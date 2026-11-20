@@ -2,16 +2,19 @@
 import { once } from 'node:events';
 import { parseArgs, intFlag } from '../lib/args.mjs';
 import { resolveConfig, saveConfig, removeConfig, serverBase } from '../lib/config.mjs';
-import { request, client, ApiError } from '../lib/api.mjs';
+import { request, client } from '../lib/api.mjs';
 import { jsonInput, runSessionCommand, watchSession, withSession } from '../lib/session.mjs';
 import { onboardingGuide, publicServiceOrigin } from '../lib/guide.mjs';
 import { diagnosticFinding } from '@tendriller/core/collaboration/diagnostics';
+import { describeReadiness, requireCreationReady, createPage } from '@tendriller/core';
+import { checkService } from '../lib/service.mjs';
 
 const usage = `Usage: tendril <command> [options]
 
 Start with a service domain (no saved handle or session required):
   guide [--server URL]                  Print the application-building workflow; no network access
   service [--server URL]                Read the public host contract and limits
+  readiness --server URL               Check current creation availability before setup
 
 Application session (--session /absolute/application.mjs):
   --mode attach | own | independent [--profile NAME] [--run RUN_ID]
@@ -22,10 +25,11 @@ Application session (--session /absolute/application.mjs):
   events [--cursor CURSOR] [--topics JSON] [--limit N] | watch
   signal <topic> <json> [--ttl MILLISECONDS]
   recovery inspect | takeover --transition ID | handover <device> --transition ID
-  definition | publication | publish <directory> --operation ID [--entry index.html]
+  definition | publication | publication-operation <id>
+  publish <directory> --operation ID [--entry index.html]
 
 Host lifecycle (--tendril NAME, or TENDRIL_API and TENDRIL_TOKEN):
-  new [name] --owner VERIFIED_EMAIL [--server URL] [--as NAME]
+  new [name] --owner VERIFIED_EMAIL --server URL [--as NAME]
   info [--show-url] | service --tendril NAME | meta <json> | release
   link list | create <json> | rotate <id> | remove <id>
   token list | create <name> [--scopes JSON] | rotate <name> | remove <name>
@@ -44,23 +48,27 @@ Chronolog owns signing, exact retry, durable identity and recovery. No host data
 API or extra delivery queue is installed. A timed out waiter leaves its saved
 operation available under the original identity.`;
 const applicationCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'status', 'query', 'command', 'operation', 'retry', 'reapply',
-  'events', 'watch', 'signal', 'recovery', 'definition', 'publication', 'publish']);
+  'events', 'watch', 'signal', 'recovery', 'definition', 'publication', 'publication-operation', 'publish']);
 const flagsByCommand = {
   self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'based-on', 'saved', 'shared'], operation: [],
   retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: [],
-  signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], publish: ['operation', 'entry'],
-  guide: ['server'], new: ['owner', 'server', 'as'], info: ['show-url'], service: ['server'], meta: [], release: [], link: [], token: ['scopes'],
+  signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
+  guide: ['server'], readiness: ['server'], new: ['owner', 'server', 'as'], info: ['show-url'], service: ['server'], meta: [], release: [], link: [], token: ['scopes'],
   activity: ['after'], remove: ['yes'],
 };
 const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2], operation: [1, 1], retry: [1, 1],
   reapply: [3, 3], events: [0, 0], watch: [0, 0], signal: [2, 2], recovery: [1, 2], definition: [0, 0], publication: [0, 0],
-  publish: [1, 1], guide: [0, 0], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
+  'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], readiness: [0, 0], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
   link: [1, 2], token: [1, 2], activity: [0, 0], remove: [0, 0] };
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
 async function hostCommand(command, args, flags, signal) {
   if (command === 'guide') return onboardingGuide(flags);
+  if (command === 'readiness') {
+    if (!flags.server && !process.env.TENDRIL_SERVER) throw invalid('readiness requires --server or TENDRIL_SERVER with the selected connector service origin');
+    return describeReadiness(publicServiceOrigin(serverBase(process.env, flags)), { signal });
+  }
   if (command === 'service' && (flags.server !== undefined ||
       !(flags.tendril || process.env.TENDRIL_NAME || process.env.TENDRIL_API && process.env.TENDRIL_TOKEN))) {
     const server = publicServiceOrigin(serverBase(process.env, flags));
@@ -69,9 +77,12 @@ async function hostCommand(command, args, flags, signal) {
   if (command === 'new') {
     const owner = String(flags.owner ?? process.env.TENDRIL_OWNER ?? '').trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(owner) || owner.length > 254) throw invalid('new requires --owner VERIFIED_EMAIL');
-    const server = serverBase(process.env, flags);
-    const handle = await request(`${server}/api/tendrils`, { method: 'POST', signal,
-      json: { ...(args[0] ? { name: args[0] } : {}), owner, lifetime: 'ad_hoc' } });
+    if (!flags.server && !process.env.TENDRIL_SERVER) throw invalid('new requires --server or TENDRIL_SERVER with the selected connector service origin; creation never defaults to production');
+    const server = publicServiceOrigin(serverBase(process.env, flags));
+    requireCreationReady(await describeReadiness(server, { signal }), { service: server });
+    await checkService(server);
+    const handle = await createPage(server, { ...(args[0] ? { name: args[0] } : {}), owner, lifetime: 'ad_hoc' },
+      { fetch: (url, options) => fetch(url, { ...options, signal }) });
     const saved = saveConfig(handle, flags.as ?? args[0], process.env, server);
     return { ...handle, config: saved.name, config_file: saved.path };
   }
@@ -103,7 +114,7 @@ async function main() {
   if (flags.help || cmd === 'help' || cmd === undefined) { console.log(usage); return; }
   if (!Object.hasOwn(flagsByCommand, cmd)) throw invalid(`Unknown command: ${cmd}`);
   const application = applicationCommands.has(cmd);
-  const allowed = new Set(['pretty', 'timeout', ...(cmd === 'guide' ? [] : application ? ['session', 'mode', 'profile', 'run'] : ['tendril']), ...flagsByCommand[cmd]]);
+  const allowed = new Set(['pretty', 'timeout', ...(['guide', 'readiness', 'new'].includes(cmd) ? [] : application ? ['session', 'mode', 'profile', 'run'] : ['tendril']), ...flagsByCommand[cmd]]);
   for (const name of Object.keys(flags)) if (!allowed.has(name)) throw invalid(`${cmd} does not accept --${name}`);
   const [min, max] = arity[cmd];
   if (args.length < min || args.length > max) throw invalid(`Invalid arguments for ${cmd}; see --help`);
@@ -117,18 +128,30 @@ async function main() {
   const seconds = intFlag(flags.timeout, 'timeout', cmd === 'watch' ? 0 : 30);
   if (seconds < 0 || seconds > 3600) throw invalid('--timeout must be between 0 and 3600 seconds');
   const lifetime = new AbortController();
-  const abort = () => lifetime.abort(Error('Invocation interrupted'));
+  const abort = () => lifetime.abort(Object.assign(Error('Invocation interrupted; inspect the original operation before retrying'), { code: 'invocation_interrupted' }));
   process.once('SIGINT', abort); process.once('SIGTERM', abort);
-  const timer = seconds ? setTimeout(() => lifetime.abort(Error('Invocation timed out; inspect or retry the original operation')), seconds * 1000) : undefined;
+  const timer = seconds ? setTimeout(() => lifetime.abort(Object.assign(Error('Invocation timed out; inspect or retry the original operation'), { code: 'invocation_timeout' })), seconds * 1000) : undefined;
   const emit = async value => {
     if (!process.stdout.write(JSON.stringify(value, null, flags.pretty ? 2 : undefined) + '\n')) await once(process.stdout, 'drain', { signal: lifetime.signal });
   };
+  let completedResult;
   try {
-    if (application) await withSession(flags.session, async owned => {
-      if (cmd === 'watch') await watchSession(owned, emit, { signal: lifetime.signal });
-      else await emit(await runSessionCommand(owned, cmd, args, flags, { signal: lifetime.signal }));
-    }, { signal: lifetime.signal, mode: flags.mode, profile: flags.profile, runId: flags.run });
+    if (application) {
+      await withSession(flags.session, async owned => {
+        if (cmd === 'watch') await watchSession(owned, emit, { signal: lifetime.signal });
+        else completedResult = await runSessionCommand(owned, cmd, args, flags, { signal: lifetime.signal });
+      }, { signal: lifetime.signal, mode: flags.mode, profile: flags.profile, runId: flags.run });
+      if (cmd !== 'watch') await emit(completedResult);
+    }
     else await emit(await hostCommand(cmd, args, flags, lifetime.signal));
+  } catch (error) {
+    if (cmd === 'publish' && completedResult?.publication?.id && Number.isSafeInteger(completedResult.version)) {
+      error.publication = { operationId: flags.operation, publicationId: completedResult.publication.id,
+        outcome: 'committed', phase: 'cleanup',
+        receipt: { publicationId: completedResult.publication.id, version: completedResult.version },
+        nextAction: 'Publication completed before this local failure. Preserve the same operation and device; inspect publication after reopening instead of creating a replacement release.' };
+    }
+    throw error;
   } finally {
     clearTimeout(timer); process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort);
   }
@@ -136,6 +159,8 @@ async function main() {
 main().catch(error => {
   console.error(JSON.stringify({ error: { code: error.code ?? 'command_failed', message: error.message },
     diagnostic: diagnosticFinding(error, { scope: error.scope ?? {} }),
-    ...(error instanceof ApiError ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}) }));
+    ...(Number.isInteger(error.status) ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}),
+    ...(error.publication ? { publication: error.publication } : {}),
+    ...(error.cleanupError ? { cleanup: { code: error.cleanupError.code ?? 'cleanup_failed', message: error.cleanupError.message } } : {}) }));
   process.exitCode = error.exit ?? 1;
 });

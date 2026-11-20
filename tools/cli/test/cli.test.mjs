@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { parseArgs, intFlag } from '../lib/args.mjs';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
-import { mkdtemp, rm, access } from 'node:fs/promises';
+import { mkdtemp, rm, access, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
@@ -42,13 +42,37 @@ test('reapplication cannot be issued without a reviewed revision', async () => {
     error => error.code === 64 && /--based-on/.test(error.stderr));
 });
 
-async function fixture(t) {
+test('CLI deadline remains explicit when cancellation closes an in-flight session', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'tendril-timeout-')), path = join(root, 'session.mjs');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(path, `export async function openSession(){let reject;return {session:{query(){return new Promise((_,r)=>{reject=r})}},close(){reject(Error('APPLICATION_SESSION_CLOSED'))}}}`);
+  await assert.rejects(run(process.execPath, [cli, '--session', path, 'query', 'notes', 'null', '--timeout', '1']), error => {
+    const result = JSON.parse(error.stderr);
+    return result.error.code === 'invocation_timeout' && /Invocation timed out/.test(result.error.message);
+  });
+});
+
+test('CLI reports a completed publication even when local ownership cleanup fails', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'tendril-published-')), path = join(root, 'session.mjs');
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await writeFile(join(root, 'index.html'), '<main>published</main>');
+  await writeFile(path, `export async function openSession(){return {session:{},control:{preparePublication:async()=>({id:'signed',payload:{operationId:'original'}}),publish:async publication=>({publication,version:1})},close(){throw Error('local cleanup failed')}}}`);
+  await assert.rejects(run(process.execPath, [cli, '--session', path, 'publish', root, '--operation', 'original']), error => {
+    const result = JSON.parse(error.stderr);
+    return error.stdout === '' && result.publication.outcome === 'committed' && result.publication.operationId === 'original'
+      && result.publication.receipt.version === 1 && result.error.message === 'local cleanup failed';
+  });
+});
+
+async function fixture(t, respond = () => undefined) {
   const root = await mkdtemp(join(tmpdir(), 'tendril-guide-'));
   const calls = [];
   const server = createServer((request, response) => {
     calls.push({ path: request.url, authorization: request.headers.authorization, method: request.method });
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({ contract: 3, path: request.url }));
+    const result = respond(request, origin);
+    response.statusCode = result?.status ?? 200;
+    response.end(JSON.stringify(result?.body ?? { contract: 3, path: request.url }));
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -75,6 +99,52 @@ test('guide starts from a domain offline and does not open a saved handle or cre
   assert.doesNotMatch(result.stdout, /private-fixture-token/);
   assert.deepEqual(calls, []);
   await assert.rejects(access(env.TENDRIL_CONFIG_DIR), { code: 'ENOENT' });
+});
+
+function readiness(origin, mode = 'open') {
+  return { schemaVersion: 1, serviceOrigin: origin, mode,
+    environment: { id: origin, kind: 'local', label: 'Local test' },
+    build: { coreRelease: 'test', runtimeId: 'a'.repeat(64), sourceCommit: null },
+    creation: { available: mode === 'open', code: mode === 'open' ? null : 'creation_paused',
+      message: mode === 'open' ? 'Creation is open.' : 'Creation is paused.', nextAction: 'Inspect this service; keep the selected origin.' },
+    writes: { available: mode !== 'read_only', code: mode === 'read_only' ? 'read_only' : null },
+    readinessUrl: origin + '/api/readiness', statusUrl: origin + '/status', checkedAt: new Date().toISOString() };
+}
+
+test('creation requires an explicit origin and stops at paused or unsupported readiness', async t => {
+  for (const mode of ['creation_paused', 'read_only', 'unsupported']) {
+    const { origin, calls, env } = await fixture(t, (_request, origin) => mode === 'unsupported'
+      ? { status: 404, body: { error: { code: 'not_found' } } }
+      : { body: readiness(origin, mode) });
+    await assert.rejects(run(process.execPath, [cli, 'new', '--owner', 'owner@example.test', '--server', origin], { env }),
+      error => JSON.parse(error.stderr).error.code === (mode === 'unsupported' ? 'readiness_unsupported' : 'creation_paused'));
+    assert.deepEqual(calls.map(({ path, method, authorization }) => [path, method, authorization]), [['/api/readiness', 'GET', undefined]]);
+    await assert.rejects(access(env.TENDRIL_CONFIG_DIR), { code: 'ENOENT' });
+    await assert.rejects(run(process.execPath, [cli, 'new', '--owner', 'owner@example.test'], { env }),
+      error => error.code === 64 && /selected connector service origin/.test(error.stderr));
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('creation rechecks server policy and never saves a handle after a preflight race', async t => {
+  const { origin, calls, env } = await fixture(t, (request, origin) => request.url === '/api/readiness'
+    ? { body: readiness(origin) } : request.url === '/api/tendrils'
+      ? { status: 503, body: { error: { code: 'creation_paused', message: 'New tendrils are temporarily paused' } } }
+      : undefined);
+  await assert.rejects(run(process.execPath, [cli, 'new', '--owner', 'owner@example.test', '--server', origin], { env }),
+    error => JSON.parse(error.stderr).error.code === 'creation_paused');
+  assert.deepEqual(calls.map(({ path, method }) => [path, method]), [['/api/readiness', 'GET'], ['/api/service', 'GET'], ['/api/tendrils', 'POST']]);
+  await assert.rejects(access(env.TENDRIL_CONFIG_DIR), { code: 'ENOENT' });
+});
+
+test('readiness reports current mode anonymously despite ambient page credentials', async t => {
+  const { origin, calls, env } = await fixture(t, (_request, origin) => ({ body: readiness(origin, 'read_only') }));
+  const result = await run(process.execPath, [cli, 'readiness', '--server', origin], {
+    env: { ...env, TENDRIL_NAME: 'unrelated', TENDRIL_TOKEN: 'private-fixture' },
+  });
+  assert.equal(JSON.parse(result.stdout).creation.available, false);
+  assert.deepEqual(calls, [{ path: '/api/readiness', method: 'GET', authorization: undefined }]);
+  assert.doesNotMatch(result.stdout, /private-fixture/);
 });
 
 test('public service discovery works before creation and explicit server ignores ambient page credentials', async t => {

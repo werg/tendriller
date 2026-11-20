@@ -21,10 +21,11 @@ export function onboardingGuide(flags = {}, env = process.env) {
     primary_deliverable: shared.delivery.primary,
     troubleshooting: shared.documentation.troubleshooting,
     service_descriptor: shared.interfaces.service_descriptor,
-    next: `tendril service --server ${service}`,
+    readiness: shared.interfaces.readiness ?? url('/api/readiness'),
+    next: `tendril readiness --server ${service}`,
     workflow: shared.workflow,
     prerequisites: [
-      'Compatible public Tendriller and Chronolog artifacts; verify the host contract before creating a page.',
+      'Use the selected connector service origin for every step; check creation readiness before installing packages, then verify the host contract before creating a page.',
       'An owner email and owner sign-in to claim the page.',
       'An application bootstrap exporting openSession({ signal }) and returning { session, control? } for session commands.',
       'Explicit enrollment, device grants and persistent signer storage; a page token alone does not grant application data or publication rights.',

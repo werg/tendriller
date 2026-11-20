@@ -74,6 +74,28 @@ export async function openSession() { return { session: { async close() { await 
   assert.equal(await readFile(closed, 'utf8'), 'closed');
 });
 
+test('cleanup failure does not overwrite the original action or operation evidence', async t => {
+  const root = await directory(t), path = join(root, 'failed-close.mjs');
+  await writeFile(path, `export async function openSession() { return {session:{}, async close(){throw Object.assign(Error('cleanup failed'),{code:'CLOSE_FAILED'});}}; }`);
+  const original = Object.assign(Error('publication verification failed'), { code: 'PUBLICATION_UNVERIFIED',
+    publication: { operationId: 'original-release', outcome: 'committed', version: 1 } });
+  await assert.rejects(withSession(path, async () => { throw original; }), error =>
+    error === original && error.code === 'PUBLICATION_UNVERIFIED' && error.cleanupError.code === 'CLOSE_FAILED' && error.publication.operationId === 'original-release');
+  await assert.rejects(withSession(path, async () => 'successful action'), { code: 'CLOSE_FAILED' });
+});
+
+test('deadline remains the primary error when closing the session rejects the pending action', async t => {
+  const root = await directory(t), path = join(root, 'cancelled.mjs');
+  await writeFile(path, `export async function openSession() { return {session:{}, async close(){throw Error('secondary cleanup failure');}}; }`);
+  const controller = new AbortController();
+  await assert.rejects(withSession(path, async () => {
+    controller.abort(Object.assign(Error('Invocation timed out'), { code: 'invocation_timeout' }));
+    throw Object.assign(Error('APPLICATION_SESSION_CLOSED'), { publication: { operationId: 'release-1', outcome: 'unknown' } });
+  }, { signal: controller.signal }), error => error.code === 'invocation_timeout' && error.message === 'Invocation timed out'
+    && error.cause.message === 'APPLICATION_SESSION_CLOSED' && error.publication.operationId === 'release-1'
+    && error.cleanupError.message === 'secondary cleanup failure');
+});
+
 test('attachment is preferred, passes retained profile and context, and only detaches once on cancellation', async t => {
   const root = await directory(t), path = join(root, 'attached.mjs'), calls = join(root, 'calls');
   await writeFile(path, `import { appendFile } from 'node:fs/promises';
@@ -156,6 +178,28 @@ test('publication sends a complete signed graph through the owned control partic
   assert.equal(calls[1].assets.length, 2, 'Content addressed bytes are uploaded once');
   assert.ok(calls[1].assets.every(asset => /^[a-f0-9]{64}$/u.test(asset.hash)));
   assert.equal(Buffer.from(calls[1].assets[1].bytes, 'base64').toString(), 'export const revision = 1;');
+});
+
+test('publication failure retains known receipt or unknown outcome and the original stable identity', async t => {
+  const root = await directory(t);
+  await writeFile(join(root, 'index.html'), '<main>exact bytes</main>');
+  const signed = { id: 'signed-publication', payload: { operationId: 'release-1' } };
+  for (const committed of [true, false]) {
+    const cause = Object.assign(Error(committed ? 'head read unavailable' : 'upload reply lost'), { outcome: committed ? 'committed' : 'unknown',
+      phase: committed ? 'selection' : 'submission', receipt: committed ? { publication: signed, version: 1 } : null });
+    const control = { preparePublication: async () => signed, publish: async () => { throw cause; } };
+    await assert.rejects(runSessionCommand({ session: {}, control }, 'publish', [root], { operation: 'release-1' }), error => error === cause
+      && error.publication.operationId === 'release-1' && error.publication.outcome === (committed ? 'committed' : 'unknown')
+      && error.publication.receipt?.version === (committed ? 1 : undefined));
+  }
+});
+
+test('publication operation inspection reads the existing journal without preparing or sending work', async () => {
+  const saved = { publication: { id: 'signed' }, receipt: null }, calls = [];
+  const control = { publicationOperation: async id => { calls.push(id); return saved; } };
+  assert.equal(await runSessionCommand({ session: {}, control }, 'publication-operation', ['original']), saved);
+  assert.deepEqual(calls, ['original']);
+  await assert.rejects(runSessionCommand({ session: {}, control: {} }, 'publication-operation', ['original']), { code: 'publication_inspection_unsupported' });
 });
 
 test('authored graphs retain exact bytes and reject incomplete, oversized or linked sources', async t => {

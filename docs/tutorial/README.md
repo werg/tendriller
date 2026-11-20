@@ -12,7 +12,7 @@ checkpoint. After installing those dependencies:
 npm run create -- https://YOUR_HOST owner@example.com "Shared notes"
 npm run init
 npm run build
-npx tendril --session ./session.mjs --mode own publish ./page --operation notes-release-1
+npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --operation notes-release-1
 # Now give the owner the ready page URL; they sign in to open this version.
 # Do not wait for a claimed reply before publishing.
 # In the published page, choose Set up this browser and verify its public key.
@@ -26,6 +26,19 @@ native device, initial key and exact setup requests; keep it out of Git and page
 assets. Setup records are write-once so a retry cannot silently generate another
 identity or change a signed transition. The browser receives keys only through
 the authenticated session's reader-to-reader key exchange.
+
+Before installing the packages, inspect the selected host's `/api/readiness`.
+`create` repeats that check and refuses paused, unavailable or older hosts with
+no readiness endpoint. It also refuses an existing handle for another service.
+Resume a saved production application only against its matching production
+connector; use a separate directory for staging. Never copy private signing
+state to make an origin mismatch disappear.
+
+If publishing times out, retain `page/`, `.tendriller/` and the original
+`notes-release-1` identity. With the owner stopped, inspect `publication` and
+`publication-operation notes-release-1` using `--mode own`; compare the signed
+graph before an exact retry. A retained host receipt and a verified current head
+are separate observations. `--timeout 120` means 120 seconds.
 
 The browser can read/write notes but cannot administer, publish, coordinate or
 recover. Keep the native peer running for applied writes. This first-app policy

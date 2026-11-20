@@ -5,6 +5,16 @@ import { pathToFileURL } from 'node:url';
 import { pack } from './pack.mjs';
 import { diagnoseApplicationSession } from '@tendriller/core/collaboration/diagnostics';
 
+function invocationFailure(error, signal) {
+  if (!signal?.aborted || signal.reason === error) return error;
+  const reason = signal.reason;
+  return Object.assign(new Error(reason?.message ?? 'Invocation interrupted', { cause: error }), {
+    code: reason?.code ?? 'invocation_interrupted',
+    ...(error?.operation ? { operation: error.operation } : {}),
+    ...(error?.publication ? { publication: error.publication } : {}),
+  });
+}
+
 export async function withSession(modulePath, run, { signal, mode, profile, runId } = {}) {
   if (!modulePath) throw Error('Supply --session with a module exporting attachSession({ signal }) or openSession({ signal }). A page handle does not open a Chronolog session. Run tendril guide --server YOUR_SERVICE_ORIGIN and follow /docs/BUILD_AN_APP.md to configure authority, enroll the device and compose the session.');
   if (mode !== undefined && !['attach', 'own', 'independent'].includes(mode)) throw Error('Use --mode attach, own, or independent');
@@ -18,7 +28,9 @@ export async function withSession(modulePath, run, { signal, mode, profile, runI
   if (typeof hook !== 'function') throw Error(selected === 'attach'
     ? 'The session module must export attachSession({ signal, profile, context }). Attachment never falls back to opening a signer.'
     : 'The session module must export openSession({ signal, mode, profile }) and acquire exclusive ownership of the selected retained profile.');
-  const owned = await hook({ signal, mode: selected, profile, ...(runId === undefined ? {} : { context: { runId } }) });
+  let owned;
+  try { owned = await hook({ signal, mode: selected, profile, ...(runId === undefined ? {} : { context: { runId } }) }); }
+  catch (error) { throw invocationFailure(error, signal); }
   const dispose = selected === 'attach'
     ? typeof owned?.detach === 'function' ? () => owned.detach() : typeof owned?.session?.detach === 'function' ? () => owned.session.detach() : undefined
     : typeof owned?.close === 'function' ? () => owned.close() : typeof owned?.session?.close === 'function' ? () => owned.session.close() : undefined;
@@ -29,10 +41,25 @@ export async function withSession(modulePath, run, { signal, mode, profile, runI
   const close = () => closing ??= Promise.resolve().then(dispose);
   const abort = () => { void close().catch(() => {}); };
   signal?.addEventListener('abort', abort, { once: true });
+  let result, failure;
   try {
     signal?.throwIfAborted();
-    return await run({ ...owned, mode: selected });
-  } finally { signal?.removeEventListener('abort', abort); await close(); }
+    result = await run({ ...owned, mode: selected });
+  } catch (error) {
+    failure = invocationFailure(error, signal);
+  } finally {
+    signal?.removeEventListener('abort', abort);
+    try { await close(); }
+    catch (cleanupError) {
+      if (!failure) failure = cleanupError;
+      else {
+        if (!(failure instanceof Error) || !Object.isExtensible(failure)) failure = new Error('Application action failed', { cause: failure });
+        failure.cleanupError = cleanupError;
+      }
+    }
+  }
+  if (failure) throw failure;
+  return result;
 }
 
 const required = (value, description) => {
@@ -107,12 +134,31 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   }
   if (command === 'definition') return controlOf(owned).definition();
   if (command === 'publication') return controlOf(owned).publication();
+  if (command === 'publication-operation') {
+    const control = controlOf(owned);
+    if (typeof control.publicationOperation !== 'function') throw Object.assign(Error('The installed Chronolog package cannot inspect retained publication receipts. Install the qualified composition; use publication to inspect the signed selected head in the meantime.'), { code: 'publication_inspection_unsupported' });
+    return control.publicationOperation(required(args[0], 'the original publication operation identity'));
+  }
   if (command === 'publish') {
-    const control = controlOf(owned), source = pack(required(args[0], 'the complete authored directory'), { entry: options.entry });
-    const publication = await control.preparePublication({ operationId: required(options.operation, '--operation with a stable publication identity'),
-      entry: source.entry, files: source.files.map(file => ({ path: file.path, type: file.type, size: file.size, hash: file.sha256 })) });
-    const assets = [...new Map(source.files.map(file => [file.sha256, { hash: file.sha256, bytes: file.bytes.toString('base64') }])).values()];
-    return control.publish(publication, assets);
+    const control = controlOf(owned), operationId = required(options.operation, '--operation with a stable publication identity');
+    const source = pack(required(args[0], 'the complete authored directory'), { entry: options.entry });
+    let publication;
+    try {
+      publication = await control.preparePublication({ operationId,
+        entry: source.entry, files: source.files.map(file => ({ path: file.path, type: file.type, size: file.size, hash: file.sha256 })) });
+      const assets = [...new Map(source.files.map(file => [file.sha256, { hash: file.sha256, bytes: file.bytes.toString('base64') }])).values()];
+      return await control.publish(publication, assets);
+    } catch (error) {
+      const committed = error.outcome === 'committed' && error.receipt?.publication?.id === publication?.id;
+      error.publication = { operationId, publicationId: publication?.id ?? null,
+        outcome: committed ? 'committed' : publication ? 'unknown' : 'not_submitted',
+        phase: error.phase ?? (publication ? 'submission' : 'preparation'),
+        receipt: committed ? { publicationId: error.receipt.publication.id, version: error.receipt.version } : null,
+        nextAction: committed
+          ? 'The host acknowledged this publication. Reopen the same device and inspect publication plus publication-operation; verify the signed selected head before calling the release current.'
+          : 'Keep this operation identity, device store and authored bytes. Inspect publication and publication-operation after reopening. Retry only the original publication intent; do not create a replacement operation because the response was uncertain.' };
+      throw error;
+    }
   }
   if (command === 'signal') {
     await session.signals.send(required(args[0], 'a live topic'), jsonInput(args[1]),
