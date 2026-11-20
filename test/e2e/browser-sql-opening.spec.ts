@@ -1,10 +1,23 @@
 // Local deterministic coverage of the live staging SQL fixture. Supply the
 // matching SQL-enabled E2E_CHRONOLOG_CONSUMER and E2E_CHRONOLOG_WASM artifacts.
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed,
   signInFixture, OTHER_TOKEN } from './local-helpers';
 import { openBrowserSqlSpecimen } from './staging-browser-sql';
+
+async function expectAppliedAndReplicated(source: Page, target: Page, text: string) {
+  try {
+    // The UI's operation.applied() has a declared 15s deadline. Start the
+    // unchanged 5s remote-display deadline only after actual local application.
+    await expect(source.locator('#status')).toHaveText(/Applied here|Shared with another device/, { timeout: 15_000 });
+    await expect(target.getByText(text, { exact: true })).toBeVisible();
+  } catch (error) {
+    const inspect = (page: Page) => page.evaluate(() => (window as any).inspectAcceptanceState?.()).catch(() => null);
+    const [sender, receiver] = await Promise.all([inspect(source), inspect(target)]);
+    throw new Error(`SQL applied/replicated observation failed: ${JSON.stringify({ sender, receiver })}`, { cause: error });
+  }
+}
 
 for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
   const isPrivate = slowPeer === 'owner' || slowPeer === 'guest';
@@ -29,14 +42,14 @@ for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
         delayedSqlElapsedMs = Date.now() - requestedAt;
         await route.fulfill({ status: response.status(), headers, body });
       });
-      if (isPrivate) await (slowPeer === 'owner' ? context : guest).route('**/_tendril/peers/participant', async route => {
+      if (isPrivate || slowPeer === 'cold-sql') await (slowPeer === 'guest' ? guest : context).route('**/_tendril/peers/participant', async route => {
         const body = route.request().postDataJSON();
         if (body?.facet !== 'publication' || body?.action !== 'definition') return route.continue();
         const response = await route.fetch();
         delayedReads++;
         // Beyond the unchanged physical transport's 10s opening deadline,
         // within the fixture's existing 25s session-preparation deadline.
-        await delay(12_000);
+        await delay(slowPeer === 'cold-sql' ? 6_000 : 12_000);
         await route.fulfill({ response });
       });
       await signInFixture(context); await claim(context, handle); await openClaimed(page, handle);
@@ -58,21 +71,21 @@ for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
       const fixture = await openBrowserSqlSpecimen({ consumer: consumer!, engineDirectory: engineDirectory!,
         peers: client(handle).peers, pageUrl: localPageUrl(handle), applicationId: handle.application.id,
         pages: [page, second], isPrivate, guestAccount: 'e2e-other' });
-      expect(delayedReads).toBe(isPrivate ? 1 : 0);
+      expect(delayedReads).toBe(slowPeer === 'none' ? 0 : 1);
+      console.info('SQL_FIXTURE_STARTUP', JSON.stringify(await page.evaluate(() => (window as any).inspectAcceptanceState?.())));
       if (isPrivate) {
         for (const answer of ['First answer', 'Corrected answer']) {
           await page.getByRole('textbox', { name: 'Your answer' }).fill(answer);
           await page.getByRole('button', { name: 'Save answer' }).click();
-          await expect(page.locator('#status')).toHaveText(/Applied here|Shared with another device/);
-          await expect(second.getByText(`Current answer: ${answer}`, { exact: true })).toBeVisible();
+          await expectAppliedAndReplicated(page, second, `Current answer: ${answer}`);
         }
         await expect(second.getByRole('textbox', { name: 'Your answer' })).toHaveCount(0);
       } else {
         await page.getByLabel('Task title').fill('Retained SQL task');
         await page.getByRole('button', { name: 'Add task' }).click();
-        await expect(second.getByText('Retained SQL task · Open', { exact: true })).toBeVisible();
+        await expectAppliedAndReplicated(page, second, 'Retained SQL task · Open');
         await second.getByRole('button', { name: 'Claim task' }).click();
-        await expect(page.getByText('Retained SQL task · Claimed by a teammate', { exact: true })).toBeVisible();
+        await expectAppliedAndReplicated(second, page, 'Retained SQL task · Claimed by a teammate');
         await guest.setOffline(true);
         await context.unroute('**/engine/sqlite3.wasm');
         const reopened = await fixture.reopenFirst();
