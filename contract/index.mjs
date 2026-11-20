@@ -3,7 +3,7 @@ import { isWellFormedUnicode } from './paths.mjs';
 export { assertFilePath } from './paths.mjs';
 export { RESOURCE_LIMITS } from './limits.mjs';
 export const CONTRACT_VERSION = 3;
-export const CORE_RELEASE = '0.3.0-rc.11';
+export const CORE_RELEASE = '0.3.0-rc.12';
 export const ROLES = Object.freeze(['owner', 'guest', 'display']);
 const string = { type: 'string' }, integer = { type: 'integer', minimum: 0 };
 const object = (properties, required = [], additionalProperties = false) => ({ type: 'object', properties, required, additionalProperties });

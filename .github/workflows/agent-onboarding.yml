@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: werg/chronolog-db
-          ref: d3efeb6d75ac24bb9b44899f27d6940475ab55e9
+          ref: 2d4af2f458236b6871b14f9da004168169583a3b
           path: chronolog
       - uses: actions/setup-node@v4
         with:
@@ -47,7 +47,7 @@ jobs:
         working-directory: core
       - name: Exercise the downloaded tutorial in a real browser
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz"
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-2d4af2f4.tgz"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

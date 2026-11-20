@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-d625546c.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-d3efeb6d.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-2d4af2f4.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",
@@ -56,7 +56,7 @@
     "ipaddr.js": "^2.5.0",
     "phonon-tts": "0.7.1"
   },
-  "version": "0.3.0-rc.11",
+  "version": "0.3.0-rc.12",
   "engines": {
     "node": ">=22.15.0"
   }
