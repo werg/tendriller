@@ -17,6 +17,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
 import { TUTORIAL_FILES } from './onboarding.mjs';
 import { nativeTestPeerSource, closeTestPeer } from './first-app-peer.mjs';
+import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
 import { CONTRACT_VERSION } from '../contract/index.mjs';
 
@@ -45,7 +46,8 @@ const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql
   limits: ['Synthetic local owner session; no OAuth provider tested.',
     sqlOnly ? 'Native SQL only; no browser SQL, publication, cross-device transport, Internet or mobile qualification.'
       : 'Local Chromium and encrypted WebSocket relay; no Internet, native RTC or mobile qualification.',
-    'Scripted tutorial execution; not an unassisted fresh-agent usability result.'], steps: [] };
+    'Scripted tutorial execution; not an unassisted fresh-agent usability result.',
+    'An ordinary test-host WebSocket forwarding boundary isolates workerd issue #8185; the packed host is unchanged. Direct production TCP closure is not qualified.'], steps: [] };
 let host, peer, browser, page, stage = 'preflight';
 
 // Every request, including a followed redirect or literal IP, is restricted to
@@ -160,16 +162,21 @@ try {
   const oauthJwk = { ...await crypto.subtle.exportKey('jwk', oauthKey.privateKey), alg: 'ES256', kid: 'first-app-test' };
   const oauthConfiguration = { resource: SERVICE + '/mcp', clients: [{ id: 'first-app-test', name: 'First app test',
     redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: ['tendrils:create', 'tendrils:list'] }] };
-  host = new Miniflare({ ...convertV4MiniflareOptions({ ...workerOptions,
-    scriptPath: join(engine, 'package/worker.mjs'), modulesRoot: join(engine, 'package'), modules: true,
-    bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost',
-      OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration),
-      ...(kit ? { SERVICE_SOURCE_COMMIT: kit.composition.core.source, SERVICE_COMPOSITION_ID: kit.composition.id } : {}) },
+  host = new Miniflare({ ...convertV4MiniflareOptions({
     host: '127.0.0.1', port: 8790, https: true, cf: false,
+    workers: [
+      { name: 'first-app-network', modules: true, script: FIRST_APP_WEBSOCKET_PROXY_WORKER,
+        compatibilityDate: workerOptions.compatibilityDate, serviceBindings: { PACKED_HOST: 'first-app-packed-host' } },
+      { ...workerOptions, name: 'first-app-packed-host',
+        scriptPath: join(engine, 'package/worker.mjs'), modulesRoot: join(engine, 'package'), modules: true,
+        bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost',
+          OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration),
+          ...(kit ? { SERVICE_SOURCE_COMMIT: kit.composition.core.source, SERVICE_COMPOSITION_ID: kit.composition.id } : {}) } },
+    ],
   }), resourcePersistencePath: join(directory, 'host-state'), resourceTmpPath: join(directory, 'host-tmp'),
   enableDevRegistry: false, logRequests: false });
   await host.ready;
-  const accounts = await host.getD1Database('ACCOUNTS');
+  const accounts = await host.getD1Database('ACCOUNTS', 'first-app-packed-host');
   for (const migration of (await readdir(join(engine, 'package/migrations')))
     .filter(name => /^\d+_[a-z0-9_]+\.sql$/.test(name)).sort())
     for (const query of unstable_splitSqlQuery(await readFile(join(engine, 'package/migrations', migration), 'utf8')))
