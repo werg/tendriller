@@ -690,6 +690,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(accepted.recent).toMatchObject([{ outcome: 'accepted', attempts: 2, sourceEventId: emitted.sourceEventId }]);
 
     // Keep an old event pinned by a webhook while the visible inbox moves on.
+    rejectCallback = true;
     const later = { ...emitted, sourceEventId: 'pinned-after-retry' };
     const pinned = await first.adapter.publish(later);
     await inDO(a.page.id, t => {
@@ -705,8 +706,15 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(gap.events[0].sequence).toBeGreaterThan(pinned + 1);
     await inDO(a.page.id, t => expect(t.db.one('SELECT seq FROM assistant_events WHERE seq=?', pinned)).toBeTruthy());
 
-    rejectCallback = true;
-    await inDO(a.page.id, t => t.db.run('UPDATE assistant_jobs SET attempts=7,due=? WHERE event_seq=?', t.now() - 1, pinned));
+    // The host may deliver immediately after emission. Let that attempt finish
+    // before preparing the final retry, so its lease cannot overwrite this setup.
+    await runAlarm(a.page.id);
+    await expect.poll(() => inDO(a.page.id, t =>
+      t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_jobs WHERE lease IS NOT NULL')!.n)).toBe(0);
+    await inDO(a.page.id, async t => {
+      t.db.run('UPDATE assistant_jobs SET attempts=7,due=? WHERE event_seq=?', t.now() - 1, pinned);
+      await t.ctx.storage.setAlarm(t.now());
+    });
     await runAlarm(a.page.id);
     const failed = (await first.tool('get_application_delivery', { applicationId: first.id })).result.structuredContent;
     expect(failed.recent).toEqual(expect.arrayContaining([expect.objectContaining({ sourceEventId: later.sourceEventId, outcome: 'retry_exhausted', attempts: 8 })]));
