@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { importReviewPackages } from '../review/packages.mjs';
 import { nativeMeasurement } from './observer-native.mjs';
-import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement } from './observer-data.mjs';
+import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement, publicationAddress } from './observer-data.mjs';
 import { hash, now, checks } from './evidence.mjs';
 
 function token(text, value) {
@@ -40,23 +40,57 @@ async function field(page, spec, metric) {
   return spec.read === 'value' ? node.inputValue() : spec.read === 'attribute'
     ? node.getAttribute(need(spec.attribute, metric + '-attribute')) : node.innerText();
 }
-export async function browserMeasurement(owner, config) {
+export async function browserIdentity(owner, config) {
   const page = need(owner?.page, 'owner-browser');
-  same(page.url(), config.handle.page_url, 'browser-page-url');
-  const spec = need(config.browser, 'browser-selectors');
-  const deviceId = need(await field(page, spec.device, 'browser-device-selector'), 'browser-device-id');
-  if (!/^[a-f0-9]{64}$/.test(deviceId)) throw new MeasurementError('browser-device-format', 'failed');
+  const address = publicationAddress(page.url(), config.handle.page_url);
   const runtime = await page.evaluate(() => {
     const i = window.tendril?.identity;
-    return i ? { page: i.page, publication: i.publication, version: i.version } : null;
+    return i ? { page: i.page, publication: i.publication, version: i.version, documentPath: i.documentPath } : null;
   });
   need(runtime, 'browser-runtime-identity');
   same(runtime.page, config.handle.id, 'browser-runtime-page');
+  if (address.version !== null) {
+    same(address.version, runtime.version, 'browser-url-runtime-version');
+    same(address.documentPath, runtime.documentPath, 'browser-url-runtime-document');
+  }
+  return { runtime, address, url: page.url(), at: now(), actionIndex: owner.actions?.length ?? 0 };
+}
+export function verifyBrowserPublication(browser, receipt) {
+  same(browser.runtime.version, receipt.version, 'browser-selected-version');
+  // Runtime publication IDs are host version strings, not Chronolog digests.
+  same(browser.runtime.publication, String(receipt.version), 'browser-publication-version-id');
+  const path = need(browser.runtime.documentPath, 'browser-document-path');
+  if (!receipt.publication.payload.files.some(file => file.path === path && file.type === 'text/html')) throw new MeasurementError('browser-unsigned-document', 'failed');
+}
+export async function verifyPublicationLineage(current, claimed, receipts, sdk, authority) {
+  const byId = new Map(receipts.map(receipt => [receipt.publication.id, receipt]));
+  byId.set(claimed.publication.id, claimed);
+  const lineage = [], seen = new Set();
+  for (let receipt = current; lineage.length < 256;) {
+    const publication = receipt.publication;
+    if (seen.has(publication.id)) throw new MeasurementError('publication-parent-cycle', 'failed');
+    seen.add(publication.id);
+    await sdk.verifyPublicationManifest(publication, authority);
+    lineage.push({ publicationId: publication.id, version: receipt.version, revision: publication.payload.revision });
+    if (publication.id === claimed.publication.id) return lineage;
+    if (publication.payload.previous === null) throw new MeasurementError('publication-not-descendant-of-claim', 'failed');
+    const previous = need(byId.get(publication.payload.previous), 'publication-parent-receipt-unobserved');
+    same(publication.payload.revision, previous.publication.payload.revision + 1, 'publication-cas-revision');
+    same(receipt.version, previous.version + 1, 'publication-host-version-lineage');
+    receipt = previous;
+  }
+  throw new MeasurementError('publication-lineage-bound');
+}
+export async function browserMeasurement(owner, config) {
+  const identity = await browserIdentity(owner, config), page = owner.page;
+  const spec = need(config.browser, 'browser-selectors');
+  const deviceId = need(await field(page, spec.device, 'browser-device-selector'), 'browser-device-id');
+  if (!/^[a-f0-9]{64}$/.test(deviceId)) throw new MeasurementError('browser-device-format', 'failed');
   const rows = await page.locator(need(spec.rows, 'browser-rows-selector')).allInnerTexts();
   const rowIds = spec.rowIdentityAttribute ? await page.locator(spec.rows).evaluateAll((nodes, { attribute, selector }) =>
     nodes.map(node => (selector ? node.querySelector(selector) : node)?.getAttribute(attribute) ?? null),
   { attribute: spec.rowIdentityAttribute, selector: spec.rowIdentitySelector ?? null }) : null;
-  return { deviceId, runtime, rows, url: page.url(), at: now(), actionIndex: owner.actions?.length ?? 0,
+  return { ...identity, deviceId, rows,
     rowIds, status: spec.status ? await field(page, spec.status, 'browser-status-selector') : null };
 }
 
@@ -74,12 +108,13 @@ export class StarterObserver {
   }
   checkpoint(name, value) {
     if (this.state.checkpoints[name]) throw new MeasurementError('checkpoint-already-exists', 'failed');
-    this.state.checkpoints[name] = { ...value, observedAt: now() }; this.save(); return this.state.checkpoints[name];
+    this.state.checkpoints[name] = { ...structuredClone(value), observedAt: now() }; this.save(); return this.state.checkpoints[name];
   }
   config() {
     const config = loadObserverConfig(this.configPath, this);
     const binding = { origin: config.origin, applicationId: config.applicationId, historyId: config.historyId,
-      deviceId: config.native.deviceId, pageId: config.handle.id, descriptor: hash(JSON.stringify(config.descriptor)), project: config.native.project };
+      deviceId: config.native.deviceId, pageId: config.handle.id, pageUrl: config.handle.page_url,
+      descriptor: hash(JSON.stringify(config.descriptor)), project: config.native.project };
     if (this.state.binding) same(JSON.stringify(binding), JSON.stringify(this.state.binding), 'observer-identity-changed');
     else { this.state.binding = binding; this.save(); }
     return config;
@@ -104,10 +139,24 @@ export class StarterObserver {
     same(receipt.publication.payload.applicationId, config.applicationId, 'publication-application');
     same(receipt.publication.payload.historyId, config.historyId, 'publication-history');
     same(receipt.publication.payload.operationId, need(config.publication?.operationId, 'publication-operation-id'), 'publication-operation');
+    this.state.publications ??= {};
+    const previous = this.state.publications[String(receipt.version)];
+    if (previous) same(previous.publication.id, receipt.publication.id, 'publication-version-rebound');
+    this.state.publications[String(receipt.version)] = structuredClone(receipt); this.save();
     return receipt;
   }
+  async browser(config) {
+    const browser = await browserMeasurement(this.owner, config);
+    let receipt = this.state.publications?.[String(browser.runtime.version)];
+    if (!receipt) {
+      const context = await this.host(config);
+      receipt = await this.publication(config, context);
+    }
+    verifyBrowserPublication(browser, receipt);
+    return { ...browser, verifiedPublication: { id: receipt.publication.id, version: receipt.version, documentPath: browser.runtime.documentPath } };
+  }
   async snapshot(config, options = {}) {
-    const native = await this.native(config, options), browser = await browserMeasurement(this.owner, config);
+    const native = await this.native(config, options), browser = await this.browser(config);
     same(native.applicationId, config.applicationId, 'native-application'); same(native.historyId, config.historyId, 'native-history');
     same(native.deviceId, config.native.deviceId, 'native-device');
     if (browser.deviceId === native.deviceId) throw new MeasurementError('browser-reused-native-signer', 'failed');
@@ -130,7 +179,7 @@ export class StarterObserver {
     if (check === 'agent-to-browser' || check === 'lost-command-response') {
       plan = this.plan(config, check, options); command = plan.name; marker = plan.marker; opId = plan.operationId; author = config.native.deviceId;
     } else {
-      author = need((await browserMeasurement(this.owner, config)).deviceId, 'browser-author');
+      author = need((await this.browser(config)).deviceId, 'browser-author');
       command = need(config.commands?.['browser-to-agent']?.name, 'browser-command-name');
     }
     const saved = this.state.checkpoints[check + '-lost'];
@@ -144,7 +193,7 @@ export class StarterObserver {
     }
     const op = accepted(native), header = op.attempt.payload.header;
     const applied = operationRows(native, config, header.operationId, author, need(marker, 'marker'));
-    const browser = await browserMeasurement(this.owner, config);
+    const browser = await this.browser(config);
     // Require the operation and marker in one normal rendered row, not a draft/status message.
     const browserToken = config.query.operationId === null ? String(at(applied[0], config.query.rowId)) : header.operationId;
     same(browserRows(browser, marker, browserToken).length, 1, 'browser-operation-row');
@@ -227,9 +276,21 @@ export class StarterObserver {
         this.checkpoint('preclaim-publication', { receipt, info });
       } else if (check === 'publication') {
         const before = need(this.state.checkpoints['preclaim-publication'], 'preclaim-publication-checkpoint');
-        same(before.receipt.publication.id, receipt.publication.id, 'claim-changed-publication');
-        const browser = await browserMeasurement(this.owner, config);
-        same(browser.runtime.publication, receipt.publication.id, 'browser-selected-publication');
+        const browser = await browserIdentity(this.owner, config);
+        verifyBrowserPublication(browser, receipt);
+        if (options.phase === 'claim-boundary') {
+          same(before.receipt.publication.id, receipt.publication.id, 'claim-boundary-publication-changed');
+          const expectedOwner = need(this.owner?.access?.accountId ?? config.ownerAccountId, 'expected-owner-account');
+          same(need(info.owner_account_id, 'owner-claim-not-observed'), expectedOwner, 'claimed-owner-account');
+          this.checkpoint('claim-boundary', { before: before.receipt, after: receipt, beforeAt: before.observedAt,
+            ownerAccountId: expectedOwner, browser, retainedSameSignedReceipt: true });
+        }
+        const boundary = need(this.state.checkpoints['claim-boundary'], 'claim-boundary-checkpoint-not-observed');
+        same(info.owner_account_id, boundary.ownerAccountId, 'claimed-owner-changed');
+        const ancestors = (config.publication.ancestors ?? []).map(ref => recordFile(config.native.project, ref).value);
+        const lineage = await verifyPublicationLineage(receipt, boundary.after, [...Object.values(this.state.publications), ...ancestors], context.sdk, authority);
+        return { signatureVerified: true, publicationId: receipt.publication.id, operationId: receipt.publication.payload.operationId,
+          receipt, browser, claimBoundary: boundary, signedCasLineage: lineage, selectedGeneration: authority.current?.id };
       }
       const nativeGrant = need(authority.grant(config.native.deviceId), 'native-grant');
       same(nativeGrant.writer, true, 'native-writer-grant');
@@ -267,7 +328,7 @@ export class StarterObserver {
         throw new MeasurementError('peer-offline-observation');
       }
       const before = need(this.state.checkpoints[check + '-before'], 'peer-before-checkpoint');
-      const browser = await browserMeasurement(this.owner, config);
+      const browser = await this.browser(config);
       same(browser.deviceId, before.snapshot.browser.deviceId, 'peer-outage-browser-device');
       if (options.phase === 'offline') {
         if (this.processAlive(before.process)) throw new MeasurementError('peer-still-running');

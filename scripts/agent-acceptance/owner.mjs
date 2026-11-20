@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
+import { publicationAddress } from './observer-data.mjs';
 
 // Also bounds injected callbacks that do not themselves honor AbortSignal. Late
 // results/rejections are consumed, and can never install a credential after close.
@@ -17,13 +18,18 @@ function abortable(task, signal) {
 
 export function ownerUrl(origin, value, publishedPageUrl) {
   const url = new URL(value);
-  if (url.origin !== origin && url.href !== publishedPageUrl || url.username || url.password || url.hash) throw Error('Owner navigation must use the exact service origin without credentials or fragments, or the observer-validated published page');
+  let ownPage = false;
+  if (publishedPageUrl) {
+    try { publicationAddress(value, publishedPageUrl); ownPage = true; } catch {}
+    if (value === publishedPageUrl + '_tendril/manage') ownPage = true;
+  }
+  if (url.origin !== origin && !ownPage || url.username || url.password || url.hash) throw Error('Owner navigation must use the exact service origin without credentials or fragments, or the observer-validated published page');
   return url.href;
 }
 
 /** Headless owner acts only on explicit, exact owner instructions, never model-generated scripts. */
 export class Owner {
-  constructor({ context, access, record = () => {}, authorize = authorizeReview }) { Object.assign(this, { context, access, record, authorize }); this.actions = []; }
+  constructor({ context, access, record = () => {}, authorize = authorizeReview }) { Object.assign(this, { context, access, record, authorize }); this.actions = []; this.pages = []; }
   async login() {
     this.page = await this.context.newPage();
     await this.page.goto(this.access.loginUrl);
@@ -37,6 +43,25 @@ export class Owner {
     if (!page) throw Error('Owner browser unavailable; use an external host adapter');
     const { action } = input;
     if (action === 'navigate') await page.goto(ownerUrl(this.access.origin, input.url, publishedPageUrl));
+    else if (action === 'open-link') {
+      const href = await page.getByRole('link', { name: input.name, exact: true }).getAttribute('href');
+      if (!href) throw Error('The selected link has no URL');
+      const url = ownerUrl(this.access.origin, new URL(href, page.url()).href, publishedPageUrl);
+      const next = await this.context.newPage();
+      try { await next.goto(url); } catch (error) { await next.close(); throw error; }
+      this.pages.push(page); this.page = next;
+    } else if (action === 'return-page') {
+      if (!this.pages.length) throw Error('No retained app page');
+      this.page = this.pages.pop(); await page.close();
+    } else if (action === 'wait') {
+      const timeout = input.timeoutMs ?? 15000;
+      if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 30000 || !['visible', 'enabled', 'text'].includes(input.condition)) throw Error('Use a bounded visible, enabled or text condition');
+      await page.waitForFunction(({ selector, condition, value }) => {
+        const element = document.querySelector(selector);
+        if (!element) return false;
+        return condition === 'enabled' ? !element.disabled : condition === 'text' ? element.textContent.includes(value) : Boolean(element.getClientRects().length);
+      }, { selector: input.selector, condition: input.condition, value: input.value ?? '' }, { timeout });
+    }
     else if (action === 'reload') await page.reload();
     else if (action === 'reopen') {
       const url = ownerUrl(this.access.origin, page.url(), publishedPageUrl);
@@ -45,7 +70,7 @@ export class Owner {
       // The evaluator must compare the exact visible fingerprint, rights and prefix
       // before requesting this action. No "check every checkbox" shortcut.
       if (!input.expected || !['fingerprint', 'rights', 'retainedPrefix'].every(key => typeof input.expected[key] === 'string' && input.expected[key].trim()) ||
-        !Array.isArray(input.permissions) || !input.permissions.length || typeof input.button !== 'string')
+        !Array.isArray(input.permissions) || typeof input.button !== 'string')
         throw Error('Review needs exact visible fingerprint, rights, retained prefix and selected permission labels');
       for (const text of Object.values(input.expected)) await page.getByText(text, { exact: true }).waitFor();
       for (const label of input.permissions) await page.getByRole('checkbox', { name: label, exact: true }).check();
@@ -56,6 +81,14 @@ export class Owner {
     } else if (action === 'click') await page.getByRole(input.role ?? 'button', { name: input.name, exact: true }).click();
     else if (action !== 'inspect') throw Error('Unsupported owner action');
     const result = { action, url: this.page.url(), text: await this.page.locator('body').innerText(), at: new Date().toISOString() };
+    if (action === 'inspect') result.view = await this.page.evaluate(() => ({
+      fields: Object.fromEntries([...document.querySelectorAll('dt')].map(node => [node.textContent.trim(), node.nextElementSibling?.textContent.trim()])),
+      links: [...document.querySelectorAll('a[href]')].map(node => ({ name: node.textContent.trim(), href: node.href })),
+      inputs: [...document.querySelectorAll('input:not([type="hidden"]):not([type="password"]),textarea')].filter(node => node.name !== 'token').map(node => ({
+        id: node.id, name: node.name, label: [...node.labels ?? []].map(label => label.textContent.trim()).join(' '), value: node.value, disabled: node.disabled,
+      })),
+      proposals: [...document.querySelectorAll('pre')].map(node => node.textContent),
+    }));
     this.actions.push({ action, url: result.url, at: result.at });
     this.record({ input, ...result }); return result;
   }

@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { control } from '../agent-acceptance/cli.mjs';
-import { externalReport, innocentPrompt } from '../agent-acceptance/evidence.mjs';
+import { control, observeInController } from '../agent-acceptance/cli.mjs';
+import { externalReport, innocentPrompt, Evidence } from '../agent-acceptance/evidence.mjs';
 
 test('bounded CLI subprocess starts isolated app-server thread, reports model, and cleans copied auth without invoking a model', t => {
   const directory = mkdtempSync(join(tmpdir(), 'acceptance-cli-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -58,4 +58,30 @@ test('external ChatGPT observations remain separate attestation with omissions b
   assert.equal(evidence.data.chatgptWeb.status, 'external-attested'); assert.equal(evidence.data.outcome, 'blocked');
   assert(!readFileSync(join(directory, 'report.json'), 'utf8').includes('PRIVATE_'));
   assert.throws(() => externalReport(directory, { ...envelope, sessionEvidence: null }), /actual session evidence/);
+});
+
+test('observe IPC and subsequent model updates share the controller Evidence without filesystem merging', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'acceptance-writer-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const evidence = new Evidence(directory, {}), socket = join(directory, 'control.sock');
+  const server = createServer(async (req, res) => {
+    let body = ''; for await (const chunk of req) body += chunk;
+    const input = JSON.parse(body);
+    if (input.action === 'observe') {
+      res.end(JSON.stringify(await observeInController({ evidence, input: input.input, source: 'test-observer', observe: async request => ({
+        protocol: 'tendriller-agent-observation-v1', check: request.check, observedAt: new Date().toISOString(), status: 'passed', evidence: { urls: ['measured-fixture'] },
+      }) })));
+    } else if (input.action === 'model-update') {
+      evidence.data.lastTurn = { status: 'completed' }; evidence.save(); res.end('{}');
+    } else res.end(JSON.stringify({ report: evidence.data }));
+  });
+  await new Promise(resolve => server.listen(socket, resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+  writeFileSync(join(directory, 'controller.json'), JSON.stringify({ socket }));
+  assert.equal((await control(directory, { action: 'observe', input: { check: 'discovery' } })).status, 'passed');
+  await control(directory, { action: 'model-update' });
+  const status = await control(directory, { action: 'status' }), report = JSON.parse(readFileSync(join(directory, 'report.json')));
+  assert.equal(status.report.checks.discovery.status, 'passed'); assert.equal(report.checks.discovery.status, 'passed');
+  assert.equal(report.lastTurn.status, 'completed'); assert.equal(report.observations.length, 1);
+  assert.equal(readFileSync(join(directory, 'observations.jsonl'), 'utf8').trim().split('\n').length, 1);
+  for (const check of Object.values(evidence.data.checks)) check.status = 'passed';
+  evidence.data.deadlineReached = true; evidence.finish(); assert.notEqual(evidence.data.outcome, 'complete');
 });

@@ -1,6 +1,6 @@
-import { appendFileSync, writeFileSync, readFileSync, realpathSync, existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, writeFileSync, readFileSync, realpathSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 export const checks = ['discovery', 'preclaim-publication', 'authority', 'connected', 'browser-to-agent', 'agent-to-browser',
   'browser-reload', 'native-reopen', 'lost-command-response', 'lost-publication-response', 'unavailable-peer', 'missing-setup', 'publication', 'cleanup'];
@@ -35,7 +35,13 @@ export class Evidence {
   private(name, value) {
     appendFileSync(join(this.directory, name + '.jsonl'), JSON.stringify({ at: now(), ...value }) + '\n', { mode: 0o600 });
   }
-  save() { writeFileSync(join(this.directory, 'report.json'), JSON.stringify(this.data, null, 2) + '\n', { mode: 0o600 }); }
+  // One controller owns this instance. Readers get an atomic snapshot; callers
+  // must use observe IPC rather than instantiate a competing writer or merge files.
+  save() {
+    const temporary = join(this.directory, '.report-' + randomUUID());
+    writeFileSync(temporary, JSON.stringify(this.data, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    renameSync(temporary, join(this.directory, 'report.json'));
+  }
   intervention(kind, text) {
     if (!['identity', 'sign-in', 'review', 'visible-error', 'user-outcome', 'maintainer-advice'].includes(kind)) throw Error('Unknown intervention category');
     this.private('interventions', { kind, text });
@@ -78,7 +84,7 @@ export class Evidence {
   }
   finish() {
     const values = Object.values(this.data.checks).map(c => c.status);
-    this.data.outcome = this.data.assisted ? 'assisted' : values.includes('failed') ? 'failed' : values.every(s => s === 'passed') ? 'complete' : 'blocked';
+    this.data.outcome = this.data.assisted ? 'assisted' : values.includes('failed') ? 'failed' : !this.data.deadlineReached && values.every(s => s === 'passed') ? 'complete' : 'blocked';
     this.data.firstUnresolvedCheck = Object.entries(this.data.checks).find(([, check]) => check.status !== 'passed')?.[0] ?? null;
     this.data.elapsedMs = Date.now() - Date.parse(this.data.startedAt);
     this.data.endedAt = now(); this.save();
