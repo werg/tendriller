@@ -1,5 +1,5 @@
 // Run this public-package consumer from its own private working directory.
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createClient, createPage } from '@tendriller/core';
@@ -12,6 +12,8 @@ import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { definition } from './review-domain.mjs';
+import { watchApplicationSetup } from '@tendriller/core/setup';
+import { superviseReviewAssistant, retainedReviewProposal } from './review-assistant.mjs';
 
 const directory = resolve('.private');
 await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -42,6 +44,7 @@ const options = { api: handle.api, token: handle.token,
   events: [{ name: 'item.completed', description: 'The synthetic checklist item ID that was completed.' }] };
 if (mode === 'propose') {
   const proposal = await proposeApplicationAssistant(options);
+  await save('assistant-proposal.json', { proposed: proposal.proposed, adapterHash: createHash('sha256').update(options.key).digest('hex') });
   console.log(JSON.stringify({ reviewUrl: proposal.reviewUrl }));
   process.exit(0);
 }
@@ -94,7 +97,14 @@ try {
       } });
     const stop = new AbortController();
     process.once('SIGINT', () => stop.abort()); process.once('SIGTERM', () => stop.abort());
-    const assistant = connectApplicationAssistant({ ...options, session, tools: createApplicationTools(session), signal: stop.signal });
+    const expectedProposalId = retainedReviewProposal(await read('assistant-proposal.json'), options.key);
+    const lifecycle = superviseReviewAssistant({ session, signal: stop.signal, expectedProposalId,
+      watch: callbacks => watchApplicationSetup({ api: handle.api, token: handle.token, ...callbacks }),
+      startAdapter: callbacks => connectApplicationAssistant({ ...options, session, tools: createApplicationTools(session), ...callbacks }),
+      onOnline: (assistant, signal) => forwardApplicationEvents({ session, assistant, topics: ['completed'], signal,
+        checkpoint: { load: async () => (await read('event-cursor.json')) ?? undefined, save: cursor => save('event-cursor.json', cursor) },
+        project: event => ({ name: 'item.completed', payload: { id: event.payload.id } }) }),
+    });
     let lastHtml;
     const publishView = async () => {
       const { value } = await session.query('checklist', null);
@@ -127,14 +137,10 @@ try {
       await publishView();
       for await (const _ of session.changes({ signal: stop.signal })) await publishView();
     })();
-    const events = forwardApplicationEvents({ session, assistant, topics: ['completed'], signal: stop.signal,
-      checkpoint: { load: async () => (await read('event-cursor.json')) ?? undefined, save: cursor => save('event-cursor.json', cursor) },
-      project: event => ({ name: 'item.completed', payload: { id: event.payload.id } }),
-    });
     console.log('Review participant running; it must remain running for reviewer reads, writes, and signed page updates.');
-    try { await Promise.all([updates, events]); }
+    try { await Promise.all([updates, lifecycle.done]); }
     catch (error) { if (!stop.signal.aborted) throw error; }
-    finally { stop.abort(); await assistant.close(); await Promise.allSettled([updates, events]); }
+    finally { stop.abort(); await lifecycle.close(); await Promise.allSettled([updates]); }
   }
 } finally {
   if (supervisor) await supervisor.close();

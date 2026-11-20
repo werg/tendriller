@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, rmSync, openSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, openSync, closeSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
@@ -12,17 +13,18 @@ import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess } from './access.mjs';
 import { recordReview } from './record.mjs';
 import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
-import { cleanupFixturePage } from './fixture.mjs';
+import { cleanupFixturePage, installReviewFixtureSources } from './fixture.mjs';
+import { createReviewDiagnostics, reviewError, reviewNativeError, waitForReviewProvider } from './diagnostics.mjs';
 
-const { values } = parseArgs({ options: { access: { type: 'string' }, config: { type: 'string' }, output: { type: 'string' }, 'no-video': { type: 'boolean', default: false } } });
-if (!values.access || !values.config || !values.output) throw Error('Pass --access PRIVATE_JSON --config WRANGLER_CONFIG --output REPORT_DIRECTORY [--no-video]');
-const root = resolve(import.meta.dirname, '../..'), accessPath = resolve(values.access), config = resolve(values.config), output = resolve(values.output);
-const access = readReviewAccess(accessPath), composition = reviewComposition(root);
+const { values } = parseArgs({ options: { access: { type: 'string' }, config: { type: 'string' }, output: { type: 'string' }, 'artifact-root': { type: 'string' }, 'no-video': { type: 'boolean', default: false } } });
+if (!values.access || !values.config || !values.output) throw Error('Pass --access PRIVATE_JSON --config WRANGLER_CONFIG --output REPORT_DIRECTORY [--no-video] [--artifact-root EXACT_CLEAN_DEPLOYED_CHECKOUT]');
+const root = resolve(import.meta.dirname, '../..'), artifactRoot = resolve(values['artifact-root'] ?? root), accessPath = resolve(values.access), config = resolve(values.config), output = resolve(values.output);
+const access = readReviewAccess(accessPath), composition = reviewComposition(artifactRoot);
 const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_readRawConfig({ config });
 assert.equal(rawConfig.vars.PUBLIC_BASE, access.origin, 'Private account must match the selected deployment before any remote mutation');
 const readiness = await preflightReviewDeployment(access.origin, composition);
 const project = mkdtempSync(join(tmpdir(), 'tendriller-review-fixture-'));
-let child, handle, creationAttempted = false, phase = 'install public packages';
+let child, handle, creationAttempted = false, phase = 'install public packages', diagnostics, fixtureSources;
 const run = args => {
   try { return execFileSync(process.execPath, ['review-app.mjs', ...args], { cwd: project, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }); }
   catch { throw Error('Synthetic fixture step failed: ' + args[0] + '. Private child diagnostics were withheld.'); }
@@ -32,7 +34,7 @@ mkdirSync(output, { recursive: true, mode: 0o700 });
 try {
   writeFileSync(join(output, 'preflight.json'), JSON.stringify(reviewProvenance(composition, readiness), null, 2) + '\n', { mode: 0o600 });
   writeFileSync(join(project, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-  for (const name of ['review-app.mjs', 'review-domain.mjs']) copyFileSync(join(root, 'integrations/chatgpt/plugin', name), join(project, name));
+  fixtureSources = Object.fromEntries(installReviewFixtureSources(root, project).map(file => [file, createHash('sha256').update(readFileSync(join(project, file))).digest('hex')]));
   execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
     composition.packagePaths.sdk, composition.packagePaths.session], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
   const { core: { createClient } } = await importReviewPackages(project);
@@ -68,29 +70,45 @@ try {
   assert(publication, 'Verify the committed publication on the actual host');
   assert.equal((await host.info()).owner_account_id, null);
   phase = 'claim and review permissions';
+  diagnostics = createReviewDiagnostics({ origin: access.origin, pageUrl: handle.page_url, reviewUrl: proposal.reviewUrl, apiUrl: handle.api });
+  diagnostics.step('launch-browser');
   const browser = await chromium.launch();
   try {
     const context = await browser.newContext(), page = await context.newPage();
-    await page.goto(access.loginUrl); await page.locator('input[name=token]').fill(access.code);
-    await page.getByRole('button', { name: 'Open test account' }).click(); await page.waitForURL(access.origin + '/dashboard');
-    await page.goto(handle.page_url); await page.getByRole('heading', { name: 'Review checklist' }).waitFor();
-    assert.equal((await readWithAdmissionRetry(() => host.peers.publication())).publication.id, publication.publication.id);
-    await page.goto(proposal.reviewUrl);
-    for (const checkbox of await page.getByRole('checkbox').all()) await checkbox.check();
-    await page.getByRole('button', { name: 'Approve selected permissions' }).click();
-    const onlineDeadline = Date.now() + 25000;
-    while (!(await (await context.request.get(proposal.reviewUrl)).text()).includes('Enrolled signer:')) { assert(Date.now() < onlineDeadline, 'Native participant deadline'); await delay(); }
+    diagnostics.attach(context, page);
+    try {
+      diagnostics.step('open-login'); await page.goto(access.loginUrl);
+      diagnostics.step('fill-login'); await page.locator('input[name=token]').fill(access.code);
+      diagnostics.step('submit-login'); await page.getByRole('button', { name: 'Open test account' }).click();
+      diagnostics.step('wait-dashboard'); await page.waitForURL(access.origin + '/dashboard');
+      diagnostics.step('open-claimed-page');
+      const claimedPage = await page.goto(handle.page_url);
+      if (claimedPage?.status() >= 400) throw Object.assign(Error('REVIEW_CLAIM_NAVIGATION_FAILED'), { status: claimedPage.status() });
+      diagnostics.step('wait-signed-page'); await page.getByRole('heading', { name: 'Review checklist' }).waitFor();
+      diagnostics.step('verify-publication');
+      assert.equal((await readWithAdmissionRetry(() => host.peers.publication())).publication.id, publication.publication.id);
+      diagnostics.step('open-permission-review'); await page.goto(proposal.reviewUrl);
+      diagnostics.step('select-permissions'); for (const checkbox of await page.getByRole('checkbox').all()) await checkbox.check();
+      diagnostics.step('approve-permissions'); await page.getByRole('button', { name: 'Approve selected permissions' }).click();
+      diagnostics.step('wait-native-signer');
+      await waitForReviewProvider({ request: context.request, url: proposal.reviewUrl, observe: value => {
+        diagnostics.provider(value); diagnostics.response(proposal.reviewUrl, value.status);
+      } });
+      await diagnostics.capture(page);
+    } catch (error) { await diagnostics.capture(page); throw error; }
   } finally { await browser.close(); }
   phase = 'native MCP qualification';
   const report = await recordReview({ project, accessPath, output, composition, video: !values['no-video'] });
   report.preclaimPublicationVerified = true;
+  report.fixtureSources = fixtureSources;
+  report.claimReview = diagnostics?.snapshot();
   writeFileSync(join(output, 'report.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
   console.log('Native MCP qualification passed all packaged cases; recording and sanitized report saved.');
 } catch (error) {
   let nativeErrorCode;
-  try { nativeErrorCode = readFileSync(join(project, 'participant-private.log'), 'utf8').match(/code: ['"]([a-zA-Z0-9_]+)['"]/)?.[1]; } catch {}
+  try { nativeErrorCode = reviewNativeError(readFileSync(join(project, 'participant-private.log'), 'utf8'), child?.exitCode); } catch {}
   if (!nativeErrorCode) nativeErrorCode = child?.exitCode != null ? 'EXIT_' + child.exitCode : undefined;
-  writeFileSync(join(output, 'fixture-failure.json'), JSON.stringify({ passed: false, phase, nativeErrorCode }, null, 2), { mode: 0o600 });
+  writeFileSync(join(output, 'fixture-failure.json'), JSON.stringify({ passed: false, phase, fixtureSources, nativeErrorCode, error: reviewError(error), nativeProcess: { started: Number.isInteger(child?.pid), running: Number.isInteger(child?.pid) && child.exitCode === null, exitCode: Number.isInteger(child?.exitCode) ? child.exitCode : null }, browser: diagnostics?.snapshot() }, null, 2), { mode: 0o600 });
   throw Error('Live qualification failed. See the sanitized reports' + (nativeErrorCode ? ' (native ' + nativeErrorCode + ')' : '') + '. No private child diagnostics were printed.');
 } finally {
   const failures = [];
