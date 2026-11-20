@@ -209,6 +209,8 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   let preparedPublication;
   if (!sqlOnly) {
     await node(['build.mjs']);
+    const preparedSizes = await Promise.all((await files(join(app, 'page'))).map(async path => (await readFile(path)).byteLength));
+    report.preclaim_code = { totalBytes: preparedSizes.reduce((sum, n) => sum + n, 0), largestFileBytes: Math.max(...preparedSizes) };
     preparedPublication = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
     assert.ok(preparedPublication.publication.id);
   }

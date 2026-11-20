@@ -194,7 +194,7 @@ it('publishes a complete signed app before claim and adopts its existing keys an
   expect(await page.text()).toContain('Already deployed before sign-in');
   expect(await peerApiJson(h, 'publication/publish', prepared)).toEqual(receipt);
   expect((await peerApiJson<AuthorityBundle>(h, 'control/configure', input)).descriptor).toEqual(authority.descriptor);
-  expect(await inDO(h.id, t => ({ owner: t.db.get('owner_account'), lifetime: t.db.get('lifetime'), expires: t.expiresAt(),
+  expect(await inDO(h.id, t => ({ owner: t.db.get('owner_account', null), lifetime: t.db.get('lifetime', 'ad_hoc'), expires: t.expiresAt(),
     accounts: t.db.get<{ accountId: string }[]>('peer_generation_accounts', []).map(item => item.accountId) })))
     .toEqual({ owner: accountId, lifetime: 'resident', expires: null, accounts: [accountId, accountId, accountId] });
 });

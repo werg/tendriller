@@ -39,18 +39,19 @@ it and `review-domain.mjs` into a private working directory and install the exac
 qualified `@tendriller/core` and events-capable `@chronolog/peer-session` archives
 there. Keep this working directory outside the upload package.
 
-1. Run `node review-app.mjs create /private/path/test-access.json` and open the
-   returned page while signed in through the private test link. This claims it
-   through the regular owner flow. Staging must allow creation during this step.
-2. Run `node review-app.mjs init`, then `node review-app.mjs propose`. Open the
-   returned review URL and approve `checklist`, `completeItem`, and
-   `item.completed` for the sample account.
+1. Run `node review-app.mjs create /private/path/test-access.json`. Keep preparing
+   without claiming yet. Staging must allow creation during this step.
+2. Run `node review-app.mjs init`, then `node review-app.mjs propose`. Retain the
+   ready page and permission-review URLs. No claimed reply is necessary.
 3. Start `node review-app.mjs run` under the operator's process supervisor. It
    retains one native signer, reconnects its assistant adapter, checkpoints
    forwarded completion events, and publishes signed checklist snapshots.
    The sample page's **Open the latest snapshot** link opens the current signed
    snapshot after a command. Application queries read current Chronolog state.
-4. Run `node scripts/test-review-app.mjs /private/review-project
+4. Open the already-published page while signed in through the private test
+   link. Claim adopts that exact app without a new publication. Open the prepared
+   review URL and approve `checklist`, `completeItem` and `item.completed`.
+5. Run `node scripts/test-review-app.mjs /private/review-project
    /private/path/test-access.json` from the core repository before trying the
    ChatGPT prompts. It verifies live OAuth, listing, schemas, reads, an applied
    command, exact retry, the event inbox, three denied operations, signed code
@@ -112,7 +113,7 @@ reviews as well.
    operator to verify its exact plain-text response, then complete linking.
 4. Resolve required metadata, skill and tool findings. Complete **Review
    details** with the dedicated credentials and recording. Check the imported
-   five positive and three negative cases.
+   positive and negative cases from `plugin.json`.
 5. Submit for review and complete the publisher's required attestations. After
    approval, publish. Record the actual public install link in the user setup
    guide and test it from an account outside the publisher's workspace.
