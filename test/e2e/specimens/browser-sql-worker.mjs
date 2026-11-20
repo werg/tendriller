@@ -88,14 +88,6 @@ self.addEventListener('message', async ({ data }) => {
     await session.query(data.respondent ? 'answer' : 'board', null);
     progress('sql-read-ready');
     if (data.remote) await connect(data.channel, data.remote);
-    for (const method of ['command', 'query']) {
-      const invoke = session[method].bind(session);
-      session[method] = async (...args) => {
-        self.postMessage({ type: 'activity-progress', stage: `${method}-start`, elapsedMs: performance.now() - started });
-        try { return await invoke(...args); }
-        finally { self.postMessage({ type: 'activity-progress', stage: `${method}-done`, elapsedMs: performance.now() - started }); }
-      };
-    }
     serveApplicationWorker(session, self);
     self.postMessage({ type: 'open' });
   } catch (error) {

@@ -72,7 +72,10 @@ for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
         peers: client(handle).peers, pageUrl: localPageUrl(handle), applicationId: handle.application.id,
         pages: [page, second], isPrivate, guestAccount: 'e2e-other' });
       expect(delayedReads).toBe(slowPeer === 'none' ? 0 : 1);
-      console.info('SQL_FIXTURE_STARTUP', JSON.stringify(await page.evaluate(() => (window as any).inspectAcceptanceState?.())));
+      const startup = await page.evaluate(() => (window as any).inspectAcceptanceState?.());
+      console.info('SQL_FIXTURE_STARTUP', JSON.stringify(startup));
+      expect(startup.viewReads, 'One coherent initial read, with no post-Ready duplicate').toBe(1);
+      expect(await second.evaluate(() => (window as any).inspectAcceptanceState?.().then((state: any) => state.viewReads))).toBe(1);
       if (isPrivate) {
         for (const answer of ['First answer', 'Corrected answer']) {
           await page.getByRole('textbox', { name: 'Your answer' }).fill(answer);

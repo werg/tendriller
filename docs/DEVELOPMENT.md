@@ -55,6 +55,14 @@ phase before exposing the page facade. Only metadata readiness starts that phase
 engine progress cannot renew it, and a successful first SQL read is required.
 The ordinary page RPC deadline stays 20 seconds. This separates fixture startup
 qualification from an operation latency bound; metadata alone does not qualify SQL.
+The view subscribes before reading and consumes the initial change snapshot;
+revision equality coalesces that notification instead of starting a second read
+after “Ready”. Its bounded 20-second initial observation exposes Ready only after
+a coherent read, including changes arriving during that read. Deterministic
+blocked-read tests run in `test:ci`; the browser regression requires one initial
+view read on both peers. This removes fixture overlap without qualifying a kernel
+latency claim. Failure-only Worker inspection runs after a failed assertion and
+cannot extend its deadline or turn it into a pass.
 Replication checks first observe the source's applied result within its declared
 15-second bound, then start the unchanged five-second remote-display check.
 Fixed startup stages/timings and cached session-state diagnostics identify which

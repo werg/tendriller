@@ -1,9 +1,10 @@
 import { connectApplicationWorker } from '@chronolog/peer-session/browser';
 import { startSqlFixtureWorker } from './browser-sql-startup.mjs';
+import { observeSqlFixture } from './browser-sql-view.mjs';
 
 const el = id => document.getElementById(id);
 const status = text => { el('status').textContent = text; };
-let session, editRevision = 0, currentAnswer = '', nextTask = 0, busy = false, painting = false, pending = false;
+let session, editRevision = 0, currentAnswer = '', nextTask = 0, busy = false, liveView;
 const rendered = new Map();
 const owner = new AbortController();
 let draftKey, latestSubmission = 0;
@@ -37,8 +38,7 @@ async function act(work) {
   finally { busy = false; }
 }
 
-async function renderTasks() {
-  const { value: rows } = await session.query('board', null);
+function renderTasks({ value: rows }) {
   const present = new Set(rows.map(row => row[0]));
   for (const [id, item] of rendered) {
     if (present.has(id)) continue;
@@ -61,24 +61,11 @@ async function renderTasks() {
   }
 }
 
-async function renderAnswer() {
-  const { value: rows } = await session.query('answer', null);
+function renderAnswer({ value: rows }) {
   const [body, revision] = rows[0] ?? ['', 0];
   currentAnswer = body;
   el('current').textContent = body ? `Current answer: ${body}` : 'No answer submitted yet.';
   el('current').dataset.revision = String(revision);
-}
-
-async function refresh(isIntake) {
-  pending = true;
-  if (painting) return;
-  painting = true;
-  try {
-    while (pending && !owner.signal.aborted) {
-      pending = false;
-      await (isIntake ? renderAnswer() : renderTasks());
-    }
-  } finally { painting = false; }
 }
 
 // This diagnostic is explicit. Opening the page/reading status never enrolls
@@ -104,27 +91,25 @@ let preparation;
 window.prepareAcceptanceSession = options => preparation ??= (async () => {
   const { remote, channel, ...preparedOptions } = options;
   const worker = new Worker(new URL('./browser-sql-worker.mjs', import.meta.url), { type: 'module' });
-  const stages = [], activity = [];
-  worker.addEventListener('message', ({ data }) => {
-    if (data?.type === 'activity-progress' && ['query-start', 'query-done', 'command-start', 'command-done'].includes(data.stage)
-      && Number.isFinite(data.elapsedMs) && data.elapsedMs >= 0 && activity.length < 32)
-      activity.push({ stage: data.stage, elapsedMs: data.elapsedMs });
-  });
+  const stages = [];
   window.inspectAcceptanceState = async ({ worker: inspectWorker = false } = {}) => {
-    const workerState = inspectWorker ? await new Promise(resolve => {
-      const finish = value => { clearTimeout(timer); worker.removeEventListener('message', listen); resolve(value); };
-      const listen = ({ data }) => { if (data?.type === 'inspected-state') finish(data.state); };
-      const timer = setTimeout(() => finish(null), 1_000);
-      worker.addEventListener('message', listen); worker.postMessage({ type: 'inspect-state' });
-    }) : null;
-    const state = session?.status, text = el('status').textContent;
-    return { workerState, activity: activity.slice(), stages: stages.slice(), phase: state?.phase ?? null, database: state?.database ?? null,
-      connectedPeers: state?.connectedPeers ?? null, sequence: session?.revision?.point.sequence ?? null,
+    // Capture cached UI state at assertion failure, before any diagnostic wait.
+    const observedAtMs = performance.now(), state = session?.status, text = el('status').textContent;
+    const observed = { observedAtMs, stages: stages.slice(), phase: state?.phase ?? null, database: state?.database ?? null,
+      viewReads: liveView?.reads ?? 0, connectedPeers: state?.connectedPeers ?? null, sequence: session?.revision?.point.sequence ?? null,
       closed: session?.signal.aborted ?? null,
       role: state?.role ?? null, operationStage, operationStages: operationStages.slice(),
       display: text === 'Saving…' ? 'saving' : text.startsWith('Applied here') ? 'applied'
         : text.startsWith('Shared with') ? 'shared' : text === 'Ready' ? 'ready'
           : text.startsWith('Could not complete') ? 'failed' : 'other' };
+    const workerState = inspectWorker ? await new Promise(resolve => {
+      const finish = value => { clearTimeout(timer); worker.removeEventListener('message', listen); resolve(value); };
+      const listen = ({ data }) => { if (data?.type === 'inspected-state') finish(data.state); };
+      // Assertion already failed. This bounded observation cannot make it pass.
+      const timer = setTimeout(() => finish(null), 20_000);
+      worker.addEventListener('message', listen); worker.postMessage({ type: 'inspect-state' });
+    }) : null;
+    return { ...observed, workerState, inspectionElapsedMs: performance.now() - observedAtMs };
   };
   await startSqlFixtureWorker(worker, { type: 'open', base: window.tendril.identity.base,
     applicationId: window.__TENDRIL__.application.id, ...preparedOptions },
@@ -168,18 +153,18 @@ window.openAcceptanceSession = async options => {
     el('title').value = localStorage.getItem(draftKey) || '';
     if (el('title').value) el('task-draft').textContent = 'Restored draft from this device. It has not been submitted.';
   }
-  await refresh(isIntake);
+  liveView?.close();
+  liveView = observeSqlFixture(session, { query: isIntake ? 'answer' : 'board', signal: owner.signal,
+    onSnapshot: isIntake ? renderAnswer : renderTasks,
+    onRecovery() {
+      latestSubmission++;
+      status('History recovered. Review changes that had not been shared.');
+    },
+    onError(error) { if (!owner.signal.aborted) errorStatus(error); },
+  });
+  await liveView.ready;
   if (isIntake) selectCurrentAnswer();
   status('Ready');
-  void (async () => {
-    for await (const change of session.changes({ signal: owner.signal })) {
-      if (change) await refresh(isIntake);
-      if (change?.kind === 'recovery') {
-        latestSubmission++;
-        status('History recovered. Review changes that had not been shared.');
-      }
-    }
-  })().catch(error => { if (!owner.signal.aborted) errorStatus(error); });
 
 };
 
