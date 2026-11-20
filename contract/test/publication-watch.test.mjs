@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { watchPublicationUpdates } from '../publication-watch.mjs';
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function fixture(t, { fail = false, response = new Response(null, { status: 202, headers: { 'Tendril-Publication-Version': '0' } }) } = {}) {
+function fixture(t, { fail = false, signal, transport, response = new Response(null, { status: 202, headers: { 'Tendril-Publication-Version': '0' } }) } = {}) {
   const window = new EventTarget(), sockets = [], notices = [], statuses = []; let reads = 0, sends = 0;
   const globals = { window, navigator: { onLine: true }, location: new URL('https://page.example/s/key/_publications/1/'),
     WebSocket: class {
@@ -10,10 +10,10 @@ function fixture(t, { fail = false, response = new Response(null, { status: 202,
       send() { sends++; }
       close(code=1000) { this.onclose?.({code}); }
       receive(current) { this.onmessage?.({data:JSON.stringify({type:'publication',version:1,current})}); }
-    }, fetch: async (_url, options) => { reads++; assert.equal(options.method,'HEAD'); return response; } };
+    }, fetch: async (_url, options) => { reads++; assert.equal(options.method,'HEAD'); return transport ? transport(options) : response; } };
   const restorers=[];
   for (const [key,value] of Object.entries(globals)) { const descriptor=Object.getOwnPropertyDescriptor(globalThis,key); Object.defineProperty(globalThis,key,{value,configurable:true,writable:true}); restorers.push(()=>descriptor?Object.defineProperty(globalThis,key,descriptor):delete globalThis[key]); }
-  const watch=watchPublicationUpdates({base:'https://page.example/s/key/',onCurrent:value=>notices.push(value.current),onStatus:value=>statuses.push(value)});
+  const watch=watchPublicationUpdates({base:'https://page.example/s/key/',onCurrent:value=>notices.push(value.current),onStatus:value=>statuses.push(value),signal});
   t.after(()=>{watch.close();for(const restore of restorers)restore();});
   return {watch,window,sockets,notices,statuses,counts:()=>({reads,sends,sockets:sockets.length})};
 }
@@ -48,4 +48,23 @@ test('a delayed close from an already failed stream cannot duplicate recovery re
  stream.onerror();await flush();assert.equal(f.counts().reads,1);stream.onclose({code:1006});await flush();
  assert.equal(f.counts().reads,1);t.mock.timers.tick(1000);assert.equal(f.sockets.length,2);f.sockets[1].receive(2);
  t.mock.timers.tick(48*3600000);assert.equal(f.counts().reads,1);
+});
+
+test('already aborted watch never opens transport',t=>{
+ const controller=new AbortController();controller.abort();const f=fixture(t,{signal:controller.signal});
+ f.window.dispatchEvent(new Event('online'));assert.deepEqual(f.counts(),{reads:0,sends:0,sockets:0});
+});
+test('pagehide aborts a pending failure observation and ignores its late publication',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let resolve,signal;
+ const f=fixture(t,{transport:options=>{signal=options.signal;return new Promise(done=>{resolve=done;});}});
+ f.sockets[0].receive(1);f.sockets[0].onerror();assert.equal(signal.aborted,false);
+ f.window.dispatchEvent(new Event('pagehide'));assert.equal(signal.aborted,true);
+ resolve(new Response(null,{status:204,headers:{'Tendril-Publication-Version':'2'}}));await flush();
+ assert.deepEqual(f.notices,[1]);t.mock.timers.tick(48*3600000);assert.equal(f.sockets.length,1);
+ f.window.dispatchEvent(new Event('pageshow'));f.sockets[1].receive(0);assert.deepEqual(f.notices,[1,0]);
+});
+test('invalid protocol cannot be restarted by online or pageshow',t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const f=fixture(t);
+ f.sockets[0].onmessage({data:'invalid'});f.window.dispatchEvent(new Event('online'));f.window.dispatchEvent(new Event('pageshow'));
+ t.mock.timers.tick(48*3600000);assert.deepEqual(f.counts(),{reads:0,sends:0,sockets:1});
 });
