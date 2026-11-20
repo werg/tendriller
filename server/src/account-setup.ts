@@ -238,6 +238,7 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
     const admission = await admissionObject.fetch(new Request('https://admission.internal/reserve', {
       method: 'POST', headers: { 'x-tendril-id': row.page_id, 'x-setup-expires-at': String(row.expires_at) },
     }));
+    await admission.body?.cancel();
     if (!admission.ok) return admission.status === 410 ? result(row, 'expired', 'setup_expired') : result(row, 'blocked', 'setup_admission_unavailable');
     await requireSetupPrincipal(env, principal); await requireCreationOpen(env);
     if (!row.indexed) {

@@ -552,8 +552,9 @@ export class Tendril extends DurableObject<Env> {
       }
     }
     await adoptPreparedAssistant(this, accountId);
-    await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
+    const releasedAdmission = await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
       .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));
+    await releasedAdmission.body?.cancel();
     this.scheduleAlarm();
     if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "held", "This page was held after screening. The owner can appeal.");
     return json({ role: "owner" });
@@ -806,9 +807,10 @@ export class Tendril extends DurableObject<Env> {
       await this.env.ACCOUNTS.prepare("DELETE FROM tendrils WHERE id = ?").bind(id).run();
     }
     if (releaseAdmission) {
-      await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global")).fetch(new Request("https://admission.internal/release", {
+      const releasedAdmission = await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global")).fetch(new Request("https://admission.internal/release", {
         method: "POST", headers: { "x-tendril-id": id },
       }));
+      await releasedAdmission.body?.cancel();
     }
     await this.ctx.storage.deleteAll();
     this.db.clearCache();

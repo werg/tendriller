@@ -46,6 +46,7 @@ export async function expireSetupReservation(t: Tendril): Promise<void> {
   const released = await t.env.ADMISSION.get(t.env.ADMISSION.idFromName('global')).fetch(new Request('https://admission.internal/release', {
     method: 'POST', headers: { 'x-tendril-id': known.page },
   }));
+  await released.body?.cancel();
   if (!released.ok) throw new HttpError(503, 'setup_cleanup_pending');
   t.db.set('account_setup_reservation', { ...known, state: 'retired' } satisfies SetupReservation);
 }

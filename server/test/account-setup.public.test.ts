@@ -55,10 +55,12 @@ async function fixture(options: { verified?: boolean; scope?: string; account?: 
     } } as DurableObjectStub;
   } } as DurableObjectNamespace;
   const admission = env.ADMISSION;
+  const admissionResponses: Response[] = [];
   settings.ADMISSION = { idFromName: name => admission.idFromName(name), get(id) {
     const object = admission.get(id);
     return { async fetch(request: Request) {
       const response = await object.fetch(request);
+      admissionResponses.push(response);
       if (pauseAfterAdmission && new URL(request.url).pathname === '/reserve') { pauseAfterAdmission = false; await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run(); }
       return response;
     } } as DurableObjectStub;
@@ -77,7 +79,7 @@ async function fixture(options: { verified?: boolean; scope?: string; account?: 
     const response = await request('/api/setup', { method:'POST', body:JSON.stringify('credential' in value ? setupRequest(value as SetupIntent) : value) });
     return { response, body: await response.json() as SetupResult & { error?: { code: string } } };
   };
-  return { account, client, grant, email, settings, token, ip, request, intent, prepare,
+  return { account, client, grant, email, settings, token, ip, request, intent, prepare, admissionResponses,
     loseReply: () => { loseInitializationReply = true; }, loseRequest: () => { loseInitializationRequest = true; },
     removeIdentityBeforeClaim: () => { removeIdentityBeforeClaim = true; },
     failReservationAlarm: () => { failReservationAlarm = true; }, pauseAfterAdmission: () => { pauseAfterAdmission = true; } };
@@ -86,27 +88,40 @@ async function fixture(options: { verified?: boolean; scope?: string; account?: 
 // Inject a change on the real D1 boundary without replacing the query result or
 // the allocation trigger. This exposes revocation between its two auth checks.
 function atDatabaseBoundary(f: Awaited<ReturnType<typeof fixture>>, matches: (sql: string) => boolean,
-  method: 'all' | 'first' | 'run', timing: 'before' | 'after', effect: () => Promise<unknown>) {
+  method: 'all' | 'first' | 'run' | 'batch', timing: 'before' | 'after', effect: () => Promise<unknown>) {
   const database = f.settings.ACCOUNTS;
   let fired = false;
-  const statement = (value: D1PreparedStatement, sql: string): D1PreparedStatement => new Proxy(value, {
+  const originals = new WeakMap<D1PreparedStatement,{statement:D1PreparedStatement;sql:string}>();
+  const boundary = async (run: () => Promise<unknown>) => {
+    if (!fired && timing === 'before') { fired = true; await effect(); }
+    const result = await run();
+    if (!fired && timing === 'after') { fired = true; await effect(); }
+    return result;
+  };
+  const statement = (value: D1PreparedStatement, sql: string): D1PreparedStatement => {
+    const wrapped = new Proxy(value, {
     get(target, key) {
       if (key === 'bind') return (...args: unknown[]) => statement(target.bind(...args), sql);
-      if (key === method && matches(sql)) return async (...args: unknown[]) => {
-        if (!fired && timing === 'before') { fired = true; await effect(); }
-        const result = await (target[method] as (...args: unknown[]) => Promise<unknown>)(...args);
-        if (!fired && timing === 'after') { fired = true; await effect(); }
-        return result;
-      };
+      if (method !== 'batch' && key === method && matches(sql)) return (...args: unknown[]) =>
+        boundary(() => Reflect.apply(target[method],target,args));
       const member = Reflect.get(target, key);
       return typeof member === 'function' ? member.bind(target) : member;
     },
-  });
+    });
+    originals.set(wrapped,{statement:value,sql});
+    return wrapped;
+  };
   f.settings.ACCOUNTS = new Proxy(database, { get(target, key) {
     if (key === 'prepare') return (sql: string) => statement(target.prepare(sql), sql);
+    if (key === 'batch') return (statements: D1PreparedStatement[]) => {
+      const raw = statements.map(value => originals.get(value)?.statement ?? value);
+      return method === 'batch' && statements.some(value => matches(originals.get(value)?.sql ?? ''))
+        ? boundary(() => target.batch(raw)) : target.batch(raw);
+    };
     const member = Reflect.get(target, key);
     return typeof member === 'function' ? member.bind(target) : member;
   } });
+  return { fired: () => fired, restore: () => { f.settings.ACCOUNTS = database; } };
 }
 
 it('rechecks the grant before exposing a list or a retained allocation after its D1 read', async () => {
@@ -239,6 +254,7 @@ it('retains a durable alarm before admission and releases abandoned pre-page cap
     expect(await env.ACCOUNTS.prepare('SELECT id FROM tendrils WHERE id=?').bind(pageId).first()).toBeNull();
     const late = await admissions.fetch(new Request('https://admission.internal/reserve', { method:'POST', headers:{'x-tendril-id':pageId,'x-setup-expires-at':String(Date.now()-1)} }));
     expect(late.status).toBe(410); expect(await reservation()).toEqual({ released:1 });
+    await late.body?.cancel();
     expect((await f.prepare(intent)).body.state).toBe('expired');
   } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
 });
@@ -585,3 +601,61 @@ it('rechecks connector authorization before returning a list or a missing-journa
     expect(response.status).toBe(401); expect(await response.text()).not.toContain(intent.credentialCommitment);
   }
 });
+
+for (const write of ['allocation','index','result'] as const) for (const timing of ['before','after'] as const) {
+  it(`recovers the original setup after losing the D1 ${write} ${timing === 'before' ? 'write before delivery' : 'reply after commit'}`,async()=>{
+    const f = await fixture(), intent = await f.intent(), originalIntent = structuredClone(intent);
+    const pageId = await accountSetupPageId(ORIGIN,f.account,f.client,intent.operationId);
+    const matches = (sql: string) => write === 'allocation' ? sql.startsWith('INSERT OR IGNORE INTO account_setups')
+      : write === 'index' ? sql.startsWith('INSERT INTO tendrils(') && sql.includes('FROM account_setups')
+      : sql.startsWith("UPDATE account_setups SET state='ready'");
+    // Keep the real account-index transaction intact: the fault surrounds the
+    // complete batch, rather than pretending its two writes are independent.
+    const fault = atDatabaseBoundary(f,matches,write === 'index' ? 'batch' : 'run',timing,async()=>{
+      throw new Error(timing === 'before' ? 'D1_WRITE_NOT_DELIVERED' : 'D1_REPLY_LOST_AFTER_COMMIT');
+    });
+    const interrupted = await f.prepare(intent);
+    expect(fault.fired()).toBe(true); fault.restore();
+    expect(interrupted.response.status).toBe(write === 'allocation' ? 500 : 200);
+    if (write !== 'allocation') expect(interrupted.body).toMatchObject({state:'provisioning',code:'setup_outcome_unknown',pageId});
+    expect(JSON.stringify(interrupted.body)).not.toContain(intent.credential);
+
+    const allocated = write !== 'allocation' || timing === 'after';
+    const indexed = write === 'result' || write === 'index' && timing === 'after';
+    const committed = write === 'result';
+    const journal = await env.ACCOUNTS.prepare('SELECT page_id,state,indexed,initialization_started FROM account_setups WHERE account_id=?').bind(f.account).first();
+    expect(journal).toEqual(allocated ? {page_id:pageId,state:write === 'result' && timing === 'after' ? 'ready' : indexed ? 'provisioning' : 'prepared',
+      indexed:indexed ? 1 : 0,initialization_started:committed ? 1 : 0} : null);
+    expect(await env.ACCOUNTS.prepare('SELECT id FROM tendrils WHERE creator_ip=?').bind(f.ip).all()).toMatchObject({results:indexed ? [{id:pageId}] : []});
+    expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual(allocated ? {count:1} : null);
+    const retained = await inDO(pageId,t=>({exists:t.exists(),binding:t.db.get('account_setup',null),
+      tokens:t.db.all('SELECT name,hash FROM tokens'),links:t.db.all('SELECT id,key FROM links')}));
+    expect(retained.exists).toBe(committed); expect(retained.tokens).toHaveLength(committed ? 1 : 0);
+
+    // No process-local object or Admission counter may be necessary for recovery.
+    const admissions = env.ADMISSION.get(env.ADMISSION.idFromName('global'));
+    expect(f.admissionResponses.every(response=>response.body === null || response.bodyUsed)).toBe(true);
+    await evictDurableObject(stub(pageId)); await evictDurableObject(admissions);
+    const inspection = await f.request('/api/setup?operationId='+intent.operationId);
+    expect(inspection.status).toBe(allocated ? 200 : 404);
+    if (allocated) expect(await inspection.json()).toMatchObject({pageId,state:committed ? 'ready' : indexed ? 'provisioning' : 'prepared'});
+    else await inspection.body?.cancel();
+    const recovered = await f.prepare(intent), repeated = await f.prepare(intent);
+    expect(recovered.response.status).toBe(200); expect(recovered.body).toMatchObject({state:'ready',pageId,operationId:intent.operationId});
+    expect(repeated.body).toEqual(recovered.body);
+    const handle = await completeSetupIntent(intent,recovered.body);
+    expect(handle.id).toBe(pageId); expect(handle.token).toBe(originalIntent.credential); expect(intent).toEqual(originalIntent);
+    expect(JSON.stringify(recovered.body)).not.toContain(intent.credential);
+    expect(await env.ACCOUNTS.prepare('SELECT page_id,request_digest,credential_commitment,grant_id,state FROM account_setups WHERE account_id=?').bind(f.account).all())
+      .toMatchObject({results:[{page_id:pageId,request_digest:intent.requestDigest,credential_commitment:intent.credentialCommitment,grant_id:f.grant,state:'ready'}]});
+    expect(await env.ACCOUNTS.prepare('SELECT page_id FROM account_setup_allocations WHERE account_id=?').bind(f.account).all()).toMatchObject({results:[{page_id:pageId}]});
+    expect(await env.ACCOUNTS.prepare('SELECT id FROM tendrils WHERE creator_ip=?').bind(f.ip).all()).toMatchObject({results:[{id:pageId}]});
+    expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toEqual({count:1});
+    expect(f.admissionResponses.every(response=>response.body === null || response.bodyUsed)).toBe(true);
+    const completed = await inDO(pageId,t=>({binding:t.db.get('account_setup',null),tokens:t.db.all('SELECT name,hash FROM tokens'),links:t.db.all('SELECT id,key FROM links')}));
+    expect(completed.tokens).toEqual([{name:'setup',hash:intent.credentialCommitment}]); expect(completed.links).toHaveLength(1);
+    if (committed) expect(completed).toEqual({binding:retained.binding,tokens:retained.tokens,links:retained.links});
+    expect(await runInDurableObject(env.ADMISSION.get(env.ADMISSION.idFromName('global')),(_instance,state)=>
+      state.storage.sql.exec('SELECT id,released FROM creations WHERE id=?',pageId).toArray())).toEqual([{id:pageId,released:0}]);
+  });
+}
