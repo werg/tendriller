@@ -110,13 +110,13 @@ window.prepareAcceptanceSession = options => preparation ??= (async () => {
       && Number.isFinite(data.elapsedMs) && data.elapsedMs >= 0 && activity.length < 32)
       activity.push({ stage: data.stage, elapsedMs: data.elapsedMs });
   });
-  window.inspectAcceptanceState = async () => {
-    const workerState = await new Promise(resolve => {
+  window.inspectAcceptanceState = async ({ worker: inspectWorker = false } = {}) => {
+    const workerState = inspectWorker ? await new Promise(resolve => {
       const finish = value => { clearTimeout(timer); worker.removeEventListener('message', listen); resolve(value); };
       const listen = ({ data }) => { if (data?.type === 'inspected-state') finish(data.state); };
       const timer = setTimeout(() => finish(null), 1_000);
       worker.addEventListener('message', listen); worker.postMessage({ type: 'inspect-state' });
-    });
+    }) : null;
     const state = session?.status, text = el('status').textContent;
     return { workerState, activity: activity.slice(), stages: stages.slice(), phase: state?.phase ?? null, database: state?.database ?? null,
       connectedPeers: state?.connectedPeers ?? null, sequence: session?.revision?.point.sequence ?? null,
