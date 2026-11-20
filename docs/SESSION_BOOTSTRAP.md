@@ -205,11 +205,21 @@ implemented supported evolution path explicitly.
 
 ## Own shutdown and uncertain operations
 
-Await `session.close()` before reopening the same native store or terminating a
-gracefully closing browser Worker. Close the page's RTC helper as well. Abrupt
-browser termination is a separate durability case to test, not a substitute for
-normal cleanup. Do not run the tutorial native peer and a CLI command against its
-same device concurrently.
+For a native session returned by the tutorial's `openSession()`, await the
+returned `owned.close()` before reopening its store. This closes the supervisor,
+its attachment listener and ownership fence as well as the session; closing only
+`owned.session` leaves supervisor resources behind. The inference launcher owns
+the same supervisor and follows the same shutdown path.
+
+Ordinary CLI commands use `--mode attach` against the running peer. Closing that
+attachment detaches it without stopping the owner or sibling clients. Reserve
+`--mode own` for deliberate standalone ownership while the peer is stopped; two
+owners must not open the same device store concurrently.
+
+An application that owns a bare session must await `session.close()` before
+reopening its store or terminating a gracefully closing browser Worker. Close
+its RTC helper as well. Abrupt browser termination is a separate durability case
+to test, not a substitute for normal cleanup.
 
 Canceling `operation.applied({ signal })` cancels the wait; it does not replace or
 erase the saved signed attempt. Inspect the original operation, retry it, or
