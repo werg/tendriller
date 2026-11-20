@@ -235,6 +235,21 @@ its attachment listener and ownership fence as well as the session; closing only
 `owned.session` leaves supervisor resources behind. The inference launcher owns
 the same supervisor and follows the same shutdown path.
 
+The standalone events, assistant, SQL and photo-inference entry points own their
+Node process. After the application and all owned components finish cleanup,
+they flush stdout/stderr and explicitly dispose that process: an Undici socket
+can remain in `CLOSING` after owned shutdown has returned. This is process
+disposal, not proof that every remote close handshake completed. Cleanup failure
+after a signal stays nonzero and reports unverified cleanup; an output flush
+failure or its bounded deadline also stays nonzero. The original device, inputs
+and signed operation references remain the recovery source. No disposal timer
+runs while the application or a cleanup promise is still active.
+
+Imported `runPeer`, `runAssistant`, `runInference` and `openSession` never exit an
+embedding process. Their caller owns its other listeners and its final lifetime.
+Tools `watch` and the preview HTTP server retain their explicit listener
+lifetimes; this standalone tutorial policy does not terminate them.
+
 Ordinary CLI commands use `--mode attach` against the running peer. Closing that
 attachment detaches it without stopping the owner or sibling clients. Reserve
 `--mode own` for deliberate standalone ownership while the peer is stopped; two

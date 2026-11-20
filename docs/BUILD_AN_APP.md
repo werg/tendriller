@@ -514,6 +514,12 @@ explicit authorized bootstrap as described in [Preview](tools/PREVIEW.md).
 
 ## 5. Publish signed code
 
+Stop the standalone native peer with Ctrl-C and await its exit before opening
+the same store. Standalone tutorial CLIs close their owner/components, flush
+output and dispose their dedicated Node process; cleanup or output failure stays
+nonzero. Imported runners leave process lifetime to their caller. See
+[owned shutdown and uncertain operations](SESSION_BOOTSTRAP.md#own-shutdown-and-uncertain-operations).
+
 With the native peer stopped, publish **only `page/`**:
 
 ```sh
