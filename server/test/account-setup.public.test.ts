@@ -199,6 +199,23 @@ it('does not revive a locally revoked setup credential during prepare or inspect
   await expect(completeSetupIntent(intent,retry.body)).rejects.toMatchObject({code:'setup_binding_inactive'});
 });
 
+it('reports a damaged scoped binding as blocked without returning a ready reconstruction receipt', async () => {
+  for (const fault of ['missing','widened'] as const) {
+    const f = await fixture(), intent = await f.intent(), ready = await f.prepare(intent);
+    await inDO(ready.body.pageId, t => {
+      if (fault === 'missing') t.db.del('agent_binding:setup');
+      else {
+        const binding = t.db.get<{id:string;scopes:string[];revision:number}>('agent_binding:setup', {id:'',scopes:[],revision:1});
+        t.db.set('agent_binding:setup', {...binding,scopes:[...binding.scopes,'agents:delegate']});
+      }
+    });
+    const replay = await f.prepare(intent), inspected = await (await f.request('/api/setup?operationId='+intent.operationId)).json() as SetupResult;
+    expect(replay.body).toMatchObject({ state:'blocked', code:'setup_binding_inactive', pageId:ready.body.pageId });
+    expect(inspected).toMatchObject({ state:'blocked', code:'setup_binding_inactive', pageId:ready.body.pageId });
+    expect((await f.request('/api/t/'+ready.body.pageId,{headers:{Authorization:'Bearer '+intent.credential}})).status).toBe(401);
+  }
+});
+
 it('atomically enforces the last daily creation slot across concurrent operations', async () => {
   const f = await fixture(), first = await f.intent(), second = await f.intent();
   await env.ACCOUNTS.prepare('INSERT INTO creation_ip(ip,day,count) VALUES(?,?,29)').bind(f.ip,new Date().toISOString().slice(0,10)).run();

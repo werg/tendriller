@@ -1,6 +1,6 @@
 import type { Tendril } from './tendril';
 import { readSetupRow, type SetupRow } from './account-setup';
-import { setupCredentialActive } from './setup-credential';
+import { SETUP_SCOPES, setupCredentialActive } from './setup-credential';
 import { setupRequestDigest } from '../../contract/setup.mjs';
 import { applicationSelection } from '../../contract/application.mjs';
 import { addActivity } from './activity';
@@ -8,9 +8,8 @@ import { HttpError, json, readJson } from './http';
 import { newPageKey, sha256Hex } from './ids';
 import { requireCreationOpen } from './service-state';
 import { publicBase } from './urls';
-import type { AgentScope } from './access';
+import { setupCredentialBinding } from './access';
 
-const SETUP_SCOPES: AgentScope[] = ['host:read','participants:connect','control:write','publication:write','assistant:manage'];
 export interface SetupBinding {
   digest: string; page: string; commitment: string; account_id: string; client_id: string; grant_id: string; service_origin: string; expires_at: number;
 }
@@ -76,8 +75,7 @@ export async function setupPage(t: Tendril, req: Request): Promise<Response> {
         t.db.get<{ id: string } | null>('application', null)?.id !== row.application_id)
       throw new HttpError(409, 'reconciliation_required', 'The page does not match its retained account setup journal.');
     const { token: _secret, ...page } = t.handle('');
-    const token = t.db.one<{ hash: string }>("SELECT hash FROM tokens WHERE name='setup'");
-    return json({ page, credentialActive: token?.hash === row.credential_commitment });
+    return json({ page, credentialActive: !!setupCredentialBinding(t, row.credential_commitment) });
   };
   if (t.exists() || action === '/setup/inspect') return inspect();
   if (row.expires_at <= t.now()) throw new HttpError(410, 'setup_expired');
