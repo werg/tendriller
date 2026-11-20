@@ -24,6 +24,10 @@ export async function nativeHost({ origin, token, cwd, spawnHost = spawn, deadli
   lines.on('line', line => {
     let message;
     try { message = JSON.parse(line); } catch { return; }
+    if (message.method) {
+      if (message.id !== undefined) child.stdin.write(JSON.stringify({ id: message.id, error: { code: -32601, message: 'Interactive requests are not accepted by this qualification client.' } }) + '\n');
+      return;
+    }
     const entry = pending.get(message.id);
     if (entry) {
       pending.delete(message.id); clearTimeout(entry.timer);

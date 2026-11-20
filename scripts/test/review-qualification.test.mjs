@@ -65,3 +65,19 @@ test('reviewer automation uses a static login URL and separately supplied reusab
     assert.throws(() => readReviewAccess(path), /inconsistent/);
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('native host deadlines stop an unresponsive client without starting a model turn', async () => {
+  const fixture = hostFixture();
+  fixture.child.stdin.removeAllListeners('data');
+  await assert.rejects(nativeHost({ origin: 'https://example.com', token: 'test', cwd: tmpdir(), spawnHost: fixture.spawnHost, deadlineMs: 10 }), /deadline: initialize/);
+  assert.equal(fixture.child.exitCode, 0);
+});
+
+test('observational backpressure retries are bounded and never hide other failures', async () => {
+  const { readWithAdmissionRetry } = await import('../review/read.mjs');
+  let calls = 0;
+  assert.equal(await readWithAdmissionRetry(() => { if (++calls < 3) throw Object.assign(Error('busy'), { status: 429 }); return 'ready'; }, { pauseMs: 1 }), 'ready');
+  assert.equal(calls, 3);
+  await assert.rejects(readWithAdmissionRetry(() => { throw Object.assign(Error('busy'), { status: 429 }); }, { deadlineMs: 0 }), /busy/);
+  await assert.rejects(readWithAdmissionRetry(() => { throw Object.assign(Error('denied'), { status: 403 }); }), /denied/);
+});

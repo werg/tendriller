@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
 import { chromium } from '@playwright/test';
 import { createClient } from '../../dist/sdk/client.mjs';
+import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess } from './access.mjs';
 import { recordReview } from './record.mjs';
 
@@ -49,7 +50,7 @@ try {
   child.once('error', () => { participantError = true; });
   let publication;
   const deadline = Date.now() + 30000;
-  while (!(publication = await host.peers.publication())) { assert(Date.now() < deadline, 'Preclaim publication deadline'); assert(!participantError && child.exitCode === null, 'Synthetic participant must remain running'); await delay(); }
+  while (!(publication = await readWithAdmissionRetry(() => host.peers.publication()))) { assert(Date.now() < deadline, 'Preclaim publication deadline'); assert(!participantError && child.exitCode === null, 'Synthetic participant must remain running'); await delay(); }
   assert.equal((await host.info()).owner_account_id, null);
   const browser = await chromium.launch();
   try {
@@ -57,7 +58,7 @@ try {
     await page.goto(access.loginUrl); await page.locator('input[name=token]').fill(access.code);
     await page.getByRole('button', { name: 'Open test account' }).click(); await page.waitForURL(access.origin + '/dashboard');
     await page.goto(handle.page_url); await page.getByRole('heading', { name: 'Review checklist' }).waitFor();
-    assert.equal((await host.peers.publication()).publication.id, publication.publication.id);
+    assert.equal((await readWithAdmissionRetry(() => host.peers.publication())).publication.id, publication.publication.id);
     await page.goto(proposal.reviewUrl);
     for (const checkbox of await page.getByRole('checkbox').all()) await checkbox.check();
     await page.getByRole('button', { name: 'Approve selected permissions' }).click();
@@ -82,6 +83,13 @@ try {
     } catch { failures.push('Could not delete the qualification-owned synthetic page'); }
   }
   if (opened) { try { db("UPDATE service_state SET mode='creation_paused' WHERE id=1 AND mode='open'"); } catch { failures.push('Could not restore staging creation mode'); } }
+  const reportPath = join(output, 'report.json');
+  try {
+    const report = JSON.parse(readFileSync(reportPath));
+    report.fixtureCleanup = failures.length === 0;
+    if (failures.length) { report.passed = false; report.cleanupErrors = failures; }
+    writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (failures.length) throw Error(failures.join('; ') + '. Private recovery files retained at ' + project);
   rmSync(project, { recursive: true, force: true });
 }

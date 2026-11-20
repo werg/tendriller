@@ -7,6 +7,7 @@ import { chromium } from '@playwright/test';
 import { createClient } from '../../dist/sdk/client.mjs';
 import { verifyAuthorityBundle, verifyPublicationManifest } from '@chronolog/peer-session';
 import { nativeHost } from './codex-host.mjs';
+import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess, authorizeReview } from './access.mjs';
 
 export async function recordReview({ project, accessPath, output, video = true, frameMs = 1500 }) {
@@ -20,6 +21,9 @@ export async function recordReview({ project, accessPath, output, video = true, 
   mkdirSync(output, { recursive: true, mode: 0o700 });
   const report = { passed: false, client: 'Codex app-server MCP', codex: execFileSync('codex', ['--version'], { encoding: 'utf8' }).trim(),
     agentBehaviorEvaluated: false, chatgptWebVerified: false, usesModelTokens: false,
+    sourceRevision: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: resolve(import.meta.dirname, '../..'), encoding: 'utf8' }).trim(),
+    sdkVersion: JSON.parse(readFileSync(new URL('../../package.json', import.meta.url))).version,
+    denialScope: 'Unlisted application ID rejected; no live second-account fixture is provisioned by this runner',
     origin: access.origin, applicationId: handle.application.id, cases: [], checks: [] };
   const browser = await chromium.launch();
   let client, context, page;
@@ -72,7 +76,7 @@ export async function recordReview({ project, accessPath, output, video = true, 
     });
     await positive(2, async () => { const value = await query(); assert.equal(value.find(item => item.id === 'check-labels').complete, false); return value; });
     const host = createClient(handle, { applicationId: app.applicationId });
-    const originalPublication = (await host.peers.publication()).publication.id;
+    const originalPublication = (await readWithAdmissionRetry(() => host.peers.publication())).publication.id;
     await page.goto(handle.page_url); await page.getByText('Incomplete · Check labels', { exact: true }).waitFor();
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs));
     let operationId;
@@ -112,9 +116,9 @@ export async function recordReview({ project, accessPath, output, video = true, 
     assert(invalid.isError); report.checks.push('Additional server guard rejects malformed input before admission');
     assert.deepEqual(await query(), unchanged);
     const deadline = Date.now() + 20000;
-    while ((await host.peers.publication()).publication.id === originalPublication) { assert(Date.now() < deadline); await new Promise(done => setTimeout(done, 200)); }
+    while ((await readWithAdmissionRetry(() => host.peers.publication())).publication.id === originalPublication) { assert(Date.now() < deadline); await new Promise(done => setTimeout(done, 200)); }
     const authority = await verifyAuthorityBundle(await host.peers.application());
-    const publication = await host.peers.publication(); await verifyPublicationManifest(publication.publication, authority);
+    const publication = await readWithAdmissionRetry(() => host.peers.publication()); await verifyPublicationManifest(publication.publication, authority);
     report.publication = publication.publication.id;
     await page.goto(handle.page_url); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor();
     await page.reload(); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor();
