@@ -7,12 +7,14 @@ import { createAssistantKey, proposeApplicationAssistant, connectApplicationAssi
 import { project, privateDirectory, readPrivate, savePrivate } from './local.mjs';
 import { openSession } from './session.mjs';
 
-export async function prepareAssistant({ events = false } = {}) {
-  const { handle } = await project();
+export async function prepareAssistant({ events = false, signal } = {}) {
+  signal?.throwIfAborted();
+  const { handle } = await project({ signal });
   const key = await readPrivate('assistant-key.json', true) ?? await savePrivate('assistant-key.json', createAssistantKey());
-  const options = { api: handle.api, token: handle.token, key, label: 'Shared notes',
+  const options = { api: handle.api, token: handle.token, key, label: 'Shared notes', signal,
     queries: ['notes'], commands: ['addNote'],
     events: events ? [{ name: 'note.added', description: 'A note was added. Only its original operation ID is exposed.' }] : [] };
+  signal?.throwIfAborted();
   return { options, review: await proposeApplicationAssistant(options) };
 }
 async function checkpoint(cursor) {
@@ -26,7 +28,9 @@ export async function runAssistant({ signal, events = false } = {}, {
   tools = createApplicationTools, forward = forwardApplicationEvents,
   report = value => console.log(JSON.stringify(value)),
 } = {}) {
-  const { options, review } = await prepare({ events });
+  signal?.throwIfAborted();
+  const { options, review } = await prepare({ events, signal });
+  signal?.throwIfAborted();
   report({ state: 'proposal_prepared', serviceOrigin: new URL(options.api).origin,
     reviewUrl: review.reviewUrl, connected: false, eventsForwarding: events,
     next: 'The owner opens the published page and reviews these permissions; no claimed reply is needed.' });
@@ -71,7 +75,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const args = process.argv.slice(2), events = args.includes('--events');
     const action = args.filter(arg => arg !== '--events');
     if (action.length > 1 || action.length && !['prepare', 'run'].includes(action[0])) throw Error('Use npm run assistant[:prepare] -- [--events]. Event forwarding is optional and does not configure future chat wake.');
-    if (action[0] === 'prepare') console.log(JSON.stringify((await prepareAssistant({ events })).review));
+    if (action[0] === 'prepare') console.log(JSON.stringify((await prepareAssistant({ events, signal: stop.signal })).review));
     else await runAssistant({ signal: stop.signal, events });
   } catch (error) { if (!stop.signal.aborted) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; } }
 }

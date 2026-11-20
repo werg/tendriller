@@ -18,27 +18,36 @@ async function fixture(t) {
 }
 
 test('assistant preparation retains one private key and event permissions are opt-in', async t => {
-  const { directory, module } = await fixture(t), calls = [], original = globalThis.fetch;
+  const { directory, module } = await fixture(t), calls = [], original = globalThis.fetch, signal = new AbortController().signal;
   await mkdir(join(directory, '.tendriller'), { mode: 0o700 });
   await writeFile(join(directory, '.tendriller/handle.json'), JSON.stringify({ api: 'https://staging.example.test/api/t/aaaaaaaaaaaa',
     token: 'test-only-token', application: { id: 'a'.repeat(64) } }), { mode: 0o600 });
   globalThis.fetch = async (url, options) => {
-    calls.push({ url, body: JSON.parse(options.body) });
+    calls.push({ url, body: JSON.parse(options.body), signal: options.signal });
     return Response.json({ reviewUrl: 'https://staging.example.test/connections/aaaaaaaaaaaa' });
   };
   t.after(() => { globalThis.fetch = original; });
-  await module.prepareAssistant();
+  await module.prepareAssistant({ signal });
   const key = await readFile(join(directory, '.tendriller/assistant-key.json'), 'utf8');
-  await module.prepareAssistant();
-  await module.prepareAssistant({ events: true });
+  await module.prepareAssistant({ signal });
+  await module.prepareAssistant({ events: true, signal });
   assert.deepEqual(calls[0].body.events, []);
   assert.deepEqual(calls[0].body.queries, ['notes']);
   assert.deepEqual(calls[0].body.commands, ['addNote']);
   assert.deepEqual(calls[1], calls[0]);
+  assert.equal(calls[0].signal, signal);
   assert.equal(calls[2].body.events[0].name, 'note.added');
   assert.deepEqual(calls[2].body.adapterHashes, calls[0].body.adapterHashes);
   assert.equal(await readFile(join(directory, '.tendriller/assistant-key.json'), 'utf8'), key);
   assert.equal((await stat(join(directory, '.tendriller/assistant-key.json'))).mode & 0o777, 0o600);
+});
+
+test('an already cancelled assistant run cannot prepare a proposal or open an owner', async t => {
+  const { module, directory } = await fixture(t), stop = new AbortController();
+  const reason = Error('cancelled before setup'); stop.abort(reason);
+  await assert.rejects(module.prepareAssistant({ signal: stop.signal }), error => error === reason);
+  await assert.rejects(module.runAssistant({ signal: stop.signal }, { prepare: () => { throw Error('must not propose'); }, open: () => { throw Error('must not open'); } }), error => error === reason);
+  await assert.rejects(readFile(join(directory, '.tendriller/assistant-key.json')), { code: 'ENOENT' });
 });
 
 function runtime({ events = false, failConnect = false, failClose = false } = {}) {

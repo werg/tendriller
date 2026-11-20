@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPage, describeReadiness, requireCreationReady, requireServiceOrigin } from '../client.mjs';
+import { createPage, describeService, describeReadiness, requireCreationReady, requireServiceOrigin } from '../client.mjs';
 
 const origin = 'https://staging.example.test';
 const readiness = (mode = 'open') => ({ schemaVersion: 1, serviceOrigin: origin,
@@ -37,6 +37,26 @@ test('missing, malformed, failing, or redirected readiness never authorizes crea
   await assert.rejects(describeReadiness(origin, { fetch: async () => { throw failure; } }), error => error.code === 'readiness_unavailable' && error.cause === failure);
   const stop = new AbortController(), reason = Error('cancelled'); stop.abort(reason);
   await assert.rejects(describeReadiness(origin, { signal: stop.signal, fetch: async () => { throw reason; } }), error => error === reason);
+});
+
+test('an open mode alone cannot authorize creation without coherent build and availability evidence', async () => {
+  for (const patch of [{ environment: undefined }, { build: undefined }, { writes: undefined }, { checkedAt: undefined },
+    { build: { ...readiness().build, runtimeId: 'unknown' } }, { build: { ...readiness().build, compositionId: 'invalid' } },
+    { environment: { ...readiness().environment, id: 'https://wrong.test' } },
+    { writes: { available: false, code: 'read_only' } }, { checkedAt: 'not a timestamp' }]) {
+    await assert.rejects(describeReadiness(origin, { fetch: async () => Response.json({ ...readiness(), ...patch }) }), { code: 'readiness_invalid' });
+  }
+});
+
+test('contract discovery uses the same validated origin and refuses redirects', async () => {
+  let calls = 0;
+  const fetch = async (url, options) => {
+    calls++; assert.equal(url, origin + '/api/service'); assert.equal(options.redirect, 'error');
+    return Response.json({ contract: 3, core_release: 'test', limits: {} });
+  };
+  await describeService(origin, { fetch });
+  await assert.rejects(describeService(origin + '/api/private', { fetch }), { code: 'invalid_service_origin' });
+  assert.equal(calls, 1);
 });
 
 test('service origin validation rejects credentials, paths and non-loopback HTTP without leaking input', () => {

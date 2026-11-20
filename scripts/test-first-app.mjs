@@ -250,6 +250,9 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     report.preclaim_code = { totalBytes: preparedSizes.reduce((sum, n) => sum + n, 0), largestFileBytes: Math.max(...preparedSizes) };
     preparedPublication = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
     assert.ok(preparedPublication.publication.id);
+    assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
+      { publication: preparedPublication.publication, receipt: preparedPublication },
+      'A separate native process must reopen the original signed intent and retained receipt.');
   }
   passed('native application initialized and first signed UI published before claim');
   const initialClaim = await fetch(localPage, { redirect: 'manual' });
@@ -317,7 +320,11 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   const publication = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
   const retry = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
   assert.deepEqual(retry, publication, 'Exact publication retry must recover its original receipt.');
+  assert.deepEqual(publication, preparedPublication, 'Owner claim and rebuild must preserve the pre-claim publication identity.');
+  assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
+    { publication: publication.publication, receipt: publication }, 'Exact retry and another process reopen preserve the acknowledged receipt.');
   report.publication_id = publication.publication.id;
+  passed('retained publication receipt inspected after native process reopen and exact retry');
   passed('public-only authored graph, signed publication and exact publication retry');
   report.native_checks = 'passed';
 

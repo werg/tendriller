@@ -59,8 +59,8 @@ export async function createPage(service, body, { fetch: fetcher = globalThis.fe
 }
 
 /** Check capabilities before a tool creates a page or writes application data. */
-export async function describeService(service, { fetch: fetcher = globalThis.fetch } = {}) {
-  const response = await fetcher(service.replace(/\/+$/, "") + "/api/service");
+export async function describeService(service, { fetch: fetcher = globalThis.fetch, signal } = {}) {
+  const response = await fetcher(requireServiceOrigin(service) + "/api/service", { signal, redirect: 'error', cache: 'no-store' });
   let result;
   try { result = await response.json(); }
   catch { throw new ApiError(response.status, { code: "invalid_response", message: "Service descriptor is not JSON" }); }
@@ -88,11 +88,19 @@ function checkedReadiness(value, origin, status) {
   if (value?.serviceOrigin !== origin) {
     throw new ApiError(409, { code: 'service_origin_mismatch', message: 'Readiness identifies another service. Continue only with the selected connector service origin.' });
   }
-  const mode = value.mode, creation = value.creation;
+  const mode = value.mode, creation = value.creation, writes = value.writes, environment = value.environment, build = value.build;
   if (value.schemaVersion !== 1 || !['open', 'creation_paused', 'read_only', 'unavailable'].includes(mode) ||
+      environment?.id !== origin || typeof environment.label !== 'string' || !environment.label ||
+      !['deployment', 'preview', 'local'].includes(environment.kind) ||
+      typeof build?.coreRelease !== 'string' || !build.coreRelease || !/^[a-f0-9]{64}$/.test(build.runtimeId ?? '') ||
+      !(build.sourceCommit === null || typeof build.sourceCommit === 'string' && /^[a-f0-9]{40}$/.test(build.sourceCommit)) ||
+      !(build.compositionId === undefined || build.compositionId === null || typeof build.compositionId === 'string' && /^[a-f0-9]{64}$/.test(build.compositionId)) ||
       typeof creation?.available !== 'boolean' || creation.available !== (mode === 'open') ||
       creation.code !== (mode === 'open' ? null : mode === 'unavailable' ? 'unavailable' : 'creation_paused') ||
       typeof creation.message !== 'string' || typeof creation.nextAction !== 'string' ||
+      typeof writes?.available !== 'boolean' || writes.available !== (mode === 'open' || mode === 'creation_paused') ||
+      writes.code !== (mode === 'read_only' ? 'read_only' : mode === 'unavailable' ? 'unavailable' : null) ||
+      typeof value.checkedAt !== 'string' || !Number.isFinite(Date.parse(value.checkedAt)) ||
       value.readinessUrl !== origin + '/api/readiness' || value.statusUrl !== origin + '/status') {
     throw new ApiError(status, { code: 'readiness_invalid', message: 'The service returned an incompatible readiness document. Upgrade or repair this service before creating a page.' });
   }
