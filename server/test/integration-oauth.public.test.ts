@@ -709,6 +709,13 @@ it('serves unrelated native applications through one MCP endpoint and retains in
         backup.connectPeer({ connection: right, peerIdentity: session.deviceId }),
       ]);
       await Promise.all([primary.synchronize(), replica.synchronize()]);
+      // Protocol synchronization and MCP socket upgrade do not activate a cold
+      // replica's data layer. Prove a coherent applied read before treating it
+      // as a ready fallback; keep lazy activation outside the RPC call budget.
+      expect(backup.status.database).toBe('idle');
+      const primaryRead = await createApplicationTools(session).call('query', { name: query, input: null });
+      const backupRead = await createApplicationTools(backup).call('query', { name: query, input: null });
+      expect(backupRead).toEqual(primaryRead);
       const standby = start(backupKey, backup);
       await vi.waitFor(() => expect(standby.online).toBe(true));
       return { standby, backup };
@@ -922,12 +929,15 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.rpc('events/unsubscribe', tuning)).result).toEqual({});
     await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_watchers')).toBeNull());
 
-    const { standby } = await first.startBackup();
+    const { standby, backup } = await first.startBackup();
     await first.adapter.close();
     // close() settles the local loop; wait for the remote close handshake before
     // testing the separate already-offline-provider scenario.
     await vi.waitFor(async () => expect(await inDO(a.page.id, t =>
       t.ctx.getWebSockets('application-mcp').filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN).length)).toBe(1));
+    expect(backup.status).toMatchObject({ database: 'ready', phase: 'ready', connectedPeers: 1, generation: first.session.status.generation });
+    expect(first.session.signal.aborted).toBe(false);
+    expect(standby.online).toBe(true);
     expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result)
       .toMatchObject({ structuredContent: { value: [{ text: 'Rope checked' }] } });
     const unresolved = (await first.tool('call_application_command', write)).result.structuredContent;
