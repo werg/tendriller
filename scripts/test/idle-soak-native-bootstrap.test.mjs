@@ -87,14 +87,14 @@ test('latest assistant state gates a full quiet interval; a brief disconnect rec
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});
  const state=newState({hours:48});nativeCoverage(state,{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',wakeups:true,modelTurns:false,eventsForwarding:true});
  assert.equal(nativeAssistantBusy(state),true);
- assert(nativeAssistantStatus(state,{idleSoakAssistantStatus:1,online:true,eventsForwarding:true}));assert.equal(nativeAssistantBusy(state),false);
+ assert(nativeAssistantStatus(state,{idleSoakAssistantStatus:1,eventsForwardingBlocked:false,online:true,eventsForwarding:true}));assert.equal(nativeAssistantBusy(state),false);
  let done=false;const boundary=quietBoundary({busy:()=>nativeAssistantBusy(state),timeoutMs:10000});const wait=boundary.wait().then(()=>{done=true;});
- t.mock.timers.tick(1000);nativeAssistantStatus(state,{idleSoakAssistantStatus:1,online:false,eventsForwarding:true});boundary.activity();
+ t.mock.timers.tick(1000);nativeAssistantStatus(state,{idleSoakAssistantStatus:1,eventsForwardingBlocked:false,online:false,eventsForwarding:true});boundary.activity();
  t.mock.timers.tick(3000);await flush();assert.equal(done,false);assert.equal(state.coverage.mcpOnline,false);assert.equal(state.coverage.mcpStatusAt,2000);assert.equal(state.coverage.eventsForwarding,true);
- nativeAssistantStatus(state,{idleSoakAssistantStatus:1,online:true,eventsForwarding:true});boundary.activity();
+ nativeAssistantStatus(state,{idleSoakAssistantStatus:1,eventsForwardingBlocked:false,online:true,eventsForwarding:true});boundary.activity();
  t.mock.timers.tick(1999);await flush();assert.equal(done,false);t.mock.timers.tick(1);await wait;
  assert.equal(done,true);assert.equal(report(state).counts.modelTurns,null);
- const before=JSON.stringify(state.coverage);assert.equal(nativeAssistantStatus(state,{idleSoakAssistantStatus:1,online:'yes',eventsForwarding:true,private:'secret'}),false);assert.equal(JSON.stringify(state.coverage),before);
+ const before=JSON.stringify(state.coverage);assert.equal(nativeAssistantStatus(state,{idleSoakAssistantStatus:1,eventsForwardingBlocked:false,online:'yes',eventsForwarding:true,private:'secret'}),false);assert.equal(JSON.stringify(state.coverage),before);
 });
 
 test('assistant status IPC changes only on actual boolean transitions and cleanup fences late online callbacks',async()=>{
@@ -111,5 +111,31 @@ test('online provider, participation and query cannot bypass an unfinished or fa
  assert.equal(readiness(f).length,0);
  const pass=f.reconcile({signal:f.stop.signal});const rejected=assert.rejects(pass,/reconcile failed/);f.reconciliation.reject(Error('reconcile failed'));await rejected;await flush();
  assert.equal(readiness(f).length,0);assert.equal(f.stats().closes,0);
+ f.stop.abort();await f.task;assert.equal(f.stats().closes,1);
+});
+
+
+test('event activity failure blocks readiness and quiet without disconnecting the provider',async()=>{
+ const f=fixture({events:true});await flush();f.status(readyStatus);f.query.resolve({});
+ const pass=f.reconcile();f.reconciliation.resolve([]);await pass;
+ f.assistantReport({state:'adapter_activity_failed'});f.assistantReport({state:'adapter_online'});await flush();
+ assert.equal(readiness(f).length,0);assert.equal(f.stats().closes,0);
+ const s=newState({hours:48});nativeCoverage(s,{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',eventsForwarding:true});
+ for(const message of f.messages.filter(x=>x.idleSoakAssistantStatus))nativeAssistantStatus(s,message);
+ assert.equal(s.coverage.mcpOnline,true);assert.equal(s.coverage.eventsForwardingBlocked,true);assert.equal(nativeAssistantBusy(s),true);
+ f.assistantReport({state:'adapter_offline'});f.assistantReport({state:'adapter_online'});
+ assert.equal(f.messages.at(-1).eventsForwardingBlocked,true);assert.equal(readiness(f).length,0);
+ f.stop.abort();await f.task;const count=f.messages.length;f.assistantReport({state:'adapter_activity_failed'});assert.equal(f.messages.length,count);
+});
+
+test('activity failure after one-shot ready updates the quiet gate without restarting the native lifetime',async()=>{
+ const f=fixture({events:true});await flush();f.status(readyStatus);f.query.resolve({});
+ const pass=f.reconcile();f.reconciliation.resolve([]);await pass;f.assistantReport({state:'adapter_online'});await flush();
+ assert.equal(readiness(f).length,2);
+ const s=newState({hours:48});for(const m of f.messages){nativeCoverage(s,m);nativeAssistantStatus(s,m);}
+ assert.equal(nativeAssistantBusy(s),false);
+ f.assistantReport({state:'adapter_activity_failed',private:'SECRET'});
+ assert(nativeAssistantStatus(s,f.messages.at(-1)));assert.equal(nativeAssistantBusy(s),true);assert.equal(s.coverage.mcpOnline,true);
+ assert.equal(readiness(f).length,2);assert.equal(f.stats().closes,0);assert(!JSON.stringify(f.messages).includes('SECRET'));
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);
 });

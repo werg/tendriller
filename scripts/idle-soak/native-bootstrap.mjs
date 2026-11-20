@@ -30,16 +30,16 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
   const lifetime = AbortSignal.any([opening, owned.session.signal].filter(Boolean));
   let lifecycle, unsubscribe, assistantTask, changesTask, closing;
   let participationReady = false, reconciled = false, activated = false, adapterReady = !assistant, sentReady = false;
-  let observing = true, lastOnline;
+  let observing = true, lastOnline, lastBlocked, eventsForwardingBlocked = false;
   const assistantStatus = online => {
     adapterReady = online;
-    if (!assistant || lastOnline === online) return;
-    lastOnline = online;
-    send({ idleSoakAssistantStatus: 1, online, eventsForwarding: events });
+    if (!assistant || lastOnline === online && lastBlocked === eventsForwardingBlocked) return;
+    lastOnline = online; lastBlocked = eventsForwardingBlocked;
+    send({ idleSoakAssistantStatus: 1, online, eventsForwarding: events, eventsForwardingBlocked });
   };
   const closeOwned = () => closing ??= Promise.resolve().then(() => owned.close());
   const ready = () => {
-    if (sentReady || lifetime.aborted || !participationReady || !reconciled || !activated || !adapterReady) return;
+    if (sentReady || lifetime.aborted || !participationReady || !reconciled || !activated || !adapterReady || eventsForwardingBlocked) return;
     sentReady = true;
     send({ idleSoakCoverage: 1, bootstrapScope: assistant ? 'native-with-mcp-adapter' : 'native-only-without-mcp-adapter', wakeups: true, modelTurns: false, eventsForwarding: assistant && events });
     send({ idleSoakReady: 1 });
@@ -63,6 +63,7 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
         report(value) {
           if (!observing || lifetime.aborted) return;
           record('wakeups');
+          if (value.state === 'adapter_activity_failed' && events) { eventsForwardingBlocked = true; assistantStatus(adapterReady); }
           if (value.state === 'adapter_online') assistantStatus(true);
           if (['adapter_offline', 'assistant_stopped', 'setup_channel_closed', 'awaiting_assistant_consent', 'stopped'].includes(value.state) ||
               ['disconnected', 'closed'].includes(value.assistant?.state)) assistantStatus(false);

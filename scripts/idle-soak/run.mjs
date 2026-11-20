@@ -21,15 +21,16 @@ export function nativeCoverage(state, message) {
 
 /** Status is observation, never a reason to terminate the independently owned app. */
 export function nativeAssistantStatus(state, message, now = Date.now()) {
-  if (message?.idleSoakAssistantStatus !== 1 || typeof message.online !== 'boolean' || typeof message.eventsForwarding !== 'boolean') return false;
-  if (state.coverage.mcpOnline === message.online && state.coverage.eventsForwarding === message.eventsForwarding) return false;
+  if (message?.idleSoakAssistantStatus !== 1 || typeof message.online !== 'boolean' || typeof message.eventsForwarding !== 'boolean' || typeof message.eventsForwardingBlocked !== 'boolean') return false;
+  if (state.coverage.mcpOnline === message.online && state.coverage.eventsForwarding === message.eventsForwarding && state.coverage.eventsForwardingBlocked === message.eventsForwardingBlocked) return false;
   state.coverage.mcpOnline = message.online;
+  state.coverage.eventsForwardingBlocked = message.eventsForwardingBlocked;
   state.coverage.mcpStatusAt = now;
   state.coverage.eventsForwarding = message.eventsForwarding;
-  record(state, { source: 'native', kind: 'assistant-status', online: message.online, eventsForwarding: message.eventsForwarding }, now);
+  record(state, { source: 'native', kind: 'assistant-status', online: message.online, eventsForwarding: message.eventsForwarding, eventsForwardingBlocked: message.eventsForwardingBlocked }, now);
   return true;
 }
-export const nativeAssistantBusy = state => state?.coverage.bootstrapScope === 'native-with-mcp-adapter' && state.coverage.mcpOnline !== true;
+export const nativeAssistantBusy = state => state?.coverage.bootstrapScope === 'native-with-mcp-adapter' && (state.coverage.mcpOnline !== true || state.coverage.eventsForwarding && state.coverage.eventsForwardingBlocked !== false);
 
 export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => {
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); resolve(); };
