@@ -101,7 +101,7 @@ jobs:
         env:
           TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
       - if: inputs.manifest_sha256 == ''
-        run: npm run build
+        run: node scripts/download-release.mjs
       - uses: actions/download-artifact@v4
         with:
           name: staging-chronolog-fixture

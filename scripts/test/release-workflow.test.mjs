@@ -48,6 +48,9 @@ test('all deployed and browser/native qualified bytes come from one artifact gra
 });
 
 test('live qualification reuses the promoted run or immutable public graph', () => {
+  const acceptance = workflow('staging-acceptance');
+  assert.doesNotMatch(acceptance, /npm run build/);
+  assert.match(acceptance, /node scripts\/download-release.mjs/);
   const mcp = workflow('plugin-qualification');
   assert.match(mcp, /github\.ref == 'refs\/heads\/master'/);
   assert.match(mcp, /run-id:.*github.event.workflow_run.id/);

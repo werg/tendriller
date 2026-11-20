@@ -60,7 +60,9 @@ archives, the exact served starter and the pinned public Chronolog session in
 the starter and local SDK/tools/session packages. `dist/manifest.json` binds the
 composition, first-app archive and provenance files for immutable publication.
 
-Commit and push incremental changes before publishing clean artifacts. A source build may update the tracked runtime manifest; include that generated update in a checkpoint, then rebuild from the clean tree. The Public service workflow builds/checks once on Node 24, seals a deployment
+Commit and push incremental changes before publishing clean artifacts. A source build may update the tracked runtime manifest; include that generated update in a checkpoint, then rebuild from the clean tree.
+
+The Public service workflow builds/checks once on Node 24, seals a deployment
 bundle into the manifest, then qualifies those same bytes in browser, exact-kit
 and native jobs. Node 22 retains a separate compatibility check. PR and branch
 jobs have read-only permissions and never publish or deploy. Only trusted master
