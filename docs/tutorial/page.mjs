@@ -27,7 +27,6 @@ function retainedPending() {
 let attachment, session, liveView, operationView, observedOperation, media;
 const submission = createSubmissionState(renderSubmission);
 function renderSubmission(state) {
-  $('#editor').disabled = false;
   $('#submit').disabled = !state.canSubmit;
   $('#inspect').disabled = !state.canInspect;
   $('#retry').disabled = !state.canRetry;
@@ -46,7 +45,6 @@ $('#note').value = readLocal('draft') ?? '';
 $('#operation-id').value = readLocal('operation') ?? '';
 if (pending) {
   $('#operation-id').value = pending.id;
-  $('#submit').disabled = true;
   $('#create-device').disabled = true;
   $('#result').textContent = `Unresolved operation ${pending.id}. Inspect or retry its original identity before submitting another note.`;
 }
@@ -231,7 +229,8 @@ $('#connect').addEventListener('click', async () => {
     installed = true;
     // The query activates data. Status observation handles later key delivery.
     await refresh();
-    $('#connection').textContent = 'Connected: a verified application query succeeded. Keep the native peer running for writes.';
+    if (submission.snapshot.available)
+      $('#connection').textContent = 'Connected: a verified application query succeeded. Keep the native peer running for writes.';
   } catch (error) {
     if (!installed) {
       const facadeOpened = Boolean(session);
