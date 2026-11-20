@@ -37,13 +37,14 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
               if(lose) throw Error('Reply lost');
               return {operationId:options.operationId, applied: async () => saved[options.operationId], shared:async()=>[]};
             },
+            async reapply(original,name,input,options) {calls.push({reapplies:original}); return this.command(name,input,options);},
             async retry(id) {calls.push({retry:id}); saved[id] = {...saved[id],status:'applied',outcome:'rejected',rejectionCode:'STALE'};},
             operations: {get:async id=>saved[id] || null, inspect:async id=>({state:saved[id] || null}),wait:async id=>saved[id]},
           };
           window.fixture = {calls, release() {hold=false; resolveRead?.();}, fail(value) {fail=value;},
             connection(phase) {participation.forEach(fn=>fn({phase}));},
             recovery() {recoveries.forEach(fn=>fn({abandoned:[],unknownLoss:false}));},
-            hold() {hold=true;}, beforeSave(value) {beforeSave=value;}, responseLoss(value) {lose=value;}, session};
+            abandon(id) {saved[id] = {...saved[id],status:'needsReapply'};}, hold() {hold=true;}, beforeSave(value) {beforeSave=value;}, responseLoss(value) {lose=value;}, session};
           return {session,detach:async()=>{},suspend:async()=>{},resume:async()=>{}};
         }
       ` }));
@@ -130,6 +131,23 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   assert.equal(await page.locator('#note').getAttribute('aria-describedby'), 'draft-help submission-status');
   assert.equal(await page.locator('#submission-status').getAttribute('role'), 'status');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  await page.locator('#note').fill('Explicit reapplication');
+  await page.evaluate(() => fixture.responseLoss(true));
+  await page.locator('#submit').click();
+  await page.waitForFunction(() => document.querySelector('#result').textContent.includes('Reply lost'));
+  const abandonedId = await page.locator('#operation-id').inputValue();
+  await page.evaluate(id => fixture.abandon(id), abandonedId);
+  await page.locator('#inspect').click(); await page.waitForFunction(() => !document.querySelector('#reapply').disabled);
+  assert.equal(await enabled('#retry'), false);
+  await page.locator('#reapply').click();
+  await page.waitForFunction(() => !document.querySelector('#retry').disabled);
+  const replacementId = await page.locator('#operation-id').inputValue();
+  assert.notEqual(replacementId, abandonedId);
+  const reapplied = await page.evaluate(() => fixture.calls.slice(-2));
+  assert.deepEqual(reapplied[0], {reapplies:abandonedId});
+  assert.equal(reapplied[1].options.operationId, replacementId);
+  await page.locator('#retry').click(); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  assert.deepEqual(await page.evaluate(() => fixture.calls.at(-1)), {retry:replacementId});
   await page.locator('#close').click(); assert.equal(await enabled('#submit'), false);
   assert.equal(await enabled('#note'), true);
   assert.deepEqual(errors, []);
