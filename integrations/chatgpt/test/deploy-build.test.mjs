@@ -6,9 +6,27 @@ import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } 
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { assembleRelease, buildRelease, CHRONOLOG_SOURCE, hashFile, inspectSource, sealRelease, unpackPublicArchive } from '../deploy/build-release.mjs';
 
 const command = promisify(execFile);
+
+test('ChatGPT release validation and CI use the actual pinned core companion source', async () => {
+  const root = fileURLToPath(new URL('../../../', import.meta.url));
+  const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  const pin = pkg.devDependencies['@chronolog/peer-session'];
+  assert.ok(pin.startsWith('file:'), 'The companion must be an exact local public archive.');
+  const archive = join(root, pin.slice(5));
+  const entries = (await command('tar', ['-tzf', archive])).stdout.trim().split('\n');
+  const entry = entries.find(name => ['provenance.json', './provenance.json', 'package/provenance.json'].includes(name));
+  assert.ok(entry, 'Pinned public package needs source provenance.');
+  const proof = JSON.parse((await command('tar', ['-xOf', archive, entry])).stdout);
+  assert.equal(proof.source, CHRONOLOG_SOURCE);
+  assert.equal(proof.dirty, false);
+  const workflow = await readFile(join(root, '.github/workflows/chatgpt-integration.yml'), 'utf8');
+  const checkout = /repository:\s*werg\/chronolog-db\s*\n\s*ref:\s*([a-f0-9]{40})/.exec(workflow);
+  assert.equal(checkout?.[1], CHRONOLOG_SOURCE, 'CI must check out the same source that release validation accepts.');
+});
 const text = async (path, value) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, value); };
 const json = (path, value) => text(path, JSON.stringify(value, null, 2) + '\n');
 const git = async (root, ...args) => (await command('git', args, { cwd: root })).stdout.trim();

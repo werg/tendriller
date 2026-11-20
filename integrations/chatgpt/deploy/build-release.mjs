@@ -5,8 +5,9 @@ import { copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, writ
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
+import { CHRONOLOG_SOURCE } from './common.mjs';
 
-export const CHRONOLOG_SOURCE = 'd3efeb6d75ac24bb9b44899f27d6940475ab55e9';
+export { CHRONOLOG_SOURCE };
 const SHA = /^[a-f0-9]{40}$/u, HASH = /^[a-f0-9]{64}$/u;
 const TEMPLATE_FILES = ['domain.mjs', 'projection.mjs', 'session.mjs', 'bridge-session.mjs', 'local.mjs', 'private-records.mjs'];
 const REQUIRED = ['integrations/chatgpt/run.mjs', 'integrations/chatgpt/integration.mjs',
