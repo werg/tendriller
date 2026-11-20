@@ -9,6 +9,7 @@ import { handleAssistantFrame, callAssistantAdapter } from '../src/assistant-soc
 import { ASSISTANT_SOCKET_TAG } from '../src/assistant-shared';
 import { exchangeDiscovery } from '../src/discovery';
 import { handleInvitations } from '../src/peer-invitations';
+import { handleDevicePairing } from '../src/device-pairing';
 import { sha256Hex } from '../src/ids';
 
 const ORIGIN = 'https://tendriller.dev';
@@ -91,6 +92,9 @@ it('expires retained principals on claimed pages and rechecks grant revocation b
       headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL },
     });
     await expect(handleInvitations(t, request, new URL(request.url), revoked.principal)).rejects.toMatchObject({ code: 'forbidden' });
+    const pairingRequest = new Request('https://tendril.internal/agent');
+    await expect(handleDevicePairing(t, pairingRequest, new URL(pairingRequest.url), revoked.principal))
+      .rejects.toMatchObject({ code: 'pairing_account_revoked' });
   });
 });
 

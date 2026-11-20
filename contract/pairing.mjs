@@ -3,6 +3,7 @@ export const DEVICE_PAIRING_DOMAIN = 'tendriller-device-pairing-v1';
 export const DEVICE_PAIRING_LIMITS = Object.freeze({ lifetimeMs: 10 * 60_000, pendingPerAccount: 20,
   retainedPerApplication: 1024, invalidProofs: 5, challengesPerMinute: 10, requestBytes: 4096, commitBytes: 512 * 1024 });
 const hex = /^[0-9a-f]{64}$/;
+const isHex = value => typeof value === 'string' && hex.test(value);
 const fail = message => Object.assign(new Error(message), { code: 'invalid_pairing' });
 const fields = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
@@ -14,13 +15,13 @@ const origin = value => {
 export function validateDevicePairingChallenge(value) {
   if (!fields(value, ['version', 'domain', 'pairingId', 'requestId', 'serviceOrigin', 'pageOrigin', 'applicationId',
     'accountId', 'publicKey', 'rights', 'expectedGeneration', 'controlRevision', 'nonce', 'expiresAt']) ||
-    value.version !== 1 || value.domain !== DEVICE_PAIRING_DOMAIN || !hex.test(value.pairingId) ||
+    value.version !== 1 || value.domain !== DEVICE_PAIRING_DOMAIN || !isHex(value.pairingId) ||
     typeof value.requestId !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(value.requestId) ||
-    !origin(value.serviceOrigin) || !origin(value.pageOrigin) || !hex.test(value.applicationId) ||
+    !origin(value.serviceOrigin) || !origin(value.pageOrigin) || !isHex(value.applicationId) ||
     typeof value.accountId !== 'string' || !value.accountId.length || value.accountId.length > 200 ||
-    !hex.test(value.publicKey) || !fields(value.rights, ['reader', 'writer']) || value.rights.reader !== true ||
-    typeof value.rights.writer !== 'boolean' || !hex.test(value.expectedGeneration) ||
-    !Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0 || !hex.test(value.nonce) ||
+    !isHex(value.publicKey) || !fields(value.rights, ['reader', 'writer']) || value.rights.reader !== true ||
+    typeof value.rights.writer !== 'boolean' || !isHex(value.expectedGeneration) ||
+    !Number.isSafeInteger(value.controlRevision) || value.controlRevision < 0 || !isHex(value.nonce) ||
     !Number.isSafeInteger(value.expiresAt) || value.expiresAt < 1) throw fail('Invalid bounded device pairing challenge');
   return Object.freeze({ ...value, rights: Object.freeze({ ...value.rights }) });
 }
@@ -54,7 +55,7 @@ export function createDevicePairingClient({ url, fetch: transport = globalThis.f
   async function call(body, pairingId, { signal } = {}) {
     const target = new URL(endpoint);
     if (pairingId !== undefined) {
-      if (!hex.test(pairingId)) throw fail('Invalid pairing identity');
+      if (!isHex(pairingId)) throw fail('Invalid pairing identity');
       target.searchParams.set('pairingId', pairingId);
     }
     const requestHeaders = new Headers(headers);
@@ -80,6 +81,7 @@ export function createDevicePairingClient({ url, fetch: transport = globalThis.f
     prove: (pairingId, signature, options) => call({ action: 'prove', pairingId, signature }, undefined, options),
     inspect: (pairingId, options) => call(undefined, pairingId, options),
     pending: options => call(undefined, undefined, options),
+    prepare: (pairingId, prepared, options) => call({ action: 'prepare', pairingId, request: prepared.request, control: prepared.control }, undefined, options),
     commit: (pairingId, prepared, options) => call({ action: 'commit', pairingId, request: prepared.request, control: prepared.control }, undefined, options),
   });
 }

@@ -1,8 +1,8 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { createPeerIdentity, signTransitionRequest, generationStartRoot, participantGrant, verifyAuthorityBundle,
+import { createPeerIdentity, signTransitionRequest, generationStartRoot, participantGrant, verifyAuthorityBundle, peerDigest,
   type PeerIdentity, type AuthorityBundle, type SignedGeneration } from '@chronolog/peer-generation/control';
-import { DEVICE_PAIRING_LIMITS, signDevicePairingChallenge, type DevicePairingStatus, type DevicePairingPrepared } from '../../contract/pairing.mjs';
+import { DEVICE_PAIRING_LIMITS, pairingProofBytes, signDevicePairingChallenge, type DevicePairingStatus, type DevicePairingPrepared } from '../../contract/pairing.mjs';
 import { api, apiJson, create, req, inDO, advance, type Handle } from './helpers';
 import { peerApiJson } from './peer-exchange';
 import { sha256Hex } from '../src/ids';
@@ -60,6 +60,7 @@ async function prepare(h: Handle, native: PeerIdentity, status: DevicePairingSta
     accounts: [{ publicKey: c.publicKey, accountId: c.accountId }] } };
 }
 const commit = (h: Handle, status: DevicePairingStatus, prepared: DevicePairingPrepared) => api(h, 'POST', 'peers/pairing', { action: 'commit', pairingId: status.pairingId, ...prepared });
+const stage = (h: Handle, status: DevicePairingStatus, prepared: DevicePairingPrepared) => api(h, 'POST', 'peers/pairing', { action: 'prepare', pairingId: status.pairingId, ...prepared });
 async function guest(h: Handle) {
   const accountId = crypto.randomUUID(), raw = 'guest-' + crypto.randomUUID(), hash = await sha256Hex(raw);
   await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(accountId, Date.now(), `${accountId}@example.test`).run();
@@ -95,8 +96,40 @@ it('requires the page session, correct origin and exact private-key proof; inval
   await jsonResponse(await browser(h, { action: 'challenge', requestId: crypto.randomUUID(), publicKey: device.publicKey, rights: { reader: true, writer: true, administrator: true } }), 400);
 });
 
+it('prepares one verified immutable proposal before owner review without selecting authority', async () => {
+  const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  const waiting = await form(c, cookie), before = await peerApiJson<AuthorityBundle>(h, 'control/read');
+  expect(waiting.csrf).toBe(''); expect(waiting.html).not.toContain('id="pairing-approve"');
+  expect(waiting.html).toContain('Waiting for the native participant');
+  expect((await review(c, cookie, 'approve', waiting)).status).toBe(403);
+  expect((await apiJson(h, 'GET', 'peers/pairing')).pairings).toEqual([c]);
+  const base = prepared.request.payload.base!;
+  const invalidPrefix = { ...prepared, request: await signTransitionRequest({ ...prepared.request.payload,
+    base: { ...base, point: { ...base.point, root: '00'.repeat(32) } } }, native) };
+  const refused = await stage(h, c, invalidPrefix);
+  expect(refused.status).not.toBe(200); await refused.text();
+  expect((await apiJson(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId)).prepared).toBeUndefined();
+  const staged = await jsonResponse(await stage(h, c, prepared));
+  expect(staged.state).toBe('pending'); expect(staged.prepared).toEqual(prepared);
+  expect(staged.preparedDigest).toBe(await peerDigest(prepared));
+  expect(await peerApiJson(h, 'control/read')).toEqual(before);
+  expect(await inDO(h.id, t => t.db.get<{ publicKey: string }[]>('peer_generation_accounts', []).some(row => row.publicKey === device.publicKey))).toBe(false);
+  const publicStatus = await jsonResponse(await browser(h, undefined, c.pairingId));
+  expect(publicStatus.preparedDigest).toBe(staged.preparedDigest); expect(publicStatus.prepared).toBeUndefined();
+  await inDO(h.id, t => t.ctx.abort('Retain the exact unapproved proposal')).catch(() => {});
+  expect(await jsonResponse(await stage(h, c, prepared))).toEqual(staged);
+  const changed = { ...prepared, control: { ...prepared.control, grants: [...prepared.control.grants].reverse() } };
+  await jsonResponse(await stage(h, c, changed), 409);
+  expect((await form(c, cookie)).html).toContain('id="pairing-approve"');
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)).toBeNull();
+});
+
 it('shows the exact service-origin review and requires one-use session-bound CSRF', async () => {
-  const { h, device, cookie, owner } = await fixture(), c = await proven(h, device), fields = await form(c, cookie);
+  const { h, native, device, cookie, owner } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  const staged = await jsonResponse(await stage(h, c, prepared)), fields = await form(c, cookie);
+  expect(fields.digest).toBe(await peerDigest(['tendriller-device-pairing-review-v1', await sha256Hex(pairingProofBytes(c.challenge)), staged.preparedDigest]));
+  expect(fields.html).toContain('id="pairing-proposal"'); expect(fields.html).toContain(prepared.request.payload.base!.point.root);
+  expect(fields.html).toContain(staged.preparedDigest); expect(fields.html).toContain('id="pairing-fingerprint"');
   expect(fields.html).toContain(owner); expect(fields.html).toContain(c.challenge.applicationId); expect(fields.html).toContain('no coordination, recovery, administration or publishing');
   expect((await req(c.reviewUrl, { redirect: 'manual' })).status).toBe(303);
   expect((await review(c, cookie, 'approve', { ...fields, digest: '00'.repeat(32) })).status).toBe(403);
@@ -112,12 +145,16 @@ it('commits only the exact reviewed grant, recovers a lost response after restar
   const { h, device, native, cookie } = await fixture(), c = await proven(h, device);
   const prepared = await prepare(h, native, c);
   await jsonResponse(await commit(h, c, prepared), 409);
-  expect((await review(c, cookie)).status).toBe(200);
   const badSignature = { ...prepared, request: { ...prepared.request, signature: '00'.repeat(64) } };
-  await jsonResponse(await commit(h, c, badSignature), 403);
+  await jsonResponse(await stage(h, c, badSignature), 403);
   expect((await apiJson(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId)).prepared).toBeUndefined();
   const broad = structuredClone(prepared);
   (broad.control.grants[broad.control.grants.length - 1] as { administrator: boolean }).administrator = true;
+  await jsonResponse(await stage(h, c, broad), 409);
+  await jsonResponse(await stage(h, c, prepared));
+  await jsonResponse(await commit(h, c, prepared), 409);
+  expect((await review(c, cookie)).status).toBe(200);
+  await jsonResponse(await commit(h, c, badSignature), 409);
   await jsonResponse(await commit(h, c, broad), 409);
   expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('approved');
   const accepted = await jsonResponse(await commit(h, c, prepared));
@@ -127,8 +164,10 @@ it('commits only the exact reviewed grant, recovers a lost response after restar
     const record = JSON.parse(row.data); record.state = 'committing'; delete record.generation;
     t.db.run('UPDATE device_pairings SET status=?,data=? WHERE id=?', 'committing', JSON.stringify(record), c.pairingId); });
   await inDO(h.id, t => t.ctx.abort('Lost pairing reply')).catch(() => {});
+  expect((await apiJson(h, 'GET', 'peers/pairing')).pairings).toHaveLength(0);
   const recovered = await jsonResponse(await commit(h, c, prepared));
   expect(recovered.generation).toEqual(accepted.generation);
+  expect(await inDO(h.id, t => t.db.one<{ status: string }>('SELECT status FROM device_pairings WHERE id=?', c.pairingId)!.status)).toBe('committed');
   const authority = await verifyAuthorityBundle(await peerApiJson(h, 'control/read')), current = authority.current!, ctl = authority.control.payload;
   const revoke = await signTransitionRequest({ ...prepared.request.payload, transitionId: 'explicit-revoke', expectedGeneration: current.id,
     controlRevision: ctl.revision + 1, base: { point: { generation: current.id, sequence: 0, root: await generationStartRoot(current) }, receipt: null, bridge: [] } }, native);
@@ -142,11 +181,14 @@ it('commits only the exact reviewed grant, recovers a lost response after restar
 });
 
 it('expires reviews and refuses stale authority instead of preparing a replacement transition', async () => {
-  const { h, native, device, cookie } = await fixture(), c = await proven(h, device), fields = await form(c, cookie);
+  const { h, native, device, cookie } = await fixture(), c = await proven(h, device);
+  await jsonResponse(await stage(h, c, await prepare(h, native, c)));
+  const fields = await form(c, cookie);
   await advance(h.id, DEVICE_PAIRING_LIMITS.lifetimeMs + 1);
   expect((await review(c, cookie, 'approve', fields)).status).toBe(403);
   expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('expired');
   const fresh = await proven(h, device), prepared = await prepare(h, native, fresh);
+  await jsonResponse(await stage(h, fresh, prepared));
   expect((await review(fresh, cookie)).status).toBe(200);
   const current = (await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).current!;
   const next = await signTransitionRequest({ ...prepared.request.payload, transitionId: 'unrelated-handover', controlRevision: current.payload.controlRevision,
@@ -159,6 +201,7 @@ it('expires reviews and refuses stale authority instead of preparing a replaceme
 
 it('keeps rejection and malformed/capacity boundaries durable without overwriting requests', async () => {
   const { h, device, native, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  await jsonResponse(await stage(h, c, prepared));
   expect((await review(c, cookie, 'deny')).status).toBe(200);
   await jsonResponse(await commit(h, c, prepared), 409);
   expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('denied');
@@ -171,7 +214,7 @@ it('keeps rejection and malformed/capacity boundaries durable without overwritin
 });
 
 it('isolates guest requests by account and requires owner review even with a valid page session', async () => {
-  const { h, device, cookie } = await fixture(), a = await guest(h), b = await guest(h);
+  const { h, native, device, cookie } = await fixture(), a = await guest(h), b = await guest(h);
   const c = await jsonResponse(await browser(a.handle, { action: 'challenge', requestId: 'guest-request', publicKey: device.publicKey, rights: { reader: true, writer: true } }, undefined, a.headers));
   expect(c.challenge.accountId).toBe(a.accountId);
   await jsonResponse(await browser(b.handle, undefined, c.pairingId, b.headers), 403);
@@ -181,6 +224,7 @@ it('isolates guest requests by account and requires owner review even with a val
   const raw = 'guest-review-' + crypto.randomUUID();
   await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)').bind(await sha256Hex(raw), a.accountId, Date.now(), Date.now() + 86400000).run();
   expect((await req(c.reviewUrl, { headers: { Cookie: `__Host-tendriller=${raw}` } })).status).toBe(403);
+  await jsonResponse(await stage(h, c, await prepare(h, native, c)));
   expect((await review(c, cookie)).status).toBe(200);
   expect((await jsonResponse(await browser(a.handle, undefined, c.pairingId, a.headers))).state).toBe('approved');
 });
@@ -189,8 +233,9 @@ it('rechecks guest admission at the atomic control write and resumes the same pr
   const { h, native, device, cookie } = await fixture(), g = await guest(h);
   const c = await jsonResponse(await browser(g.handle, { action: 'challenge', requestId: 'revocation-race', publicKey: device.publicKey, rights: { reader: true, writer: true } }, undefined, g.headers));
   await jsonResponse(await browser(g.handle, { action: 'prove', pairingId: c.pairingId, signature: await signDevicePairingChallenge(c.challenge, device) }, undefined, g.headers));
-  expect((await review(c, cookie)).status).toBe(200);
   const prepared = await prepare(h, native, c);
+  await jsonResponse(await stage(h, c, prepared));
+  expect((await review(c, cookie)).status).toBe(200);
   const race = await inDO(h.id, async t => {
     const original = t.env.ACCOUNTS;
     let revoked = false;
@@ -226,6 +271,7 @@ it('rechecks guest admission at the atomic control write and resumes the same pr
 
 it('refuses a corrupt retained attempt without selecting a replacement or dropping the journal', async () => {
   const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  await jsonResponse(await stage(h, c, prepared));
   expect((await review(c, cookie)).status).toBe(200);
   await jsonResponse(await commit(h, c, prepared));
   await inDO(h.id, t => { const row = t.db.one<{ data: string }>('SELECT data FROM device_pairings WHERE id=?', c.pairingId)!;
@@ -236,6 +282,34 @@ it('refuses a corrupt retained attempt without selecting a replacement or droppi
   await jsonResponse(await commit(h, c, prepared), 503);
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).bundle.generations).toHaveLength(2);
   expect(await inDO(h.id, t => t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM device_pairings')!.n)).toBe(1);
+});
+
+it('refuses corrupt prepared review evidence before issuing an approval form', async () => {
+  const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  await jsonResponse(await stage(h, c, prepared));
+  const fields = await form(c, cookie);
+  await inDO(h.id, t => {
+    const row = t.db.one<{ data: string }>('SELECT data FROM device_pairings WHERE id=?', c.pairingId)!;
+    const record = JSON.parse(row.data); record.prepared.request.payload.base.point.root = '00'.repeat(32);
+    t.db.run('UPDATE device_pairings SET data=? WHERE id=?', JSON.stringify(record), c.pairingId);
+  });
+  expect((await req(c.reviewUrl, { headers: { Cookie: cookie } })).status).toBe(503);
+  expect((await review(c, cookie, 'approve', fields)).status).toBe(503);
+  await jsonResponse(await commit(h, c, prepared), 503);
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).bundle.generations).toHaveLength(1);
+});
+
+it('does not report a differently selected control as the exact reviewed enrollment', async () => {
+  const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  await jsonResponse(await stage(h, c, prepared)); expect((await review(c, cookie)).status).toBe(200);
+  const changed = structuredClone(prepared);
+  (changed.control.grants[changed.control.grants.length - 1] as { administrator: boolean }).administrator = true;
+  // Existing native administrative authority can select separately; pairing must not mislabel that receipt.
+  await peerApiJson(h, 'control/select', changed);
+  const result = await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId);
+  expect(result.state).toBe('reconciliation_required'); expect(result.prepared).toEqual(prepared);
+  expect((await jsonResponse(await commit(h, c, prepared))).state).toBe('reconciliation_required');
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).bundle.generations).toHaveLength(2);
 });
 
 it('fails closed for missing storage and finite retained and device-binding capacities', async () => {

@@ -29,6 +29,8 @@ test('proof canonicalization ignores object insertion order and refuses extra ri
   for (const invalid of [{ ...challenge, rights: { ...challenge.rights, administrator: true } }, { ...challenge, owner: true },
     { ...challenge, serviceOrigin: 'https://example.com/path' }, { ...challenge, version: 2 }, { ...challenge, domain: 'different' }])
     assert.throws(() => pairingProofBytes(invalid), /Invalid bounded/);
+  for (const key of ['pairingId', 'applicationId', 'publicKey', 'expectedGeneration', 'nonce'])
+    assert.throws(() => pairingProofBytes({ ...challenge, [key]: [challenge[key]] }), /Invalid bounded/, key);
 });
 
 test('pairing client pins request identity, does not redirect credentials, and retains caller-signed attempts', async () => {
@@ -41,8 +43,10 @@ test('pairing client pins request identity, does not redirect credentials, and r
   assert.equal(new URL(calls[1].url).searchParams.get('pairingId'), challenge.pairingId);
   assert.equal(calls[1].init.method, 'GET');
   const prepared = { request: { payload: { transitionId: 'retained' }, signature: 'signed' }, control: { epoch: 0 } };
+  await client.prepare(challenge.pairingId, prepared);
+  assert.deepEqual(JSON.parse(calls[2].init.body), { action: 'prepare', pairingId: challenge.pairingId, ...prepared });
   await client.commit(challenge.pairingId, prepared);
-  assert.deepEqual(JSON.parse(calls[2].init.body), { action: 'commit', pairingId: challenge.pairingId, ...prepared });
+  assert.deepEqual(JSON.parse(calls[3].init.body), { action: 'commit', pairingId: challenge.pairingId, ...prepared });
   await assert.rejects(client.challenge({ requestId: 'substituted', publicKey: challenge.publicKey, rights: challenge.rights }), /does not match/);
   assert.throws(() => createDevicePairingClient({ url: 'https://secret@example.com/pairing' }), /exact pairing endpoint/);
 });

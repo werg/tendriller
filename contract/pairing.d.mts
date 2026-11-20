@@ -18,7 +18,7 @@ export type DevicePairingState = 'challenge' | 'pending' | 'approved' | 'committ
 export interface DevicePairingStatus {
   readonly pairingId: string; readonly requestId: string; readonly state: DevicePairingState;
   readonly challenge: DevicePairingChallenge; readonly expiresAt: number; readonly reviewUrl: string; readonly nextAction: string;
-  readonly generation?: SignedGeneration; readonly prepared?: DevicePairingPrepared;
+  readonly generation?: SignedGeneration; readonly preparedDigest?: string; readonly prepared?: DevicePairingPrepared;
 }
 export declare function validateDevicePairingChallenge(value: unknown): DevicePairingChallenge;
 export declare function pairingProofBytes(challenge: DevicePairingChallenge): Uint8Array;
@@ -30,6 +30,8 @@ export interface DevicePairingClient {
   prove(pairingId: string, signature: string, options?: DevicePairingRequestOptions): Promise<DevicePairingStatus>;
   inspect(pairingId: string, options?: DevicePairingRequestOptions): Promise<DevicePairingStatus>;
   pending(options?: DevicePairingRequestOptions): Promise<{ pairings: DevicePairingStatus[] }>;
+  /** Retain and verify the exact native attempt for owner review, without selecting a generation. */
+  prepare(pairingId: string, prepared: DevicePairingPrepared, options?: DevicePairingRequestOptions): Promise<DevicePairingStatus>;
   commit(pairingId: string, prepared: DevicePairingPrepared, options?: DevicePairingRequestOptions): Promise<DevicePairingStatus>;
 }
 export declare function createDevicePairingClient(options: { url: string | URL; fetch?: typeof fetch; headers?: HeadersInit }): DevicePairingClient;
