@@ -1,0 +1,86 @@
+import { once } from 'node:events';
+
+/** The test participant owns the complete bootstrap, including its supervisor. */
+export function nativeTestPeerSource({ evidenceBase64, browserDeviceId }) {
+  return `import assert from 'node:assert/strict';
+import {createInterface} from 'node:readline';
+import {openSession} from './session.mjs';
+import {servePeerInference} from './media/inference-service.mjs';
+const owned = await openSession(), {session,supervisor} = owned;
+const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
+let inference, input, closing, inferenceCalls = 0, inferenceSource = null;
+const close = () => closing ??= (async () => {
+  const errors = [];
+  try { await inference?.close(); } catch (error) { errors.push(error); }
+  try { await owned.close(); } catch (error) { errors.push(error); }
+  if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed');
+})();
+try {
+  inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: 2,
+    async infer({bytes, mediaType, source, signal}) {
+      signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
+      inferenceCalls++; inferenceSource = source;
+      return {text: 'Suggested fixture observation'};
+    },
+  });
+  console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
+  input = createInterface({input:process.stdin});
+  for await (const line of input) {
+    const request=JSON.parse(line);
+    try {
+      let result;
+      if(request.action==='query') result=await session.query('notes',null);
+      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status};
+      else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
+      else if(request.action==='command') {
+        const before=await session.query('notes',null);
+        const operation=await session.command('addNote',{text:request.text},{operationId:request.operationId,basedOn:before.revision});
+        result=await operation.applied({signal:AbortSignal.timeout(30000)});
+      } else if(request.action==='close') {await close(); console.log(JSON.stringify({id:request.id,closed:true})); break;}
+      else throw Error('Unknown test action');
+      console.log(JSON.stringify({id:request.id,result}));
+    } catch(error) {console.log(JSON.stringify({id:request.id,error:error.message})); if(request.action==='close') break;}
+  }
+} finally { input?.close(); await close(); }
+`;
+}
+
+const closures = new WeakMap();
+
+/** Forced termination cleans up a failed test; it must never qualify shutdown. */
+export function closeTestPeer(peer, { timeoutMs = 5_000 } = {}) {
+  let closing = closures.get(peer.child);
+  if (closing) return closing;
+  closing = close(peer, timeoutMs);
+  closures.set(peer.child, closing);
+  return closing;
+}
+
+async function close(peer, timeoutMs) {
+  const child = peer.child;
+  const exited = child.exitCode !== null || child.signalCode !== null;
+  const ended = exited ? Promise.resolve([child.exitCode, child.signalCode]) : once(child, 'close');
+  void ended.catch(() => {});
+  let timer;
+  try {
+    if (exited) throw Error('Native peer exited before owned shutdown was acknowledged.');
+    const graceful = (async () => {
+      const reply = await peer.request('close', {}, timeoutMs);
+      if (reply?.closed !== true) throw Error('Native peer did not acknowledge owned shutdown.');
+      child.stdin.end();
+      const [code, signal] = await ended;
+      if (code !== 0 || signal !== null) throw Error(`Native peer shutdown failed (exit ${code}, signal ${signal}).`);
+      return { exitCode: code, signal };
+    })();
+    return await Promise.race([graceful, new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(Error('Native peer did not exit after owned cleanup before the shutdown deadline.')), timeoutMs);
+    })]);
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGTERM');
+      const killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
+      try { await ended.catch(() => {}); } finally { clearTimeout(killTimer); }
+    }
+    throw error;
+  } finally { clearTimeout(timer); }
+}

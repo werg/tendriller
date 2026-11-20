@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -17,6 +16,7 @@ import { chromium, expect } from '@playwright/test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
 import { TUTORIAL_FILES } from './onboarding.mjs';
+import { nativeTestPeerSource, closeTestPeer } from './first-app-peer.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
@@ -79,13 +79,6 @@ async function files(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
   return (await Promise.all(entries.map(entry => entry.isDirectory()
     ? files(join(directory, entry.name)) : [join(directory, entry.name)]))).flat();
-}
-async function stop(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = once(child, 'exit');
-  child.kill('SIGTERM');
-  const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
-  try { await exited; } finally { clearTimeout(timer); }
 }
 async function packDependency(name) {
   const path = dirname(require.resolve(`${name}/package.json`));
@@ -380,39 +373,9 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     // Only the inference provider function is replaced, inside this private test
     // process. Signals, encrypted content and reviewed commands remain real.
     const evidencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
-    await writeFile(join(app, 'test-peer.mjs'), `import assert from 'node:assert/strict';
-  import {createInterface} from 'node:readline';
-  import {openSession} from './session.mjs';
-  import {servePeerInference} from './media/inference-service.mjs';
-  const {session,supervisor} = await openSession();
-  const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidencePng.toString('base64'))}, 'base64'));
-  let inferenceCalls = 0, inferenceSource = null;
-  const inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDevice)}], maxRequests: 2,
-    async infer({bytes, mediaType, source, signal}) {
-      signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
-      inferenceCalls++; inferenceSource = source;
-      return {text: 'Suggested fixture observation'};
-    },
-  });
-  console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
-  for await (const line of createInterface({input:process.stdin})) {
-    const request=JSON.parse(line);
-    try {
-      let result;
-      if(request.action==='query') result=await session.query('notes',null);
-      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status};
-      else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
-      else if(request.action==='command') {
-        const before=await session.query('notes',null);
-        const operation=await session.command('addNote',{text:request.text},{operationId:request.operationId,basedOn:before.revision});
-        result=await operation.applied({signal:AbortSignal.timeout(30000)});
-      } else if(request.action==='close') {await inference.close(); await session.close(); console.log(JSON.stringify({id:request.id,closed:true})); break;}
-      else throw Error('Unknown test action');
-      console.log(JSON.stringify({id:request.id,result}));
-    } catch(error) {console.log(JSON.stringify({id:request.id,error:error.message}));}
-  }
-  await inference.close(); await session.close();
-  `);
+    await writeFile(join(app, 'test-peer.mjs'), nativeTestPeerSource({
+      evidenceBase64: evidencePng.toString('base64'), browserDeviceId: browserDevice,
+    }));
     async function startPeer() {
       const child = spawn(process.execPath, ['--import', preload, join(app, 'test-peer.mjs')], { cwd: app, stdio: ['pipe', 'pipe', 'pipe'] });
       const waiting = new Map(); let sequence = 0, readyResolve, readyReject, stderr = '';
@@ -425,7 +388,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
         waiting.delete(value.id); clearTimeout(held.timer);
         if (value.error) held.reject(Error(value.error)); else held.resolve(value.result ?? value);
       });
-      child.once('exit', code => {
+      child.once('close', code => {
         const error = Error(`Native peer exited (${code}): ${stderr}`); readyReject(error);
         for (const held of waiting.values()) { clearTimeout(held.timer); held.reject(error); } waiting.clear();
       });
@@ -498,7 +461,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     checkpoint('close and reopen both original devices');
     await page.locator('#close').click();
     await expect(page.locator('#connection')).toContainText('Connection closed');
-    await peer.request('close'); await stop(peer.child); peer = undefined;
+    await closeTestPeer(peer); peer = undefined;
     await startPeer(); assert.equal((await peer.request('query')).value.length, 4);
     await page.reload(); await page.locator('#connect').click();
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
@@ -565,6 +528,8 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
       content_id: evidenceNote.source.reference.id, operation_id: evidenceNote.operationId };
     report.limits.push('Inference provider output is injected in the private native test process; no live provider, credential validity or billing tested.');
     passed('human-edited evidence command retains exact source identity and survives browser reopen');
+    await closeTestPeer(peer); peer = undefined;
+    passed('native supervisor cleanup and natural child exit without forced termination');
     report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = 5;
     console.log('First-app native/browser integration passed. Synthetic local claim and relay limits are recorded in the report.');
   }
@@ -588,7 +553,9 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   if (error.stderr) process.stderr.write(error.stderr);
   throw error;
 } finally {
-  if (peer) { await peer.request('close').catch(() => {}); await stop(peer.child); }
+  if (peer) await closeTestPeer(peer).catch(error => {
+    report.native_cleanup = { status: 'failed', message: error.message };
+  });
   await browser?.close().catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
   await mkdir(dirname(reportPath), { recursive: true });
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
