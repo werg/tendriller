@@ -102,8 +102,11 @@ jobs:
           if-no-files-found: error
           path: |
             dist/tendriller-*.tgz
+            dist/chronolog-peer-session-*.tgz
             dist/manifest.json
+            dist/composition.json
             dist/provenance.json
+            dist/tools-manifest.json
             dist/SHA256SUMS
 
   staging:

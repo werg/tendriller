@@ -79,7 +79,10 @@ const archive = `tendriller-tools-${pkg.version}.tgz`;
 execFileSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-czf', join(dist, archive), '-C', out, '.']);
 const bytes = readFileSync(join(dist, archive));
 const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const sourceTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim();
+const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], { cwd: root, encoding: 'utf8' }).trim().length !== 0;
 writeJson(join(dist, 'tools-manifest.json'), { format: 'tendriller-tools', version: pkg.version, source_commit: sourceCommit,
+  source_tree: sourceTree, dirty,
   contract: runtimeManifest.contract, runtime: runtimeManifest.id,
   artifacts: [{ file: archive, sha256: sha256(bytes), size: bytes.length }],
 });

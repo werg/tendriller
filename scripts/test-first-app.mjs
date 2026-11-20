@@ -16,17 +16,21 @@ import { Agent, setGlobalDispatcher } from 'undici';
 import { chromium, expect } from '@playwright/test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
+import { TUTORIAL_FILES } from './onboarding.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { values } = parseArgs({ options: {
-  'session-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
+  'session-archive': { type: 'string' }, 'first-app-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
   'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' },
 } });
-if (!values['session-archive']) throw Error('Usage: node scripts/test-first-app.mjs --session-archive /absolute/chronolog-peer-session-COMMIT.tgz [--native-only | --sql-native-only] [--report FILE] [--keep]');
+if (!values['session-archive'] && !values['first-app-archive'])
+  throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only] [--report FILE] [--keep]; or --session-archive FILE for an explicit source/SQL composition.');
+if (values['session-archive'] && values['first-app-archive']) throw Error('Use the companion inside the first-app archive; do not override its composition.');
 if (values['native-only'] && values['sql-native-only']) throw Error('Choose --native-only for events or --sql-native-only for SQL.');
+if (values['first-app-archive'] && values['sql-native-only']) throw Error('The first-app release archive has the SQL-free events profile.');
 const sqlOnly = Boolean(values['sql-native-only']);
-const sessionArchive = resolve(values['session-archive']);
+let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
 const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
 const directory = await mkdtemp(join(tmpdir(), 'tendriller-first-app-'));
 const app = join(directory, 'application');
@@ -166,7 +170,40 @@ try {
   const sourceBytes = new Uint8Array(await source.arrayBuffer());
   report.tutorial_sha256 = sha256(sourceBytes);
   const sourceArchive = join(directory, 'first-app.tgz'); await writeFile(sourceArchive, sourceBytes);
-  await run('tar', ['-xzf', sourceArchive, '-C', app]);
+  if (values['first-app-archive']) {
+    const firstAppArchive = resolve(values['first-app-archive']);
+    const release = await jsonFile(join(root, 'dist/manifest.json'));
+    const record = release.artifacts.find(item => item.file === release.first_app?.file);
+    assert.ok(record, 'The release manifest must bind the first-app archive.');
+    assert.equal(sha256(await readFile(firstAppArchive)), record.sha256, 'The first-app archive must match the release manifest.');
+    await run('tar', ['-xzf', firstAppArchive, '-C', app]);
+    const composition = await jsonFile(join(app, 'composition.json'));
+    const { id, ...identity } = composition;
+    assert.equal(sha256(JSON.stringify(identity)), id, 'Composition identity must bind all package inputs.');
+    assert.equal(id, release.composition.id);
+    assert.equal(composition.core.dirty, false);
+    assert.equal(composition.core.source, proof.source);
+    assert.equal(composition.version, version);
+    assert.equal(composition.components.find(item => item.role === 'starter')?.sha256, report.tutorial_sha256,
+      'The isolated host must serve the starter bound by the release composition.');
+    // Compare every extracted source file with the actual served archive, then
+    // install the archives carried by the release kit, not checkout dependencies.
+    for (const file of TUTORIAL_FILES) {
+      const original = await execute('tar', ['-xOf', sourceArchive, file], { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 });
+      assert.equal(sha256(await readFile(join(app, file))), sha256(original.stdout), `First-app source changed: ${file}`);
+    }
+    for (const item of composition.components.filter(item => ['sdk', 'tools', 'session'].includes(item.role))) {
+      const path = join(app, 'packages', item.file);
+      assert.equal(sha256(await readFile(path)), item.sha256, `First-app package changed: ${item.role}`);
+      if (item.role === 'session') sessionArchive = path;
+      else {
+        assert.equal(sha256(await readFile(archives[item.role])), item.sha256);
+        archives[item.role] = path;
+      }
+    }
+    assert.ok(sessionArchive, 'The first-app archive must carry its pinned session package.');
+    report.composition = { id, first_app_sha256: record.sha256 };
+  } else await run('tar', ['-xzf', sourceArchive, '-C', app]);
   const buildDependencies = sqlOnly ? [] : [await packDependency('esbuild'),
     await packDependency(`@esbuild/${process.platform}-${process.arch}`)];
   await run('npm', ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund',
