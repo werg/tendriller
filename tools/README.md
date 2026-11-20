@@ -18,6 +18,13 @@ page, define state, build the UI, connect the session, and publish signed code.
 Page creation alone does not configure a session. The guide names required
 authority and device setup so a missing bootstrap has a concrete next step.
 
+Finite `tendril` invocations await session cleanup, flush stdout and stderr for up
+to one second, then exit even if a transport close handshake remains open.
+An output failure or flush deadline produces a nonzero exit status. `watch`
+continues awaiting changes until interrupted or its requested timeout expires;
+the same cleanup and flush apply afterward. Public session library calls retain
+their caller's process lifetime.
+
 | Entry | Purpose |
 | --- | --- |
 | `tendril` | Domain commands and coherent queries, exact operations, explicit recovery, signed publication, and host lifecycle administration |
