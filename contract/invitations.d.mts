@@ -1,6 +1,10 @@
 import type { PeerSocket } from './peers.mjs';
 export interface PeerInvitation { readonly channel: string; readonly requesterPeerId: string }
-export interface PeerInvitationOptions { readonly signal?: AbortSignal; readonly timeoutMs?: number; readonly socket?: (url: string, protocols: readonly string[]) => PeerSocket }
+export interface PeerInvitationOptions {
+  readonly signal?: AbortSignal; readonly timeoutMs?: number; readonly socket?: (url: string, protocols: readonly string[]) => PeerSocket;
+  /** Native (agent-token) listeners only: content-free wake-ups when a pairing request needs this participant. */
+  readonly onNotice?: (notice: { readonly kind: 'pairing' }) => void;
+}
 export interface PeerInvitationListener {
   readonly ready: Promise<void>;
   readonly closed: Promise<Readonly<{ code: number; reason: string }>>;

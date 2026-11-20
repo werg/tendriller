@@ -144,11 +144,33 @@ test('revocation releases no pause until the server confirms expiry and fresh si
   assert.ok(f.records.has(`pairing-${f.status.pairingId}-prepared.json`), 'terminal recovery retains the original proposal');
 });
 
-test('native pairing windows are finite and closing does not erase an unresolved durable pause', async () => {
+test('native enrollment stays open for the participant lifetime and closing does not erase an unresolved durable pause', async () => {
   const f = await fixture(); await f.tick();
-  assert.throws(() => native.startPairingWindow({ owned: f, durationMs: 600001 }), { code: 'PAIRING_WINDOW_INVALID' });
+  assert.throws(() => native.startPairingWindow({ owned: f, durationMs: 0 }), { code: 'PAIRING_WINDOW_INVALID' });
+  const lifetime = native.startPairingWindow({ owned: { session: f.session, pairing: f.pairing } });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  let settled = false; void lifetime.done.then(() => { settled = true; });
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(settled, false, 'the default window has no deadline');
+  await lifetime.close(); assert.ok(f.pause); assert.equal(f.actions.includes('resume'), false);
   const window = native.startPairingWindow({ owned: { session: f.session, pairing: f.pairing }, durationMs: 1 });
   await window.close(); assert.ok(f.pause); assert.equal(f.actions.includes('resume'), false);
+});
+
+test('a host pairing notice checks at once instead of waiting out the idle backoff', async () => {
+  const wakeups = new EventTarget(), passes = [];
+  const loop = native.startReviewedPairingLoop(async () => { passes.push(Date.now()); return []; },
+    { intervalMs: 10000, maxIdleMs: 30000, wakeups });
+  try {
+    while (!passes.length) await new Promise(resolve => setTimeout(resolve, 5));
+    wakeups.dispatchEvent(new Event('pairing'));
+    const started = Date.now();
+    while (passes.length < 2 && Date.now() - started < 2000) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(passes.length, 2, 'the notice ended the idle wait');
+    loop.wake();
+    while (passes.length < 3 && Date.now() - started < 2000) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(passes.length, 3);
+  } finally { await loop.close(); }
 });
 
 test('an unretained native intent cannot pause ordering or reach proposal/commit', async () => {
@@ -170,7 +192,7 @@ test('the retained-owner compatibility processor serializes overlapping passes a
     signal.addEventListener('abort', () => { stopped = true; resolve([]); }, { once: true });
   }), { durationMs: 1000, intervalMs: 250, maxIdleMs: 500 });
   await loop.close(); assert.equal(stopped, true);
-  assert.throws(() => native.startReviewedPairingLoop(process, { durationMs: Infinity }), { code: 'PAIRING_WINDOW_INVALID' });
+  assert.throws(() => native.startReviewedPairingLoop(process, { durationMs: -1 }), { code: 'PAIRING_WINDOW_INVALID' });
 });
 
 function browserFixture({ brokenStorage = false, wrongOrigin = false, failWorker = false } = {}) {

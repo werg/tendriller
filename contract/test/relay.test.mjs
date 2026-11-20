@@ -39,18 +39,47 @@ test('relay readiness pairs both lanes, strips transport controls and accounts f
   assert.equal(sockets.reliable.closed, 1); assert.equal(sockets.live.closed, 1);
 });
 
-test('live pressure stays on its own lane with one outstanding packet and no frame queue', async () => {
+test('live pressure stays on its own lane: an old host keeps one packet in flight and the rest wait in order', async () => {
   const { relay, sockets, pair } = fixture(); pair(); await relay.ready;
   try {
     relay.live.send(new Uint8Array(16_448));
-    assert.equal(relay.live.bufferedAmount, PEER_RELAY_LIMITS.liveBufferedBytes);
-    assert.throws(() => relay.live.send(new Uint8Array([1])), { code: 'invalid_relay' });
-    assert.equal(sockets.live.sent.length, 1); assert.equal(relay.reliable.bufferedAmount, 0);
-    sockets.live.receive({ t: 'credit', session, sequence: 1 }); assert.equal(relay.live.bufferedAmount, 0);
-    relay.live.send(new Uint8Array([2])); assert.equal(sockets.live.sent.length, 2);
+    assert.equal(relay.live.bufferedAmount, 0, 'queued live packets do not refuse the next piece');
+    relay.live.send(new Uint8Array([1]));
+    assert.equal(sockets.live.sent.length, 1); assert.equal(relay.live.stats.queuedPackets, 1); assert.equal(relay.reliable.bufferedAmount, 0);
+    sockets.live.receive({ t: 'credit', session, sequence: 1 });
+    assert.equal(sockets.live.sent.length, 2); assert.deepEqual([...new Uint8Array(sockets.live.sent[1])], [0, 0, 0, 2, 1]);
+    sockets.live.receive({ t: 'credit', session, sequence: 2 });
+    relay.live.send(new Uint8Array([2])); assert.equal(sockets.live.sent.length, 3);
     sockets.live.receive(packet(3)); // Dropped disposable packets may leave sequence gaps.
     assert.equal(relay.signal.aborted, false);
   } finally { relay.close(); }
+});
+
+test('a multi-piece live message of several hundred KB flows through the granted window without refusal', async () => {
+  const sockets = { reliable: new Socket(), live: new Socket() }, relay = createPeerRelay(sockets, { peerId, remotePeerId });
+  for (const lane of ['reliable', 'live']) sockets[lane].receive({ t: 'ready', version: 1, session, lane, peerId, remotePeerId,
+    liveWindow: PEER_RELAY_LIMITS.livePendingPackets });
+  await relay.ready;
+  try {
+    const pieces = Array.from({ length: 40 }, (_value, index) => new Uint8Array(16_448).fill(index));
+    for (const piece of pieces) {
+      // The Chronolog live channel refuses a frame when bufferedAmount + frame > 64 KiB.
+      assert.ok(relay.live.bufferedAmount + piece.length <= 65_536, 'the relay never reports a full live lane for this reply');
+      relay.live.send(piece);
+    }
+    assert.equal(sockets.live.sent.length, PEER_RELAY_LIMITS.livePendingPackets);
+    for (let credited = 1; credited <= pieces.length; credited++) sockets.live.receive({ t: 'credit', session, sequence: credited });
+    assert.equal(sockets.live.sent.length, pieces.length);
+    assert.deepEqual(sockets.live.sent.map(value => new DataView(value).getUint32(0)), pieces.map((_value, index) => index + 1));
+    assert.deepEqual(sockets.live.sent.map(value => new Uint8Array(value)[4]), pieces.map((_value, index) => index));
+    const full = Math.floor(PEER_RELAY_LIMITS.liveQueueBytes / PEER_RELAY_LIMITS.packetBytes);
+    for (let index = 0; index < PEER_RELAY_LIMITS.livePendingPackets + full; index++) relay.live.send(new Uint8Array(PEER_RELAY_LIMITS.packetBytes));
+    assert.equal(relay.live.bufferedAmount, PEER_RELAY_LIMITS.liveBufferedBytes, 'a full local queue is reported as genuine backpressure');
+    assert.throws(() => relay.live.send(new Uint8Array(PEER_RELAY_LIMITS.packetBytes)), { code: 'invalid_relay' });
+  } finally { relay.close(); }
+  const excessive = fixture();
+  excessive.sockets.live.receive({ t: 'ready', version: 1, session, lane: 'live', peerId, remotePeerId, liveWindow: 99 });
+  await assert.rejects(excessive.relay.ready, { code: 'invalid_relay' });
 });
 
 test('malformed controls, foreign sessions, repeated receipts and early binary close the whole relay', async () => {

@@ -16,7 +16,7 @@ function rootLimits(value = {}) {
 export function serveBrowserOwner(options) {
   const scope = options.scope ?? globalThis, lifetime = new AbortController(), roots = new Map(), identities = new Set();
   let profileId, openSession, createIdentity, ownerOptions, limits = defaults;
-  let owner, owned, lease, opening, channel, election, broadcast, closed = false, retiring = false, closing, scopeRoot, sessionAborted;
+  let owner, owned, lease, opening, channel, election, broadcast, broadcastStarting, closed = false, retiring = false, closing, scopeRoot, sessionAborted;
   const post = (endpoint, value) => { try { endpoint.postMessage(value); } catch { /* The remote page may have gone away. */ } };
   const failure = (record, id, error) => post(record.endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'failure', id,
     profileId, rootId: record.rootId, ownerInstanceId: owner?.ownerInstanceId,
@@ -88,6 +88,19 @@ export function serveBrowserOwner(options) {
     });
     return election;
   }
+  // Every owner, shared or elected, also answers BroadcastChannel discovery, so a
+  // page whose own Worker cannot take the profile (another publication's Worker,
+  // or a fallback owner) attaches to the owner that holds it instead of failing.
+  function serveBroadcast() {
+    if (broadcastStarting || closed) return broadcastStarting;
+    channel ??= new BroadcastChannel(ownerChannelName(profileId));
+    broadcastStarting = createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32 }).then(async value => {
+      if (closed) { await value.close(); return; }
+      broadcast = value; value.announce();
+    });
+    void broadcastStarting.catch(() => {});
+    return broadcastStarting;
+  }
   function result(record, id) {
     post(record.endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'root.result', id,
       profileId, rootId: record.rootId, ownerInstanceId: owner?.ownerInstanceId });
@@ -155,6 +168,7 @@ export function serveBrowserOwner(options) {
         if (data.mode === 'elected' && !shared) { void startElection().catch(error => failure(record, data.id, error)); return; }
         if (data.mode !== 'shared' || !shared) throw Error('OWNER_MODE_INVALID');
         await open(false); lifetime.signal.throwIfAborted(); if (record.disposed) return;
+        if (typeof BroadcastChannel === 'function') void serveBroadcast();
         if (!record.detach) record.detach = owner.attach(endpoint);
         record.ready = true; renew(record);
         post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'ready', id: data.id, ownerInstanceId: owner.ownerInstanceId });
@@ -173,7 +187,7 @@ export function serveBrowserOwner(options) {
     if (scopeRoot) dispose(scopeRoot);
     closing = (async () => {
       try {
-        await Promise.allSettled([opening, ...identities]);
+        await Promise.allSettled([opening, broadcastStarting, ...identities]);
         owned?.session?.signal.removeEventListener('abort', sessionAborted);
         try { await broadcast?.close(); }
         finally { try { await owner?.close(); } finally { await owned?.close?.(); } }

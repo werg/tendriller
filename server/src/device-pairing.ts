@@ -9,6 +9,7 @@ import type { Env } from './env';
 import { HttpError, json, readBody, readJson } from './http';
 import { safeEqual, sha256Hex } from './ids';
 import { exchangePeerControl, peerControlSelectionMatches, withPeerPairingAuthority } from './peer-generations';
+import { notifyPairingListeners } from './peer-invitations';
 import { requireWritesOpen } from './service-state';
 import type { Tendril } from './tendril';
 import { publicBase } from './urls';
@@ -120,8 +121,10 @@ async function status(t: Tendril, record: PairingRecord, authority: PeerAuthorit
   if (record.prepared) {
     generation = authority.bundle.generations.find(row => row.payload.transition.payload.transitionId === `pair-${c.pairingId}`);
     if (generation && (await peerDigest(generation.payload.transition) !== await peerDigest(record.prepared.request) ||
-      !record.reviewedDigest || !await peerControlSelectionMatches(t, record.prepared))) state = 'reconciliation_required';
+      !await peerControlSelectionMatches(t, record.prepared))) state = 'reconciliation_required';
     else if (generation) {
+      // A generation for this exact transition is either the reviewed commit or the
+      // native administrator selecting the same exact staged proposal itself.
       const grant = authority.grant(c.publicKey);
       state = grant?.reader && (!c.rights.writer || grant.writer) ? 'committed' : 'revoked';
     } else if (record.state === 'committed') state = 'reconciliation_required';
@@ -203,6 +206,8 @@ async function prove(t: Tendril, req: Request, principal: Principal, input: Reco
   }
   record.proof = input.signature; record.state = 'pending';
   t.transaction(() => save(t, record));
+  // Wake a listening native participant so it prepares the proposal now.
+  notifyPairingListeners(t);
   return status(t, record, authority);
 }
 async function validateProposal(record: PairingRecord, authority: PeerAuthority, request: SignedTransitionRequest, rawControl: unknown): Promise<void> {
@@ -387,15 +392,24 @@ export async function routeDevicePairingReview(req: Request, env: Env, url: URL)
   const session = await serviceSession(req, env);
   if (!session) {
     if (req.method === 'POST') throw new HttpError(401, 'unauthorized', 'Sign in again before reviewing this device.');
-    return Response.redirect(`${publicBase(env)}/auth?return_to=${encodeURIComponent(url.pathname)}`, 303);
+    return Response.redirect(`${publicBase(env)}/auth?return_to=${encodeURIComponent(url.pathname + url.search)}`, 303);
   }
   if (!(await env.ACCOUNT_RATE.limit({ key: `pairing-review:${session.accountId}` })).success) throw new HttpError(429, 'rate_limited');
   const raw = /(?:^|;\s*)__Host-tendriller=([^;]+)/.exec(req.headers.get('Cookie') ?? '')![1];
   const headers = new Headers({ 'x-tendril-id': match[1], 'x-pairing-id': match[2], 'x-account-id': session.accountId,
     'x-review-session': await sha256Hex(raw), 'x-review-origin': url.origin });
   if (req.headers.has('Content-Type')) headers.set('Content-Type', req.headers.get('Content-Type')!);
+  // The page that asked for review may name where to continue. The Durable
+  // Object accepts it only on that request's exact page origin.
+  const returnTo = url.searchParams.get('return_to');
+  if (returnTo !== null) {
+    if ([...url.searchParams.keys()].some(key => key !== 'return_to') || returnTo.length > 2048) throw new HttpError(400, 'invalid_pairing_review');
+    headers.set('x-review-return', returnTo);
+  } else if (url.search) throw new HttpError(400, 'invalid_pairing_review');
   return env.TENDRIL.get(env.TENDRIL.idFromName(match[1])).fetch(new Request('https://tendril.internal/pairing-review', {
     method: req.method, headers, ...(req.method === 'POST' ? { body: req.body } : {}), signal: req.signal,
+    // The return to the requesting page is the browser's navigation, never followed here.
+    redirect: 'manual',
   }));
 }
 const escape = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]!));
@@ -415,6 +429,8 @@ export async function reviewDevicePairing(t: Tendril, req: Request): Promise<Res
   if (form && ([...form.keys()].some(key => !['csrf', 'digest', 'action'].includes(key)) || [...form.keys()].length !== 3)) throw new HttpError(400, 'invalid_pairing_review');
   return withPeerPairingAuthority(t, async authority => {
     const owner = await reviewOwner(t, req), record = await verified(t, id);
+    // Refuse a foreign return address before issuing or consuming any form.
+    const target = returnTarget(req, record.challenge);
     let result = await status(t, record, authority), csrf: string | undefined;
     const digest = await reviewDigest(record);
     if (form) {
@@ -439,11 +455,46 @@ export async function reviewDevicePairing(t: Tendril, req: Request): Promise<Res
       await reviewOwner(t, req);
       t.transaction(() => save(t, record));
     }
-    const c = record.challenge, formHtml = csrf ? `<form method="post"><input type="hidden" name="csrf" value="${escape(csrf)}"><input type="hidden" name="digest" value="${digest}"><div class="actions"><button id="pairing-approve" name="action" value="approve">Approve this device</button><button id="pairing-deny" class="secondary" name="action" value="deny">Reject request</button></div></form>` : '';
-    const proposal = record.prepared?.request.payload;
-    const proposalHtml = proposal ? `<section id="pairing-proposal" class="card"><h2>Exact signed proposal</h2><p>This proposal preserves the existing grants and adds only the device and account shown above. Its complete signed transition and control are retained unchanged through approval and commit.</p><dl><dt>Proposal digest</dt><dd><code>${record.preparedDigest}</code></dd><dt>Current generation</dt><dd><code>${escape(proposal.expectedGeneration!)}</code></dd><dt>Next control revision</dt><dd>${proposal.controlRevision}</dd><dt>Native signer</dt><dd><code>${escape(proposal.requester)}</code></dd><dt>Coordinator</dt><dd><code>${escape(proposal.coordinator)}</code></dd><dt>History checkpoint</dt><dd>Sequence ${proposal.base!.point.sequence} in <code>${escape(proposal.base!.point.generation)}</code>, root <code>${escape(proposal.base!.point.root)}</code></dd></dl><details><summary>Complete signed transition, grants and account bindings</summary><pre>${escape(JSON.stringify(record.prepared, null, 2))}</pre></details></section>` : '<section id="pairing-proposal" class="card"><h2>Waiting for the native participant</h2><p>The exact signed proposal must be prepared before this device can be approved. Keep the native participant running, then refresh this review.</p></section>';
-    const response = servicePage('Review browser device', `<style>.pairing-review dd{margin-inline-start:0;margin-bottom:.8rem;overflow-wrap:anywhere}.pairing-review pre{white-space:pre-wrap;overflow-wrap:anywhere}.pairing-review .card{margin-bottom:1rem}</style><div class="pairing-review"><h1>Review browser device</h1><p>Approve only the device you just requested. This adds its reviewed reader${c.rights.writer ? ' and writer' : ''} access when the authorized native participant commits it.</p><section class="card"><h2>Exact request</h2><dl><dt>Application</dt><dd><code>${escape(c.applicationId)}</code></dd><dt>Account</dt><dd><code>${escape(c.accountId)}</code></dd><dt>Device fingerprint</dt><dd id="pairing-fingerprint"><code>${c.publicKey.match(/.{1,8}/g)!.join(' ')}</code></dd><dt>Rights</dt><dd>Read${c.rights.writer ? ' and write' : ' only'}; member data role; no coordination, recovery, administration or publishing</dd><dt>Page origin</dt><dd><code>${escape(c.pageOrigin)}</code></dd><dt>Service origin</dt><dd><code>${escape(c.serviceOrigin)}</code></dd><dt>Expires</dt><dd>${escape(new Date(c.expiresAt).toISOString())}</dd><dt>Request</dt><dd><code>${escape(c.requestId)}</code></dd></dl></section>${proposalHtml}<p id="pairing-state" class="notice" role="status"><strong>${escape(result.state)}</strong>: ${escape(result.nextAction)}</p>${formHtml}<p><a href="${escape(result.reviewUrl)}">Refresh request status</a></p></div>`);
-    response.headers.set('Content-Security-Policy', response.headers.get('Content-Security-Policy') + "; frame-ancestors 'none'");
-    response.headers.set('X-Frame-Options', 'DENY'); return response;
+    if (form && target) {
+      // One tap continues on the page that asked. Approval itself stays here.
+      if (result.state === 'approved') notifyPairingListeners(t);
+      return new Response(null, { status: 303, headers: { Location: target.href, 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin' } });
+    }
+    if (form && result.state === 'approved') notifyPairingListeners(t);
+    return reviewPage(t, record, result, owner.id, digest, csrf, target);
   });
+}
+/** Only the exact page origin that created this request may receive the browser back. */
+function returnTarget(req: Request, c: DevicePairingChallenge): URL | null {
+  const raw = req.headers.get('x-review-return');
+  if (raw === null) return null;
+  let target: URL;
+  try { target = new URL(raw); } catch { throw new HttpError(400, 'invalid_pairing_review', 'The return address must be this page.'); }
+  if (target.origin !== c.pageOrigin || target.username || target.password || target.href.length > 2048)
+    throw new HttpError(400, 'invalid_pairing_review', 'The return address must be the page that requested this device.');
+  return target;
+}
+function reviewPage(t: Tendril, record: PairingRecord, result: DevicePairingStatus, ownerId: string, digest: string, csrf: string | undefined, target: URL | null): Response {
+  const c = record.challenge, name = escape(t.db.get<string>('name', 'Tendril')), own = c.accountId === ownerId;
+  const back = target ? `?return_to=${encodeURIComponent(target.href)}` : '';
+  const rights = c.rights.writer ? 'read and change' : 'read';
+  const fingerprint = c.publicKey.match(/.{1,8}/g)!.join(' ');
+  const formHtml = csrf && !(target && ['approved', 'committing', 'committed'].includes(result.state)) ? `<form method="post" action="${escape(result.reviewUrl + back)}"><input type="hidden" name="csrf" value="${escape(csrf)}"><input type="hidden" name="digest" value="${digest}"><div class="actions"><button id="pairing-approve" class="big" name="action" value="approve">Approve this device</button><button id="pairing-deny" class="secondary" name="action" value="deny">Reject request</button></div></form>` : '';
+  const proposal = record.prepared?.request.payload;
+  const proposalHtml = proposal ? `<section id="pairing-proposal" class="card"><h2>Exact signed proposal</h2><p>This proposal preserves the existing grants and adds only the device and account shown above. Its complete signed transition and control are retained unchanged through approval and commit.</p><dl><dt>Proposal digest</dt><dd><code>${record.preparedDigest}</code></dd><dt>Current generation</dt><dd><code>${escape(proposal.expectedGeneration!)}</code></dd><dt>Next control revision</dt><dd>${proposal.controlRevision}</dd><dt>Native signer</dt><dd><code>${escape(proposal.requester)}</code></dd><dt>Coordinator</dt><dd><code>${escape(proposal.coordinator)}</code></dd><dt>History checkpoint</dt><dd>Sequence ${proposal.base!.point.sequence} in <code>${escape(proposal.base!.point.generation)}</code>, root <code>${escape(proposal.base!.point.root)}</code></dd></dl><details><summary>Complete signed transition, grants and account bindings</summary><pre>${escape(JSON.stringify(record.prepared, null, 2))}</pre></details></section>` : '<section id="pairing-proposal" class="card"><h2>Waiting for the native participant</h2><p>The exact signed proposal must be prepared before this device can be approved. Keep the native participant running; this page refreshes by itself.</p></section>';
+  const details = `<details id="pairing-details"><summary>Technical details</summary><section class="card"><h2>Exact request</h2><dl><dt>Application</dt><dd><code>${escape(c.applicationId)}</code></dd><dt>Account</dt><dd><code>${escape(c.accountId)}</code></dd><dt>Device fingerprint</dt><dd id="pairing-fingerprint"><code>${fingerprint}</code></dd><dt>Rights</dt><dd>Read${c.rights.writer ? ' and write' : ' only'}; member data role; no coordination, recovery, administration or publishing</dd><dt>Page origin</dt><dd><code>${escape(c.pageOrigin)}</code></dd><dt>Service origin</dt><dd><code>${escape(c.serviceOrigin)}</code></dd><dt>Expires</dt><dd>${escape(new Date(c.expiresAt).toISOString())}</dd><dt>Request</dt><dd><code>${escape(c.requestId)}</code></dd></dl></section>${proposalHtml}</details>`;
+  const waiting = !record.prepared && ['challenge', 'pending'].includes(result.state);
+  const done = ['approved', 'committing', 'committed'].includes(result.state);
+  const lead = waiting ? `<p class="lead">Getting the request ready. This takes a few seconds while ${name} prepares it.</p>`
+    : done && target ? `<p class="lead">This browser is approved for <strong>${name}</strong>. Returning to the app…</p>`
+    : csrf ? `<p class="lead">${own ? `You opened <strong>${name}</strong> in a browser it does not know yet.` : `An account you admitted asks to open <strong>${name}</strong> in a new browser.`} Approving lets that browser ${rights} the app's data with its own key, which never leaves it. It cannot publish code or administer the app.</p>`
+    : done ? `<p class="lead">This browser is approved for <strong>${name}</strong>.${target ? ' Returning to the app…' : ' Go back to the app; it continues by itself.'}</p>`
+    : `<p class="lead">${escape(result.nextAction)}</p>`;
+  const returnLink = target && (!csrf || done) ? `<p><a class="button${done ? '' : ' secondary'}" id="pairing-return" href="${escape(target.href)}">Return to ${name}</a></p>` : '';
+  const refresh = waiting ? `<meta http-equiv="refresh" content="2">` : done && target ? `<meta http-equiv="refresh" content="1;url=${escape(target.href)}">` : '';
+  const response = servicePage('Review browser device', `${refresh}<style>.pairing-review dd{margin-inline-start:0;margin-bottom:.8rem;overflow-wrap:anywhere}.pairing-review pre{white-space:pre-wrap;overflow-wrap:anywhere}.pairing-review .card{margin:1rem 0}.pairing-review .lead{font-size:1.1rem}.pairing-review button.big{font-size:1.1rem;padding:.9rem 1.4rem}.pairing-review summary{cursor:pointer;margin-top:1.5rem}.pairing-review .device{font-size:.9rem}</style><div class="pairing-review"><h1>${own ? `Add this browser to ${name}?` : `Admit a browser to ${name}?`}</h1>${lead}${formHtml}${returnLink}<p class="device muted">Device <code>${fingerprint.slice(0, 17)}…</code> · from <code>${escape(c.pageOrigin)}</code></p><p id="pairing-state" class="notice" role="status"><strong>${escape(result.state)}</strong>: ${escape(result.nextAction)}</p>${details}</div>`);
+  const policy = response.headers.get('Content-Security-Policy')!;
+  // A completed form redirects to the requesting page; CSP form-action also governs that redirect.
+  response.headers.set('Content-Security-Policy', (target ? policy.replace("form-action 'self'", `form-action 'self' ${c.pageOrigin}`) : policy) + "; frame-ancestors 'none'");
+  response.headers.set('X-Frame-Options', 'DENY'); return response;
 }

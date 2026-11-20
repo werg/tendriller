@@ -83,6 +83,28 @@ it('forwards opaque binary over isolated reliable and live lanes through real au
   } finally { a.close(); b.close(); }
 });
 
+it('delivers a live reply of several hundred KB in order through the negotiated window without refusing a piece', async () => {
+  const page = await createTestPage(), guest = await page.participant(), window = { liveWindow: String(LIMITS.livePendingPackets) };
+  const relay = (target: typeof page | typeof guest, peerId: string, remotePeerId: string) => createPeerRelay({
+    reliable: target.relaySocket('reply-relay', peerId, remotePeerId, 'reliable', window), live: target.relaySocket('reply-relay', peerId, remotePeerId, 'live', window),
+  }, { peerId, remotePeerId });
+  const a = relay(page, left, right), b = relay(guest, right, left), live: Uint8Array[] = [];
+  b.live.addEventListener('message', event => { live.push(new Uint8Array(event.data)); });
+  try {
+    await Promise.all([a.ready, b.ready]);
+    const pieces = Array.from({ length: 40 }, (_value, index) => new Uint8Array(16_448).fill(index));
+    for (const piece of pieces) {
+      // Chronolog's live channel refuses a frame once bufferedAmount + frame exceeds 64 KiB.
+      expect(a.live.bufferedAmount + piece.length).toBeLessThanOrEqual(65_536);
+      a.live.send(piece);
+    }
+    await expect.poll(() => live.length, { timeout: 10_000 }).toBe(pieces.length);
+    expect(live.map(value => value[0])).toEqual(pieces.map((_value, index) => index));
+    expect(live.every(value => value.length === 16_448)).toBe(true);
+    await expect.poll(() => a.live.stats.pendingPackets + a.live.stats.queuedPackets).toBe(0);
+  } finally { a.close(); b.close(); }
+});
+
 it('requires authenticated protocol admission and exact reciprocal peer/lane pairing', async () => {
   const h = await create({ mode: 'dashboard', listener: false });
   expect((await req(`${h.api}/${path('auth')}`, { headers, anonymous: true })).status).toBe(401);

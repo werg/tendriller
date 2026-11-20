@@ -15,7 +15,9 @@ self.addEventListener('message', async ({ data }) => {
     const configuration = await response.json(), profileId = `tendriller-notes-${configuration.applicationId}`;
     if (data.profileId !== profileId || typeof data.requestId !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(data.requestId) ||
         new URL(configuration.page_url).origin !== self.location.origin) throw Error('Pairing must use the retained profile on its signed page origin.');
-    lock = await acquireApplicationOwnerLock(profileId, { signal });
+    // Wait for the profile's owner fence instead of failing while another tab's
+    // attempt briefly holds it; the signal still bounds the whole request.
+    lock = await acquireApplicationOwnerLock(profileId, { wait: true, signal });
     device = await openBrowserDevice({ name: profileId, create: data.publicKey === undefined });
     if (data.publicKey && data.publicKey !== device.identity.publicKey) throw Error('The retained browser key changed. Preserve this request and recover the original profile.');
     const client = createDevicePairingClient({ url: new URL('_tendril/peers/pairing', configuration.page_url) });

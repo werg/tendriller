@@ -40,7 +40,8 @@ export async function runAssistant({ signal, events = false } = {}, {
   const lifetime = signal ? AbortSignal.any([signal, stopped.signal]) : stopped.signal;
   try {
     owned = await open({ signal });
-    if (owned.processPairings) pairings = startReviewedPairingLoop(owned.processPairings, { signal: lifetime, report });
+    if (owned.processPairings) pairings = startReviewedPairingLoop(owned.processPairings, { signal: lifetime, report,
+      ...(owned.notices ? { wakeups: owned.notices } : {}) });
     report({ state: 'participant_running', pid: process.pid, applicationId: owned.session.applicationId,
       processLifetime: 'Until this process or its execution environment stops.', checkpointDirectory: privateDirectory.pathname,
       futureWakeVerified: false });

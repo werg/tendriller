@@ -38,6 +38,26 @@ test('invitation queues, cancellation, malformed frames and opening deadlines re
   await assert.rejects(invalid.ready, { code: 'invalid_invitation' });
 });
 
+test('pairing notices wake only listeners that asked for them and carry no data', async () => {
+  const notices = [], socket = new Socket(), listener = createPeerInvitationListener(socket, 'target', { onNotice: notice => notices.push(notice) });
+  socket.receive({ t: 'ready', version: 1, peerId: 'target' }); await listener.ready;
+  socket.receive({ t: 'notice', kind: 'pairing', version: 1 }); socket.receive({ t: 'notice', kind: 'pairing', version: 1 });
+  assert.deepEqual(notices, [{ kind: 'pairing' }, { kind: 'pairing' }]);
+  assert.deepEqual(socket.sent, []); assert.equal(listener.stats.closed, false);
+  socket.receive({ t: 'notice', kind: 'other', version: 1 });
+  assert.equal((await listener.closed).code, 1008);
+  const plainSocket = new Socket(), plain = createPeerInvitationListener(plainSocket, 'target');
+  plainSocket.receive({ t: 'ready', version: 1, peerId: 'target' }); await plain.ready;
+  plainSocket.receive({ t: 'notice', kind: 'pairing', version: 1 });
+  assert.equal((await plain.closed).code, 1008, 'Listeners that did not opt in keep the strict frame set.');
+  const sockets = [], client = createPeersClient({ base: 'https://host.test/api/app', applicationId: 'ab'.repeat(32),
+    request: async () => ({}), socket: (url, protocols) => { const value = new Socket(); sockets.push({ url, value }); return value; } });
+  client.listenInvitations('ab'.repeat(32), { onNotice: () => {} }).close();
+  client.listenInvitations('ab'.repeat(32)).close();
+  assert.equal(new URL(sockets[0].url).searchParams.get('notices'), 'pairing');
+  assert.equal(new URL(sockets[1].url).searchParams.has('notices'), false);
+});
+
 test('the public client preserves private protocol credentials and only posts on demand', async () => {
   const calls = [], sockets = [];
   const client = createPeersClient({ base: 'https://host.test/api/app', applicationId: 'ab'.repeat(32), protocols: ['tendriller.rendezvous.v1', 'private-token'],

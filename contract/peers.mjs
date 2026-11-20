@@ -6,7 +6,7 @@ import { createPeerParticipantClient } from './peer-participant.mjs';
 export * from './peer-participant.mjs';
 import { createPeerInvitationListener, validatePeerInvitation, PEER_INVITATION_PROTOCOL } from './invitations.mjs';
 export * from './invitations.mjs';
-import { createPeerRelay, PEER_RELAY_PROTOCOL } from './relay.mjs';
+import { createPeerRelay, PEER_RELAY_LIMITS, PEER_RELAY_PROTOCOL } from './relay.mjs';
 export * from './relay.mjs';
 /** Bounded introduction only. Application framing belongs to the chosen peer transport. */
 const MAX_BOOTSTRAP_ENDPOINTS = 8;
@@ -163,6 +163,7 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
         fail('invalid_invitation', 'Invalid invitation listener open timeout');
       if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
       const url = socketUrl('peers/invitations', 'invalid_invitation'); url.searchParams.set('peerId', peerId);
+      if (options.onNotice) url.searchParams.set('notices', 'pairing');
       const invitationProtocols = [PEER_INVITATION_PROTOCOL, ...protocols.filter(value => value !== PEER_RENDEZVOUS_PROTOCOL && value !== PEER_INVITATION_PROTOCOL)];
       return createPeerInvitationListener((options.socket || socket)(url.href, invitationProtocols), peerId, options);
     },
@@ -189,6 +190,7 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
       if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
       const url = socketUrl('peers/relay', 'invalid_relay');
       url.searchParams.set('channel', channel); url.searchParams.set('peerId', peerId); url.searchParams.set('remotePeerId', options.remotePeerId);
+      url.searchParams.set('liveWindow', String(PEER_RELAY_LIMITS.livePendingPackets));
       const relayProtocols = [PEER_RELAY_PROTOCOL, ...protocols.filter(value => ![PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL, PEER_RELAY_PROTOCOL].includes(value))];
       const open = lane => { const route = new URL(url); route.searchParams.set('lane', lane); return (options.socket || socket)(route.href, relayProtocols); };
       let reliable, live;

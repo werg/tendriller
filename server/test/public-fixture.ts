@@ -50,8 +50,8 @@ export async function createTestPage(options: { application?: { id: string }; li
     `${base}peers/rendezvous?${new URLSearchParams({ channel, peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL } }), traffic, 'rendezvous');
   const invitations = (base: string, headers: Record<string, string>) => (peerId: string) => testPeerSocket(() => request(
     `${base}peers/invitations?${new URLSearchParams({ peerId })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL } }), traffic, 'invitation');
-  const relay = (base: string, headers: Record<string, string>) => (channel: string, peerId: string, remotePeerId: string, lane: 'reliable' | 'live') => testPeerSocket(() => request(
-    `${base}peers/relay?${new URLSearchParams({ channel, peerId, remotePeerId, lane })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RELAY_PROTOCOL } }), traffic, 'relay');
+  const relay = (base: string, headers: Record<string, string>) => (channel: string, peerId: string, remotePeerId: string, lane: 'reliable' | 'live', extra: Record<string, string> = {}) => testPeerSocket(() => request(
+    `${base}peers/relay?${new URLSearchParams({ channel, peerId, remotePeerId, lane, ...extra })}`, { headers: { ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RELAY_PROTOCOL } }), traffic, 'relay');
   return {
     /** Exact observed requests/frame bytes, excluding synthetic identity/page setup. */
     get hostTraffic() { return Object.freeze({ ...traffic }); },

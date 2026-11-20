@@ -37,6 +37,8 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   const selected = paths(profile);
   let binding = await readPrivate(selected.credential, true);
   if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey() });
+  // Content-free host wake-ups: a browser asked to pair, or the owner approved one.
+  const notices = new EventTarget();
   let session, control, pairing, processPairings;
   const supervisor = await createNativeSessionSupervisor({ directory: selected.directory, profileId: profile, signal,
     bindings: [binding], openOwner: async () => {
@@ -66,16 +68,18 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
           peers: host.peers, identity: session.deviceId,
           openDirectConnection: async () => { throw Error('TUTORIAL_NATIVE_RTC_NOT_CONFIGURED'); },
           openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
+          onNotice: () => notices.dispatchEvent(new Event('pairing')),
         }) });
         signal?.throwIfAborted();
         return createApplicationOwner(session, { host: control });
       } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
     } });
-  return { session, control, supervisor, pairing, processPairings, close: () => supervisor.close() };
+  return { session, control, supervisor, pairing, processPairings, notices, close: () => supervisor.close() };
 }
 
 export async function runPeer({ signal, profile = 'main' } = {}) {
   const owned = await openSession({ signal, profile });
+  // Browser enrollment stays open while this peer runs; each request still needs the owner's approval.
   const pairing = startPairingWindow({ owned, signal, onStatus: status => console.log(JSON.stringify({ pairing: status })) });
   try {
     console.log(JSON.stringify({ running: true, profile, deviceId: owned.session.deviceId,

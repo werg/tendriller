@@ -13,10 +13,11 @@ export function validatePeerInvitation(value) {
 }
 
 /** Receive-only connection hints, with consumption ACKs bounding host-side pending work. */
-export function createPeerInvitationListener(socket, peerId, { signal, timeoutMs = PEER_INVITATION_LIMITS.openTimeoutMs } = {}) {
+export function createPeerInvitationListener(socket, peerId, { signal, timeoutMs = PEER_INVITATION_LIMITS.openTimeoutMs, onNotice } = {}) {
   peerId = validatePeerId(peerId);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000)
     throw failure('invalid_invitation', 'Invalid invitation listener open timeout');
+  if (onNotice !== undefined && typeof onNotice !== 'function') throw failure('invalid_invitation', 'onNotice must be a function');
   let ended = false, opened = false, error, reading = false, waiting, receivedBytes = 0, sentBytes = 0, receivedInvitations = 0;
   let resolveReady, rejectReady, resolveClosed;
   const queue = [], ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
@@ -44,6 +45,11 @@ export function createPeerInvitationListener(socket, peerId, { signal, timeoutMs
         throw failure('invalid_invitation', 'Invalid invitation frame');
       if (value.t === 'ready' && !opened && value.version === 1 && value.peerId === peerId) {
         opened = true; clearTimeout(timer); resolveReady(); return;
+      }
+      // Content-free wake-ups exist only for listeners that asked for them.
+      if (opened && onNotice && value.t === 'notice' && value.kind === 'pairing' && value.version === 1) {
+        try { onNotice(Object.freeze({ kind: 'pairing' })); } catch { /* An observer cannot close routing. */ }
+        return;
       }
       if (!opened || value.t !== 'invitation') throw failure('invalid_invitation', 'Unexpected invitation frame');
       if (queue.length >= PEER_INVITATION_LIMITS.pending) throw failure('invitation_backpressure', 'Invitation consumer is not keeping up');
