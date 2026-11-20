@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { TUTORIAL_DOWNLOAD, TUTORIAL_FILES } from './onboarding.mjs';
 import { verifyRuntimeManifest } from './runtime-manifest.mjs';
 
@@ -67,6 +67,59 @@ function matchesRecorded(component, proof, label) {
   const record = proof.artifacts?.find(item => item.file === component.file);
   if (!record || record.sha256 !== component.sha256 || record.size !== undefined && record.size !== component.size)
     fail(`${label} does not match recorded artifact bytes: ${component.file}`);
+}
+
+// Publication is a separate process from preparation. Recheck its complete
+// local graph before contacting GitHub, even if an earlier build was qualified.
+export function verifyReleaseArtifacts(root, manifest) {
+  const identity = sourceIdentity(root), dist = join(root, 'dist');
+  cleanIdentity(identity, 'werg/tendriller', 'Release checkout');
+  if (manifest.format !== 'tendriller-core-release' || manifest.source_commit !== identity.source ||
+      manifest.source_tree !== identity.sourceTree || !Number.isSafeInteger(manifest.contract) ||
+      manifest.contract < 1 || !/^[a-f0-9]{64}$/.test(manifest.runtime ?? ''))
+    fail('Release manifest must identify the exact clean source tree, contract and runtime.');
+  const required = [...roles, 'session', 'starter', 'composition', 'first-app', 'core-provenance', 'tools-provenance'];
+  if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== required.length ||
+      required.some(role => manifest.artifacts.filter(item => item.role === role).length !== 1))
+    fail('Release manifest must contain the complete SDK/runtime/engine/tools/session/starter composition and its proofs.');
+  const names = new Set();
+  for (const item of manifest.artifacts) {
+    if (typeof item.file !== 'string' || item.file !== basename(item.file) || !/^[a-zA-Z0-9._-]+$/.test(item.file) ||
+        names.has(item.file) || !Number.isSafeInteger(item.size) || item.size < 0 || !/^[a-f0-9]{64}$/.test(item.sha256 ?? ''))
+      fail('Release artifact records require unique safe filenames, sizes and SHA-256 hashes.');
+    names.add(item.file);
+    const bytes = readFileSync(join(dist, item.file));
+    if (bytes.length !== item.size || digest(bytes) !== item.sha256)
+      fail(`Built release asset does not match manifest: ${item.file}`);
+  }
+  const byRole = Object.fromEntries(manifest.artifacts.map(item => [item.role, item]));
+  if (manifest.composition?.file !== byRole.composition.file || manifest.first_app?.file !== byRole['first-app'].file ||
+      manifest.first_app?.profile !== 'events' || JSON.stringify(manifest.first_app?.packages) !== JSON.stringify(['sdk', 'tools', 'session']))
+    fail('Release discovery must reference its exact composition and complete events first-app kit.');
+  const composition = json(join(dist, byRole.composition.file));
+  const { id, ...body } = composition;
+  if (id !== digest(JSON.stringify(body)) || id !== manifest.composition.id ||
+      composition.format !== 'tendriller-release-composition-v1' || composition.version !== manifest.version ||
+      composition.contract !== manifest.contract || composition.runtime !== manifest.runtime)
+    fail('Release composition identity does not match the manifest and its contents.');
+  cleanIdentity(composition.core ?? {}, 'werg/tendriller', 'Release composition source', identity);
+  for (const role of ['session', 'generation'])
+    cleanIdentity(composition.chronolog?.[role] ?? {}, 'werg/chronolog-db', `Release composition ${role}`);
+  const componentRoles = [...roles, 'session', 'starter'];
+  if (!Array.isArray(composition.components) || composition.components.length !== componentRoles.length ||
+      componentRoles.some(role => {
+        const entries = composition.components.filter(item => item.role === role);
+        return entries.length !== 1 || ['file', 'size', 'sha256'].some(key => entries[0][key] !== byRole[role][key]);
+      })) fail('Release manifest and composition must bind the same complete component graph.');
+  const core = json(join(dist, byRole['core-provenance'].file));
+  const tools = json(join(dist, byRole['tools-provenance'].file));
+  cleanIdentity(core, 'werg/tendriller', 'Release core provenance', identity);
+  cleanIdentity({ repository: 'werg/tendriller', source: tools.source_commit, sourceTree: tools.source_tree, dirty: tools.dirty },
+    'werg/tendriller', 'Release tools provenance', identity);
+  for (const role of roles) matchesRecorded(byRole[role], role === 'tools' ? tools : core, 'Release provenance');
+  if (tools.version !== manifest.version || tools.contract !== manifest.contract || tools.runtime !== manifest.runtime)
+    fail('Release tools provenance must match its version, contract and runtime.');
+  return identity;
 }
 
 export function prepareRelease({ root, version, contract }) {

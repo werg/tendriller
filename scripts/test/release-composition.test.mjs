@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
-import { prepareRelease, REQUIRED_SDK_EXPORTS, sourceIdentity } from '../release-composition.mjs';
+import { prepareRelease, REQUIRED_SDK_EXPORTS, sourceIdentity, verifyReleaseArtifacts } from '../release-composition.mjs';
 import { runtimeManifest } from '../runtime-manifest.mjs';
 import { TUTORIAL_FILES } from '../onboarding.mjs';
 
@@ -89,6 +89,7 @@ test('release identity binds actual package bytes, starter, companion and comple
   assert.deepEqual(f.prepare(), manifest);
   assert.equal(digest(readFileSync(archive)), bytes);
   for (const item of manifest.artifacts) assert.equal(digest(readFileSync(join(f.root, 'dist', item.file))), item.sha256);
+  assert.deepEqual(verifyReleaseArtifacts(f.root, manifest), f.identity);
 });
 
 test('release rejects a dirty source checkout before emitting discovery metadata', t => {
