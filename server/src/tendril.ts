@@ -1,3 +1,5 @@
+import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
+import { adoptPreparedAssistant } from './assistant-admission';
 import { isPublicationWatch } from "./publication-watch";
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from './peers';
@@ -321,7 +323,7 @@ export class Tendril extends DurableObject<Env> {
       mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
       unclaimed_limits: { request_body_bytes: RESOURCE_LIMITS.unclaimed_body_bytes },
-      next_step: "Give the human owner page_url. They must open it in a visible browser tab and sign in with their verified owner identity to claim the page within 24 hours; an agent cannot claim for them. Follow build_guide to define the app, configure Chronolog authority, select the initial generation, connect devices and publish signed page code. Once claimed, set lifetime to resident for a long-lived page.",
+      next_step: "Prepare and publish the signed app now with this private setup handle; do not wait for claim or ask the person to reply claimed. Give the human owner page_url while you configure authority, select the initial generation, build and publish, start the native participant and prepare any assistant-access proposal. The owner signs in to access the ready page within 24 hours. Their sign-in retains the prepared authority, publication and keys, makes the configured page resident within account quotas, and activates any prepared permission review. Browser device enrollment and assistant consent remain explicit.",
       application,
       agent_setup: {
         application: application.id,
@@ -482,7 +484,11 @@ export class Tendril extends DurableObject<Env> {
     throw new HttpError(404, "not_found");
   }
 
-  private async claimOwner(accountId: string, identities: unknown[]): Promise<Response> {
+  private claimOwner(accountId: string, identities: unknown[]): Promise<Response> {
+    return withPeerOwnerClaim(this, () => this.claimOwnerSerialized(accountId, identities));
+  }
+
+  private async claimOwnerSerialized(accountId: string, identities: unknown[]): Promise<Response> {
     const current = this.db.get<string | null>("owner_account", null);
     if (current && current !== accountId) throw new HttpError(403, "claimed", "Another account owns this tendril");
     const expected = this.db.get<string | null>("intended_owner", null);
@@ -490,16 +496,23 @@ export class Tendril extends DurableObject<Env> {
     if (!current) {
       let row: unknown;
       try {
-        row = await this.env.ACCOUNTS.prepare("UPDATE tendrils SET owner_account = ?, claimed_at = ? WHERE id = ? AND owner_account IS NULL RETURNING id")
-          .bind(accountId, this.now(), this.tid).first();
+        const lifetime = this.db.get('peer_generation_configuration', null) ? 'resident' : this.db.get('lifetime', 'ad_hoc');
+        row = await this.env.ACCOUNTS.prepare(`UPDATE tendrils SET owner_account = ?, claimed_at = COALESCE(claimed_at, ?), lifetime = ?
+          WHERE id = ? AND (owner_account IS NULL OR owner_account = ?) RETURNING id`)
+          .bind(accountId, this.now(), lifetime, this.tid, accountId).first();
       } catch (err) {
+        if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: 3 });
         if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
         if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
         throw err;
       }
       if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
-      this.db.set("owner_account", accountId);
-      this.db.set("claimed_at", this.now());
+      this.transaction(() => {
+        adoptPreparedPeerApplication(this, accountId);
+        this.db.set("owner_account", accountId);
+        this.db.set("claimed_at", this.now());
+        if (this.db.get('peer_generation_configuration', null)) this.db.set('lifetime', 'resident');
+      });
       // Starting the claim also starts the inactivity window.
       this.recordAccess();
       const label = (identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
@@ -521,6 +534,7 @@ export class Tendril extends DurableObject<Env> {
         }
       }
     }
+    await adoptPreparedAssistant(this, accountId);
     await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
       .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));
     this.scheduleAlarm();

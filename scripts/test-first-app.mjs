@@ -200,10 +200,19 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     passed('explicit native SQL capability and execution manifest');
   }
 
-  checkpoint('create, claim and initialize');
+  checkpoint('create, initialize and publish before owner claim');
   await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'First-app qualification']);
   const handle = await jsonFile(join(project, '.tendriller/handle.json'));
   const localPage = new URL(handle.page_url); localPage.port = '8790';
+  const beforeClaim = JSON.parse(await node(['setup.mjs', 'init']));
+  assert.equal(beforeClaim.initialized, true);
+  let preparedPublication;
+  if (!sqlOnly) {
+    await node(['build.mjs']);
+    preparedPublication = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
+    assert.ok(preparedPublication.publication.id);
+  }
+  passed('native application initialized and first signed UI published before claim');
   const initialClaim = await fetch(localPage, { redirect: 'manual' });
   assert.equal(initialClaim.status, 302); await initialClaim.body?.cancel();
   const claim = await fetch(initialClaim.headers.get('Location'), { redirect: 'manual',

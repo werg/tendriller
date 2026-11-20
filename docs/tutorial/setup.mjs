@@ -9,7 +9,7 @@ import { devicePath, project, readPrivate, savePrivate } from './local.mjs';
 
 export async function createProject(service, owner, name = 'Shared notes') {
   const existing = await readPrivate('handle.json', true);
-  if (existing) return { page_url: existing.page_url, next: 'Open this page and sign in as its owner, then run npm run init.' };
+  if (existing) return { page_url: existing.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
   if (!service || !owner) throw Error('Usage: npm run create -- https://YOUR_HOST VERIFIED_OWNER_EMAIL "Shared notes"');
   const url = new URL(service);
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
@@ -19,13 +19,11 @@ export async function createProject(service, owner, name = 'Shared notes') {
   requireService(await describeService(url.origin));
   const handle = await createPage(url.origin, { owner, name });
   await savePrivate('handle.json', handle);
-  return { page_url: handle.page_url, next: 'Open this page and sign in as its owner, then run npm run init.' };
+  return { page_url: handle.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
 }
 
 export async function initializeProject() {
   const { handle, host } = await project();
-  const info = await host.info();
-  if (!info.owner) throw Error(`The owner must first open ${handle.page_url} and sign in to claim it.`);
   if (await readPrivate('initialized.json', true)) return { initialized: true, next: 'npm run build' };
   // Explicit first setup may create a signer. All normal opens omit create:true.
   const device = await openNativeDevice({ path: devicePath, create: true });
