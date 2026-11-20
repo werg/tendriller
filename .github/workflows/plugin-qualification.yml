@@ -19,7 +19,11 @@ permissions:
 
 jobs:
   qualify:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch'))
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +72,7 @@ jobs:
           # Explicit allowlist: never upload private handles, access records or raw host diagnostics.
           path: |
             .results/plugin-review/report.json
+            .results/plugin-review/fixture-failure.json
             .results/plugin-review/walkthrough.webm
             .results/plugin-review/verified-page.png
           include-hidden-files: true

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, copyFileSync, rmSync, openSync, closeSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
@@ -44,7 +44,9 @@ try {
   handle = JSON.parse(readFileSync(join(project, '.private/handle.json')));
   run(['init']);
   const proposal = JSON.parse(run(['propose']));
-  child = spawn(process.execPath, ['review-app.mjs', 'run'], { cwd: project, stdio: ['ignore', 'ignore', 'ignore'] });
+  const diagnostic = openSync(join(project, 'participant-private.log'), 'w', 0o600);
+  try { child = spawn(process.execPath, ['review-app.mjs', 'run'], { cwd: project, stdio: ['ignore', 'ignore', diagnostic] }); }
+  finally { closeSync(diagnostic); }
   const host = createClient(handle, { applicationId: handle.application.id });
   let participantError;
   child.once('error', () => { participantError = true; });
@@ -69,6 +71,12 @@ try {
   report.preclaimPublicationVerified = true;
   writeFileSync(join(output, 'report.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
   console.log('Native MCP qualification passed all packaged cases; recording and sanitized report saved.');
+} catch (error) {
+  let nativeErrorCode;
+  try { nativeErrorCode = readFileSync(join(project, 'participant-private.log'), 'utf8').match(/code: ['"]([a-zA-Z0-9_]+)['"]/)?.[1]; } catch {}
+  if (!nativeErrorCode) nativeErrorCode = child?.exitCode != null ? 'EXIT_' + child.exitCode : undefined;
+  writeFileSync(join(output, 'fixture-failure.json'), JSON.stringify({ passed: false, phase: 'fixture or qualification', nativeErrorCode }, null, 2), { mode: 0o600 });
+  throw Error('Live qualification failed. See the sanitized reports' + (nativeErrorCode ? ' (native ' + nativeErrorCode + ')' : '') + '. No private child diagnostics were printed.');
 } finally {
   const failures = [];
   if (child?.pid && child.exitCode === null) {
