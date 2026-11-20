@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { chromium } from '@playwright/test';
 import { Owner, ownerUrl, mcpBridge } from '../agent-acceptance/owner.mjs';
+import { browserMeasurement } from '../agent-acceptance/observer.mjs';
 
 test('owner rejects credential-bearing and cross-origin navigation', () => {
   const origin = 'https://selected.example';
@@ -17,7 +18,8 @@ test('bounded local Chromium owner: login, exact review, checklist interaction, 
   <p>Fingerprint ABCD</p><p>Rights: checklist write</p><p>Retained prefix: 12</p>
   <label><input type="checkbox">Allow checklist</label><button onclick="document.querySelector('output').textContent='Approved'">Approve</button><output></output>
   <label>New item<input id="new"></label><button onclick="localStorage.item=document.querySelector('#new').value;document.querySelector('#list').textContent=localStorage.item">Add</button>
-  <div id="list"></div><script>document.querySelector('#list').textContent=localStorage.item||''</script>`;
+  <div id="list"></div><input id="measured-device" value="${'11'.repeat(32)}"><ul id="measured-rows"><li><label><input data-item-id="row-1">Measured marker</label></li></ul>
+  <script>document.querySelector('#list').textContent=localStorage.item||'';window.tendril={identity:{page:'fixture',publication:'pub',version:1}}</script>`;
   const server = createServer((req, res) => res.end(fixture));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
@@ -37,6 +39,9 @@ test('bounded local Chromium owner: login, exact review, checklist interaction, 
   for (const action of ['reload', 'reopen']) {
     const result = await owner.act({ action }); assert(result.text.includes('Owner local test'));
   }
+  const measured = await browserMeasurement(owner, { handle: { id: 'fixture', page_url: owner.page.url() },
+    browser: { device: { selector: '#measured-device', read: 'value' }, rows: '#measured-rows li', rowIdentityAttribute: 'data-item-id', rowIdentitySelector: 'input' } });
+  assert.deepEqual(measured.rowIds, ['row-1']); assert(measured.rows[0].includes('Measured marker'));
   assert(!JSON.stringify(records).includes('local-fixture-only'));
   await assert.rejects(owner.act({ action: 'evaluate', script: 'state=fake' }), /Unsupported/);
 });

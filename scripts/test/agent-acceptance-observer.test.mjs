@@ -55,8 +55,8 @@ async function fixture(t) {
     locator: selector => ({ count: async () => 1, inputValue: async () => browserSigner.publicKey, innerText: async () => 'Connected',
       allInnerTexts: async () => ['Observer marker · operation stable-observer-op'] }) };
   const packages = async () => ({ session: p, core: { createClient: () => ({ peers: { application: async () => authority, publication: async () => receipt },
-    info: async () => ({ owner_account_id: null }) }) } });
-  return { directory, runDirectory, project, config, configPath, request, loaded, session, snapshot, browserSigner, publication, receipt, authority, page, packages, save };
+    info: async () => ({ id: handle.id, application: handle.application, page_url: handle.page_url, owner_account_id: null }) }) } });
+  return { directory, runDirectory, project, config, configPath, request, loaded, session, snapshot, browserSigner, publication, receipt, authority, handle, page, packages, save };
 }
 
 test('real Chronolog native query and signed operation proof reject tampering, wrong author, definition and application', async t => {
@@ -166,4 +166,18 @@ test('private configuration cannot switch to a foreign service, native project, 
   f.config.native.project = f.project; f.config.native.deviceId = f.browserSigner.publicKey; f.save();
   const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, native: async () => f.snapshot, owner: { page: f.page } });
   assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'failed');
+});
+
+test('staging preview page origins require the authenticated host to confirm the exact URL', async t => {
+  const f = await fixture(t);
+  f.handle.page_url = `https://${f.handle.id}--p-9a9a9a9a9a9a.tendriller.dev/s/${'a'.repeat(26)}/`;
+  writeFileSync(join(f.project, 'handle.json'), JSON.stringify(f.handle));
+  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, packages: f.packages });
+  assert.equal((await observer.observe({ check: 'preclaim-publication' })).status, 'passed');
+  const packages = await f.packages(), createClient = packages.core.createClient;
+  packages.core.createClient = () => { const host = createClient(); const info = host.info;
+    host.info = async () => ({ ...await info(), page_url: 'https://wrong.example/' }); return host; };
+  observer.packages = async () => packages;
+  const mismatch = await observer.observe({ check: 'publication' });
+  assert.equal(mismatch.status, 'failed'); assert(mismatch.evidence.mismatches.includes('host-authoritative-page-url'));
 });
