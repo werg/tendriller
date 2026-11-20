@@ -1,6 +1,6 @@
 # Account-bound setup and reviewed device pairing
 
-Status: **design and acceptance work, not implemented or deployed**. This review
+Status: **required implementation in progress; not qualified or deployed**. This review
 was made on 20 November 2026 against the account, creation and enrollment code
 under review with [core PR #68](https://github.com/werg/tendriller/pull/68).
 Every task below remains open. Proposed interface names and limits require

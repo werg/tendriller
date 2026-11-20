@@ -150,11 +150,12 @@ and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
 
 ## Protocol and interaction follow-ups
 
-The optional account-bound initiation and reviewed browser-pairing improvements
+The required account-bound initiation and reviewed browser-pairing improvements
 are specified in [ONBOARDING_PROTOCOL_FOLLOWUPS.md](ONBOARDING_PROTOCOL_FOLLOWUPS.md).
 All 20 implementation/acceptance tasks there remain open and are also enumerated
-in the core draft PR description. These are new protocol/UI work, not capabilities
-provided by the repairs above. Account creation needs a bounded durable operation
+in the core draft PR description. Implementation is in progress; these are new
+protocol/UI capabilities that are not provided by discovery repairs alone.
+Account creation needs a bounded durable operation
 ledger and recoverable credential commitment; pairing needs proof of possession,
 exact owner review and the existing signed-control authority path. Existing
 OAuth tokens receive no implicit new rights.

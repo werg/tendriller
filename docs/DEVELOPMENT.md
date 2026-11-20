@@ -161,7 +161,7 @@ scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavi
 link and consistency checks do not prove that an unfamiliar agent can finish.
 
 The [account-bound setup and reviewed device pairing follow-ups](ONBOARDING_PROTOCOL_FOLLOWUPS.md)
-record the remaining optional interaction improvements, their current authority
+record the required interaction improvements, their current authority
 boundaries and unimplemented acceptance tasks. They require explicit durable
 protocol/state work; discovery improvements do not enable those proposed APIs.
 
