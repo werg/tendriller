@@ -256,3 +256,85 @@ test('duplicate notification readers, cancelled subscriptions and failure cleanu
   await assert.rejects(f.discovery.notifications(selected)[Symbol.asyncIterator]().next(),/already cancelled/);
   assert.equal(closes,1);
 });
+
+function notificationDriver() {
+  const queue=[],stopped=Promise.withResolvers();let wake,ended=false;
+  return {ready:Promise.resolve(),push(type){queue.push({type});wake?.();wake=undefined;},
+    notifications:{async *[Symbol.asyncIterator](){while(!ended){if(queue.length){yield queue.shift();continue;}await new Promise(resolve=>{wake=resolve;});}}},
+    close(){ended=true;wake?.();stopped.resolve();},closed:stopped.promise};
+}
+async function advertisingFixture(overrides={}) {
+  const watch=notificationDriver(),controller=new AbortController();
+  const f=fixture({watchDiscovery:()=>watch,...overrides}),selected={signal:controller.signal};
+  const notifications=f.discovery.notifications(selected)[Symbol.asyncIterator]();
+  const initial=notifications.next();watch.push('ready');await initial;
+  const invitations=f.discovery.invitations(selected)[Symbol.asyncIterator]();const waiting=invitations.next();
+  await Promise.resolve();
+  return {...f,watch,selected,notifications,controller,
+    async close(){controller.abort();await waiting;await notifications.return();},
+  };
+}
+
+test('only effective confirmed advertisement payloads cause HTTP; changed metadata is inert and ready always invalidates',async()=>{
+  const f=await advertisingFixture();
+  const value={identity:local,storageId:'disk',point:{sequence:1},role:'coordinator'};
+  await f.discovery.advertise(value,f.selected);
+  await f.discovery.advertise({...value,point:{sequence:2},role:'follower',generation:'new-head'},f.selected);
+  assert.equal(f.calls.filter(call=>call[0]==='advertise').length,1);
+  const changed=f.notifications.next();f.watch.push('changed');assert.equal((await changed).value.type,'changed');
+  await f.discovery.advertise(value,f.selected);assert.equal(f.calls.filter(call=>call[0]==='advertise').length,1);
+  const reconnected=f.notifications.next();f.watch.push('ready');assert.equal((await reconnected).value.type,'ready');
+  await f.discovery.advertise(value,f.selected);assert.equal(f.calls.filter(call=>call[0]==='advertise').length,2);
+  await f.discovery.advertise({...value,storageId:'different-disk'},f.selected);
+  assert.equal(f.calls.filter(call=>call[0]==='advertise').length,3);
+  await f.discovery.withdraw(f.selected);await f.discovery.advertise({...value,storageId:'different-disk'},f.selected);
+  assert.equal(f.calls.filter(call=>call[0]==='advertise').length,4);
+  await f.close();
+});
+
+test('a lost advertisement response stays unconfirmed and an explicit retry sends the exact same payload',async()=>{
+  const attempts=[];
+  const f=await advertisingFixture({async advertise(value){attempts.push(value);if(attempts.length===1)throw Error('response lost');}});
+  await assert.rejects(f.discovery.advertise({identity:local,storageId:'disk',point:1},f.selected),/response lost/);
+  await f.discovery.advertise({identity:local,storageId:'disk',point:2},f.selected);
+  assert.equal(attempts.length,2);assert.deepEqual(attempts[0],attempts[1]);
+  await f.discovery.advertise({identity:local,storageId:'disk',point:3},f.selected);assert.equal(attempts.length,2);
+  await f.close();
+});
+
+test('invitation listener replacement invalidates confirmed availability even with unchanged wire routes',async()=>{
+  const listeners=[];const f=await advertisingFixture({listenInvitations(){
+    const closed=Promise.withResolvers();const listener={ready:Promise.resolve(),invitations:{async *[Symbol.asyncIterator](){await closed.promise;}},close:()=>closed.resolve()};
+    listeners.push(listener);return listener;
+  }});
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);listeners[0].close();await Promise.resolve();await new Promise(resolve=>setImmediate(resolve));
+  const nextStop=new AbortController(),nextOptions={signal:nextStop.signal};
+  const invitations=f.discovery.invitations(nextOptions)[Symbol.asyncIterator]();const waiting=invitations.next();await Promise.resolve();
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);
+  assert.equal(f.calls.filter(call=>call[0]==='advertise').length,2);
+  listeners[1].close();await waiting;nextStop.abort();await f.close();
+});
+
+test('a response from before reconnect cannot confirm presence on the new watch generation',async()=>{
+  const gate=Promise.withResolvers();let attempts=0;
+  const f=await advertisingFixture({async advertise(){attempts++;if(attempts===1)await gate.promise;}});
+  const pending=f.discovery.advertise({identity:local,storageId:'disk'},f.selected);
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(attempts,1);
+  const reconnect=f.notifications.next();f.watch.push('ready');await reconnect;gate.resolve();await pending;
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);assert.equal(attempts,2);
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);assert.equal(attempts,2);
+  await f.close();
+});
+
+test('an aborted acknowledgment or a failed changed payload cannot confirm any previous payload',async()=>{
+  let attempts=0,abortAfterAck;
+  const f=await advertisingFixture({async advertise(){attempts++;if(attempts===2)throw Error('changed payload uncertain');abortAfterAck?.abort(Error('caller ended'));}});
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);
+  await assert.rejects(f.discovery.advertise({identity:local,storageId:'other-disk'},f.selected),/uncertain/);
+  await f.discovery.advertise({identity:local,storageId:'disk'},f.selected);assert.equal(attempts,3);
+  abortAfterAck=new AbortController();
+  await assert.rejects(f.discovery.advertise({identity:local,storageId:'other-disk'},{signal:abortAfterAck.signal}),/caller ended/);
+  abortAfterAck=undefined;
+  await f.discovery.advertise({identity:local,storageId:'other-disk'},f.selected);assert.equal(attempts,5);
+  await f.close();
+});

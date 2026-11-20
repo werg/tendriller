@@ -1,9 +1,9 @@
-import { validatePeerRoute } from './discovery.mjs';
+import { validatePeerRoute, validatePeerAdvertisement } from './discovery.mjs';
 import { validatePeerDiscoveryNotification } from './discovery-watch.mjs';
 import { validatePeerInvitation } from './invitations.mjs';
 
 const identityKey = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
-const invalid = message => { throw Object.assign(new Error(message), { name: 'PeerIntroductionError', code: 'invalid_introduction' }); };
+const invalid = message => { throw Object.assign(new Error(message), { name: 'PeerIntroductionError', code: 'invalid_introduction', retryable: false }); };
 const hint = (identity, route) => Object.freeze({ identity, route });
 const invitationRoute = identity => Object.freeze({ kind: 'invitation', peerId: identity });
 
@@ -24,20 +24,24 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
       !['watchDiscovery', 'discover', 'advertise', 'withdraw', 'listenInvitations', 'invite', 'rendezvous', 'relay'].every(key => typeof peers?.[key] === 'function'))
     invalid('Provide the session device identity, host peers client and direct/relay connection openers');
   let activeListener, nextListener = Promise.withResolvers(), activeWatcher, nextWatcher = Promise.withResolvers();
+  let advertisementEpoch = 0, advertisementRequest = 0, confirmedAdvertisement;
+  const invalidateAdvertisement = () => { advertisementEpoch++; confirmedAdvertisement = undefined; };
   return Object.freeze({
     discovery: Object.freeze({
       async *notifications({ signal }) {
         signal.throwIfAborted();
         if (activeWatcher) invalid('The owned session has one discovery watcher');
         const watcher = peers.watchDiscovery(identity, { signal });
-        activeWatcher = watcher; nextWatcher.resolve(watcher);
+        invalidateAdvertisement(); activeWatcher = watcher; nextWatcher.resolve(watcher);
         try {
           for await (const value of watcher.notifications) {
             signal.throwIfAborted();
-            yield validatePeerDiscoveryNotification(value);
+            const notification = validatePeerDiscoveryNotification(value);
+            if (notification.type === 'ready') invalidateAdvertisement();
+            yield notification;
           }
         } finally {
-          if (activeWatcher === watcher) { activeWatcher = undefined; nextWatcher = Promise.withResolvers(); }
+          if (activeWatcher === watcher) { invalidateAdvertisement(); activeWatcher = undefined; nextWatcher = Promise.withResolvers(); }
           watcher.close();
         }
       },
@@ -56,6 +60,8 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
       async advertise(value, { signal }) {
         signal.throwIfAborted();
         if (value.identity !== identity) invalid('An advertisement must identify this owned session');
+        const advertisement = validatePeerAdvertisement({ peerId: identity, storageId: value.storageId, routes: [invitationRoute(identity)] });
+        const key = JSON.stringify(advertisement);
         const watcher = await until(nextWatcher.promise, signal);
         await until(watcher.ready, signal);
         signal.throwIfAborted();
@@ -64,18 +70,27 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
         await until(listener.ready, signal);
         signal.throwIfAborted();
         if (activeListener !== listener) invalid('The invitation listener ended before advertising');
-        await peers.advertise({ peerId: identity, storageId: value.storageId,
-          routes: [invitationRoute(identity)] }, { signal });
+        if (confirmedAdvertisement === key) return;
+        const epoch = advertisementEpoch, request = ++advertisementRequest;
+        confirmedAdvertisement = undefined;
+        try {
+          await peers.advertise(advertisement, { signal });
+          signal.throwIfAborted();
+          // A late or uncertain response must never restore a cache invalidated
+          // by a new socket, invitation listener, withdrawal or another request.
+          confirmedAdvertisement = epoch === advertisementEpoch && request === advertisementRequest ? key : undefined;
+        } catch (error) { confirmedAdvertisement = undefined; throw error; }
       },
       async withdraw({ signal }) {
         signal.throwIfAborted();
+        invalidateAdvertisement();
         await peers.withdraw(identity, { signal });
       },
       async *invitations({ signal }) {
         signal.throwIfAborted();
         if (activeListener) invalid('The owned session has one invitation listener');
         const listener = peers.listenInvitations(identity, { signal });
-        activeListener = listener; nextListener.resolve(listener);
+        invalidateAdvertisement(); activeListener = listener; nextListener.resolve(listener);
         try {
           await listener.ready;
           for await (const value of listener.invitations) {
@@ -85,7 +100,7 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
               yield Object.freeze({ peer: hint(token.requesterPeerId, invitationRoute(token.requesterPeerId)), token });
           }
         } finally {
-          if (activeListener === listener) { activeListener = undefined; nextListener = Promise.withResolvers(); }
+          if (activeListener === listener) { invalidateAdvertisement(); activeListener = undefined; nextListener = Promise.withResolvers(); }
           listener.close();
         }
       },
