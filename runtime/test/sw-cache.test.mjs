@@ -139,7 +139,9 @@ test("open A and newly published B keep complete independent asset graphs offlin
     for (const [file, value] of [["app.js", "app-"], ["lazy.js", "lazy-"], ["styles.css", "style-"]])
       assert.equal(await (await sw.request(item.publication.base + file, client)).text(), value + item.publication.id);
     assert.equal(await (await sw.request(item.publication.runtime.base + "tendril.js", client)).text(), `runtime-${item.publication.id}`);
-    assert.match(await (await sw.request("", client, true)).text(), new RegExp(`<h1>${item.publication.id}</h1>`));
+    // The page URL opens the latest saved release; the release URL its own.
+    assert.match(await (await sw.request("", client, true)).text(), /<h1>2<\/h1>/);
+    assert.match(await (await sw.request(item.publication.base, client, true)).text(), new RegExp(`<h1>${item.publication.id}</h1>`));
   }
 });
 
@@ -188,7 +190,8 @@ test("active publication identity survives a worker restart and offline activati
   net.online = false;
   const restarted = await worker(net, first.stores, first.clients);
   await restarted.activate();
-  assert.match(await (await restarted.request("", "a", true)).text(), /<h1>1<\/h1>/);
+  assert.match(await (await restarted.request("", "a", true)).text(), /<h1>2<\/h1>/, "the page URL opens the latest release");
+  assert.match(await (await restarted.request(a.publication.base, "a", true)).text(), /<h1>1<\/h1>/);
   assert.match(await (await restarted.request("", "b", true)).text(), /<h1>2<\/h1>/);
 });
 
@@ -281,7 +284,8 @@ test("a late network publication cannot rebind or evict a tab already given its 
   assert.equal(sw.stores.has(cacheName("2")), true);
   net.online = false;
   const restarted = await worker(net, sw.stores, sw.clients);
-  assert.match(await (await restarted.request("", "a", true)).text(), /<h1>1<\/h1>/);
+  assert.match(await (await restarted.request("", "a", true)).text(), /<h1>2<\/h1>/, "a reload of the page URL opens the latest release");
+  assert.match(await (await restarted.request(a.publication.base, "a", true)).text(), /<h1>1<\/h1>/);
   assert.match(await (await restarted.request("", "fresh", true)).text(), /<h1>2<\/h1>/);
   assert.equal(await (await restarted.request(a.publication.base + "lazy.js", "a")).text(), "lazy-1");
 });
@@ -462,9 +466,11 @@ test("pinned and ordinary directory navigation resolves only declared index file
   net.current = b; await sw.install(); await sw.announce("b", b.publication); net.online = false;
   for (const [client, item] of [["a", a], ["b", b]]) {
     for (const base of ["", item.publication.base]) {
-      assert.equal(await (await sw.request(base + "docs/", client, true)).text(), `${item.publication.id}: docs/index.html`);
+      // Ordinary page URLs open the latest saved release; release URLs their own.
+      const id = base ? item.publication.id : b.publication.id;
+      assert.equal(await (await sw.request(base + "docs/", client, true)).text(), `${id}: docs/index.html`);
       for (const path of [encode(directory), encode(directory + "index.html").replace(/%[0-9A-F]{2}/g, part => part.toLowerCase())])
-        assert.equal(await (await sw.request(base + path, client, true)).text(), `${item.publication.id}: ${directory}index.html`);
+        assert.equal(await (await sw.request(base + path, client, true)).text(), `${id}: ${directory}index.html`);
       for (const path of ["missing/", "docs", "docs/missing.html", "bad%escape/"])
         assert.equal((await sw.request(base + path, client, true)).status, 503, `No implicit page fallback for ${path}`);
     }

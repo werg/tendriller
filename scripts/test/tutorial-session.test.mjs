@@ -12,7 +12,8 @@ test('native tutorial routes explicitly granted owner recovery through its owned
   const directory = await mkdtemp(join(tmpdir(), 't'));
   let owned, ordinary, administrator;
   try {
-    for (const name of ['session.mjs', 'domain.mjs', 'pairing-native.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
+    await mkdir(join(directory, 'helpers'));
+    for (const name of ['session.mjs', 'domain.mjs', 'pairing-native.mjs', 'helpers/participant-lifecycle.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
     await mkdir(join(directory, 'p'), { mode: 0o700 });
     for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session']]) {
       await mkdir(join(directory, 'node_modules', scope), { recursive: true });
