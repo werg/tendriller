@@ -83,6 +83,10 @@ export interface ApplicationChangeOptions { readonly view?: ApplicationView; rea
 /** One application session owns commands, coherent applied views, operations and explicit recovery. */
 export interface ApplicationBackend<Program = unknown, Submission extends ApplicationOperation = ApplicationOperation, QueryResult = unknown, Parameter = unknown> {
   readonly id: string;
+  /** Owner-bound attachment identity; document/run context retains its declared evidence level. */
+  readonly endpoint?: Readonly<{ ownerInstanceId: string; endpointId: string; endpointIncarnation: string;
+    context: Readonly<{ viewId?: string; documentPath?: string; publicationId?: string; runId?: string }>;
+    evidence: 'owner-bound'; contextEvidence: 'caller-asserted' | 'owner-validated' }> | null;
   readonly capabilities: readonly string[];
   readonly status: ApplicationStatus;
   /** Reports current state once, then actual session changes; installs no polling. */

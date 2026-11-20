@@ -17,3 +17,14 @@ patched native engine. The default events archive cannot run this directory.
 SQL additionally needs `--sql-browser`, the exact separately built WASM assets,
 an enrolled browser and a supported OPFS SQL VFS. This directory does not ship
 a separate browser UI or claim that installing an events archive qualifies SQL.
+
+The native peer runs a private supervisor. Normal CLI invocations attach to it;
+use `--mode own` for an explicit one-off command while the owner is stopped.
+Browser documents use `openBrowserOwner` with `requiresDedicatedWorker: true`
+against this directory's bundled `worker.mjs`. Synchronous OPFS APIs are not
+available in SharedWorker in the qualified browser. Automatic mode therefore
+elects a dedicated Worker under an exclusive Web Lock; forcing shared mode
+returns `OWNER_STORAGE_UNSUPPORTED` before opening storage. All documents attach
+to that one SQL owner, and detaching a document does not close sibling views.
+The lazy WASM/VFS lifetime belongs to the owner, with database handles closed
+before pool cleanup.

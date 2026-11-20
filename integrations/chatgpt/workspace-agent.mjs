@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { consumerOwner } from './consumer.mjs';
 
 const ORIGIN = 'https://api.chatgpt.com';
 const STATES = new Set(['queued', 'in_progress', 'suspended', 'completed', 'failed']);
@@ -59,7 +60,10 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
       !Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10 ||
       !Number.isSafeInteger(maxOperations) || maxOperations < 1 || maxOperations > 100000 ||
       !Number.isSafeInteger(retryWindowMs) || retryWindowMs < timeoutMs || retryWindowMs > 86400000) fail('WORKSPACE_AGENT_CONFIGURATION_INVALID');
-  const keyFor = operationId => hash(`workspace-agent-operation\0${operationId}`);
+  const keyFor = async (ownerId, operationId) => {
+    const legacyKey = hash(`workspace-agent-operation\0${operationId}`), legacy = await read(legacyKey);
+    return legacy?.ownerId === ownerId ? legacyKey : hash(JSON.stringify(['workspace-agent-operation-v2', ownerId, operationId]));
+  };
   const owner = principal => {
     const subject = text(principal?.id, 512, 'WORKSPACE_AGENT_PRINCIPAL_REQUIRED');
     if (!subject.trim()) fail('WORKSPACE_AGENT_PRINCIPAL_REQUIRED');
@@ -67,7 +71,8 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
     if (typeof issuer !== 'string' || issuer.length > 2048 || /[\u0000-\u001f\u007f]/u.test(issuer)) fail('WORKSPACE_AGENT_PRINCIPAL_REQUIRED');
     // Match OAuth/consent identity semantics: equal subjects from different
     // issuers are different principals. Issuer comparison is exact, not URL-normalized.
-    return JSON.stringify([issuer, subject]);
+    const { agentBindingId, clientId } = consumerOwner({ ...principal, issuer: issuer || 'legacy:unscoped' });
+    return JSON.stringify([issuer, subject, ...(agentBindingId ? [{ agentBindingId }] : clientId ? [{ clientId }] : [])]);
   };
   const permitted = async (principal, applicationId, name) => {
     if (await authorize(principal, applicationId, name) !== true) fail('WORKSPACE_AGENT_ACCESS_DENIED', 403);
@@ -108,7 +113,7 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
         row.sourceEventId !== input.sourceEventId || row.triggerId !== triggerId) fail('WORKSPACE_AGENT_OPERATION_CONFLICT', 409);
   }
   async function perform(principal, input) {
-    const ownerId = owner(principal), key = keyFor(input.operationId);
+    const ownerId = owner(principal), key = await keyFor(ownerId, input.operationId);
     await permitted(principal, input.applicationId, null);
     let row = await read(key);
     if (row) {
@@ -238,7 +243,7 @@ export function createWorkspaceAgentAdapter({ store, bridge, authorize, triggerI
     },
     async status(principal, input) {
       inputs(input, ['operationId']); text(input.operationId, 256, 'WORKSPACE_AGENT_INPUT_INVALID');
-      const key = keyFor(input.operationId); let row = await read(key);
+      const key = await keyFor(owner(principal), input.operationId); let row = await read(key);
       if (!row || row.ownerId !== owner(principal) || row.triggerId !== triggerId) fail('WORKSPACE_AGENT_OPERATION_NOT_FOUND', 404);
       await permitted(principal, row.applicationId, null); await permitted(principal, row.applicationId, row.eventName);
       const current = await source(principal, row.applicationId, row.sourceEventId);

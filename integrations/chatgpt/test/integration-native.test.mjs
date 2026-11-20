@@ -177,13 +177,17 @@ test('native kitchen request traverses authenticated MCP and durable signed deli
       const reply = { applicationId, operationId: 'reply-help-1', requestId: 'help-1',
         requestEventId: beforeReply.assistance.requestEventId, answer, suggestedSteps: ['Reduce the heat', 'Stir in the cream'],
         cookingStepId: 'cream-step', basedOnContextRevision: beforeReply.assistance.contextRevision, basedOn: beforeReply.revision };
-      assert.equal((await call('reply_to_assistance', reply)).operationId, reply.operationId);
-      await enrolled.session.operations.wait(reply.operationId, { signal: AbortSignal.timeout(5000) });
+      const firstReply = await call('reply_to_assistance', reply);
+      assert.equal(firstReply.operationId, reply.operationId);
+      const nativeReplyId = firstReply.operationReference.operationId;
+      assert.match(nativeReplyId, /^integration_v2_/u);
+      assert.equal(firstReply.operationReference.deviceId, enrolled.session.deviceId);
+      await enrolled.session.operations.wait(nativeReplyId, { signal: AbortSignal.timeout(5000) });
       await link.synchronize();
-      const saved = await enrolled.session.operations.inspect(reply.operationId);
+      const saved = await enrolled.session.operations.inspect(nativeReplyId);
       assert.ok(saved.attempt);
       assert.equal((await call('reply_to_assistance', reply)).operationId, reply.operationId);
-      assert.deepEqual((await enrolled.session.operations.inspect(reply.operationId)).attempt, saved.attempt);
+      assert.deepEqual((await enrolled.session.operations.inspect(nativeReplyId)).attempt, saved.attempt);
       await link.synchronize();
       const canonicalReply = (await page.session.query('assistanceStatus', { requestId: 'help-1' })).value;
       assert.equal(canonicalReply.status, 'answered'); assert.equal(canonicalReply.answer.answer, answer);
@@ -193,9 +197,13 @@ test('native kitchen request traverses authenticated MCP and durable signed deli
       assert.equal(changedRetry.value.result.structuredContent.code, 'OPERATION_ID_CONFLICT');
       const operationStatus = await call('get_operation_status', { applicationId, operationId: reply.operationId });
       assert.equal(operationStatus.operation.status, 'applied');
+      assert.equal(operationStatus.operationReference.attemptId, saved.attempt.id);
+      assert.equal((await call('retry_application_operation', { applicationId, operationId: reply.operationId })).operationReference.attemptId, saved.attempt.id);
+      assert.equal((await call('wait_application_operation', { applicationId, operationId: reply.operationId, timeoutMs: 1000 })).operationReference.attemptId, saved.attempt.id);
+      assert.deepEqual((await enrolled.session.operations.inspect(nativeReplyId)).attempt, saved.attempt);
       const answered = await call('get_assistance_status', { applicationId, requestId: 'help-1' });
       assert.equal(answered.assistance.answer.answer, answer);
-      assert.equal(answered.delivery.jobs[0].responseOperationId, reply.operationId);
+      assert.equal(answered.delivery.jobs[0].responseOperationId, nativeReplyId);
 
       const persisted = await store.read();
       await store.close(); store = openDeliveryStore({ path: databasePath, key: databaseKey }); runtime = compose();
@@ -204,7 +212,7 @@ test('native kitchen request traverses authenticated MCP and durable signed deli
       assert.equal(await runtime.outbox.dispatchDue(), 0);
       assert.equal(deliveries.length, 1, 'Reopen must retain the accepted receipt and avoid another delivery');
       assert.equal((await call('reply_to_assistance', reply)).operationId, reply.operationId);
-      assert.deepEqual((await enrolled.session.operations.inspect(reply.operationId)).attempt, saved.attempt);
+      assert.deepEqual((await enrolled.session.operations.inspect(nativeReplyId)).attempt, saved.attempt);
       await link.close(); await page.session.close(); page = await fixture.open(0, true);
       const reopened = (await page.session.query('assistanceStatus', { requestId: 'help-1' })).value;
       assert.equal(reopened.answer.answer, answer); assert.equal(reopened.replies.length, 1);

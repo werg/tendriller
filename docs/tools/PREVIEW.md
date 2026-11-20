@@ -89,14 +89,15 @@ The named module must exist inside the authored graph and export
 | --- | --- |
 | `application` | The real common backend made by `createApplicationBackend({ id: session.applicationId, session })` from `@chronolog/peer-session/tendriller` |
 | `signals` (optional) | That session's actual live-signal surface |
-| `close()` | Closes the owned session and every Worker, transport bridge and external resource created by the composition |
+| `close()` | Detaches this preview from its owner and closes resources created exclusively for this preview; owner shutdown is a separate explicit lifecycle |
 
 The tool then calls
 `startRuntime(configuration, { application, signals })` and exposes its
 initialization promise as `globalThis.tendrilReady`. The selected application
 identity comes from that real backend. A browser composition normally obtains
-its facade through `connectApplicationWorker`, while its Worker owns the
-signer/store and calls `serveApplicationWorker`.
+its facade through `openBrowserOwner`, while `serveBrowserOwner` in the owning
+Worker controls the retained signer/store. Several preview documents may attach
+to that one profile; their drafts and pending references remain per-view.
 
 The bootstrap is responsible for real device creation or resume, verified
 authority, enrollment and peer access from that local origin. The preview server

@@ -14,6 +14,12 @@ the current browser without requesting permissions.
 | --- | --- | --- |
 | Shared notes, checklists, retained facts, ordinary CRUD | One Chronolog definition with declared commands and `session.query` | `domain.mjs`, `setup.mjs`, `session.mjs`, `worker.mjs` in the [starter](/downloads/tendriller-first-app.tgz); [state choice](STATE_MODELS.md) |
 | Atomic stock deduction, multiple related rows, relational guards | The optional SQL capability and a signed schema/engine manifest | `sql/` in the starter; [events versus SQL](STATE_MODELS.md) |
+| Several tabs or documents using one signing profile | `openBrowserOwner` / `serveBrowserOwner` with bounded attachments | `@tendriller/core/collaboration/browser` and `/worker`; [multi-participant composition](MULTIPARTICIPANT.md) |
+| Addressed work, exclusive claims, fan-out and guarded synthesis | `createCollaborationDefinition` and `createCollaborationClient` | `@tendriller/core/collaboration`; [immutable schema and recovery](MULTIPARTICIPANT.md) |
+| Current tasks and paged conversation or result history | `client.tasks`, `client.results`, `client.thread`; `client.capture` for one stable reading revision | `@tendriller/core/collaboration`; [bounded reads](MULTIPARTICIPANT.md#bounded-reads) |
+| Native clients sharing a retained signer | `createNativeSessionSupervisor` and `attachNativeSession` | `@tendriller/core/collaboration/native`; [CLI attachment modes](tools/CLI.md) |
+| Explain owner, keys, coordinator and recovery state | `diagnoseApplicationSession` / CLI `doctor`; bounded findings and next actions | `@tendriller/core/collaboration/diagnostics`; [diagnostic output](tools/CLI.md) |
+| Independently revocable agent connections | Scoped host credentials and approved application consumer bindings | [Agent bindings](AGENT_BINDINGS.md) |
 | State fetching and live UI refresh | `createLiveView(session, {query, input})` over real session queries and changes | `helpers/live-view.mjs`; [application patterns](APP_PATTERNS.md) |
 | Operation status, uncertain replies, retry and recovery | The operation journal and `createOperationView` | `helpers/operation-view.mjs`; [application patterns](APP_PATTERNS.md) |
 | Typing, presence, disposable progress | `session.signals.send/subscribe` | [Live signals](APPLICATION_SIGNALS.md) |
@@ -37,7 +43,8 @@ another database, a synchronization protocol or a hidden server dependency.
 ```js
 import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
-import { connectApplicationWorker } from '@chronolog/peer-session/browser';
+import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
+import { createCollaborationClient, createViewStore } from '@tendriller/core/collaboration';
 import { createVoice } from '@tendriller/runtime/voice';
 import { createLiveView } from './helpers/live-view.mjs';
 ```
@@ -52,7 +59,8 @@ const { createVoice } = await import(tendril.assetUrl('voice.mjs'));
 constructors. The headless runtime constructor is
 `startRuntime` from `@tendriller/runtime/kernel`. Browser signer, storage and
 replication belong in the owning Worker; the page uses its facade. Native code
-opens its own enrolled device through `@chronolog/peer-session/native`.
+attaches to a supervisor, or explicitly opens a separately enrolled device
+through `@chronolog/peer-session/native`.
 
 ## Acquisition, tracking, interpretation and commit
 

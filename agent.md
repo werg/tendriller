@@ -13,6 +13,12 @@ browser Worker and a signed publication. Use its complete files first, then adap
 the commands and UI to the user's task. The [session bootstrap](docs/SESSION_BOOTSTRAP.md)
 explains the setup code. This page is the concise workflow and contract reference.
 
+For several views or agents, use [multi-participant composition](docs/MULTIPARTICIPANT.md)
+and [scoped agent bindings](docs/AGENT_BINDINGS.md). Browser pages attach to one
+retained owner; native tools attach or deliberately choose a separately enrolled
+profile. Shared observation does not assign work: use explicit recipients and
+guarded claims. Keep per-view drafts and full original operation references.
+
 ## If the user gave you only a domain
 
 1. Read that origin's `/api/service` for its contract/release and

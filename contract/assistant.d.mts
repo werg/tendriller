@@ -1,8 +1,19 @@
 export interface AssistantEventDefinition { name: string; description: string }
 export interface AssistantEndpoint { api: string; key: string }
 export interface AssistantExposure { queries?: readonly string[]; commands?: readonly string[] }
+export interface AssistantCallerContext {
+  account: string; agentBindingId: string; bindingRevision: number;
+  verification: 'approved-binding' | 'oauth-client';
+  context: { evidence: 'caller-asserted'; endpointId?: string; endpointIncarnation?: string; runId?: string;
+    interactionId?: string; threadId?: string; documentPath?: string; publicationId?: string };
+}
+export interface AssistantInboxCursor {
+  version: 1; applicationId: string; agentBindingId: string; exportVersion: string;
+  generation: string | null; filter: string[]; sequence: number;
+}
 interface AssistantSession {
   readonly applicationId: string;
+  readonly historyId?: string;
   readonly deviceId: string;
   readonly status: { readonly generation: string };
   readonly signal: AbortSignal;
@@ -12,15 +23,17 @@ export interface AssistantParticipant {
   readonly closed: Promise<void>;
   close(): Promise<void>;
   waitUntilOnline(options?: { signal?: AbortSignal }): Promise<void>;
-  publish(event: { sourceEventId: string; name: string; generation: string; payload: unknown }): Promise<number>;
+  publish(event: { sourceEventId: string; name: string; generation: string; payload: unknown;
+    context?: Omit<AssistantCallerContext['context'], 'evidence'> }): Promise<number>;
 }
 export function createAssistantKey(): string;
+export function createApplicationAgentKey(bindingId?: string): string;
 export function proposeApplicationAssistant(options: AssistantEndpoint & AssistantExposure & {
   token: string; backupKeys?: readonly string[]; label: string; events?: readonly AssistantEventDefinition[]; signal?: AbortSignal; fetcher?: typeof fetch;
 }): Promise<{ applicationId: string; proposed: string; approved: boolean; reviewUrl: string }>;
 export function connectApplicationAssistant(options: AssistantEndpoint & AssistantExposure & {
   session: AssistantSession;
-  tools: { call(name: string, input: unknown, options?: { signal?: AbortSignal }): Promise<unknown> };
+  tools: { call(name: string, input: unknown, options?: { signal?: AbortSignal; caller?: Readonly<AssistantCallerContext> }): Promise<unknown> };
   onStatus?: (status: { state: string; reason?: string; retryInMs?: number }) => void;
   openSocket?: (url: string, protocols: string[]) => WebSocket;
   signal?: AbortSignal;

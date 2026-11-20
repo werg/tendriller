@@ -2,7 +2,7 @@
 // The local host has synthetic account sessions; no OAuth provider or live service is used.
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, X509Certificate } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
+import { connect as connectTls } from 'node:tls';
 import { parseArgs, promisify } from 'node:util';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { chromium, expect } from '@playwright/test';
@@ -88,6 +89,25 @@ async function packDependency(name) {
     '--cache', join(directory, 'npm-cache'), '--pack-destination', directory, path]));
   return join(directory, result[0].filename);
 }
+
+async function localCertificatePin() {
+  return new Promise((resolve, reject) => {
+    const socket = connectTls({ host: '127.0.0.1', port: 8790,
+      servername: 'service.localhost', rejectUnauthorized: false });
+    const finish = (error, value) => {
+      clearTimeout(timer); socket.destroy(); error ? reject(error) : resolve(value);
+    };
+    const timer = setTimeout(() => finish(Error('Local fixture certificate was unavailable')), 5_000);
+    socket.once('error', error => finish(error));
+    socket.once('secureConnect', () => {
+      try {
+        const certificate = new X509Certificate(socket.getPeerCertificate().raw);
+        finish(null, createHash('sha256').update(certificate.publicKey.export({ type: 'spki', format: 'der' })).digest('base64'));
+      } catch (error) { finish(error); }
+    });
+  });
+}
+
 
 try {
   await mkdir(app);
@@ -169,7 +189,8 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   const project = sqlOnly ? join(app, 'sql') : app;
   const node = async args => run(process.execPath, ['--import', preload, ...args], { cwd: project });
   const cli = join(app, 'node_modules/@tendriller/tools/bin/tendril.mjs');
-  const cliJson = async args => JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), ...args]));
+  // These setup/reopen probes deliberately run without a resident owner.
+  const cliJson = async args => JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'own', ...args]));
   passed('domain-served tutorial and independently installed public packages');
   if (sqlOnly) {
     checkpoint('load the exact native SQL engine');
@@ -259,10 +280,22 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   } else {
     report.browser_checks = 'running';
     checkpoint('launch browser');
+    // Context.ignoreHTTPSErrors does not cover subsequent SharedWorker fetches.
+    // Trust only this loopback fixture certificate across Chromium targets;
+    // never disable certificate verification globally or alter the public app.
+    const certificatePin = await localCertificatePin();
     browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-      args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1'] });
+      args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1',
+        `--ignore-certificate-errors-spki-list=${certificatePin}`] });
     report.browser = await browser.version();
-    const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    context.on('requestfailed', request => {
+      report.browser_network_failures ??= [];
+      if (report.browser_network_failures.length < 20) {
+        const url = new URL(request.url());
+        report.browser_network_failures.push({ endpoint: url.origin + url.pathname, error: request.failure()?.errorText });
+      }
+    });
     page = await context.newPage();
     page.on('pageerror', error => {
       report.browser_errors ??= [];
@@ -296,7 +329,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   import {createInterface} from 'node:readline';
   import {openSession} from './session.mjs';
   import {servePeerInference} from './media/inference-service.mjs';
-  const {session} = await openSession();
+  const {session,supervisor} = await openSession();
   const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidencePng.toString('base64'))}, 'base64'));
   let inferenceCalls = 0, inferenceSource = null;
   const inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDevice)}], maxRequests: 2,
@@ -306,12 +339,13 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
       return {text: 'Suggested fixture observation'};
     },
   });
-  console.log(JSON.stringify({ready:true,deviceId:session.deviceId}));
+  console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
   for await (const line of createInterface({input:process.stdin})) {
     const request=JSON.parse(line);
     try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
+      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status};
       else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
       else if(request.action==='command') {
         const before=await session.query('notes',null);
@@ -354,9 +388,16 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
         timer = setTimeout(() => reject(Error(`Native peer did not open: ${stderr}`)), 40_000);
       })]).finally(() => clearTimeout(timer));
       assert.equal(metadata.deviceId, device.deviceId);
+      client.metadata = metadata;
       return client;
     }
     await startPeer();
+    const attached = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'self']));
+    assert.equal(attached.deviceId, device.deviceId);
+    assert.equal(attached.endpoint.ownerInstanceId, peer.metadata.ownerInstanceId);
+    const attachedNotes = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'query', 'notes', 'null']));
+    assert.deepEqual(attachedNotes.value, (await peer.request('query')).value);
+    passed('separate CLI processes attach to the resident native owner without another signer/store');
     checkpoint('connect browser and exchange retained commands');
     await page.locator('#connect').click();
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
@@ -479,7 +520,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
   if (page && !page.isClosed()) {
     report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
-      'connection', 'data-status', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
+      'connection', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
     ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
     try {
       await page.screenshot({ path: join(dirname(reportPath), 'first-app-failure.png'), fullPage: true, timeout: 10_000 });
@@ -487,6 +528,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     } catch { /* Preserve the original test failure if the page has crashed. */ }
   }
   if (peer) report.native_inference_diagnostics = await peer.request('inference-status', {}, 5_000).catch(failure => ({ error: failure.message }));
+  if (peer) report.native_session_diagnostics = await peer.request('diagnostics', {}, 5_000).catch(failure => ({ error: failure.message }));
   if (error.stdout) process.stderr.write(error.stdout);
   if (error.stderr) process.stderr.write(error.stderr);
   throw error;

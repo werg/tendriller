@@ -1,5 +1,5 @@
-import { connectApplicationWorker } from '@chronolog/peer-session/browser';
-import { serveWorkerWebRtcConnections } from '@chronolog/peer-session/webrtc';
+import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/collaboration/browser';
+import { createViewStore, operationReference } from '@tendriller/core/collaboration';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createLiveView } from './helpers/live-view.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
@@ -7,12 +7,21 @@ import { mountReviewedMedia } from './media/panel.mjs';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => response.json());
-const storagePrefix = `tendriller-notes-${configuration.applicationId}`;
-const readLocal = name => { try { return localStorage.getItem(`${storagePrefix}:${name}`); } catch { return null; } };
-const writeLocal = (name, value) => { try { localStorage.setItem(`${storagePrefix}:${name}`, value); } catch { /* Session persistence is independent. */ } };
-let worker, rtc, session, liveView, operationView, observedOperation, media;
+const profileId = `tendriller-notes-${configuration.applicationId}`;
+const viewKey = `${profileId}:view`;
+let viewId = sessionStorage.getItem(viewKey) || crypto.randomUUID();
+sessionStorage.setItem(viewKey, viewId);
+let viewStore = createViewStore({ storage: localStorage, applicationId: configuration.applicationId, profileId, viewId });
+const readLocal = name => viewStore.readDraft(name);
+const writeLocal = (name, value) => viewStore.writeDraft(value, name);
+function retainedPending() {
+  const references = viewStore.pending(), selected = readLocal('operation');
+  const retained = references.find(item => item.reference.operationId === selected) ?? references[0];
+  return retained ? { ...retained.context, id: retained.reference.operationId, reference: retained.reference } : null;
+}
+let attachment, session, liveView, operationView, observedOperation, media;
 let preparingSubmission = false;
-let pending = JSON.parse(readLocal('pending') || 'null');
+let pending = retainedPending();
 const report = error => { $('#result').textContent = error.message ?? String(error); };
 const operationStatus = document.createElement('p');
 operationStatus.id = 'operation-status'; operationStatus.setAttribute('role', 'status');
@@ -28,13 +37,29 @@ if (pending) {
 $('#note').addEventListener('input', () => writeLocal('draft', $('#note').value));
 
 function savePending(value) {
-  // A durable local reference makes an uncertain first call inspectable after
-  // reload. Refuse a new submission if this reference cannot be retained.
-  localStorage.setItem(`${storagePrefix}:pending`, JSON.stringify(value));
-  pending = value;
+  // Each view owns its reference to the common signed journal. Removing this
+  // reference cannot erase another view's pending command or draft.
+  const previous = pending;
+  if (value) {
+    const reference = { applicationId: session.applicationId, historyId: session.historyId,
+      author: session.deviceId, operationId: value.id };
+    const { reference: ignored, ...context } = value;
+    viewStore.retainOperation(reference, context);
+    pending = { ...value, reference };
+  } else pending = null;
+  if (previous?.reference && previous.id !== value?.id) viewStore.removeOperation(previous.reference);
   $('#submit').disabled = Boolean(pending);
   $('#reapply').disabled = true;
   media?.setBlocked(Boolean(pending) || preparingSubmission);
+}
+function retainObservedReference(state) {
+  if (!state || pending?.id !== state.operationId) return;
+  const reference = operationReference(session, pending.id, state);
+  if (reference.author !== pending.reference.author || reference.historyId !== pending.reference.historyId)
+    throw Error('The observed operation does not belong to this retained signer and history.');
+  const { reference: ignored, ...context } = pending;
+  viewStore.retainOperation(reference, context);
+  pending = { ...pending, reference };
 }
 function beginSubmission() {
   if (pending || preparingSubmission) throw Error('Resolve the current submission before starting another operation.');
@@ -57,37 +82,19 @@ function acceptedOrRejected(result) {
   }
 }
 
-function workerReply(expected) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => finish(Error('Browser setup timed out; inspect the error and retry opening the existing device.')), 30_000);
-    const message = ({ data }) => {
-      if (data?.type === 'tutorial-failure') finish(Error(data.message));
-      else if (data?.type === expected) finish(null, data);
-    };
-    const failed = event => finish(Error(event.message || 'The application Worker failed to load.'));
-    function finish(error, value) {
-      clearTimeout(timer); worker.removeEventListener('message', message); worker.removeEventListener('error', failed);
-      if (error) reject(error); else resolve(value);
-    }
-    worker.addEventListener('message', message); worker.addEventListener('error', failed);
-  });
-}
-function makeWorker() { worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' }); }
 function busy(value) { $('#create-device').disabled = value || Boolean(pending); $('#connect').disabled = value; }
 
 $('#create-device').addEventListener('click', async () => {
   busy(true);
   try {
     if (pending) throw Error('Resume the existing device and resolve its pending operation before setting up another identity.');
-    makeWorker();
-    const ready = workerReply('tutorial-identity'); worker.postMessage({ type: 'tutorial-create' });
-    const { publicKey } = await ready;
+    const publicKey = await createBrowserIdentity({ workerUrl: new URL(configuration.ownerWorkerUrl || './worker.mjs', import.meta.url), profileId });
     $('#device-key').value = publicKey;
     $('#enrollment-command').textContent = `npm run enroll -- ${publicKey}`;
     $('#enrollment').hidden = false;
     $('#connection').textContent = 'Device created. Enroll this public key, start the native peer, then connect.';
   } catch (error) { report(error); }
-  finally { worker?.terminate(); worker = undefined; busy(false); }
+  finally { busy(false); }
 });
 
 function renderNotes(snapshot) {
@@ -107,6 +114,7 @@ function observeOperation(id, operation) {
   operationView?.close(); observedOperation = id;
   operationView = createOperationView(session, { operationId: id, operation,
     onChange({ state, coverage, waitingForShared }) {
+      retainObservedReference(state);
       const label = !state ? 'No saved attempt visible; preserve the original input and ID.'
         : state.status === 'saved' ? 'Saved on this device; waiting for applied execution.'
         : state.status === 'applied' ? `Applied: ${state.outcome}${state.rejectionCode ? ` (${state.rejectionCode})` : ''}.`
@@ -126,10 +134,28 @@ $('#connect').addEventListener('click', async () => {
   busy(true);
   let installed = false;
   try {
-    makeWorker(); rtc = serveWorkerWebRtcConnections(worker);
-    const ready = workerReply('tutorial-opened'); worker.postMessage({ type: 'tutorial-connect' });
-    const { publicKey } = await ready; $('#device-key').value = publicKey;
-    session = await connectApplicationWorker(worker, { timeoutMs: 30_000 });
+    const identity = window.tendril?.identity;
+    attachment = await openBrowserOwner({ workerUrl: new URL(configuration.ownerWorkerUrl || './worker.mjs', import.meta.url),
+      profileId, applicationId: configuration.applicationId, definitionId: 'shared-notes', definitionVersion: '2',
+      timeoutMs: 30_000, context: { viewId, ...(identity?.documentPath ? { documentPath: identity.documentPath } : {}),
+        ...(identity?.publication ? { publicationId: identity.publication } : {}) },
+      onOwnerReplaced() { $('#connection').textContent = 'The session owner restarted. Reload to reconnect this retained device and inspect pending work.'; },
+    });
+    session = attachment.session; $('#device-key').value = session.deviceId;
+    if (pending?.reference && (pending.reference.author !== session.deviceId || pending.reference.historyId !== session.historyId))
+      throw Error('The retained operation belongs to a different signer or history. Reopen its original owner to inspect it.');
+    if (session.endpoint.context.viewId !== viewId) {
+      const offeredDraft = $('#note').value;
+      viewId = session.endpoint.context.viewId; sessionStorage.setItem(viewKey, viewId);
+      viewStore = createViewStore({ storage: localStorage, applicationId: configuration.applicationId, profileId, viewId });
+      pending = retainedPending(); $('#note').value = readLocal('draft') ?? ''; $('#operation-id').value = readLocal('operation') ?? '';
+      $('#submit').disabled = Boolean(pending);
+      if (offeredDraft) {
+        const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy the other view’s draft';
+        copy.addEventListener('click', () => { $('#note').value = offeredDraft; writeLocal('draft', offeredDraft); copy.remove(); });
+        $('#result').before(copy);
+      }
+    }
     if (!window.tendril) throw Error('Open the published Tendriller page to install its runtime binding.');
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
     window.tendril.signals.install(session.signals);
@@ -162,10 +188,8 @@ $('#connect').addEventListener('click', async () => {
     if (!installed) {
       const facadeOpened = Boolean(session);
       liveView?.close(); operationView?.close(); media?.close();
-      try { await session?.close(); } catch { /* Preserve the setup failure. */ }
-      try { rtc?.close(); } catch { /* Preserve the setup failure. */ }
-      worker?.terminate();
-      session = rtc = worker = undefined;
+      try { await attachment?.detach(); } catch { /* Preserve the setup failure. */ }
+      session = attachment = undefined;
       $('#editor').disabled = true; $('#close').disabled = true;
       // A partially installed runtime binding cannot be replaced in this page.
       // Close the owned store first, then make the required reload explicit.
@@ -263,7 +287,9 @@ $('#inspect').addEventListener('click', async () => {
 $('#retry').addEventListener('click', async () => {
   try {
     const id = $('#operation-id').value;
-    if (!await session.operations.get(id) && pending?.id === id) {
+    const original = await session.operations.get(id);
+    retainObservedReference(original);
+    if (!original && pending?.id === id) {
       const options = { operationId: id, basedOn: pending.basedOn };
       // A first RPC can fail before its saved acknowledgment. Explicit retry
       // preserves the original input, revision and identity in that case too.
@@ -297,12 +323,18 @@ $('#refresh').addEventListener('click', () => { void refresh().catch(report); })
 
 async function close() {
   liveView?.close(); operationView?.close(); media?.close();
-  try { await session?.close(); }
-  finally { rtc?.close(); worker?.terminate(); $('#editor').disabled = true; $('#close').disabled = true;
+  try { await attachment?.detach(); }
+  finally { $('#editor').disabled = true; $('#close').disabled = true;
     $('#connection').textContent = 'Connection closed. Reload to reconnect this existing device.'; }
 }
 $('#close').addEventListener('click', () => { void close().catch(report); });
-window.addEventListener('pagehide', () => { void close().catch(() => {}); }, { once: true });
+window.addEventListener('pagehide', event => {
+  if (event.persisted) void attachment?.suspend().catch(report);
+  else void close().catch(() => {});
+});
+window.addEventListener('pageshow', event => {
+  if (event.persisted && attachment) void attachment.resume().then(() => refresh()).catch(report);
+});
 if (location.origin !== new URL(configuration.page_url).origin) {
   busy(true);
   $('#connection').textContent = 'Layout preview. Open the published page to enroll and connect its real application session.';

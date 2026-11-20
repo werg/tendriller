@@ -19,6 +19,8 @@ export function onboardingDescriptor(base: string) {
       patterns: url('/docs/APP_PATTERNS.md'), reviewed_input: url('/docs/AI_INPUT.md'),
       state_models: url('/docs/STATE_MODELS.md'),
       bootstrap: url('/docs/SESSION_BOOTSTRAP.md'),
+      collaboration: url('/docs/MULTIPARTICIPANT.md'),
+      agent_bindings: url('/docs/AGENT_BINDINGS.md'),
       troubleshooting: url('/docs/TROUBLESHOOTING.md'),
       application: url('/docs/APPLICATION_BACKENDS.md'),
       browser: url('/docs/BROWSER_API.md'),
@@ -52,7 +54,8 @@ export function onboardingDescriptor(base: string) {
     execution: {
       application: 'An owned Chronolog session executes commands and retains application data on participating devices.',
       host: 'Tendriller hosts authenticated code, signed controls and bounded introductions. It does not run a resident application or agent process.',
-      browser: 'Browser execution and replication belong in the owned Worker. Runtime installation alone does not establish connectivity.',
+      browser: 'Browser views attach to one profile owner using SharedWorker or a fenced elected Worker. Each view retains its own draft and original operation references. Runtime installation alone does not establish connectivity.',
+      agents: 'Approved consumer bindings, native profile ownership and application grants are independent. Addressed claims select execution; observing shared history does not claim work.',
     },
     sources: {
       core: 'https://github.com/werg/tendriller',

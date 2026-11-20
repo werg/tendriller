@@ -133,6 +133,7 @@ export default {
     allowedQueries: ['kitchenContext', 'assistanceStatus'],
     allowedCommands: ['requestAssistance', 'replyToAssistance'],
     eventTopics: ['assistant'],
+    exportVersion: 'kitchen-assistance-v1',
     eventProjection: kitchenEventProjection,
   }],
   authorizeAccountAccess: account.authorizeAccountAccess,
@@ -152,6 +153,74 @@ Use the same application ID in account mapping, consent, lifecycle handles and
 tool calls. No remote tool accepts a module path, provider endpoint, host token
 or signing key. Configured trusted dependency injection exists for controlled
 composition and tests, not model-selected execution.
+
+### Independent approved consumers
+
+The built-in external OAuth verifier and Tendriller account adapter establish an
+account identity. Their default `get_profile.consumer.verification` is `account`.
+That compatibility mode intentionally shares one account's operation and
+subscription namespace: a new conversation or request-supplied agent name does
+not establish a new approved participant. A trusted authenticator can supply a
+verified `clientId` for an OAuth client namespace; its verification is explicitly
+`oauth-client`, which does not claim an individually approved agent.
+
+For independently scoped agents, use the hosted MCP owner's agent approval flow
+or supply the following result from this deployment's trusted `auth.authenticate`
+adapter after it verifies the credential and resolves an existing approved
+binding. The adapter owns the approval policy; this service does not read these
+fields from tool arguments, tokens' unverified claims, or MCP `_meta`:
+
+```js
+{
+  id: verifiedAccountId,
+  issuer: trustedIssuer,
+  scopes: ['applications:read', 'applications:write', 'events:subscribe'],
+  oauthGrantId: verifiedCurrentGrantId,
+  agentBinding: {
+    id: approvedStableBindingId,
+    revision: approvedBindingRevision,
+    applications: {
+      [applicationId]: {
+        queries: ['kitchenContext', 'assistanceStatus'],
+        commands: ['replyToAssistance'],
+        events: ['assistant.help_requested'],
+        readEvents: true,
+      },
+    },
+  },
+}
+```
+
+`authorizeAccountAccess` must also verify that this exact binding and revision
+remain approved for the account and application, including when the service
+passes retained principal metadata for background delivery. Return `false` on
+revocation or stale revision. All egress and protected calls repeat that check.
+OAuth scopes, current account access, account consent, binding capabilities and
+the native device grant must all permit the action. Keep a binding ID stable
+across credential rotation; create another approved ID for a different agent.
+Revoking one binding stops its observations, invocations and new deliveries while
+preserving sibling bindings. Existing delivery receipts remain inspectable by
+the same approved consumer after authorization is restored.
+
+The same short local operation ID is safe in two bindings. The integration
+derives a native ID from application, issuer/account, approved consumer and local
+ID, then durably binds it to the command, exact input, reviewed revision and
+source context. Its response includes the original local `operationId` and a
+full `operationReference` containing the actual signer, history, native operation
+and known attempt/generation. Optional `context` accepts run, endpoint, document
+and publication correlation fields; these remain labeled `caller-asserted` and
+never authenticate an actor or become a signed domain claim automatically.
+
+Use `inspect_application_operation`, `wait_application_operation` and
+`retry_application_operation` with the original local ID. Retry sends the exact
+native attempt; it does not create a new attempt after uncertainty. A lost or
+offline response retains the full known reference and reports uncertainty.
+`reapply_application_operation` requires the original ID, a distinct new ID,
+explicit input and a reviewed `basedOn` revision. The real native API checks
+whether reapplication is valid. Reconfiguring a provider never moves old work to
+another signing device or history: those operations require their original
+provider. Account-only legacy records retain their original native IDs and do
+not transfer to a newly approved binding.
 
 Start with the actual private module:
 
@@ -198,6 +267,8 @@ The adapter fixes the destination in trusted configuration, sends selected-sourc
 identifiers and keeps the original idempotency key. See
 [WORKSPACE_AGENT.md](WORKSPACE_AGENT.md). Its conversation/run receipt does not
 contain the assistant answer; the agent must use permitted MCP write-back tools.
+Approved consumer identity also scopes its operation journal and conversation
+key, so sibling agents can use the same short operation ID independently.
 
 Add `lifecycle: {creation, applications, authorizePublication}` for separately
 scoped creation/release tools. `creation` supplies the trusted service `origin`
@@ -212,6 +283,9 @@ consent. Missing approval configuration leaves publication unavailable.
 publisher signing. Creation returns the actual owner claim URL without claiming.
 Preparation never implies a signed publication. The private bundle must be
 reviewed by bytes as well as hashes, and no signing key goes to the remote model.
+Approved consumers receive separate review and native publication identities;
+`clientOperationId` retains their short local ID while `operationId` and the
+signing request identify the exact scoped publication to approve.
 The default MCP request limit is 256 KiB including JSON/base64 overhead; trusted
 `maxRequestBytes` may raise it up to 12 MiB. Lifecycle graphs additionally default
 to 8 MiB decoded bytes/128 files and host limits still apply. The public CLI is
@@ -244,6 +318,39 @@ with `from_current` or `replay_selected`. An accepted external request cannot be
 retracted. Finite journal capacities refuse new work instead of deleting uncertain
 records; operators must review/archive retained receipts deliberately.
 
+Internal cursors record the application, consumer, history, export fingerprint,
+event filter and generation. Public subscription cursors remain `null`; replay
+is an explicit reviewed action. Configure `exportVersion` whenever projection
+behavior or captured configuration changes. If omitted, the service fingerprints
+the projection function text as a compatibility default. Export definitions also
+bind the declared topics, application definition and actual provider. A changed
+export pauses observation and queued egress before an old cursor is opened.
+`get_application_status.delivery` exposes `cursorReset`, the previous/current export and an
+exact `reviewToken`. Pass that token and the shown revision to
+`resume_event_delivery`; a subsequent export change invalidates the review.
+Replaying under a changed export uses new delivery identities and preserves the
+cancelled old receipts. A refresh or credential rotation cannot silently clear
+this pause.
+
+Event envelopes retain the actual source author, attempt, selected revision and
+export definition. Delivery status distinguishes delivered, pending, cancelled,
+revoked, expired, rejected and unknown outcomes; successful webhook receipt still
+does not mean that an assistant answered or a domain command applied. Admission
+allows two concurrent calls per consumer, eight per account and 32 overall.
+All bindings share the account's rate and subscription budgets. Durable dispatch
+turns alternate accounts and their consumers before draining older backlogs.
+Webhook delivery uses four workers by default, with at most two current leases
+per account, two per consumer and one per subscription. These limits are checked
+inside the durable lease transaction, including across simultaneous dispatcher
+instances. A slow callback occupies its own slot while another recipient can
+complete; callbacks for the same subscription do not run concurrently. Configure
+`outboxLimits.maxConcurrent` (1–32), `maxConcurrentPerAccount`, and
+`maxConcurrentPerConsumer` to reduce the relevant budgets. Account/consumer limits
+cannot exceed their parent budget. Each turn still admits at most its explicit
+delivery limit, and late responses retain the existing exact-lease receipt rules.
+The journal's finite capacity preserves terminal and uncertain receipts instead
+of silently evicting them.
+
 `GET /health` is process liveness and reports `liveChatGptVerified: false`.
 Use authorized application status for grants, connection availability, observer
 problems, queued attempts and recovery pauses. Keep safe diagnostic codes; do not
@@ -274,12 +381,12 @@ Build the pinned public events artifact and extract its archive to enable them:
 
 ```sh
 git clone https://github.com/werg/chronolog-db.git chronolog-source
-git -C chronolog-source checkout --detach d014879ecb29714e80311d6101cfa8973953d5c4
+git -C chronolog-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
 cd chronolog-source
 corepack pnpm install --frozen-lockfile --ignore-scripts
 node tools/package-peer-session.mjs
 mkdir -p /absolute/private/native-test-package
-tar -xzf artifacts/peer-session/chronolog-peer-session-d014879e.tgz \
+tar -xzf artifacts/peer-session/chronolog-peer-session-d3efeb6d.tgz \
   -C /absolute/private/native-test-package --strip-components=1
 cd /absolute/path/to/tendriller
 CHRONOLOG_SESSION_PACKAGE=/absolute/private/native-test-package npm run test:chatgpt

@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { evictDurableObject } from 'cloudflare:test';
 import type { Tendril } from '../src/tendril';
@@ -124,7 +124,13 @@ it.each([false, true])('starts a full inactivity window when an old resident pag
       }
       finally { restore(); }
     });
-    await runAlarm(page.id);
+    // An automatic cleanup alarm can already own the first recovery attempt.
+    // Drive its persisted retry instead of treating an absent manual alarm as
+    // evidence that the interrupted lifetime change has finished.
+    await vi.waitFor(async () => {
+      await runAlarm(page.id);
+      expect(await inDO(page.id, t => lifetimeChangePending(t))).toBe(false);
+    }, { timeout: 5000, interval: 25 });
   } else await apiJson(page, 'PATCH', '', { lifetime: 'ad_hoc' });
   await inDO(page.id, t => {
     expect(t.exists()).toBe(true);

@@ -10,6 +10,8 @@ import { servicePage } from './accounts/ui';
 import { requireWritesOpen } from './service-state';
 import { publicBase } from './urls';
 import { APP_NAME, assistantOAuth, fields, string, type EventDefinition, type Operation } from './assistant-shared';
+import { initializeAssistantBindings, selectedProvider, selectProvider, type ConsumerRow } from './assistant-bindings';
+import { revokeAssistantConsumer } from './assistant-events';
 
 export type Proposal = {
   id: string; owner: string; applicationId: string; label: string; adapterHashes: string[]; agent: AgentPrincipal;
@@ -82,13 +84,32 @@ export async function reviewAssistant(t: Tendril, req: Request) {
   const csrf = await sha256Hex(JSON.stringify([browser.sessionHash, item.id, current?.version, t.tid, 'application-mcp-consent']));
   if (req.method === 'GET') {
     const selection = current?.id === item.id ? current : null;
+    const consumers = t.db.get('assistant_binding_tables_v1', false)
+      ? t.db.all<ConsumerRow>('SELECT * FROM assistant_consumers ORDER BY created_at') : [];
+    const consumerForms = consumers.map(agent => `<li><strong>${escapeHtml(agent.label)}</strong> · ${escapeHtml(agent.status)} · ${escapeHtml(agent.route)}
+      <p>OAuth client: ${escapeHtml(agent.client_id)}. Queries: ${escapeHtml(JSON.parse(agent.queries).join(', ') || 'none')}.
+      Commands: ${escapeHtml(JSON.parse(agent.commands).join(', ') || 'none')}. Events: ${escapeHtml(JSON.parse(agent.events).join(', ') || 'none')}.</p>
+      <form method="post"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="binding" value="${escapeHtml(agent.id)}">
+      <input type="hidden" name="revision" value="${agent.revision}">${agent.status === 'pending' ? '<button name="action" value="approve-agent">Approve this agent</button>' : ''}
+      ${agent.status !== 'revoked' ? '<button name="action" value="revoke-agent">Revoke this agent</button>' : ''}</form></li>`).join('');
+    const provider = selectedProvider(t);
+    const providerForms = current ? activeAdapters(t).map(hash => {
+      const device = t.db.one<{ device_id: string }>('SELECT device_id FROM assistant_devices WHERE adapter_hash=?', hash)?.device_id;
+      return `<li>Provider key <code>${escapeHtml(hash.slice(0, 12))}</code> · ${hash === provider?.adapterHash ? 'Selected executor' : 'Read replica'}
+        <p>${device ? 'Enrolled signer: <code>' + escapeHtml(device) + '</code>' : 'No enrolled process has connected.'}</p>
+        ${device && hash !== provider?.adapterHash ? `<form method="post"><input type="hidden" name="csrf" value="${csrf}">
+        <input type="hidden" name="provider" value="${hash}"><input type="hidden" name="epoch" value="${provider?.selectionEpoch ?? 0}">
+        <button name="action" value="select-provider">Use for new commands</button></form>` : ''}</li>`;
+    }).join('') : '';
     const page = servicePage('Assistant connection',
     `<h1>${escapeHtml(item.label)}</h1><p>${current ? 'Removing an event stops its subscriptions and removes that event from the inbox.' : 'Choose what the assistant may access.'}</p>
     <p>Participant keys ${item.adapterHashes.map(hash => '<code>' + hash.slice(0, 12) + '</code>').join(', ')}</p>
     <form method="post"><input type="hidden" name="csrf" value="${csrf}">
     ${options('queries', item.queries, selection?.queries)}${options('commands', item.commands, selection?.commands)}${options('events', item.events, selection?.events)}
     <button name="action" value="approve">Approve selected permissions</button>
-    ${current ? '<button name="action" value="revoke">Disconnect application</button>' : ''}</form>`);
+    ${current ? '<button name="action" value="revoke">Disconnect application</button>' : ''}</form>
+    ${current ? `<section><h2>Application tool provider</h2><p>One selected provider executes new commands. Existing operations remain bound to their original signer.</p><ul>${providerForms}</ul></section>
+    <section><h2>Independent agents</h2><p>Each approved agent has a separate proof, operation namespace and delivery progress. Revoking one agent leaves the others connected.</p><ul>${consumerForms || '<li>No independently registered agents.</li>'}</ul></section>` : ''}`);
     const headers = new Headers(page.headers);
     headers.set('Content-Security-Policy', headers.get('Content-Security-Policy') + "; frame-ancestors 'none'");
     return new Response(page.body, { status: page.status, headers });
@@ -100,10 +121,28 @@ export async function reviewAssistant(t: Tendril, req: Request) {
   return t.serializeAssistant(async () => {
     if (proposal(t)?.id !== item.id || connection(t)?.version !== current?.version || t.db.get('owner_account', null) !== browser.id)
       throw new HttpError(409, 'proposal_changed');
-    if (form.get('action') === 'revoke') {
+    if (form.get('action') === 'approve-agent' || form.get('action') === 'revoke-agent') {
+      if (!current) throw new HttpError(409, 'application_not_connected');
+      initializeAssistantBindings(t);
+      const agent = t.db.one<ConsumerRow>('SELECT * FROM assistant_consumers WHERE id=?', form.get('binding') ?? '');
+      if (!agent || String(agent.revision) !== form.get('revision')) throw new HttpError(409, 'agent_binding_changed');
+      if (form.get('action') === 'approve-agent') {
+        await requireWritesOpen(t.env);
+        if (agent.status !== 'pending') throw new HttpError(409, 'agent_binding_changed');
+        t.db.run("UPDATE assistant_consumers SET status='active',revision=revision+1 WHERE id=?", agent.id);
+      } else t.transaction(() => revokeAssistantConsumer(t, agent.id));
+    } else if (form.get('action') === 'select-provider') {
+      await requireWritesOpen(t.env);
+      const hash = form.get('provider') ?? '';
+      if (!current || !activeAdapters(t).includes(hash) || !t.db.one('SELECT 1 FROM assistant_devices WHERE adapter_hash=?', hash))
+        throw new HttpError(403, 'provider_not_approved');
+      if (String(selectedProvider(t)?.selectionEpoch ?? 0) !== form.get('epoch')) throw new HttpError(409, 'provider_changed');
+      selectProvider(t, hash);
+    } else if (form.get('action') === 'revoke') {
       t.transaction(() => {
         t.db.del('assistant_connection');
         t.db.del('assistant_adapters');
+        t.db.del('assistant_provider');
         resetAssistantConnection(t);
         t.afterCommit(() => closeAssistantConnections(t, []));
       });
@@ -119,6 +158,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
       if (current?.id === item.id && JSON.stringify([current.queries, current.commands, current.events]) ===
         JSON.stringify([approved.queries, approved.commands, approved.events])) return redirect(returnTo);
       initializeAssistantTables(t);
+      initializeAssistantBindings(t);
       try {
         await t.env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1,label=? WHERE page_id=? AND owner_account=?')
           .bind(approved.label, t.tid, browser.id).run();
@@ -142,6 +182,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
         }
         t.db.set('assistant_connection', approved);
         t.db.set('assistant_adapters', { agent: item.agent, hashes: item.adapterHashes });
+        if (!selectedProvider(t) || !item.adapterHashes.includes(selectedProvider(t)!.adapterHash)) selectProvider(t, item.adapterHashes[0]);
         t.afterCommit(() => closeAssistantConnections(t, item.adapterHashes, Boolean(sameEvents)));
       });
     } else throw new HttpError(400, 'invalid_action');
@@ -160,6 +201,9 @@ function closeAssistantConnections(t: Tendril, keep: string[], keepInbox = false
 }
 
 function resetAssistantConnection(t: Tendril) {
+  if (t.db.get('assistant_binding_tables_v1', false)) {
+    for (const row of t.db.all<{ id: string }>("SELECT id FROM assistant_consumers WHERE status<>'revoked'")) revokeAssistantConsumer(t, row.id);
+  }
   if (t.db.get('assistant_tables', false)) {
     t.db.run('DELETE FROM assistant_jobs');
     t.db.run('DELETE FROM assistant_watchers');

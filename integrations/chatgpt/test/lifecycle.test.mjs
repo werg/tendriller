@@ -203,3 +203,14 @@ test('real enrolled publisher signs reviewed bytes; public host transport verifi
       assert.equal((await native.registry.read()).controls[0].payload.grants.find(grant => grant.publicKey === nonPublisher.session.deviceId).publisher, false);
     } finally { await native.close(); }
   });
+
+test('approved agents retain separate review and signed publication identities for the same local ID', async () => {
+  const f = fixture(), first = { ...principal, agentBindingId: 'planner' }, second = { ...principal, agentBindingId: 'reviewer' };
+  const one = await f.service.preparePageRelease(first, input), two = await f.service.preparePageRelease(second, input);
+  assert.notEqual(one.reviewId, two.reviewId); assert.notEqual(one.operationId, two.operationId);
+  assert.match(one.operationId, /^publication_v2_/u); assert.equal(one.clientOperationId, input.operationId);
+  assert.equal(one.signingRequest.operationId, one.operationId);
+  await assert.rejects(f.service.getReviewBundle(second, { reviewId: one.reviewId }), { code: 'LIFECYCLE_REVIEW_UNAVAILABLE' });
+  const rotated = await f.service.preparePageRelease({ ...first, oauthGrantId: 'rotated' }, input);
+  assert.deepEqual(rotated, one);
+});

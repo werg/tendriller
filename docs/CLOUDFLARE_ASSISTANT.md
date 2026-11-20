@@ -94,12 +94,20 @@ initialize it at the current selected tail using the same topic filter. The
 helper advances the checkpoint after the host acknowledges all events in a
 batch. A recovered history requires explicit review of what to resume.
 The Worker checks the approved adapter credential and its enrolled device
-against signed Chronolog grants. A lost participant can be bypassed for reads
-and new writes by choosing an eligible approved standby. Chronolog still needs
+against signed Chronolog grants. Reads can use an eligible approved replica.
+New writes use one explicitly selected provider. The owner can select a different
+enrolled provider on the connection review page; connecting another socket does
+not change that selection. Each connection has a monotonically increasing epoch,
+so frames from a replaced socket cannot act as its successor. Chronolog still needs
 an available coordination path for writes. For an attempted write, Tendriller
 retains its input digest and original signing device with the operation ID.
-Retries use that device. If it is unavailable, inspect the app's selected
-state or restore the original participant. A new ID starts independent work.
+Retries use that device. If it is unavailable, the response retains its original
+operation reference and reports uncertainty. Restore that provider and use
+`inspect_application_operation`, `retry_application_operation` or the bounded
+`wait_application_operation`. These calls never move a saved operation to a
+different signer. `reapply_application_operation` is a deliberate new operation,
+requires a new ID and links to the reviewed original. A new ID without that
+explicit link starts independent work.
 The retained command index is bounded per page and survives connection edits.
 An OAuth revocation blocks each dispatch whose fresh authorization check occurs
 after revocation. Keep the original operation identity for a command already
@@ -112,6 +120,50 @@ where to begin on each forwarding device.
 
 Stop the adapter using `assistant.close()` or by closing its parent session.
 The SDK scopes remote commands and queries again before calling the native tool.
+
+## Several independently acting agents
+
+OAuth identifies the account and registered client. It does not independently
+authenticate two chats or model runs within the same client. Unbound requests are
+therefore labeled **Tool caller via the OAuth client**. Their operation namespace
+includes that client; they are never presented as a verified individual agent.
+
+Use a separate approved binding for each independently acting agent:
+
+1. Generate `createApplicationAgentKey()` from `@tendriller/core/assistant` and
+   retain the private proof before the first uncertain request. It consists of a
+   UUID and 32 random bytes; the UUID alone grants no authority.
+2. Call `register_application_agent` with `applicationId`, `bindingToken`, a
+   readable `label`, the requested command/query/event names and the actual
+   route (`on-demand`, `event-subscriber`, `mounted-inbox` or `native-loop`).
+3. The owner reviews and approves that exact binding at the returned URL. Each
+   binding's approved capabilities are capped by the application connection and
+   the currently authenticated OAuth grant.
+4. Include the proof in the `Tendriller-Agent-Binding` request header, the MCP
+   request's `_meta['tendriller/agentBinding']`, or the tool's `bindingToken` field.
+   The proof must never appear in application input, code assets or event exports.
+
+Each binding has independent operation IDs, subscriptions, retained delivery
+receipts and cursor scope. Two bindings may use the same short `operationId`.
+An ID identifies the same command, input, captured revision and source context;
+changed content conflicts. Token refresh and connection reconnect preserve the
+namespace. `rotate_application_agent` accepts a replacement proof created with
+`createApplicationAgentKey(existingBindingId)` and preserves the binding ID.
+`revoke_application_agent` or the owner's **Revoke this agent** action stops only
+that binding. It does not revoke other agents or enrolled signing profiles.
+
+Command responses contain the actual signer, native operation ID, generation and
+attempt ID when available. The response distinguishes saved, applied, rejected,
+needs-review and uncertain states. The native tool receives the gateway's
+authenticated caller binding separately from optional endpoint/run/document
+labels, which remain explicitly **caller-asserted**. The admission index retains
+this delegated context; cryptographic execution provenance remains the actual
+Chronolog signer. An application needing the logical actor in its signed domain
+records must explicitly compose that attested context into its command policy.
+
+Host-level credentials are also independently scoped. See
+[Agent bindings](AGENT_BINDINGS.md) for additive enrollment, rotation and the
+separate, replacing recovery action.
 
 ## MCP Events and other clients
 
@@ -129,8 +181,13 @@ terminal receipts, including expiry, rejected callbacks and exhausted retries.
 An accepted receipt establishes delivery to the provider. Confirm the resulting signed writeback in application history.
 
 A tool-capable chat without background subscriptions can call
-`read_application_events` on the next turn. Keep its returned `next` cursor and
-generation, check `truncated`, and preserve context if the generation changes.
+`read_application_events` on the next turn. Retain the complete returned `next`
+cursor: application, agent binding, export version, selected generation, filter
+and sequence. A binding, filter, export, generation or retention change returns
+`resetRequired`, the reason and a reset cursor. Inspect affected work before
+explicitly continuing from that boundary. Numeric sequence values alone are not
+resumable cursors. Each observer advances independently, including empty filtered
+batches. A cursor establishes observation progress, never task ownership.
 `truncated` tracks the visible inbox window even when an old event must remain
 stored for a pending webhook.
 Compatible MCP Apps hosts can mount `open_application_inbox` to show new activity
@@ -153,7 +210,10 @@ chat or a separately published agent with its own trigger. See the
   the page's assistant work queue, and backs off on transient errors.
 - The inbox holds the newest 256 accepted events per page plus records needed
   for outstanding delivery. There are eight subscriptions, at most 256 queued
-  deliveries and four mounted live inboxes per page. When the queue is full,
+  deliveries and four mounted live inboxes per page. A consumer binding may have
+  four subscriptions and two active RPCs within the page's eight-call ceiling.
+  There are at most 32 retained consumer bindings and 4,096 operation mappings.
+  When the queue is full,
   the emitter receives an explicit error and can retry its exact source event.
   Disconnecting the application removes its event inbox and subscriptions.
 - Verify a real client subscription, a user-initiated inbox follow-up, retry

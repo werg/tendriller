@@ -13,6 +13,7 @@ export function createSignalBinding(initial) {
   };
   const binding = Object.freeze({
     get available() { return service !== undefined; },
+    get delivery() { return service?.delivery; },
     ready: () => ready,
     install(value) {
       if (service) throw new SignalError('signals_already_installed', 'Reconnect within the installed signal implementation');
