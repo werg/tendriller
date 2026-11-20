@@ -30,6 +30,13 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
   const lifetime = AbortSignal.any([opening, owned.session.signal].filter(Boolean));
   let lifecycle, unsubscribe, assistantTask, changesTask, closing;
   let participationReady = false, reconciled = false, activated = false, adapterReady = !assistant, sentReady = false;
+  let observing = true, lastOnline;
+  const assistantStatus = online => {
+    adapterReady = online;
+    if (!assistant || lastOnline === online) return;
+    lastOnline = online;
+    send({ idleSoakAssistantStatus: 1, online, eventsForwarding: events });
+  };
   const closeOwned = () => closing ??= Promise.resolve().then(() => owned.close());
   const ready = () => {
     if (sentReady || lifetime.aborted || !participationReady || !reconciled || !activated || !adapterReady) return;
@@ -48,15 +55,17 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
       record('wakeups'); participationReady = ['coordinating', 'following'].includes(status.phase) && !status.error && !status.recovery; ready();
     });
     if (assistant) {
+      assistantStatus(false);
       if (typeof runAssistant !== 'function') throw Error('CANONICAL_ASSISTANT_REQUIRED');
       assistantTask = Promise.resolve().then(() => runAssistant({ signal: lifetime, events }, {
         // runAssistant must reuse this observed owner, never open a second signing store.
         open: async () => { lifetime.throwIfAborted(); return observed; },
         report(value) {
+          if (!observing || lifetime.aborted) return;
           record('wakeups');
-          if (value.state === 'adapter_online') adapterReady = true;
-          if (['adapter_offline', 'assistant_stopped', 'setup_channel_closed', 'stopped'].includes(value.state) ||
-              ['disconnected', 'closed'].includes(value.assistant?.state)) adapterReady = false;
+          if (value.state === 'adapter_online') assistantStatus(true);
+          if (['adapter_offline', 'assistant_stopped', 'setup_channel_closed', 'awaiting_assistant_consent', 'stopped'].includes(value.state) ||
+              ['disconnected', 'closed'].includes(value.assistant?.state)) assistantStatus(false);
           ready();
         },
       }));
@@ -69,6 +78,7 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
     await untilStopped(Promise.race([changesTask, ...[assistantTask].filter(Boolean)]), lifetime);
   } catch (error) { if (!lifetime.aborted) throw error; }
   finally {
+    observing = false; assistantStatus(false);
     stop.abort();
     if (typeof unsubscribe === 'function') unsubscribe();
     try {
