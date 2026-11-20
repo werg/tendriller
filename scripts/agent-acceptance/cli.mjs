@@ -113,7 +113,12 @@ export async function run(values) {
       } else evidence.data.limits.push('Owner browser unavailable: external observer evidence is required.');
     }
     const env = isolatedEnvironment(directory);
-    const config = ['mcp_servers={}', 'web_search="live"', 'history.persistence="none"'];
+    const config = ['mcp_servers={}', 'web_search="live"', 'history.persistence="none"',
+      'features.apps=false', 'features.plugins=false', 'features.remote_plugin=false',
+      'features.skip_host_skill_discovery=true', 'features.skill_search=false'];
+    evidence.data.environment.accountApps = 'disabled';
+    evidence.data.environment.plugins = 'disabled';
+    evidence.data.environment.hostSkillDiscovery = 'disabled';
     if (mode === 'mcp' && !smoke) {
       bridge = await mcpBridge({ origin, token: await browser.owner.freshToken(), freshToken: async options => {
         const token = await browser.owner.freshToken(options);
@@ -125,6 +130,11 @@ export async function run(values) {
     }
     host = new AppServer({ cwd: project, env, config, deadlineMs: Math.min(seconds * 1000, 60000), onEvent: event => {
       evidence.private('observable', event);
+      if (event.type === 'mcpToolCall' && (mode === 'domain' || event.server !== 'tendriller')) {
+        evidence.data.contextContaminated = true;
+        evidence.data.checks.discovery = { status: 'failed', source: 'harness-tool-isolation', observedAt: now() };
+        evidence.save(); signal();
+      }
       if (event.event === 'turn') { busy = false; evidence.data.lastTurn = { status: event.status, at: now() }; evidence.save(); }
     } });
     evidence.data.nativeHost = { pid: host.child.pid, startedAt: now(), processLifetime: 'Bounded harness process; no wake/handoff promised' };
@@ -143,13 +153,18 @@ export async function run(values) {
         if (bridge) {
           bridge.refresh(await browser.owner.freshToken());
           await host.rpc('config/mcpServer/reload', null);
-          const status = await host.rpc('mcpServerStatus/list', { threadId, serverName: 'tendriller', detail: 'full' });
+          const status = await host.rpc('mcpServerStatus/list', { threadId, detail: 'full' });
           evidence.private('catalog', { status });
+          if (!Array.isArray(status.data) || status.data.some(server => server.name !== 'tendriller')) throw Error('Unexpected inherited MCP server');
           const tools = status.data?.find(server => server.name === 'tendriller')?.tools;
           if (!tools || !Object.keys(tools).length) throw Error('Selected-origin tool catalog unavailable');
           evidence.data.mcp.catalogSha256 = hash(JSON.stringify(tools));
           evidence.data.mcp.refreshedAt = now(); evidence.save();
           // Status is retained for source/tool verification, never converted into an invented tool catalog.
+        } else {
+          const status = await host.rpc('mcpServerStatus/list', { threadId, detail: 'full' });
+          evidence.private('catalog', { status });
+          if (!Array.isArray(status.data) || status.data.length) throw Error('Domain-only context inherited an MCP server');
         }
         evidence.private('prompts', { text });
         const result = await host.rpc('turn/start', { threadId, cwd: project, input: [{ type: 'text', text }], approvalPolicy: 'never', summary: 'none' });

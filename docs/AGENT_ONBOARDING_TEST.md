@@ -238,6 +238,11 @@ It copies only the model auth file to that isolated home and removes the isolate
 Codex credential/cache directory on shutdown. It disables host tracing/telemetry.
 It inherits PATH and optional OPENAI_API_KEY, not maintainer environment,
 configuration, skills, memories, repository snippets or review credentials.
+Account-linked apps and remote plugins are explicitly disabled along with host
+skill discovery. Before each turn, the complete MCP server catalog must be empty
+for domain mode or contain only the configured selected-origin server for MCP
+mode. An observed call to another server stops and marks the attempt contaminated.
+An isolated home alone does not disable account-linked app tools in all Codex versions.
 Any instruction sources reported by `thread/start` fail the baseline closed.
 This is context isolation, not an OS security sandbox: the agent has host network
 and filesystem access with approval policy `never`. Run on a disposable evaluator
