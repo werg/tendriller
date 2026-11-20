@@ -1,5 +1,6 @@
 import type { Env } from './env';
-import { assistantGuide, assistantGuides, assistantSetup } from './assistant-guide';
+import { assistantDiscovery, assistantGuide, assistantGuides } from './assistant-guide';
+import { serviceIdentity } from './service-identity';
 import { browserIdentity, ensureOAuthSchema, redirect } from './accounts/oauth-data';
 import { inspectAccessToken } from './accounts/oauth-tokens';
 import { servicePage } from './accounts/ui';
@@ -30,8 +31,10 @@ const tool = (name: string, description: string, scope: string | null, propertie
 const tools = [
   { ...tool('tendril_guide', 'Start here to build a Tendriller app, connect an existing app, discover UI and sensor capabilities, or recover setup. Returns complete maintained instructions without a browsing tool. Call with topic start first, especially when list_tendrils is empty.', null,
     { topic: { type: 'string', enum: Object.keys(assistantGuides), default: 'start' } }, []), securitySchemes: [{ type: 'noauth' }] },
-  { ...tool('get_profile', 'Identify the account linked to this MCP connection.', null, {}, []),
-    _meta: { 'openai/profile': true }, outputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] } },
+  { ...tool('get_profile', 'Identify the linked account and this service origin. Includes setup links when the installed guide tool is unavailable.', null, {}, []),
+    _meta: { 'openai/profile': true }, outputSchema: { type: 'object', properties: {
+      id: { type: 'string' }, serviceOrigin: { type: 'string' }, environment: { type: 'object' }, build: { type: 'object' }, setup: { type: 'object' },
+    }, required: ['id'] } },
   tool('list_tendrils', 'List this account’s assistant-connected applications, not all hosted pages. For a new app or an empty list, call tendril_guide; for an existing result, call describe_application.',
     'tendrils:list', {}, []),
   tool('describe_application', 'Get exact allowed commands, queries, events, and participant availability.',
@@ -189,7 +192,9 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       throw new HttpError(400, 'invalid_mcp_headers', 'The MCP request headers must match its method and name.', { rpcCode: -32602 });
 
     if (method === 'initialize') return result(id, { protocolVersion: supported.includes(String(params.protocolVersion)) ? params.protocolVersion : PROTOCOL,
-      capabilities: { tools: {}, events: {}, resources: {} }, serverInfo: { name: 'tendriller', version: '1.0.0' }, instructions: instructions + ' Connected service: ' + config.issuer + '. All guide links target this deployment.' });
+      capabilities: { tools: {}, events: {}, resources: {} }, serverInfo: { name: 'tendriller', version: serviceIdentity(env).build.coreRelease },
+      _meta: { 'tendriller/service': serviceIdentity(env) },
+      instructions: instructions + ' Connected service: ' + config.issuer + '. All guide links target this deployment. If tendril_guide is missing from the installed tools, read ' + config.issuer + assistantGuides.start + ' directly. Never substitute another service origin.' });
     if (method === 'server/discover') return result(id, { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {}, resources: {} } });
     if (method === 'ping') return result(id, {});
     if (method === 'tools/list') return complete({ tools: tools.filter(item => !item.scope || !principal || principal.scopes.includes(item.scope)).map(({ scope, ...item }) => item) });
@@ -237,10 +242,11 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       }
       if (selected.name === 'get_profile') return complete(toolResult({
         id: 'profile_' + await sha256Hex(JSON.stringify([config.issuer, principal.account])),
+        ...assistantDiscovery(env, config.issuer),
       }));
       if (selected.name === 'list_tendrils') {
         const connected = await listConnected(env, principal.account);
-        return complete(toolResult({ applications: connected, setup: assistantSetup(config.issuer, connected.length === 0) }));
+        return complete(toolResult({ applications: connected, ...assistantDiscovery(env, config.issuer, connected.length === 0) }));
       }
       const applicationId = string(args.applicationId, 64, APP_ID);
       const connected = await resolveConnection(env, principal.account, applicationId);

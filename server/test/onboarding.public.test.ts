@@ -40,6 +40,7 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
     name: 'Tendriller',
     contract: CONTRACT_VERSION,
     core_release: CORE_RELEASE,
+    serviceOrigin: origin,
     service: origin + '/',
     start_here: origin + guidePath,
     agent_instructions: origin + '/agent.md',

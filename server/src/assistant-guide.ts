@@ -1,6 +1,7 @@
 import type { Env } from './env';
 import { HttpError } from './http';
 import { onboardingDescriptor } from './onboarding';
+import { serviceIdentity } from './service-identity';
 
 // Fixed public paths are shared with SDK consumers; callers cannot choose a fetch destination.
 export { ASSISTANT_GUIDES as assistantGuides } from '../../contract/onboarding.mjs';
@@ -11,20 +12,35 @@ export async function assistantGuide(env: Env, origin: string, topic: unknown = 
     throw new HttpError(400, 'invalid_guide_topic', 'Choose start, build, capabilities, connect, delivery or troubleshooting.');
   const path = assistantGuides[topic as AssistantGuideTopic];
   const response = await env.ASSETS.fetch(new Request(origin + path));
-  if (!response.ok) throw new HttpError(503, 'guide_unavailable', 'The deployed onboarding document is unavailable.');
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new HttpError(503, 'guide_unavailable',
+      `The onboarding document at ${origin + path} is unavailable. Inspect ${origin}/.well-known/tendriller.json and ask this service's operator to restore its guide. Keep setup on ${origin}; do not switch to another host.`);
+  }
   const url = origin + path;
   const text = (await response.text()).replaceAll('https://tendriller.dev', origin)
     .replace(/(\[[^\]\n]*\]\()([^\s)]+)(\))/g,
       (_match, before, target, after) => `${before}${new URL(target, url).href}${after}`);
-  return { topic, serviceOrigin: origin, url, text,
+  return { topic, ...assistantDiscovery(env, origin), url, text,
     onboarding: onboardingDescriptor(origin) };
 }
-export function assistantSetup(origin: string, empty: boolean) {
+export function assistantSetup(origin: string, empty?: boolean) {
+  const onboarding = onboardingDescriptor(origin);
   return {
     guideTool: 'tendril_guide', topic: 'start', serviceOrigin: origin,
     startHere: origin + assistantGuides.start,
-    nextAction: empty
+    buildGuide: onboarding.start_here,
+    discoveryUrl: origin + '/.well-known/tendriller.json',
+    serviceDescriptor: onboarding.interfaces.service_descriptor,
+    starter: onboarding.starter,
+    originPolicy: 'same-origin-only',
+    guideUnavailableAction: `If tendril_guide is missing from the installed tools, read ${origin + assistantGuides.start} directly, or use ${origin}/.well-known/tendriller.json. Refresh the installed plugin's tool catalog when possible. Keep all setup on ${origin}; do not substitute another service origin.`,
+    nextAction: empty === true
       ? 'No applications are connected to this account yet. For a new app, call tendril_guide now and follow its build route; an empty list is not a missing plugin. For an existing app, follow its connect route.'
-      : 'Use describe_application for an existing app. To build another app or discover sensors and UI patterns, call tendril_guide.',
+      : 'Use describe_application for an existing app. To build or connect an app, call tendril_guide or read startHere directly if the installed tool is unavailable.',
   };
+}
+
+export function assistantDiscovery(env: Env, origin: string, empty?: boolean) {
+  return { ...serviceIdentity(env), setup: assistantSetup(origin, empty) };
 }

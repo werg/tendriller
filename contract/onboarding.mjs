@@ -9,12 +9,14 @@ import { CONTRACT_VERSION, CORE_RELEASE } from './index.mjs';
 
 /** Public navigation only. This document grants no account or device authority. */
 export function onboardingDescriptor(base) {
-  const url = (path) => new URL(path, base).href;
+  const origin = new URL(base).origin;
+  const url = (path) => new URL(path, origin).href;
   return {
     schema_version: 1,
     name: 'Tendriller',
     contract: CONTRACT_VERSION,
     core_release: CORE_RELEASE,
+    serviceOrigin: origin,
     service: url('/'),
     start_here: url(ASSISTANT_GUIDES.build),
     agent_instructions: url('/agent.md'),

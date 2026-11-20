@@ -5,7 +5,7 @@ export declare const ASSISTANT_GUIDES: Readonly<{
 }>;
 export interface OnboardingDescriptor {
   schema_version: number; name: string; contract: number; core_release: string;
-  service: string; start_here: string; agent_instructions: string; starter: string; capabilities: string;
+  serviceOrigin: string; service: string; start_here: string; agent_instructions: string; starter: string; capabilities: string;
   documentation: Record<string, string>;
   interfaces: { service_descriptor: string; contract: string; create_page: { method: string; url: string; required: string[] } };
   workflow: { id: string; action: string }[];

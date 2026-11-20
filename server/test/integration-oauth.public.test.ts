@@ -3,6 +3,7 @@ import { evictDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import type { Env } from '../src/env';
 import { route } from '../src/router';
+import { CORE_RELEASE } from '../../contract/index.mjs';
 import { oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
 import { challengeFor } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
@@ -73,7 +74,8 @@ it('challenges an empty OAuth setup probe and serves the public resource-templat
 
 it('provides a complete public MCP onboarding route without browsing or account access, including staging', async () => {
   const origin = 'https://staging.tendriller.dev';
-  const settings = configured({ PUBLIC_BASE: origin, OAUTH_CONFIG_JSON: JSON.stringify({ resource: origin + '/mcp', clients: [
+  const settings = configured({ PUBLIC_BASE: origin, SERVICE_ENVIRONMENT: 'Staging QA', SERVICE_SOURCE_COMMIT: 'c'.repeat(40),
+    OAUTH_CONFIG_JSON: JSON.stringify({ resource: origin + '/mcp', clients: [
     { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] },
   ] }) });
   const call = async (method: string, params: object = {}) => {
@@ -85,6 +87,12 @@ it('provides a complete public MCP onboarding route without browsing or account 
   const initialized = await call('initialize', { protocolVersion: '2025-11-25' });
   expect(initialized.body.result.instructions).toContain('tendril_guide');
   expect(initialized.body.result.instructions).toContain(origin);
+  expect(initialized.body.result.instructions).toContain(origin + '/docs/MCP_AGENT_GUIDE.md');
+  expect(initialized.body.result.serverInfo.version).toBe(CORE_RELEASE);
+  expect(initialized.body.result._meta['tendriller/service']).toMatchObject({ serviceOrigin: origin,
+    environment: { id: origin, label: 'Staging QA', kind: 'deployment' },
+    build: { coreRelease: CORE_RELEASE, sourceCommit: 'c'.repeat(40), runtimeId: expect.stringMatching(/^[a-f0-9]{64}$/) },
+  });
   const catalog = await call('tools/list');
   const guideTool = catalog.body.result.tools.find((item: any) => item.name === 'tendril_guide');
   expect(guideTool.securitySchemes).toEqual([{ type: 'noauth' }]);
@@ -98,6 +106,10 @@ it('provides a complete public MCP onboarding route without browsing or account 
   const start = await readGuide();
   expect(start.topic).toBe('start');
   expect(start.serviceOrigin).toBe(origin);
+  expect(start.environment.id).toBe(origin);
+  expect(start.build).toEqual(initialized.body.result._meta['tendriller/service'].build);
+  expect(start.setup).toMatchObject({ startHere: origin + '/docs/MCP_AGENT_GUIDE.md', originPolicy: 'same-origin-only',
+    guideUnavailableAction: expect.stringContaining(origin + '/.well-known/tendriller.json') });
   expect(start.text).toContain('Node 24');
   expect(start.text).toContain('POST ' + origin + '/api/tendrils');
   expect(start.text).not.toContain('https://tendriller.dev');
@@ -115,6 +127,13 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect((await call('resources/read', { uri: start.url })).body.result.contents[0].text).toBe(start.text);
   const invalid = await call('tools/call', { name: 'tendril_guide', arguments: { topic: 'https://untrusted.example/' } });
   expect(invalid.body.result).toMatchObject({ isError: true, structuredContent: { code: 'invalid_guide_topic' } });
+  const absentGuide = await route(new Request(origin + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'tendril_guide' } }),
+  }), { ...settings, ASSETS: { fetch: async () => new Response('Missing', { status: 404 }) } as unknown as Fetcher });
+  const absent = (await absentGuide.json() as any).result;
+  expect(absent).toMatchObject({ isError: true, structuredContent: { code: 'guide_unavailable',
+    message: expect.stringContaining(origin + '/.well-known/tendriller.json') } });
+  expect(absent.structuredContent.message).not.toContain('https://tendriller.dev');
   expect((await call('tools/call', { name: 'list_tendrils', arguments: {} })).response.status).toBe(401);
   expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first()).toEqual(before);
 });
@@ -1079,10 +1098,22 @@ it('uses an operator-pinned client metadata document for public PKCE without fet
     const result = await response.json() as { access_token: string };
     const listed = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call',
       params: { name: 'list_tendrils', arguments: {} } }, settings, result.access_token);
-    expect(await listed.json()).toMatchObject({ result: { structuredContent: { applications: [], setup: {
+    const listing = (await listed.json() as any).result.structuredContent;
+    expect(listing).toMatchObject({ applications: [], serviceOrigin: ISSUER,
+      environment: { id: ISSUER, label: new URL(ISSUER).host, kind: 'deployment' },
+      build: { coreRelease: CORE_RELEASE, sourceCommit: null }, setup: {
       guideTool: 'tendril_guide', topic: 'start', serviceOrigin: ISSUER,
       startHere: ISSUER + '/docs/MCP_AGENT_GUIDE.md', nextAction: expect.stringContaining('For a new app'),
-    } } } });
+      originPolicy: 'same-origin-only', guideUnavailableAction: expect.stringContaining('Refresh the installed plugin'),
+    } });
+    const profile = await jsonPost('/mcp', { jsonrpc: '2.0', id: 2, method: 'tools/call',
+      params: { name: 'get_profile', arguments: {} } }, settings, result.access_token);
+    const identity = (await profile.json() as any).result.structuredContent;
+    expect(identity.id).toMatch(/^profile_[a-f0-9]{64}$/);
+    expect(identity).toMatchObject({ serviceOrigin: listing.serviceOrigin, environment: listing.environment, build: listing.build,
+      setup: { startHere: listing.setup.startHere, guideUnavailableAction: listing.setup.guideUnavailableAction } });
+    expect(identity).not.toHaveProperty('email');
+    expect(identity).not.toHaveProperty('account');
   } finally { outbound.mockRestore(); }
 });
 

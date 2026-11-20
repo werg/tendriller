@@ -20,6 +20,14 @@ Use its `topic` argument for the maintained instructions themselves: `build`,
 browsing tool to read those documents. Use the `serviceOrigin` returned by MCP
 throughout; staging must stay on staging.
 
+If an installed plugin does not expose `tendril_guide`, `get_profile` and
+`list_tendrils` also return the service identity and direct `setup.startHere`,
+`setup.buildGuide` and `setup.discoveryUrl` links. Read those exact URLs and
+refresh the installed plugin's tool catalog when possible. Do not infer the
+target environment from the plugin name or substitute the production example
+domain. The public profile remains opaque; discovery does not reveal login
+email, account credentials or application keys.
+
 ## Build a new application
 
 1. Call `tendril_guide` with `topic: "build"` and read `topic: "capabilities"`
