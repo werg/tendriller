@@ -5,6 +5,7 @@ import { execFile, spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -71,6 +72,24 @@ function createLocalDispatcher() {
 }
 const dispatcher = createLocalDispatcher();
 setGlobalDispatcher(dispatcher);
+
+let trackStorage = async () => {};
+// OPFS inventory for failure diagnosis: top-level entries plus file count/bytes of each chronolog directory.
+const opfsInventory = target => target.evaluate(async () => {
+  const out = {};
+  try {
+    for await (const [name, handle] of (await navigator.storage.getDirectory()).entries()) {
+      if (handle.kind !== 'directory') { out[name] = 'file'; continue; }
+      let files = 0, bytes = 0, empty = 0, directories = 0;
+      for await (const [, entry] of handle.entries()) {
+        if (entry.kind === 'directory') { directories++; continue; }
+        const size = (await entry.getFile()).size; files++; bytes += size; if (!size) empty++;
+      }
+      out[name] = { files, bytes, empty, directories };
+    }
+  } catch (error) { out.error = error.name; }
+  return out;
+}).catch(failure => ({ error: failure.message }));
 
 async function run(command, args, options = {}) {
   const result = await execute(command, args, { cwd: app, timeout: 120_000,
@@ -443,6 +462,12 @@ export async function closeLocalTransport() {
       }
     });
     page = await context.newPage();
+    // Chromium's own record of storage buckets being created, updated or deleted (eviction evidence).
+    report.storage_bucket_events = [];
+    const storageEvents = await context.newCDPSession(page);
+    for (const name of ['Storage.storageBucketCreatedOrUpdated', 'Storage.storageBucketDeleted'])
+      storageEvents.on(name, event => { if (report.storage_bucket_events.length < 200) report.storage_bucket_events.push({ at: new Date().toISOString(), event: name.slice(8), detail: JSON.stringify(event).slice(0, 300) }); });
+    trackStorage = origin => storageEvents.send('Storage.setStorageBucketTracking', { storageKey: new URL(origin).origin + '/', enable: true }).catch(error => { report.storage_tracking_error = error.message; });
     page.on('pageerror', error => {
       report.browser_errors ??= [];
       if (report.browser_errors.length < 12) report.browser_errors.push(error.message);
@@ -465,6 +490,7 @@ export async function closeLocalTransport() {
       domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
     checkpoint('open the page: a new browser sets itself up without a button');
     await page.setViewportSize({ width: 390, height: 844 });
+    await trackStorage(handle.page_url);
     await page.goto(handle.page_url);
     await expect(page.locator('#connection-card')).toBeVisible();
     await expect(page.locator('#connection-card button:visible')).toHaveCount(0);
@@ -577,6 +603,7 @@ export async function closeLocalTransport() {
     assert.deepEqual(attachedNotes.value, (await peer.request('query')).value);
     passed('separate CLI processes attach to the resident native owner without another signer/store');
     checkpoint('exchange retained commands from the automatically connected browser');
+    report.opfs_snapshots = { connected: await opfsInventory(page) };
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
     await page.locator('#note').fill('Created in the browser'); await page.locator('#submit').click();
     await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
@@ -587,6 +614,7 @@ export async function closeLocalTransport() {
     passed('browser command observed by the real native session through relay');
     passed('public UI adapters expose actual operation outcome and separate retained coverage');
 
+    report.opfs_snapshots.after_commands = await opfsInventory(page);
     checkpoint('a second tab attaches to the same device owner without any prompt');
     const second = await context.newPage();
     second.on('pageerror', error => { report.browser_errors ??= []; if (report.browser_errors.length < 12) report.browser_errors.push(`second tab: ${error.message}`); });
@@ -601,10 +629,22 @@ export async function closeLocalTransport() {
     await expect(second.locator('#app-content')).toBeVisible({ timeout: 60_000 });
     await second.close();
     await expect(page.locator('#notes')).toContainText('Created in a second tab');
+    report.opfs_snapshots.after_second_tab = await opfsInventory(page);
     passed('a second tab and its reload attach to the existing owner; no OWNER_BUSY or pairing UI');
 
     checkpoint('multi-piece replies and a quiet connection over the real relay');
     const soakMs = Number(process.env.FIRST_APP_SOAK_MS ?? 60_000), frozenMs = Number(process.env.FIRST_APP_FROZEN_MS ?? 30_000);
+    // Browser application status transitions, kept in sessionStorage so they survive reloads.
+    const recordStatus = () => page.evaluate(async () => {
+      const app = await window.tendril.application.ready();
+      app.onStatus(status => {
+        const log = JSON.parse(sessionStorage.getItem('first-app-status-log') || '[]'), last = log.at(-1);
+        if (last && last.phase === status.phase && last.generation === status.generation && last.database === status.database) return;
+        log.push({ at: Date.now(), phase: status.phase, generation: status.generation, database: status.database });
+        sessionStorage.setItem('first-app-status-log', JSON.stringify(log.slice(-200)));
+      });
+    }).catch(() => {});
+    await recordStatus();
     await page.evaluate(() => {
       window.soak = { pieces: 0, replies: new Map() };
       void (async () => { for await (const signal of window.tendril.signals.subscribe({ topics: ['soak'], mode: 'all' })) {
@@ -617,6 +657,9 @@ export async function closeLocalTransport() {
     const burst = async (pieces, bytes = 15_000) => {
       const before = await page.evaluate(() => window.soak.complete ?? 0);
       const sent = await peer.request('signal-burst', { topic: 'soak', pieces, bytes }, 60_000);
+      if (sent.failures.length) report.failed_burst = { ...sent, at: new Date().toISOString() };
+      report.slowest_burst = !report.slowest_burst || sent.ms > report.slowest_burst.ms ? { ms: sent.ms, pieceMs: sent.pieceMs, eventLoopLagMaxMs: sent.eventLoopLagMaxMs } : report.slowest_burst;
+      if (sent.retries) (report.burst_retries ??= []).push({ at: new Date().toISOString(), retries: sent.retries, pieceMs: sent.pieceMs, eventLoopLagMaxMs: sent.eventLoopLagMaxMs });
       assert.deepEqual(sent.failures, [], `Every piece of a ${pieces}-piece reply must be accepted (${JSON.stringify(sent.failures.slice(0, 3))}).`);
       await expect.poll(() => page.evaluate(() => window.soak.complete ?? 0), { timeout: 30_000 }).toBe(before + 1);
       return sent.ms;
@@ -625,7 +668,16 @@ export async function closeLocalTransport() {
     passed('a 600 KB reply in 40 signal pieces reaches the browser without SIGNAL_BACKPRESSURE');
     const churn = entries => entries.filter(entry => !entry.peers.includes(browserDevice)).length;
     const soakStarted = Date.now();
+    report.opfs_timeline = [];
+    let lastInventory = 0;
     while (Date.now() - soakStarted < soakMs) {
+      if (Date.now() - lastInventory >= 60_000) {
+        lastInventory = Date.now();
+        // Host memory beside each sample: browser storage eviction depends on it.
+        const memAvailableGb = Number(/MemAvailable:\s+(\d+)/.exec(readFileSync('/proc/meminfo', 'utf8'))?.[1] ?? 0) / 1048576;
+        report.opfs_timeline.push({ atS: Math.round((Date.now() - soakStarted) / 1000), memAvailableGb: Math.round(memAvailableGb * 10) / 10,
+          ...(process.env.FIRST_APP_OPFS_TIMELINE === '1' ? { opfs: await opfsInventory(page) } : {}) });
+      }
       await burst(5); // like a dashboard answer every ten seconds
       await new Promise(resolve => setTimeout(resolve, 10_000));
     }
@@ -650,6 +702,7 @@ export async function closeLocalTransport() {
     passed('a frozen (backgrounded) tab receives live replies again after resuming, without reload or prompts');
 
     checkpoint('a request sent right after connecting is answered, and periodic updates arrive in every subscription mode');
+    report.opfs_before_reload = await opfsInventory(page);
     await page.reload();
     await expect(page.locator('#app-content')).toBeVisible({ timeout: 60_000 });
     const requested = Date.now();
@@ -828,6 +881,16 @@ export async function closeLocalTransport() {
     report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
       'connection', 'connection-card', 'pairing-status', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
     ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
+    // Which browser stores exist (names only): distinguishes a missing store from an emptied one.
+    report.opfs_at_failure = await opfsInventory(page);
+    report.browser_status_log = await page.evaluate(() => JSON.parse(sessionStorage.getItem('first-app-status-log') || '[]')).catch(() => null);
+    report.browser_storage = await page.evaluate(async () => {
+      const opfs = [];
+      try { for await (const [name, handle] of (await navigator.storage.getDirectory()).entries()) opfs.push(`${handle.kind}:${name}`); } catch (error) { opfs.push(`error:${error.name}`); }
+      let indexed = [];
+      try { indexed = (await indexedDB.databases()).map(db => `${db.name}@${db.version}`); } catch (error) { indexed = [`error:${error.name}`]; }
+      return { opfs: opfs.slice(0, 40), indexedDB: indexed.slice(0, 40) };
+    }).catch(failure => ({ error: failure.message }));
     try {
       await page.screenshot({ path: join(dirname(reportPath), 'first-app-failure.png'), fullPage: true, timeout: 10_000 });
       report.screenshots ??= {}; report.screenshots.failure = 'first-app-failure.png';
