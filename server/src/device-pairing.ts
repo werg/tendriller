@@ -1,3 +1,4 @@
+import { notifySetupChanged } from './setup-watch';
 import { peerDigest, type PeerAuthority, type SignedGeneration, type SignedTransitionRequest, type PeerGrant } from '@chronolog/peer-generation/control';
 import { DEVICE_PAIRING_DOMAIN, DEVICE_PAIRING_LIMITS as LIMITS, pairingProofBytes, validateDevicePairingChallenge,
   verifyDevicePairingProof, type DevicePairingChallenge, type DevicePairingStatus, type DevicePairingPrepared } from '../../contract/pairing.mjs';
@@ -202,7 +203,7 @@ async function prove(t: Tendril, req: Request, principal: Principal, input: Reco
     throw new HttpError(403, 'pairing_proof_invalid', 'The proof does not match this exact request and retained device.');
   }
   record.proof = input.signature; record.state = 'pending';
-  t.transaction(() => save(t, record));
+  t.transaction(() => { save(t, record); notifySetupChanged(t); });
   return status(t, record, authority);
 }
 async function validateProposal(record: PairingRecord, authority: PeerAuthority, request: SignedTransitionRequest, rawControl: unknown): Promise<void> {
@@ -430,7 +431,7 @@ export async function reviewDevicePairing(t: Tendril, req: Request): Promise<Res
       if (record.challenge.expiresAt <= t.now()) throw new HttpError(409, 'pairing_expired');
       record.state = form.get('action') === 'deny' ? 'denied' : record.state === 'committing' ? 'committing' : 'approved';
       record.reviewedAccount = owner.id; record.reviewedDigest = digest; delete record.csrf;
-      t.transaction(() => { if (owner.id !== t.db.get('owner_account', null)) throw new HttpError(403, 'pairing_owner_required'); save(t, record); });
+      t.transaction(() => { if (owner.id !== t.db.get('owner_account', null)) throw new HttpError(403, 'pairing_owner_required'); save(t, record); notifySetupChanged(t); });
       result = await status(t, record, authority);
     } else if (record.prepared && ['pending', 'approved', 'committing'].includes(result.state)) {
       await requireWritesOpen(t.env);

@@ -1,3 +1,4 @@
+import { notifySetupChanged } from './setup-watch';
 import { escapeHtml } from './inject';
 import { browserIdentity, redirect } from './accounts/oauth-data';
 import { pagePolicy, currentPrincipal, freshPrincipal, type AgentPrincipal } from './access';
@@ -202,6 +203,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
         t.afterCommit(() => closeAssistantConnections(t, item.adapterHashes, Boolean(sameEvents)));
       });
     } else throw new HttpError(400, 'invalid_action');
+    notifySetupChanged(t);
     return redirect(returnTo);
   });
 }

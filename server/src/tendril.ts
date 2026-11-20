@@ -1,3 +1,4 @@
+import { isSetupWatch, notifySetupChanged } from './setup-watch';
 import { setupPage, nextSetupDeadline, expireSetupReservation } from './setup-page';
 import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
 import { adoptPreparedAssistant } from './assistant-admission';
@@ -223,6 +224,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (isSetupWatch(ws)) { ws.close(1008, 'Setup watch is receive-only'); return; }
     if (isPublicationWatch(ws)) { ws.close(1008, "Publication watch is receive-only"); return; }
     if (isRelaySocket(ws)) { await handleRelayMessage(this, ws, message); return; }
     if (isAssistantAdapter(ws)) { await handleAssistantFrame(this, ws, message); return; }
@@ -582,6 +584,7 @@ export class Tendril extends DurableObject<Env> {
       }
     }
     await adoptPreparedAssistant(this, accountId);
+    notifySetupChanged(this);
     const releasedAdmission = await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
       .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));
     await releasedAdmission.body?.cancel();

@@ -1,3 +1,4 @@
+export { watchApplicationSetup, validateSetupNotice, SETUP_WATCH_PROTOCOL } from './setup-watch.mjs';
 import { ApiError, requireServiceOrigin } from './client.mjs';
 
 const operation = /^[A-Za-z0-9_.:-]{1,160}$/;

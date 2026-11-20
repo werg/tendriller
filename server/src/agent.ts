@@ -1,4 +1,5 @@
 /** Explicit page-host lifecycle and the filtered Chronolog participant transport. */
+import { upgradeSetupWatch } from './setup-watch';
 import { proposeAssistant } from './assistant-admission';
 import { changeLifetime } from './lifetime';
 import { PEER_ROUTE, handlePeers } from './peers';
@@ -41,6 +42,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
     if (rest === 'peers/bootstrap' && method !== 'GET') requireAgentScope(principal, 'host:manage');
     return handlePeers(t, req, url, rest, principal);
   }
+  if (rest === 'setup/watch') return upgradeSetupWatch(t, req, principal);
   if (rest === 'assistant/propose' && method === 'POST') {
     requireAgentScope(principal, 'assistant:manage');
     return proposeAssistant(t, req, principal);

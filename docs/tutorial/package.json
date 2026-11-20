@@ -15,6 +15,7 @@
     "pair": "node setup.mjs pair",
     "build": "node build.mjs",
     "peer": "node session.mjs",
+    "serve": "node assistant.mjs run",
     "assistant:prepare": "node assistant.mjs prepare",
     "assistant": "node assistant.mjs"
   }
