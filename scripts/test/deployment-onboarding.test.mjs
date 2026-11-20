@@ -137,6 +137,16 @@ test('deployment smoke fails for missing readiness or mismatched deployment iden
   });
 });
 
+test('assistant smoke uses the structured creation URL rather than incidental guide wording', () => {
+  const value = fixture();
+  value.guide.text = 'Use Node 24 and follow the build guide for account-bound setup.';
+  runSmoke(value, { assistant: true, attested: true });
+  value.guide.onboarding.interfaces.create_page.url = 'https://another.example/api/tendrils';
+  assert.throws(() => runSmoke(value, { assistant: true, attested: true }), failure => {
+    assert.match(String(failure.stderr), /app-building guidance/); return true;
+  });
+});
+
 test('assistant smoke requires tendril_guide in tools/list even when an unadvertised call succeeds', () => {
   const value = fixture();
   value.tools = value.tools.filter(tool => tool.name !== 'tendril_guide');

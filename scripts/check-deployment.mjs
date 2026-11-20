@@ -155,7 +155,7 @@ if (assistant) {
   if (!guideResponse.ok || guide?.topic !== 'start' || guide.serviceOrigin !== base ||
       guide.readiness?.serviceOrigin !== base ||
       guide.onboarding?.interfaces?.create_page?.url !== `${base}/api/tendrils` ||
-      !guide.text?.includes('Node 24') || !guide.text?.includes(`${base}/api/tendrils`))
+      !guide.text?.includes('Node 24'))
     throw new Error('Assistant app-building guidance is unavailable or targets another deployment');
   checkBuild(guide.build, 'Assistant guide');
   checkBuild(guide.readiness.build, 'Assistant guide readiness');
