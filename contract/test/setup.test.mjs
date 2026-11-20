@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSetupIntent, setupRequest, completeSetupIntent, prepareTendrilSetup } from '../setup.mjs';
+import { createSetupIntent, setupRequest, completeSetupIntent, prepareTendrilSetup, inspectTendrilSetup } from '../setup.mjs';
 const service = 'https://staging.tendriller.dev';
 function storage() {
   const values = new Map();
@@ -43,4 +43,19 @@ test('refuses mismatched receipts, nonready states and returned secrets', async 
     await assert.rejects(completeSetupIntent(intent, { ...ready, ...change }), { code: 'setup_receipt_mismatch' });
   await assert.rejects(completeSetupIntent(intent, { ...ready, state: 'expired', code: 'setup_expired' }), { code: 'setup_expired' });
   await assert.rejects(completeSetupIntent({ ...intent, credential: 'tk_' + 'z'.repeat(32) }, ready), { code: 'setup_state_invalid' });
+});
+test('rejects coerced operation IDs, commitments, origins and private credentials', async () => {
+  const intent = await createSetupIntent(service, { operationId: 'types' }, { store: storage() });
+  for (const key of ['operationId','applicationId','credentialCommitment']) {
+    for (const value of [[intent[key]], 222222222222])
+      assert.throws(() => setupRequest({ ...intent, [key]: value }), { code: 'invalid_setup_request' });
+  }
+  await assert.rejects(createSetupIntent([service], { operationId: 'types' }, { store: storage() }), { code: 'invalid_service_origin' });
+  await assert.rejects(createSetupIntent(service, { operationId: 123 }, { store: storage() }), { code: 'invalid_setup_request' });
+  assert.throws(() => inspectTendrilSetup(service, [intent.operationId]), { code: 'invalid_setup_request' });
+  for (const change of [{ credential: [intent.credential] }, { serviceOrigin: [service] }])
+    await assert.rejects(completeSetupIntent({ ...intent, ...change }, receipt(intent)), { code: 'setup_state_invalid' });
+  const ready = receipt(intent), pageId = 222222222222;
+  await assert.rejects(completeSetupIntent(intent, { ...ready, pageId, page: { ...ready.page, id: pageId,
+    api: service + '/api/t/' + pageId, page_url: 'https://' + pageId + '.tendriller.site/s/' + 'a'.repeat(26) + '/' } }), { code: 'setup_receipt_mismatch' });
 });
