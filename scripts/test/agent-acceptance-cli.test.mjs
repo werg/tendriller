@@ -17,7 +17,7 @@ test('bounded CLI subprocess starts isolated app-server thread, reports model, a
   writeFileSync(join(bin, 'codex'), `#!/usr/bin/env node
 const {createInterface}=require('node:readline'),fs=require('node:fs');
 if(process.argv.includes('--version')){console.log('codex-fixture 1');process.exit(0)}
-const record={env:{HOME:process.env.HOME,CODEX_HOME:process.env.CODEX_HOME,secret:process.env.PRIVATE_REVIEW_SECRET},calls:[],files:fs.readdirSync(process.cwd())};
+const record={argv:process.argv,env:{HOME:process.env.HOME,CODEX_HOME:process.env.CODEX_HOME,secret:process.env.PRIVATE_REVIEW_SECRET},calls:[],files:fs.readdirSync(process.cwd())};
 createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line);record.calls.push(m);fs.writeFileSync(process.env.HOME+'/fixture.json',JSON.stringify(record));
  if(m.id!==undefined)process.stdout.write(JSON.stringify({id:m.id,result:m.method==='thread/start'?{thread:{id:'fresh'},model:'fixture-model',modelProvider:'fixture',instructionSources:[]}: {}})+'\\n');
@@ -29,6 +29,7 @@ createInterface({input:process.stdin}).on('line',line=>{
   assert.equal(report.cleanup.appServerStopped, true); assert.equal(report.chatgptWeb.status, 'not-tested');
   assert.equal(captured.env.CODEX_HOME, join(output, 'home/.codex')); assert.equal(captured.env.secret, undefined);
   assert.deepEqual(captured.files, []);
+  for (const flag of ['features.apps=false', 'features.plugins=false', 'features.remote_plugin=false', 'features.skip_host_skill_discovery=true', 'features.skill_search=false']) assert(captured.argv.includes(flag));
   assert(!captured.calls.some(call => call.method === 'turn/start'));
   assert.equal(captured.calls.find(call => call.method === 'thread/start').params.ephemeral, true);
   assert(!existsSync(join(output, 'home/.codex/config.toml'))); assert(!existsSync(join(output, 'home/.codex/auth.json')));
