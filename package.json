@@ -45,7 +45,7 @@
   },
   "devDependencies": {
     "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-d625546c.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-1e4e8406.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-e8bb116a.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",
