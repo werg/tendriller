@@ -4,10 +4,19 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
-import { validateConfig, nativeCoverage, privateJSON, save, newState, record, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
+import { validateConfig, privateJSON, save, newState, record, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
 import { measure } from './cloudflare.mjs';
 import { startBrowser } from './browser.mjs';
 import { nativeReady, quietBoundary } from './warmup.mjs';
+
+export const NATIVE_BOOTSTRAP_SCOPES = Object.freeze(['native-only-without-mcp-adapter', 'native-with-mcp-adapter']);
+export function nativeCoverage(state, message) {
+  if (message?.idleSoakCoverage !== 1 || !NATIVE_BOOTSTRAP_SCOPES.includes(message.bootstrapScope)) return false;
+  state.coverage.bootstrapScope = message.bootstrapScope;
+  state.coverage.wakeups ||= message.wakeups === true;
+  state.coverage.modelTurns ||= message.modelTurns === true;
+  return true;
+}
 
 export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => {
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); resolve(); };
