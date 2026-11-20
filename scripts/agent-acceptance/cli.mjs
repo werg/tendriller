@@ -115,9 +115,13 @@ export async function run(values) {
     const env = isolatedEnvironment(directory);
     const config = ['mcp_servers={}', 'web_search="live"', 'history.persistence="none"'];
     if (mode === 'mcp' && !smoke) {
-      bridge = await mcpBridge({ origin, token: await browser.owner.freshToken() });
+      bridge = await mcpBridge({ origin, token: await browser.owner.freshToken(), freshToken: async options => {
+        const token = await browser.owner.freshToken(options);
+        evidence.private('mcp-auth', { event: 'request-driven-renewal', reason: 'http-401' });
+        return token;
+      } });
       config[0] = 'mcp_servers={tendriller={url=' + JSON.stringify(bridge.url) + ',startup_timeout_sec=30}}';
-      evidence.data.mcp = { origin, authentication: 'Real review-account OAuth/PKCE; renewed before every model turn', catalog: 'Unmodified selected-origin tools through credential-isolating loopback transport' };
+      evidence.data.mcp = { origin, authentication: 'Real review-account OAuth/PKCE; renewed before every model turn and once on HTTP 401 with coalesced renewal and exact request replay', catalog: 'Unmodified selected-origin tools through credential-isolating loopback transport' };
     }
     host = new AppServer({ cwd: project, env, config, deadlineMs: Math.min(seconds * 1000, 60000), onEvent: event => {
       evidence.private('observable', event);
