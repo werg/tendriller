@@ -26,6 +26,12 @@ SQL additionally needs `--sql-browser`, the exact separately built WASM assets,
 an enrolled browser and a supported OPFS SQL VFS. This directory does not ship
 a separate browser UI or claim that installing an events archive qualifies SQL.
 
+Run this directory within the downloaded starter kit: its standalone peer uses
+the shipped `../helpers/cli-lifetime.mjs`. Ctrl-C awaits the SQL session and
+supervisor cleanup, flushes output, then disposes only the standalone process.
+Cleanup/flush failure stays nonzero. Imported `openSession` and `runPeer` leave
+process lifetime to their caller.
+
 The native peer runs a private supervisor. Normal CLI invocations attach to it;
 use `--mode own` for an explicit one-off command while the owner is stopped.
 Browser documents use `openBrowserOwner` with `requiresDedicatedWorker: true`

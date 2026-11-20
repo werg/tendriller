@@ -14,16 +14,16 @@ import { digestPattern } from './inference-protocol.mjs';
 // The exported runner never owns the embedding process.
 export async function runInference({ args = process.argv.slice(2), signal } = {}, { onOwned, onClosed } = {}) {
   signal?.throwIfAborted();
-const { values } = parseArgs({ args, options: { 'allow-device': { type: 'string', multiple: true },
-  'max-requests': { type: 'string', default: '1' }, model: { type: 'string' }, provider: { type: 'string' },
-  'max-output-tokens': { type: 'string', default: '600' } }, strict: true });
-const allowedDevices = values['allow-device'] ?? [], maxRequests = Number(values['max-requests']);
-if (!allowedDevices.length || allowedDevices.some(id => !digestPattern.test(id))) throw Error('Supply --allow-device with each explicitly authorized browser device public key.');
-if (!Number.isSafeInteger(maxRequests) || maxRequests < 1 || maxRequests > 100) throw Error('Supply a request budget from 1 to 100. The default is one request for this process lifetime.');
-const providerUrl = values.provider ? pathToFileURL(resolve(values.provider)).href : new URL('./provider-openai.mjs', import.meta.url).href;
-const provider = await import(providerUrl);
-if (typeof provider.createInferenceProvider !== 'function') throw Error('The chosen native provider must export createInferenceProvider(options).');
-const infer = await provider.createInferenceProvider({ model: values.model, maxOutputTokens: Number(values['max-output-tokens']) });
+  const { values } = parseArgs({ args, options: { 'allow-device': { type: 'string', multiple: true },
+    'max-requests': { type: 'string', default: '1' }, model: { type: 'string' }, provider: { type: 'string' },
+    'max-output-tokens': { type: 'string', default: '600' } }, strict: true });
+  const allowedDevices = values['allow-device'] ?? [], maxRequests = Number(values['max-requests']);
+  if (!allowedDevices.length || allowedDevices.some(id => !digestPattern.test(id))) throw Error('Supply --allow-device with each explicitly authorized browser device public key.');
+  if (!Number.isSafeInteger(maxRequests) || maxRequests < 1 || maxRequests > 100) throw Error('Supply a request budget from 1 to 100. The default is one request for this process lifetime.');
+  const providerUrl = values.provider ? pathToFileURL(resolve(values.provider)).href : new URL('./provider-openai.mjs', import.meta.url).href;
+  const provider = await import(providerUrl);
+  if (typeof provider.createInferenceProvider !== 'function') throw Error('The chosen native provider must export createInferenceProvider(options).');
+  const infer = await provider.createInferenceProvider({ model: values.model, maxOutputTokens: Number(values['max-output-tokens']) });
   let owned, service;
   try {
     owned = await openSession({ signal }); onOwned?.();
