@@ -186,6 +186,8 @@ async function connectSession() {
     });
     if ($('#operation-id').value) observeOperation($('#operation-id').value);
     submission.update({ attached: true }); $('#close').disabled = false;
+    // The draft editor is usable now; the submission state gates every action until reads succeed.
+    $('#app-content').hidden = false;
     // The query activates data. Status observation handles later key delivery.
     await refresh();
     // The runtime binding installs once per page, so only after the app is usable.
@@ -194,13 +196,12 @@ async function connectSession() {
     installed = true;
     // On-demand answers from the native participant (not retained in the journal).
     window.appRequests = createSignalRequests(session, { peer: configuration.nativeDeviceId });
-    $('#app-content').hidden = false;
   } catch (error) {
     if (!installed) {
       liveView?.close(); operationView?.close(); media?.close();
       try { await attachment?.detach(); } catch { /* Preserve the setup failure. */ }
       session = attachment = liveView = undefined;
-      submission.update({ attached: false, coherent: false }); $('#close').disabled = true;
+      submission.update({ attached: false, coherent: false }); $('#close').disabled = true; $('#app-content').hidden = true;
     }
     throw error;
   }

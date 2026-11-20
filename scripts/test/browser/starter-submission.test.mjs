@@ -62,12 +62,12 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => window.tendril = {application:{install(){}},signals:{install(){}},on:()=>()=>{},sensors:{status:()=>({active:[],pending:[]}),on:()=>()=>{},stopAll(){}}});
   const url = `http://127.0.0.1:${server.address().port}/`;
-  await page.goto(url);
+  // The page attaches by itself (connection component); there is no connect button.
+  await page.goto(url); await page.waitForFunction(() => window.fixture);
   const enabled = id => page.locator(id).isEnabled();
   await page.locator('#note').fill('Preserved draft');
   await page.locator('#note').press('Tab');
   assert.equal(await page.locator('#operation-id').evaluate(element => element === document.activeElement), true);
-  await page.locator('#connect').click(); await page.waitForFunction(() => window.fixture);
   assert.equal(await enabled('#submit'), false);
   assert.equal(await enabled('#media-file'), false, await page.locator('#result').textContent());
   // Even synthetic/keyboard submission cannot bypass readiness.
@@ -94,7 +94,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   assert.equal(retained[0].reference.operationId, id);
   const command = await page.evaluate(() => fixture.calls[0]);
   assert.deepEqual(command.input, {text:'Preserved draft'});
-  await page.reload(); await page.locator('#connect').click(); await page.waitForFunction(() => window.fixture);
+  await page.reload(); await page.waitForFunction(() => window.fixture);
   assert.equal(await page.locator('#note').inputValue(), 'Preserved draft');
   assert.equal(await page.locator('#operation-id').inputValue(), id);
   assert.equal(await enabled('#retry'), false);
@@ -112,7 +112,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   const intentId = await page.locator('#operation-id').inputValue();
   const intentCommand = await page.evaluate(() => fixture.calls.at(-1));
   await page.locator('#note').fill('A newer editable draft');
-  await page.reload(); await page.locator('#connect').click(); await page.waitForFunction(() => window.fixture);
+  await page.reload(); await page.waitForFunction(() => window.fixture);
   await page.evaluate(() => {fixture.responseLoss(false); fixture.release();});
   await page.waitForFunction(() => !document.querySelector('#retry').disabled);
   await page.locator('#retry').click(); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
