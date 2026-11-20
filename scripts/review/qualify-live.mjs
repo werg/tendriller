@@ -13,7 +13,7 @@ import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess } from './access.mjs';
 import { recordReview } from './record.mjs';
 import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
-import { cleanupFixturePage, installReviewFixtureSources } from './fixture.mjs';
+import { cleanupFixturePage, installReviewFixtureSources, validateReviewProposal } from './fixture.mjs';
 import { sourceIdentity } from '../release-composition.mjs';
 import { createReviewDiagnostics, reviewError, reviewNativeError, waitForReviewProvider } from './diagnostics.mjs';
 
@@ -49,7 +49,7 @@ try {
   handle = JSON.parse(readFileSync(join(project, '.private/handle.json')));
   phase = 'initialize application';
   run(['init']);
-  const proposal = JSON.parse(run(['propose']));
+  const proposal = validateReviewProposal(JSON.parse(run(['propose'])));
   phase = 'publish before claim';
   const diagnostic = openSync(join(project, 'participant-private.log'), 'w', 0o600);
   try { child = spawn(process.execPath, ['review-app.mjs', 'run'], { cwd: project, stdio: ['ignore', 'ignore', diagnostic] }); }
@@ -97,7 +97,7 @@ try {
         diagnostics.provider(value); diagnostics.response(proposal.reviewUrl, value.status);
       } });
       diagnostics.step('replay-approved-proposal');
-      const replay = JSON.parse(run(['propose']));
+      const replay = validateReviewProposal(JSON.parse(run(['propose'])));
       assert.equal(replay.proposed, proposal.proposed, 'Claim replay must retain the exact proposal identity');
       assert.equal(replay.approved, true, 'Claim replay must retain owner approval');
       await diagnostics.capture(page);
