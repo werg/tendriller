@@ -178,3 +178,22 @@ test('a synchronous approval-change status during adapter start cannot forward o
   assert.equal(forwards, 0); assert.equal(starts, 1); assert.equal(closes, 1);
   f.notice(approved()); await flush(); assert.equal(starts, 1); await f.lifecycle.close();
 });
+
+
+test('optional synchronous activity failure stays isolated from the healthy transport',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const f=fixture({onOnline(){throw Object.assign(Error('private diagnostic'),{code:'access_revoked'});}});
+ f.notice(approved());await flush();await flush();t.mock.timers.tick(48*3600000);await flush();
+ assert.equal(f.adapters.length,1);assert.equal(f.adapters[0].signal.aborted,false);assert.equal(f.adapters[0].closes,0);
+ assert.equal(f.reports.filter(x=>x.state==='adapter_activity_failed').length,1);
+ assert(!f.reports.some(x=>['assistant_retry','adapter_offline','assistant_stopped'].includes(x.state)));
+ assert(!JSON.stringify(f.reports).includes('private diagnostic'));await f.lifecycle.close();
+});
+test('late optional activity errors after replacement or shutdown are fenced from newer components',async()=>{
+ const activities=[];const f=fixture({onOnline(){const pending=Promise.withResolvers();activities.push(pending);return pending.promise;}});
+ f.notice(approved());await flush();f.notice(approved('next'));await flush();await flush();
+ assert.equal(f.adapters.length,2);activities[0].reject(Error('late old activity'));await flush();
+ assert(!f.reports.some(x=>x.state==='adapter_activity_failed'));assert.equal(f.adapters[1].closes,0);
+ await f.lifecycle.close();activities[1].reject(Error('late shutdown activity'));await flush();
+ assert(!f.reports.some(x=>x.state==='adapter_activity_failed'));
+});
