@@ -141,6 +141,41 @@ it('shows the exact service-origin review and requires one-use session-bound CSR
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)).toBeNull();
 });
 
+it('consumes one raced review form and selects only one exact proposal when two approved devices share a generation', async () => {
+  const { h, native, device, cookie } = await fixture(), other = await createPeerIdentity();
+  const a = await proven(h, device), b = await proven(h, other);
+  const preparedA = await prepare(h, native, a), preparedB = await prepare(h, native, b);
+  expect(preparedA.request.payload.expectedGeneration).toBe(preparedB.request.payload.expectedGeneration);
+  const stagedA = await jsonResponse(await stage(h, a, preparedA)), stagedB = await jsonResponse(await stage(h, b, preparedB));
+  const fields = await form(a, cookie);
+  const reviews = await Promise.all([review(a, cookie, 'approve', fields), review(a, cookie, 'approve', fields)]);
+  expect(reviews.map(response => response.status).sort()).toEqual([200, 403]);
+  await Promise.all(reviews.map(response => response.text()));
+  expect((await review(b, cookie)).status).toBe(200);
+  expect((await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + a.pairingId)).state).toBe('approved');
+  expect((await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + b.pairingId)).state).toBe('approved');
+  const attempts = await Promise.all([commit(h, a, preparedA), commit(h, b, preparedB)]);
+  expect(attempts.map(response => response.status).sort()).toEqual([200, 409]);
+  const outcomes = await Promise.all(attempts.map(response => response.json()));
+  const selected = attempts.findIndex(response => response.status === 200), rejected = 1 - selected;
+  const proposals = [{ status: a, prepared: preparedA, digest: stagedA.preparedDigest },
+    { status: b, prepared: preparedB, digest: stagedB.preparedDigest }];
+  const winner = proposals[selected], loser = proposals[rejected];
+  const winnerResult = outcomes[selected] as DevicePairingStatus;
+  expect(winnerResult).toMatchObject({ state: 'committed', pairingId: winner.status.pairingId, preparedDigest: winner.digest });
+  const authority = await verifyAuthorityBundle(await peerApiJson(h, 'control/read'));
+  expect(authority.bundle.generations).toHaveLength(2);
+  expect(authority.current!.payload.transition).toEqual(winner.prepared.request);
+  const order = (grants: readonly { publicKey: string }[]) => [...grants].sort((left, right) => left.publicKey.localeCompare(right.publicKey));
+  expect(await peerDigest(order(authority.control.payload.grants))).toBe(await peerDigest(order(winner.prepared.control.grants)));
+  expect(authority.grant(loser.status.challenge.publicKey)).toBeNull();
+  const stale = await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + loser.status.pairingId);
+  expect(stale.state).toBe('stale'); expect(stale.prepared).toEqual(loser.prepared); expect(stale.preparedDigest).toBe(loser.digest);
+  expect((await jsonResponse(await commit(h, winner.status, winner.prepared))).generation).toEqual(winnerResult.generation);
+  await jsonResponse(await commit(h, loser.status, loser.prepared), 409);
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).bundle.generations).toHaveLength(2);
+});
+
 it('commits only the exact reviewed grant, recovers a lost response after restart and keeps revoked grants revoked', async () => {
   const { h, device, native, cookie } = await fixture(), c = await proven(h, device);
   const prepared = await prepare(h, native, c);
