@@ -23,7 +23,7 @@ it.each([
     expect(response.headers.get('Link')).toContain(`<${BASE}/api/readiness>; rel="monitor"`);
     const value = await response.json() as any;
     expect(value).toMatchObject({ schemaVersion: 1, serviceOrigin: BASE,
-      environment: { id: BASE }, build: { coreRelease: CORE_RELEASE, runtimeId: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      environment: { id: BASE }, build: { coreRelease: CORE_RELEASE, runtimeId: expect.stringMatching(/^[a-f0-9]{64}$/), compositionId: null },
       mode: state.mode, creation: { available: state.creation, code: state.creationCode },
       writes: { available: state.writes, code: state.writeCode }, readinessUrl: BASE + '/api/readiness', statusUrl: BASE + '/status',
     });
@@ -64,18 +64,18 @@ it.each([
   { origin: 'http://localhost:8787', suffix: '', kind: 'local' },
 ])('keeps readiness on $origin without inferring a production deployment', async ({ origin, suffix, kind }) => {
   const settings: Env = { ...env, PUBLIC_BASE: origin + '/', PAGE_HOST_SUFFIX: suffix,
-    SERVICE_ENVIRONMENT: 'Prototype test', SERVICE_SOURCE_COMMIT: 'b'.repeat(40) };
+    SERVICE_ENVIRONMENT: 'Prototype test', SERVICE_SOURCE_COMMIT: 'b'.repeat(40), SERVICE_COMPOSITION_ID: 'c'.repeat(64) };
   const response = await read(settings);
   expect(response.status).toBe(200);
   const value = await response.json() as any;
   expect(value).toMatchObject({ serviceOrigin: origin, environment: { id: origin, label: 'Prototype test', kind },
-    build: { sourceCommit: 'b'.repeat(40) }, readinessUrl: origin + '/api/readiness', statusUrl: origin + '/status',
+    build: { sourceCommit: 'b'.repeat(40), compositionId: 'c'.repeat(64) }, readinessUrl: origin + '/api/readiness', statusUrl: origin + '/status',
   });
   expect(JSON.stringify(value)).not.toContain('https://tendriller.dev');
   const mismatched = await route(new Request('https://wrong.example/api/readiness'), settings);
   expect(mismatched.status).toBe(404);
-  const invalid = await read({ ...settings, SERVICE_SOURCE_COMMIT: 'not-a-source-checkpoint' });
-  expect((await invalid.json() as any).build.sourceCommit).toBeNull();
+  const invalid = await read({ ...settings, SERVICE_SOURCE_COMMIT: 'not-a-source-checkpoint', SERVICE_COMPOSITION_ID: 'not-a-composition' });
+  expect((await invalid.json() as any).build).toMatchObject({ sourceCommit: null, compositionId: null });
 });
 
 it('rechecks service state at creation after a previously successful preflight', async () => {

@@ -17,6 +17,8 @@ export interface Env {
   SERVICE_ENVIRONMENT?: string;
   /** Optional public source checkpoint for this deployed Worker (40 lowercase hex). */
   SERVICE_SOURCE_COMMIT?: string;
+  /** Public complete release composition identity (64 lowercase SHA-256 hex). */
+  SERVICE_COMPOSITION_ID?: string;
   PAGE_BASE_DOMAIN: string;
   /** Optional preview suffix in the page's DNS label, e.g. --p-0123456789ab. */
   PAGE_HOST_SUFFIX?: string;

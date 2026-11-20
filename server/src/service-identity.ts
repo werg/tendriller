@@ -9,6 +9,7 @@ export function serviceIdentity(env: Env) {
   const preview = isBranchPreview(env);
   const label = env.SERVICE_ENVIRONMENT?.trim();
   const source = env.SERVICE_SOURCE_COMMIT ?? (preview ? env.BRANCH_PREVIEW_SHA : undefined);
+  const composition = env.SERVICE_COMPOSITION_ID;
   return {
     serviceOrigin: url.origin,
     environment: {
@@ -22,6 +23,7 @@ export function serviceIdentity(env: Env) {
       // A release/runtime identity is not an exact Worker source identity.
       // Only an explicitly supplied, valid public source checkpoint is reported.
       sourceCommit: /^[a-f0-9]{40}$/.test(source ?? '') ? source! : null,
+      compositionId: /^[a-f0-9]{64}$/.test(composition ?? '') ? composition! : null,
     },
   };
 }

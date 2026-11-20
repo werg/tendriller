@@ -74,7 +74,7 @@ it('challenges an empty OAuth setup probe and serves the public resource-templat
 
 it('provides a complete public MCP onboarding route without browsing or account access, including staging', async () => {
   const origin = 'https://staging.tendriller.dev';
-  const settings = configured({ PUBLIC_BASE: origin, SERVICE_ENVIRONMENT: 'Staging QA', SERVICE_SOURCE_COMMIT: 'c'.repeat(40),
+  const settings = configured({ PUBLIC_BASE: origin, SERVICE_ENVIRONMENT: 'Staging QA', SERVICE_SOURCE_COMMIT: 'c'.repeat(40), SERVICE_COMPOSITION_ID: 'd'.repeat(64),
     OAUTH_CONFIG_JSON: JSON.stringify({ resource: origin + '/mcp', clients: [
     { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] },
   ] }) });
@@ -91,7 +91,7 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(initialized.body.result.serverInfo.version).toBe(CORE_RELEASE);
   expect(initialized.body.result._meta['tendriller/service']).toMatchObject({ serviceOrigin: origin,
     environment: { id: origin, label: 'Staging QA', kind: 'deployment' },
-    build: { coreRelease: CORE_RELEASE, sourceCommit: 'c'.repeat(40), runtimeId: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    build: { coreRelease: CORE_RELEASE, sourceCommit: 'c'.repeat(40), compositionId: 'd'.repeat(64), runtimeId: expect.stringMatching(/^[a-f0-9]{64}$/) },
   });
   expect((await call('server/discover')).body.result._meta['tendriller/service']).toEqual(initialized.body.result._meta['tendriller/service']);
   const catalog = await call('tools/list');

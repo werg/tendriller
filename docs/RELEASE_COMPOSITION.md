@@ -78,6 +78,25 @@ cold-start gates alongside the exact source and archive evidence.
 
 Build and deploy the selected core commit to fresh staging storage. Run `node scripts/check-deployment.mjs https://staging.tendriller.dev`; it checks a real Durable Object read as well as public endpoints. Then exercise OAuth return, owner claim, a signed page publication, page reload, and an independent agent/browser exchange. Keep creation paused if the shared Durable Object quota or a required check fails. `STAGING_READY` and `STAGING_STORAGE_SCHEMA` must describe the actual staging deployment before CI may deploy it automatically.
 
+The automatic staging and production jobs take source, composition, release,
+runtime, engine and starter identities from the public-artifacts job. Before
+deploying they run `check-deployment-artifacts.mjs`: the checkout must still be
+clean, its engine archive and served starter must match the prepared hashes,
+and the served runtime bytes must match their manifest. Wrangler then receives
+`SERVICE_SOURCE_COMMIT` and `SERVICE_COMPOSITION_ID` as public deployment metadata.
+Readiness and MCP discovery report these as `build.sourceCommit` and
+`build.compositionId`; an absent or invalid setting is explicitly `null`.
+
+For an attested manual smoke check, pass `--source-commit`, `--composition-id`,
+`--core-release` and `--runtime-id` from the selected manifest, along with
+`--assistant`. The smoke check rejects missing or mismatched expected identity,
+cross-origin readiness, and a tool catalog missing `tendril_guide`, even if a
+direct call to that unadvertised tool would succeed. These public metadata fields
+identify the operator's checked deployment composition; the post-deployment
+check verifies what the service reports, while CI separately verifies local
+deployment bytes. Live account linking and selected-connector approval/calls
+remain separate acceptance evidence.
+
 Production needs its own fresh storage baseline and explicit cutover. There is no old-state reader or migration path. The release tuple, passing composition artifact, staging evidence, runtime ID, and storage schema should be recorded together before production deployment.
 
 ## Browser record backend rollout gate

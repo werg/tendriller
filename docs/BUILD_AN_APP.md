@@ -141,6 +141,8 @@ assert.equal(composition.core.dirty, false);
 assert.equal(composition.core.source, release.source_commit);
 if (readiness.build.sourceCommit !== null)
   assert.equal(composition.core.source, readiness.build.sourceCommit, 'Host source checkpoint mismatch.');
+if (readiness.build.compositionId != null)
+  assert.equal(id, readiness.build.compositionId, 'Host release composition mismatch.');
 JS
 (cd packages && sha256sum --check SHA256SUMS)
 TENDRILLER_SESSION_ARCHIVE=$(node -p "JSON.parse(require('fs').readFileSync('composition.json','utf8')).components.find(x=>x.role==='session').file")
@@ -156,8 +158,9 @@ Keep `composition.json`, the release manifest, archive hashes and the generated
 set, the source starter, the pinned Chronolog session and embedded generation
 control provenance. The first-app archive carries the three packages this app
 installs; the manifest also identifies the runtime and engine used by the host.
-A runtime ID describes browser assets, not every host Worker byte. When the host
-has no source checkpoint configured, its full deployed identity still needs the
+A runtime ID describes browser assets, not every host Worker byte. Automated
+deployments report both their source checkpoint and complete composition ID.
+When either identity is absent, the host's full deployed identity still needs the
 operator's [release composition evidence](RELEASE_COMPOSITION.md).
 
 If the versioned archive is unavailable or these checks fail, the operator must

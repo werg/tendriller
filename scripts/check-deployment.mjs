@@ -1,17 +1,35 @@
 import { readFileSync } from "node:fs";
-import { requireService } from "../contract/client.mjs";
+import { parseArgs } from 'node:util';
+import { describeReadiness, requireService, requireServiceOrigin } from "../contract/client.mjs";
+import { CORE_RELEASE } from '../contract/index.mjs';
 // Smoke check the public endpoints after each deployment.
-const base = process.argv[2];
-const assistant = process.argv[3] === '--assistant';
-if (!base || !/^https:\/\/[a-z0-9.-]+$/.test(base) || (process.argv.length > 3 && !assistant)) {
-  throw new Error("Usage: node scripts/check-deployment.mjs https://service-host [--assistant]");
+const { values, positionals } = parseArgs({ allowPositionals: true, options: {
+  assistant: { type: 'boolean' }, 'source-commit': { type: 'string' }, 'composition-id': { type: 'string' },
+  'runtime-id': { type: 'string' }, 'core-release': { type: 'string' },
+} });
+if (positionals.length !== 1) throw Error('Usage: node scripts/check-deployment.mjs https://service-host [--assistant] [--source-commit SHA --composition-id SHA256] [--runtime-id SHA256 --core-release VERSION]');
+const base = requireServiceOrigin(positionals[0]), assistant = Boolean(values.assistant);
+const runtime = JSON.parse(readFileSync(new URL('../server/src/runtime-release.json', import.meta.url)));
+const expected = { coreRelease: values['core-release'] ?? CORE_RELEASE, runtimeId: values['runtime-id'] ?? runtime.id,
+  sourceCommit: values['source-commit'], compositionId: values['composition-id'] };
+if (Boolean(expected.sourceCommit) !== Boolean(expected.compositionId) ||
+    expected.sourceCommit && !/^[a-f0-9]{40}$/.test(expected.sourceCommit) ||
+    expected.compositionId && !/^[a-f0-9]{64}$/.test(expected.compositionId))
+  throw Error('Supply both an exact source commit and complete composition ID for deployment attestation.');
+if (expected.coreRelease !== CORE_RELEASE || expected.runtimeId !== runtime.id)
+  throw Error('The smoke checkout does not match the expected release/runtime identity.');
+function checkBuild(build, label) {
+  if (build?.coreRelease !== expected.coreRelease || build?.runtimeId !== expected.runtimeId ||
+      expected.sourceCommit && build?.sourceCommit !== expected.sourceCommit ||
+      expected.compositionId && build?.compositionId !== expected.compositionId)
+    throw Error(`${label} does not match the expected source/release/runtime/composition identity.`);
 }
 
 async function get(path, headers) {
   let error;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const response = await fetch(new URL(path, base), { headers, signal: AbortSignal.timeout(15_000) });
+      const response = await fetch(new URL(path, base), { headers, redirect: 'error', signal: AbortSignal.timeout(15_000) });
       if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
       return response;
     } catch (cause) {
@@ -24,6 +42,10 @@ async function get(path, headers) {
 
 const health = await (await get("/health")).json();
 if (health?.ok !== true) throw new Error("Health response did not report ok: true");
+const readiness = await describeReadiness(base, { signal: AbortSignal.timeout(15_000) });
+if (readiness.mode === 'unavailable' || readiness.environment?.id !== base)
+  throw Error('Readiness is unavailable or identifies a different deployment environment.');
+checkBuild(readiness.build, 'Readiness');
 const status = await (await get("/status")).text();
 if (!/Operational|New page creation paused|Read-only or unavailable/.test(status))
   throw new Error("Service status did not read the account database");
@@ -31,7 +53,7 @@ if (!/Operational|New page creation paused|Read-only or unavailable/.test(status
 // Object storage quota is exhausted. Touch one nonexistent, fixed Tendril so
 // its SQLite-backed namespace must complete a real read before deployment is
 // reported healthy. The missing tendril is the expected result.
-const objectResponse = await fetch(new URL("/api/t/aaaaaaaaaaaa", base), { signal: AbortSignal.timeout(15_000) });
+const objectResponse = await fetch(new URL("/api/t/aaaaaaaaaaaa", base), { redirect: 'error', signal: AbortSignal.timeout(15_000) });
 const objectResult = await objectResponse.json().catch(() => null);
 if (objectResponse.status !== 404 || objectResult?.error?.message !== "No such tendril") {
   throw new Error(`Durable Object storage readiness failed: HTTP ${objectResponse.status}`);
@@ -42,8 +64,10 @@ const landing = await (await get('/')).text();
 if (!landing.includes(`${base}/docs/BUILD_AN_APP.md`)) throw new Error('Homepage is missing the first-app entry point');
 const descriptor = await (await get('/api/service')).json();
 requireService(descriptor);
+if (descriptor.core_release !== expected.coreRelease) throw Error('Service descriptor release does not match the expected build.');
 const onboarding = await (await get('/.well-known/tendriller.json')).json();
-if (onboarding.start_here !== `${base}/docs/BUILD_AN_APP.md` ||
+if (onboarding.serviceOrigin !== base || onboarding.interfaces?.readiness !== `${base}/api/readiness` ||
+    onboarding.start_here !== `${base}/docs/BUILD_AN_APP.md` ||
     onboarding.starter !== `${base}/downloads/tendriller-first-app.tgz` ||
     onboarding.capabilities !== `${base}/.well-known/tendriller-capabilities.json`)
   throw new Error('Onboarding navigation must target this deployment');
@@ -99,7 +123,6 @@ if (!(automated.headers.get("content-type") || "").includes("application/json"))
 const automatedGuide = await (await get("/agent.md", { "User-Agent": "Python-urllib/3.12" })).text();
 if (!automatedGuide.includes("Tendriller")) throw new Error("Automated clients cannot read the agent guide");
 if (!descriptor.limits?.participant) throw new Error('The service must advertise its filtered participant contract');
-const runtime = JSON.parse(readFileSync(new URL("../server/src/runtime-release.json",import.meta.url)));
 const manifest = await (await get(`/_tendril/runtime/${runtime.id}/manifest.json`)).json();
 if(manifest.id!==runtime.id)throw Error("Runtime artifact mismatch");
 if (assistant) {
@@ -117,21 +140,26 @@ if (assistant) {
       !issuer.code_challenge_methods_supported?.includes('S256') || !issuer.token_endpoint_auth_methods_supported?.includes('none') ||
       !keys.keys?.length || keys.keys.some(key => ['d', 'p', 'q', 'dp', 'dq', 'qi', 'oth', 'k'].some(field => field in key)))
     throw new Error('Assistant OAuth discovery does not match this deployment');
-  const call = (method, params) => fetch(`${base}/mcp`, { method: 'POST', signal: AbortSignal.timeout(15_000),
+  const call = (method, params) => fetch(`${base}/mcp`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
   const catalog = await call('tools/list');
-  if (!catalog.ok || !(await catalog.json()).result?.tools?.some(tool => tool.name === 'get_application_delivery'))
-    throw new Error('Assistant tool discovery failed');
+  const tools = (await catalog.json()).result?.tools;
+  if (!catalog.ok || !Array.isArray(tools) ||
+      ['get_application_delivery', 'tendril_guide'].some(name => !tools.some(tool => tool.name === name)))
+    throw new Error('Assistant tool discovery failed: get_application_delivery and tendril_guide must both appear in tools/list');
   const guideResponse = await call('tools/call', { name: 'tendril_guide', arguments: {} });
   const guide = (await guideResponse.json()).result?.structuredContent;
   if (!guideResponse.ok || guide?.topic !== 'start' || guide.serviceOrigin !== base ||
+      guide.readiness?.serviceOrigin !== base ||
       guide.onboarding?.interfaces?.create_page?.url !== `${base}/api/tendrils` ||
       !guide.text?.includes('Node 24') || !guide.text?.includes(`${base}/api/tendrils`))
     throw new Error('Assistant app-building guidance is unavailable or targets another deployment');
+  checkBuild(guide.build, 'Assistant guide');
+  checkBuild(guide.readiness.build, 'Assistant guide readiness');
   const templates = await call('resources/templates/list');
   if (!templates.ok || !Array.isArray((await templates.json()).result?.resourceTemplates))
     throw new Error('Assistant resource-template discovery failed');
-  const probe = await fetch(`${base}/mcp`, { method: 'POST', signal: AbortSignal.timeout(15_000),
+  const probe = await fetch(`${base}/mcp`, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
     headers: { 'Content-Type': 'application/octet-stream' } });
   if (probe.status !== 401 || !probe.headers.get('WWW-Authenticate')?.includes(`${base}/.well-known/oauth-protected-resource/mcp`))
     throw new Error('Assistant setup probe did not advertise account linking');
@@ -141,4 +169,5 @@ if (assistant) {
   console.log(`Assistant discovery and authorization smoke check passed: ${base}`);
 }
 console.log(`Matched contract ${descriptor.contract}, runtime ${runtime.id} with the filtered participant transport`);
+if (expected.compositionId) console.log(`Matched deployed source ${expected.sourceCommit} and composition ${expected.compositionId}`);
 console.log(`Deployment and agent onboarding smoke check passed: ${base}`);
