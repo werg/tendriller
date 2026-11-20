@@ -39,6 +39,7 @@ test('real stdio child handles turns, server requests, reasoning exclusion, RPC 
   await assert.rejects(host.rpc('bad'), error => /RPC failed/.test(error.message) && !error.message.includes('PRIVATE_CREDENTIAL'));
   host.deadlineMs = 25;
   await assert.rejects(host.rpc('hang'), /deadline/);
+  host.deadlineMs = 5000;
   await assert.rejects(host.rpc('die'), /exited/);
   await assert.rejects(host.rpc('anything'), /closed/);
 });
