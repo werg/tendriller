@@ -111,7 +111,7 @@ and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
 - [x] Preserve the same device identity and exact saved attempts on resume.
 - [x] Report actual assistant approval/online status, process lifetime, and
   required native participant; proposing a connection is not live connectivity.
-- [x] Keep optional event forwarding/wake opt-in and distinct from ordinary
+- [x] Keep event forwarding/wake consent-gated and distinct from ordinary
   assistant reads/writes and from persistence of the native process.
 - [x] Owner claim, assistant permission review, and browser device enrollment
   remain explicit, distinguishable authority steps with resumable instructions.

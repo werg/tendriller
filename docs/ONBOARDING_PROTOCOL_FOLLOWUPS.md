@@ -196,7 +196,7 @@ participant uses `handle.api + "/peers/pairing"`. The public
 | `challenge` | POST `{action:"challenge",requestId,publicKey,rights:{reader:true,writer:boolean}}` | One retained challenge, pairing ID, expiry, status and service-origin review URL. |
 | `prove` | POST `{action:"prove",pairingId,signature}` | The same request becomes `pending` after possession is verified. |
 | `inspect` | GET `?pairingId=...` | Same-account browser status or authorized native inspection of the original request. |
-| `pending` | Native GET without an ID | At most 20 reviewed/retained attempts. Current-generation work is prioritized; uncertain attempts can report terminal observations. |
+| `pending` | Native GET without an ID | At most 20 pending, approved or uncertain retained attempts. Current-generation work is prioritized; uncertain attempts can report terminal observations. |
 | `prepare` | Native POST `{action:"prepare",pairingId,request,control}` | Validate and retain the exact signed proposal without selecting it. Status stays `pending`; its `preparedDigest` becomes available for owner review. |
 | `commit` | Native POST `{action:"commit",pairingId,request,control}` | The existing signed-control outcome; exact accepted retries return the original generation. |
 
