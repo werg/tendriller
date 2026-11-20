@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createPeerIdentity } from '@chronolog/peer-generation/control';
 import { DEVICE_PAIRING_DOMAIN, pairingProofBytes, signDevicePairingChallenge, verifyDevicePairingProof,
   createDevicePairingClient } from '../pairing.mjs';
+async function createPeerIdentity() {
+  const keys = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']);
+  return { publicKey: Buffer.from(await crypto.subtle.exportKey('raw', keys.publicKey)).toString('hex'), privateKey: keys.privateKey };
+}
 const challengeFor = publicKey => ({ version: 1, domain: DEVICE_PAIRING_DOMAIN, pairingId: 'ab'.repeat(32), requestId: 'retained-request',
   serviceOrigin: 'https://example.com', pageOrigin: 'https://page.example.net', applicationId: 'cd'.repeat(32), accountId: 'account-one',
   publicKey, rights: { reader: true, writer: true }, expectedGeneration: 'ef'.repeat(32), controlRevision: 1, nonce: '01'.repeat(32), expiresAt: 1800000000000 });
