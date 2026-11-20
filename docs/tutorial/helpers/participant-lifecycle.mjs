@@ -87,7 +87,9 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
         current = adapter = startAdapter({ signal: componentSignal, onStatus: status => {
           if (componentSignal.aborted || approvedKey() !== key) return;
           report({ assistant: status, participantRunning: true });
-          if (['approval_changed', 'participant_replaced'].includes(status.reason)) blockedKey = key;
+          if (['approval_changed', 'participant_replaced'].includes(status.reason)) {
+            blockedKey = key; track(stopAdapter());
+          }
           if (status.reason === 'access_revoked') stopOptional('access_revoked');
         } });
         const closed = Promise.resolve(current.closed).finally(() => controller.abort());
