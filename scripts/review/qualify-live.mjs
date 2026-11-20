@@ -96,12 +96,17 @@ try {
       await waitForReviewProvider({ request: context.request, url: proposal.reviewUrl, observe: value => {
         diagnostics.provider(value); diagnostics.response(proposal.reviewUrl, value.status);
       } });
+      diagnostics.step('replay-approved-proposal');
+      const replay = JSON.parse(run(['propose']));
+      assert.equal(replay.proposed, proposal.proposed, 'Claim replay must retain the exact proposal identity');
+      assert.equal(replay.approved, true, 'Claim replay must retain owner approval');
       await diagnostics.capture(page);
     } catch (error) { await diagnostics.capture(page); throw error; }
   } finally { await browser.close(); }
   phase = 'native MCP qualification';
   const report = await recordReview({ project, accessPath, output, composition, video: !values['no-video'] });
   report.preclaimPublicationVerified = true;
+  report.approvalSurvivesClaimReplay = true;
   report.fixtureSources = fixtureSources;
   report.consumerSource = consumerSource;
   report.claimReview = diagnostics?.snapshot();
