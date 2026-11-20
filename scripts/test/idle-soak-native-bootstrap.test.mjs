@@ -105,3 +105,11 @@ test('assistant status IPC changes only on actual boolean transitions and cleanu
  const before=f.messages.length;f.assistantReport({state:'adapter_online'});await flush();assert.equal(f.messages.length,before);
  assert.equal(f.messages.at(-1).online,false);assert.equal(f.stats().closes,1);assert.equal(readiness(f).length,0);
 });
+
+test('online provider, participation and query cannot bypass an unfinished or failed initial reconciliation',async()=>{
+ const f=fixture();await flush();f.status(readyStatus);f.query.resolve({});f.assistantReport({state:'adapter_online'});await flush();
+ assert.equal(readiness(f).length,0);
+ const pass=f.reconcile({signal:f.stop.signal});const rejected=assert.rejects(pass,/reconcile failed/);f.reconciliation.reject(Error('reconcile failed'));await rejected;await flush();
+ assert.equal(readiness(f).length,0);assert.equal(f.stats().closes,0);
+ f.stop.abort();await f.task;assert.equal(f.stats().closes,1);
+});
