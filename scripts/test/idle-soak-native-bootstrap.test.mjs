@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runNativeBootstrap, bootstrapOptions } from '../idle-soak/native-bootstrap.mjs';
 import { newState, report } from '../idle-soak/state.mjs';
-import { nativeCoverage } from '../idle-soak/run.mjs';
+import { nativeCoverage, nativeAssistantStatus, nativeAssistantBusy } from '../idle-soak/run.mjs';
+import { quietBoundary } from '../idle-soak/warmup.mjs';
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
+const readiness=f=>f.messages.filter(x=>x.idleSoakReady===1||x.idleSoakCoverage===1);
 function fixture({assistant=true,events=false,queryFailure=false,missingPairings=false}={}) {
  const stop=new AbortController(),sessionStop=new AbortController(),query=Promise.withResolvers(),reconciliation=Promise.withResolvers();
  const calls=[],messages=[],wakeups=[];let status,notify,observed,reconcile,assistantReport,opens=0,closes=0,assistantCalls=0,supervisorCloses=0;
@@ -40,17 +42,17 @@ test('assistant readiness requires actual adapter online, native participation, 
  assert.deepEqual(f.calls.filter(x=>Array.isArray(x)&&x[0]==='assistant'),[['assistant',true]]);
  f.assistantReport({state:'participant_running',private:'MUST_NOT_LEAK'});f.assistantReport({assistant:{state:'connected'}});
  f.status({phase:'connected'});const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;
- f.query.resolve({revision:{},value:[]});await flush();assert.equal(f.messages.length,0);
- f.assistantReport({state:'adapter_online'});await flush();assert.equal(f.messages.length,0);
- f.status({...readyStatus,recovery:{id:'review'}});assert.equal(f.messages.length,0);
- f.status(readyStatus);assert.deepEqual(f.messages,[{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',wakeups:true,modelTurns:false,eventsForwarding:true},{idleSoakReady:1}]);
- f.status(readyStatus);f.assistantReport({state:'adapter_online'});assert.equal(f.messages.length,2);
+ f.query.resolve({revision:{},value:[]});await flush();assert.equal(readiness(f).length,0);
+ f.assistantReport({state:'adapter_online'});await flush();assert.equal(readiness(f).length,0);
+ f.status({...readyStatus,recovery:{id:'review'}});assert.equal(readiness(f).length,0);
+ f.status(readyStatus);assert.deepEqual(readiness(f),[{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',wakeups:true,modelTurns:false,eventsForwarding:true},{idleSoakReady:1}]);
+ f.status(readyStatus);f.assistantReport({state:'adapter_online'});assert.equal(readiness(f).length,2);
  assert(!JSON.stringify(f.messages).includes('MUST_NOT_LEAK'));
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert(f.calls.includes('unsubscribe'));
 });
 test('an earlier online callback is invalidated by adapter loss before the remaining readiness conditions',async()=>{
  const f=fixture();await flush();f.assistantReport({state:'adapter_online'});f.assistantReport({assistant:{state:'disconnected'}});
- f.status(readyStatus);const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;f.query.resolve({});await flush();assert.equal(f.messages.length,0);
+ f.status(readyStatus);const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;f.query.resolve({});await flush();assert.equal(readiness(f).length,0);
  f.assistantReport({state:'adapter_online'});assert.equal(f.messages.at(-1).idleSoakReady,1);f.stop.abort();await f.task;
 });
 test('native-only mode still counts real reconciliation, participation and change callbacks and closes once',async()=>{
@@ -61,12 +63,12 @@ test('native-only mode still counts real reconciliation, participation and chang
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert.equal(f.stats().supervisorCloses,1);
 });
 test('failed activation or an outdated starter cannot emit readiness or leak a second owner',async()=>{
- const failed=fixture({queryFailure:true});await assert.rejects(failed.task,/query failed/);assert.equal(failed.messages.length,0);assert.equal(failed.stats().opens,1);assert.equal(failed.stats().closes,1);
- const old=fixture({missingPairings:true});await assert.rejects(old.task,/CURRENT_EVENT_DRIVEN_STARTER_REQUIRED/);assert.equal(old.messages.length,0);assert.equal(old.stats().assistantCalls,0);assert.equal(old.stats().closes,1);
+ const failed=fixture({queryFailure:true});await assert.rejects(failed.task,/query failed/);assert.equal(readiness(failed).length,0);assert.equal(failed.stats().opens,1);assert.equal(failed.stats().closes,1);
+ const old=fixture({missingPairings:true});await assert.rejects(old.task,/CURRENT_EVENT_DRIVEN_STARTER_REQUIRED/);assert.equal(readiness(old).length,0);assert.equal(old.stats().assistantCalls,0);assert.equal(old.stats().closes,1);
 });
 test('abort cancels blocked activation, closes the canonical open hook and never emits late readiness',async()=>{
  const f=fixture();await flush();f.status(readyStatus);const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;f.assistantReport({state:'adapter_online'});
- f.stop.abort();await f.task;f.query.resolve({});await flush();assert.equal(f.messages.length,0);assert.equal(f.stats().closes,1);assert.equal(f.stats().opens,1);
+ f.stop.abort();await f.task;f.query.resolve({});await flush();assert.equal(readiness(f).length,0);assert.equal(f.stats().closes,1);assert.equal(f.stats().opens,1);
  let opened=false;await assert.rejects(runNativeBootstrap({assistant:true,signal:AbortSignal.abort(Error('stopped')),record(){},send(){}},{openSession(){opened=true;}}),/stopped/);assert.equal(opened,false);
 });
 test('coverage IPC uses a fixed native scope whitelist and MCP does not imply observed model turns',()=>{
@@ -78,4 +80,28 @@ test('coverage IPC uses a fixed native scope whitelist and MCP does not imply ob
   assert.equal(report(s).coverage.eventsForwarding,bootstrapScope==='native-with-mcp-adapter');
   assert.equal(report(s).counts.modelTurns,null);assert.equal(report(s).coverage.bootstrapScope,bootstrapScope);
  }
+});
+
+
+test('latest assistant state gates a full quiet interval; a brief disconnect records state without killing native',async t=>{
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});
+ const state=newState({hours:48});nativeCoverage(state,{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',wakeups:true,modelTurns:false,eventsForwarding:true});
+ assert.equal(nativeAssistantBusy(state),true);
+ assert(nativeAssistantStatus(state,{idleSoakAssistantStatus:1,online:true,eventsForwarding:true}));assert.equal(nativeAssistantBusy(state),false);
+ let done=false;const boundary=quietBoundary({busy:()=>nativeAssistantBusy(state),timeoutMs:10000});const wait=boundary.wait().then(()=>{done=true;});
+ t.mock.timers.tick(1000);nativeAssistantStatus(state,{idleSoakAssistantStatus:1,online:false,eventsForwarding:true});boundary.activity();
+ t.mock.timers.tick(3000);await flush();assert.equal(done,false);assert.equal(state.coverage.mcpOnline,false);assert.equal(state.coverage.mcpStatusAt,2000);assert.equal(state.coverage.eventsForwarding,true);
+ nativeAssistantStatus(state,{idleSoakAssistantStatus:1,online:true,eventsForwarding:true});boundary.activity();
+ t.mock.timers.tick(1999);await flush();assert.equal(done,false);t.mock.timers.tick(1);await wait;
+ assert.equal(done,true);assert.equal(report(state).counts.modelTurns,null);
+ const before=JSON.stringify(state.coverage);assert.equal(nativeAssistantStatus(state,{idleSoakAssistantStatus:1,online:'yes',eventsForwarding:true,private:'secret'}),false);assert.equal(JSON.stringify(state.coverage),before);
+});
+
+test('assistant status IPC changes only on actual boolean transitions and cleanup fences late online callbacks',async()=>{
+ const f=fixture({events:true});await flush();
+ f.assistantReport({state:'adapter_online'});f.assistantReport({state:'adapter_online'});f.assistantReport({assistant:{state:'disconnected'}});f.assistantReport({state:'adapter_online'});
+ assert.deepEqual(f.messages.filter(x=>x.idleSoakAssistantStatus===1).map(x=>[x.online,x.eventsForwarding]),[[false,true],[true,true],[false,true],[true,true]]);
+ f.stop.abort();await f.task;
+ const before=f.messages.length;f.assistantReport({state:'adapter_online'});await flush();assert.equal(f.messages.length,before);
+ assert.equal(f.messages.at(-1).online,false);assert.equal(f.stats().closes,1);assert.equal(readiness(f).length,0);
 });

@@ -19,6 +19,18 @@ export function nativeCoverage(state, message) {
   return true;
 }
 
+/** Status is observation, never a reason to terminate the independently owned app. */
+export function nativeAssistantStatus(state, message, now = Date.now()) {
+  if (message?.idleSoakAssistantStatus !== 1 || typeof message.online !== 'boolean' || typeof message.eventsForwarding !== 'boolean') return false;
+  if (state.coverage.mcpOnline === message.online && state.coverage.eventsForwarding === message.eventsForwarding) return false;
+  state.coverage.mcpOnline = message.online;
+  state.coverage.mcpStatusAt = now;
+  state.coverage.eventsForwarding = message.eventsForwarding;
+  record(state, { source: 'native', kind: 'assistant-status', online: message.online, eventsForwarding: message.eventsForwarding }, now);
+  return true;
+}
+export const nativeAssistantBusy = state => state?.coverage.bootstrapScope === 'native-with-mcp-adapter' && state.coverage.mcpOnline !== true;
+
 export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => {
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); resolve(); };
   const abort = () => { clearTimeout(timer); reject(Error('INTERRUPTED')); };
@@ -49,7 +61,7 @@ export async function run(configPath, directory) {
   const stop = () => abort.abort(); process.once('SIGTERM', stop); process.once('SIGINT', stop);
   const persist = () => { save(checkpoint, s); save(resolve(directory, 'report.json'), report(s)); };
   const pending = { browser: 0, native: 0 };
-  const boundary = quietBoundary({ signal: abort.signal, busy: () => pending.browser + pending.native > 0 });
+  const boundary = quietBoundary({ signal: abort.signal, busy: () => pending.browser + pending.native > 0 || nativeAssistantBusy(s) });
   const emit = event => {
     if (event?.kind === 'activity' && ['browser', 'native'].includes(event.source) && Number.isSafeInteger(event.pending) && event.pending >= 0) {
       pending[event.source] = event.pending; boundary.activity(); return;
@@ -79,7 +91,8 @@ export async function run(configPath, directory) {
     native.on('message', message => {
       if (message?.idleSoak === 1) emit(message);
       if (message?.idleSoakActivity === 1) emit({ ...message, kind: 'activity' });
-      if (nativeCoverage(s, message)) persist();
+      if (nativeAssistantStatus(s, message)) { boundary.activity(); persist(); }
+      if (nativeCoverage(s, message)) { boundary.activity(); persist(); }
     });
     native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); abort.abort(); });
     native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); abort.abort(); } persist(); });
