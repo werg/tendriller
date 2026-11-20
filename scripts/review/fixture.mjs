@@ -1,5 +1,20 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, copyFileSync, mkdirSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+
+/** Enumerated public consumer sources only; never copy private device stores or generated application data. */
+export const REVIEW_FIXTURE_FILES = [
+  ['review-app.mjs', 'integrations/chatgpt/plugin/review-app.mjs'],
+  ['review-domain.mjs', 'integrations/chatgpt/plugin/review-domain.mjs'],
+  ['review-assistant.mjs', 'integrations/chatgpt/plugin/review-assistant.mjs'],
+  ['support/participant-lifecycle.mjs', 'docs/tutorial/helpers/participant-lifecycle.mjs'],
+];
+export function installReviewFixtureSources(root, project) {
+  for (const [file, source] of REVIEW_FIXTURE_FILES) {
+    const target = resolve(project, file); mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(resolve(root, source), target);
+  }
+  return REVIEW_FIXTURE_FILES.map(([file]) => file);
+}
 
 export function restoreFixtureCreationMode(db) {
   db("UPDATE service_state SET mode='creation_paused' WHERE id=1 AND mode='open'");

@@ -98,7 +98,16 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
         componentSignal.throwIfAborted();
         if (approvedKey() !== key || blockedKey === key) return;
         report({ state: 'adapter_online', participantRunning: true, roundTripVerified: false, futureWakeVerified: false });
-        await (onOnline ? Promise.race([closed, Promise.resolve(onOnline(current, componentSignal)).then(() => closed)]) : closed);
+        // Optional activity has its own failure boundary. A cursor/review error
+        // cannot turn a healthy provider into a transport retry or idle heartbeat.
+        if (onOnline) void Promise.resolve().then(() => {
+          componentSignal.throwIfAborted();
+          return onOnline(current, componentSignal);
+        }).catch(() => {
+          if (componentSignal.aborted || approvedKey() !== key || blockedKey === key) return;
+          report({ state: 'adapter_activity_failed', code: 'adapter_activity_failed', participantRunning: true });
+        });
+        await cancellable(closed, componentSignal);
       } catch (error) {
         if (!optionalLifetime.aborted && !controller.signal.aborted) {
           report({ state: 'adapter_offline', code: safeCode(error), participantRunning: true });

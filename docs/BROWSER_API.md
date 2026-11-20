@@ -130,12 +130,14 @@ its injected `<base>`, which names the immutable publication graph. So:
 
 - a reload, a new tab, a Home Screen launch and a discarded-then-restored tab load
   the release that is selected **now**;
-- an open tab holds one hibernating watch and learns when a newer release is
-  published. The watch is the runtime's only self-started host contact; it opens
-  after the document has loaded and while it is visible, never during the load. It switches at its next safe point: immediately when hidden or idle,
+- an open tab holds the page's one hibernating publication watch
+  (`contract/publication-watch.mjs`, opened by the hosted `tendril.js` entry; the
+  bare `startRuntime` kernel opens it only with `watchPublication: true`) and learns
+  of every change of the selected release, rollbacks included. It switches at its next safe point: immediately when hidden or idle,
   otherwise once no editable field is focused or changed and no
   `tendril.publication.hold()` is active. A tab resumed from the background
-  rechecks at once;
+  switches at once. While a switch waits, Page options shows **New version
+  published** with an **Open update** link to the page's own address;
 - pinning is explicit: a document opened at its immutable
   `…/_publications/ID/` URL stays on that release (for a review or a comparison),
   and `publication.pinned` is `true`.

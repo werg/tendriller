@@ -77,7 +77,8 @@ export interface RuntimeServices {
     readonly pinned: boolean;
     /** A newer release is selected; the page switches at its next safe point. */
     readonly updateAvailable: boolean;
-    onUpdate(listener: (update: { version: number }) => void): () => void;
+    /** Called with the selected version when it differs from this document's release; version null when the selection returns to it. */
+    onUpdate(listener: (update: { version: number | null }) => void): () => void;
     /** Defer the automatic switch while there is unsaved work; call the result to release. */
     hold(): () => void;
     /** Load the latest selected release now. */

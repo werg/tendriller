@@ -61,7 +61,7 @@ export class Db {
   private reads = new Map<string, unknown>();
   private readonly sql: SqlStorage;
 
-  constructor(private readonly storage: Pick<DurableObjectStorage, 'sql' | 'transactionSync'>) {
+  constructor(private readonly storage: Pick<DurableObjectStorage, 'sql' | 'transactionSync'>, private readonly metadataChanged?: (key: string) => void) {
     this.sql = storage.sql;
   }
 
@@ -156,11 +156,13 @@ export class Db {
     // so mutable caller objects and cold caches cannot hide a real change.
     this.execute("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v WHERE meta.v <> excluded.v", [k, JSON.stringify(v)]);
     remember(this.cache, k, v);
+    this.metadataChanged?.(k);
   }
 
   del(k: string): void {
     this.run("DELETE FROM meta WHERE k = ?", k);
     this.cache.delete(k);
+    this.metadataChanged?.(k);
   }
 
   clearCache(): void {

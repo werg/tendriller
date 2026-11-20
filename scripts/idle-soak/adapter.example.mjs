@@ -20,6 +20,9 @@ export async function settle({ page, config }) { if (page) await coherentRead(pa
 export async function reconnect({ page, config, signal }) {
   signal.throwIfAborted();
   await page.locator('#close:enabled').click({ timeout: 10000 });
+  // The runtime binding is installed once per document. Follow its explicit
+  // close/reload contract while retaining this browser's original device.
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.locator('#connect:enabled').click({ timeout: 10000 });
   await coherentRead(page, config);
   return true;

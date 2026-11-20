@@ -11,7 +11,7 @@ export function nativeReady(child, { signal, timeoutMs = 60000 } = {}) {
     signal?.addEventListener('abort', aborted, { once: true }); if (signal?.aborted) aborted();
   });
 }
-export function quietBoundary({ signal, quietMs = 2000, timeoutMs = 30000 } = {}) {
+export function quietBoundary({ signal, quietMs = 2000, timeoutMs = 30000, busy = () => false } = {}) {
   let activity = () => {};
   return { activity() { activity(); }, wait() {
     return new Promise((resolve, reject) => {
@@ -20,7 +20,7 @@ export function quietBoundary({ signal, quietMs = 2000, timeoutMs = 30000 } = {}
         signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(); };
       const abort = () => finish(Error('WARMUP_INTERRUPTED'));
       const deadline = setTimeout(() => finish(Error('QUIET_BOUNDARY_DEADLINE')), timeoutMs);
-      activity = () => { clearTimeout(quiet); quiet = setTimeout(() => finish(), quietMs); };
+      activity = () => { clearTimeout(quiet); quiet = setTimeout(() => { if (!busy()) finish(); }, quietMs); };
       signal?.addEventListener('abort', abort, { once: true });
       if (signal?.aborted) abort(); else activity();
     });

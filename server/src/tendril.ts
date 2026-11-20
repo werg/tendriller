@@ -3,7 +3,7 @@ import { isSetupWatch, notifySetupChanged } from './setup-watch';
 import { setupPage, nextSetupDeadline, expireSetupReservation } from './setup-page';
 import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
 import { adoptPreparedAssistant } from './assistant-admission';
-import { isPublicationWatch } from "./publication-watch";
+import { isPublicationWatch, notifyPublicationWatchers } from "./publication-watch";
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from './peers';
 import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expireRelays } from './peer-relay';
@@ -67,7 +67,7 @@ export class Tendril extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.db = new Db(ctx.storage);
+    this.db = new Db(ctx.storage, key => { if (key === 'current') notifyPublicationWatchers(this); });
     this.db.init();
     this.transactions = new Transactions(ctx.storage, () => this.db.clearCache(), work => ctx.waitUntil(work));
     this.alarms = new DeadlineAlarm(ctx.storage);

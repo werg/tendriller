@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const RELEASE_DOWNLOAD_LIMITS = Object.freeze({ metadataBytes: 1024 * 1024,
-  artifactBytes: 64 * 1024 * 1024, totalBytes: 256 * 1024 * 1024, artifacts: 32, redirects: 3, timeoutMs: 120_000 });
+  artifactBytes: 64 * 1024 * 1024, totalBytes: 256 * 1024 * 1024, artifacts: 32, redirects: 3, timeoutMs: 300_000 });
 const hash = value => createHash('sha256').update(value).digest('hex');
 const sha256 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const commit = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -62,7 +62,7 @@ function releaseDownload(base, { fetcher = globalThis.fetch, limits = RELEASE_DO
         digest.update(chunk); if (retain || onVerified) chunks.push(Buffer.from(chunk));
       }
     } catch (error) {
-      if (error?.code?.startsWith('release_')) throw error;
+      if (typeof error?.code === 'string' && error.code.startsWith('release_')) throw error;
       fail('release_download_failed', `Public release asset ${file} could not be read completely.`);
     }
     if (expectedSize !== undefined && bytes !== expectedSize || expectedHash !== undefined && digest.digest('hex') !== expectedHash)

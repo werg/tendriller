@@ -1,5 +1,12 @@
 # First application: Shared Notes
 
+When adapting this starter to a checklist or another application, first verify its
+unchanged connected loop, then change the domain and UI. Keep device identity
+independent of titles: the page, pairing Worker and application Worker all import
+`helpers/browser-profile.mjs`. Do not rename the profile in just one entry point
+or replace a retained browser store. Keep `configuration.page_url` from the page
+handle; the service origin and the published page origin serve different roles.
+
 This is the complete source used by the selected service's
 `/docs/BUILD_AN_APP.md`. Use Node 24 and check that service's `/api/readiness`
 before acquiring dependencies. Follow its build guide to download and verify
@@ -230,3 +237,17 @@ PID, actual adapter status and shutdown separately. Missing consent, adapter fai
 participant running. New consent reconnects only the adapter through setup
 notifications. Even `adapter_online` still
 requires a real MCP/browser round trip before setup is complete.
+
+If optional forwarding reports `adapter_activity_failed`, the native participant
+and healthy MCP provider stay running, but event continuity is unverified and
+forwarding is paused for that connection. Inspect the retained private
+`.tendriller/assistant-event-cursor.json` and the selected application's recovery
+history. Keep that exact cursor; do not delete it or silently choose a new start.
+After explicitly reviewing which events may be forwarded from that checkpoint,
+restart the existing runner from the same private project with
+`npm run serve -- --events` (equivalently `npm run assistant -- --events`).
+This explicitly restarts the native process too; its retained identity, cursor
+and operation records resume from that project. A still-unresolved review
+remains blocked rather than silently advancing its cursor.
+`eventsForwarding: true` means enabled, not verified continuity. Do not begin an
+idle qualification that requires forwarding while this review remains blocked.

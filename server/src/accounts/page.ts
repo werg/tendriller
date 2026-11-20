@@ -29,6 +29,19 @@ function waitingPage(): Response {
     `<script>const target=new URL(location.href);target.searchParams.set('status','1');async function check(){try{const r=await fetch(target,{cache:'no-store'});if(r.status===401){location.reload();return}if(!r.ok)throw Error();const d=await r.json();if(d.status==='approved'){location.href=location.pathname+location.search.replace(/([?&])status=1(&|$)/,'$1').replace(/[?&]$/,'');return}if(d.status==='declined'){document.querySelector('#claim-status').textContent='The owner declined this invitation.';return}document.querySelector('#claim-status').textContent='Still waiting for approval.'}catch{document.querySelector('#claim-status').textContent='Could not check right now. Retrying…'}setTimeout(check,4000)}check()</script>`);
 }
 
+/** A browser claim must explain a capacity stop, rather than displaying an API error as a sign-in failure. */
+async function claimFailure(req: Request, response: Response): Promise<Response> {
+  if (!req.headers.get('Accept')?.includes('text/html') || ![413, 429].includes(response.status)) return response;
+  const body = await response.clone().json().catch(() => null) as { error?: { code?: string; limit?: number } } | null;
+  if (body?.error?.code !== 'quota') return response;
+  const limit = body.error.limit;
+  const explanation = response.status === 429 && limit === 3
+    ? 'Your account can keep up to 3 resident pages.'
+    : response.status === 429 && limit === 20 ? 'Your account can keep up to 20 pages.'
+    : response.status === 413 ? 'Your account has reached its page storage allowance.' : 'Your account has reached its page allowance.';
+  return html(`<h1>Your account is at its page limit</h1><p>${explanation}</p><p>Open your dashboard to remove a page you no longer need, then return to this page link. Your prepared app has not been claimed.</p><p><a class="button" href="/dashboard">Open dashboard</a></p>`, response.status);
+}
+
 async function issuePageCode(env: Env, id: string, key: string, accountId: string, role: "owner" | "guest" = "owner"): Promise<Response> {
   const code = randomToken();
   await env.ACCOUNTS!.prepare("INSERT INTO page_codes (hash, tendril_id, account_id, role, key_hash, expires_at) VALUES (?, ?, ?, ?, ?, ?)")
@@ -78,7 +91,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ account_id: session.accountId, identities }),
     }));
-    if (!claim.ok) return claim;
+    if (!claim.ok) return claimFailure(req, claim);
     return issuePageCode(env, id, key, session.accountId);
   }
   if (info.role === "guest" && req.method === "GET") {

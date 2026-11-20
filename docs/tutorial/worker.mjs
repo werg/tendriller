@@ -1,3 +1,4 @@
+import { browserProfileId } from './helpers/browser-profile.mjs';
 import { verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openBrowserDevice, openBrowserApplication } from '@chronolog/peer-session/worker';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
@@ -10,7 +11,7 @@ const configuration = await fetch(new URL('./configuration.json', import.meta.ur
   if (!response.ok) throw Error('Application configuration is unavailable.');
   return response.json();
 });
-const profileId = `tendriller-notes-${configuration.applicationId}`;
+const profileId = browserProfileId(configuration.applicationId);
 return { profileId,
   async createIdentity() {
     const device = await openBrowserDevice({ name: profileId, create: true });

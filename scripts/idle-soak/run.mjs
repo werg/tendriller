@@ -4,10 +4,33 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
-import { validateConfig, privateJSON, save, newState, record, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
+import { validateConfig, privateJSON, save, newState, record, markStopRequested, beginSegment, endSegment, report, digest, pathOutsideRepo, boundedActive } from './state.mjs';
 import { measure } from './cloudflare.mjs';
 import { startBrowser } from './browser.mjs';
 import { nativeReady, quietBoundary } from './warmup.mjs';
+
+export const NATIVE_BOOTSTRAP_SCOPES = Object.freeze(['native-only-without-mcp-adapter', 'native-with-mcp-adapter']);
+export function nativeCoverage(state, message) {
+  if (message?.idleSoakCoverage !== 1 || !NATIVE_BOOTSTRAP_SCOPES.includes(message.bootstrapScope)) return false;
+  state.coverage.bootstrapScope = message.bootstrapScope;
+  state.coverage.eventsForwarding = message.bootstrapScope === 'native-with-mcp-adapter' && message.eventsForwarding === true;
+  state.coverage.wakeups ||= message.wakeups === true;
+  state.coverage.modelTurns ||= message.modelTurns === true;
+  return true;
+}
+
+/** Status is observation, never a reason to terminate the independently owned app. */
+export function nativeAssistantStatus(state, message, now = Date.now()) {
+  if (message?.idleSoakAssistantStatus !== 1 || typeof message.online !== 'boolean' || typeof message.eventsForwarding !== 'boolean' || typeof message.eventsForwardingBlocked !== 'boolean') return false;
+  if (state.coverage.mcpOnline === message.online && state.coverage.eventsForwarding === message.eventsForwarding && state.coverage.eventsForwardingBlocked === message.eventsForwardingBlocked) return false;
+  state.coverage.mcpOnline = message.online;
+  state.coverage.eventsForwardingBlocked = message.eventsForwardingBlocked;
+  state.coverage.mcpStatusAt = now;
+  state.coverage.eventsForwarding = message.eventsForwarding;
+  record(state, { source: 'native', kind: 'assistant-status', online: message.online, eventsForwarding: message.eventsForwarding, eventsForwardingBlocked: message.eventsForwardingBlocked }, now);
+  return true;
+}
+export const nativeAssistantBusy = state => state?.coverage.bootstrapScope === 'native-with-mcp-adapter' && (state.coverage.mcpOnline !== true || state.coverage.eventsForwarding && state.coverage.eventsForwardingBlocked !== false);
 
 export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => {
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); resolve(); };
@@ -15,6 +38,10 @@ export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => 
   const timer = setTimeout(done, Math.max(0, deadline - Date.now()));
   signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
 });
+export function requestStop(state, abort, persist, now = Date.now()) {
+  try { if (state && markStopRequested(state, now)) persist(); }
+  finally { abort.abort(); }
+}
 export async function run(configPath, directory) {
   const root = resolve(import.meta.dirname, '../..');
   configPath = pathOutsideRepo(configPath, root); directory = pathOutsideRepo(directory, root);
@@ -36,10 +63,16 @@ export async function run(configPath, directory) {
   const checkpoint = resolve(directory, 'checkpoint.json');
   let s, native, browser, stopping = false;
   const abort = new AbortController();
-  const stop = () => abort.abort(); process.once('SIGTERM', stop); process.once('SIGINT', stop);
+  const stop = () => requestStop(s, abort, persist); process.once('SIGTERM', stop); process.once('SIGINT', stop);
   const persist = () => { save(checkpoint, s); save(resolve(directory, 'report.json'), report(s)); };
-  const boundary = quietBoundary({ signal: abort.signal });
-  const emit = event => { if (record(s, event)) { boundary.activity(); persist(); } };
+  const pending = { browser: 0, native: 0 };
+  const boundary = quietBoundary({ signal: abort.signal, busy: () => pending.browser + pending.native > 0 || nativeAssistantBusy(s) });
+  const emit = event => {
+    if (event?.kind === 'activity' && ['browser', 'native'].includes(event.source) && Number.isSafeInteger(event.pending) && event.pending >= 0) {
+      pending[event.source] = event.pending; boundary.activity(); return;
+    }
+    if (record(s, event)) { boundary.activity(); persist(); }
+  };
   try {
     try { s = privateJSON(checkpoint); } catch (e) { if (e.code !== 'ENOENT') throw e; s = newState(c); }
     if (s.configHash !== digest(JSON.stringify(c))) throw Error('CONFIG_CHANGED_USE_NEW_RUN_DIRECTORY');
@@ -52,6 +85,9 @@ export async function run(configPath, directory) {
     s.provenanceHash = digest(JSON.stringify(c.provenance));
     s.runnerHash = digest(readFileSync(fileURLToPath(import.meta.url)));
     s.adapterHash = createHash('sha256').update(readFileSync(c.adapter)).digest('hex');
+    // A resumed attempt has its own stop boundary; prior timeline markers and
+    // interruption/overrun evidence remain retained.
+    delete s.stopRequestedAt;
     s.status = 'running'; persist();
     // Explicit read-only baseline before any measured target phase. Never store credentials or raw API errors.
     if (!s.baseline) { s.baseline = await measure(c, Date.now() - 3600000, Date.now()); save(resolve(directory, 'baseline.json'), s.baseline); persist(); }
@@ -62,13 +98,12 @@ export async function run(configPath, directory) {
     s.nativeStartedAt = Date.now(); s.events.push({kind:'native-start',at:s.nativeStartedAt}); persist();
     native.on('message', message => {
       if (message?.idleSoak === 1) emit(message);
-      if (message?.idleSoakCoverage === 1) {
-        if (message.bootstrapScope === 'native-only-without-mcp-adapter') s.coverage.bootstrapScope = message.bootstrapScope;
-        s.coverage.wakeups ||= message.wakeups === true; s.coverage.modelTurns ||= message.modelTurns === true; persist();
-      }
+      if (message?.idleSoakActivity === 1) emit({ ...message, kind: 'activity' });
+      if (nativeAssistantStatus(s, message)) { boundary.activity(); persist(); }
+      if (nativeCoverage(s, message)) { boundary.activity(); persist(); }
     });
-    native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); abort.abort(); });
-    native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); abort.abort(); } persist(); });
+    native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); stop(); });
+    native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); stop(); } persist(); });
     browser = await startBrowser(c, emit);
     const coverage = await browser.adapter.audit?.({ config: c });
     s.coverage.modelTurns ||= coverage?.modelTurns === true;
@@ -85,13 +120,14 @@ export async function run(configPath, directory) {
       // Complete startup and drain boundary traffic before measuring; continuous
       // activity fails this bounded barrier instead of earning idle credit.
       await boundary.wait();
-      beginSegment(s, phase); persist();
+      beginSegment(s, phase); s.segments.at(-1).pendingClientRequestsAtStart = { ...pending }; persist();
       await waitUntil(s.segments.at(-1).deadline, abort.signal);
       endSegment(s); persist();
       if (phase !== 'closed') { s.events.push({ kind: 'reconnect', phase, ...await browser.reconnect(), at: Date.now() }); persist(); }
     }
     s.status = 'collecting'; persist();
     stopping = true;
+    if (markStopRequested(s)) persist();
     await browser.close(); browser = undefined;
     await stopNative(native); native = undefined;
     // Metrics windows exclude transitions and controlled reconnects. Collect after sockets close + ingestion lag.
@@ -109,8 +145,11 @@ export async function run(configPath, directory) {
       persist(); }
     throw Error('SOAK_INCOMPLETE_SEE_PRIVATE_CHECKPOINT');
   } finally {
-    stopping = true; await browser?.close().catch(() => {}); if (native) await stopNative(native);
-    process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop); unlinkSync(lockPath);
+    try { if (s && markStopRequested(s)) persist(); }
+    finally {
+      stopping = true; await browser?.close().catch(() => {}); if (native) await stopNative(native);
+      process.removeListener('SIGTERM', stop); process.removeListener('SIGINT', stop); unlinkSync(lockPath);
+    }
   }
 }
 async function stopNative(child) {

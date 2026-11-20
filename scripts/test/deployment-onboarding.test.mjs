@@ -55,6 +55,9 @@ function runSmoke(value, { assistant = false, attested = false } = {}) {
     writeFileSync(preload, `import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 const fixture = ${JSON.stringify(value)}, calls = [];
+// Advance only deployment retry delays; HTTP deadlines and the assertions stay real.
+const schedule = globalThis.setTimeout;
+globalThis.setTimeout = (callback, ms, ...args) => schedule(callback, ms === 2000 ? 0 : ms, ...args);
 process.on('exit', () => writeFileSync(${JSON.stringify(calls)}, JSON.stringify(calls)));
 globalThis.fetch = async (input, init = {}) => {
   const url = new URL(input); assert.equal(url.origin, fixture.base);

@@ -39,12 +39,14 @@ async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof
 export interface RuntimeOptions {
   application?: import("../../contract/application.mjs").ApplicationBackend;
   signals?: import("../../contract/signals.mjs").Signals;
+  /** Open the page's publication watch and switch to a newly selected release at the next safe point (the hosted tendril.js entry does). */
+  watchPublication?: boolean;
 }
 export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): RuntimeApi {
   validateDocumentContext(cfg);
   // The address bar keeps the page's own URL so a reload or new tab opens the latest
   // selected release. Opening an immutable /_publications/ID/ URL pins explicitly.
-  const updates = watchPublicationUpdates(cfg, { pinned: explicitlyPinned(cfg) });
+  const updates = watchPublicationUpdates(cfg, { pinned: explicitlyPinned(cfg), watch: options.watchPublication === true });
   const core = createCore(cfg, options.application);
   let registration: Promise<void> | undefined;
   const registerOffline = () => registration ??= registerServiceWorker(cfg, core).then(registered => {

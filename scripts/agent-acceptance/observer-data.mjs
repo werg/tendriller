@@ -15,6 +15,20 @@ export function at(value, pointer = '') {
 export function inside(directory, path) {
   const rel = relative(directory, path); return !isAbsolute(rel) && rel !== '..' && !rel.startsWith('../');
 }
+/** Only this page's canonical entry or its documented immutable publication path. */
+export function publicationAddress(value, pageUrl) {
+  let url, page;
+  try { url = new URL(value); page = new URL(pageUrl); } catch { throw new MeasurementError('browser-page-url', 'failed'); }
+  if (url.origin !== page.origin || url.username || url.password || url.search || url.hash || !url.pathname.startsWith(page.pathname))
+    throw new MeasurementError('browser-page-url', 'failed');
+  const relative = url.pathname.slice(page.pathname.length);
+  if (!relative) return { version: null, documentPath: null };
+  const match = /^_publications\/([1-9][0-9]*)\/(.+)$/u.exec(relative);
+  if (!match || !Number.isSafeInteger(Number(match[1]))) throw new MeasurementError('browser-publication-url', 'failed');
+  let path; try { path = decodeURIComponent(match[2]); } catch { throw new MeasurementError('browser-document-path', 'failed'); }
+  if (path.includes('\\') || path.split('/').some(p => !p || p === '.' || p === '..')) throw new MeasurementError('browser-document-path', 'failed');
+  return { version: Number(match[1]), documentPath: path };
+}
 export function recordFile(base, ref) {
   need(ref?.file, 'record-file');
   const path = resolve(base, ref.file);
@@ -51,10 +65,9 @@ export function loadObserverConfig(path, request) {
   same(handle.api, request.origin + '/api/t/' + handle.id, 'handle-origin-and-page');
   if (!/^[a-z2-7]{12}$/.test(handle.id ?? '')) throw new MeasurementError('handle-page-id', 'failed');
   need(handle.token, 'host-credential');
-  const page = new URL(handle.page_url), origin = new URL(config.origin);
+  const page = new URL(handle.page_url);
   if (page.protocol !== 'https:' || page.username || page.password || page.search || page.hash ||
       !page.hostname.startsWith(handle.id + '.') && !page.hostname.startsWith(handle.id + '--p-') ||
-      !page.hostname.endsWith('.' + origin.hostname) && !page.hostname.endsWith('--p-' + origin.hostname) ||
       !/^\/s\/[a-z2-7]{26}\/$/.test(page.pathname)) throw new MeasurementError('handle-page-url', 'failed');
   const modulePath = realpathSync(resolve(project, config.native.module ?? 'session.mjs'));
   if (!inside(project, modulePath)) throw new MeasurementError('native-module-outside-project', 'failed');

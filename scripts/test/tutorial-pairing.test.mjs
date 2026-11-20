@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import * as p from '@chronolog/peer-session';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-async function module(name) {
+async function module(name, workerUrl) {
   const result = await build({ entryPoints: [root + 'docs/tutorial/' + name], bundle: true, write: false,
-    platform: 'node', format: 'esm', logLevel: 'silent', plugins: [{ name: 'test-private-boundary', setup(builder) {
+    platform: 'node', format: 'esm', logLevel: 'silent', ...(workerUrl ? { define: { 'import.meta.url': JSON.stringify(workerUrl) } } : {}), plugins: [{ name: 'test-private-boundary', setup(builder) {
       builder.onResolve({ filter: /^\.\/local\.mjs$/ }, () => ({ path: 'private', namespace: 'fixture' }));
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents:
         'export const readPrivate=()=>{throw Error("Supply retained test state")};export const savePrivate=readPrivate;' }));
@@ -215,4 +215,29 @@ test('browser lost reply retains its original request, and replacement review is
   assert.notEqual(second.requestId, first.requestId); assert.equal(f.messages[1].publicKey, first.challenge.publicKey);
   assert.equal(JSON.parse([...f.records.values()][0]).history[0].pairingId, first.pairingId);
   await assert.rejects(f.make().prepare('aa'.repeat(32)), { code: 'PAIRING_KEY_CHANGED' });
+});
+
+
+test('pairing Worker distinguishes a changed storage profile from the wrong page origin before opening a signer', async t => {
+  const { browserProfileId } = await import('../../docs/tutorial/helpers/browser-profile.mjs');
+  const applicationId = 'ab'.repeat(32), profileId = browserProfileId(applicationId);
+  const originalSelf = globalThis.self, originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.self = originalSelf; globalThis.fetch = originalFetch; });
+  for (const [kind, origin, requestedProfile, expected] of [
+    ['profile', 'https://a.pages.example', 'renamed-checklist', 'PAIRING_PROFILE_MISMATCH'],
+    ['origin', 'https://wrong.pages.example', profileId, 'PAIRING_PAGE_ORIGIN_MISMATCH'],
+  ]) {
+    let handler; const responses = [], requests = [];
+    globalThis.self = { location: { origin }, addEventListener(_type, callback) { handler = callback; }, postMessage(value) { responses.push(value); } };
+    globalThis.fetch = async url => {
+      requests.push(String(url));
+      return Response.json({ applicationId, page_url: 'https://a.pages.example/t/key/', serviceOrigin: 'https://service.example' });
+    };
+    const workerUrl = 'https://a.pages.example/' + kind + '/pairing-worker.mjs';
+    await module('pairing-worker.mjs', workerUrl);
+    await handler({ data: { protocol: 'tendriller-tutorial-pairing-v1', id: kind, requestId: 'retained-request', profileId: requestedProfile } });
+    assert.equal(responses.length, 1);
+    assert.equal(responses[0].error.code, expected);
+    assert.deepEqual(requests, ['https://a.pages.example/' + kind + '/configuration.json']);
+  }
 });

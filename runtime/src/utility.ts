@@ -41,6 +41,18 @@ export function mountUtility(api: RuntimeApi): () => void {
     const node = element("button", text, className); node.type = "button"; return node;
   };
 
+  let disposed = false;
+  // The runtime owns the page's one publication watch and switches at the next safe
+  // point. This card is shown while a switch waits (unsaved input, an application hold,
+  // or a page pinned to its release), with an explicit way to open the update now.
+  const update = element("aside", undefined, "card"); update.hidden = true;
+  update.setAttribute("aria-label", "Publication update"); update.setAttribute("role", "status"); update.setAttribute("aria-live", "polite");
+  // A link to the page's own address: following it loads the latest selected release.
+  const openUpdate = element("a", "Open update", "primary"); openUpdate.href = api.identity.base;
+  update.append(element("strong", "New version published"), element("p", api.publication.pinned
+    ? "This address shows a fixed version. Open the latest version when you are ready."
+    : "This page switches to it as soon as no unsaved changes are open.", "note"), openUpdate);
+  const offUpdate = api.publication.onUpdate(({ version }) => { if (!disposed) update.hidden = version === null; });
   const nav = element("nav"); nav.setAttribute("aria-label", "Page operations");
   const active = element("span", undefined, "sensors"); active.setAttribute("role", "status");
   const stop = button("Stop sensors", "stop");
@@ -83,9 +95,9 @@ export function mountUtility(api: RuntimeApi): () => void {
   const suggestAdd = button("Show me how", "primary"), dismiss = button("Not now");
   const actions = element("div", undefined, "actions"); actions.append(suggestAdd, dismiss);
   suggestion.append(pitch, element("p", "Add a shortcut to your Home Screen."), actions);
-  root.append(style, suggestion, panel, nav);
+  root.append(style, update, suggestion, panel, nav);
 
-  let disposed = false, engaged = false, suggested = false, suppressed = false, installing = false;
+  let engaged = false, suggested = false, suppressed = false, installing = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const dismissalKey = "tendril:install-dismissed:" + api.identity.base;
   const cancelSuggestion = () => { clearTimeout(timer); timer = undefined; };
@@ -232,7 +244,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
   renderInstallation(); renderSensors(); attach(); observer.observe(document, { childList: true, subtree: true });
   return () => {
-    disposed = true; cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
+    disposed = true; offUpdate(); cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();
   };

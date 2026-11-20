@@ -2,6 +2,7 @@ import { test, expect, request, chromium } from '@playwright/test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { build } from 'esbuild';
 import { LOCAL_WORKER_HOST_RULES } from '../../scripts/e2e-network.mjs';
 import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles,
   requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN, LOGOUT_TOKEN } from './local-helpers';
@@ -13,7 +14,7 @@ test('verified owner claims a page and executes its signed authored module', asy
     expect(handle.token).toMatch(/^tk_/);
     await signInFixture(context); await claim(context, handle);
     const notified = page.waitForEvent('websocket', socket => socket.url().endsWith('/_tendril/publication-ready'))
-      .then(socket => socket.waitForEvent('framereceived', frame => frame.payload === 'ready'));
+      .then(socket => socket.waitForEvent('framereceived', frame => JSON.parse(String(frame.payload)).current === 1));
     const readinessRequests: string[] = [];
     page.on('request', request => {
       if (request.method() === 'HEAD' && request.url().endsWith('/_tendril/publication-ready')) readinessRequests.push(request.url());
@@ -259,4 +260,62 @@ test('two browsers can open the same unclaimed page as its intended owner', asyn
     await second.close();
     await deletePage(handle);
   }
+});
+
+
+test('broken unpaired publication gets an explicit update and retains browser pairing intent and local draft', async ({ page, context }) => {
+  const handle = await createPage();
+  try {
+    await signInFixture(context); await claim(context, handle);
+    // Exercise the maintained public profile, pairing-intent and draft consumers.
+    // The broken Worker models a released app that cannot enroll this browser.
+    const fixture = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'publication-notice-fixture.mjs', contents: `
+      import { browserProfileId } from './docs/tutorial/helpers/browser-profile.mjs';
+      import { createBrowserPairing } from './docs/tutorial/pairing-browser.mjs';
+      import { createViewStore } from './collaboration/local.mjs';
+      const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
+      const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view';
+      const viewId=sessionStorage.getItem(viewKey)||crypto.randomUUID();sessionStorage.setItem(viewKey,viewId);
+      const store=createViewStore({storage:localStorage,applicationId:configuration.applicationId,profileId,viewId});
+      const pairing=createBrowserPairing({configuration,profileId,workerUrl:new URL('./pairing-worker.mjs',location.href),
+        createWorker(){throw Error('BROKEN_V1_WORKER');}});
+      const input=document.querySelector('textarea');input.value=store.readDraft('draft')||'';
+      input.addEventListener('input',()=>store.writeDraft(input.value,'draft'));
+      document.querySelector('button').onclick=async()=>{try{await pairing.request();}catch{document.querySelector('#pairing').textContent='Worker unavailable; original request retained';}};
+      window.fixture={snapshot:()=>({profileId,viewId,request:pairing.read(),draft:store.readDraft('draft')})};
+    ` }, alias: { '@tendriller/core/pairing': join(process.cwd(), 'dist/sdk/pairing.mjs') }, bundle: true,
+      format: 'esm', platform: 'browser', write: false });
+    const assets = (version: string) => ({
+      'index.html': { type: 'text/html', body: '<!doctype html><title>Unpaired publication</title><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="pairing">Not paired</p><script type="module" src="./page.mjs"></script>' },
+      'page.mjs': { type: 'text/javascript', body: fixture.outputFiles[0].text },
+    });
+    const first=await publishFiles(handle,assets('Broken unpaired v1'));
+    const requests: string[]=[];let sentFrames=0;
+    page.on('request',request=>{if(request.url().includes('/_tendril/'))requests.push(request.method()+' '+new URL(request.url()).pathname);});
+    page.on('websocket',socket=>{if(socket.url().endsWith('/_tendril/publication-ready'))socket.on('framesent',()=>sentFrames++);});
+    const initial=page.waitForEvent('websocket',socket=>socket.url().endsWith('/_tendril/publication-ready'))
+      .then(socket=>socket.waitForEvent('framereceived',frame=>JSON.parse(String(frame.payload)).current===first.version));
+    await openClaimed(page,handle);await initial;
+    await expect(page.getByRole('heading',{name:'Broken unpaired v1'})).toBeVisible();
+    await page.getByRole('textbox',{name:'Local draft'}).fill('Retain this unresolved local draft');
+    await page.getByRole('button',{name:'Connect this device'}).click();
+    await expect(page.locator('#pairing')).toHaveText('Worker unavailable; original request retained');
+    const before=await page.evaluate(()=>(window as any).fixture.snapshot());
+    expect(before.request.requestId).toBeTruthy();expect(before.request.pairingId).toBeUndefined();
+    expect(await page.evaluate(()=>(window as any).tendril.application.available)).toBe(false);
+    const pinned=page.url();const quietBaseline=requests.length;
+    await publishFiles(handle,assets('Repaired unpaired v2'));
+    const notice=page.getByRole('status',{name:'Publication update'});
+    await expect(notice).toBeVisible();await expect(notice).toContainText('New version published');
+    await expect(page.getByRole('textbox')).toHaveValue(before.draft);expect(page.url()).toBe(pinned);
+    expect(await page.evaluate(()=>(window as any).fixture.snapshot())).toEqual(before);
+    expect(requests.slice(quietBaseline)).toEqual([]);expect(sentFrames).toBe(0);
+    const update=page.getByRole('link',{name:'Open update',exact:true});
+    await expect(update).toHaveAttribute('href',localPageUrl(handle));
+    await update.click();await expect(page.getByRole('heading',{name:'Repaired unpaired v2'})).toBeVisible();
+    await expect(page.getByRole('textbox')).toHaveValue(before.draft);
+    expect(await page.evaluate(()=>(window as any).fixture.snapshot())).toEqual(before);
+    await expect(page.getByRole('status',{name:'Publication update'})).toBeHidden();
+    expect(requests.some(value=>value.includes('/peers/pairing'))).toBe(false);
+  } finally { await deletePage(handle); }
 });

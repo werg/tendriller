@@ -146,7 +146,8 @@ test('owner claim, reconnect for pushed first publication and live invitations',
   const peers = client(handle).peers;
   const release = await publish(peers, 'First signed release');
   await expect(page.getByRole('heading', { name: 'First signed release' })).toBeVisible({ timeout: 10_000 });
-  expect(messages).toEqual(['ready']);
+  expect(messages.map(value => JSON.parse(String(value)).current)).toContain(1);
+  expect(messages.every(value => JSON.parse(String(value)).type === 'publication')).toBe(true);
   expect(checks).toBe(1);
   expect(await peers.publication()).toEqual(release);
 

@@ -78,6 +78,7 @@ export async function run(values) {
     if (server) { server.close(); server.closeAllConnections(); }
     const cleanup = await Promise.allSettled([host?.close(), bridge?.close(), browser?.close()]);
     try {
+      evidence.data.modelState = { ...evidence.data.modelState, busy: false, phase: 'stopped' };
       evidence.data.nativeHost = { ...evidence.data.nativeHost, stoppedAt: now(), exitCode: host?.child.exitCode ?? null, signal: host?.child.signalCode ?? null };
       evidence.data.cleanup = { appServerStopped: !host || host.child.exitCode != null || host.child.signalCode != null, browserClosed: cleanup[2].status === 'fulfilled',
         privateProjectRetained: true, remoteApps: 'Observer must reconcile and delete only run-owned apps; no blanket account deletion',
@@ -113,7 +114,12 @@ export async function run(values) {
       } else evidence.data.limits.push('Owner browser unavailable: external observer evidence is required.');
     }
     const env = isolatedEnvironment(directory);
-    const config = ['mcp_servers={}', 'web_search="live"', 'history.persistence="none"'];
+    const config = ['mcp_servers={}', 'web_search="live"', 'history.persistence="none"',
+      'features.apps=false', 'features.plugins=false', 'features.remote_plugin=false',
+      'features.skip_host_skill_discovery=true', 'features.skill_search=false'];
+    evidence.data.environment.accountApps = 'disabled';
+    evidence.data.environment.plugins = 'disabled';
+    evidence.data.environment.hostSkillDiscovery = 'disabled';
     if (mode === 'mcp' && !smoke) {
       bridge = await mcpBridge({ origin, token: await browser.owner.freshToken(), freshToken: async options => {
         const token = await browser.owner.freshToken(options);
@@ -125,7 +131,15 @@ export async function run(values) {
     }
     host = new AppServer({ cwd: project, env, config, deadlineMs: Math.min(seconds * 1000, 60000), onEvent: event => {
       evidence.private('observable', event);
-      if (event.event === 'turn') { busy = false; evidence.data.lastTurn = { status: event.status, at: now() }; evidence.save(); }
+      if (event.type === 'mcpToolCall' && (mode === 'domain' || event.server !== 'tendriller')) {
+        evidence.data.contextContaminated = true;
+        evidence.data.checks.discovery = { status: 'failed', source: 'harness-tool-isolation', observedAt: now() };
+        evidence.save(); signal();
+      }
+      if (event.event === 'turn') {
+        busy = false; evidence.data.lastTurn = { status: event.status, at: now() };
+        evidence.data.modelState = { ...evidence.data.modelState, busy: false, phase: 'idle', completedAt: now() }; evidence.save();
+      }
     } });
     evidence.data.nativeHost = { pid: host.child.pid, startedAt: now(), processLifetime: 'Bounded harness process; no wake/handoff promised' };
     evidence.private('environment', { initialized: await host.initialize() });
@@ -139,22 +153,29 @@ export async function run(values) {
     const turn = async text => {
       if (busy) throw Error('Model turn already running');
       busy = true;
+      evidence.data.modelState = { busy: true, phase: bridge ? 'renewing-account-auth' : 'starting-turn', startedAt: now() }; evidence.save();
       try {
         if (bridge) {
           bridge.refresh(await browser.owner.freshToken());
           await host.rpc('config/mcpServer/reload', null);
-          const status = await host.rpc('mcpServerStatus/list', { threadId, serverName: 'tendriller', detail: 'full' });
+          const status = await host.rpc('mcpServerStatus/list', { threadId, detail: 'full' });
           evidence.private('catalog', { status });
+          if (!Array.isArray(status.data) || status.data.some(server => server.name !== 'tendriller')) throw Error('Unexpected inherited MCP server');
           const tools = status.data?.find(server => server.name === 'tendriller')?.tools;
           if (!tools || !Object.keys(tools).length) throw Error('Selected-origin tool catalog unavailable');
           evidence.data.mcp.catalogSha256 = hash(JSON.stringify(tools));
           evidence.data.mcp.refreshedAt = now(); evidence.save();
           // Status is retained for source/tool verification, never converted into an invented tool catalog.
+        } else {
+          const status = await host.rpc('mcpServerStatus/list', { threadId, detail: 'full' });
+          evidence.private('catalog', { status });
+          if (!Array.isArray(status.data) || status.data.length) throw Error('Domain-only context inherited an MCP server');
         }
         evidence.private('prompts', { text });
         const result = await host.rpc('turn/start', { threadId, cwd: project, input: [{ type: 'text', text }], approvalPolicy: 'never', summary: 'none' });
+        evidence.data.modelState = { ...evidence.data.modelState, turnId: result.turn.id, phase: busy ? 'running' : 'idle' }; evidence.save();
         return { turnId: result.turn.id };
-      } catch (error) { busy = false; throw error; }
+      } catch (error) { busy = false; evidence.data.modelState = { ...evidence.data.modelState, busy: false, phase: 'turn-start-failed' }; evidence.save(); throw error; }
     };
     if (smoke) {
       evidence.data.limits.push('Protocol smoke only: real app-server initialization and empty thread, no model turn, browser, service or app verification.');
@@ -173,17 +194,16 @@ export async function run(values) {
         } else if (input.action === 'owner') {
           if (!browser) throw Error('Use the external owner adapter');
           let publishedPageUrl;
-          if (observer && ['navigate', 'reopen'].includes(input.input.action)) {
+          if (observer && ['navigate', 'reopen', 'open-link'].includes(input.input.action)) {
             try { publishedPageUrl = observer.config().handle.page_url; } catch {} // Service-origin sign-in/review still works before app config exists.
           }
           result = await browser.owner.act(input.input, { publishedPageUrl });
+          evidence.data.lastOwnerAction = { action: input.input.action, at: now() }; evidence.save();
         } else if (input.action === 'observe') {
           if (!observer && !values.adapter) throw Error('Configure --observer-config or a trusted external --adapter');
-          const observation = observer ? await observer.observe(input.input) : await adapterCall(values.adapter,
-            { ...input.input, protocol: 'tendriller-agent-adapter-v1', action: 'observe', runDirectory: directory, project, origin });
-          if (observation.check !== input.input.check) throw Error('Observer returned a different check');
-          evidence.observation(observation, observer ? 'maintained-starter-observer' : 'external-observer');
-          result = { recorded: true, status: observation.status, ...(['missing', 'mismatches'].some(key => observation.evidence[key]) ? { metrics: observation.evidence } : {}) };
+          result = await observeInController({ evidence, input: input.input, source: observer ? 'maintained-starter-observer' : 'external-observer',
+            observe: request => observer ? observer.observe(request) : adapterCall(values.adapter,
+              { ...request, protocol: 'tendriller-agent-adapter-v1', action: 'observe', runDirectory: directory, project, origin }) });
         } else if (input.action === 'stop') { res.end('{}'); await close(); return; }
         else throw Error('Unknown controller action');
         res.end(JSON.stringify(result));
@@ -195,6 +215,7 @@ export async function run(values) {
     const socket = join(directory, 'control.sock');
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socket, resolve); });
     writeFileSync(join(directory, 'controller.json'), JSON.stringify({ pid: process.pid, socket }), { mode: 0o600 });
+    evidence.data.deadlineAt = new Date(Date.now() + seconds * 1000).toISOString(); evidence.save();
     timer = setTimeout(() => { evidence.data.deadlineReached = true; signal(); }, seconds * 1000);
     await turn(innocentPrompt(origin, mode));
     console.log('Fresh agent running. Use status, owner, send, observe and stop with the private --output directory.');
@@ -206,6 +227,14 @@ export async function run(values) {
       nextAction: 'Read failure.jsonl for the exact prerequisite and service next action. Preserve this run; start a new baseline after resolving it.' };
     await close(); throw Error('Acceptance run blocked; see the private report. Raw diagnostics withheld.');
   } finally { process.removeListener('SIGTERM', signal); process.removeListener('SIGINT', signal); }
+}
+
+/** The live controller is the sole report writer, including external adapters. */
+export async function observeInController({ evidence, input, source, observe }) {
+  const observation = await observe(input);
+  if (observation.check !== input.check) throw Error('Observer returned a different check');
+  evidence.observation(observation, source);
+  return { recorded: true, status: observation.status, ...(['missing', 'mismatches'].some(key => observation.evidence[key]) ? { metrics: observation.evidence } : {}) };
 }
 
 export function control(directory, input) {

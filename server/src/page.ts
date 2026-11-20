@@ -137,12 +137,9 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ ok: true });
   }
 
-  if (sub === "publication-ready" && m === "GET" && upgrade) {
-    const after = url.searchParams.get("after");
-    return watchPublication(t, principal, key, after === null ? undefined : /^[0-9]{1,15}$/.test(after) ? Number(after) : -1);
-  }
+  if (sub === "publication-ready" && m === "GET" && upgrade) return watchPublication(t, req, principal, key);
   if (sub === "publication-ready" && m === "HEAD") {
-    return new Response(null, { status: servedVersion(t) > 0 ? 204 : 202, headers: { "Cache-Control": "no-store" } });
+    return new Response(null, { status: servedVersion(t) > 0 ? 204 : 202, headers: { "Cache-Control": "no-store", "Tendril-Publication-Version": String(servedVersion(t)) } });
   }
 
   if (sub === "info" && m === "GET") {

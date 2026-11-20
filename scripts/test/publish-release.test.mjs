@@ -48,6 +48,8 @@ function fixture(t) {
     copyFileSync(new URL('../' + file, import.meta.url), join(root, 'publisher', file));
   mkdirSync(join(root, 'integrations/chatgpt/plugin'), { recursive: true });
   copyFileSync(new URL('../../integrations/chatgpt/plugin/build.mjs', import.meta.url), join(root, 'integrations/chatgpt/plugin/build.mjs'));
+  mkdirSync(join(root, 'scripts/review'), { recursive: true });
+  copyFileSync(new URL('../review/fixture.mjs', import.meta.url), join(root, 'scripts/review/fixture.mjs'));
   writeFileSync(join(root, 'bin/gh'), fakeGh); chmodSync(join(root, 'bin/gh'), 0o755);
   writeFileSync(join(root, 'bin/package.json'), '{"type":"module"}');
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.2.3' }));

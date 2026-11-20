@@ -238,6 +238,11 @@ It copies only the model auth file to that isolated home and removes the isolate
 Codex credential/cache directory on shutdown. It disables host tracing/telemetry.
 It inherits PATH and optional OPENAI_API_KEY, not maintainer environment,
 configuration, skills, memories, repository snippets or review credentials.
+Account-linked apps and remote plugins are explicitly disabled along with host
+skill discovery. Before each turn, the complete MCP server catalog must be empty
+for domain mode or contain only the configured selected-origin server for MCP
+mode. An observed call to another server stops and marks the attempt contaminated.
+An isolated home alone does not disable account-linked app tools in all Codex versions.
 Any instruction sources reported by `thread/start` fail the baseline closed.
 This is context isolation, not an OS security sandbox: the agent has host network
 and filesystem access with approval policy `never`. Run on a disposable evaluator
@@ -292,6 +297,21 @@ node scripts/agent-acceptance/cli.mjs observe --output /private/acceptance/new-d
 node scripts/agent-acceptance/cli.mjs stop --output /private/acceptance/new-domain-run
 ```
 
+The running controller is the **single report writer**. Use `control(run,
+{action: 'observe', input: {check, options}})` or the `observe` CLI above for every
+live measurement; an external adapter also returns its result through this IPC.
+Do not instantiate another `Evidence`, import results directly, or edit/merge
+`report.json` while that controller is active. Those unsupported competing writes
+are overwritten by its next model/owner event. The report is an atomic snapshot
+of the controller's own instance; `status` returns that same instance. Owner
+actions alone do not imply passed checks: call `observe` at each checkpoint.
+`deadlineAt` is reported in advance. Preserve expired reports as expired partial
+attempts; a later evaluator continuation is not a resumed innocent model thread.
+Use `--seconds 7200` when owner review and fault rehearsals need that bounded
+window. Run one cold app at a time when a shared account's resident quota must
+leave room for independent CI fixtures. Use a short run path such as
+`/tmp/td-acceptance-domain-1` for the filesystem controller socket.
+
 `send` input is `{ "kind": "identity", "text": "…" }`. Allowed categories are
 `identity`, `sign-in`, `review`, `visible-error`, `user-outcome` and
 `maintainer-advice`. Give identity only when asked. Sign in and review only the
@@ -333,6 +353,21 @@ credential-bearing URLs. Action results contain visible page text and remain
 private. Login uses a static URL and a separately filled private account code;
 credentials are never a model input. Exact review text must be chosen by the
 evaluator after inspection, not guessed or approved by checking every checkbox.
+For a device review with one approval button and no permission checkboxes, use
+`permissions: []`; the exact fingerprint, rights and retained-prefix checks still
+apply. Add the application/account text to `expected` when checking those fields.
+`inspect` also returns a private `view` of definition-list fields, link targets,
+non-secret visible inputs, and the displayed proposal JSON, so the evaluator can
+choose actual values without exporting browser keys or injecting state.
+
+`open-link` with an exact accessible link `name` follows that real link in a new
+owner tab; `return-page` closes it and restores the retained app tab. These actions
+support the browser review flow without an external browser driver or report
+writer. `wait` accepts a selector, `condition` (`visible`, `enabled`, or `text`),
+optional text `value`, and `timeoutMs` up to 30000. It only observes the DOM. If a
+review form reports expired/already used, navigate with GET to the same review
+link, compare the unchanged proposal/fingerprint/rights/prefix, then approve; do
+not replace the browser key or start a new enrollment to bypass that message.
 
 ### Maintained starter observer (no custom module)
 
@@ -417,6 +452,18 @@ device field and rendered rows. They require the configured app's page URL and a
 distinct browser identity. `owner navigate` and `reopen` may use that one
 observer-validated page URL on the service's page subdomain; this does not enable
 arbitrary foreign navigation. No browser state or receipts are injected.
+Preview page origins may differ from the service hostname. The configured handle
+must still name the selected service API, and that authenticated host must confirm
+the exact page ID, application ID and page URL before publication qualifies.
+An open tab normally uses the documented immutable URL
+`BASE/_publications/VERSION/DOCUMENT`. The observer accepts only that route or the
+exact canonical base on the host-confirmed page origin and private link. The URL
+version/document must agree with the public runtime identity; the host version
+string must map to an independently verified signed receipt, and its HTML document
+must belong to that signed file graph. The host's publication/version string
+(for example `"2"`) is distinct from Chronolog's signed publication digest.
+Other page IDs, private links, origins, arbitrary suffixes, unsigned documents,
+version mismatches and credential-bearing URLs fail closed.
 
 For checklist projections without operation/author columns, set
 `query.operationId` to `null` and configure `query.eventTopic`, `query.eventId`
@@ -426,7 +473,11 @@ revision**; changed revisions block and require another observation. A missing
 join cannot pass from a matching label alone. The browser row must expose the
 operation ID (notes mode) or joined item ID (event mode), either in its text or
 through an actual DOM attribute named by `browser.rowIdentityAttribute` (for
-example `data-item-id`). If the produced app exposes neither, record the missing
+example `data-item-id`). `browser.rowIdentitySelector` selects a nested element
+within each measured row when that attribute is on a checkbox rather than its
+container. `query.eventIdEncoding: "author-operation-json"` supports projections
+whose row ID is JSON.stringify([event.author, event.operationId]). No arbitrary
+projection code is accepted by the observer. If the produced app exposes neither, record the missing
 metric; do not provide implementation advice to repair the baseline's score.
 
 Use the normal `observe --input /private/check.json` controller command. Supported
@@ -435,7 +486,7 @@ check inputs and their sequence:
 | Check | Input/options and observed proof |
 | --- | --- |
 | `preclaim-publication` | Observe before claim; independently verify the selected signed publication and unclaimed host response. |
-| `authority`, `publication` | Verify pinned authority, grants and selected generation; publication also checks the saved preclaim head against the browser runtime identity. |
+| `authority`, `publication` | Verify pinned authority, grants and selected generation. Immediately after claim, call `publication` with `options.phase: "claim-boundary"` before allowing a further republish: the exact signed receipt must be unchanged and the authenticated owner must match. Later `publication` calls verify the actually selected release/browser version and the signed CAS parent lineage back to that retained boundary. A legitimate v2 after claim does not invalidate the v1 claim proof. Missing boundary/parent receipts block instead of inventing continuity; `publication.ancestors` may reference actually retained intermediate receipt JSON files, whose signatures/scope/revision chain are reverified. |
 | `browser-to-agent` | Owner adds a unique marker through the ordinary UI. Supply `options.operationId` and `options.marker` from the visible result. Signed author must equal the measured browser device. |
 | `agent-to-browser` | `options.action: "submit"` submits the configured command once using a coherent revision and stable local operation ID. Observe again without an action when the browser renders it. Native attachment aliases and the canonical signed ID are both retained. |
 | `browser-reload`, `native-reopen` | Supply `options` with `phase: "before"`, `operationId`, `author`, `command`, `marker`. Perform actual owner reload/reopen or explicit same-store native restart, then observe with `phase: "after"` and the same fields. Native restart requires a new process birth token and the same measured store inode/device/signing identity and signed attempt. No process is restarted by the observer. |
@@ -585,3 +636,38 @@ intervention hashes, first shared-command time, first unresolved stage and proce
 lifetime. Detailed receipt/operation/identity/resume evidence is deliberately private.
 Unknown or unperformed observations stay explicit. Preserve the failed attempt
 before starting a fresh one; do not retrofit a baseline with hidden maintainer help.
+
+### Classify frontend repairs separately from data synchronization
+
+The source-722 live attempt exposed an authored pairing-profile mismatch. After
+the agent published its repair as version 2, reloading the existing version-1 tab
+still ran version 1. The agent later discovered the documented **Page options →
+Open latest version** action; that action loaded version 2 before browser pairing.
+Record this as **manual recovery from expected publication pinning after an
+authored defect**, not proof of automatic frontend adoption or automatic update
+notification. Retain the initial error and the extra owner interaction.
+
+The deployed source explains the distinction: `server/src/files.ts`
+pins `_publications/VERSION/DOCUMENT`, `runtime/src/utility.ts`
+links explicitly to the canonical latest URL, and
+`server/src/publication-watch.ts`, installed by the
+host's waiting page, handles the first publication. The source-722 commit path
+notified that watch only for `next === 1`; it did not provide a later-release notice
+to an already published, unpaired tab. The observed custom page also did not show
+such a notice. This is not evidence of a missing data-session subscription: the
+failure occurred before browser enrollment and the publication pin was independent
+of that enrollment.
+
+A requirement that frontend repairs reach an existing tab before pairing needs a
+separate test: publish v2 while the owner remains on broken v1, verify a visible
+host/runtime update notice or an explicitly supported safe adoption path, choose
+it, and prove v2 is executing with the same retained browser identity/request.
+Do not silently auto-replace code with unresolved operations, and do not count a
+manual latest-version navigation as automatic-update success. Missing update
+notification remains an explicit UX/health-recovery gap until that test exists.
+
+Maintain starter identity/profile wiring centrally rather than deriving it from
+display labels. Qualification should first exercise the unchanged kit and then
+adapt labels/domain operations while preserving its profile/key/storage bindings.
+The evaluator must not supply that implementation guidance to a baseline model;
+it belongs in maintained starter/SDK guidance naturally discovered on the service.
