@@ -1,8 +1,8 @@
 # Troubleshoot an application build
 
 Start with [Build an app](BUILD_AN_APP.md). Diagnose the first incomplete stage
-before changing architecture: **create and claim → define state and UI → configure
-authority and select the first generation → connect → publish and verify**. A page URL, an installed adapter, and
+before changing architecture: **create → define state and UI → configure
+authority and select the first generation → publish → owner sign-in → connect and verify**. A page URL, an installed adapter, and
 a working shared application are different checkpoints.
 
 Keep the private handle, signer store, epoch keys and saved attempts intact while
@@ -31,8 +31,8 @@ production to find an app.
 | Checkpoint | Evidence to inspect | What remains to do |
 | --- | --- | --- |
 | Host discovered | `GET /api/service` returns a compatible contract and limits. | Obtain compatible public artifacts and read the build guide. A descriptor does not open a session. |
-| Page created | The saved private handle contains `api`, `token`, `page_url` and `application.id`. | Give the owner their page URL so they can claim it. |
-| Owner claimed | The owner completed sign-in; inspect host info through `host.info()` or `tendril --tendril NAME info`. | Configure device authority. `configured: false` is a separate state from claim. |
+| Page created | The saved private handle contains `api`, `token`, `page_url` and `application.id`. | Prepare and publish the first UI, start the participant, and give the owner the ready page and permission-review URLs. Do not wait for a claimed reply. |
+| Owner claimed | The owner completed sign-in; inspect host info through `host.info()` or `tendril --tendril NAME info`. | Inspect the prepared authority and publication, then explicitly enroll devices and approve assistant access. An older unprepared page may still need configuration. |
 | Authority configured | Host info reports `configured: true`; `host.peers.application()` returns authority to verify and pin through Chronolog. | Select the first generation. Configuration retains the descriptor and controls but supplies no selected generation and starts no application process. |
 | Initial generation selected | The saved, signed creation transition has been submitted through `host.peers.selectGeneration(...)`; verified authority contains the selected generation. | Open the enrolled device's session with the matching definition, keys and persistent store. The tutorial's `init` step saves the exact transition before sending it and resumes that attempt after interruption. |
 | Browser binding installed | `tendril.application.available` is true; `ready()` resolves with the backend. | Inspect `session.status` and participation status for connectivity and the selected generation. |
@@ -76,7 +76,7 @@ See [membership](MEMBERSHIP.md) for the independent account and device rights.
 
 | Code | Next action |
 | --- | --- |
-| `peer_application_unconfigured` | After owner claim, complete `host.peers.configureApplication(...)` with the real public definition, execution-manifest digest, schema administrator, epoch/key digest and initial device grants. SQL also needs its matching signed schema. Inspect authority after an uncertain response before repeating the exact configuration. Publishing HTML cannot configure the application. |
+| `peer_application_unconfigured` | Using the private setup credential, complete `host.peers.configureApplication(...)` before asking for owner sign-in with the real public definition, execution-manifest digest, schema administrator, epoch/key digest and initial device grants. SQL also needs its matching signed schema. Inspect authority after an uncertain response before repeating the exact configuration. Publishing HTML cannot configure the application. |
 | `PEER_NO_SELECTED_GENERATION` when opening the session | Configuration succeeded but the initial generation has not been selected. Resume the tutorial's `init` step or the complete [session bootstrap](SESSION_BOOTSTRAP.md): persist the signed creation transition, submit it through `host.peers.selectGeneration(...)`, verify the resulting authority, then open the session. Reuse a retained transition on an uncertain response; do not invent a replacement generation or start an empty session. |
 | `peer_definition_invalid` or `peer_schema_definition_mismatch` | Validate the actual application definition and, for SQL, prepare its schema with the matching public engine/session artifacts. Compare the signed definition/schema commitments instead of inventing digest values. |
 | `peer_application_immutable` | Read the configured definition and authority. The initial descriptor cannot be replaced by submitting different configuration. Resume that application or deliberately design a new application identity; preserve the existing page and data while deciding. |

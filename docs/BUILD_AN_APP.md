@@ -32,7 +32,7 @@ There is no missing `deployment.mjs` to invent.
 | Create | Create the page privately and retain the setup handle; keep preparing | A page handle and stable application ID |
 | Define state | Declare `addNote` and `notes`; configure authority and select the first generation | The native session opens and reads a coherent empty notes view |
 | Build the UI | Bundle the page and owning Worker | `page/` contains the complete authored graph and public configuration |
-| Publish | Use the creator session's saved signed publication | A receipt and selected immutable release; the hosted UI opens |
+| Publish | Use the creator session's saved signed publication | A receipt and selected immutable release ready for the owner’s first signed-in visit |
 | Owner sign-in | Give the person the already-published page and any prepared permission-review URL | Existing authority, keys and code retained; no new publication needed |
 | Connect the browser | Create its device, explicitly enroll its public key, then connect | The session acquires keys from the native peer and shows real connection/data status |
 | Verify | Submit, reload, read, inspect and retry | Retained notes and the same device/operation identities survive reopening |
@@ -309,12 +309,12 @@ browser**. This explicit action creates or resumes a browser-owned identity,
 closes that short setup owner, and displays its public key. It transfers no
 private key or plaintext epoch key.
 
-Verify that this is the intended owner's browser. Stop `npm run peer` if it is
+Verify that this is the intended owner's browser. Stop `npm run peer` or `npm run assistant` if it is
 already running, then copy the exact command shown in the page:
 
 ```sh
 npm run enroll -- BROWSER_PUBLIC_KEY_FROM_THE_PAGE
-npm run peer
+npm run peer # Or restart npm run assistant when using MCP access.
 ```
 
 Enrollment uses the current native coordinator's complete retained prefix,

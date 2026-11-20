@@ -12,7 +12,7 @@ keys and peer transports; a localhost tab does not inherit those things.
 | Inspect the authored UI immediately | `npx tendril-preview ./page` | Local rendering of the exact authored asset graph |
 | Capture the layout in a browser | `npx tendril-preview ./page --headless --desktop --out preview.png` | A screenshot and browser errors from that graph |
 | Exercise the starter's real app/session | Signed publication on its authorized Tendriller page, with `npm run peer` running | Real commands, queries, operation journal, key acquisition and peer synchronization |
-| Test a separate development environment | Create/claim/init/publish/enroll a development page using the same source | The same application implementation with an explicit separate identity and data |
+| Test a separate development environment | Create/init/publish/claim/enroll a development page using the same source | The same application implementation with an explicit separate identity and data |
 | Validate the local host integration from the core checkout | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | An isolated packed host, synthetic local account, real application sessions and scripted browser checks |
 | Integrate an already implemented local session bootstrap | `--bootstrap` naming an existing authored `openPreview` module | Exactly the real backend and cleanup supplied by that module |
 

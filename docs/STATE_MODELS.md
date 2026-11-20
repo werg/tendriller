@@ -145,7 +145,7 @@ TENDRILLER_ORIGIN=https://tendriller.dev
 npm run create -- "$TENDRILLER_ORIGIN" owner@example.com "Shared inventory"
 ```
 
-The owner opens that URL and signs in. After the page is claimed:
+Initialize and prepare the application immediately, without waiting for owner claim:
 
 ```sh
 npm run init
@@ -311,7 +311,7 @@ the caller. Its server serves authored/runtime assets and does not proxy
 [preview contract](tools/PREVIEW.md).
 
 For this starter, use an explicitly created development page for live review.
-Run the same create/claim/init/build/publish/enroll steps against that page's
+Run the same create/init/build/publish/claim/enroll steps against that page's
 configuration. Later publish the reviewed graph to the intended application
 using its authorized session and pinned configuration. If reviewing the exact
 same production application/data is required, open its actual authorized page
