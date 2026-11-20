@@ -20,9 +20,14 @@ try {
   const page = await context.newPage();
   await page.goto(access.url); await page.getByRole('button', { name: 'Open test account' }).click();
   await page.waitForURL(origin + '/dashboard');
+  const discovery = await context.request.get(origin + '/.well-known/oauth-protected-resource/mcp');
+  assert.equal(discovery.status(), 200);
+  const metadata = await discovery.json();
+  assert.equal(metadata.resource, resource);
+  assert.ok(Array.isArray(metadata.scopes_supported) && metadata.scopes_supported.length);
   const verifier = randomBytes(32).toString('base64url'), state = randomUUID();
   const params = new URLSearchParams({ client_id: clientId, redirect_uri: callbackUri, resource, state,
-    response_type: 'code', scope: 'tendrils:list applications:read applications:write events:subscribe',
+    response_type: 'code', scope: metadata.scopes_supported.join(' '),
     code_challenge_method: 'S256', code_challenge: createHash('sha256').update(verifier).digest('base64url') });
   let redirect;
   await page.route(url => url.origin === origin && url.pathname === '/oauth/authorize', async route => {
