@@ -497,7 +497,7 @@ export async function closeLocalTransport() {
     await expect(page.locator('#app-content')).toBeHidden();
     await expect(page.locator('#device-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 30_000 });
     const browserDevice = await page.locator('#device-key').inputValue();
-    const retainedPairing = () => page.evaluate(id => JSON.parse(localStorage.getItem(`tendriller-notes-${id}:pairing-v1`)), handle.application.id);
+    const retainedPairing = () => page.evaluate(id => JSON.parse(localStorage.getItem(`tendriller-browser-${id}:pairing-v1`)), handle.application.id);
     await expect.poll(async () => (await retainedPairing())?.pairingId, { timeout: 30_000 }).toMatch(/^[a-f0-9]{64}$/);
     const firstRequest = await retainedPairing();
     await expect(page.locator('#connection')).toContainText('Setting up this browser');
