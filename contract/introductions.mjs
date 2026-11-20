@@ -17,10 +17,9 @@ function until(value, signal) {
 }
 
 /** Host routing only. The owned Chronolog session supplies policy and authenticates every opened peer. */
-export function createPeerIntroductions({ peers, identity, openDirectConnection, openRelayConnection, directTimeoutMs = 5000, onNotice }) {
+export function createPeerIntroductions({ peers, identity, openDirectConnection, openRelayConnection, directTimeoutMs = 5000 }) {
   if (!identityKey(identity) || typeof openDirectConnection !== 'function' || typeof openRelayConnection !== 'function' ||
       !Number.isSafeInteger(directTimeoutMs) || directTimeoutMs < 1 || directTimeoutMs > 30_000 ||
-      onNotice !== undefined && typeof onNotice !== 'function' ||
       !['discover', 'advertise', 'withdraw', 'listenInvitations', 'invite', 'rendezvous', 'relay'].every(key => typeof peers?.[key] === 'function'))
     invalid('Provide the session device identity, host peers client and direct/relay connection openers');
   let activeListener, nextListener = Promise.withResolvers();
@@ -55,7 +54,7 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
       async *invitations({ signal }) {
         signal.throwIfAborted();
         if (activeListener) invalid('The owned session has one invitation listener');
-        const listener = peers.listenInvitations(identity, { signal, ...(onNotice ? { onNotice } : {}) });
+        const listener = peers.listenInvitations(identity, { signal });
         activeListener = listener; nextListener.resolve(listener);
         try {
           await listener.ready;

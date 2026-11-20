@@ -133,12 +133,13 @@ commit and connects; it also connects when it later finds a request the native
 owner committed while it was away. Approval never happens in author-controlled
 page HTML, and the review page cannot be framed.
 
-The native loop runs for the participant's lifetime (a finite `durationMs` is
-optional). It opts into content-free host notices on its invitation listener
-(`createPeerIntroductions({ onNotice })`), so it prepares a new request and
-commits an approval within seconds; idle checks otherwise back off to thirty
-seconds. A notice carries no data and grants nothing; the participant re-reads
-pending requests through its authenticated API. A timeout, lost commit reply or
+The native participant handles pairing for its whole lifetime
+(`superviseParticipant` in `helpers/participant-lifecycle.mjs`). It holds the
+hibernating setup channel (`watchApplicationSetup`), which the host notifies
+when a browser proves a request and when the owner approves or rejects one, so
+it prepares and commits within seconds without polling. A notification carries
+no pairing data and grants nothing; the participant re-reads pending requests
+through its authenticated API. A timeout, lost commit reply or
 process close preserves both the exact request and durable ordering pause.
 On reopen, verify the original signed transition and complete reviewed payload
 before adopting it and resuming ordering. A mismatch or unavailable status stays

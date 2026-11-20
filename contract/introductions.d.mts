@@ -14,8 +14,6 @@ export declare function createPeerIntroductions<Connection extends { close(): vo
   readonly openRelayConnection: (options: { readonly relay: PeerRelay; readonly signal: AbortSignal }) => Promise<Connection>;
   /** Budget for one direct attempt before the relay; the session owns the overall attempt and retries. Default 5000ms. */
   readonly directTimeoutMs?: number;
-  /** Native participants only: content-free host wake-ups (a browser asked to pair, or the owner approved one). Re-read state through the authenticated API. */
-  readonly onNotice?: (notice: { readonly kind: 'pairing' }) => void;
 }): Readonly<{
   discovery: Readonly<{
     read(options: { readonly signal: AbortSignal }): Promise<readonly { readonly identity: string; readonly route: PeerRoute }[]>;

@@ -163,7 +163,6 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
         fail('invalid_invitation', 'Invalid invitation listener open timeout');
       if (options.signal?.aborted) throw options.signal.reason || new DOMException('Aborted', 'AbortError');
       const url = socketUrl('peers/invitations', 'invalid_invitation'); url.searchParams.set('peerId', peerId);
-      if (options.onNotice) url.searchParams.set('notices', 'pairing');
       const invitationProtocols = [PEER_INVITATION_PROTOCOL, ...protocols.filter(value => value !== PEER_RENDEZVOUS_PROTOCOL && value !== PEER_INVITATION_PROTOCOL)];
       return createPeerInvitationListener((options.socket || socket)(url.href, invitationProtocols), peerId, options);
     },

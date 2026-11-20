@@ -9,7 +9,9 @@ import { createDevicePairingClient } from '@tendriller/core/pairing';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
 import { definition } from './domain.mjs';
 import { devicePath, privateDirectory, project, readPrivate, readHostHandle, savePrivate } from './local.mjs';
-import { startPairingWindow, createReviewedPairingProcessor } from './pairing-native.mjs';
+import { watchApplicationSetup } from '@tendriller/core/setup';
+import { superviseParticipant } from './helpers/participant-lifecycle.mjs';
+import { createReviewedPairingProcessor } from './pairing-native.mjs';
 
 function paths(profile = 'main') {
   if (!/^[A-Za-z0-9_-]{1,48}$/u.test(profile)) throw Error('Choose a retained native profile name.');
@@ -37,8 +39,6 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   const selected = paths(profile);
   let binding = await readPrivate(selected.credential, true);
   if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey() });
-  // Content-free host wake-ups: a browser asked to pair, or the owner approved one.
-  const notices = new EventTarget();
   let session, control, pairing, processPairings;
   const supervisor = await createNativeSessionSupervisor({ directory: selected.directory, profileId: profile, signal,
     bindings: [binding], openOwner: async () => {
@@ -69,19 +69,19 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
           peers: host.peers, identity: session.deviceId,
           openDirectConnection: async () => { throw Error('TUTORIAL_NATIVE_RTC_NOT_CONFIGURED'); },
           openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-          onNotice: () => notices.dispatchEvent(new Event('pairing')),
         }) });
         signal?.throwIfAborted();
         return createApplicationOwner(session, { host: control });
       } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
     } });
-  return { session, control, supervisor, pairing, processPairings, notices, close: () => supervisor.close() };
+  return { session, control, supervisor, pairing, processPairings, close: () => supervisor.close() };
 }
 
 export async function runPeer({ signal, profile = 'main' } = {}) {
   const owned = await openSession({ signal, profile });
-  // Browser enrollment stays open while this peer runs; each request still needs the owner's approval.
-  const pairing = startPairingWindow({ owned, signal, onStatus: status => console.log(JSON.stringify({ pairing: status })) });
+  const { handle } = await project({ signal });
+  const lifecycle = superviseParticipant({ owned, signal, watch: callbacks => watchApplicationSetup({ api: handle.api, token: handle.token, ...callbacks }),
+    report: status => console.log(JSON.stringify(status)) });
   try {
     console.log(JSON.stringify({ running: true, profile, deviceId: owned.session.deviceId,
       ownerInstanceId: owned.supervisor.ownerInstanceId, terminal: 'tendril --session ./session.mjs --mode attach self' }));
@@ -90,7 +90,7 @@ export async function runPeer({ signal, profile = 'main' } = {}) {
       const snapshot = await owned.session.query('notes', null);
       console.log(JSON.stringify({ notes: snapshot.value.length, revision: snapshot.revision, change: change.kind }));
     }
-  } finally { try { await pairing.close(); } finally { await owned.close(); } }
+  } finally { try { await lifecycle.close(); } finally { await owned.close(); } }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

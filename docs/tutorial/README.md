@@ -96,10 +96,10 @@ The host checks current account access, authority and the reviewed payload again
 when the normal signed control transition is selected. Existing grants and key
 commitments are preserved.
 
-`npm run peer` keeps enrollment open for as long as it runs. The host sends it a
-content-free notice when a browser asks or the owner approves, so it prepares and
-commits within seconds; idle checks otherwise back off to thirty seconds. Every
-request still needs the owner's approval on the service origin.
+`npm run peer` keeps enrollment open for as long as it runs. Its hibernating
+setup channel wakes it when a browser asks or the owner approves, so it prepares
+and commits within seconds without polling. Every request still needs the
+owner's approval on the service origin.
 
 The page uses `connection.mjs` and `connect-view.mjs`: opening it attaches to
 this browser's existing device owner (any tab), sets up a new browser, opens the

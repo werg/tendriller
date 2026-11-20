@@ -1,3 +1,4 @@
+import { SETUP_WATCH_PROTOCOL } from '../../contract/setup.mjs';
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { createPeerIdentity, signTransitionRequest, generationStartRoot, participantGrant, verifyAuthorityBundle, peerDigest,
@@ -516,22 +517,19 @@ it('reports the exact staged proposal as committed when its native administrator
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)?.writer).toBe(true);
 });
 
-it('wakes an opted-in native listener when a browser proves a request and when the owner approves it', async () => {
+it('wakes the native setup watch when a browser proves a request and when the owner approves it on the review page', async () => {
   const { h, native, device, cookie } = await fixture();
-  const response = await req(`${h.api}/peers/invitations?peerId=${native.publicKey}&notices=pairing`, { anonymous: true,
-    headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': `tendriller.invitations.v1, ${h.token}` } });
+  const response = await req(`${h.api}/setup/watch`, { anonymous: true,
+    headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': `${SETUP_WATCH_PROTOCOL}, ${h.token}` } });
   expect(response.status).toBe(101);
   const socket = response.webSocket!, frames: unknown[] = [];
   socket.accept(); socket.addEventListener('message', event => frames.push(JSON.parse(event.data as string)));
   await expect.poll(() => frames.length).toBe(1);
   const c = await proven(h, device);
   await expect.poll(() => frames.length).toBe(2);
-  expect(frames[1]).toEqual({ t: 'notice', kind: 'pairing', version: 1 });
+  expect(frames[1]).toMatchObject({ type: 'setup', version: 1 });
   await jsonResponse(await stage(h, c, await prepare(h, native, c)));
   expect((await review(c, cookie)).status).toBe(200);
   await expect.poll(() => frames.length).toBe(3);
-  const browserListener = await req(`${h.page_url}_tendril/peers/invitations?peerId=${device.publicKey}&notices=pairing`, {
-    headers: { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.invitations.v1' } });
-  expect(browserListener.status).toBe(400);
   socket.close();
 });

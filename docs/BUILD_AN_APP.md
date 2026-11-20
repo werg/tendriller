@@ -573,9 +573,9 @@ Errors are shown in user words (`describeConnectionError`), with the code folded
 into technical details; never show raw codes such as `APPLICATION_DEVICE_NOT_FOUND`
 or `OWNER_BUSY` as the message.
 
-`npm run peer` keeps enrollment open for as long as it runs. A host notice wakes
-it when a browser asks and when the owner approves; idle checks otherwise back
-off to thirty seconds. A finite `durationMs` is available for one-off helpers.
+`npm run peer` keeps enrollment open for as long as it runs. Its setup channel
+(`watchApplicationSetup`) wakes it when a browser asks and when the owner
+approves; it does not poll in between.
 Stopping it does not erase a durable pause. Native records under `.tendriller/`
 retain `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json`; the pause belongs to the

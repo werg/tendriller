@@ -9,7 +9,7 @@ import type { Tendril } from './tendril';
 interface PendingInvitation extends PeerInvitation { fingerprint: string }
 interface Attachment {
   kind: 'peer-invitations'; peerId: string; owner: string; principal: Principal;
-  window: number; seen: PendingInvitation[]; pending: PendingInvitation[]; notices?: boolean;
+  window: number; seen: PendingInvitation[]; pending: PendingInvitation[];
 }
 const attachment = (ws: WebSocket): Attachment | null => {
   const value = ws.deserializeAttachment() as Attachment | null;
@@ -42,9 +42,6 @@ export async function handleInvitations(t: Tendril, req: Request, url: URL, prin
     if (!(req.headers.get('Sec-WebSocket-Protocol') ?? '').split(',').map(value => value.trim()).includes(PEER_INVITATION_PROTOCOL))
       throw new HttpError(400, 'bad_request', `Invitations require ${PEER_INVITATION_PROTOCOL}`);
     let peerId: string;
-    const notices = url.searchParams.get('notices');
-    if (notices !== null && (notices !== 'pairing' || principal.kind !== 'agent'))
-      throw new HttpError(400, 'bad_request', 'Only native participants may listen for pairing notices');
     try { peerId = validatePeerId(url.searchParams.get('peerId')); }
     catch { throw new HttpError(400, 'bad_request', 'A bounded peer identity is required'); }
     await fresh(t, principal);
@@ -56,8 +53,7 @@ export async function handleInvitations(t: Tendril, req: Request, url: URL, prin
     previous?.close(1000, 'Invitation listener replaced');
     const [client, server] = Object.values(new WebSocketPair());
     t.ctx.acceptWebSocket(server, ['peer-invitations']);
-    server.serializeAttachment({ kind: 'peer-invitations', peerId, owner, principal, window: t.now(), seen: [], pending: [],
-      ...(notices ? { notices: true } : {}) } satisfies Attachment);
+    server.serializeAttachment({ kind: 'peer-invitations', peerId, owner, principal, window: t.now(), seen: [], pending: [] } satisfies Attachment);
     server.send(JSON.stringify({ t: 'ready', version: 1, peerId }));
     return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL } });
   }
@@ -112,14 +108,4 @@ export function handleInvitationMessage(t: Tendril, ws: WebSocket, message: stri
     if (pending.length === value.pending.length) throw new Error('unknown acknowledgement');
     ws.serializeAttachment({ ...value, pending });
   } catch { ws.close(1008, 'Invalid invitation acknowledgement'); }
-}
-
-/** A content-free wake-up: a native participant that opted in re-reads pending
- * pairings through its normal authenticated API. Nothing is granted by it. */
-export function notifyPairingListeners(t: Tendril): void {
-  for (const ws of active(t)) {
-    const value = attachment(ws)!;
-    if (!value.notices || value.principal.kind !== 'agent') continue;
-    try { ws.send(JSON.stringify({ t: 'notice', kind: 'pairing', version: 1 })); } catch { /* The listener reconnects and polls. */ }
-  }
 }
