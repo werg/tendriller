@@ -1,0 +1,83 @@
+name: Native MCP live qualification
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        default: staging
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_run:
+    workflows: ['Public service']
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch'))
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(github.event_name == 'workflow_run' && '["production"]' || inputs.environment == 'staging' && '["staging"]' || inputs.environment == 'production' && '["production"]' || '["staging","production"]') }}
+    environment: ${{ matrix.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: tendriller-live-${{ matrix.environment }}-acceptance
+      cancel-in-progress: false
+    container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      REVIEW_ACCESS_PATH: /tmp/tendriller-review-access.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm install --global @openai/codex@0.170.0
+      - run: npm run build:artifacts
+      - name: Load private reviewer credentials
+        env:
+          REVIEW_ACCESS_JSON: ${{ secrets.TENDRILLER_REVIEW_ACCESS_JSON }}
+        run: |
+          node --input-type=module -e '
+            import { writeFileSync } from "node:fs";
+            if (!process.env.REVIEW_ACCESS_JSON) throw Error("Configure the environment secret TENDRILLER_REVIEW_ACCESS_JSON");
+            JSON.parse(process.env.REVIEW_ACCESS_JSON);
+            writeFileSync(process.env.REVIEW_ACCESS_PATH, process.env.REVIEW_ACCESS_JSON, { mode: 0o600 });'
+      - name: Renew the same dedicated account without rotating its credentials
+        run: node scripts/provision-test-access.mjs --config server/wrangler.${{ matrix.environment }}.jsonc --output "$REVIEW_ACCESS_PATH" --days 90 --renew
+      - name: Exercise real native MCP tools and record all packaged cases
+        run: npm run test:plugin:live -- --access "$REVIEW_ACCESS_PATH" --config server/wrangler.${{ matrix.environment }}.jsonc --output .results/plugin-review
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-mcp-${{ matrix.environment }}-evidence
+          # Explicit allowlist: never upload private handles, access records or raw host diagnostics.
+          path: |
+            .results/plugin-review/report.json
+            .results/plugin-review/fixture-failure.json
+            .results/plugin-review/walkthrough.webm
+            .results/plugin-review/verified-page.png
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Remove runner credentials
+        if: always()
+        run: rm -f "$REVIEW_ACCESS_PATH"

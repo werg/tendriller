@@ -164,3 +164,23 @@ The [account-bound setup and reviewed device pairing follow-ups](ONBOARDING_PROT
 record the remaining optional interaction improvements, their current authority
 boundaries and unimplemented acceptance tasks. They require explicit durable
 protocol/state work; discovery improvements do not enable those proposed APIs.
+
+## Live MCP reviewer qualification
+
+`npm run test:plugin:live -- --access /private/account.json --config
+server/wrangler.staging.jsonc --output /private/evidence` creates an isolated
+synthetic app and records a real Codex MCP client's tool-level acceptance run.
+Build artifacts first; install the qualified Codex CLI and Playwright Chromium.
+No model turns or OpenAI model credentials are used. The test verifies prepared
+publication before claim, real OAuth/PKCE, reads, a write, retry, retained events,
+rejections and reload, then deletes only its own fixture. It leaves the stable
+reviewer sample untouched. It does not establish ChatGPT web or model behavior.
+
+The [qualification workflow](../.github/workflows/plugin-qualification.yml)
+gates production promotion on staging, verifies production after successful
+master deployments, and runs weekly on both environments.
+Private account records live in each environment's `TENDRILLER_REVIEW_ACCESS_JSON`
+secret; the same account is renewed automatically. Reports, screenshots and video
+use an explicit artifact allowlist; private fixture credentials stay outside it.
+See [review preparation](../integrations/chatgpt/plugin/REVIEW.md) for static
+reviewer login, credential renewal/revocation and persistent sample operation.

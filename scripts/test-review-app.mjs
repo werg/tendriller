@@ -1,13 +1,14 @@
-// Service-side acceptance. The separate ChatGPT conversation check remains explicit.
+// Direct service acceptance; native-client qualification and recording live in scripts/review/.
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { readReviewAccess } from './review/access.mjs';
 import { chromium } from '@playwright/test';
 import { createClient } from '../dist/sdk/client.mjs';
 import { verifyAuthorityBundle, verifyPublicationManifest } from '@chronolog/peer-session';
 
-const project = resolve(process.argv[2]), access = JSON.parse(readFileSync(process.argv[3], 'utf8'));
+const project = resolve(process.argv[2]), access = readReviewAccess(process.argv[3]);
 const handle = JSON.parse(readFileSync(resolve(project, '.private/handle.json'), 'utf8'));
 const origin = access.origin, resource = `${origin}/mcp`, clientId = 'https://chatgpt.com/oauth/client.json';
 const callbackUri = 'https://chatgpt.com/connector_platform_oauth_redirect';
@@ -18,7 +19,7 @@ mkdirSync(output, { recursive: true, mode: 0o700 });
 try {
   const context = await browser.newContext();
   const page = await context.newPage();
-  await page.goto(access.url); await page.getByRole('button', { name: 'Open test account' }).click();
+  await page.goto(access.loginUrl); await page.locator('input[name=token]').fill(access.code); await page.getByRole('button', { name: 'Open test account' }).click();
   await page.waitForURL(origin + '/dashboard');
   const discovery = await context.request.get(origin + '/.well-known/oauth-protected-resource/mcp');
   assert.equal(discovery.status(), 200);
@@ -126,4 +127,4 @@ try {
   await browser.close();
   writeFileSync(resolve(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
 }
-console.log(`Reviewer service acceptance passed. Report saved in ${output}. ChatGPT conversation acceptance is still required.`);
+console.log(`Reviewer service acceptance passed. Report saved in ${output}. This is direct service evidence. Use npm run test:plugin:live for native MCP client qualification and recording.`);

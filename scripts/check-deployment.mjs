@@ -25,12 +25,12 @@ function checkBuild(build, label) {
     throw Error(`${label} does not match the expected source/release/runtime/composition identity.`);
 }
 
-async function get(path, headers) {
+async function get(path, headers, expectedStatus) {
   let error;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       const response = await fetch(new URL(path, base), { headers, redirect: 'error', signal: AbortSignal.timeout(15_000) });
-      if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+      if (!response.ok && response.status !== expectedStatus) throw new Error(`${path}: HTTP ${response.status}`);
       return response;
     } catch (cause) {
       error = cause;
@@ -53,7 +53,10 @@ if (!/Operational|New page creation paused|Read-only or unavailable/.test(status
 // Object storage quota is exhausted. Touch one nonexistent, fixed Tendril so
 // its SQLite-backed namespace must complete a real read before deployment is
 // reported healthy. The missing tendril is the expected result.
-const objectResponse = await fetch(new URL("/api/t/aaaaaaaaaaaa", base), { redirect: 'error', signal: AbortSignal.timeout(15_000) });
+// A code update can briefly return 500 while the object restarts. Apply the
+// same bounded read retries as the other probes; persistent storage failures
+// still block deployment, and only the exact missing-object response passes.
+const objectResponse = await get("/api/t/aaaaaaaaaaaa", undefined, 404);
 const objectResult = await objectResponse.json().catch(() => null);
 if (objectResponse.status !== 404 || objectResult?.error?.message !== "No such tendril") {
   throw new Error(`Durable Object storage readiness failed: HTTP ${objectResponse.status}`);
