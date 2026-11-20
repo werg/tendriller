@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from 'node:util';
 import { describeReadiness, requireService, requireServiceOrigin } from "../contract/client.mjs";
+import { deploymentConvergence } from './deployment-convergence.mjs';
 import { CORE_RELEASE } from '../contract/index.mjs';
 // Smoke check the public endpoints after each deployment.
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
@@ -42,10 +43,12 @@ async function get(path, headers, expectedStatus) {
 
 const health = await (await get("/health")).json();
 if (health?.ok !== true) throw new Error("Health response did not report ok: true");
-const readiness = await describeReadiness(base, { signal: AbortSignal.timeout(15_000) });
-if (readiness.mode === 'unavailable' || readiness.environment?.id !== base)
-  throw Error('Readiness is unavailable or identifies a different deployment environment.');
-checkBuild(readiness.build, 'Readiness');
+const readiness = await deploymentConvergence(async () => {
+  const value = await describeReadiness(base, { signal: AbortSignal.timeout(15_000) });
+  if (value.mode === 'unavailable' || value.environment?.id !== base)
+    throw Error('Readiness is unavailable or identifies a different deployment environment.');
+  checkBuild(value.build, 'Readiness'); return value;
+});
 const status = await (await get("/status")).text();
 if (!/Operational|New page creation paused|Read-only or unavailable/.test(status))
   throw new Error("Service status did not read the account database");
@@ -150,15 +153,18 @@ if (assistant) {
   if (!catalog.ok || !Array.isArray(tools) ||
       ['get_application_delivery', 'tendril_guide'].some(name => !tools.some(tool => tool.name === name)))
     throw new Error('Assistant tool discovery failed: get_application_delivery and tendril_guide must both appear in tools/list');
-  const guideResponse = await call('tools/call', { name: 'tendril_guide', arguments: {} });
-  const guide = (await guideResponse.json()).result?.structuredContent;
-  if (!guideResponse.ok || guide?.topic !== 'start' || guide.serviceOrigin !== base ||
-      guide.readiness?.serviceOrigin !== base ||
-      guide.onboarding?.interfaces?.create_page?.url !== `${base}/api/tendrils` ||
-      !guide.text?.includes('Node 24'))
-    throw new Error('Assistant app-building guidance is unavailable or targets another deployment');
-  checkBuild(guide.build, 'Assistant guide');
-  checkBuild(guide.readiness.build, 'Assistant guide readiness');
+  await deploymentConvergence(async () => {
+    const guideResponse = await call('tools/call', { name: 'tendril_guide', arguments: {} });
+    const guide = (await guideResponse.json()).result?.structuredContent;
+    if (!guideResponse.ok || guide?.topic !== 'start' || guide.serviceOrigin !== base ||
+        guide.readiness?.serviceOrigin !== base ||
+        guide.onboarding?.interfaces?.create_page?.url !== `${base}/api/tendrils` ||
+        !guide.text?.includes('Node 24'))
+      throw new Error('Assistant app-building guidance is unavailable or targets another deployment');
+    checkBuild(guide.build, 'Assistant guide');
+    checkBuild(guide.readiness.build, 'Assistant guide readiness');
+    return guide;
+  });
   const templates = await call('resources/templates/list');
   if (!templates.ok || !Array.isArray((await templates.json()).result?.resourceTemplates))
     throw new Error('Assistant resource-template discovery failed');
