@@ -447,6 +447,13 @@ export async function closeLocalTransport() {
       report.browser_errors ??= [];
       if (report.browser_errors.length < 12) report.browser_errors.push(error.message);
     });
+    // Bounded browser console tail for failure diagnosis (errors and warnings only).
+    page.on('console', message => {
+      if (!['error', 'warning'].includes(message.type())) return;
+      report.browser_console ??= [];
+      report.browser_console.push(`${message.type()}: ${message.text()}`.slice(0, 400));
+      if (report.browser_console.length > 40) report.browser_console.shift();
+    });
     report.screenshots = {};
     await page.goto(SERVICE); await page.screenshot({ path: join(dirname(reportPath), 'first-app-homepage-desktop.png'), fullPage: true });
     report.screenshots.homepage_desktop = 'first-app-homepage-desktop.png';
@@ -819,7 +826,7 @@ export async function closeLocalTransport() {
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
   if (page && !page.isClosed()) {
     report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
-      'connection', 'pairing-status', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
+      'connection', 'connection-card', 'pairing-status', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
     ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
     try {
       await page.screenshot({ path: join(dirname(reportPath), 'first-app-failure.png'), fullPage: true, timeout: 10_000 });
