@@ -1,4 +1,4 @@
-import { peerApi, peerApiJson } from './peer-exchange';
+import { peerApi, peerApiJson, peerOwnerApi } from './peer-exchange';
 import { expect, it } from 'vitest';
 import { advance, api, create, inDO, req, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
@@ -68,11 +68,13 @@ it('requires the same participant incarnation and excludes revoked routes on the
     expect((await page.exchange('discovery/withdraw', { peerId: 'peer-a' })).status).toBe(409);
     expect((await guest.exchange('discovery/withdraw', { peerId: 'peer-a' })).status).toBe(200);
   } finally { socket.close(); }
-  const native = await fixtureSocket(page.discoverySocket('peer-a'));
+  const h = await create({ listener: false });
+  const native = await subscribe(h, 'peer-a');
   try {
-    expect((await page.exchange('discovery/advertise', { advertisement: advertisement() })).status).toBe(200);
-    await inDO(page.id, t => t.db.run('DELETE FROM tokens'));
-    expect((await (await page.ownerExchange('discovery/read')).json()).peers).toEqual([]);
+    expect((await peerApi(h, 'discovery/advertise', { advertisement: advertisement() })).status).toBe(200);
+    await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
+    const directory = await (await peerOwnerApi(h, 'discovery/read')).json() as { peers: unknown[] };
+    expect(directory.peers).toEqual([]);
   } finally { native.close(); }
 });
 
