@@ -86,6 +86,27 @@ test('maintained observer proves native-to-browser from measured rows and signed
   assert(!readFileSync(join(f.runDirectory, 'report.json'), 'utf8').includes('PRIVATE_HANDLE'));
 });
 
+test('colon-derived row identity binds the actual signed event, native projection and browser row', async t => {
+  const f = await fixture(t);
+  Object.assign(f.config.query, { operationId: null, eventTopic: 'note', eventIdEncoding: 'author-operation-colon', rowId: '/id' });
+  f.config.browser.rowIdentityAttribute = 'data-item-id'; f.save();
+  const config = loadObserverConfig(f.configPath, f.request);
+  const measured = await sessionMeasurement(f.session, config, p, { operationId: 'stable-observer-op', author: f.session.deviceId, command: 'addNote' });
+  const rowId = `${f.session.deviceId}:stable-observer-op`;
+  measured.rows = measured.rows.map(row => ({ ...row, id: `${row.author}:${row.operationId}` }));
+  let browserId = rowId;
+  f.page.locator = () => ({ count: async () => 1, inputValue: async () => f.browserSigner.publicKey,
+    allInnerTexts: async () => ['Observer marker'], evaluateAll: async () => [browserId] });
+  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath,
+    owner: { page: f.page }, native: async () => measured, packages: f.packages });
+  assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'passed');
+  browserId = `${f.browserSigner.publicKey}:stable-observer-op`;
+  assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'failed');
+  browserId = rowId; measured.events[0].author = f.browserSigner.publicKey;
+  const substituted = await observer.observe({ check: 'agent-to-browser' });
+  assert.equal(substituted.status, 'failed'); assert(substituted.evidence.mismatches.includes('event-author'));
+});
+
 test('missing measurements block; duplicate application, replaced signer and changed configured identity fail', async t => {
   const f = await fixture(t);
   const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, native: async () => f.snapshot, packages: f.packages });
