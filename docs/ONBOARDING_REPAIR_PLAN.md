@@ -141,7 +141,7 @@ and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
 
 - [ ] Core `npm ci` and `npm run check` pass at the integrated branch head.
 - [x] Relevant Chronolog unit/integration/package checks pass.
-- [ ] Downloaded first-app qualification covers native write/reopen/retry,
+- [x] Downloaded first-app qualification covers native write/reopen/retry,
   signed publication, and browser enrollment/replication/reload using the exact
   candidate composition; identify any environment-limited portions as partial.
 - [ ] A fresh unfamiliar agent starts with only the selected plugin and the
@@ -154,8 +154,8 @@ and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
 
 Both required capabilities are implemented across the host, public SDK/MCP and
 starter. [ONBOARDING_PROTOCOL_FOLLOWUPS.md](ONBOARDING_PROTOCOL_FOLLOWUPS.md) maps
-the exact APIs, limits, storage identities, tests and two remaining integrated/live
-acceptance items. Account setup retains one allocation and credential commitment;
+the exact APIs, limits, storage identities, tests and selected-host acceptance
+boundary. Account setup retains one allocation and credential commitment;
 browser pairing retains one proved, reviewed proposal and signed-control attempt.
 Existing OAuth grants acquire no implicit new rights. The per-page baseline is
 fresh Durable Object revision 10; account setup requires the explicit
@@ -203,7 +203,7 @@ GitHub CLI has no authenticated account.
   packed API/export verification; CLI cancellation/outcome preservation; durable
   Chronolog receipts and reopen inspection; explicit assistant/event lifecycle;
   exact rc.12 composition and first-app kit; predeploy byte/identity/public-asset
-  gates; current cookbook guidance; and protocol follow-up assessment.
+  gates; current cookbook guidance; and required setup/pairing implementation.
 - Dependency checkpoint: core pins clean Chronolog commit
   `2d4af2f458236b6871b14f9da004168169583a3b`, archive SHA-256
   `740ebc0d2e21bcaf689483f221626535fdec4a1316f33f2ed77bf981e39a2d07`.
@@ -259,3 +259,56 @@ GitHub CLI has no authenticated account.
   the native MCP reviewer opens a paused service. Any readiness recovery is a
   separately authorized operator action; tests retain existing uncertain-result
   recovery behavior and do not switch origins or modes.
+
+## Qualified integrated checkpoints
+
+On 20 November 2026, clean core source
+`1ee9d095557497a76966554f596bfff7859f2c1d` passed `npm ci`, the full
+`npm run check` and `npm run release:artifacts`. The full check passed **917
+tests**: 264 script, 74 SDK contract, 72 collaboration, 93 runtime, 379 Worker
+and 35 tools cases, plus schema, type, build, boundary and independent packed
+consumer checks. Both Node 22.15 and Node 24
+[hosted core jobs](https://github.com/werg/tendriller/actions/runs/44731655576)
+passed at that same head. Clean local and hosted builds produced the same ten
+immutable release assets and composition
+`d433cfbb17c60ef0ec149a5f81d6edb08efd87d769f387bbef3395dd9fdd4046`.
+
+The [full packed first-app job](https://github.com/werg/tendriller/actions/runs/44731655551/job/136272675480)
+passed account-MCP lost-response recovery, publication before owner claim,
+browser-held key proof, full narrow-screen keyboard review, durable native
+ordering pause/restart, commands in both directions, same-device data after
+reopen and natural native process exit. It also passed actual **Add agent**
+approval and retained credential adoption, original setup-credential revocation,
+loss of the original handle and a creation retry with **one original allocation**.
+The [separate SQL starter job](https://github.com/werg/tendriller/actions/runs/44731655551/job/136272675954)
+passed its explicitly pinned native SQL qualification; that historical SQL pin
+does not become the events kit's current Chronolog identity.
+
+These tests use synthetic owner/provider sessions and a local encrypted
+WebSocket relay. The test-host forwarding Worker preserves upstream close
+acknowledgment and physical socket closure while isolating the pinned workerd
+cold hibernatable-WebSocket defect; it does not qualify direct production TCP
+closure. No live OAuth provider, mobile/native RTC environment, installed
+ChatGPT connection or unaided agent is certified by this fixture. The distinct
+general browser suite timed out during its web-server startup at `1ee9d095`;
+its resolution and later final-source matrix belong to the core PR's current
+qualification record.
+
+Subsequent focused checkpoints add the missing real account-suspension race
+during pairing commitment (**17 pairing tests**, 32 combined management,
+adoption and pairing cases), and protect both events and SQL starters from
+replacement creation when retained private recovery evidence exists (**39
+starter setup/account/adoption cases**, plus five packaged-onboarding checks).
+These focused results are not relabeled as the preceding 917-test run.
+
+The companion source and qualification are independently pinned:
+
+| Repository | Exact source | Current evidence |
+| --- | --- | --- |
+| Chronolog | `15573014f4536369d7bd2f8a4b894a0d9fb69812` | [Quality](https://github.com/werg/chronolog-db/actions/runs/44725394129): 678 passed, six WASM cases skipped in that suite; [native/WASM execution](https://github.com/werg/chronolog-db/actions/runs/44725394245) and [independent application qualification](https://github.com/werg/chronolog-db/actions/runs/44725394158) also passed. |
+| Contrib | `b33cf7102c4bb36eac8be29bbce8368a476ac7a0` | [Node 22.15 and Node 24](https://github.com/werg/tendriller-contrib/actions/runs/44729150515): 59 guides, 237 source decisions and 74 tests passed. |
+
+Core carries the clean Chronolog archive with SHA-256
+`c7320c8e5c7c12f8ae65c148f6a6a3a44b5efb64cbee39e36cb6efa71e289be0`.
+The final source head, hosted run links and remaining selected-host release
+gates are kept current in [PR #68](https://github.com/werg/tendriller/pull/68).

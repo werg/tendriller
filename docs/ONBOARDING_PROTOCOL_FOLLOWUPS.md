@@ -2,10 +2,10 @@
 
 Status: **both required capabilities are implemented in the repository** for
 [core PR #68](https://github.com/werg/tendriller/pull/68). Focused SDK, worker and
-starter tests are committed. The remaining integrated, packed-browser and
-deployed-client acceptance gates are recorded below. All twenty original
-acceptance tasks are retained; open aggregate gates include their unexercised
-failure cases, not just missing implementation. Source changes do not
+starter tests are committed. The packed browser/native lifecycle has passed at
+the exact source and composition recorded below. The remaining final-source and
+deployed-client acceptance gates are recorded in the repair plan. All twenty
+original acceptance tasks are retained. Source changes do not
 deploy a service or authenticate a user's browser.
 
 These implementations remove two avoidable interactions: asking for an owner's
@@ -138,7 +138,7 @@ failure before Admission, retained-state loss/corruption, alarm failure and
 absolute expiry including late Admission reservation. The setup-authority
 regressions cover retained scopes, metadata corruption, post-claim expiry,
 original-grant revocation and cached adapter admission. The account setup suite
-now passes 39 actual endpoint tests, including six direct D1 fault cases, plus
+now passes 43 actual endpoint tests, including six direct D1 fault cases, plus
 the separately verified authority and schema suites. Per-account retained
 capacity and the last daily
 IP slot are exercised; the 10,000-row global ceiling is enforced by the schema
@@ -148,6 +148,9 @@ allocation insert, account-index/stage transaction and ready-result update. Each
 case evicts the page and Admission objects and recovers one original page,
 credential, reservation and quota charge. These checks also found and fixed
 unread internal Admission responses in setup, expiry, claim and deletion callers.
+Direct Admission reservation loss before delivery and after commitment, and a
+discarded successful MCP response, also recover the same allocation and credential
+after both objects restart.
 
 ### Implementation and acceptance tasks
 
@@ -315,7 +318,7 @@ or uncertain evidence.
   inspectable and any replacement requires a newly reviewed exact proposal.
 - [x] Test expiry, request/body/binding capacity and ledger-full behavior without
   evicting accepted or uncertain outcome evidence.
-- [ ] Qualify a real browser creating its own key, owner review, native enrollment,
+- [x] Qualify a real browser creating its own key, owner review, native enrollment,
   peer key exchange, a command observed on the other device and same-key reopen.
   A successful review screen alone does not satisfy this gate.
 
@@ -323,17 +326,26 @@ Focused evidence is in
 [SDK proof/transport tests](../contract/test/pairing.test.mjs),
 [worker lifecycle tests](../server/test/device-pairing.public.test.ts) and
 [starter resume tests](../scripts/test/tutorial-pairing.test.mjs).
-The pairing worker suite passes **15 tests**, including actual concurrent form
+The pairing worker suite passes **17 tests**, including actual concurrent form
 submission and two approved proposals targeting the same generation. One form
 is consumed once; only the exact winning proposal commits, while the original
 losing proposal remains inspectable as stale. Separate database, signed-control
 and native-helper regressions cover authority and retained-pause recovery.
+An account suspended during asynchronous commitment cannot acquire a signed
+generation or device binding. Its exact reviewed evidence survives eviction;
+only explicit account restoration permits the same transition to complete.
 Revocation without a commit cannot hide a later server-confirmed expiry; the
 helper still requires fresh verified authority before releasing that pause.
 The real-browser route in
 [the first-app runner](../scripts/test-first-app.mjs) exercises the actual review
-form and native consumer; its final integrated result belongs to the separate
-acceptance record. A local timer, uncertain response or unresolved receipt never
+form and native consumer. The [full hosted run at `1ee9d095`](https://github.com/werg/tendriller/actions/runs/44731655551/job/136272675480)
+passed key creation, narrow-screen keyboard review, durable native pause/restart,
+encrypted peer commands in both directions and same-key reopen. It also completed
+owner-reviewed credential continuation after revoking the setup credential and
+removing the original handle, with one original application and allocation.
+This uses synthetic owner/provider sessions and a local encrypted WebSocket
+relay; selected-host OAuth/MCP acceptance remains a separate gate. A local timer,
+uncertain response or unresolved receipt never
 substitutes for that authority check.
 
 ## Delivery boundary
