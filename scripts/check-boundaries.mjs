@@ -15,6 +15,10 @@ const controlImports = new Map([
   ['server/src/peer-control-identity.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-publications.ts', '@chronolog/peer-generation/control'],
   ['server/src/peer-participant.ts', '@chronolog/peer-generation/participant'],
+  ['server/src/device-pairing.ts', '@chronolog/peer-generation/control'],
+  // Public types for the optional companion-backed pairing API are declarations
+  // only. Its executable SDK proof helper uses WebCrypto, never the app engine.
+  ['contract/pairing.d.mts', '@chronolog/peer-session'],
 ]);
 const controlArtifacts = new Set(['node_modules/@chronolog/peer-generation/control.mjs', 'node_modules/@chronolog/peer-generation/participant.mjs']);
 for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {
