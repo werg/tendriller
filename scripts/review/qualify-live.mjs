@@ -6,16 +6,17 @@ import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
-import { createClient } from '../../dist/sdk/client.mjs';
 import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess } from './access.mjs';
 import { recordReview } from './record.mjs';
+import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
 
 const { values } = parseArgs({ options: { access: { type: 'string' }, config: { type: 'string' }, output: { type: 'string' }, 'no-video': { type: 'boolean', default: false } } });
 if (!values.access || !values.config || !values.output) throw Error('Pass --access PRIVATE_JSON --config WRANGLER_CONFIG --output REPORT_DIRECTORY [--no-video]');
 const root = resolve(import.meta.dirname, '../..'), accessPath = resolve(values.access), config = resolve(values.config), output = resolve(values.output);
-const access = readReviewAccess(accessPath), version = JSON.parse(readFileSync(join(root, 'package.json'))).version;
+const access = readReviewAccess(accessPath), composition = reviewComposition(root);
 const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_readRawConfig({ config });
 assert.equal(rawConfig.vars.PUBLIC_BASE, access.origin, 'Private account must match the selected deployment before any remote mutation');
 const project = mkdtempSync(join(tmpdir(), 'tendriller-review-fixture-'));
@@ -28,10 +29,14 @@ const run = args => {
 const delay = () => new Promise(done => setTimeout(done, 250));
 mkdirSync(output, { recursive: true, mode: 0o700 });
 try {
+  const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
+  writeFileSync(join(output, 'preflight.json'), JSON.stringify(reviewProvenance(composition, readiness), null, 2) + '\n', { mode: 0o600 });
   writeFileSync(join(project, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   for (const name of ['review-app.mjs', 'review-domain.mjs']) copyFileSync(join(root, 'integrations/chatgpt/plugin', name), join(project, name));
   execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
-    join(root, `dist/tendriller-sdk-${version}.tgz`), join(root, 'test/artifacts/chronolog-peer-session-d3efeb6d.tgz')], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
+    composition.packagePaths.sdk, composition.packagePaths.session], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
+  const { createClient } = await import(pathToFileURL(createRequire(join(project, 'package.json')).resolve('@tendriller/core')).href);
+  await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   originalMode = db('SELECT mode FROM service_state WHERE id=1').results[0]?.mode;
   assert(['open', 'creation_paused'].includes(originalMode));
   if (originalMode === 'creation_paused') {
@@ -39,7 +44,10 @@ try {
     opened = db("UPDATE service_state SET mode='open' WHERE id=1 AND mode='creation_paused'").meta.changes === 1;
     assert(opened);
   }
-  try { run(['create', accessPath, 'Qualification checklist']); }
+  try {
+    await preflightReviewDeployment(access.origin, composition);
+    run(['create', accessPath, 'Qualification checklist']);
+  }
   finally { if (opened) { db("UPDATE service_state SET mode='creation_paused' WHERE id=1 AND mode='open'"); opened = false; } }
   handle = JSON.parse(readFileSync(join(project, '.private/handle.json')));
   run(['init']);
@@ -77,7 +85,7 @@ try {
     const onlineDeadline = Date.now() + 25000;
     while (!(await (await context.request.get(proposal.reviewUrl)).text()).includes('Enrolled signer:')) { assert(Date.now() < onlineDeadline, 'Native participant deadline'); await delay(); }
   } finally { await browser.close(); }
-  const report = await recordReview({ project, accessPath, output, video: !values['no-video'] });
+  const report = await recordReview({ project, accessPath, output, composition, video: !values['no-video'] });
   report.preclaimPublicationVerified = true;
   writeFileSync(join(output, 'report.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
   console.log('Native MCP qualification passed all packaged cases; recording and sanitized report saved.');

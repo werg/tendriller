@@ -13,7 +13,8 @@ names Gabriel Pickard; select the corresponding verified identity in the portal.
 
 Install Node 24, the qualified Codex CLI (`npm install --global
 @openai/codex@0.170.0`), Chromium (`npx playwright install --with-deps chromium`)
-and dependencies with `npm ci`. Build with `npm run build:artifacts`. With the
+and dependencies with `npm ci`. From a clean checkpoint, run
+`npm run build:artifacts` and `npm run release:artifacts`. With the
 operator's Cloudflare deployment access and existing private account record, run:
 
 ```sh
@@ -24,6 +25,14 @@ npm run test:plugin:live -- \
 ```
 
 Use the production config and its matching private account for production.
+Before renewing the account or creating a fixture, the workflow checks the
+selected host's readiness and exact source/release/runtime/composition identity.
+The fixture installs the SDK and Chronolog session named by that composition,
+verifies their actual hashes against the current source pin, and reports those
+identities. A mismatched deployment, missing readiness or paused production stops
+the run; it does not select another origin or an older archive. The recording
+rechecks deployment identity at completion. This fixture does not qualify the
+first-app kit or a browser-owned application peer; those have separate gates.
 The command creates its own synthetic app, prepares signed UI before claim,
 starts the participant, signs in with the static form, claims that prepared
 publication, approves application access and completes real OAuth with PKCE.
