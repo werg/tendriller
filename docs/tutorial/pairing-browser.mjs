@@ -1,3 +1,4 @@
+import { browserProfileId } from './helpers/browser-profile.mjs';
 import { createDevicePairingClient, validateDevicePairingChallenge, pairingProofBytes } from '@tendriller/core/pairing';
 
 const fail = (code, message) => Object.assign(new Error(message), { code });
@@ -20,7 +21,7 @@ export function checkBrowserPairing(status, configuration, retained) {
 
 /** The public request ID is retained before the first Worker or host call.
  * Local browser keys stay in the owner Worker store, never in this record. */
-export function createBrowserPairing({ configuration, profileId = `tendriller-notes-${configuration.applicationId}`,
+export function createBrowserPairing({ configuration, profileId = browserProfileId(configuration.applicationId),
   workerUrl, storage = localStorage, locks = globalThis.navigator?.locks, WorkerClass = globalThis.Worker,
   createWorker = url => new WorkerClass(url, { type: 'module' }), fetch: transport = fetch }) {
   const key = `${profileId}:pairing-v1`;

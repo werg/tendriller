@@ -1,5 +1,12 @@
 # First application: Shared Notes
 
+When adapting this starter to a checklist or another application, first verify its
+unchanged connected loop, then change the domain and UI. Keep device identity
+independent of titles: the page, pairing Worker and application Worker all import
+`helpers/browser-profile.mjs`. Do not rename the profile in just one entry point
+or replace a retained browser store. Keep `configuration.page_url` from the page
+handle; the service origin and the published page origin serve different roles.
+
 This is the complete source used by the selected service's
 `/docs/BUILD_AN_APP.md`. Use Node 24 and check that service's `/api/readiness`
 before acquiring dependencies. Follow its build guide to download and verify

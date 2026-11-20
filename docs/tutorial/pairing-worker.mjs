@@ -1,3 +1,4 @@
+import { browserProfileId } from './helpers/browser-profile.mjs';
 // Only this fenced Worker opens the browser signer for a pairing proof.
 import { openBrowserDevice, acquireApplicationOwnerLock } from '@chronolog/peer-session/worker';
 import { createDevicePairingClient, signDevicePairingChallenge } from '@tendriller/core/pairing';
@@ -12,9 +13,12 @@ self.addEventListener('message', async ({ data }) => {
     const signal = AbortSignal.timeout(30000);
     const response = await fetch(new URL('./configuration.json', import.meta.url), { signal, cache: 'no-store', redirect: 'error' });
     if (!response.ok) throw Error('The signed application configuration is unavailable.');
-    const configuration = await response.json(), profileId = `tendriller-notes-${configuration.applicationId}`;
-    if (data.profileId !== profileId || typeof data.requestId !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(data.requestId) ||
-        new URL(configuration.page_url).origin !== self.location.origin) throw Error('Pairing must use the retained profile on its signed page origin.');
+    const configuration = await response.json(), profileId = browserProfileId(configuration.applicationId);
+    if (data.profileId !== profileId) throw Object.assign(new Error('The page and pairing Worker must use browserProfileId(configuration.applicationId) from the same helper. Keep the existing browser profile when changing application labels.'), { code: 'PAIRING_PROFILE_MISMATCH' });
+    if (typeof data.requestId !== 'string' || !/^[A-Za-z0-9_.:-]{1,160}$/.test(data.requestId))
+      throw Object.assign(new Error('Resume the saved browser pairing request.'), { code: 'PAIRING_REQUEST_INVALID' });
+    if (new URL(configuration.page_url).origin !== self.location.origin)
+      throw Object.assign(new Error('Open the published page at its own Tendriller address. Keep configuration.page_url from that page handle; do not substitute the service origin.'), { code: 'PAIRING_PAGE_ORIGIN_MISMATCH' });
     lock = await acquireApplicationOwnerLock(profileId, { signal });
     device = await openBrowserDevice({ name: profileId, create: data.publicKey === undefined });
     if (data.publicKey && data.publicKey !== device.identity.publicKey) throw Error('The retained browser key changed. Preserve this request and recover the original profile.');

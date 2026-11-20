@@ -1,3 +1,4 @@
+import { browserProfileId } from './helpers/browser-profile.mjs';
 import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
 import { createViewStore, operationReference } from '@tendriller/core/collaboration';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
@@ -9,7 +10,7 @@ import { createBrowserPairing } from './pairing-browser.mjs';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => response.json());
-const profileId = `tendriller-notes-${configuration.applicationId}`;
+const profileId = browserProfileId(configuration.applicationId);
 const pairing = createBrowserPairing({ configuration, profileId,
   workerUrl: new URL(configuration.pairingWorkerUrl || './pairing-worker.mjs', import.meta.url) });
 let pairingState;
