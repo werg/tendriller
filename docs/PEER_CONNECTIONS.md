@@ -34,11 +34,36 @@ The controller exposes `status`, `onStatus`, `signal`, `approveRecovery(proposal
 
 The controller reads current signed grants and authenticated peer evidence. Advertisements cannot grant coordination or recovery rights. A reconnect grace period permits a healthy coordinator to return. Recovery outside the configured freshness budget, or without a known observation, requires the displayed proposal to be approved. Approval is tied to that exact proposal; changed authority invalidates it. Application code presents that decision and the resulting loss/reapply notices.
 
-Ordinary commands, queries, content and live signals use peer connections. The controller may renew a coarse discovery lease; it does not turn each application update into a host request. Its availability and recovery timers are owned centrally by Chronolog.
+Ordinary commands, queries, content and live signals use peer connections. The controller consumes required discovery notifications. A healthy idle participant
+does not renew advertisements, scan the host directory or synchronize on a timer.
+An initial connection or reconnect advertises once; directory changes and actual
+application/link changes trigger the relevant work. Chronolog owns bounded
+unavailable-peer retries and the explicit recovery grace/freshness decisions.
 
 ## Host transport primitives
 
-`host.peers.discover()`, `advertise(advertisement)` and `withdraw(peerId)` use the shared participant discovery facet. An advertisement contains exactly `{peerId,storageId,routes}`. These bounded, expiring routing hints carry no execution profiles, eligibility claims, recovery proofs, application commands or secrets. Independent retained coverage is verified after connection.
+`host.peers.discover()`, `advertise(advertisement)` and `withdraw(peerId)` use the shared participant discovery facet. An advertisement contains exactly `{peerId,storageId,routes}`. These bounded routing hints exist only while their authenticated discovery
+WebSocket is connected. They carry no execution profiles, eligibility claims,
+recovery proofs, application commands or secrets. Independent retained coverage is verified after connection.
+
+`host.peers.watchDiscovery(peerId, {signal})` opens the receive-only hibernating
+`peers/discovery/watch` channel using `tendriller.discovery.v1`. Its bounded
+notifications are `{type:"ready"}` and `{type:"changed"}`. `ready` precedes
+advertising and is repeated only after a real reconnect; `changed` invalidates
+one directory read. The normal `createPeerIntroductions` adapter supplies this
+channel as the session discovery port
+`notifications({signal}): AsyncIterable<{type:"ready"|"changed"}>`.
+Use that adapter rather than constructing another availability loop.
+
+Advertisements contain no TTL and return `{advertisement}`; directory entries
+have the same shape. An advertisement requires its existing same-principal
+subscription. Closing, replacing or revoking that subscription removes its
+availability. Reconnect re-advertises the same retained signing identity; it
+does not create a device or change membership. Presence and small connection
+attachments survive Durable Object hibernation without heartbeats, pending
+HTTP requests or expiry alarms. Routing hints are retained in bounded SQLite
+rows and checked against the current sockets on every read. Large routes never
+enter the small WebSocket attachment.
 
 `listenInvitations(peerId)` opens a hibernatable host socket without a heartbeat. `invite(peerId,{channel,requesterPeerId})` sends one small `ephemeral/invite` action. Pending requests are bounded, coalesced and acknowledged when consumed. Revoked credentials and cancellation close the listener.
 
