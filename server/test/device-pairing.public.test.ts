@@ -329,6 +329,65 @@ it('rechecks guest admission at the atomic control write and resumes the same pr
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).bundle.generations).toHaveLength(2);
 });
 
+it('refuses suspension after an active account read without consuming the approved pairing', async () => {
+  const { h, native, device, cookie } = await fixture(), g = await guest(h);
+  const c = await jsonResponse(await browser(g.handle, { action: 'challenge', requestId: 'suspension-race',
+    publicKey: device.publicKey, rights: { reader: true, writer: true } }, undefined, g.headers));
+  await jsonResponse(await browser(g.handle, { action: 'prove', pairingId: c.pairingId,
+    signature: await signDevicePairingChallenge(c.challenge, device) }, undefined, g.headers));
+  const prepared = await prepare(h, native, c), before = await peerApiJson<AuthorityBundle>(h, 'control/read');
+  const staged = await jsonResponse(await stage(h, c, prepared));
+  expect((await review(c, cookie)).status).toBe(200);
+  const race = await inDO(h.id, async t => {
+    const original = t.env.ACCOUNTS;
+    let suspended = false;
+    t.env.ACCOUNTS = new Proxy(original, { get(target, key) {
+      if (key !== 'prepare') { const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value; }
+      return (sql: string) => {
+        const statement = target.prepare(sql);
+        if (!sql.includes('FROM accounts WHERE id')) return statement;
+        return { bind(...args: unknown[]) {
+          const bound = statement.bind(...args);
+          return { async first() {
+            const active = await bound.first();
+            if (!suspended && active && args[0] === g.accountId &&
+                t.db.one<{ status: string }>('SELECT status FROM device_pairings WHERE id=?', c.pairingId)?.status === 'committing') {
+              // Return the old active snapshot after a real account suspension.
+              // Only a fresh check before the signed control write can refuse it.
+              await original.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(t.now(), g.accountId).run();
+              suspended = true;
+            }
+            return active;
+          } };
+        } };
+      };
+    } });
+    try {
+      const principal = await authenticateAgentToken(t, h.token), request = new Request('https://tendril.internal/agent', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'commit', pairingId: c.pairingId, ...prepared }) });
+      try { await handleDevicePairing(t, request, new URL(request.url), principal); return { suspended, code: 'unexpected-success' }; }
+      catch (error) { return { suspended, code: (error as { code: string }).code }; }
+    } finally { t.env.ACCOUNTS = original; }
+  });
+  expect(race).toEqual({ suspended: true, code: 'pairing_account_revoked' });
+  const retained = await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId);
+  expect(retained.state).toBe('revoked'); expect(retained.prepared).toEqual(prepared); expect(retained.preparedDigest).toBe(staged.preparedDigest);
+  expect(await peerApiJson(h, 'control/read')).toEqual(before);
+  expect(await inDO(h.id, t => t.db.get<{ publicKey: string }[]>('peer_generation_accounts', []).some(row => row.publicKey === device.publicKey))).toBe(false);
+  await inDO(h.id, t => t.ctx.abort('Retain the suspended pairing')).catch(() => {});
+  const reopened = await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId);
+  expect(reopened).toEqual(retained);
+  expect(await jsonResponse(await commit(h, c, prepared), 403)).toMatchObject({ error: { code: 'forbidden' } });
+  expect(await peerApiJson(h, 'control/read')).toEqual(before);
+  await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=NULL WHERE id=?').bind(g.accountId).run();
+  const resumed = await jsonResponse(await commit(h, c, prepared));
+  expect(resumed.state).toBe('committed'); expect(resumed.preparedDigest).toBe(staged.preparedDigest);
+  expect(resumed.generation!.payload.transition).toEqual(prepared.request);
+  const authority = await verifyAuthorityBundle(await peerApiJson<AuthorityBundle>(h, 'control/read'));
+  expect(authority.bundle.generations).toHaveLength(2);
+  expect(authority.grant(device.publicKey)).toMatchObject({ reader: true, writer: true, administrator: false, publisher: false });
+});
+
 it('refuses a corrupt retained attempt without selecting a replacement or dropping the journal', async () => {
   const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
   await jsonResponse(await stage(h, c, prepared));
