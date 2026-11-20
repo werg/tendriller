@@ -63,7 +63,13 @@ handle, setup intent, signer and signed operations. It refuses a replacing
 recovery code or another application's identity. If the reply is lost,
 `adoption_outcome_unknown` requires the owner to inspect and disconnect that
 named binding if present before explicitly approving another code; the helper
-does not resend the uncertain one-use code. A saved response resumes locally.
+does not resend the uncertain one-use code. A saved response is reused after
+the host confirms its credential remains active. Replaying an older successful
+attempt cannot overwrite a newer selected credential. If both the handle and
+connector access are lost, the owner can inspect `SERVICE_ORIGIN/dashboard/setups`
+and save its **Open existing page** link privately as
+`.tendriller/owner-page-url.txt`; the retained signed descriptor binds the same
+application for the same `host:adopt` command.
 For lost credentials, retained operation inspection and assistant permission
 renewal, follow [same-app continuation](https://tendriller.dev/docs/BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss).
 The original device checkpoint remains necessary; host delegation cannot

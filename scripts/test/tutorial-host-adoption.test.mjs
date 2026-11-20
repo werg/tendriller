@@ -32,10 +32,14 @@ async function fixture(t) {
   const module = await import(pathToFileURL(join(directory, 'host-adoption.mjs')).href);
   const local = await import(pathToFileURL(join(directory, 'local.mjs')).href);
   return { directory, module, local, path, read, save, code: path('delegation-code.txt'),
-    adopt: options => module.adoptHostCredential(origin, path('delegation-code.txt'), { ...options, fetch: (url, init) => {
-      if (init.method === 'GET') {
+    adopt: (options, codeFile = path('delegation-code.txt')) => module.adoptHostCredential(origin, codeFile, { ...options, fetch: (url, init) => {
+      if (init.method === 'GET' && url === origin + '/api/adopt') {
         assert.equal(url, origin + '/api/adopt'); assert.equal(init.redirect, 'error'); assert.equal(init.body, undefined);
         return reply({ schemaVersion: 1, serviceOrigin: origin, delegation: { applicationBound: true, nonReplacing: true, responseRecovery: false } });
+      }
+      if (init.method === 'GET' && url === original.api + '/self') {
+        assert.equal(init.redirect, 'error'); assert.match(init.headers.Authorization, /^Bearer tk_[a-z2-7]{32}$/);
+        return options.verify ? options.verify(url, init) : reply({ name: 'reviewed-native', binding: { id: 'reviewed-binding' }, applicationId, authority: 'host-access-only' });
       }
       return options.fetch(url, init);
     } }) };
@@ -98,6 +102,11 @@ test('a later explicit reviewed renewal atomically selects a new credential and 
   assert.deepEqual(await readFile(f.path('handle.json')), originalBytes);
   for (const [name, bytes] of firstEvidence) assert.deepEqual(await readFile(f.path(name)), bytes);
   assert.equal((await readdir(f.path('.'))).filter(name => name.endsWith('-response.json')).length, 2);
+  // Reopening the old successful attempt must never roll back this renewal.
+  await writeFile(f.code, pageId + '-123456');
+  await assert.rejects(f.adopt({ fetch: async () => { throw Error('No second redemption'); },
+    verify: async () => { throw Error('A superseded credential must not be sent'); } }), { code: 'host_selection_changed' });
+  assert.deepEqual(await f.local.readHostHandle(), renewed);
 });
 
 test('a lost response retains uncertainty until the owner explicitly approves a different code', async t => {
@@ -114,8 +123,7 @@ test('a lost response retains uncertainty until the owner explicitly approves a 
 
 test('a saved response completes after a local selection failure without another redemption', async t => {
   const f = await fixture(t); let sends = 0;
-  await mkdir(f.path('host-credential.json'));
-  await assert.rejects(f.adopt({ fetch: async () => { sends++; return reply(delegated); } }));
+  await assert.rejects(f.adopt({ fetch: async () => { sends++; await mkdir(f.path('host-credential.json')); return reply(delegated); } }));
   await rm(f.path('host-credential.json'), { recursive: true });
   await f.adopt({ fetch: async () => { sends++; throw Error('no second request'); } });
   assert.equal(sends, 1); assert.deepEqual(await f.local.readHostHandle(), delegated);
@@ -153,6 +161,63 @@ test('lost setup credential can use original public inspection and retained desc
   assert.deepEqual(await readFile(f.path('device.sqlite')), before);
   await assert.rejects(access(f.path('handle.json')), { code: 'ENOENT' });
   await assert.rejects(access(f.path('account-setup.json')), { code: 'ENOENT' });
+});
+
+test('a revoked connector and lost handle can continue through the owner dashboard page link and retained descriptor', async t => {
+  const f = await fixture(t);
+  await rm(f.path('handle.json'));
+  await writeFile(f.path('owner-page-url.txt'), original.page_url, { mode: 0o600 });
+  const before = await readFile(f.path('device.sqlite'));
+  await f.adopt({ fetch: async () => reply(delegated) });
+  assert.deepEqual(await f.local.readHostHandle(), delegated);
+  assert.deepEqual(await readFile(f.path('device.sqlite')), before);
+  await assert.rejects(access(f.path('account-setup.json')), { code: 'ENOENT' });
+  await assert.rejects(access(f.path('account-setup-result.json')), { code: 'ENOENT' });
+  // The server-redeemed handle must still exactly match the owner's page and
+  // the locally pinned application, even without the original OAuth connector.
+  await writeFile(f.path('owner-page-url.txt'), original.page_url.replace('/s/a', '/s/b'));
+  await assert.rejects(f.local.readHostHandle(), { code: 'host_handle_mismatch' });
+});
+
+test('a retained but revoked credential is never installed or reported as successfully renewed', async t => {
+  const f = await fixture(t); let sends = 0;
+  const options = { fetch: async () => { sends++; return reply(delegated); },
+    verify: async () => new Response(JSON.stringify({ error: { code: 'unauthorized' } }), { status: 401 }) };
+  await assert.rejects(f.adopt(options), { code: 'host_credential_unverified' });
+  await assert.rejects(f.adopt(options), { code: 'host_credential_unverified' });
+  assert.equal(sends, 1);
+  assert.deepEqual(await f.local.readHostHandle(), original);
+});
+
+test('a competing selection lock preserves the response and can resume without another code submission', async t => {
+  const f = await fixture(t); let sends = 0;
+  await writeFile(f.path('host-selection.lock'), JSON.stringify({ pid: 123, attemptId: 'other-command' }));
+  const options = { fetch: async () => { sends++; return reply(delegated); } };
+  await assert.rejects(f.adopt(options), { code: 'host_selection_busy' });
+  assert.deepEqual(await f.local.readHostHandle(), original);
+  await rm(f.path('host-selection.lock'));
+  await f.adopt(options);
+  assert.equal(sends, 1); assert.deepEqual(await f.local.readHostHandle(), delegated);
+});
+
+test('concurrent distinct reviewed renewals cannot both replace the same predecessor selection', async t => {
+  const f = await fixture(t), bothVerifying = Promise.withResolvers();
+  let verifications = 0, submissions = 0;
+  await writeFile(f.path('second-code.txt'), pageId + '-654321');
+  const run = (token, file) => f.adopt({ fetch: async () => { submissions++; return reply({ ...original, token }); },
+    verify: async () => {
+      if (++verifications === 2) bothVerifying.resolve();
+      await bothVerifying.promise;
+      return reply({ name: 'reviewed-native', binding: { id: 'reviewed-binding' }, applicationId, authority: 'host-access-only' });
+    } }, file);
+  const attempts = await Promise.allSettled([run(delegated.token, f.code), run('tk_' + 'c'.repeat(32), f.path('second-code.txt'))]);
+  assert.equal(submissions, 2, 'each separately reviewed code was submitted once');
+  assert.equal(attempts.filter(result => result.status === 'fulfilled').length, 1);
+  const failure = attempts.find(result => result.status === 'rejected');
+  assert(['host_selection_busy', 'host_selection_changed'].includes(failure.reason.code));
+  const winner = attempts.find(result => result.status === 'fulfilled').value;
+  assert.equal((await f.read('host-credential.json')).attemptId, winner.attemptId);
+  assert.equal((await readdir(f.path('.'))).filter(name => name.endsWith('-response.json')).length, 2);
 });
 
 test('origin, retained identity and private code checks fail before any network submission', async t => {

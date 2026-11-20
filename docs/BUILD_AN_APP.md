@@ -307,7 +307,10 @@ that has already expired cannot be recovered through delegation.
    `.tendriller/host-credential.json`. The original handle, setup intent, native
    signer and operation records remain unchanged. A later explicit **Add agent**
    approval can select another credential atomically while retaining both
-   adoption histories. With the peer still stopped,
+   adoption histories. A retained older attempt cannot roll back that newer
+   selection. Before selection, the helper verifies the credential through the
+   same host's authenticated `GET /api/t/PAGE_ID/self`; a revoked credential or
+   unavailable verification stays unselected. With the peer still stopped,
    inspect the same identity and retained data:
 
    ```sh
@@ -338,6 +341,16 @@ public inspection result, including an `expired` result, as
 `.tendriller/account-setup-result.json`. The helper can validate this result
 against the retained descriptor and redeem the owner's reviewed delegation for
 that same app. A missing or conflicting identity record stops continuation.
+
+When the connector is disconnected too, the owner can sign in directly at
+`SERVICE_ORIGIN/dashboard/setups`, inspect the original setup, and copy its
+**Open existing page** link into the private file
+`.tendriller/owner-page-url.txt`. Keep `.tendriller/descriptor.json` and the native
+device checkpoint. The same `host:adopt` command can use that exact owner link
+and pinned application identity without a connector token, a reconstructed
+setup secret or a new operation. This read-only dashboard shows at most 100
+retained records and never claims, recreates or reconfigures the page.
+
 If the native signer or application keys are also missing, host delegation
 cannot recreate them: restore the device checkpoint or use the application's
 explicit signed recovery procedure with surviving authorized devices.
@@ -348,7 +361,14 @@ again. The owner must inspect the named agent in the same management screen,
 disconnect that named binding if it exists, and explicitly approve a fresh
 **Add agent** code. Keep the failed attempt and original app records. When the
 response was saved but local selection was interrupted, rerunning the same
-command completes from the private response without another network request.
+command reuses the private response and verifies the current credential without
+submitting the code again. `host_credential_unverified` retains that response
+while the owner inspects revocation or a network failure. A stale attempt reports
+`host_selection_changed` and leaves the later credential selected. Concurrent
+selection reports `host_selection_busy`; retry after the other command exits.
+If a command crashed while holding `.tendriller/host-selection.lock`, confirm
+all adoption commands have stopped before removing only that lock and resuming
+the saved response. Keep every attempt, response and application checkpoint.
 `delegation_unavailable` means that the selected host could not confirm these
 preconditions; no code was submitted. Have the operator deploy the matching host
 and retain the same service origin while resolving that prerequisite.

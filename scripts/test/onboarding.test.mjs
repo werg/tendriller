@@ -112,6 +112,7 @@ test('building a starter excludes nested private state, provider secrets, genera
     for (const path of ['.tendriller/handle.json', '.tendriller/device.sqlite', '.tendriller/epoch.json',
       '.tendriller/account-setup.json', '.tendriller/account-setup-result.json', '.tendriller/account-setup-interrupted.tmp',
       '.tendriller/host-credential.json', '.tendriller/host-adoption-private.json', '.tendriller/host-adoption-private-response.json', '.tendriller/delegation-code.txt',
+      '.tendriller/owner-page-url.txt', '.tendriller/host-selection.lock',
       'node_modules/secret.txt', 'page/config.mjs', '.env',
       'helpers/.env', 'media/.env', 'media/provider-local.mjs', 'media/provider-secrets.json',
       'sql/.env', 'sql/.tendriller/handle.json', 'sql/.tendriller/device.sqlite', 'sql/.tendriller/initial-input.json',

@@ -50,6 +50,43 @@ async function responseText(response) {
   } finally { reader.releaseLock(); }
 }
 
+const selectionChanged = () => failure('host_selection_changed', 'A later reviewed credential has been selected. This retained attempt cannot roll it back. Keep both histories and obtain a new explicit Add agent review if another renewal is needed.');
+function requireSelectionPredecessor(current, attempt) {
+  if (current?.attemptId === attempt.attemptId) return;
+  if (!Object.hasOwn(attempt, 'previousAttemptId') || (current?.attemptId ?? null) !== attempt.previousAttemptId) throw selectionChanged();
+}
+
+async function selectCredential(attempt, handle, { fetcher, signal }) {
+  const current = await saved('host-credential.json', true);
+  requireSelectionPredecessor(current, attempt);
+  try {
+    // Redeeming once is not a permanent authorization. A response retained
+    // before an interruption may since have been revoked by the owner.
+    const response = await fetcher(handle.api + '/self', { method: 'GET', redirect: 'error', cache: 'no-store',
+      signal: AbortSignal.any([AbortSignal.timeout(15_000), ...[signal].filter(Boolean)]),
+      headers: { Authorization: 'Bearer ' + handle.token } });
+    const self = JSON.parse(await responseText(response));
+    if (!response.ok || self.applicationId !== attempt.applicationId || self.authority !== 'host-access-only' ||
+      typeof self.binding?.id !== 'string' || self.name === 'setup') throw Error('inactive');
+  } catch { throw failure('host_credential_unverified', 'The retained delegated credential could not be verified as active for this application. No code was resent and no credential was selected. Inspect the same named binding with its owner before retrying verification or approving another delegation.'); }
+  if (current?.attemptId === attempt.attemptId) return;
+  // A short filesystem critical section makes the predecessor check and
+  // atomic selection indivisible across concurrently running CLI processes.
+  const lockPath = new URL('host-selection.lock', privateDirectory);
+  let lock;
+  try { lock = await open(lockPath, 'wx', 0o600); }
+  catch (error) {
+    if (error.code === 'EEXIST') throw failure('host_selection_busy', 'Another credential selection holds .tendriller/host-selection.lock. Let it finish, then retry this saved response. After a crashed command, confirm every adoption command has stopped before removing only this lock; retain all attempt and response files.');
+    throw error;
+  }
+  try {
+    await lock.writeFile(JSON.stringify({ attemptId: attempt.attemptId, pid: process.pid })); await lock.sync();
+    const latest = await saved('host-credential.json', true);
+    requireSelectionPredecessor(latest, attempt);
+    if (latest?.attemptId !== attempt.attemptId) await persist('host-credential.json', { ...attempt, handle }, true);
+  } finally { try { await lock.close(); } finally { await unlink(lockPath); } }
+}
+
 /** The caller gives a private file path, never a code in shell arguments/logs. */
 export async function adoptHostCredential(service, codeFile, { fetch: fetcher = globalThis.fetch, signal } = {}) {
   const identity = await hostIdentity(service);
@@ -63,6 +100,8 @@ export async function adoptHostCredential(service, codeFile, { fetch: fetcher = 
     throw failure('adoption_page_mismatch', 'The private code does not identify this retained page. Obtain Add agent approval for the existing application.');
   const digest = createHash('sha256').update(JSON.stringify([identity.serviceOrigin, identity.applicationId, code])).digest('hex');
   const name = `host-adoption-${digest}`, attemptName = name + '.json', responseName = name + '-response.json';
+  await readHostHandle(true);
+  const previous = await saved('host-credential.json', true);
   if (!await saved(attemptName, true)) {
     // Earlier hosts ignored unknown POST fields. Check explicit support without
     // a code before trusting application/mode preconditions on this endpoint.
@@ -76,7 +115,7 @@ export async function adoptHostCredential(service, codeFile, { fetch: fetcher = 
     } catch { throw failure('delegation_unavailable', 'This selected host did not confirm application-bound non-replacing delegation. Ask the operator to deploy the matching host. No code was submitted; keep the original service and application.'); }
   }
   const proposed = { schemaVersion: 1, attemptId: randomUUID(), serviceOrigin: identity.serviceOrigin,
-    applicationId: identity.applicationId, pageId: identity.pageId, submittedAt: Date.now() };
+    applicationId: identity.applicationId, pageId: identity.pageId, submittedAt: Date.now(), previousAttemptId: previous?.attemptId ?? null };
   const { created, value: attempt } = await persist(attemptName, proposed);
   if (attempt.schemaVersion !== 1 || attempt.serviceOrigin !== identity.serviceOrigin || attempt.applicationId !== identity.applicationId ||
     attempt.pageId !== identity.pageId || typeof attempt.attemptId !== 'string') throw failure('host_state_invalid', 'The retained adoption attempt has conflicting identity. Preserve it for inspection.');
@@ -101,7 +140,7 @@ export async function adoptHostCredential(service, codeFile, { fetch: fetcher = 
     throw failure(code, 'The host rejected this retained adoption attempt. Inspect the existing page’s owner management screen, use Add agent with the required scopes, and explicitly approve another code if needed. Existing app identity and keys remain unchanged.');
   }
   requireHostHandle(handle, identity);
-  await persist('host-credential.json', { ...attempt, handle }, true);
+  await selectCredential(attempt, handle, { fetcher, signal });
   const selected = await readHostHandle();
   if (selected.token !== handle.token) throw failure('host_selection_changed', 'Another reviewed adoption selected a different host credential concurrently. Inspect the retained private records before starting the participant.');
   return { state: 'host_credential_saved', serviceOrigin: identity.serviceOrigin, pageId: identity.pageId,

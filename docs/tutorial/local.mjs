@@ -30,21 +30,32 @@ export async function savePrivate(name, value) {
 export async function hostIdentity(service) {
   try {
     const origin = requireServiceOrigin(service);
-    const [original, receipt, intent, descriptor] = await Promise.all([
+    const [original, receipt, intent, descriptor, ownerPageText] = await Promise.all([
       readPrivate('handle.json', true), readPrivate('account-setup-result.json', true),
       readPrivate('account-setup.json', true), readPrivate('descriptor.json', true),
+      readFile(new URL('owner-page-url.txt', privateDirectory), 'utf8').catch(error => { if (error.code === 'ENOENT') return null; throw error; }),
     ]);
-    const pageId = original?.id ?? receipt?.pageId;
+    let ownerPage;
+    if (ownerPageText !== null) {
+      try { ownerPage = new URL(ownerPageText.trim()); } catch {}
+      if (!ownerPage || ownerPage.protocol !== 'https:' || ownerPage.username || ownerPage.password || ownerPage.search || ownerPage.hash ||
+        !/^\/s\/[a-z2-7]{26}\/$/.test(ownerPage.pathname) || !/^([a-z2-7]{12})(?:\.|--p-)/.test(ownerPage.hostname))
+        throw Error('The retained owner page URL is invalid. Copy the original existing page link from this service’s signed-in setup recovery dashboard.');
+    }
+    const ownerPageId = ownerPage && /^([a-z2-7]{12})(?:\.|--p-)/.exec(ownerPage.hostname)[1];
+    const pageId = original?.id ?? receipt?.pageId ?? ownerPageId;
     const applicationId = original?.application?.id ?? intent?.applicationId ?? descriptor?.payload?.applicationId;
     if (!/^[a-z2-7]{12}$/.test(pageId ?? '') || !/^[a-f0-9]{64}$/.test(applicationId ?? ''))
-      throw Error('Restore the original handle or save the original operation’s public inspect result as .tendriller/account-setup-result.json, with its retained intent or signed descriptor. Do not prepare a new application.');
+      throw Error('Restore the original handle, save its public setup inspection, or retain its dashboard page link in .tendriller/owner-page-url.txt alongside the original signed descriptor. Do not prepare a new application.');
     if (original && original.api !== `${origin}/api/t/${pageId}` ||
       intent && (intent.serviceOrigin !== origin || intent.applicationId !== applicationId) ||
       descriptor && descriptor.payload?.applicationId !== applicationId ||
+      ownerPage && (ownerPageId !== pageId || original?.page_url && original.page_url !== ownerPage.href ||
+        receipt?.page?.page_url && receipt.page.page_url !== ownerPage.href) ||
       receipt && (receipt.serviceOrigin !== origin || receipt.pageId !== pageId || receipt.applicationId !== applicationId ||
         intent && (receipt.operationId !== intent.operationId || receipt.requestDigest !== intent.requestDigest || receipt.credentialCommitment !== intent.credentialCommitment)))
       throw Error('The retained service, page, application or setup operation differs. Preserve the records and inspect the original application before continuing.');
-    return { serviceOrigin: origin, pageId, applicationId, pageUrl: original?.page_url ?? receipt?.page?.page_url };
+    return { serviceOrigin: origin, pageId, applicationId, pageUrl: original?.page_url ?? receipt?.page?.page_url ?? ownerPage?.href };
   } catch (error) {
     throw Object.assign(Error(error instanceof SyntaxError ? 'A private identity record is malformed. Restore its verified checkpoint before continuing.' : error.message), { code: 'host_identity_required' });
   }
