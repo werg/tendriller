@@ -220,3 +220,9 @@ GitHub CLI has no authenticated account.
   shutdown, publication graph revalidation and synchronized onboarding surfaces
   were incorporated without overwriting their commits. Final branch-head
   qualification results and any later corrections are recorded in the core PR.
+
+- Scope correction: account-bound setup and reviewed browser pairing are required
+  deliverables in this PR. Implement durable retry-safe allocation, retained
+  credential commitments, authenticated device proofs, exact owner review and
+  signed-control enrollment across the host, SDK/MCP and starter. Continue to
+  distinguish implemented repository behavior from live deployment/owner gates.

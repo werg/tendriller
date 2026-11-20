@@ -3,14 +3,15 @@
 Status: **required implementation in progress; not qualified or deployed**. This review
 was made on 20 November 2026 against the account, creation and enrollment code
 under review with [core PR #68](https://github.com/werg/tendriller/pull/68).
-Every task below remains open. Proposed interface names and limits require
-review before they become a public contract.
+Tasks below remain open until the corresponding code and tests are committed.
+The user requires both capabilities in this PR; they are not optional follow-ups.
+Keep interface names and finite limits aligned with the implementation.
 
 The current repair fixes discovery, origin selection, early service readiness,
 release composition, resumption from a saved handle and publication-outcome reporting. These
 two follow-ups remove additional interaction steps: obtaining an owner's email
 when the integration already knows the account, and copying a browser public key
-to the native participant. They are separate product/protocol work. Human owner
+to the native participant. They are required product/protocol work in this repair. Human owner
 sign-in, device authority and assistant consent remain deliberate boundaries.
 The existing email-based creation and reviewed enrollment route remains usable
 when its prerequisites are met.
