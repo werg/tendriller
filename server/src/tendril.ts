@@ -296,9 +296,22 @@ export class Tendril extends DurableObject<Env> {
       else this.db.set("adopt", a);
       throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
     }
-    this.db.del("adopt");
-    if (a.mode !== 'delegate') this.db.run("DELETE FROM tokens");
-    const token = await this.addToken(a.mode === 'delegate' ? a.name! : "main", a.scopes);
+    // A retained native app asks for non-replacing delegation only. Check both
+    // bindings before consuming the one-use code or issuing any credential.
+    if (body.expectedMode !== undefined && (body.expectedMode !== 'delegate' || a.mode !== 'delegate'))
+      throw new HttpError(409, 'adoption_mode_mismatch', 'Use Add agent on the owner management page; this code would replace existing agent credentials.');
+    if (body.applicationId !== undefined && body.applicationId !== selectedApplication(this).id)
+      throw new HttpError(409, 'adoption_application_mismatch', 'This code belongs to another application. Preserve the original app and ask its owner for delegation.');
+    const token = await this.addToken(a.mode === 'delegate' ? a.name! : "main", a.scopes, () => {
+      // Hashing the token yields. A replacement/expired/redeemed code must not
+      // authorize another binding after that await; consume it atomically.
+      if (JSON.stringify(this.db.get('adopt', null)) !== JSON.stringify(a) || a.expires_at <= this.now())
+        throw new HttpError(409, 'adoption_changed', 'The reviewed code changed or was already used. Ask the owner to inspect the named binding before issuing another code.');
+      if (body.applicationId !== undefined && body.applicationId !== selectedApplication(this).id)
+        throw new HttpError(409, 'adoption_application_mismatch');
+      this.db.del('adopt');
+      if (a.mode !== 'delegate') this.db.run('DELETE FROM tokens');
+    });
     addActivity(this, { kind: a.mode === 'delegate' ? 'agent_delegated' : "adopted", summary: a.mode === 'delegate'
       ? `An independently revocable agent binding ${a.name} joined this tendril`
       : "A new agent session adopted this tendril; earlier agent tokens were revoked" });

@@ -1,7 +1,7 @@
 // Node-only private project state. This module is never bundled into the page.
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { createClient } from '@tendriller/core';
+import { createClient, requireServiceOrigin } from '@tendriller/core';
 
 export const privateDirectory = new URL('./.tendriller/', import.meta.url);
 export const devicePath = fileURLToPath(new URL('device.sqlite', privateDirectory));
@@ -25,8 +25,57 @@ export async function savePrivate(name, value) {
   return value;
 }
 
+// Reviewed host delegation changes only the HTTP credential. The original
+// setup handle, signed descriptor, device and operation journals stay intact.
+export async function hostIdentity(service) {
+  try {
+    const origin = requireServiceOrigin(service);
+    const [original, receipt, intent, descriptor] = await Promise.all([
+      readPrivate('handle.json', true), readPrivate('account-setup-result.json', true),
+      readPrivate('account-setup.json', true), readPrivate('descriptor.json', true),
+    ]);
+    const pageId = original?.id ?? receipt?.pageId;
+    const applicationId = original?.application?.id ?? intent?.applicationId ?? descriptor?.payload?.applicationId;
+    if (!/^[a-z2-7]{12}$/.test(pageId ?? '') || !/^[a-f0-9]{64}$/.test(applicationId ?? ''))
+      throw Error('Restore the original handle or save the original operation’s public inspect result as .tendriller/account-setup-result.json, with its retained intent or signed descriptor. Do not prepare a new application.');
+    if (original && original.api !== `${origin}/api/t/${pageId}` ||
+      intent && (intent.serviceOrigin !== origin || intent.applicationId !== applicationId) ||
+      descriptor && descriptor.payload?.applicationId !== applicationId ||
+      receipt && (receipt.serviceOrigin !== origin || receipt.pageId !== pageId || receipt.applicationId !== applicationId ||
+        intent && (receipt.operationId !== intent.operationId || receipt.requestDigest !== intent.requestDigest || receipt.credentialCommitment !== intent.credentialCommitment)))
+      throw Error('The retained service, page, application or setup operation differs. Preserve the records and inspect the original application before continuing.');
+    return { serviceOrigin: origin, pageId, applicationId, pageUrl: original?.page_url ?? receipt?.page?.page_url };
+  } catch (error) {
+    throw Object.assign(Error(error instanceof SyntaxError ? 'A private identity record is malformed. Restore its verified checkpoint before continuing.' : error.message), { code: 'host_identity_required' });
+  }
+}
+
+export function requireHostHandle(handle, identity) {
+  let page;
+  try { page = new URL(handle?.page_url); } catch {}
+  if (handle?.id !== identity.pageId || handle?.application?.id !== identity.applicationId ||
+    handle?.api !== `${identity.serviceOrigin}/api/t/${identity.pageId}` || !/^tk_[a-z2-7]{32}$/.test(handle?.token ?? '') ||
+    !page || page.protocol !== 'https:' || page.username || page.password || page.search || page.hash ||
+    !page.hostname.startsWith(identity.pageId + '.') && !page.hostname.startsWith(identity.pageId + '--p-') ||
+    !/^\/s\/[a-z2-7]{26}\/$/.test(page.pathname) || identity.pageUrl && handle.page_url !== identity.pageUrl)
+    throw Object.assign(Error('The delegated handle does not match the retained service, page and application. Preserve the private response for inspection; no application identity was replaced.'), { code: 'host_handle_mismatch' });
+  return handle;
+}
+
+export async function readHostHandle(optional = false) {
+  try {
+    const selected = await readPrivate('host-credential.json', true);
+    if (!selected) return await readPrivate('handle.json', optional);
+    if (selected.schemaVersion !== 1 || typeof selected.attemptId !== 'string') throw Error('Invalid reviewed credential selection.');
+    return requireHostHandle(selected.handle, await hostIdentity(selected.serviceOrigin));
+  } catch (error) {
+    if (error instanceof SyntaxError) throw Object.assign(Error('A private host credential record is malformed. Preserve it and restore its verified checkpoint.'), { code: 'host_state_invalid' });
+    throw error;
+  }
+}
+
 export async function project({ signal } = {}) {
-  const handle = await readPrivate('handle.json');
+  const handle = await readHostHandle();
   return { handle, host: createClient(handle, { applicationId: handle.application.id,
     fetch: (url, options = {}) => fetch(url, { ...options,
       signal: AbortSignal.any([AbortSignal.timeout(30_000), ...[signal, options.signal].filter(Boolean)]) }),

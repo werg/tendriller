@@ -270,6 +270,89 @@ separate action from initialization; neither a saved handle nor an accepted
 setup result establishes device enrollment, assistant approval or an online
 participant.
 
+### Continue the same app after setup credential expiry or loss
+
+The account-linked setup credential expires 24 hours after preparation, including
+after the owner claims the page. Revoking its admitting OAuth grant also stops
+that credential. Claim preserves the application, its signed authority, data and
+publication; continued native access needs an independently reviewed host
+binding. The owner can approve that binding before expiry. An unclaimed page
+that has already expired cannot be recovered through delegation.
+
+1. Stop the running native peer or assistant cleanly and retain its complete
+   private checkpoint. Keep `.tendriller/account-setup.json`, `handle.json`,
+   `descriptor.json`, `device.sqlite` and all signed operation records intact.
+2. Have the owner open the existing `page_url` and append `_tendril/manage` to
+   its trailing slash, for example `https://PAGE_HOST/s/OWNER_KEY/_tendril/manage`.
+   They sign in as the same owner and choose **Agent connection → Add agent**.
+   Use a recognizable name such as `native-continuation`. For the complete
+   first-app workflow select **Read host status**, **Connect enrolled
+   participants**, **Update signed application control**, **Publish signed
+   code** and **Propose assistant access**. Omit publication or assistant access
+   when that participant does not need it. These host permissions preserve the
+   separately signed application grants. The setup name is reserved.
+3. Save the returned ten-minute, one-use code in
+   `.tendriller/delegation-code.txt` using a private local editor. Keep the file
+   accessible only to the project owner. Supply the file path to the command;
+   keep the code itself out of chat, shell arguments, logs and page assets:
+
+   ```sh
+   npm run host:adopt -- "$TENDRILLER_ORIGIN" .tendriller/delegation-code.txt
+   ```
+
+4. The helper checks the selected host's explicit delegation support, then binds
+   the request to the retained service, page and application,
+   requires a non-replacing delegation code, and retains its submission before
+   sending. It saves the private response before selecting the credential in
+   `.tendriller/host-credential.json`. The original handle, setup intent, native
+   signer and operation records remain unchanged. A later explicit **Add agent**
+   approval can select another credential atomically while retaining both
+   adoption histories. With the peer still stopped,
+   inspect the same identity and retained data:
+
+   ```sh
+   npx tendril --session ./session.mjs --mode own self
+   npx tendril --session ./session.mjs --mode own query notes null
+   npm run peer
+   ```
+
+   Verify the original application/device IDs and existing notes, then reconnect
+   the same browser profile. A saved host credential does not prove a live
+   session. If assistant access used the old setup credential, stop the peer,
+   run `npm run assistant:prepare`, have the owner review its new proposal for
+   this same app, then run `npm run assistant`. Retain the existing assistant
+   key and event cursor. Host delegation does not approve assistant permissions.
+
+Use **Add agent** for this continuation. The separate **Replace all agent
+credentials for recovery** action revokes every existing host token when its
+code is used; the starter rejects that code. Neither route grants a new device
+signing key or changes signed membership.
+
+If the setup secret or original handle is lost, first restore its verified
+private checkpoint. When the native device and signed descriptor survive but
+the host credential cannot be restored, use the same account-linked connector
+to `inspect_tendril_setup` with the original operation ID. If that ID was also
+lost, `list_tendril_setups` provides the bounded retained allocations; identify
+the original page and application, then inspect that operation. Save the exact
+public inspection result, including an `expired` result, as
+`.tendriller/account-setup-result.json`. The helper can validate this result
+against the retained descriptor and redeem the owner's reviewed delegation for
+that same app. A missing or conflicting identity record stops continuation.
+If the native signer or application keys are also missing, host delegation
+cannot recreate them: restore the device checkpoint or use the application's
+explicit signed recovery procedure with surviving authorized devices.
+
+An `adoption_outcome_unknown` means the code may have been consumed and its
+credential reply was not durably retained. The helper will not send that code
+again. The owner must inspect the named agent in the same management screen,
+disconnect that named binding if it exists, and explicitly approve a fresh
+**Add agent** code. Keep the failed attempt and original app records. When the
+response was saved but local selection was interrupted, rerunning the same
+command completes from the private response without another network request.
+`delegation_unavailable` means that the selected host could not confirm these
+preconditions; no code was submitted. Have the operator deploy the matching host
+and retain the same service origin while resolving that prerequisite.
+
 ## 3. Define retained state and initialize the native session
 
 Read `domain.mjs`. Its declared `addNote` command emits a retained `note` event.
@@ -350,6 +433,7 @@ The implementation is deliberately ordinary:
 | --- | --- |
 | `domain.mjs` | One definition shared by native and browser execution |
 | `setup.mjs` | Explicit create, initial authority/generation and reviewed device enrollment |
+| `host-adoption.mjs` | Retain and redeem owner-reviewed host delegation for the same application |
 | `local.mjs` | Private local setup records and the authenticated native host client |
 | `session.mjs` | Complete resumable native bootstrap for the CLI and running peer |
 | `worker.mjs` | Browser identity, verified authority, session ownership, participation and key acquisition |
@@ -527,7 +611,8 @@ remain separate from this first-app acceptance.
 
 Keep the complete project and its `.tendriller/` directory in a persistent,
 access-controlled location. That directory contains the setup credential,
-device database, signing material, saved initialization/publication attempts and
+device database, signing material, saved initialization/publication attempts,
+reviewed host credentials and adoption attempts, and
 optional assistant identity/cursor; retaining only the public `page/` files or
 the page URL cannot resume the participant. Never add private state to a source
 commit, publication archive, chat transcript or browser bundle.
@@ -588,6 +673,7 @@ mobile suspension.
 | --- | --- |
 | Create is unavailable or contract mismatches | Read `/api/service` and the error; use a compatible host/package pair. Preserve the requested platform and report the actual blocker. |
 | `forbidden` during configuration | Check the current private setup credential and its scopes, expiry and page identity. Configuration and signed publication support unclaimed pages; claim is not a prerequisite. |
+| `setup_expired`, `setup_binding_inactive`, or a revoked setup token on a claimed page | Follow [same-app continuation](#continue-the-same-app-after-setup-credential-expiry-or-loss): owner **Add agent**, retain its private code and use `host:adopt`. Preserve the original signer and setup operation. |
 | `peer_application_unconfigured` | Run the explicit initial configuration; a page handle alone has no application authority. |
 | `PEER_NO_SELECTED_GENERATION` | Complete the saved first `create` transition before opening the session. |
 | Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |

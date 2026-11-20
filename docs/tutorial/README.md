@@ -42,6 +42,34 @@ exact ready result. Reopen the same directory and inspect the same operation
 after a lost reply. Restore the original private checkpoint if it is missing;
 never mint a replacement intent as a retry. `handle_saved` is not connected.
 
+The account-linked setup credential lasts 24 hours even after owner claim and
+also depends on its original OAuth grant. To continue the same claimed app,
+stop the native peer, retain its complete checkpoint, and have the owner open
+the existing `page_url` with `_tendril/manage` appended. Under **Add agent**,
+approve a named native binding with host read, participant connection and signed
+control permissions; include signed publication and assistant proposal access
+when used. Save its ten-minute code privately in
+`.tendriller/delegation-code.txt`, then run:
+
+```sh
+npm run host:adopt -- https://YOUR_HOST .tendriller/delegation-code.txt
+npx tendril --session ./session.mjs --mode own self
+npx tendril --session ./session.mjs --mode own query notes null
+npm run peer
+```
+
+This selects a separately retained host credential while keeping the original
+handle, setup intent, signer and signed operations. It refuses a replacing
+recovery code or another application's identity. If the reply is lost,
+`adoption_outcome_unknown` requires the owner to inspect and disconnect that
+named binding if present before explicitly approving another code; the helper
+does not resend the uncertain one-use code. A saved response resumes locally.
+For lost credentials, retained operation inspection and assistant permission
+renewal, follow [same-app continuation](https://tendriller.dev/docs/BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss).
+The original device checkpoint remains necessary; host delegation cannot
+recreate application signing keys. Keep all adoption records and code files
+private alongside the rest of `.tendriller/`.
+
 Without an account-linked creation route, use the supported explicit email route:
 `npm run create -- https://YOUR_HOST owner@example.com "Shared notes"`.
 Do not use it to replace an uncertain account-linked operation.
@@ -125,6 +153,7 @@ remain alive, as described in [Agent delivery](https://tendriller.dev/docs/AGENT
 | --- | --- |
 | `domain.mjs` | Shared events-backed command/query definition |
 | `account-setup.mjs` | Retain private setup intent, supply public MCP arguments, reconstruct exact ready handle |
+| `host-adoption.mjs` | Continue the same app through privately retained owner-reviewed host delegation |
 | `setup.mjs` | Explicit email creation, initialize/select genesis, one pairing pass or deliberate manual enrollment |
 | `local.mjs` | Private setup records and native host client |
 | `session.mjs` | Real resumable native session; CLI bootstrap and running peer |

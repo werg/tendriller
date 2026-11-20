@@ -316,18 +316,26 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     }
 
     if (path === "/api/adopt") {
+      if (req.method === 'GET') return json({ schemaVersion: 1, serviceOrigin: publicBase(env),
+        delegation: { applicationBound: true, nonReplacing: true, responseRecovery: false } }, 200, { 'Cache-Control': 'no-store' });
       if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
-      const text = await req.text();
+      const text = new TextDecoder().decode(await readBody(req, 4096));
       let code = "";
+      let expectedMode: 'delegate' | undefined, applicationId: string | undefined;
       try {
-        code = String(JSON.parse(text || "{}").code ?? "").trim();
+        const input = JSON.parse(text || "{}");
+        if (!isPlainObject(input) || typeof input.code !== 'string' ||
+          input.expectedMode !== undefined && input.expectedMode !== 'delegate' ||
+          input.applicationId !== undefined && (typeof input.applicationId !== 'string' || !/^[a-f0-9]{64}$/.test(input.applicationId)))
+          return errorResponse(400, 'invalid_adoption_request', 'Provide a code and, for reviewed delegation, its application identity and expectedMode delegate.');
+        code = input.code.trim(); expectedMode = input.expectedMode as 'delegate' | undefined; applicationId = input.applicationId as string | undefined;
       } catch {
         return errorResponse(400, "bad_json", "Request body is not valid JSON");
       }
       const m = /^([a-z2-7]{12})-(\d{6})$/.exec(code);
       if (!m) return errorResponse(400, "invalid_code", "Adopt codes look like <tendril id>-<6 digits>");
       return stub(env, m[1]).fetch(
-        new Request("https://tendril.internal/adopt", { method: "POST", headers: { "x-tendril-id": m[1], "Content-Type": "application/json" }, body: JSON.stringify({ code }) }),
+        new Request("https://tendril.internal/adopt", { method: "POST", headers: { "x-tendril-id": m[1], "Content-Type": "application/json" }, body: JSON.stringify({ code, expectedMode, applicationId }) }),
       );
     }
 

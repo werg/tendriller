@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { requireServiceOrigin } from '@tendriller/core';
 import { createSetupIntent, setupRequest, completeSetupIntent } from '@tendriller/core/setup';
-import { privateDirectory, readPrivate as readSavedPrivate } from './local.mjs';
+import { privateDirectory, readPrivate as readSavedPrivate, readHostHandle } from './local.mjs';
 
 const intentName = 'account-setup.json';
 const failure = (code, message) => Object.assign(Error(message), { code });
@@ -75,6 +75,11 @@ export async function prepareAccountSetup(service, options = {}) {
   const origin = requireServiceOrigin(service);
   const saved = await readPrivate(intentName, true), handle = await readPrivate('handle.json', true);
   if (handle) checkHandle(handle, origin, saved);
+  const selected = await readHostHandle(true);
+  if (selected && selected.token !== handle?.token) {
+    checkHandle(selected, origin);
+    return { ...ready(selected, origin, saved?.operationId, true), nextAction: 'This project uses the owner’s reviewed host delegation. Resume its retained native participant and signed operation records; do not repeat setup or initialize a new signer.' };
+  }
   if (handle && !saved) {
     if (options.operationId || options.applicationId)
       throw failure('setup_handle_conflict', 'This project already has a handle without an account-setup intent. Resume its existing setup instead of replacing its identity.');

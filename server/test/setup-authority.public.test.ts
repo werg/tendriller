@@ -1,6 +1,8 @@
 import { beforeAll, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { create, api, inDO } from './helpers';
+import { create, api, inDO, req } from './helpers';
+import { peerApiJson } from './peer-exchange';
+import { createPeerIdentity, participantGrant, signTransitionRequest, verifyAuthorityBundle, type AuthorityBundle } from '@chronolog/peer-generation/control';
 import { authenticateAgentToken, currentPrincipal, freshPrincipal } from '../src/access';
 import { PEER_INVITATION_PROTOCOL } from '../../contract/invitations.mjs';
 import { SETUP_SCOPES } from '../src/setup-credential';
@@ -60,6 +62,43 @@ it('reserves the fixed setup name before ordinary delegation can mint an unusabl
   expect(response.status).toBe(400);
   expect(await response.json()).toMatchObject({ error: { code: 'reserved_agent_name' } });
   expect(await inDO(handle.id, t => t.db.one("SELECT hash FROM tokens WHERE name='setup'"))).toBeNull();
+});
+
+it('continues a claimed app through reviewed delegation after setup expiry without changing signed authority', async () => {
+  const f = await fixture(), device = await createPeerIdentity();
+  const authority = await peerApiJson<AuthorityBundle>(f.handle, 'control/configure', {
+    historyId: 'retained-setup-application', executionManifestDigest: '12'.repeat(32),
+    definition: { id: 'retained-setup', version: '1', schema: null, commands: [], queries: [] },
+    schemaAdministrator: device.publicKey, epoch: 0, keyDigest: '56'.repeat(32),
+    members: [{ grant: participantGrant(device.publicKey, { administrator: true, publisher: true }) }],
+  });
+  const descriptor = authority.descriptor.payload;
+  const request = await signTransitionRequest({ applicationId: descriptor.applicationId, profile: descriptor.profile, policy: descriptor.policy,
+    transitionId: 'retained-setup-genesis', expectedGeneration: null, requester: device.publicKey, coordinator: device.publicKey,
+    controlRevision: 0, reason: 'create', base: null }, device);
+  const generation = await peerApiJson(f.handle, 'control/select', { request });
+  const before = await peerApiJson<AuthorityBundle>(f.handle, 'control/read');
+  await inDO(f.handle.id, t => t.db.set('account_setup', { ...t.db.get<object>('account_setup', {}), expires_at: Date.now() - 1 }));
+  expect((await api(f.handle, 'GET', 'self')).status).toBe(401);
+  const form = new URLSearchParams({ action: 'delegate-agent', name: 'retained-native' });
+  for (const scope of SETUP_SCOPES) form.append('scopes', scope);
+  const review = await req(f.handle.page_url + '_tendril/manage', { method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: form.toString() });
+  expect(review.status).toBe(200);
+  const code = new RegExp(f.handle.id + '-[0-9]{6}').exec(await review.text())![0];
+  const response = await req('/api/adopt', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, expectedMode: 'delegate', applicationId: f.handle.application.id }) });
+  expect(response.status).toBe(200);
+  const delegated = await response.json() as typeof f.handle;
+  expect(delegated.id).toBe(f.handle.id);
+  expect(delegated.token).not.toBe(f.handle.token);
+  expect((await api(delegated, 'GET', 'self')).status).toBe(200);
+  expect((await api(delegated, 'POST', 'tokens', { name: 'unauthorized', scopes: ['host:read'] })).status).toBe(403);
+  expect(await peerApiJson(delegated, 'control/select', { request })).toEqual(generation);
+  const after = await peerApiJson<AuthorityBundle>(delegated, 'control/read');
+  expect(after).toEqual(before);
+  expect((await verifyAuthorityBundle(after, authority.descriptor)).current?.id).toBe(generation.id);
+  expect((await api(f.handle, 'GET', 'self')).status).toBe(401);
 });
 
 it('fails closed for missing, widened or changed setup bindings instead of granting historical unrestricted access', async () => {

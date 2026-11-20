@@ -48,6 +48,7 @@ try { await initial.query('notes', null); } finally { await initial.close(); }
 const records = new Map([['descriptor.json', descriptor], ['handle.json', { application: { id: descriptor.payload.applicationId },
   api: 'https://tendriller.test/api/tendrils/aaaaaaaaaaaa', page_url: 'https://aaaaaaaaaaaa.pages.test/s/test/', token: 'synthetic-test-token' }]]);
 export const readPrivate = async name => structuredClone(records.get(name) ?? null);
+export const readHostHandle = async () => readPrivate('handle.json');
 export const savePrivate = async (name, value) => { records.set(name, structuredClone(value)); return value; };
 const unused = () => { throw Error('The isolated fixture has no remote peers'); };
 export const authorityOptions = [];

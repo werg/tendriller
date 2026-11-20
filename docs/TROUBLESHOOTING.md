@@ -73,7 +73,11 @@ artifact versions in the private build record so mismatches are visible.
 | --- | --- |
 | `/api/service` returns HTML, a challenge, or `invalid_response` | Check that the URL is the service origin, not a page or agent API URL. Inspect HTTP status and content type. If ordinary automated clients are blocked before the Worker, report the host access problem with a redacted response. Do not treat it as a successful descriptor. |
 | `contract_mismatch`, missing package export, or incompatible definition/engine artifacts | Compare the host contract, core release and exact installed artifact manifests. Follow [artifact acquisition](tools/ARTIFACTS.md) and the [release composition](RELEASE_COMPOSITION.md) record. Supply a compatible public Chronolog session archive; the core host's control dependency is not the full native/browser session package. Do not assume that unrelated latest package versions compose. |
-| `unauthorized` from an agent API | Check the saved handle's service/API and current bearer token. Ask the owner to use the page's management connection flow if the agent credential has been revoked. A different account's credential or browser cookie is not a substitute. |
+| `unauthorized` from an agent API | Check the saved handle's service/API and current bearer token. For a claimed application, use [same-app owner delegation](BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss) to retain a reviewed credential with `npm run host:adopt`; do not create another page or signer. |
+| `setup_expired` or `setup_binding_inactive` after owner claim | The 24-hour setup credential or its original OAuth grant is no longer active. Have the same owner open `page_url` + `_tendril/manage`, choose **Add agent**, review the native scopes and save its one-use code privately. Redeem it with `npm run host:adopt -- SERVICE_ORIGIN .tendriller/delegation-code.txt`, then reopen the retained native device and verify existing data. Claim does not extend the setup credential. |
+| `adoption_outcome_unknown` | The one-use code may have been consumed without a retained response. Keep the private attempt. The owner inspects its named agent, disconnects that binding if present and explicitly approves another **Add agent** code. No automatic resend, token rotation or replacement application is safe. If a response was retained, the same helper completes locally. |
+| `delegation_unavailable` | The selected host did not confirm the required `GET /api/adopt` capability. No code was submitted. Ask the operator to deploy the matching host and keep the original service origin. |
+| `host_identity_required` or `host_handle_mismatch` | Restore the original private checkpoint. If only the host credential was lost, save the original account setup inspection as `.tendriller/account-setup-result.json` and retain the signed descriptor/device. Resolve service/page/application conflicts before delegation. Missing signing keys still require a device checkpoint or explicit application recovery. |
 | Sign-in is shown, `wrong_owner`, or `claimed` | Have the human open the returned owner `page_url` and sign in with the intended verified identity. If another account owns the page, report that mismatch. Agent credentials cannot claim the page on the owner's behalf. |
 | `forbidden` while configuring, or `account_required` while making a page resident | Confirm owner claim and the current account's authority. Host control configuration is owner administration. A page display role cannot perform it. Read the specific error message; `forbidden` can also mean revoked access. |
 | `lifetime_pending` | Inspect current host info and retry the same requested lifetime after account storage recovers. Do not alternate lifetime values to work around an uncertain account write. |
@@ -81,6 +85,13 @@ artifact versions in the private build record so mismatches are visible.
 
 Unclaimed pages expire after 24 hours. Creating another page is a new application
 setup decision, not a recovery mechanism for an existing claimed application.
+The account-linked setup credential has its own 24-hour deadline even for a
+claimed resident page. The starter retains reviewed host credentials separately
+from the initial handle, so `project()` and terminal attachment resume the same
+application after owner delegation. Stop and restart an already running native
+participant to select the new credential. Assistant access tied to the former
+credential requires `npm run assistant:prepare` and a fresh owner permission
+review; the existing assistant key and event cursor can remain intact.
 See [membership](MEMBERSHIP.md) for the independent account and device rights.
 
 ## Definition, authority and enrollment

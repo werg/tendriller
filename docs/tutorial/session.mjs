@@ -8,7 +8,7 @@ import { createPeerIntroductions } from '@tendriller/core/peers';
 import { createDevicePairingClient } from '@tendriller/core/pairing';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
 import { definition } from './domain.mjs';
-import { devicePath, privateDirectory, project, readPrivate, savePrivate } from './local.mjs';
+import { devicePath, privateDirectory, project, readPrivate, readHostHandle, savePrivate } from './local.mjs';
 import { startPairingWindow, createReviewedPairingProcessor } from './pairing-native.mjs';
 
 function paths(profile = 'main') {
@@ -21,7 +21,7 @@ function paths(profile = 'main') {
 // Normal terminal calls attach and never open the signing store. An unavailable
 // owner is an actionable error; the CLI does not fall back to another signer.
 export async function attachSession({ signal, profile = 'main', context } = {}) {
-  const selected = paths(profile), handle = await readPrivate('handle.json');
+  const selected = paths(profile), handle = await readHostHandle();
   const binding = await readPrivate(selected.credential, true);
   const token = process.env.TENDRIL_NATIVE_ATTACHMENT_KEY ?? binding?.token;
   if (!token) throw Error('Start npm run peer for this retained profile, then attach again.');
