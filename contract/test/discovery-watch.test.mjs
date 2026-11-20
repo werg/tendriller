@@ -110,3 +110,22 @@ test('a watch has one notification consumer and explicit close drains its owned 
   f.watch.close();assert.deepEqual(await pending,{value:undefined,done:true});
   assert.deepEqual(await f.watch.closed,{code:1000,reason:'Discovery watch closed'});
 });
+
+
+test('a newer controller fences the old watcher with 4000 without a reconnect contest', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
+  let retained, firstOpens=0, secondOpens=0;
+  const connect = () => {const previous=retained; const socket=retained=new Socket(); previous?.end(4000); return socket;};
+  const first=createPeerDiscoveryWatcher(()=>{firstOpens++;return connect();});
+  retained.receive({type:'ready'}); await first.ready;
+  const reader=first.notifications[Symbol.asyncIterator]();await reader.next();
+  const pending=assert.rejects(reader.next(),{code:'participant_replaced'});
+  const second=createPeerDiscoveryWatcher(()=>{secondOpens++;return connect();});
+  retained.receive({type:'ready'});await second.ready;await pending;
+  assert.deepEqual(await first.closed,{code:4000,reason:'Discovery participant replaced'});
+  t.mock.timers.tick(86400000);await flush();
+  assert.equal(firstOpens,1);assert.equal(secondOpens,1);
+  second.close();
+  const unopened=fixture();unopened.sockets[0].end(4000);
+  await assert.rejects(unopened.watch.ready,{code:'participant_replaced'});
+});

@@ -70,7 +70,8 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
     };
     const disconnected = event => {
       if (!live()) return;
-      if ([1008, 4003].includes(event.code)) finish(fail('discovery_access_revoked', 'Discovery subscription was refused'), event.code, 'Discovery subscription refused');
+      if (event.code === 4000) finish(fail('participant_replaced', 'Discovery subscription was replaced'), 4000, 'Discovery participant replaced');
+      else if ([1008, 4003].includes(event.code)) finish(fail('discovery_access_revoked', 'Discovery subscription was refused'), event.code, 'Discovery subscription refused');
       else retry();
     };
     const errored = () => { if (live()) retry(); };
