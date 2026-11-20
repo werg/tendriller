@@ -25,13 +25,19 @@ for (const ending of ['close', 'deadline']) test(`pairing ${ending} cancels its 
       pageOrigin: 'https://aaaaaaaaaaaa.pages.example', rights: { reader: true, writer: true }, expiresAt } };
   const pause = { operationId: 'pairing:' + pairingId, generation: '33'.repeat(32), base: { retained: true } };
   const entered = Promise.withResolvers(), response = Promise.withResolvers();
-  let requestSignal, aborted = false, requests = 0, resumed = 0;
+  let requestSignal, aborted = false, requests = 0, pendingRequests = 0, resumed = 0;
   const host = createClient(handle, { applicationId, fetch: async (url, { signal }) => {
     assert.equal(url, handle.api + '/peers/participant');
     requests++; requestSignal = signal;
-    signal?.addEventListener('abort', () => { aborted = true; response.reject(signal.reason); }, { once: true });
+    const abort = () => { aborted = true; response.reject(signal.reason); };
+    signal?.addEventListener('abort', abort, { once: true });
+    // AbortSignal.timeout deliberately does not keep Node alive. Model the
+    // reference owned by blocked HTTP I/O, with a bounded fixture watchdog.
+    const watchdog = setTimeout(() => response.reject(Error('Authority request was not cancelled')), 1_000);
+    pendingRequests++;
     entered.resolve();
-    return response.promise;
+    try { return await response.promise; }
+    finally { clearTimeout(watchdog); signal?.removeEventListener('abort', abort); pendingRequests--; }
   } });
   const session = {
     orderingPause: async () => structuredClone(pause),
@@ -49,6 +55,8 @@ for (const ending of ['close', 'deadline']) test(`pairing ${ending} cancels its 
     assert.ok(requestSignal instanceof AbortSignal, 'the helper signal reaches the public host fetch');
     if (ending === 'close') await loop.close(); else await loop.done;
     assert.equal(aborted, true);
+    assert.equal(requestSignal.reason.name, ending === 'deadline' ? 'TimeoutError' : 'AbortError');
+    assert.equal(pendingRequests, 0, 'the cancelled request releases its fixture-owned timer and listener');
     assert.equal(requests, 1, 'the ended window does not start another authority read');
     assert.equal(resumed, 0, 'cancelling inspection cannot release uncertain ordering');
     assert.deepEqual(await session.orderingPause(), pause);
