@@ -60,17 +60,24 @@ export function createReviewedPairingProcessor({ handle, host, descriptor, sessi
   };
 }
 
-export function startReviewedPairingLoop(process, { signal, report = () => {}, intervalMs = 2000 } = {}) {
+export function startReviewedPairingLoop(process, { signal, report = () => {}, intervalMs = 2000, maxIdleMs = 30_000 } = {}) {
   const stopped = new AbortController(), lifetime = signal ? AbortSignal.any([signal, stopped.signal]) : stopped.signal;
+  let delayMs = intervalMs;
   const completion = (async () => {
     while (!lifetime.aborted) {
       try {
-        for (const result of await process({ signal: lifetime })) report({ pairing: result });
-      } catch (error) { if (!lifetime.aborted) report({ pairing: { state: 'inspection_unavailable', code: error.code || error.name } }); }
+        const results = await process({ signal: lifetime });
+        for (const result of results) report({ pairing: result });
+        delayMs = results.some(result => ['approved', 'committing', 'committed'].includes(result.state))
+          ? intervalMs : Math.min(maxIdleMs, delayMs * 2);
+      } catch (error) {
+        delayMs = Math.min(maxIdleMs, delayMs * 2);
+        if (!lifetime.aborted) report({ pairing: { state: 'inspection_unavailable', code: error.code || error.name } });
+      }
       if (lifetime.aborted) break;
       await new Promise(resolve => {
         const finish = () => { clearTimeout(timer); lifetime.removeEventListener('abort', finish); resolve(); };
-        const timer = setTimeout(finish, intervalMs);
+        const timer = setTimeout(finish, delayMs);
         lifetime.addEventListener('abort', finish, { once: true });
         if (lifetime.aborted) finish();
       });
