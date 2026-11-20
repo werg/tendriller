@@ -14,12 +14,14 @@ import { readReviewAccess } from './access.mjs';
 import { recordReview } from './record.mjs';
 import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
 import { cleanupFixturePage, installReviewFixtureSources } from './fixture.mjs';
+import { sourceIdentity } from '../release-composition.mjs';
 import { createReviewDiagnostics, reviewError, reviewNativeError, waitForReviewProvider } from './diagnostics.mjs';
 
 const { values } = parseArgs({ options: { access: { type: 'string' }, config: { type: 'string' }, output: { type: 'string' }, 'artifact-root': { type: 'string' }, 'no-video': { type: 'boolean', default: false } } });
 if (!values.access || !values.config || !values.output) throw Error('Pass --access PRIVATE_JSON --config WRANGLER_CONFIG --output REPORT_DIRECTORY [--no-video] [--artifact-root EXACT_CLEAN_DEPLOYED_CHECKOUT]');
-const root = resolve(import.meta.dirname, '../..'), artifactRoot = resolve(values['artifact-root'] ?? root), accessPath = resolve(values.access), config = resolve(values.config), output = resolve(values.output);
-const access = readReviewAccess(accessPath), composition = reviewComposition(artifactRoot);
+const consumerRoot = resolve(import.meta.dirname, '../..'), artifactRoot = resolve(values['artifact-root'] ?? consumerRoot), accessPath = resolve(values.access), config = resolve(values.config), output = resolve(values.output);
+const access = readReviewAccess(accessPath), composition = reviewComposition(artifactRoot), consumerSource = sourceIdentity(consumerRoot);
+assert.equal(consumerSource.dirty, false, 'Diagnostic consumer source must be a clean checkpoint');
 const { rawConfig } = createRequire(import.meta.url)('wrangler').experimental_readRawConfig({ config });
 assert.equal(rawConfig.vars.PUBLIC_BASE, access.origin, 'Private account must match the selected deployment before any remote mutation');
 const readiness = await preflightReviewDeployment(access.origin, composition);
@@ -32,9 +34,9 @@ const run = args => {
 const delay = () => new Promise(done => setTimeout(done, 250));
 mkdirSync(output, { recursive: true, mode: 0o700 });
 try {
-  writeFileSync(join(output, 'preflight.json'), JSON.stringify(reviewProvenance(composition, readiness), null, 2) + '\n', { mode: 0o600 });
+  writeFileSync(join(output, 'preflight.json'), JSON.stringify({ ...reviewProvenance(composition, readiness), consumerSource }, null, 2) + '\n', { mode: 0o600 });
   writeFileSync(join(project, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
-  fixtureSources = Object.fromEntries(installReviewFixtureSources(root, project).map(file => [file, createHash('sha256').update(readFileSync(join(project, file))).digest('hex')]));
+  fixtureSources = Object.fromEntries(installReviewFixtureSources(consumerRoot, project).map(file => [file, createHash('sha256').update(readFileSync(join(project, file))).digest('hex')]));
   execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
     composition.packagePaths.sdk, composition.packagePaths.session], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
   const { core: { createClient } } = await importReviewPackages(project);
@@ -101,6 +103,7 @@ try {
   const report = await recordReview({ project, accessPath, output, composition, video: !values['no-video'] });
   report.preclaimPublicationVerified = true;
   report.fixtureSources = fixtureSources;
+  report.consumerSource = consumerSource;
   report.claimReview = diagnostics?.snapshot();
   writeFileSync(join(output, 'report.json'), JSON.stringify(report, null, 2), { mode: 0o600 });
   console.log('Native MCP qualification passed all packaged cases; recording and sanitized report saved.');
@@ -108,7 +111,7 @@ try {
   let nativeErrorCode;
   try { nativeErrorCode = reviewNativeError(readFileSync(join(project, 'participant-private.log'), 'utf8'), child?.exitCode); } catch {}
   if (!nativeErrorCode) nativeErrorCode = child?.exitCode != null ? 'EXIT_' + child.exitCode : undefined;
-  writeFileSync(join(output, 'fixture-failure.json'), JSON.stringify({ passed: false, phase, fixtureSources, nativeErrorCode, error: reviewError(error), nativeProcess: { started: Number.isInteger(child?.pid), running: Number.isInteger(child?.pid) && child.exitCode === null, exitCode: Number.isInteger(child?.exitCode) ? child.exitCode : null }, browser: diagnostics?.snapshot() }, null, 2), { mode: 0o600 });
+  writeFileSync(join(output, 'fixture-failure.json'), JSON.stringify({ passed: false, phase, consumerSource, fixtureSources, nativeErrorCode, error: reviewError(error), nativeProcess: { started: Number.isInteger(child?.pid), running: Number.isInteger(child?.pid) && child.exitCode === null, exitCode: Number.isInteger(child?.exitCode) ? child.exitCode : null }, browser: diagnostics?.snapshot() }, null, 2), { mode: 0o600 });
   throw Error('Live qualification failed. See the sanitized reports' + (nativeErrorCode ? ' (native ' + nativeErrorCode + ')' : '') + '. No private child diagnostics were printed.');
 } finally {
   const failures = [];
@@ -123,6 +126,8 @@ try {
     try {
       const report = JSON.parse(readFileSync(reportPath));
       report.fixtureCleanup = failures.length === 0;
+      report.consumerSource = consumerSource;
+      report.fixtureSources = fixtureSources;
       if (failures.length) { report.passed = false; report.cleanupErrors = failures; }
       writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
     } catch (error) { if (error.code !== 'ENOENT') throw error; }

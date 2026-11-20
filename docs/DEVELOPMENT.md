@@ -225,7 +225,13 @@ reviewer login, credential renewal/revocation and persistent sample operation.
 
 The live MCP qualifier accepts `--artifact-root /absolute/clean/deployed-checkout`
 when running a diagnostic-tool revision against a separately restored CI graph.
-That checkout must remain clean and its manifest, composition and archives must
+The flag selects only package/composition artifacts. Fixture consumer sources always
+come from the tool's own clean checkout (`consumerRoot`), so an older artifact root
+need not contain the new review helper. Evidence separately records `consumerSource`
+(commit/tree/dirty) and hashes of the exact copied fixture sources, alongside the
+deployment's package provenance; a mixed diagnostic run is not a new release-graph
+qualification. Normal CI defaults both roots to its selected source checkpoint.
+The artifact checkout must remain clean and its manifest, composition and archives must
 match the actual deployment; the option does not bypass provenance or readiness.
 Claim/review failure evidence identifies a fixed step, normalized response routes
 and status codes, fixed UI markers and process state. It omits URLs, browser/child
