@@ -6,10 +6,21 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { requireServiceOrigin } from '@tendriller/core';
 import { createSetupIntent, setupRequest, completeSetupIntent } from '@tendriller/core/setup';
-import { privateDirectory, readPrivate } from './local.mjs';
+import { privateDirectory, readPrivate as readSavedPrivate } from './local.mjs';
 
 const intentName = 'account-setup.json';
 const failure = (code, message) => Object.assign(Error(message), { code });
+
+async function readPrivate(name, optional = false) {
+  try { return await readSavedPrivate(name, optional); }
+  catch (error) {
+    // JSON.parse includes input fragments in its error message. Keep a damaged
+    // credential record private too; never print those bytes to the console.
+    if (error instanceof SyntaxError)
+      throw failure('setup_state_invalid', 'A retained private setup record is malformed. Preserve it and restore its verified checkpoint; no replacement operation or credential was created.');
+    throw error;
+  }
+}
 
 // Link a fully flushed temporary file into place without replacing another
 // invocation's winning record. A crash cannot leave half a JSON credential.

@@ -155,3 +155,20 @@ test('the real prepare/finish CLI needs no local OAuth token or networking and n
   assert.equal(JSON.parse(completed.stdout).state, 'handle_saved');
   assert.equal((completed.stdout + completed.stderr).includes(intent.credential), false);
 });
+
+test('malformed private JSON never echoes credential fragments through CLI errors', async t => {
+  const f = await fixture(t);
+  await f.module.prepareAccountSetup(origin);
+  const intent = await f.read('account-setup.json');
+  await writeFile(f.path('account-setup.json'), intent.credential);
+  await writeFile(join(f.directory, 'public-result.json'), JSON.stringify(receipt(intent)));
+  for (const args of [['prepare', origin], ['finish', 'public-result.json']]) {
+    await assert.rejects(execute(process.execPath, ['account-setup.mjs', ...args], { cwd: f.directory, timeout: 10_000 }), error => {
+      assert.equal(JSON.parse(error.stderr).error.code, 'setup_state_invalid');
+      assert.equal((error.stdout + error.stderr).includes(intent.credential.slice(0, 10)), false);
+      return true;
+    });
+  }
+  assert.equal(await readFile(f.path('account-setup.json'), 'utf8'), intent.credential);
+  await assert.rejects(access(f.path('handle.json')), { code: 'ENOENT' });
+});
