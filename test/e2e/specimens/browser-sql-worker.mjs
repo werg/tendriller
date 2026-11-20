@@ -68,6 +68,11 @@ self.addEventListener('message', async ({ data }) => {
         return createBrowserSqlEngine({ ...loaded, vfs: pool.vfsName });
       },
     });
+    // openSqlApplication is metadata-ready, with SQL still lazy. Qualify this
+    // explicitly SQL fixture inside its existing Worker startup deadline before
+    // exposing the page RPC facade; otherwise the first UI query spends its
+    // shorter RPC deadline downloading/compiling the cold engine.
+    await session.query(data.respondent ? 'answer' : 'board', null);
     if (data.remote) await connect(data.channel, data.remote);
     serveApplicationWorker(session, self);
     self.postMessage({ type: 'open' });

@@ -47,7 +47,10 @@ With a restored qualified deployment graph and the matching combined SQL consume
 and WASM engine, run `E2E_CHRONOLOG_CONSUMER=/absolute/consumer E2E_CHRONOLOG_WASM=/absolute/wasm node node_modules/@playwright/test/cli.js test --config test/e2e/browser-sql-opening.playwright.config.ts`.
 Staging acceptance runs this local regression before the live scenarios, using the
 packaged Worker with bundling disabled. It retains SQL replication, correction and
-reopen checks while delaying either peer's metadata response by twelve seconds.
+reopen checks while delaying either peer's metadata response by twelve seconds,
+and delaying cold SQL engine loading beyond the page RPC deadline. This explicit
+SQL fixture activates its database inside the existing Worker startup deadline
+before exposing the page facade; metadata readiness alone does not qualify SQL.
 The SQL specimen deliberately opens a one-shot relay rather than canonical
 `participate()` discovery. Both sessions must finish preparation before either
 physical connection starts; canonical participation instead owns bounded

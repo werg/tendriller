@@ -6,16 +6,30 @@ import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed
   signInFixture, OTHER_TOKEN } from './local-helpers';
 import { openBrowserSqlSpecimen } from './staging-browser-sql';
 
-for (const slowPeer of ['none', 'owner', 'guest'] as const) {
-  const isPrivate = slowPeer !== 'none';
-  test(`SQL opening: ${isPrivate ? `private correction with delayed ${slowPeer}` : 'checklist and reopen'}`, async ({ page, context, browser }) => {
+for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
+  const isPrivate = slowPeer === 'owner' || slowPeer === 'guest';
+  test(`SQL opening: ${isPrivate ? `private correction with delayed ${slowPeer}` : `checklist and reopen (${slowPeer})`}`, async ({ page, context, browser }) => {
     const consumer = process.env.E2E_CHRONOLOG_CONSUMER, engineDirectory = process.env.E2E_CHRONOLOG_WASM;
     expect(consumer, 'Supply the matching combined SQL session consumer').toBeTruthy();
     expect(engineDirectory, 'Supply its verified browser engine').toBeTruthy();
     const handle = await createPage(), guest = await browser.newContext({ ignoreHTTPSErrors: true });
-    let delayedReads = 0;
+    let delayedReads = 0, delayedSqlLoads = 0, delayedSqlElapsedMs = 0;
     try {
-      if (slowPeer !== 'none') await (slowPeer === 'owner' ? context : guest).route('**/_tendril/peers/participant', async route => {
+      if (slowPeer === 'cold-sql') await context.route('**/engine/sqlite3.wasm', async route => {
+        // Playwright exposes no network start time for a routed Worker fetch.
+        // Use receipt at this observer as the explicit measurement boundary.
+        const requestedAt = Date.now(), response = await route.fetch();
+        const body = await response.body(), headers = { ...response.headers() };
+        delete headers['content-encoding']; delete headers['content-length'];
+        delayedSqlLoads++;
+        // SQL is lazy: metadata readiness alone does not cover this first-use
+        // work. Include fetching/buffering in the 21s hold instead of adding
+        // that work after the hold and manufacturing a startup-budget overrun.
+        await delay(Math.max(0, Math.ceil(requestedAt + 21_000 - Date.now())));
+        delayedSqlElapsedMs = Date.now() - requestedAt;
+        await route.fulfill({ status: response.status(), headers, body });
+      });
+      if (isPrivate) await (slowPeer === 'owner' ? context : guest).route('**/_tendril/peers/participant', async route => {
         const body = route.request().postDataJSON();
         if (body?.facet !== 'publication' || body?.action !== 'definition') return route.continue();
         const response = await route.fetch();
@@ -60,8 +74,11 @@ for (const slowPeer of ['none', 'owner', 'guest'] as const) {
         await second.getByRole('button', { name: 'Claim task' }).click();
         await expect(page.getByText('Retained SQL task · Claimed by a teammate', { exact: true })).toBeVisible();
         await guest.setOffline(true);
+        await context.unroute('**/engine/sqlite3.wasm');
         const reopened = await fixture.reopenFirst();
         await expect(reopened.getByText('Retained SQL task · Claimed by a teammate', { exact: true })).toBeVisible();
+        expect(delayedSqlLoads).toBe(slowPeer === 'cold-sql' ? 1 : 0);
+        if (slowPeer === 'cold-sql') expect(delayedSqlElapsedMs).toBeGreaterThanOrEqual(21_000);
       }
     } finally { await guest.close(); await deletePage(handle); }
   });
