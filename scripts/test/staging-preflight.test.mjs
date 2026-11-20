@@ -3,6 +3,9 @@ import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { transform } from 'esbuild';
+import { packedArchive } from '../release-composition.mjs';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { CORE_RELEASE } from '../../contract/index.mjs';
 import { preflightStaging, STAGING_ORIGIN } from '../staging-preflight.mjs';
 import { runStagingAcceptance } from '../run-staging-acceptance.mjs';
@@ -71,4 +74,19 @@ test('workflow gates dependency builds and runner has no service-mode mutation p
   assert(workflow.indexOf('--source-only --origin https://staging.tendriller.dev') < workflow.indexOf('repository: werg/chronolog-db'));
   const runner = readFileSync(new URL('../run-staging-acceptance.mjs', import.meta.url), 'utf8');
   assert(!runner.includes('UPDATE service_state')); assert(!runner.includes('d1'));
+});
+
+
+test('live SQL fixtures use the reviewed session source and remain outside the attested checkout', () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const workflow = readFileSync(resolve(root, '.github/workflows/staging-acceptance.yml'), 'utf8');
+  const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
+  const pin = pkg.devDependencies['@chronolog/peer-session'];
+  const proof = packedArchive(resolve(root, pin.slice(5))).json('provenance.json');
+  assert.equal(workflow.match(/CHRONOLOG_SHA: ([a-f0-9]{40})/)[1], proof.source);
+  const download = workflow.slice(workflow.indexOf('- uses: actions/download-artifact@v4'));
+  assert.match(download, /path: \$\{\{ runner.temp \}\}\/chronolog-fixture/);
+  assert(!download.includes('$GITHUB_WORKSPACE/.chronolog-fixture'));
+  assert(download.includes('"$RUNNER_TEMP"/chronolog-fixture/session/*.tgz'));
+  assert(download.includes('E2E_CHRONOLOG_WASM="$RUNNER_TEMP/chronolog-fixture/wasm"'));
 });
