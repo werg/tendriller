@@ -1,0 +1,59 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+import { createClient } from '../../contract/client.mjs';
+
+const root = fileURLToPath(new URL('../../', import.meta.url));
+const built = await build({ entryPoints: [root + 'docs/tutorial/pairing-native.mjs'], bundle: true,
+  write: false, platform: 'node', format: 'esm', logLevel: 'silent', plugins: [{ name: 'retained-fixture', setup(builder) {
+    builder.onResolve({ filter: /^\.\/local\.mjs$/ }, () => ({ path: 'private', namespace: 'fixture' }));
+    builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents:
+      'export const readPrivate=()=>{throw Error("Unexpected private read")};export const savePrivate=readPrivate;' }));
+    builder.onResolve({ filter: /^@tendriller\/core\/pairing$/ }, () => ({ path: root + 'contract/pairing.mjs' }));
+  } }] });
+const native = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
+
+for (const ending of ['close', 'deadline']) test(`pairing ${ending} cancels its blocked authority HTTP read and preserves the durable pause`, { timeout: 3_000 }, async () => {
+  const applicationId = '11'.repeat(32), pairingId = '22'.repeat(32);
+  const handle = { api: 'https://service.example/api/t/aaaaaaaaaaaa', token: 'synthetic-test-token',
+    application: { id: applicationId }, page_url: 'https://aaaaaaaaaaaa.pages.example/s/synthetic/' };
+  const expiresAt = Date.now() + 600_000;
+  const status = { pairingId, requestId: 'retained-browser-request', state: 'pending', expiresAt,
+    reviewUrl: `https://service.example/pairings/aaaaaaaaaaaa/${pairingId}`, nextAction: 'Review the exact proposal',
+    challenge: { pairingId, requestId: 'retained-browser-request', applicationId, serviceOrigin: 'https://service.example',
+      pageOrigin: 'https://aaaaaaaaaaaa.pages.example', rights: { reader: true, writer: true }, expiresAt } };
+  const pause = { operationId: 'pairing:' + pairingId, generation: '33'.repeat(32), base: { retained: true } };
+  const entered = Promise.withResolvers(), response = Promise.withResolvers();
+  let requestSignal, aborted = false, requests = 0, resumed = 0;
+  const host = createClient(handle, { applicationId, fetch: async (url, { signal }) => {
+    assert.equal(url, handle.api + '/peers/participant');
+    requests++; requestSignal = signal;
+    signal?.addEventListener('abort', () => { aborted = true; response.reject(signal.reason); }, { once: true });
+    entered.resolve();
+    return response.promise;
+  } });
+  const session = {
+    orderingPause: async () => structuredClone(pause),
+    pauseOrdering: async () => { throw Error('The original pause already exists'); },
+    resumeOrdering: async () => { resumed++; },
+  };
+  const process = native.createReviewedPairingProcessor({ handle, host, session, descriptor: {}, identity: {},
+    client: { inspect: async () => structuredClone(status) },
+    store: { load: async () => { throw Error('No authority result was received'); },
+      save: async () => { throw Error('No private evidence may be changed'); } } });
+  const loop = native.startReviewedPairingLoop(process, { durationMs: ending === 'deadline' ? 50 : 10_000,
+    intervalMs: 250, maxIdleMs: 250 });
+  try {
+    await entered.promise;
+    assert.ok(requestSignal instanceof AbortSignal, 'the helper signal reaches the public host fetch');
+    if (ending === 'close') await loop.close(); else await loop.done;
+    assert.equal(aborted, true);
+    assert.equal(requests, 1, 'the ended window does not start another authority read');
+    assert.equal(resumed, 0, 'cancelling inspection cannot release uncertain ordering');
+    assert.deepEqual(await session.orderingPause(), pause);
+  } finally {
+    response.reject(Error('Fixture cleanup'));
+    await loop.close();
+  }
+});

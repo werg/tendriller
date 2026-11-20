@@ -22,7 +22,7 @@ export function createPeerControlsClient(participant) {
     return value;
   };
   return Object.freeze({
-    async application() { return authority(await participant.request('control', 'read', {})); },
+    async application(options) { return authority(await participant.request('control', 'read', {}, options)); },
     async definition() { return definition(await participant.request('publication', 'definition', {})); },
     async configureApplication(configuration) { return authority(await participant.request('control', 'configure', configuration)); },
     async selectGeneration(signedRequest, options = {}) {

@@ -141,6 +141,7 @@ const readiness: ServiceReadiness = await describeReadiness(origin, {signal:new 
 const ready: ServiceReadiness = requireCreationReady(readiness, {service:origin});
 void ready;
 void client.peers.application(); void client.peers.publication();
+void client.peers.application({ signal: new AbortController().signal });
 const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
   openDirectConnection: async options => { const role:'offerer'|'answerer'=options.role; void role; return { kind:'raw' as const, close() {} }; },
   openRelayConnection: async options => { await options.relay.ready; return { kind:'raw' as const, close() {} }; } });

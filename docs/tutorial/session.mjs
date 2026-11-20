@@ -41,7 +41,7 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   const supervisor = await createNativeSessionSupervisor({ directory: selected.directory, profileId: profile, signal,
     bindings: [binding], openOwner: async () => {
       const { host, handle } = await project({ signal });
-      const authority = await host.peers.application();
+      const authority = await host.peers.application({ signal });
       const descriptor = await readPrivate('descriptor.json');
       await verifyAuthorityBundle(authority, descriptor);
       const device = await openNativeDevice({ path: selected.device });
@@ -49,7 +49,7 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
         session = await openNativeApplication({ device, definition, authority });
         pairing = Object.freeze({ descriptor, applicationId: handle.application.id,
           serviceOrigin: new URL(handle.api).origin, pageOrigin: new URL(handle.page_url).origin,
-          authority: () => host.peers.application(),
+          authority: options => host.peers.application(options),
           // The retained owner signs in place. No identity/private key is
           // exported to terminal attachments, browser pages or helper files.
           signTransition: payload => signTransitionRequest(payload, device.identity),

@@ -50,8 +50,9 @@ const records = new Map([['descriptor.json', descriptor], ['handle.json', { appl
 export const readPrivate = async name => structuredClone(records.get(name) ?? null);
 export const savePrivate = async (name, value) => { records.set(name, structuredClone(value)); return value; };
 const unused = () => { throw Error('The isolated fixture has no remote peers'); };
+export const authorityOptions = [];
 const peers = {
-  application: () => registry.read(),
+  async application(options) { authorityOptions.push(options); options?.signal?.throwIfAborted(); return registry.read(); },
   async exchange(request) {
     if (request.facet !== 'control') throw Error('Unexpected fixture request');
     const value = request.action === 'read' ? await registry.read()
@@ -93,6 +94,11 @@ export async function createNativeSessionSupervisor({ openOwner, ...options }) {
     const { definition } = await import(pathToFileURL(join(directory, 'domain.mjs')).href);
     const { connectApplicationOwner } = await import('@chronolog/peer-session/browser');
     owned = await bootstrap.openSession();
+    const stoppedPairing = new AbortController(), stoppedReason = Error('pairing window closed');
+    stoppedPairing.abort(stoppedReason);
+    await assert.rejects(owned.pairing.authority({ signal: stoppedPairing.signal }), error => error === stoppedReason);
+    assert.equal(fixture.authorityOptions.at(-1).signal, stoppedPairing.signal,
+      'the owned pairing callback retains its independent per-pass cancellation');
     const attach = async policy => {
       const endpoint = Object.assign(new EventTarget(), { postMessage(value) {
         endpoint.dispatchEvent(new MessageEvent('message', { data: value }));

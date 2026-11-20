@@ -149,7 +149,7 @@ export async function advancePairing({ session, pairing, retain = savePrivate, r
  * consumers. All passes share one owner and serialize the exact same lifecycle. */
 export function createReviewedPairingProcessor({ handle, host, descriptor, session, identity, store, client, pairing: supplied }) {
   const pairing = supplied ?? { applicationId: handle.application.id, serviceOrigin: new URL(handle.api).origin,
-    pageOrigin: new URL(handle.page_url).origin, descriptor, authority: () => host.peers.application(),
+    pageOrigin: new URL(handle.page_url).origin, descriptor, authority: options => host.peers.application(options),
     signTransition: payload => signTransitionRequest(payload, identity),
     client: client ?? createDevicePairingClient({ url: handle.api + '/peers/pairing', headers: { Authorization: 'Bearer ' + handle.token } }),
   };
