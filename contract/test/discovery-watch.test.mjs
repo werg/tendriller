@@ -129,3 +129,47 @@ test('a newer controller fences the old watcher with 4000 without a reconnect co
   const unopened=fixture();unopened.sockets[0].end(4000);
   await assert.rejects(unopened.watch.ready,{code:'participant_replaced'});
 });
+
+
+for(const status of [401,403,409]) test(`hidden upgrade refusal is terminal after authenticated self returns ${status}`, async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});let opens=0, probes=0;
+  const peers=createPeersClient({base:'https://service.test/api/t/aaaaaaaaaaaa', socket:()=>{opens++;throw Error('hidden HTTP upgrade error');},
+    request:async(path,options)=>{probes++;assert.equal(path,'self');assert(options.signal instanceof AbortSignal);throw Object.assign(Error('refused'),{status});}});
+  const watch=peers.watchDiscovery(peerId);
+  await assert.rejects(watch.ready,{code:'discovery_access_revoked'});assert.equal((await watch.closed).code,4003);
+  t.mock.timers.tick(86400000);await flush();assert.equal(opens,1);assert.equal(probes,1);
+});
+
+test('failure-only access diagnosis uses the original native request credentials and fetcher',async()=>{
+  const original=globalThis.WebSocket;let probes=0;
+  globalThis.WebSocket=class{constructor(){throw Error('upgrade refused');}};
+  try{
+    const native=createClient({api:'https://service.test/api/t/aaaaaaaaaaaa',token:'private-test-token'}, {fetch:async(url,options)=>{
+      probes++;assert.equal(url,'https://service.test/api/t/aaaaaaaaaaaa/self');
+      assert.equal(options.headers.Authorization,'Bearer private-test-token');
+      return new Response('not JSON',{status:403});
+    }});
+    const watch=native.peers.watchDiscovery(peerId);await assert.rejects(watch.ready,{code:'discovery_access_revoked'});
+    assert.equal(probes,1);
+  }finally{globalThis.WebSocket=original;}
+});
+
+test('healthy watches never probe; inconclusive failures back off and aborted probes cannot redial',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});let probes=0, probeSignal;
+  const stop=new AbortController(), f=fixture({signal:stop.signal,retryMs:10,maxRetryMs:20,
+    probeAccess:async({signal})=>{probes++;probeSignal=signal;if(probes===1)throw Object.assign(Error('self route unavailable'),{status:404});return new Promise(()=>{});}});
+  f.sockets[0].receive({type:'ready'});await f.watch.ready;t.mock.timers.tick(86400000);await flush();assert.equal(probes,0);
+  f.sockets[0].end();await flush();assert.equal(probes,1);assert.equal(f.sockets.length,1);
+  t.mock.timers.tick(10);assert.equal(f.sockets.length,2);f.sockets[1].end();await flush();assert.equal(probes,2);
+  stop.abort();await f.watch.closed;assert(probeSignal.aborted);await flush();
+  t.mock.timers.tick(86400000);assert.equal(f.sockets.length,2);
+});
+
+test('an uncooperative access probe has a bounded deadline and its late denial cannot close the reconnected watch',async t=>{
+  t.mock.timers.enable({apis:['setTimeout']});const gate=Promise.withResolvers();let signal;
+  const f=fixture({retryMs:10,maxRetryMs:20,probeAccess:options=>{signal=options.signal;return gate.promise;}});
+  f.sockets[0].end();await flush();t.mock.timers.tick(5000);await flush();assert(signal.aborted);
+  t.mock.timers.tick(10);assert.equal(f.sockets.length,2);f.sockets[1].receive({type:'ready'});await f.watch.ready;
+  gate.reject(Object.assign(Error('late denial'),{status:401}));await flush();
+  assert.equal(f.sockets[1].closes.length,0);f.watch.close();
+});

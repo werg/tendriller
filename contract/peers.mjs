@@ -166,7 +166,9 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
       const url = socketUrl('peers/discovery/watch', 'invalid_discovery_watch'); url.searchParams.set('peerId', peerId);
       const watchProtocols = [PEER_DISCOVERY_PROTOCOL, ...protocols.filter(value =>
         ![PEER_DISCOVERY_PROTOCOL, PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL, PEER_RELAY_PROTOCOL].includes(value))];
-      return createPeerDiscoveryWatcher(() => (options.socket || socket)(url.href, watchProtocols), options);
+      return createPeerDiscoveryWatcher(() => (options.socket || socket)(url.href, watchProtocols), { ...options,
+        probeAccess: options.probeAccess ?? (({ signal }) => request('self', { signal })),
+      });
     },
     listenInvitations(peerId, options = {}) {
       peerId = validatePeerId(peerId);

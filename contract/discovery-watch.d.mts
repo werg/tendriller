@@ -5,6 +5,8 @@ export interface PeerDiscoveryWatchOptions {
   readonly timeoutMs?: number;
   readonly retryMs?: number;
   readonly maxRetryMs?: number;
+  /** Optional failure-only authenticated self check; reject with HTTP status on refusal. Never called while healthy. */
+  readonly probeAccess?: (options: { readonly signal: AbortSignal }) => Promise<unknown>;
   readonly socket?: (url: string, protocols: readonly string[]) => PeerSocket;
 }
 export interface PeerDiscoveryWatcher {
