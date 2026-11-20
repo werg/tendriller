@@ -627,7 +627,7 @@ export async function closeLocalTransport() {
     assert.equal(adopted.pageId, handle.id); assert.equal(adopted.applicationId, handle.application.id);
     const resumedAdoption = JSON.parse(await node(['host-adoption.mjs', SERVICE, '.tendriller/delegation-code.txt']));
     assert.equal(resumedAdoption.attemptId, adopted.attemptId);
-    assert.equal(resumedAdoption.resumed, true, 'A retained response completes locally without redeeming the code twice.');
+    assert.equal(resumedAdoption.resumed, true, 'A retained response is reused without redeeming the code twice.');
     await management.locator('form:has(input[name="agent"][value="setup"])').getByRole('button', { name: 'Disconnect', exact: true }).click();
     await expect(management.locator('[role="status"]')).toContainText('Disconnected setup.');
     await management.close();
@@ -637,6 +637,8 @@ export async function closeLocalTransport() {
     const resumedCreation = JSON.parse(await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'Retain the existing application']));
     assert.equal(resumedCreation.resumed, true); assert.equal(resumedCreation.page_url, handle.page_url);
     assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind('e2e-owner').first()).n, 1);
+    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM tendrils').first()).n, 1,
+      'Recovery and creation retry must not allocate a second page through either setup route.');
     assert.deepEqual(await readFile(join(project, '.tendriller/descriptor.json')), retainedDescriptor);
     assert.deepEqual(await readFile(join(project, '.tendriller/initialized.json')), retainedInitialization);
     assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
