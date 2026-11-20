@@ -433,6 +433,8 @@ export async function closeLocalTransport() {
         `--ignore-certificate-errors-spki-list=${certificatePin}`] });
     report.browser = await browser.version();
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    // FIRST_APP_NO_SHARED_WORKER=1 runs the whole flow on the fallback owner, as on browsers without SharedWorker.
+    if (process.env.FIRST_APP_NO_SHARED_WORKER === '1') { await context.addInitScript(() => { delete globalThis.SharedWorker; }); report.owner_route = 'elected'; }
     context.on('requestfailed', request => {
       report.browser_network_failures ??= [];
       if (report.browser_network_failures.length < 20) {
@@ -454,18 +456,23 @@ export async function closeLocalTransport() {
     await page.setViewportSize({ width: 1280, height: 960 });
     await context.addCookies([{ name: '__Host-tendriller', value: ownerToken,
       domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
-    checkpoint('prove and review the actual browser device');
+    checkpoint('open the page: a new browser sets itself up without a button');
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(handle.page_url);
-    await page.locator('#create-device').click();
+    await expect(page.locator('#connection-card')).toBeVisible();
+    await expect(page.locator('#connection-card button:visible')).toHaveCount(0);
+    await expect(page.locator('#app-content')).toBeHidden();
     await expect(page.locator('#device-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 30_000 });
     const browserDevice = await page.locator('#device-key').inputValue();
-    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'pending', { timeout: 30_000 });
-    const reviewUrl = await page.locator('#pairing-review').getAttribute('href');
+    const retainedPairing = () => page.evaluate(id => JSON.parse(localStorage.getItem(`tendriller-notes-${id}:pairing-v1`)), handle.application.id);
+    await expect.poll(async () => (await retainedPairing())?.pairingId, { timeout: 30_000 }).toMatch(/^[a-f0-9]{64}$/);
+    const firstRequest = await retainedPairing();
+    await expect(page.locator('#connection')).toContainText('Setting up this browser');
+    await page.screenshot({ path: join(dirname(reportPath), 'first-app-connect-mobile.png'), fullPage: true });
+    report.screenshots.connect_narrow_viewport = 'first-app-connect-mobile.png';
     await page.reload();
-    await page.locator('#pairing-refresh').click();
-    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'pending');
-    assert.equal(await page.locator('#pairing-review').getAttribute('href'), reviewUrl, 'Reload must retain the original pairing request.');
-    assert.equal(await page.locator('#device-key').inputValue(), browserDevice);
+    await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
+    assert.deepEqual((await retainedPairing()).pairingId, firstRequest.pairingId, 'Reload must retain the original pairing request.');
     report.browser_device_id = browserDevice;
 
     // Drive the same real native bootstrap without a second store owner. This is
@@ -525,31 +532,35 @@ export async function closeLocalTransport() {
       'The original signed proposal must be prepared and awaiting owner review.');
     // A pending proof alone cannot authorize enrollment. The actual native
     // participant prepares and retains the full signed control change first.
-    const reviewPage = await context.newPage();
-    const reviewResponse = await reviewPage.goto(reviewUrl);
+    // Once it has, the page opens the service-origin approval by itself.
+    await page.waitForURL(url => url.pathname.startsWith('/pairings/'), { timeout: 30_000 });
+    const reviewUrl = new URL(page.url());
+    assert.equal(reviewUrl.origin, SERVICE);
+    assert.equal(new URL(reviewUrl.searchParams.get('return_to')).origin, new URL(handle.page_url).origin);
+    const reviewResponse = await page.reload();
     assert.match(reviewResponse.headers()['content-security-policy'], /frame-ancestors 'none'/);
-    await expect(reviewPage.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
-    await expect(reviewPage.locator('#pairing-proposal')).toContainText(paused.base.point.generation);
-    await reviewPage.setViewportSize({ width: 390, height: 844 });
-    assert.equal(await reviewPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
-      'The complete pairing proposal must remain readable without horizontal page overflow.');
-    await reviewPage.screenshot({ path: join(dirname(reportPath), 'first-app-pairing-review-mobile.png'), fullPage: true });
+    await expect(page.getByRole('heading', { name: /Add this browser to/ })).toBeVisible();
+    await page.locator('#pairing-details > summary').click();
+    await expect(page.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
+    await expect(page.locator('#pairing-proposal')).toContainText(paused.base.point.generation);
+    await page.locator('#pairing-details > summary').click();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The approval must fit a phone without horizontal overflow.');
+    await page.screenshot({ path: join(dirname(reportPath), 'first-app-pairing-review-mobile.png'), fullPage: true });
     report.screenshots.pairing_review_narrow_viewport = 'first-app-pairing-review-mobile.png';
-    await expect(reviewPage.getByRole('button', { name: 'Approve this device', exact: true })).toBeEnabled({ timeout: 30_000 });
-    await reviewPage.locator('#pairing-approve').focus();
-    await expect(reviewPage.locator('#pairing-approve')).toBeFocused();
-    await reviewPage.keyboard.press('Enter');
-    await expect(reviewPage.locator('[role=status]')).toContainText('approved');
-    await reviewPage.close();
-    await expect.poll(async () => {
-      await page.locator('#pairing-refresh').click();
-      return page.locator('#pairing-status').getAttribute('data-state');
-    }, { timeout: 30_000, message: 'The same running native owner must commit the exact approved proposal.' }).toBe('committed');
+    await expect(page.getByRole('button', { name: 'Approve this device', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await page.locator('#pairing-approve').focus();
+    await expect(page.locator('#pairing-approve')).toBeFocused();
+    // The one confirmation tap. The service returns to the page, which finishes and connects.
+    await page.keyboard.press('Enter');
+    await page.waitForURL(url => url.origin === new URL(handle.page_url).origin, { timeout: 30_000 });
+    await expect(page.locator('#app-content')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('#connection-card')).toBeHidden();
     await expect.poll(async () => (await peer.request('ordering-pause')).pause,
       { timeout: 30_000, message: 'Only verified committed authority may release the retained pause.' }).toBeNull();
-    await peer.request('pairing-process');
-    await page.locator('#pairing-refresh').click();
-    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'committed');
+    await page.screenshot({ path: join(dirname(reportPath), 'first-app-connected-after-approval-mobile.png'), fullPage: true });
+    report.screenshots.connected_after_approval_narrow_viewport = 'first-app-connected-after-approval-mobile.png';
+    await page.setViewportSize({ width: 1280, height: 960 });
     report.pairing = { reviewed_prefix: paused.base, recovered_native_pause: true, committed: true };
     passed('retained browser proof, full owner review, durable native pause across restart and exact signed enrollment');
     const attached = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'self']));
@@ -558,8 +569,7 @@ export async function closeLocalTransport() {
     const attachedNotes = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'query', 'notes', 'null']));
     assert.deepEqual(attachedNotes.value, (await peer.request('query')).value);
     passed('separate CLI processes attach to the resident native owner without another signer/store');
-    checkpoint('connect browser and exchange retained commands');
-    await page.locator('#connect').click();
+    checkpoint('exchange retained commands from the automatically connected browser');
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
     await page.locator('#note').fill('Created in the browser'); await page.locator('#submit').click();
     await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
@@ -569,6 +579,68 @@ export async function closeLocalTransport() {
       ['Native setup and durable reopen', 'Created in the browser']);
     passed('browser command observed by the real native session through relay');
     passed('public UI adapters expose actual operation outcome and separate retained coverage');
+
+    checkpoint('a second tab attaches to the same device owner without any prompt');
+    const second = await context.newPage();
+    second.on('pageerror', error => { report.browser_errors ??= []; if (report.browser_errors.length < 12) report.browser_errors.push(`second tab: ${error.message}`); });
+    await second.goto(handle.page_url);
+    await expect(second.locator('#app-content')).toBeVisible({ timeout: 60_000 });
+    await expect(second.locator('#device-key')).toHaveValue(browserDevice);
+    await expect(second.locator('#connection-card button:visible')).toHaveCount(0);
+    await second.locator('#note').fill('Created in a second tab'); await second.locator('#submit').click();
+    await expect(second.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
+    await expect(page.locator('#notes')).toContainText('Created in a second tab', { timeout: 30_000 });
+    await second.reload();
+    await expect(second.locator('#app-content')).toBeVisible({ timeout: 60_000 });
+    await second.close();
+    await expect(page.locator('#notes')).toContainText('Created in a second tab');
+    passed('a second tab and its reload attach to the existing owner; no OWNER_BUSY or pairing UI');
+
+    checkpoint('multi-piece replies and a quiet connection over the real relay');
+    const soakMs = Number(process.env.FIRST_APP_SOAK_MS ?? 60_000), frozenMs = Number(process.env.FIRST_APP_FROZEN_MS ?? 30_000);
+    await page.evaluate(() => {
+      window.soak = { pieces: 0, replies: new Map() };
+      void (async () => { for await (const signal of window.tendril.signals.subscribe({ topics: ['soak'], mode: 'all' })) {
+        window.soak.pieces++; const { id, n } = signal.payload; window.soak.replies.set(id, (window.soak.replies.get(id) ?? 0) + 1);
+        if (window.soak.replies.get(id) === n) window.soak.complete = (window.soak.complete ?? 0) + 1;
+      } })();
+    });
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await peer.request('participation-log');
+    const burst = async (pieces, bytes = 15_000) => {
+      const before = await page.evaluate(() => window.soak.complete ?? 0);
+      const sent = await peer.request('signal-burst', { topic: 'soak', pieces, bytes }, 60_000);
+      assert.deepEqual(sent.failures, [], `Every piece of a ${pieces}-piece reply must be accepted (${JSON.stringify(sent.failures.slice(0, 3))}).`);
+      await expect.poll(() => page.evaluate(() => window.soak.complete ?? 0), { timeout: 30_000 }).toBe(before + 1);
+      return sent.ms;
+    };
+    report.multi_piece_reply = { pieces: 40, bytes: 40 * 15_000, ms: await burst(40) };
+    passed('a 600 KB reply in 40 signal pieces reaches the browser without SIGNAL_BACKPRESSURE');
+    const churn = entries => entries.filter(entry => !entry.peers.includes(browserDevice)).length;
+    const soakStarted = Date.now();
+    while (Date.now() - soakStarted < soakMs) {
+      await burst(5); // like a dashboard answer every ten seconds
+      await new Promise(resolve => setTimeout(resolve, 10_000));
+    }
+    const soakLog = await peer.request('participation-log');
+    report.soak = { ms: Date.now() - soakStarted, statusChanges: soakLog.entries.length, browserAbsent: churn(soakLog.entries), current: soakLog.current };
+    assert.equal(churn(soakLog.entries), 0, `The idle browser connection must not churn: ${JSON.stringify(soakLog.entries.slice(0, 8))}`);
+    assert.ok(soakLog.current.peers.includes(browserDevice));
+    passed(`a ${Math.round(soakMs / 1000)} s soak with periodic multi-piece replies keeps one browser connection`);
+
+    checkpoint('a backgrounded phone tab resumes');
+    await page.setViewportSize({ width: 390, height: 844 });
+    const lifecycle = await context.newCDPSession(page);
+    await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
+    await new Promise(resolve => setTimeout(resolve, frozenMs));
+    await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
+    const resumedAt = Date.now();
+    await burst(5);
+    const resumeLog = await peer.request('participation-log');
+    report.background_resume = { frozenMs, firstReplyAfterMs: Date.now() - resumedAt, browserAbsent: churn(resumeLog.entries), statusChanges: resumeLog.entries.length };
+    await expect(page.locator('#app-content')).toBeVisible();
+    await page.setViewportSize({ width: 1280, height: 960 });
+    passed('a frozen (backgrounded) tab receives live replies again after resuming, without reload or prompts');
 
     checkpoint('cancel an applied waiter, reload and retry its original operation');
     await page.evaluate(() => {
@@ -580,7 +652,7 @@ export async function closeLocalTransport() {
     await expect(page.locator('#result')).toContainText('TEST_APPLIED_WAITER_CANCELLED', { timeout: 30_000 });
     const operation = await page.locator('#operation-id').inputValue();
     await expect(page.locator('#submit')).toBeDisabled();
-    await page.reload(); await page.locator('#connect').click();
+    await page.reload();
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
     await expect(page.locator('#operation-id')).toHaveValue(operation);
@@ -590,14 +662,14 @@ export async function closeLocalTransport() {
     await expect(page.locator('#operation-status')).toContainText('Applied: accepted', { timeout: 30_000 });
     const afterRetry = (await peer.request('query')).value;
     assert.equal(afterRetry.filter(note => note.operationId === operation).length, 1);
-    assert.equal(afterRetry.length, 3);
+    assert.equal(afterRetry.length, 4);
     report.retried_operation_id = operation;
     passed('cancelled waiter, pending identity across reload and exact retry without duplication');
 
     const applied = await peer.request('command', { text: 'Created by the native agent', operationId: 'native-note-1' });
     assert.equal(applied.outcome, 'accepted');
     await expect(page.locator('#notes')).toContainText('Created by the native agent', { timeout: 30_000 });
-    await expect(page.locator('#notes li')).toHaveCount(4);
+    await expect(page.locator('#notes li')).toHaveCount(5);
     passed('native command observed by the browser without state injection');
 
     checkpoint('close and reopen both original devices');
@@ -647,17 +719,17 @@ export async function closeLocalTransport() {
       original_setup_revoked: true, original_handle_unavailable: true, retained_response_reused: true };
     passed('actual owner-scoped delegation, retained response recovery and same-app continuation after setup revocation and handle loss');
 
-    await startPeer(); assert.equal((await peer.request('query')).value.length, 4);
-    await page.reload(); await page.locator('#connect').click();
+    await startPeer(); assert.equal((await peer.request('query')).value.length, 5);
+    await page.reload();
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
-    await expect(page.locator('#notes li')).toHaveCount(4, { timeout: 60_000 });
+    await expect(page.locator('#notes li')).toHaveCount(5, { timeout: 60_000 });
     passed('same native/browser identities and retained notes after both reopen');
 
     checkpoint('analyze immutable evidence through the authorized native peer');
     // The reopened notes can be read from local storage before the new peer
     // link exists. Ephemeral signals have no reconnect outbox: wait for the
     // actual coordinator connection before this one deliberate request.
-    await expect(page.locator('#connection')).toContainText('Connection: following', { timeout: 60_000 });
+    await expect(page.locator('#peer-status')).toContainText('Connection: following', { timeout: 60_000 });
     const beforeMedia = (await peer.request('query')).value;
     assert.equal((await peer.request('inference-status')).calls, 0);
     await page.locator('#media-file').setInputFiles({ name: 'fixture-evidence.png', mimeType: 'image/png', buffer: evidencePng });
@@ -692,7 +764,7 @@ export async function closeLocalTransport() {
     await page.locator('#media-commit').click();
     await expect(page.locator('#media-result')).toContainText('Applied: accepted', { timeout: 30_000 });
     const reviewedNotes = (await peer.request('query')).value;
-    assert.equal(reviewedNotes.length, 5);
+    assert.equal(reviewedNotes.length, 6);
     const evidenceNote = reviewedNotes.at(-1);
     assert.equal(evidenceNote.text, 'Human-reviewed fixture observation');
     assert.equal(evidenceNote.author, browserDevice);
@@ -702,10 +774,10 @@ export async function closeLocalTransport() {
     assert.equal(evidenceNote.source.reference.applicationId, handle.application.id);
     assert.equal(evidenceNote.source.reference.bytes, evidencePng.length);
     assert.equal(evidenceNote.source.reference.mediaType, 'image/png');
-    await expect(page.locator('#notes li')).toHaveCount(5);
-    await page.reload(); await page.locator('#connect').click();
+    await expect(page.locator('#notes li')).toHaveCount(6);
+    await page.reload();
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
-    await expect(page.locator('#notes li')).toHaveCount(5, { timeout: 60_000 });
+    await expect(page.locator('#notes li')).toHaveCount(6, { timeout: 60_000 });
     assert.deepEqual((await peer.request('query')).value.at(-1), evidenceNote);
     assert.equal((await peer.request('inference-status')).calls, 1, 'Reload must not launch another provider request.');
     report.media_inference = { provider: 'injected deterministic native test function', calls: inferred.calls,

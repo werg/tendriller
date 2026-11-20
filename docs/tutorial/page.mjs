@@ -5,13 +5,14 @@ import { createLiveView } from './helpers/live-view.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { mountReviewedMedia } from './media/panel.mjs';
 import { createBrowserPairing } from './pairing-browser.mjs';
+import { createOwnerConnection, reloadOnOwnerReplaced } from './connection.mjs';
+import { mountConnectionView } from './connect-view.mjs';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => response.json());
 const profileId = `tendriller-notes-${configuration.applicationId}`;
 const pairing = createBrowserPairing({ configuration, profileId,
   workerUrl: new URL(configuration.pairingWorkerUrl || './pairing-worker.mjs', import.meta.url) });
-let pairingState;
 const viewKey = `${profileId}:view`;
 let viewId = sessionStorage.getItem(viewKey) || crypto.randomUUID();
 sessionStorage.setItem(viewKey, viewId);
@@ -35,7 +36,6 @@ $('#operation-id').value = readLocal('operation') ?? '';
 if (pending) {
   $('#operation-id').value = pending.id;
   $('#submit').disabled = true;
-  $('#create-device').disabled = true;
   $('#result').textContent = `Unresolved operation ${pending.id}. Inspect or retry its original identity before submitting another note.`;
 }
 $('#note').addEventListener('input', () => writeLocal('draft', $('#note').value));
@@ -86,50 +86,6 @@ function acceptedOrRejected(result) {
   }
 }
 
-function busy(value) {
-  $('#create-device').disabled = value || Boolean(pending) || Boolean(session) || pairingState?.state === 'committed';
-  $('#connect').disabled = value || Boolean(session) || Boolean(pairingState && pairingState.state !== 'committed');
-  $('#pairing-refresh').disabled = value || Boolean(session);
-  $('#pairing-renew').disabled = value || Boolean(pending) || Boolean(session);
-}
-function showPairing(status) {
-  pairingState = status;
-  $('#device-key').value = status.challenge.publicKey;
-  $('#enrollment').hidden = false;
-  $('#pairing-status').textContent = `${status.state}: ${status.nextAction}`;
-  $('#pairing-status').dataset.state = status.state;
-  $('#pairing-review').href = status.reviewUrl;
-  $('#pairing-review').hidden = ['expired', 'denied', 'stale', 'revoked', 'committed'].includes(status.state);
-  $('#pairing-renew').hidden = !['expired', 'denied', 'stale'].includes(status.state);
-  $('#create-device').textContent = 'Resume this browser request';
-  $('#connection').textContent = status.state === 'committed'
-    ? 'The reviewed grant committed. Connect this retained device to verify the application.'
-    : 'Pairing is separate from a working application connection.';
-}
-
-async function requestPairing(newReview = false) {
-  busy(true);
-  try {
-    if (pending) throw Error('Resume the existing device and resolve its pending operation before setting up another identity.');
-    showPairing(await pairing.request({ newReview, signal: AbortSignal.timeout(35000) }));
-  } catch (error) { report(error); }
-  finally { busy(false); }
-}
-$('#create-device').addEventListener('click', () => { void requestPairing(); });
-$('#pairing-renew').addEventListener('click', () => { void requestPairing(true); });
-async function refreshPairing() {
-  busy(true);
-  try { showPairing(await pairing.refresh({ signal: AbortSignal.timeout(15000) })); }
-  catch (error) { report(error); }
-  finally { busy(false); }
-}
-$('#pairing-refresh').addEventListener('click', () => { void refreshPairing(); });
-window.addEventListener('focus', () => {
-  // A user returning from the review tab triggers one bounded inspection.
-  // There is no background polling lease or automatic replacement request.
-  if (!session && pairing.read()?.pairingId && location.origin === new URL(configuration.page_url).origin) void refreshPairing();
-});
-
 function renderNotes(snapshot) {
   const list = $('#notes'); list.replaceChildren();
   for (const note of snapshot.value) {
@@ -163,8 +119,9 @@ function observeOperation(id, operation) {
   return operationView;
 }
 
-$('#connect').addEventListener('click', async () => {
-  busy(true);
+// Attach to this browser's device owner and mount the app. Errors keep their code;
+// createOwnerConnection decides whether to set the browser up, wait or retry.
+async function connectSession() {
   let installed = false;
   try {
     const identity = window.tendril?.identity;
@@ -172,7 +129,8 @@ $('#connect').addEventListener('click', async () => {
       profileId, applicationId: configuration.applicationId, definitionId: 'shared-notes', definitionVersion: '2',
       timeoutMs: 30_000, context: { viewId, ...(identity?.documentPath ? { documentPath: identity.documentPath } : {}),
         ...(identity?.publication ? { publicationId: identity.publication } : {}) },
-      onOwnerReplaced() { $('#connection').textContent = 'The session owner restarted. Reload to reconnect this retained device and inspect pending work.'; },
+      // Another tab or a page update took over this tab's route: reconnect.
+      onOwnerReplaced: reloadOnOwnerReplaced({ onSkipped() { $('#result').textContent = 'The connection moved to another tab. Reload to continue here.'; } }),
     });
     session = attachment.session; $('#device-key').value = session.deviceId;
     if (pending?.reference && (pending.reference.author !== session.deviceId || pending.reference.historyId !== session.historyId))
@@ -190,8 +148,6 @@ $('#connect').addEventListener('click', async () => {
       }
     }
     if (!window.tendril) throw Error('Open the published Tendriller page to install its runtime binding.');
-    window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
-    window.tendril.signals.install(session.signals);
     liveView = createLiveView(session, { query: 'notes', input: null,
       onStatus(status) { $('#data-status').textContent = `Data: ${status.database}; application: ${status.phase}`; },
       onRecovery(notice) {
@@ -200,6 +156,12 @@ $('#connect').addEventListener('click', async () => {
       }, onError: report,
     });
     liveView.subscribe(renderNotes);
+    // The query activates data. Status observation handles later key delivery.
+    await refresh();
+    // The runtime binding installs once per page, so only after the app is usable.
+    window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
+    window.tendril.signals.install(session.signals);
+    installed = true;
     media = mountReviewedMedia({ container: $('#media-panel'), session, runtime: window.tendril,
       nativeDeviceId: configuration.nativeDeviceId,
       getContext: () => liveView.snapshot ? { revision: liveView.snapshot.revision, collection: 'shared-notes' } : null,
@@ -210,29 +172,20 @@ $('#connect').addEventListener('click', async () => {
       },
     });
     session.participation.onStatus(status => {
-      $('#connection').textContent = `Connection: ${status.phase}${status.error ? ` (${status.error})` : ''}. Keep the native peer running.`;
+      $('#peer-status').textContent = `Connection: ${status.phase}${status.error ? ` (${status.error})` : ''}.`;
     });
     if ($('#operation-id').value) observeOperation($('#operation-id').value);
-    $('#editor').disabled = false; $('#close').disabled = false;
-    installed = true;
-    // The query activates data. Status observation handles later key delivery.
-    await refresh();
-    $('#connection').textContent = 'Connected: a verified application query succeeded. Keep the native peer running for writes.';
+    $('#editor').disabled = false; $('#close').disabled = false; $('#app-content').hidden = false;
   } catch (error) {
     if (!installed) {
-      const facadeOpened = Boolean(session);
       liveView?.close(); operationView?.close(); media?.close();
       try { await attachment?.detach(); } catch { /* Preserve the setup failure. */ }
-      session = attachment = undefined;
+      session = attachment = liveView = undefined;
       $('#editor').disabled = true; $('#close').disabled = true;
-      // A partially installed runtime binding cannot be replaced in this page.
-      // Close the owned store first, then make the required reload explicit.
-      busy(facadeOpened);
-      if (facadeOpened) $('#connection').textContent = 'Connection setup failed. Reload to reconnect this existing device.';
     }
-    report(error);
+    throw error;
   }
-});
+}
 
 $('#form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -359,7 +312,8 @@ async function close() {
   liveView?.close(); operationView?.close(); media?.close();
   try { await attachment?.detach(); }
   finally { $('#editor').disabled = true; $('#close').disabled = true;
-    $('#connection').textContent = 'Connection closed. Reload to reconnect this existing device.'; }
+    $('#app-content').hidden = true; view.render({ phase: 'failed', title: 'Connection closed', detail: 'Reload to reconnect this browser.',
+      action: { label: 'Reconnect', run: () => location.reload() } }); }
 }
 $('#close').addEventListener('click', () => { void close().catch(report); });
 window.addEventListener('pagehide', event => {
@@ -369,10 +323,10 @@ window.addEventListener('pagehide', event => {
 window.addEventListener('pageshow', event => {
   if (event.persisted && attachment) void attachment.resume().then(() => refresh()).catch(report);
 });
-if (location.origin !== new URL(configuration.page_url).origin) {
-  busy(true);
-  $('#connection').textContent = 'Layout preview. Open the published page to enroll and connect its real application session.';
-} else {
-  busy(false);
-  if (pairing.read()?.pairingId) void refreshPairing();
-}
+const view = mountConnectionView($('#connection-slot'));
+const connection = createOwnerConnection({ configuration, pairing, connect: connectSession, appName: 'Shared notes',
+  onState(state) {
+    view.render(state);
+    const key = pairing.read()?.publicKey; if (key && !$('#device-key').value) $('#device-key').value = key;
+  } });
+void connection.start();

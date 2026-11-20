@@ -3,6 +3,10 @@ import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastOwner, checkOw
 import { prepareCollaborationCommand } from './protocol.mjs';
 
 const defaults = { maxPorts: 64, pendingTimeoutMs: 30000, idleTimeoutMs: 60000 };
+// A retired elected owner with no routes stays this long, so the same page can
+// reattach (reload of a view, an app-level reconnect) without restarting the
+// session and its peer connections. A new route cancels the retirement wait.
+const RETIRE_GRACE_MS = 5000;
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
 function rootLimits(value = {}) {
   const limits = { ...defaults, ...value };
@@ -16,7 +20,7 @@ function rootLimits(value = {}) {
 export function serveBrowserOwner(options) {
   const scope = options.scope ?? globalThis, lifetime = new AbortController(), roots = new Map(), identities = new Set();
   let profileId, openSession, createIdentity, ownerOptions, limits = defaults;
-  let owner, owned, lease, opening, channel, election, broadcast, broadcastStarting, closed = false, retiring = false, closing, scopeRoot, sessionAborted;
+  let owner, owned, lease, opening, channel, election, broadcast, broadcastStarting, closed = false, retiring = false, retireTimer, closing, scopeRoot, sessionAborted;
   const post = (endpoint, value) => { try { endpoint.postMessage(value); } catch { /* The remote page may have gone away. */ } };
   const failure = (record, id, error) => post(record.endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'failure', id,
     profileId, rootId: record.rootId, ownerInstanceId: owner?.ownerInstanceId,
@@ -76,14 +80,18 @@ export function serveBrowserOwner(options) {
     })().catch(error => { opening = undefined; owned = undefined; owner = undefined; throw error; });
     return opening;
   }
+  function retireSoon() {
+    if (retireTimer || closed) return;
+    retireTimer = setTimeout(() => { retireTimer = undefined; if (!broadcast || broadcast.routes === 0) void close().catch(() => {}); }, RETIRE_GRACE_MS);
+  }
   function startElection() {
     if (election) return election;
     channel = new BroadcastChannel(ownerChannelName(profileId));
     election = open(true).then(async () => {
       broadcast = await createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32,
-        onRoutesChanged: count => { if (retiring && count === 0) void close().catch(() => {}); } });
+        onRoutesChanged: count => { if (count > 0) { clearTimeout(retireTimer); retireTimer = undefined; } else if (retiring) retireSoon(); } });
       if (closed) { await broadcast.close(); return; }
-      if (retiring && broadcast.routes === 0) { void close().catch(() => {}); return; }
+      if (retiring && broadcast.routes === 0) { retireSoon(); return; }
       broadcast.announce();
     });
     return election;
@@ -147,7 +155,8 @@ export function serveBrowserOwner(options) {
           post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'retired', id: data.id, profileId });
           // A detached page stops competing for ownership. An existing owner
           // serves authenticated siblings until its last active/pending route ends.
-          if (!owner || broadcast?.routes === 0) void close().catch(() => {});
+          if (!owner) void close().catch(() => {});
+          else if (broadcast?.routes === 0) retireSoon();
           return;
         }
         if (data.type === 'identity') {
@@ -182,7 +191,7 @@ export function serveBrowserOwner(options) {
 
   function close() {
     if (closing) return closing;
-    closed = true; lifetime.abort(Error('OWNER_UNREACHABLE')); scope.removeEventListener('connect', connect);
+    closed = true; clearTimeout(retireTimer); lifetime.abort(Error('OWNER_UNREACHABLE')); scope.removeEventListener('connect', connect);
     for (const record of [...roots.values()]) dispose(record, 'OWNER_UNREACHABLE');
     if (scopeRoot) dispose(scopeRoot);
     closing = (async () => {

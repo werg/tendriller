@@ -32,6 +32,9 @@ try {
       return {text: 'Suggested fixture observation'};
     },
   });
+  // Every participation change, with its peer set, so the harness can count churn.
+  const participationLog = [];
+  session.participation.onStatus(status => { if (participationLog.length < 5000) participationLog.push({at:Date.now(),phase:status.phase,peers:[...status.connectedPeers].sort(),error:status.error}); });
   console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
   input = createInterface({input:process.stdin});
   for await (const line of input) {
@@ -40,6 +43,16 @@ try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
       else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus};
+      else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:{phase:session.participation.status.phase,peers:[...session.participation.status.connectedPeers].sort()}};
+      else if(request.action==='signal-burst') {
+        // A reply larger than one signal, sent piece by piece as an app would: each send awaited, none retried.
+        const failures=[], started=Date.now();
+        for(let index=0;index<request.pieces;index++){
+          try{await session.signals.send(request.topic,{id:request.id,i:index,n:request.pieces,z:'x'.repeat(request.bytes)},{ttlMs:30000});}
+          catch(error){failures.push(error.code||error.message);}
+        }
+        result={sent:request.pieces-failures.length,failures,ms:Date.now()-started};
+      }
       else if(request.action==='ordering-pause') result={pause:await session.orderingPause()};
       else if(request.action==='pairing-process') result=await owned.processPairings();
       else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};

@@ -13,25 +13,16 @@
   <p class="muted">A Tendriller application</p>
   <h1>Shared notes</h1>
   <p>Write a note, reopen this device, and see the same retained conversation.</p>
-  <section aria-labelledby="device-heading">
-    <h2 id="device-heading">Connect this browser</h2>
-    <p>First visit: request access for this browser's own retained device. The owner reviews its fingerprint, rights and exact selected history on the service sign-in page. Returning here: connect the existing device.</p>
-    <button id="create-device" disabled>Request browser access</button>
-    <button id="connect" disabled>Connect existing device</button>
-    <button id="close" class="secondary" disabled>Close connection</button>
-    <label for="device-key">This browser's public key</label>
+  <!-- The connection card (connect-view.mjs) replaces any connect buttons: opening the page connects,
+       and a new browser is approved once on the service origin. Do not ship separate request/connect steps. -->
+  <div id="connection-slot"></div>
+  <details id="device-details"><summary>This browser</summary>
+    <label for="device-key">Public key of this browser's own device (the private key never leaves it)</label>
     <input id="device-key" readonly spellcheck="false">
-    <div id="enrollment" hidden>
-      <p id="pairing-status" role="status" aria-live="polite">No pairing request yet.</p>
-      <p><a id="pairing-review" target="_blank" rel="noopener noreferrer" hidden>Review this exact browser request</a></p>
-      <button id="pairing-refresh" type="button" class="secondary">Check pairing status</button>
-      <button id="pairing-renew" type="button" class="secondary" hidden>Request another explicit review</button>
-      <p>Keep the native peer running during its ten-minute pairing window. It pauses ordering while this exact history is under review; an uncertain commit keeps that pause until its original outcome is verified. No private key leaves this browser.</p>
-    </div>
-    <p id="connection" role="status">Not connected.</p>
-    <p id="data-status" class="muted"></p>
-  </section>
+  </details>
   <section id="recovery" role="alert" hidden></section>
+  <div id="app-content" hidden>
+  <p class="muted"><span id="peer-status"></span> <span id="data-status"></span> <button id="close" class="secondary" disabled>Close connection</button></p>
   <form id="form">
     <fieldset id="editor" disabled>
       <legend>Add a retained note</legend>
@@ -89,6 +80,7 @@
     <p id="count" class="muted">Connect to read retained notes.</p>
     <ul id="notes"></ul>
   </section>
+  </div>
   <p class="muted">This first app uses a running native peer to coordinate writes. A saved operation can wait while that peer is away. Page options can add this page to your Home Screen; saving code offline is a separate choice.</p>
 </main>
 <script type="module" src="./page.mjs"></script>

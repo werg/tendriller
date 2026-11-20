@@ -28,10 +28,10 @@ npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --op
 npm run peer # Or npm run assistant for the MCP participant.
 # Now give the owner the ready page URL; they sign in to open this version.
 # Do not wait for a claimed reply before publishing or starting the participant.
-# In the published page, choose Request browser access.
-# The native peer pauses ordering and stages the exact signed proposal.
-# Open the service review link and review that proposal before approving it.
-# Check pairing status; after Enrollment committed, Connect existing device.
+# The owner opens the page. It connects by itself: a new browser creates its own
+# key, the native peer pauses ordering and stages the exact signed proposal, and
+# the page opens the service-origin approval once. One Approve tap returns to the
+# page, which connects as soon as the peer commits. Later visits just connect.
 ```
 
 The account-linked route derives the verified owner on the host and requires its
@@ -96,12 +96,18 @@ The host checks current account access, authority and the reviewed payload again
 when the normal signed control transition is selected. Existing grants and key
 commitments are preserved.
 
-The default pairing window is at most ten minutes. It checks pending work with
-bounded backoff and does not renew a request automatically. The browser has no
-continuous polling loop: **Check pairing status**, or returning from review,
-performs one bounded read. Browser reloads retain the same public request and key;
-private signing keys stay in Worker storage. A new review for an expired, denied
-or stale request is an explicit action for that same device.
+`npm run peer` keeps enrollment open for as long as it runs. The host sends it a
+content-free notice when a browser asks or the owner approves, so it prepares and
+commits within seconds; idle checks otherwise back off to thirty seconds. Every
+request still needs the owner's approval on the service origin.
+
+The page uses `connection.mjs` and `connect-view.mjs`: opening it attaches to
+this browser's existing device owner (any tab), sets up a new browser, opens the
+approval with a return to the page, waits for the commit and connects. A request
+the participant committed while the page was away is found on the next open.
+Browser reloads retain the same public request and key; private signing keys stay
+in Worker storage. An expired or stale request is renewed for the same device; a
+denied one waits for an explicit "Ask again".
 
 Private native records are `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json` under `.tendriller/`.
