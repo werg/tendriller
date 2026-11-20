@@ -8,6 +8,7 @@ function storage() {
 }
 function receipt(intent) { return { schemaVersion: 1, serviceOrigin: service, operationId: intent.operationId, requestDigest: intent.requestDigest,
   credentialCommitment: intent.credentialCommitment, applicationId: intent.applicationId, pageId: 'abcdefghijkl', state: 'ready', code: null,
+  expiresAt: Date.now() + 86_400_000,
   page: { id: 'abcdefghijkl', api: service + '/api/t/abcdefghijkl', page_url: 'https://abcdefghijkl.staging.tendriller.site/s/' + 'a'.repeat(26) + '/', application: { id: intent.applicationId } } }; }
 test('retains one private credential before exposing MCP input and resumes omitted fields', async () => {
   const store = storage(), first = await createSetupIntent(service, { operationId: 'create-one', name: 'Private setup' }, { store });
@@ -42,6 +43,9 @@ test('refuses mismatched receipts, nonready states and returned secrets', async 
   for (const change of [{ serviceOrigin: 'https://tendriller.dev' }, { requestDigest: 'f'.repeat(64) }, { credentialCommitment: 'f'.repeat(64) }, { operationId: 'different' }, { page: { ...ready.page, token: 'server-secret' } }, { page: { ...ready.page, api: 'https://tendriller.dev/api/t/abcdefghijkl' } }])
     await assert.rejects(completeSetupIntent(intent, { ...ready, ...change }), { code: 'setup_receipt_mismatch' });
   await assert.rejects(completeSetupIntent(intent, { ...ready, state: 'expired', code: 'setup_expired' }), { code: 'setup_expired' });
+  await assert.rejects(completeSetupIntent(intent, { ...ready, expiresAt: Date.now()-1 }), { code: 'setup_expired' });
+  for (const expiresAt of [undefined, String(ready.expiresAt), NaN, Infinity])
+    await assert.rejects(completeSetupIntent(intent, { ...ready, expiresAt }), { code: 'setup_receipt_mismatch' });
   await assert.rejects(completeSetupIntent({ ...intent, credential: 'tk_' + 'z'.repeat(32) }, ready), { code: 'setup_state_invalid' });
 });
 test('rejects coerced operation IDs, commitments, origins and private credentials', async () => {

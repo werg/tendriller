@@ -64,6 +64,9 @@ export async function completeSetupIntent(intent, result) {
       result.applicationId !== intent.applicationId)
     fail('setup_receipt_mismatch', 'The setup receipt does not identify this exact retained operation.', 409);
   if (result.state !== 'ready') fail(result.code ?? 'setup_not_ready', result.nextAction ?? 'Inspect the original setup operation before continuing.', 409);
+  if (!Number.isSafeInteger(result.expiresAt) || result.expiresAt < 1)
+    fail('setup_receipt_mismatch', 'The setup receipt must retain its finite credential deadline.', 409);
+  if (result.expiresAt <= Date.now()) fail('setup_expired', 'This setup credential expired. Inspect the original operation and use the owner’s reviewed adoption/delegation route.', 409);
   const page = result.page;
   if (!page || typeof result.pageId !== 'string' || !/^[a-z2-7]{12}$/.test(result.pageId) || page.id !== result.pageId ||
       page.api !== intent.serviceOrigin + '/api/t/' + result.pageId || page.application?.id !== intent.applicationId ||
