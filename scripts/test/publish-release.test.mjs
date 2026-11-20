@@ -44,7 +44,7 @@ function fixture(t) {
   const root = mkdtempSync(join(scratch, 'release-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const dir of ['bin', 'dist', 'publisher', 'remote/assets']) mkdirSync(join(root, dir), { recursive: true });
-  for (const file of ['publish-release.mjs', 'release-composition.mjs', 'onboarding.mjs', 'runtime-manifest.mjs'])
+  for (const file of ['publish-release.mjs', 'release-composition.mjs', 'onboarding.mjs', 'runtime-manifest.mjs', 'archive-metadata.mjs'])
     copyFileSync(new URL('../' + file, import.meta.url), join(root, 'publisher', file));
   writeFileSync(join(root, 'bin/gh'), fakeGh); chmodSync(join(root, 'bin/gh'), 0o755);
   writeFileSync(join(root, 'bin/package.json'), '{"type":"module"}');
