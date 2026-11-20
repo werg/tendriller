@@ -17,6 +17,8 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
 import { TUTORIAL_FILES } from './onboarding.mjs';
 import { nativeTestPeerSource, closeTestPeer } from './first-app-peer.mjs';
+import { verifyFirstAppComposition } from './first-app-composition.mjs';
+import { CONTRACT_VERSION } from '../contract/index.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
@@ -112,16 +114,33 @@ try {
   const { version } = await jsonFile(join(root, 'package.json'));
   const proof = await jsonFile(join(root, 'dist/provenance.json'));
   const toolsProof = await jsonFile(join(root, 'dist/tools-manifest.json'));
-  const archives = Object.fromEntries(['sdk', 'tools', 'engine'].map(name =>
+  const archives = Object.fromEntries(['sdk', 'tools', 'engine', 'runtime'].map(name =>
     [name, join(root, 'dist', `tendriller-${name}-${version}.tgz`)]));
   for (const artifact of [...proof.artifacts, ...toolsProof.artifacts]) {
     assert.equal(sha256(await readFile(join(root, 'dist', artifact.file))), artifact.sha256, `Archive changed: ${artifact.file}`);
   }
   report.core = { source: proof.source, dirty: proof.dirty, version,
     artifacts: Object.fromEntries(await Promise.all(Object.entries(archives).map(async ([name, path]) => [name, sha256(await readFile(path))]))) };
+  let kit;
+  if (values['first-app-archive']) {
+    const archive = resolve(values['first-app-archive']);
+    const release = await jsonFile(join(root, 'dist/manifest.json'));
+    const record = release.artifacts.find(item => item.role === 'first-app' && item.file === release.first_app?.file);
+    assert.ok(record, 'The release manifest must bind the first-app archive.');
+    assert.equal(sha256(await readFile(archive)), record.sha256, 'The first-app archive must match the release manifest.');
+    const composition = JSON.parse(await run('tar', ['-xOf', archive, 'composition.json']));
+    await verifyFirstAppComposition({ release, composition, coreProof: proof, toolsProof, archives, version, contract: CONTRACT_VERSION });
+    kit = { archive, release, composition, record };
+    passed('complete exact-kit SDK/runtime/engine/tools identities before isolated host startup');
+  }
   const engine = join(directory, 'engine'); await mkdir(engine);
   await run('tar', ['-xzf', archives.engine, '-C', engine]);
   const engineProof = await jsonFile(join(engine, 'package/provenance.json'));
+  if (kit) {
+    assert.equal(engineProof.dirty, false);
+    assert.equal(engineProof.source, kit.composition.core.source, 'The packed host must have the exact composition source.');
+    assert.equal(engineProof.sourceTree, kit.composition.core.sourceTree, 'The packed host must have the exact composition tree.');
+  }
   for (const [path, hash] of Object.entries(engineProof.files))
     assert.equal(sha256(await readFile(join(engine, 'package', path))), hash, `Packed engine changed: ${path}`);
 
@@ -163,20 +182,11 @@ try {
   const sourceBytes = new Uint8Array(await source.arrayBuffer());
   report.tutorial_sha256 = sha256(sourceBytes);
   const sourceArchive = join(directory, 'first-app.tgz'); await writeFile(sourceArchive, sourceBytes);
-  if (values['first-app-archive']) {
-    const firstAppArchive = resolve(values['first-app-archive']);
-    const release = await jsonFile(join(root, 'dist/manifest.json'));
-    const record = release.artifacts.find(item => item.file === release.first_app?.file);
-    assert.ok(record, 'The release manifest must bind the first-app archive.');
-    assert.equal(sha256(await readFile(firstAppArchive)), record.sha256, 'The first-app archive must match the release manifest.');
+  if (kit) {
+    const { archive: firstAppArchive, composition, record } = kit;
+    assert.equal(sha256(await readFile(firstAppArchive)), record.sha256, 'The first-app archive changed after preflight.');
     await run('tar', ['-xzf', firstAppArchive, '-C', app]);
-    const composition = await jsonFile(join(app, 'composition.json'));
-    const { id, ...identity } = composition;
-    assert.equal(sha256(JSON.stringify(identity)), id, 'Composition identity must bind all package inputs.');
-    assert.equal(id, release.composition.id);
-    assert.equal(composition.core.dirty, false);
-    assert.equal(composition.core.source, proof.source);
-    assert.equal(composition.version, version);
+    assert.deepEqual(await jsonFile(join(app, 'composition.json')), composition, 'Extracted first-app identity changed after preflight.');
     assert.equal(composition.components.find(item => item.role === 'starter')?.sha256, report.tutorial_sha256,
       'The isolated host must serve the starter bound by the release composition.');
     // Compare every extracted source file with the actual served archive, then
@@ -195,7 +205,7 @@ try {
       }
     }
     assert.ok(sessionArchive, 'The first-app archive must carry its pinned session package.');
-    report.composition = { id, first_app_sha256: record.sha256 };
+    report.composition = { id: composition.id, first_app_sha256: record.sha256 };
   } else await run('tar', ['-xzf', sourceArchive, '-C', app]);
   const buildDependencies = sqlOnly ? [] : [await packDependency('esbuild'),
     await packDependency(`@esbuild/${process.platform}-${process.arch}`)];
