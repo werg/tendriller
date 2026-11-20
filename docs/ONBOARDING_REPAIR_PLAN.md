@@ -139,7 +139,8 @@ and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
 
 ### 7. Acceptance and residual external constraints
 
-- [ ] Core `npm ci` and `npm run check` pass at the integrated branch head.
+- [x] Core `npm ci` and `npm run check` pass at the exact integrated source
+  checkpoints recorded below; the PR records the latest source matrix.
 - [x] Relevant Chronolog unit/integration/package checks pass.
 - [x] Downloaded first-app qualification covers native write/reopen/retry,
   signed publication, and browser enrollment/replication/reload using the exact
@@ -290,9 +291,21 @@ acknowledgment and physical socket closure while isolating the pinned workerd
 cold hibernatable-WebSocket defect; it does not qualify direct production TCP
 closure. No live OAuth provider, mobile/native RTC environment, installed
 ChatGPT connection or unaided agent is certified by this fixture. The distinct
-general browser suite timed out during its web-server startup at `1ee9d095`;
-its resolution and later final-source matrix belong to the core PR's current
-qualification record.
+general browser suite timed out during its web-server startup at `1ee9d095`.
+The later [complete Public service matrix at `f85c8143`](https://github.com/werg/tendriller/actions/runs/44732642146)
+passed both Node versions, all browser suites, native ownership/recovery and
+public artifacts; the [exact-kit and SQL jobs](https://github.com/werg/tendriller/actions/runs/44732642139)
+also passed. That source passed **921 core tests**, including the focused
+recovery additions below.
+
+Investigation additionally reproduced a test-environment DNS portability issue:
+Chromium mapped the local service/page names while Playwright's Node clients
+relied on container DNS. The E2E configuration now gives both the same explicit
+loopback resolution, preserving the real hostnames, HTTP/TLS origins, `/health`
+readiness and timeout. A real Playwright runner/worker regression verifies both
+readiness and API requests with their original Host headers. This is a
+demonstrated portability improvement; the earlier hosted timeout's exclusive
+cause is not claimed. The final source matrix is recorded in the core PR.
 
 Subsequent focused checkpoints add the missing real account-suspension race
 during pairing commitment (**17 pairing tests**, 32 combined management,
