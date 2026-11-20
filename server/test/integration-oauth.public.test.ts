@@ -830,8 +830,12 @@ it('serves unrelated native applications through one MCP endpoint and retains in
 
     const { standby } = await first.startBackup();
     await first.adapter.close();
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value)
-      .toMatchObject([{ text: 'Rope checked' }]);
+    // close() settles the local loop; wait for the remote close handshake before
+    // testing the separate already-offline-provider scenario.
+    await vi.waitFor(async () => expect(await inDO(a.page.id, t =>
+      t.ctx.getWebSockets('application-mcp').filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN).length)).toBe(1));
+    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result)
+      .toMatchObject({ structuredContent: { value: [{ text: 'Rope checked' }] } });
     const unresolved = (await first.tool('call_application_command', write)).result.structuredContent;
     expect(unresolved).toMatchObject({ code: 'operation_uncertain', outcome: 'uncertain', operationReference: { deviceId: first.session.deviceId } });
     expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.structuredContent.code)
