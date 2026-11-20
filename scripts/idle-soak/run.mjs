@@ -38,8 +38,14 @@ export async function run(configPath, directory) {
   const abort = new AbortController();
   const stop = () => abort.abort(); process.once('SIGTERM', stop); process.once('SIGINT', stop);
   const persist = () => { save(checkpoint, s); save(resolve(directory, 'report.json'), report(s)); };
-  const boundary = quietBoundary({ signal: abort.signal });
-  const emit = event => { if (record(s, event)) { boundary.activity(); persist(); } };
+  const pending = { browser: 0, native: 0 };
+  const boundary = quietBoundary({ signal: abort.signal, busy: () => pending.browser + pending.native > 0 });
+  const emit = event => {
+    if (event?.kind === 'activity' && ['browser', 'native'].includes(event.source) && Number.isSafeInteger(event.pending) && event.pending >= 0) {
+      pending[event.source] = event.pending; boundary.activity(); return;
+    }
+    if (record(s, event)) { boundary.activity(); persist(); }
+  };
   try {
     try { s = privateJSON(checkpoint); } catch (e) { if (e.code !== 'ENOENT') throw e; s = newState(c); }
     if (s.configHash !== digest(JSON.stringify(c))) throw Error('CONFIG_CHANGED_USE_NEW_RUN_DIRECTORY');
@@ -62,6 +68,7 @@ export async function run(configPath, directory) {
     s.nativeStartedAt = Date.now(); s.events.push({kind:'native-start',at:s.nativeStartedAt}); persist();
     native.on('message', message => {
       if (message?.idleSoak === 1) emit(message);
+      if (message?.idleSoakActivity === 1) emit({ ...message, kind: 'activity' });
       if (message?.idleSoakCoverage === 1) {
         if (message.bootstrapScope === 'native-only-without-mcp-adapter') s.coverage.bootstrapScope = message.bootstrapScope;
         s.coverage.wakeups ||= message.wakeups === true; s.coverage.modelTurns ||= message.modelTurns === true; persist();
@@ -85,7 +92,7 @@ export async function run(configPath, directory) {
       // Complete startup and drain boundary traffic before measuring; continuous
       // activity fails this bounded barrier instead of earning idle credit.
       await boundary.wait();
-      beginSegment(s, phase); persist();
+      beginSegment(s, phase); s.segments.at(-1).pendingClientRequestsAtStart = { ...pending }; persist();
       await waitUntil(s.segments.at(-1).deadline, abort.signal);
       endSegment(s); persist();
       if (phase !== 'closed') { s.events.push({ kind: 'reconnect', phase, ...await browser.reconnect(), at: Date.now() }); persist(); }

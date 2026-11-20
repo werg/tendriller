@@ -46,7 +46,8 @@ The user's systemd manager must persist after logout (administrator enables ling
 
 Before measuring, the native bootstrap must confirm application activation,
 participation readiness and initial setup reconciliation. Each residency boundary
-then requires two seconds with no observed client activity, bounded to thirty
+then requires no observed in-flight client requests and two seconds with no
+observed client activity, bounded to thirty
 seconds total. Continuous startup activity fails that barrier; startup traffic
 is retained in total counters and earns no idle credit. These timers are cleared
 before the quiet segment begins. The report also hashes the actual runner.

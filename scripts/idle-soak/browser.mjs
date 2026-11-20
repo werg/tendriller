@@ -7,7 +7,11 @@ export async function startBrowser(c, emit, { chromium, launchContext = launchRe
   const { context, close } = await launchContext(c, chromium);
   let page, cover;
   const bytes = v => typeof v === 'string' ? Buffer.byteLength(v) : v?.length ?? 0;
-  context.on('request', () => emit({ source: 'browser', kind: 'requests' }));
+  const pending = new Set();
+  const activity = () => emit({ source: 'browser', kind: 'activity', pending: pending.size });
+  context.on('request', request => { pending.add(request); activity(); emit({ source: 'browser', kind: 'requests' }); });
+  const finished = request => { pending.delete(request); activity(); };
+  context.on('requestfinished', finished); context.on('requestfailed', finished);
   context.on('page', p => p.on('websocket', ws => {
     emit({ source: 'browser', kind: 'socketsOpened' });
     ws.on('close', () => emit({ source: 'browser', kind: 'socketsClosed' }));

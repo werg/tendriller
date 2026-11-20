@@ -116,5 +116,6 @@ test('native observer bounds fetch, emits numeric counters only and does not ext
   const messages=[];let diagnostics='';child.on('message',v=>messages.push(v));child.stderr.on('data',v=>diagnostics+=v);
   const result=await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{child.kill('SIGKILL');reject(Error('OBSERVER_KEPT_CHILD_ALIVE'));},5000);child.once('error',reject);child.once('exit',code=>{clearTimeout(timer);resolve(code);});});
   assert.equal(result,0,diagnostics);assert(messages.some(x=>x.kind==='requests'));assert(messages.some(x=>x.kind==='framesReceived'));assert(messages.some(x=>x.kind==='wakeups'));
-  assert(!JSON.stringify(messages).includes('PRIVATE_'));assert(messages.every(x=>Object.keys(x).sort().join(',')==='count,idleSoak,kind,source'));
+  assert(!JSON.stringify(messages).includes('PRIVATE_'));assert(messages.every(x=>Object.keys(x).sort().join(',')===(x.idleSoakActivity===1?'idleSoakActivity,pending,source':'count,idleSoak,kind,source')));
+  assert.deepEqual(messages.filter(x=>x.idleSoakActivity===1).map(x=>x.pending),[1,0]);
 });

@@ -23,3 +23,12 @@ test('continuous boundary traffic reaches its deadline instead of being hidden a
  t.mock.timers.enable({apis:['setTimeout']}); const b=quietBoundary({timeoutMs:3000}); const waiting=b.wait();
  t.mock.timers.tick(1500);b.activity();t.mock.timers.tick(1500);await assert.rejects(waiting,/DEADLINE/);
 });
+
+
+test('an in-flight startup request cannot be credited as quiet even when no new request starts', async t => {
+ t.mock.timers.enable({apis:['setTimeout']});let pending=1,done=false;
+ const b=quietBoundary({busy:()=>pending>0}),waiting=b.wait().then(()=>{done=true;});
+ t.mock.timers.tick(5000);await Promise.resolve();assert.equal(done,false);
+ pending=0;b.activity();t.mock.timers.tick(1999);await Promise.resolve();assert.equal(done,false);
+ t.mock.timers.tick(1);await waiting;assert.equal(done,true);
+});
