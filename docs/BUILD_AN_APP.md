@@ -533,7 +533,8 @@ it does not itself install the device grant. The native owner saves the exact
 commit attempt, then submits the reviewed transition. The server rechecks
 current account access and authority inside the serialized normal selector.
 
-The native review window lasts at most ten minutes with bounded idle backoff.
+The native review window lasts at most ten minutes, with idle checks backing off
+to thirty seconds.
 Closing it does not erase a durable pause. Native records under `.tendriller/`
 retain `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json`; the pause belongs to the
@@ -550,9 +551,12 @@ means the reviewed signed grant is installed. Reloads retain the same request
 and browser key. Expired, denied or stale requests offer an explicit new review
 for that device; uncertain outcomes remain on the original request.
 
-For a one-shot local run with the resident owner stopped, `npm run pair` performs
-one prepare/inspect/commit pass. It can leave a staged proposal paused for owner
-review; rerun it afterward using the same project. `npm run enroll -- PUBLIC_KEY`
+For a deliberate inspection/retry step with the resident owner stopped,
+`npm run pair` performs one prepare/inspect/commit pass. It does not wait for human
+approval or the later independent receipt-verification pass. If it prepares or
+submits a proposal, restart the same native participant to finish or reconcile
+that request; keep the native process running for the complete pairing flow.
+`npm run enroll -- PUBLIC_KEY`
 remains a deliberate manual administration route; the ordinary browser flow
 uses its own signed proof and the complete proposal review above.
 

@@ -125,12 +125,16 @@ owner review. The owner approves that fingerprint, narrow rights and exact
 proposal digest. The normal serialized host selector rechecks current authority
 and account access when committing it.
 
-The native loop is bounded to ten minutes. A timeout, lost commit reply or
+The native loop is bounded to ten minutes, with idle checks backing off to thirty
+seconds. A timeout, lost commit reply or
 process close preserves both the exact request and durable ordering pause.
 On reopen, verify the original signed transition and complete reviewed payload
 before adopting it and resuming ordering. A mismatch or unavailable status stays
 paused; never substitute a new prefix or signer. `npm run pair` performs one
-bounded pass with the resident owner stopped. The deliberate manual `enroll`
+bounded pass with the resident owner stopped; it does not wait for owner review
+or later independent receipt verification. Restart the same native participant
+to finish or reconcile a prepared/submitted proposal, and keep it running for
+the complete pairing flow. The deliberate manual `enroll`
 command still uses authenticated `info().owner_account_id` for a separately
 verified owner device; it is not the ordinary browser pairing flow.
 

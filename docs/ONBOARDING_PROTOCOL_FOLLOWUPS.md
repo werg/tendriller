@@ -245,8 +245,10 @@ exchange. The UI describes enrollment separately and reports connected only
 after application work succeeds. An offline native participant leaves a bounded
 pending/approved request with an explicit next action. The running starter's
 pairing window lasts at most ten minutes and backs off idle checks up to 30
-seconds. One-shot `npm run pair` remains available while the ordinary native
-owner is stopped; one pass can stage a proposal and leave it paused for review.
+seconds. Single-pass `npm run pair` is available for deliberate inspection/retry
+while the ordinary native owner is stopped. It does not wait for owner review or
+the later independent receipt-verification pass. Restart the same retained native
+participant to complete or reconcile a proposal that the pass prepares or submits.
 The browser makes explicit status checks, or one bounded check on returning
 from the review tab, without continuous polling or automatic request renewal.
 
