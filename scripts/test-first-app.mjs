@@ -584,8 +584,11 @@ export async function closeLocalTransport() {
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
     await expect(page.locator('#operation-id')).toHaveValue(operation);
-    await expect(page.locator('#submit')).toBeDisabled();
-    await page.locator('#retry').click();
+    // Normal operation observation may already resolve the retained attempt on
+    // reconnect. Retry is offered only while that exact attempt is uncertain.
+    await expect.poll(async () => await page.locator('#retry').isEnabled() || await page.locator('#submit').isEnabled(),
+      { timeout: 30_000 }).toBe(true);
+    if (await page.locator('#retry').isEnabled()) await page.locator('#retry').click();
     await expect(page.locator('#submit')).toBeEnabled({ timeout: 30_000 });
     await expect(page.locator('#operation-status')).toContainText('Applied: accepted', { timeout: 30_000 });
     const afterRetry = (await peer.request('query')).value;
