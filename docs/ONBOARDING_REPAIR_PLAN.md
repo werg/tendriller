@@ -63,7 +63,7 @@ and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
   does not lead to an alternate origin, repeated creation, or an expensive build.
 - [x] Tests cover open, creation-paused/read-only modes, unavailable readiness,
   and races where readiness changes before the create request.
-- [ ] Operator runbook records how to inspect/restore the intended staging
+- [x] Operator runbook records how to inspect/restore the intended staging
   readiness. No service mode is changed as part of this PR.
 
 ### 3. Release composition and usable public packages
@@ -205,7 +205,17 @@ GitHub CLI has no authenticated account.
   passed and the merged checkpoint's GitHub ChatGPT integration passed.
 - Upstream `25b6b3bd6091e53e374ab3d2fcf4fef4cc27722c` was merged so its native
   MCP reviewer qualification and bounded Durable Object restart retries remain.
-  The review runner's exact companion/live build identity is being integrated.
+  The review runner now checks the exact companion/live build before fixture
+  renewal and creation; uncertain creation/mode changes retain recovery files.
 - Final integrated core/kit qualification is a separate gate above; this earlier
   evidence must not be relabeled as a final-head pass. Live release, operator,
   installed-plugin and unaided-agent acceptance remain open.
+- Final companion integration advances to clean Chronolog commit
+  `e7f90ae8761f19a6111b1a1b18f095132454f4ff`, archive SHA-256
+  `187f0e8c6bae155823df2d52e6f441ddeddf7f2a85150f2a22a9a7efa4140753`.
+  This adds storage-version consistency checks; 25 targeted tests, full lint and
+  typecheck and the independent packed receipt/reopen consumer passed.
+- Concurrent remote fixes for same-origin SQL setup, inferred participant owner
+  shutdown, publication graph revalidation and synchronized onboarding surfaces
+  were incorporated without overwriting their commits. Final branch-head
+  qualification results and any later corrections are recorded in the core PR.
