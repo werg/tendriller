@@ -605,6 +605,12 @@ it('serves unrelated native applications through one MCP endpoint and retains in
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0,
     rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0,
     relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
+  const checkStatus = async (pending: Promise<Response>, status: number) => {
+    const response = await pending, body = await response.text();
+    // Rejected upgrades still carry an HTTP response body. Consume it so the
+    // remote request releases its Durable Object reference before hibernation.
+    expect(response.status, body).toBe(status);
+  };
   async function open<D extends typeof notes | typeof counter>(f: typeof a, definition: D, query: string, command: string, eventName: string) {
     const pagePath = new URL(f.page.api).pathname, headers = { Authorization: 'Bearer ' + f.page.token, 'Content-Type': 'application/json' };
     const peers = createPeersClient({ base: f.page.api, applicationId: f.page.application.id,
@@ -645,11 +651,11 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       ...blueprints, fetcher: (url, init) => request(new URL(String(url)).pathname, bind, init) });
     expect(proposal.approved).toBe(false);
     expect(proposal.reviewUrl).toBe(ISSUER + reviewPath);
-    expect((await request(reviewPath, bind, { headers: { Cookie: f === a ? b.cookie : a.cookie } })).status).toBe(404);
+    await checkStatus(request(reviewPath, bind, { headers: { Cookie: f === a ? b.cookie : a.cookie } }), 404);
     const upgrade = (protocols: string[]) => request(pagePath + '/assistant/adapter', bind, { headers: {
       Upgrade: 'websocket', 'Sec-WebSocket-Protocol': protocols.join(', '),
     } });
-    expect((await upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + session.deviceId])).status).toBe(401);
+    await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + session.deviceId]), 401);
     const review = async (queries: string[], origin = ISSUER) => {
       const page = await request(reviewPath, bind, { headers: { Cookie: f.cookie } });
       expect(page.status).toBe(200);
@@ -664,8 +670,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       return request(reviewPath, bind, { method: 'POST', headers: { Origin: ISSUER, Cookie: f.cookie },
         body: new URLSearchParams({ csrf, action, ...fields }) });
     };
-    expect((await review(blueprints.queries, 'https://evil.example')).status).toBe(403);
-    expect((await review(blueprints.queries)).status).toBe(303);
+    await checkStatus(review(blueprints.queries, 'https://evil.example'), 403);
+    await checkStatus(review(blueprints.queries), 303);
     let dropNextResult = false, droppedResult: Record<string, any> | null = null;
     const start = (whichKey = key, peer = session) => {
       const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools: createApplicationTools(peer),
@@ -692,7 +698,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       if (!backupDevice) throw Error('No backup configured');
       const backup = await openPeerApplication({ device: backupDevice, definition, authority: await peers.application(), epochKeys: new Map([[0, epoch]]) });
       sessions.push(backup);
-      expect((await upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + backup.deviceId])).status).toBe(409);
+      await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + backup.deviceId]), 409);
       const channel = 'backup:' + crypto.randomUUID();
       const firstRelay = peers.relay(channel, session.deviceId, { remotePeerId: backup.deviceId });
       const secondRelay = peers.relay(channel, backup.deviceId, { remotePeerId: session.deviceId });
@@ -752,7 +758,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
       headers: { 'Content-Type': 'application/json', 'Mcp-Protocol-Version': '2026-07-28', 'Mcp-Method': method },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
     expect(await (await anonymous('tools/list')).json()).toMatchObject({ result: { resultType: 'complete' } });
-    expect((await anonymous('tools/call', { name: 'list_tendrils', arguments: {} })).status).toBe(401);
+    await checkStatus(anonymous('tools/call', { name: 'list_tendrils', arguments: {} }), 401);
     const first = await open(a, notes, 'notes', 'addNote', 'note.added');
     const second = await open(b, counter, 'readings', 'count', 'counter.changed');
     expect((await first.rpc('initialize')).result.capabilities.events).toEqual({});
@@ -772,8 +778,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     const mount = (pageId: string, token: string) => request('/api/t/' + pageId + '/assistant/activity', bind, { headers: {
       Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.application-activity.v1, td_watch.' + token,
     } });
-    expect((await mount(b.page.id, proof)).status).toBe(401);
-    expect((await mount(a.page.id, proof.replace(/^[\w-]/u, proof[0] === 'A' ? 'B' : 'A'))).status).toBe(401);
+    await checkStatus(mount(b.page.id, proof), 401);
+    await checkStatus(mount(a.page.id, proof.replace(/^[\w-]/u, proof[0] === 'A' ? 'B' : 'A')), 401);
     const watched = await mount(a.page.id, proof);
     expect(watched.status).toBe(101);
     mounted = watched.webSocket!;
@@ -843,18 +849,26 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
     expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
     await runAlarm(a.page.id);
+    await expect.poll(() => inDO(a.page.id, t =>
+      t.db.one('SELECT block_reason,attempts,lease FROM assistant_jobs')), { timeout: 5000 })
+      .toMatchObject({ block_reason: 'callback_retry', attempts: 1, lease: null });
     expect(sent).toHaveLength(1);
-    expect((await first.review(['notes'])).status).toBe(303);
+    await checkStatus(first.review(['notes']), 303);
     expect(first.adapter.online).toBe(true);
     expect((await first.tool('query_application', { applicationId: first.id, query: 'privateNotes', input: null })).result.structuredContent.code)
       .toBe('operation_not_approved');
     expect((await subscribe(rotatedSecret)).result.id).toBe(watch.result.id);
     expect(verifications).toBe(2);
+    const liveSockets = await inDO(a.page.id, t => ({
+      adapter: t.ctx.getWebSockets('application-mcp').map(socket => socket.deserializeAttachment()),
+      activity: t.ctx.getWebSockets('application-activity').map(socket => socket.deserializeAttachment()),
+    }));
+    expect(liveSockets.adapter).toHaveLength(1); expect(liveSockets.activity).toHaveLength(1);
     await evictDurableObject(stub(a.page.id));
     await inDO(a.page.id, t => {
       Object.assign(t.env, settings);
-      expect(t.ctx.getWebSockets('application-mcp')).toHaveLength(1);
-      expect(t.ctx.getWebSockets('application-activity')).toHaveLength(1);
+      expect(t.ctx.getWebSockets('application-mcp').map(socket => socket.deserializeAttachment())).toEqual(liveSockets.adapter);
+      expect(t.ctx.getWebSockets('application-activity').map(socket => socket.deserializeAttachment())).toEqual(liveSockets.activity);
     });
     await advance(a.page.id, 3000);
     await runAlarm(a.page.id);
@@ -921,7 +935,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.structuredContent.code)
       .toBe('provider_offline');
     const provider = (await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.provider;
-    expect((await first.reviewAction('select-provider', { provider: await sha256Hex(first.backupKey), epoch: String(provider.selectionEpoch) })).status).toBe(303);
+    await checkStatus(first.reviewAction('select-provider', { provider: await sha256Hex(first.backupKey), epoch: String(provider.selectionEpoch) }), 303);
     expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.isError)
       .toBeUndefined();
     await vi.waitFor(async () => expect((await createApplicationTools(first.session).call('query', { name: 'notes', input: null }) as { value: unknown }).value)
@@ -955,8 +969,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect((await register(reviewerKey, 'Reviewer')).result.structuredContent.agentBindingId).toBe(reviewer.agentBindingId);
     expect((await second.tool('call_application_command', { applicationId: second.id, bindingToken: reviewerKey,
       command: 'count', input: 2, operationId: 'same-local-id' })).result.structuredContent.code).toBe('agent_binding_approval_required');
-    expect((await second.reviewAction('approve-agent', { binding: reviewer.agentBindingId, revision: '1' })).status).toBe(303);
-    expect((await second.reviewAction('approve-agent', { binding: planner.agentBindingId, revision: '1' })).status).toBe(303);
+    await checkStatus(second.reviewAction('approve-agent', { binding: reviewer.agentBindingId, revision: '1' }), 303);
+    await checkStatus(second.reviewAction('approve-agent', { binding: planner.agentBindingId, revision: '1' }), 303);
     const agentWrite = (key: string, input: number) => second.tool('call_application_command', {
       applicationId: second.id, bindingToken: key, command: 'count', input, operationId: 'same-local-id',
       context: { endpointId: 'tool-endpoint', runId: 'run-' + input },
