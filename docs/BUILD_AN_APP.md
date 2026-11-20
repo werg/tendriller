@@ -417,25 +417,42 @@ therefore shows the next setup action explicitly.
 
 ## 6. Enroll and connect the owner's browser
 
-Open the published page while signed in as its owner. Choose **Set up this
-browser**. This explicit action creates or resumes a browser-owned identity,
-closes that short setup owner, and displays its public key. It transfers no
-private key or plaintext epoch key.
+Open the published page while signed in as its owner and choose **Set up this
+browser**. The page retains one public request ID before networking. A short-lived,
+exclusively fenced Worker reopens this browser's retained identity and signs a
+challenge binding its key, account, application, service/page origins, exact
+read/write rights, current authority and expiry. The private key stays in Worker
+storage.
 
-Verify that this is the intended owner's browser. Stop `npm run peer` or `npm run assistant` if it is
-already running, then copy the exact command shown in the page:
+Open **Review this browser's key and permissions**. On the service-origin review
+page, compare the complete device fingerprint with the browser's displayed public
+key, check the application and origins, and choose **Approve this device**. This
+approves the request; it does not yet create a device grant.
+
+Keep the private project's native participant running:
 
 ```sh
-npm run enroll -- BROWSER_PUBLIC_KEY_FROM_THE_PAGE
-npm run peer # Or restart npm run assistant when using MCP access.
+npm run peer # Or npm run assistant when using MCP access.
 ```
 
-Enrollment uses the current native coordinator's complete retained prefix,
-preserves existing grants and key commitments, explicitly binds the new device
-to `info().owner_account_id`, and saves the exact signed control-change request
-before sending it. A lost reply retries that saved request. The script refuses
-an unexpected coordinator or an existing grant rather than silently selecting
-another history or widening device rights.
+That same native owner consumes approved requests, preserves the current retained
+prefix, grants and key commitments, and binds the new device to its proved account.
+It saves the exact signed control change in `.tendriller/pairing-ID.json` before
+sending it. A lost reply or restart retries the saved request. The server checks
+the proof, review, current owner and authority again inside its serialized control
+transition. The browser receives only reader/writer rights; replaying an older
+approval cannot restore a later revoked grant.
+
+Choose **Refresh pairing status**. Only **Enrollment committed** means the signed
+grant is installed. Then choose **Connect existing device**. Reloads retain the
+same request and browser key. Expired, denied or stale requests expose **Request a
+new review for this device**; this explicit action keeps the identity and obtains
+a new owner review. Uncertain outcomes remain on the original request.
+
+For a deliberate one-shot local run while the resident native owner is stopped,
+`npm run pair` consumes already approved reviews and closes the complete owner.
+`npm run enroll -- PUBLIC_KEY` remains an explicit manual administration route;
+the normal browser flow uses the signed proof and owner review above.
 
 This first app grants the browser **read and write**, with **no publication,
 administration, coordination or recovery authority**. This keeps the first

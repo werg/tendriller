@@ -36,7 +36,7 @@ return { profileId,
       const authority = await peers.application();
       const verified = await verifyAuthorityBundle(authority, configuration.descriptor);
       if (!verified.grant(device.identity.publicKey)?.reader)
-        throw Object.assign(Error(`This browser is not enrolled. Verify its public key and run npm run enroll -- ${device.identity.publicKey}`), { code: 'DEVICE_NOT_ENROLLED' });
+        throw Object.assign(Error('This browser is not enrolled. Use Set up this browser, review its exact key and rights, then wait for the running native peer to finish pairing.'), { code: 'DEVICE_NOT_ENROLLED' });
       signal.throwIfAborted();
       session = await openBrowserApplication({ device, definition, authority,
         signals: { localEcho: true, delivery: 'neighbors', limits: { maxSubscriptions: 256 } } });

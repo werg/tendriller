@@ -27,10 +27,10 @@ npm run build
 npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --operation notes-release-1
 # Now give the owner the ready page URL; they sign in to open this version.
 # Do not wait for a claimed reply before publishing.
-# In the published page, choose Set up this browser and verify its public key.
-npm run enroll -- BROWSER_PUBLIC_KEY_FROM_THE_PAGE
-npm run peer
-# In the published page, choose Connect existing device.
+npm run peer # Or npm run assistant for the MCP participant.
+# In the published page, choose Set up this browser.
+# Open its review link and approve the exact device key and read/write rights.
+# Refresh pairing status until Enrollment committed, then Connect existing device.
 ```
 
 The account-linked route derives the verified owner on the host and requires its
@@ -44,6 +44,14 @@ never mint a replacement intent as a retry. `handle_saved` is not connected.
 Without an account-linked creation route, use the supported explicit email route:
 `npm run create -- https://YOUR_HOST owner@example.com "Shared notes"`.
 Do not use it to replace an uncertain account-linked operation.
+
+The running native owner consumes reviewed browser pairing requests without
+opening a second signer. Browser reloads retain the same public request and key;
+private signing keys never leave Worker storage. The native project saves the
+exact signed control change before sending it, so an uncertain reply is retried
+with the same transition. Expired or stale requests require a fresh owner review
+for the same device. A committed pairing still needs a successful session connection.
+With the resident owner stopped, `npm run pair` can consume approved requests once.
 
 Only `page/` is publishable. `.tendriller/` holds the private agent handle,
 native device, initial key and exact setup requests; keep it out of Git and page

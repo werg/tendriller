@@ -4,9 +4,11 @@ import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createLiveView } from './helpers/live-view.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { mountReviewedMedia } from './media/panel.mjs';
+import { createBrowserPairing } from './pairing-browser.mjs';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => response.json());
+const pairing = createBrowserPairing({ configuration });
 const profileId = `tendriller-notes-${configuration.applicationId}`;
 const viewKey = `${profileId}:view`;
 let viewId = sessionStorage.getItem(viewKey) || crypto.randomUUID();
@@ -82,19 +84,61 @@ function acceptedOrRejected(result) {
   }
 }
 
-function busy(value) { $('#create-device').disabled = value || Boolean(pending); $('#connect').disabled = value; }
+function busy(value) {
+  $('#create-device').disabled = value || Boolean(pending); $('#connect').disabled = value;
+  $('#pairing-refresh').disabled = value; $('#pairing-renew').disabled = value || Boolean(pending);
+}
+
+function showPairing(status) {
+  if (!status) return;
+  $('#device-key').value = status.challenge.publicKey;
+  $('#enrollment').hidden = false;
+  $('#pairing-status').dataset.state = status.state;
+  const messages = {
+    challenge: 'Device proof is incomplete. Resume this same request.',
+    pending: 'Device proof received. Open the owner review and check this exact public key and read/write permissions.',
+    approved: 'Owner approved this device. Keep the native peer running to commit enrollment, then refresh this status.',
+    committing: 'Enrollment is being reconciled. Keep the original native project and refresh this request.',
+    committed: 'Enrollment committed. Keep the native peer running, then choose Connect existing device.',
+    expired: 'This review expired. Request a new review for this same retained device.',
+    stale: 'Application authority changed before enrollment. Request a new review for this same device.',
+    denied: 'The owner declined this review. A new review requires an explicit request.',
+    revoked: 'This enrollment was revoked. Inspect current authority with the owner; replaying this review cannot restore access.',
+    reconciliation_required: 'The original pairing outcome needs inspection. Preserve this device and the native project; do not create another identity.',
+  };
+  $('#pairing-status').textContent = messages[status.state] ?? 'Unknown pairing state. Preserve the original request and inspect it.';
+  const review = $('#pairing-review');
+  review.href = status.reviewUrl; review.hidden = status.state !== 'pending';
+  $('#pairing-renew').hidden = !['expired', 'stale', 'denied'].includes(status.state);
+  $('#create-device').textContent = 'Resume browser pairing';
+}
 
 $('#create-device').addEventListener('click', async () => {
   busy(true);
   try {
     if (pending) throw Error('Resume the existing device and resolve its pending operation before setting up another identity.');
-    const publicKey = await createBrowserIdentity({ workerUrl: new URL(configuration.ownerWorkerUrl || './worker.mjs', import.meta.url), profileId });
+    const publicKey = pairing.retained()?.publicKey ?? await createBrowserIdentity({
+      workerUrl: new URL(configuration.ownerWorkerUrl || './worker.mjs', import.meta.url), profileId });
     $('#device-key').value = publicKey;
-    $('#enrollment-command').textContent = `npm run enroll -- ${publicKey}`;
     $('#enrollment').hidden = false;
-    $('#connection').textContent = 'Device created. Enroll this public key, start the native peer, then connect.';
+    $('#pairing-status').textContent = 'Retaining this request and proving possession of the browser device…';
+    showPairing(await pairing.prepare(publicKey));
   } catch (error) { report(error); }
   finally { busy(false); }
+});
+
+$('#pairing-refresh').addEventListener('click', async () => {
+  busy(true);
+  try { showPairing(await pairing.inspect()); } catch (error) { report(error); }
+  finally { busy(Boolean(session)); }
+});
+$('#pairing-renew').addEventListener('click', async () => {
+  busy(true);
+  try {
+    if (pending) throw Error('Inspect this device’s pending operation before requesting a new review.');
+    showPairing(await pairing.prepare(pairing.retained().publicKey, { renew: true }));
+  } catch (error) { report(error); }
+  finally { busy(Boolean(session)); }
 });
 
 function renderNotes(snapshot) {
@@ -338,4 +382,14 @@ window.addEventListener('pageshow', event => {
 if (location.origin !== new URL(configuration.page_url).origin) {
   busy(true);
   $('#connection').textContent = 'Layout preview. Open the published page to enroll and connect its real application session.';
-} else busy(false);
+} else {
+  busy(false);
+  try {
+    const savedPairing = pairing.retained();
+    if (savedPairing) {
+      $('#device-key').value = savedPairing.publicKey; $('#enrollment').hidden = false;
+      $('#create-device').textContent = 'Resume browser pairing';
+      $('#pairing-status').textContent = 'A pairing request is retained on this device. Refresh its status or resume the same request.';
+    }
+  } catch (error) { report(error); }
+}

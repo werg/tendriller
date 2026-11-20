@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'tutorial-assistant-'));
-  for (const name of ['assistant.mjs', 'session.mjs', 'local.mjs', 'domain.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
+  for (const name of ['assistant.mjs', 'session.mjs', 'local.mjs', 'domain.mjs', 'pairing-native.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
   for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session']]) {
     await mkdir(join(directory, 'node_modules', scope), { recursive: true });
     await symlink(resolve(root, source), join(directory, 'node_modules', scope, name));

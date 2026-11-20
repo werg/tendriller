@@ -190,13 +190,16 @@ import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/collab
 import { serveBrowserOwner } from '@tendriller/core/collaboration/worker';
 import { createNativeAttachmentKey, createNativeSessionSupervisor, attachNativeSession } from '@tendriller/core/collaboration/native';
 import { diagnoseApplicationSession } from '@tendriller/core/collaboration/diagnostics';
+import { createSetupIntent, setupRequest, completeSetupIntent, inspectTendrilSetup } from '@tendriller/core/setup';
+import { createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge } from '@tendriller/core/pairing';
 import { openPeerApplication, createApplicationOwner } from '@chronolog/peer-session';
 import { openNativeDevice } from '@chronolog/peer-session/native';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 for (const api of [createCollaborationDefinition, createCollaborationClient, openBrowserOwner,
   createBrowserIdentity, serveBrowserOwner, createNativeSessionSupervisor, attachNativeSession,
   diagnoseApplicationSession, openPeerApplication, createApplicationOwner,
-  openNativeDevice, connectApplicationOwner]) assert.equal(typeof api, 'function');
+  openNativeDevice, connectApplicationOwner, createSetupIntent, setupRequest, completeSetupIntent,
+  inspectTendrilSetup, createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge]) assert.equal(typeof api, 'function');
 assert.match(createNativeAttachmentKey(), /^td_n_[a-f0-9]{64}$/);
 `);
   run(process.execPath, ['collaboration.mjs']);
@@ -208,6 +211,14 @@ import { openBrowserOwner, type BrowserOwnerOptions } from '@tendriller/core/col
 import { serveBrowserOwner, type BrowserOwnerConfiguration } from '@tendriller/core/collaboration/worker';
 import { createNativeSessionSupervisor, attachNativeSession, type NativeSessionOwner } from '@tendriller/core/collaboration/native';
 import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/core/collaboration/diagnostics';
+import { createSetupIntent, completeSetupIntent, type SetupIntent, type SetupResult } from '@tendriller/core/setup';
+import { createDevicePairingClient, signDevicePairingChallenge, type DevicePairingChallenge } from '@tendriller/core/pairing';
+declare const setupIntent: SetupIntent;
+declare const setupResult: SetupResult;
+declare const pairingChallenge: DevicePairingChallenge;
+const restored = await completeSetupIntent(setupIntent, setupResult);
+const pairingClient = createDevicePairingClient({url: restored.api + '/peers/pairing'});
+void createSetupIntent; void pairingClient; void signDevicePairingChallenge; void pairingChallenge;
 declare const session: CollaborationSession;
 declare const owner: NativeSessionOwner;
 declare const browser: BrowserOwnerOptions;

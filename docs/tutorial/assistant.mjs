@@ -6,6 +6,7 @@ import { createApplicationTools } from '@chronolog/peer-session';
 import { createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant, forwardApplicationEvents } from '@tendriller/core/assistant';
 import { project, privateDirectory, readPrivate, savePrivate } from './local.mjs';
 import { openSession } from './session.mjs';
+import { startReviewedPairingLoop } from './pairing-native.mjs';
 
 export async function prepareAssistant({ events = false, signal } = {}) {
   signal?.throwIfAborted();
@@ -34,11 +35,12 @@ export async function runAssistant({ signal, events = false } = {}, {
   report({ state: 'proposal_prepared', serviceOrigin: new URL(options.api).origin,
     reviewUrl: review.reviewUrl, connected: false, eventsForwarding: events,
     next: 'The owner opens the published page and reviews these permissions; no claimed reply is needed.' });
-  let owned, assistant, failure;
+  let owned, assistant, pairings, failure;
   const stopped = new AbortController();
   const lifetime = signal ? AbortSignal.any([signal, stopped.signal]) : stopped.signal;
   try {
     owned = await open({ signal });
+    if (owned.processPairings) pairings = startReviewedPairingLoop(owned.processPairings, { signal: lifetime, report });
     report({ state: 'participant_running', pid: process.pid, applicationId: owned.session.applicationId,
       processLifetime: 'Until this process or its execution environment stops.', checkpointDirectory: privateDirectory.pathname,
       futureWakeVerified: false });
@@ -62,7 +64,7 @@ export async function runAssistant({ signal, events = false } = {}, {
   finally {
     stopped.abort();
     const errors = [];
-    for (const close of [() => assistant?.close(), () => owned?.close()]) {
+    for (const close of [() => pairings?.close(), () => assistant?.close(), () => owned?.close()]) {
       try { await close(); } catch (error) { errors.push(error); }
     }
     report({ state: 'stopped', connected: false, pid: process.pid });

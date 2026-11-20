@@ -11,6 +11,7 @@
     "setup:finish": "node account-setup.mjs finish",
     "init": "node setup.mjs init",
     "enroll": "node setup.mjs enroll",
+    "pair": "node setup.mjs pair",
     "build": "node build.mjs",
     "peer": "node session.mjs",
     "assistant:prepare": "node assistant.mjs prepare",

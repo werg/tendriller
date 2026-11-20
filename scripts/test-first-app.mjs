@@ -154,17 +154,32 @@ try {
   // The engine archive is already one bundled module; source-loader rules do
   // not apply to it (and are intentionally unsupported by the v5 converter).
   const { modulesRules: _sourceRules, ...workerOptions } = sourceOptions;
+  // These credentials exist only in the isolated synthetic host. Exercise the
+  // actual OAuth verifier, scope checks and MCP setup route without a provider.
+  const oauthKey = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const oauthJwk = { ...await crypto.subtle.exportKey('jwk', oauthKey.privateKey), alg: 'ES256', kid: 'first-app-test' };
+  const oauthConfiguration = { resource: SERVICE + '/mcp', clients: [{ id: 'first-app-test', name: 'First app test',
+    redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: ['tendrils:create', 'tendrils:list'] }] };
   host = new Miniflare({ ...convertV4MiniflareOptions({ ...workerOptions,
     scriptPath: join(engine, 'package/worker.mjs'), modulesRoot: join(engine, 'package'), modules: true,
-    bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost' },
+    bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost',
+      OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration) },
     host: '127.0.0.1', port: 8790, https: true, cf: false,
   }), resourcePersistencePath: join(directory, 'host-state'), resourceTmpPath: join(directory, 'host-tmp'),
   enableDevRegistry: false, logRequests: false });
   await host.ready;
   const accounts = await host.getD1Database('ACCOUNTS');
-  for (const query of unstable_splitSqlQuery(await readFile(join(engine, 'package/migrations/0001_accounts.sql'), 'utf8')))
-    await accounts.prepare(query).run();
+  for (const migration of ['0001_accounts.sql', '0002_integration_oauth.sql', '0003_assistant_connections.sql', '0004_account_setup.sql'])
+    for (const query of unstable_splitSqlQuery(await readFile(join(engine, 'package/migrations', migration), 'utf8')))
+      await accounts.prepare(query).run();
   const now = Date.now(), ownerToken = 'tendriller-local-e2e-session';
+  const oauthGrant = crypto.randomUUID(), oauthJti = crypto.randomUUID();
+  const jwtPart = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const signingInput = jwtPart({ alg: 'ES256', typ: 'JWT', kid: oauthJwk.kid }) + '.' + jwtPart({
+    iss: SERVICE, aud: SERVICE + '/mcp', sub: 'e2e-owner', client_id: 'first-app-test', sid: oauthGrant,
+    jti: oauthJti, scope: 'tendrils:create tendrils:list', exp: Math.floor((now + 86_400_000) / 1000) });
+  const oauthToken = signingInput + '.' + Buffer.from(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' },
+    oauthKey.privateKey, new TextEncoder().encode(signingInput))).toString('base64url');
   await accounts.batch([
     accounts.prepare("UPDATE service_state SET mode = 'open' WHERE id = 1"),
     accounts.prepare('INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)').bind('e2e-owner', now, 'owner@example.test'),
@@ -173,6 +188,10 @@ try {
     accounts.prepare('INSERT INTO identity_emails (provider, subject, email) VALUES (?, ?, ?)').bind('github', 'e2e-subject', 'owner@example.test'),
     accounts.prepare('INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
       .bind(sha256(ownerToken), 'e2e-owner', now, now + 86_400_000),
+    accounts.prepare('INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?)')
+      .bind(oauthGrant, 'e2e-owner', 'first-app-test', SERVICE + '/mcp', 'tendrils:create tendrils:list', now, now + 86_400_000),
+    accounts.prepare('INSERT INTO integration_oauth_access(hash,grant_id,jti,scope,created_at,expires_at) VALUES(?,?,?,?,?,?)')
+      .bind(sha256(oauthToken), oauthGrant, oauthJti, 'tendrils:create tendrils:list', now, now + 86_400_000),
   ]);
   passed('packed host with isolated storage');
 
@@ -241,7 +260,34 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   }
 
   checkpoint('create, initialize and publish before owner claim');
-  await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'First-app qualification']);
+  if (sqlOnly) await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'First-app qualification']);
+  else {
+    const preparation = JSON.parse(await node(['account-setup.mjs', 'prepare', SERVICE, 'First-app qualification']));
+    const privateIntent = await jsonFile(join(project, '.tendriller/account-setup.json'));
+    assert.equal(JSON.stringify(preparation).includes(privateIntent.credential), false);
+    const mcp = async (name, args) => {
+      const response = await fetch(SERVICE + '/mcp', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+        headers: { Authorization: 'Bearer ' + oauthToken, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
+      assert.equal(response.status, 200);
+      const reply = await response.json();
+      assert.ok(reply.result && reply.result.isError !== true, 'The actual linked-account setup tool must succeed.');
+      return reply.result.structuredContent;
+    };
+    // Deliberately ignore the first ready reply: inspect restores the same page
+    // using only the previously retained operation and local credential.
+    const first = await mcp(preparation.prepare.tool, preparation.prepare.arguments);
+    const recovered = await mcp(preparation.inspect.tool, preparation.inspect.arguments);
+    assert.equal(recovered.pageId, first.pageId); assert.equal(recovered.state, 'ready');
+    assert.equal(JSON.stringify(recovered).includes(privateIntent.credential), false);
+    const receiptPath = join(project, '.tendriller/account-setup-result.json');
+    await writeFile(receiptPath, JSON.stringify(recovered), { mode: 0o600, flag: 'wx', flush: true });
+    await node(['account-setup.mjs', 'finish', receiptPath]);
+    assert.equal((await jsonFile(join(project, '.tendriller/handle.json'))).token, privateIntent.credential);
+    await node(['account-setup.mjs', 'finish', receiptPath]);
+    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind('e2e-owner').first()).n, 1);
+    passed('account-linked MCP setup with private preflight intent and exact lost-reply recovery');
+  }
   const handle = await jsonFile(join(project, '.tendriller/handle.json'));
   const localPage = new URL(handle.page_url); localPage.port = '8790';
   const beforeClaim = JSON.parse(await node(['setup.mjs', 'init']));
@@ -368,15 +414,33 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     await page.setViewportSize({ width: 1280, height: 960 });
     await context.addCookies([{ name: '__Host-tendriller', value: ownerToken,
       domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
-    checkpoint('create and enroll the actual browser device');
+    checkpoint('prove and review the actual browser device');
     await page.goto(handle.page_url);
     await page.locator('#create-device').click();
     await expect(page.locator('#device-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 30_000 });
     const browserDevice = await page.locator('#device-key').inputValue();
-    await node(['setup.mjs', 'enroll', browserDevice]);
-    await node(['setup.mjs', 'enroll', browserDevice]);
+    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'pending', { timeout: 30_000 });
+    const reviewUrl = await page.locator('#pairing-review').getAttribute('href');
+    await page.reload();
+    await page.locator('#pairing-refresh').click();
+    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'pending');
+    assert.equal(await page.locator('#pairing-review').getAttribute('href'), reviewUrl, 'Reload must retain the original pairing request.');
+    assert.equal(await page.locator('#device-key').inputValue(), browserDevice);
+    const reviewPage = await context.newPage();
+    await reviewPage.goto(reviewUrl);
+    await expect(reviewPage.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
+    await reviewPage.getByRole('button', { name: 'Approve this device', exact: true }).click();
+    await expect(reviewPage.locator('[role=status]')).toContainText('approved');
+    await reviewPage.close();
+    await page.locator('#pairing-refresh').click();
+    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'approved');
+    const paired = JSON.parse(await node(['setup.mjs', 'pair']));
+    assert.equal(paired.pairings.find(item => item.publicKey === browserDevice)?.state, 'committed');
+    await node(['setup.mjs', 'pair']);
+    await page.locator('#pairing-refresh').click();
+    await expect(page.locator('#pairing-status')).toHaveAttribute('data-state', 'committed');
     report.browser_device_id = browserDevice;
-    passed('independent browser signer and exact authorized enrollment retry');
+    passed('retained browser proof, exact owner review and native signed enrollment with repeat recovery');
 
     // Drive the same real native bootstrap without a second store owner. This is
     // the agent side of the test; it adds no protocol, backend or fixture state.

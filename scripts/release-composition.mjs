@@ -12,7 +12,7 @@ const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, nul
 const fail = message => { throw Error(message); };
 const sha = /^[0-9a-f]{40}$/;
 const roles = ['sdk', 'runtime', 'engine', 'tools'];
-export const REQUIRED_SDK_EXPORTS = ['.', './contract', './onboarding', './application', './signals', './peers',
+export const REQUIRED_SDK_EXPORTS = ['.', './contract', './onboarding', './setup', './pairing', './application', './signals', './peers',
   './assistant', './collaboration', './collaboration/browser', './collaboration/worker',
   './collaboration/native', './collaboration/diagnostics', './schema'];
 

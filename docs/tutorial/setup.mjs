@@ -119,13 +119,21 @@ export async function enrollBrowser(publicKey) {
   } finally { if (session) await session.close(); else await device.close(); }
 }
 
+export async function pairReviewedBrowsers() {
+  const { openSession } = await import('./session.mjs');
+  const owned = await openSession();
+  try { return { pairings: await owned.processPairings(), next: 'Start npm run peer and refresh browser pairing status before connecting.' }; }
+  finally { await owned.close(); }
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [action, ...args] = process.argv.slice(2);
   try {
     const result = action === 'create' ? await createProject(...args)
       : action === 'init' ? await initializeProject()
         : action === 'enroll' ? await enrollBrowser(args[0])
-          : (() => { throw Error('Use create, init, or enroll. See /docs/BUILD_AN_APP.md on the selected service origin.'); })();
+          : action === 'pair' ? await pairReviewedBrowsers()
+            : (() => { throw Error('Use create, init, pair, or enroll. See /docs/BUILD_AN_APP.md on the selected service origin.'); })();
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; }
 }

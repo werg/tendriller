@@ -8,6 +8,7 @@ import { createPeerIntroductions } from '@tendriller/core/peers';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
 import { definition } from './domain.mjs';
 import { devicePath, privateDirectory, project, readPrivate, savePrivate } from './local.mjs';
+import { createReviewedPairingProcessor, startReviewedPairingLoop } from './pairing-native.mjs';
 
 function paths(profile = 'main') {
   if (!/^[A-Za-z0-9_-]{1,48}$/u.test(profile)) throw Error('Choose a retained native profile name.');
@@ -35,15 +36,18 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   const selected = paths(profile);
   let binding = await readPrivate(selected.credential, true);
   if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey() });
-  let session, control;
+  let session, control, processPairings;
   const supervisor = await createNativeSessionSupervisor({ directory: selected.directory, profileId: profile, signal,
     bindings: [binding], openOwner: async () => {
-      const { host } = await project({ signal });
+      const { host, handle } = await project({ signal });
       const authority = await host.peers.application();
-      await verifyAuthorityBundle(authority, await readPrivate('descriptor.json'));
+      const descriptor = await readPrivate('descriptor.json');
+      await verifyAuthorityBundle(authority, descriptor);
       const device = await openNativeDevice({ path: selected.device });
       try {
         session = await openNativeApplication({ device, definition, authority });
+        processPairings = createReviewedPairingProcessor({ handle, host, descriptor, session, identity: device.identity,
+          store: { load: name => readPrivate(name, true), save: savePrivate } });
         const controlHost = { exchange: (message, options) => host.peers.exchange(message, options) };
         control = session.connectControlParticipant(controlHost);
         await session.participate({ control, ...createPeerIntroductions({
@@ -55,11 +59,12 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
         return createApplicationOwner(session, { host: control });
       } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
     } });
-  return { session, control, supervisor, close: () => supervisor.close() };
+  return { session, control, supervisor, processPairings, close: () => supervisor.close() };
 }
 
 export async function runPeer({ signal, profile = 'main' } = {}) {
   const owned = await openSession({ signal, profile });
+  const pairings = startReviewedPairingLoop(owned.processPairings, { signal, report: value => console.log(JSON.stringify(value)) });
   try {
     console.log(JSON.stringify({ running: true, profile, deviceId: owned.session.deviceId,
       ownerInstanceId: owned.supervisor.ownerInstanceId, terminal: 'tendril --session ./session.mjs --mode attach self' }));
@@ -68,7 +73,7 @@ export async function runPeer({ signal, profile = 'main' } = {}) {
       const snapshot = await owned.session.query('notes', null);
       console.log(JSON.stringify({ notes: snapshot.value.length, revision: snapshot.revision, change: change.kind }));
     }
-  } finally { await owned.close(); }
+  } finally { try { await pairings.close(); } finally { await owned.close(); } }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
