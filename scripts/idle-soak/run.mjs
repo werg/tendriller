@@ -30,6 +30,11 @@ export function nativeAssistantStatus(state, message, now = Date.now()) {
   record(state, { source: 'native', kind: 'assistant-status', online: message.online, eventsForwarding: message.eventsForwarding, eventsForwardingBlocked: message.eventsForwardingBlocked }, now);
   return true;
 }
+export function nativeStopped(state, message, now = Date.now()) {
+  if (message?.idleSoakStopped !== 1 || ['ownerClosed', 'observersSettled', 'assistantSettled', 'processDisposal'].some(key => message[key] !== true)) return false;
+  state.events.push({ kind: 'native-owned-shutdown', at: now, ownerClosed: true, observersSettled: true, assistantSettled: true, processDisposal: true });
+  return true;
+}
 export const nativeAssistantBusy = state => state?.coverage.bootstrapScope === 'native-with-mcp-adapter' && (state.coverage.mcpOnline !== true || state.coverage.eventsForwarding && state.coverage.eventsForwardingBlocked !== false);
 
 export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => {
@@ -101,6 +106,7 @@ export async function run(configPath, directory) {
       if (message?.idleSoakActivity === 1) emit({ ...message, kind: 'activity' });
       if (nativeAssistantStatus(s, message)) { boundary.activity(); persist(); }
       if (nativeCoverage(s, message)) { boundary.activity(); persist(); }
+      if (nativeStopped(s, message)) persist();
     });
     native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); stop(); });
     native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); stop(); } persist(); });

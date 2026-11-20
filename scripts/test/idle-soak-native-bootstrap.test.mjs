@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runNativeBootstrap, bootstrapOptions } from '../idle-soak/native-bootstrap.mjs';
+import { runNativeBootstrap, bootstrapOptions, disposeStoppedBootstrap } from '../idle-soak/native-bootstrap.mjs';
 import { newState, report } from '../idle-soak/state.mjs';
-import { nativeCoverage, nativeAssistantStatus, nativeAssistantBusy } from '../idle-soak/run.mjs';
+import { nativeCoverage, nativeAssistantStatus, nativeAssistantBusy, nativeStopped } from '../idle-soak/run.mjs';
 import { quietBoundary } from '../idle-soak/warmup.mjs';
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const readiness=f=>f.messages.filter(x=>x.idleSoakReady===1||x.idleSoakCoverage===1);
@@ -145,4 +145,16 @@ test('abort closes the shared owner before awaiting readers blocked on owner tra
  const f=fixture({assistant:false,changesNeedOwnerClose:true});await flush();f.status(readyStatus);f.query.resolve({});
  const pass=f.reconcile();f.reconciliation.resolve([]);await pass;await flush();
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert.equal(f.stats().supervisorCloses,1);
+});
+
+
+test('dedicated process disposal requires completed owned shutdown and flushes its receipt before exit',async()=>{
+ const f=fixture({assistant:false}),gate=Promise.withResolvers(),close=f.owned.close;let returned=false;
+ f.owned.close=async()=>{await gate.promise;await close();};await flush();f.stop.abort();const result=f.task.then(x=>{returned=true;return x;});await flush();assert.equal(returned,false);
+ gate.resolve();const receipt=await result;assert.deepEqual(receipt,{ownerClosed:true,observersSettled:true,assistantSettled:true});
+ const sent=Promise.withResolvers(),calls=[];const disposal=disposeStoppedBootstrap(receipt,{send:async m=>{calls.push(m);await sent.promise;},disconnect:()=>calls.push('disconnect'),exit:code=>calls.push(code)});
+ await flush();assert.equal(calls.length,1);sent.resolve();await disposal;assert.deepEqual(calls.slice(1),['disconnect',0]);
+ const s=newState({hours:48});assert(nativeStopped(s,calls[0],123));assert.equal(s.events.at(-1).processDisposal,true);assert.equal(report(s).counts.modelTurns,null);
+ let exited=false;await assert.rejects(disposeStoppedBootstrap({...receipt,ownerClosed:false},{exit:()=>exited=true}),/SHUTDOWN_REQUIRED/);assert.equal(exited,false);
+ await assert.rejects(disposeStoppedBootstrap(receipt,{send:async()=>{throw Error('IPC failed');},exit:()=>exited=true}),/IPC failed/);assert.equal(exited,false);
 });
