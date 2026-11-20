@@ -526,6 +526,21 @@ For example, after the owner adds a note:
 }
 ```
 
+Take `connected` as soon as both participants are enrolled and the native process
+configuration is measured. It retains the process checkpoint before checking the
+optional transport metric, so a transport-blocked observation still supplies the
+owned-process prerequisite for later cleanup. Record every subsequent native
+restart and stop all actual run-owned processes before the cleanup observation.
+
+Discovery timing uses only allowlisted `commandExecution` and `mcpToolCall`
+`item/started` IDs/timestamps held in memory. Their completed observations include
+`startedAt` and `completedAt`; no raw start notification or reasoning is logged.
+Every required HTTP read or MCP profile/build-guide result must finish before
+the earliest installation starts, including a failed or parallel installation.
+Missing/malformed timestamps block; comparing completion notification times alone
+cannot establish this order. Older attempts without start timing retain that
+limitation and must not be relabeled as timing-qualified.
+
 The controller returns `status` and explicit `missing`/`mismatches` metrics.
 If the native attachment exposes connected peers but no transport diagnostic,
 leave transport unknown. For the existing public WebSocket relay only, the

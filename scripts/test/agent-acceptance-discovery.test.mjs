@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mcpDiscovery } from '../agent-acceptance/discovery.mjs';
+import { mcpDiscovery, discoveryTiming } from '../agent-acceptance/discovery.mjs';
 
 function fixture() {
   const origin = 'https://staging.example', build = { coreRelease: 'test', sourceCommit: 'a'.repeat(40), runtimeId: 'b'.repeat(64), compositionId: 'c'.repeat(64) };
   const value = { serviceOrigin: origin, build, readiness: { serviceOrigin: origin, build, mode: 'open', creation: { available: true } } };
   const event = (tool, body, at) => ({ type: 'mcpToolCall', server: 'tendriller', tool, arguments: tool === 'tendril_guide' ? { topic: 'build' } : {},
-    at, result: { content: [{ type: 'text', text: JSON.stringify(body) }] } });
+    at, completedAt: at, result: { content: [{ type: 'text', text: JSON.stringify(body) }] } });
   return { origin, build, catalog: { data: [{ name: 'tendriller', tools: { get_profile: {}, tendril_guide: {} } }] }, items: [
     event('get_profile', value, '2026-01-01T00:00:01Z'), event('tendril_guide', { ...value, topic: 'build', url: origin + '/docs/BUILD_AN_APP.md', text: '# Build an app' }, '2026-01-01T00:00:02Z'),
-    { type: 'commandExecution', command: 'npm install', exitCode: 0, at: '2026-01-01T00:00:03Z' }] };
+    { type: 'commandExecution', command: 'npm install', exitCode: 0, startedAt: '2026-01-01T00:00:03Z', completedAt: '2026-01-01T00:00:05Z', at: '2026-01-01T00:00:05Z' }] };
 }
 
 test('MCP discovery proves authenticated origin/build/readiness and actual guide before installation without requiring literal HTTP reads', () => {
@@ -27,6 +27,20 @@ test('wrong server/tool/origin/build, paused creation, opaque guide and late dis
     f => { const b = JSON.parse(f.items[0].result.content[0].text); b.readiness.mode = 'paused'; f.items[0].result.content[0].text = JSON.stringify(b); },
     f => { const b = JSON.parse(f.items[1].result.content[0].text); b.url = 'https://other.example/docs/BUILD_AN_APP.md'; f.items[1].result.content[0].text = JSON.stringify(b); },
     f => { f.items[1].result.content = [{ type: 'text', text: 'Just trust this guide' }]; },
-    f => { f.items[0].at = '2026-01-01T00:00:04Z'; },
+    f => { f.items[0].completedAt = '2026-01-01T00:00:04Z'; },
   ]) { const f = fixture(); mutate(f); assert.throws(() => mcpDiscovery(f.items, f)); }
+});
+
+test('parallel installation starting before guide completion fails even if it completes later; missing and malformed times block', () => {
+  const f = fixture(); f.items[2].startedAt = '2026-01-01T00:00:01.500Z';
+  assert.throws(() => mcpDiscovery(f.items, f), /not-before-install-start/);
+  assert.throws(() => discoveryTiming([f.items[1]], [f.items[2]]), /not-before-install-start/, 'same timing proof applies to domain HTTP reads');
+  for (const bad of [undefined, null, '', 'invalid', 0]) {
+    const missing = fixture(); missing.items[2].startedAt = bad;
+    assert.throws(() => mcpDiscovery(missing.items, missing), /installation-start-time-missing/);
+    const malformed = fixture(); malformed.items[0].completedAt = bad;
+    assert.throws(() => mcpDiscovery(malformed.items, malformed), /discovery-completion-time-missing/);
+  }
+  const failedInstall = fixture(); failedInstall.items[2].exitCode = 1; failedInstall.items[2].startedAt = '2026-01-01T00:00:00Z';
+  assert.throws(() => mcpDiscovery(failedInstall.items, failedInstall), /not-before-install-start/);
 });
