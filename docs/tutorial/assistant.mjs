@@ -6,7 +6,6 @@ import { createApplicationTools } from '@chronolog/peer-session';
 import { createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant, forwardApplicationEvents } from '@tendriller/core/assistant';
 import { project, privateDirectory, readPrivate, savePrivate } from './local.mjs';
 import { openSession } from './session.mjs';
-import { watchApplicationSetup } from '@tendriller/core/setup';
 import { superviseParticipant } from './helpers/participant-lifecycle.mjs';
 
 export async function prepareAssistant({ events = false, signal } = {}) {
@@ -27,23 +26,28 @@ async function checkpoint(cursor) {
 // Dependency hooks qualify this lifecycle without real accounts or credentials.
 export async function runAssistant({ signal, events = false } = {}, {
   prepare = prepareAssistant, open = openSession, connect = connectApplicationAssistant,
-  tools = createApplicationTools, forward = forwardApplicationEvents, watch = watchApplicationSetup,
+  tools = createApplicationTools, forward = forwardApplicationEvents, watch,
   report = value => console.log(JSON.stringify(value)),
 } = {}) {
   signal?.throwIfAborted();
-  const { options, review } = await prepare({ events, signal });
-  signal?.throwIfAborted();
-  report({ state: 'proposal_prepared', serviceOrigin: new URL(options.api).origin,
-    reviewUrl: review.reviewUrl, connected: false, eventsForwarding: events,
-    next: 'The owner opens the published page and reviews these permissions; no claimed reply is needed.' });
-  let owned, lifecycle;
+  let options, owned, lifecycle;
   try {
+    // The native owner and its setup watcher must outlive optional proposal work.
     owned = await open({ signal });
     report({ state: 'participant_running', pid: process.pid, applicationId: owned.session.applicationId,
       processLifetime: 'Until this process or its execution environment stops; optional MCP connectivity has an independent lifetime.',
       checkpointDirectory: privateDirectory.pathname, futureWakeVerified: false });
-    lifecycle = superviseParticipant({ owned, signal, proposalId: review.proposed,
-      watch: callbacks => watch({ api: options.api, token: options.token, ...callbacks }),
+    lifecycle = superviseParticipant({ owned, signal,
+      watch: watch ?? owned.watchSetup,
+      prepareAdapter: async ({ signal }) => {
+        const prepared = await prepare({ events, signal });
+        signal.throwIfAborted();
+        options = prepared.options;
+        report({ state: 'proposal_prepared', serviceOrigin: new URL(options.api).origin,
+          reviewUrl: prepared.review.reviewUrl, connected: false, eventsForwarding: events,
+          next: 'The owner opens the published page and reviews these permissions; no claimed reply is needed.' });
+        return prepared.review.proposed;
+      },
       startAdapter: callbacks => connect({ ...options, session: owned.session, tools: tools(owned.session), ...callbacks }),
       onOnline: events ? (assistant, lifetime) => forward({ session: owned.session, assistant, topics: ['note'], signal: lifetime,
         checkpoint: { load: async () => {
