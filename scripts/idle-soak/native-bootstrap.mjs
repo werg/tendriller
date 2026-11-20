@@ -20,7 +20,7 @@ try {
   if (!processPairings || typeof owned.watchSetup !== 'function') throw Error('CURRENT_EVENT_DRIVEN_STARTER_REQUIRED');
   lifecycle = superviseParticipant({ owned: observed, signal: stop.signal, watch: owned.watchSetup, report() {} });
   unsubscribe = owned.session.participation.onStatus(() => record('wakeups'));
-  process.send({ idleSoakCoverage: 1, wakeups: true, modelTurns: false });
+  process.send({ idleSoakCoverage: 1, bootstrapScope: 'native-only-without-mcp-adapter', wakeups: true, modelTurns: false });
   // The wakeup definition is actual native reconciliation/status/change callbacks, not a future chat wake.
   for await (const _change of owned.session.changes({ signal: stop.signal })) record('wakeups');
 } finally {

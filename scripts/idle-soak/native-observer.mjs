@@ -2,7 +2,11 @@
 const emit = (kind, count = 1) => process.send?.({ idleSoak: 1, source: 'native', kind, count });
 const bytes = value => typeof value === 'string' ? Buffer.byteLength(value) : value?.byteLength ?? value?.size ?? 0;
 const originalFetch = globalThis.fetch;
-globalThis.fetch = function (...args) { emit('requests'); return originalFetch.apply(this, args); };
+globalThis.fetch = function (input, init = {}) {
+  emit('requests');
+  const signals = [AbortSignal.timeout(30000), init.signal, input instanceof Request ? input.signal : undefined].filter(Boolean);
+  return originalFetch.call(this, input, { ...init, signal: AbortSignal.any(signals) });
+};
 const OriginalSocket = globalThis.WebSocket;
 if (OriginalSocket) globalThis.WebSocket = new Proxy(OriginalSocket, {
   construct(Target, args) {

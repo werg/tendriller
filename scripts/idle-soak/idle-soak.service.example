@@ -8,8 +8,8 @@ StartLimitBurst=3
 [Service]
 Type=simple
 # Replace ALL absolute paths. Use the exact Node 24 executable, not an interactive shell alias.
-WorkingDirectory=/tmp/tendriller-idle-soak
-ExecStart=/ABSOLUTE/PATH/TO/node /tmp/tendriller-idle-soak/scripts/idle-soak/run.mjs --config /PRIVATE/idle-soak/config.json --state /PRIVATE/idle-soak/run-48h
+WorkingDirectory=/ABSOLUTE/QUALIFIED/CHECKOUT
+ExecStart=/ABSOLUTE/PATH/TO/node /ABSOLUTE/QUALIFIED/CHECKOUT/scripts/idle-soak/run.mjs --config /PRIVATE/idle-soak/config.json --state /PRIVATE/idle-soak/run-48h
 Restart=on-failure
 RestartSec=60
 KillMode=control-group

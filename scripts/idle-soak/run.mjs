@@ -55,15 +55,16 @@ export async function run(configPath, directory) {
     native = spawn(c.native.argv[0], [...c.native.argv.slice(1)], { cwd: c.native.cwd,
       env: { ...process.env, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${fileURLToPath(new URL('./native-observer.mjs', import.meta.url))}` },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
-    s.nativeStartedAt = Date.now(); persist();
+    s.nativeStartedAt = Date.now(); s.events.push({kind:'native-start',at:s.nativeStartedAt}); persist();
     native.on('message', message => {
       if (message?.idleSoak === 1) emit(message);
       if (message?.idleSoakCoverage === 1) {
+        if (message.bootstrapScope === 'native-only-without-mcp-adapter') s.coverage.bootstrapScope = message.bootstrapScope;
         s.coverage.wakeups ||= message.wakeups === true; s.coverage.modelTurns ||= message.modelTurns === true; persist();
       }
     });
     native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); abort.abort(); });
-    native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); abort.abort(); } persist(); });
+    native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); abort.abort(); } persist(); });
     browser = await startBrowser(c, emit);
     const coverage = await browser.adapter.audit?.({ config: c });
     s.coverage.modelTurns ||= coverage?.modelTurns === true;
