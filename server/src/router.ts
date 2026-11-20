@@ -2,6 +2,7 @@ import { routeAccountSetup } from './account-setup';
 import { ADAPTER_KEY, ASSISTANT_PROTOCOL } from './assistant-shared';
 import { parseActivityTicket } from './assistant-activity';
 import { routeAssistant } from './assistant-gateway';
+import { routeDevicePairingReview } from './device-pairing';
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
 import { servicePage } from "./accounts/ui";
 import { assertValid, schemaDocument } from "../../contract/index.mjs";
@@ -154,6 +155,8 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
     return withCors(await api(req, env, url));
   }
+
+  if (path.startsWith('/pairings/')) return routeDevicePairingReview(req, env, url);
 
   if (path === '/mcp' || path === '/connections' || path.startsWith('/connections/') ||
     path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp')

@@ -1,7 +1,7 @@
 // SQLite storage for the Tendril Durable Object (PROTOCOL section 3).
 
 /** Persistent host storage identity, independent of runtime and application releases. */
-export const STORAGE_SCHEMA_REVISION = 9;
+export const STORAGE_SCHEMA_REVISION = 10;
 
 export class StorageSchemaError extends Error {
   readonly code = 'storage_schema_mismatch';
@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS stored_files (hash TEXT PRIMARY KEY, size INTEGER NOT
 CREATE TABLE IF NOT EXISTS trusted_versions (account_id TEXT NOT NULL, version INTEGER NOT NULL, PRIMARY KEY (account_id, version));
 CREATE TABLE IF NOT EXISTS page_sessions (hash TEXT PRIMARY KEY, account_id TEXT NOT NULL, role TEXT NOT NULL,
   expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS device_pairings (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS device_pairings_account ON device_pairings (account_id, created_at);
 CREATE TABLE IF NOT EXISTS visitor_signals (kind TEXT NOT NULL, value_hash TEXT NOT NULL,
   first_seen INTEGER NOT NULL, PRIMARY KEY (kind, value_hash));
 CREATE INDEX IF NOT EXISTS visitor_signals_time ON visitor_signals (kind, first_seen);

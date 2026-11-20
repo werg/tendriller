@@ -20,6 +20,7 @@ import { reviewAssistant } from './assistant-admission';
 import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter, upgradeAssistantAdapter } from './assistant-socket';
 import { nextAssistantDelivery, runAssistantDelivery } from './assistant-events';
 import { requireWritesOpen } from './service-state';
+import { reviewDevicePairing } from './device-pairing';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
 import { handleMcp } from './mcp';
@@ -177,6 +178,7 @@ export class Tendril extends DurableObject<Env> {
       }
       if (kind === 'assistant' && req.method === 'POST') return await assistantRequest(this, req);
       if (kind === 'assistant-review') return await reviewAssistant(this, req);
+      if (kind === 'pairing-review') return await reviewDevicePairing(this, req);
       if (kind === 'assistant-adapter') return await upgradeAssistantAdapter(this, req);
       if (kind === 'assistant-activity') return await upgradeAssistantActivity(this, req);
       if (kind === 'account' && url.pathname === '/account/integration-access' && req.method === 'GET') return integrationPageAccess(this, req);
