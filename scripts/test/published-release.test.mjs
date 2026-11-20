@@ -230,6 +230,10 @@ test('manual bootstrap accepts the signed HTTPS asset redirect and carries one b
 
 test('numeric browser/Node timeout codes retain a scoped release download error', async () => {
   const { readPublishedManifest } = await import('../check-published-release.mjs');
-  await assert.rejects(readPublishedManifest('a'.repeat(40),{fetcher:async()=>{throw Object.assign(Error('private transport diagnostic'),{code:23});}}),
-    error=>error.code==='release_download_failed'&&!error.message.includes('private transport diagnostic'));
+  const failure = () => Object.assign(Error('private transport diagnostic'), { code: 23 });
+  for (const fetcher of [async () => { throw failure(); },
+    async () => new Response(new ReadableStream({ start(controller) { controller.error(failure()); } }))]) {
+    await assert.rejects(readPublishedManifest('a'.repeat(40), { fetcher }),
+      error => error.code === 'release_download_failed' && !error.message.includes('private transport diagnostic'));
+  }
 });
