@@ -1,4 +1,4 @@
-/** Page-origin metadata only. This function is self-contained so holding HTML and the runtime use identical code. */
+/** Page-origin metadata only, shared by holding pages and published-page utilities. */
 export function watchPublicationUpdates({ base, onCurrent, onStatus = () => {}, signal }) {
   const protocol = 'tendriller.publication.v1';
   const endpoint = new URL('_tendril/publication-ready', base);

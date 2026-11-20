@@ -1,4 +1,3 @@
-import { watchPublicationUpdates } from '../../contract/publication-watch.mjs';
 import runtimeRelease from "./runtime-release.json";
 import type { RuntimeArtifactFeatures } from "../../contract/index.mjs";
 import { brandHead, brandLink, brandLogo, brandStyle } from "./brand";
@@ -133,19 +132,7 @@ ${brandHead()}${brandStyle}
   <p><span class="pulse" aria-hidden="true"></span><span id="publication-status" role="status">Your agent is preparing the first version. It will open here automatically.</span></p>
   <p><a href="">Check now</a></p>
 </main>
-<script>
-(() => {
-  const status = document.querySelector('#publication-status');
-  let done = false, watch;
-  watch = (${watchPublicationUpdates.toString()})({ base: document.baseURI,
-    onCurrent(notice) { if (!done && notice.current > 0) { done = true; watch?.close(); location.reload(); } },
-    onStatus(value) {
-      if (value.state === 'reconnecting') status.textContent = 'Connection interrupted. Retrying automatically.';
-      if (value.state === 'access_ended' || value.state === 'protocol_error') status.textContent = 'This page could not be opened. Select Check now to try again.';
-    },
-  });
-})();
-</script>
+
 </body>
 </html>`;
 }

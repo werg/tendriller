@@ -42,14 +42,27 @@ export function mountUtility(api: RuntimeApi): () => void {
     const node = element("button", text, className); node.type = "button"; return node;
   };
 
-  let disposed = false;
+  let disposed = false, openingPublication = false;
   const update = element("aside", undefined, "card"); update.hidden = true;
   update.setAttribute("aria-label", "Publication update"); update.setAttribute("role", "status"); update.setAttribute("aria-live", "polite");
   const openUpdate = element("a", "Open update", "primary"); openUpdate.href = api.identity.base;
   update.append(element("strong", "New version published"), element("p", "Your current page stays open until you choose the update. Finish or retain any work first.", "note"), openUpdate);
-  const publicationWatch = api.identity.version > 0 ? watchPublicationUpdates({ base: api.identity.base,
-    onCurrent(value) { if (!disposed) update.hidden = value.current === 0 || value.current === api.identity.version; },
-  }) : undefined;
+  const publicationWatch = watchPublicationUpdates({ base: api.identity.base,
+    onCurrent(value) {
+      if (disposed) return;
+      if (api.identity.version === 0) {
+        if (value.current > 0 && !openingPublication) { openingPublication = true; location.reload(); }
+      } else update.hidden = value.current === 0 || value.current === api.identity.version;
+    },
+    onStatus(value) {
+      if (api.identity.version !== 0) return;
+      const status = document.getElementById("publication-status");
+      if (!status) return;
+      status.textContent = value.state === "connected" ? "Your agent is preparing the first version. It will open here automatically."
+        : value.state === "reconnecting" ? "Connection interrupted. Retrying automatically."
+        : "This page could not be opened. Select Check now to try again.";
+    },
+  });
   const nav = element("nav"); nav.setAttribute("aria-label", "Page operations");
   const active = element("span", undefined, "sensors"); active.setAttribute("role", "status");
   const stop = button("Stop sensors", "stop");
