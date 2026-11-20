@@ -279,7 +279,7 @@ generation chain after object eviction or a lost commitment response.
 The native helper reads back `pairing-ID-intent.json`,
 `pairing-ID-prepared.json`, `pairing-ID-commit.json` and
 `pairing-ID-outcome.json` under its private project before advancing. The durable
-ordering pause is in the same device store; closing a helper window or process
+ordering pause is in the same device store; closing the native process
 does not clear it. Reopen that same participant to reconcile the original
 transition. Missing or conflicting outcomes keep ordering paused. Never delete
 the evidence, copy a signer or select a replacement prefix to make writes resume.
