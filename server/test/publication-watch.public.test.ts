@@ -5,6 +5,7 @@ import { bytesDigest, createPeerIdentity, participantGrant, signPublicationManif
 import { advance, create, inDO, req, stub, type Handle } from './helpers';
 import { peerApiJson } from './peer-exchange';
 import { PUBLICATION_WATCH_PROTOCOL } from '../src/publication-watch';
+import type { Tendril } from '../src/tendril';
 
 const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PUBLICATION_WATCH_PROTOCOL };
 const endpoint = (h: Handle) => h.page_url + '_tendril/publication-ready';
@@ -20,6 +21,43 @@ async function subscribe(h: Handle) {
 }
 const notice = (current: number) => ({ type: 'publication', version: 1, current });
 const select = (h: Handle, current: number) => inDO(h.id, t => t.transaction(() => t.db.set('current', current)));
+
+/** Pause one real policy result; retain actual D1, SQL and post-commit delivery. */
+async function withPausedPolicy(t: Tendril, change: () => void | Promise<void>) {
+  const database = t.env.ACCOUNTS, afterCommit = t.afterCommit, effects: Promise<unknown>[] = [];
+  let entered!: () => void, release!: () => void, held = false;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const statement = (value: D1PreparedStatement, policy: boolean): D1PreparedStatement => new Proxy(value, {
+    get(target, key) {
+      if (key === 'bind') return (...args: unknown[]) => statement(target.bind(...args), policy);
+      if (key === 'first' && policy) return async (...args: Parameters<D1PreparedStatement['first']>) => {
+        const result = await target.first(...args);
+        if (!held) { held = true; entered(); await gate; }
+        return result;
+      };
+      const result = Reflect.get(target, key, target);
+      return typeof result === 'function' ? result.bind(target) : result;
+    },
+  });
+  t.env.ACCOUNTS = new Proxy(database, { get(target, key) {
+    if (key === 'prepare') return (sql: string) => statement(target.prepare(sql), sql.includes('AS visitor_active'));
+    const result = Reflect.get(target, key, target);
+    return typeof result === 'function' ? result.bind(target) : result;
+  } });
+  // Observe completion without replacing the production commit/rollback boundary.
+  t.afterCommit = effect => afterCommit.call(t, () => {
+    const result = effect(); effects.push(Promise.resolve(result)); return result;
+  });
+  try {
+    t.transaction(() => t.db.set('current', 2));
+    await started;
+    await change();
+    await Promise.all(effects.slice(1));
+    release();
+    await Promise.all(effects);
+  } finally { release(); t.env.ACCOUNTS = database; t.afterCommit = afterCommit; }
+}
 
 async function publisher(h: Handle) {
   const author = await createPeerIdentity();
@@ -123,6 +161,29 @@ it.each(['session', 'link', 'expiry', 'held'] as const)('rechecks %s revocation 
       if (reason === 'held') t.db.set('disabled', true);
       t.db.set('current', 1);
     }));
+    expect(await closed).toBe(4003);
+    expect(watch.messages).toEqual([notice(0)]);
+  } finally { watch.socket.close(); }
+});
+
+it.each([1, 0])('does not replay paused selection 2 after selection changes to %s during policy authorization', async current => {
+  const h = await create({ listener: false }), watch = await subscribe(h);
+  try {
+    await inDO(h.id, t => withPausedPolicy(t, () => { t.transaction(() => t.db.set('current', current)); }));
+    // A nonzero final notice is an observed delivery barrier. Selection zero
+    // equals the initial snapshot and must suppress both the newer and held sends.
+    if (current) await expect.poll(() => watch.messages).toEqual([notice(0), notice(current)]);
+    await select(h, 3);
+    await expect.poll(() => watch.messages).toEqual(current
+      ? [notice(0), notice(current), notice(3)] : [notice(0), notice(3)]);
+  } finally { watch.socket.close(); }
+});
+
+it('revokes a session while its policy read is paused and delivers no post-revocation selection', async () => {
+  const h = await create({ listener: false }), watch = await subscribe(h);
+  try {
+    const closed = new Promise<number>(resolve => watch.socket.addEventListener('close', event => resolve(event.code), { once: true }));
+    await inDO(h.id, t => withPausedPolicy(t, () => { t.db.run('DELETE FROM page_sessions'); }));
     expect(await closed).toBe(4003);
     expect(watch.messages).toEqual([notice(0)]);
   } finally { watch.socket.close(); }
