@@ -164,6 +164,7 @@ jobs:
           if-no-files-found: error
           path: |
             dist/tendriller-*.tgz
+            dist/tendriller-chatgpt-plugin.zip
             dist/chronolog-peer-session-*.tgz
             dist/manifest.json
             dist/composition.json
@@ -177,9 +178,15 @@ jobs:
     with:
       manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
 
+  chatgpt-integration:
+    needs: [artifacts]
+    uses: ./.github/workflows/chatgpt-integration.yml
+    with:
+      manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+
   publish:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
-    needs: [check, browser, native-owner, sql-starter, artifacts]
+    needs: [check, browser, native-owner, sql-starter, chatgpt-integration, artifacts]
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml

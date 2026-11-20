@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { prepareRelease, REQUIRED_SDK_EXPORTS, sourceIdentity, verifyReleaseArtifacts } from '../release-composition.mjs';
@@ -38,6 +38,13 @@ function fixture(t, { sessionDirty = false, sqlEngines = [] } = {}) {
   };
   pack('session', { 'package.json': { name: '@chronolog/peer-session', exports: Object.fromEntries(['.', './native', './browser', './worker'].map(key => [key, './index.mjs'])) },
     'index.mjs': 'export const session = true;', 'provenance.json': { ...chronolog, dirty: sessionDirty, sqlEngines } }, join(root, 'session.tgz'));
+  for (const file of ['plugin.json', 'mcp.json', 'skills/connect-tendriller/SKILL.md']) {
+    const target = join(root, 'integrations/chatgpt/plugin', file);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(resolve(import.meta.dirname, '../../integrations/chatgpt/plugin', file), target);
+  }
+  mkdirSync(join(root, 'docs/assets'), { recursive: true });
+  copyFileSync(resolve(import.meta.dirname, '../../docs/assets/tendriller-icon-180.png'), join(root, 'docs/assets/tendriller-icon-180.png'));
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['-c', 'user.name=Composition test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'Source fixture'], { cwd: root });
@@ -198,4 +205,19 @@ test('publication verification rejects version-derived URLs even with unchanged 
   const f = fixture(t), manifest = f.prepare();
   manifest.artifacts[0].url = `https://github.com/werg/tendriller/releases/download/v${f.version}/${manifest.artifacts[0].file}`;
   assert.throws(() => verifyReleaseArtifacts(f.root, manifest), /canonical source-qualified URLs/);
+});
+
+test('source-qualified graph carries the current plugin guidance and detects ZIP tampering', t => {
+  const f = fixture(t), manifest = f.prepare();
+  const plugin = manifest.artifacts.find(item => item.role === 'plugin');
+  assert.equal(plugin.file, 'tendriller-chatgpt-plugin.zip');
+  assert.equal(plugin.type, 'application/zip');
+  assert.equal(plugin.url, `https://github.com/werg/tendriller/releases/download/source-${f.identity.source}/${plugin.file}`);
+  const skill = 'skills/connect-tendriller/SKILL.md';
+  assert.deepEqual(execFileSync('unzip', ['-p', join(f.root, 'dist', plugin.file), skill]),
+    readFileSync(join(f.root, 'integrations/chatgpt/plugin', skill)));
+  assert.deepEqual(execFileSync('unzip', ['-Z1', join(f.root, 'dist', plugin.file)], { encoding: 'utf8' }).trim().split('\n'),
+    ['plugin.json', 'mcp.json', 'assets/icon.png', skill]);
+  writeFileSync(join(f.root, 'dist', plugin.file), 'stale or altered guidance');
+  assert.throws(() => verifyReleaseArtifacts(f.root, manifest), /does not match manifest/);
 });

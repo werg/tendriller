@@ -28,7 +28,7 @@ function fixture() {
     first_app: { file: `tendriller-first-app-${version}.tgz`, profile: 'events' },
     artifacts: [...components, artifact('composition', 'composition.json', json(composition)),
       artifact('first-app', `tendriller-first-app-${version}.tgz`),
-      artifact('core-provenance', 'provenance.json'), artifact('tools-provenance', 'tools-manifest.json')] };
+      artifact('core-provenance', 'provenance.json'), artifact('tools-provenance', 'tools-manifest.json'), artifact('plugin', 'tendriller-chatgpt-plugin.zip')] };
   const expected = { sourceCommit: source, coreRelease: version, runtimeId: runtime,
     compositionId: composition.id, manifestSha256: '' };
   const saveManifest = () => { const value = json(manifest); bytes.set('manifest.json', value); expected.manifestSha256 = hash(value); };
@@ -49,8 +49,8 @@ function fixture() {
 test('the same exact published composition verifies the kit and every public component anonymously', async () => {
   const f = fixture(), result = await f.check();
   assert.equal(result.compositionId, f.expected.compositionId);
-  assert.equal(result.artifacts, 10);
-  assert.equal(f.calls.length, 11, 'Manifest plus every asset, with no fallback lookup.');
+  assert.equal(result.artifacts, 11);
+  assert.equal(f.calls.length, 12, 'Manifest plus every asset, with no fallback lookup.');
   for (const item of f.manifest.artifacts) assert(f.calls.some(call => call.url === item.url));
   assert(f.calls.every(call => call.url.startsWith(f.base + '/')));
 });
