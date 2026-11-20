@@ -1,8 +1,9 @@
 import { fork } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { importReviewPackages } from '../review/packages.mjs';
-import { at, need, same, MeasurementError } from './observer-data.mjs';
+import { at, need, same, MeasurementError, recordFile } from './observer-data.mjs';
 import { hash } from './evidence.mjs';
 
 /** Verify the published v1 signed-envelope wire format using the public canonical
@@ -39,7 +40,17 @@ export async function sessionMeasurement(session, config, sdk, { operationId, au
     storageId: session.storageId ?? null, revision: snapshot.revision, rows, status: session.status,
     participation: session.participation?.status ?? null, module: config.native.modulePath };
   if (operationId) {
-    const inspection = need(await session.operations.inspect(operationId, author ? { author } : {}), 'retained-operation');
+    let inspection = await session.operations.inspect(operationId, author ? { author } : {}), inspectionSource = 'native-attachment';
+    let inspectionEventSha256;
+    // Terminal attachments deliberately cannot inspect another same-signer
+    // adapter namespace. A real completed MCP inspection retains that adapter's
+    // signed bytes; the coherent native event/read below still proves application.
+    if (!inspection && config.native.mcpOperations?.[operationId]) {
+      const record = recordFile(config.native.project, config.native.mcpOperations[operationId]);
+      inspection = mcpOperationInspection(record.value, config, operationId, author);
+      inspectionSource = 'recorded-selected-origin-mcp-inspection'; inspectionEventSha256 = record.sha256;
+    }
+    need(inspection, 'retained-operation');
     const attempt = inspection.attempt, state = inspection.state, header = need(attempt?.payload?.header, 'signed-attempt');
     same(header.applicationId, config.applicationId, 'attempt-application');
     same(header.author, need(author, 'expected-operation-author'), 'attempt-author');
@@ -48,9 +59,9 @@ export async function sessionMeasurement(session, config, sdk, { operationId, au
     same(state.operationId, header.operationId, 'operation-signed-id');
     same(state.generation, header.generation, 'operation-generation');
     if (state.author !== undefined) same(state.author, header.author, 'applied-author');
-    if (author !== session.deviceId || operationId.startsWith('native_')) same(header.operationId, operationId, 'requested-operation-id');
+    if (author !== session.deviceId || operationId.startsWith('native_') || inspectionSource !== 'native-attachment') same(header.operationId, operationId, 'requested-operation-id');
     await verifySignedOperation(attempt, authority, sdk);
-    result.operation = { state, attempt, attemptHash: hash(sdk.encodePeerValue(attempt)), signatureVerified: true,
+    result.operation = { state, attempt, attemptHash: hash(sdk.encodePeerValue(attempt)), signatureVerified: true, inspectionSource, inspectionEventSha256,
       proofScope: 'Independent signed envelope, digest and historical grant; applied execution/read from the native session' };
     if (config.query.operationId === null) {
       const view = await session.readView(), events = [];
@@ -71,6 +82,24 @@ export async function sessionMeasurement(session, config, sdk, { operationId, au
     }
   }
   return result;
+}
+
+export function mcpOperationInspection(event, config, operationId, author) {
+  same(event?.type, 'mcpToolCall', 'inspection-event-type'); same(event.server, 'tendriller', 'inspection-mcp-server');
+  same(event.tool, 'inspect_application_operation', 'inspection-mcp-tool');
+  if (event.result?.isError) throw new MeasurementError('inspection-mcp-error', 'failed');
+  same(event.arguments?.applicationId, config.applicationId, 'inspection-request-application');
+  const blocks = event.result?.content?.filter(c => c.type === 'text');
+  if (blocks?.length !== 1) throw new MeasurementError('inspection-mcp-content', 'failed');
+  let body; try { body = JSON.parse(blocks[0].text); } catch { throw new MeasurementError('inspection-mcp-json', 'failed'); }
+  same(body.operationId, event.arguments.operationId, 'inspection-client-operation');
+  const reference = need(body.operationReference, 'inspection-operation-reference');
+  for (const [key, value] of Object.entries({ applicationId: config.applicationId, historyId: config.historyId, deviceId: author, operationId }))
+    same(reference[key], value, 'inspection-reference-' + key);
+  const inspection = need(body.operation, 'inspection-signed-operation');
+  same(inspection.attempt?.id, reference.attemptId, 'inspection-reference-attempt');
+  same(inspection.state?.attemptId, reference.attemptId, 'inspection-state-attempt');
+  return inspection;
 }
 
 /** Attach only. The observer never opens a second signer or silently replaces a store. */
@@ -133,7 +162,8 @@ export function nativeMeasurement(config, options = {}) {
 
 if (process.send && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.once('message', async ({ config, options }) => {
-    try { process.send({ ok: true, value: await probe(config, options) }, () => process.exit(0)); }
+    try { process.send({ ok: true, value: { ...await probe(config, options),
+      observerImplementationSha256: hash(readFileSync(fileURLToPath(import.meta.url))) } }, () => process.exit(0)); }
     catch (error) {
       const metric = error instanceof MeasurementError ? error.metric : /^[A-Z_]{1,100}$/.test(error.code ?? '') ? error.code : 'native-probe-unavailable';
       const invalid = /^PEER_.*(INVALID|MISMATCH|FORBIDDEN)$/u.test(error.code ?? '');

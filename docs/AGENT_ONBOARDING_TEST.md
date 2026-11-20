@@ -486,6 +486,22 @@ metric; do not provide implementation advice to repair the baseline's score.
 Use the normal `observe --input /private/check.json` controller command. Supported
 check inputs and their sequence:
 
+For an MCP-authored operation in the same native signer's separate adapter
+namespace, the terminal attachment may correctly refuse inspection. Do not
+broaden that binding or open another owner. If the model actually called
+`inspect_application_operation`, `native.mcpOperations` may map its canonical
+operation ID to the retained completed event, for example a file reference to
+`observable.jsonl` with `format: "jsonl"` and the exact zero-based `line`.
+The observer accepts only that selected server/tool and matching client request,
+application/history/device/operation/attempt reference. The response must contain
+the **raw signed attempt**, whose signature and historical grant are verified
+independently. It still requires the exact authenticated applied event in a
+coherent native read and the matching browser row. A receipt, saved status or
+model completion message alone cannot substitute for those bytes. Native probe
+results record their implementation SHA-256, including when a separately forked
+probe was fixed after controller launch; retain the controller's original source
+identity and do not relabel the entire run as having used a newer harness.
+
 | Check | Input/options and observed proof |
 | --- | --- |
 | `preclaim-publication` | Observe before claim; independently verify the selected signed publication and unclaimed host response. |
