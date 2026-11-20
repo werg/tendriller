@@ -1,7 +1,7 @@
 /** Own one application lifetime. Optional integration failures never close its signing store. */
 export function superviseParticipant({ owned, signal, watch, startAdapter, proposalId, onOnline, report = () => {},
   retryMs = 1000, maxRetryMs = 60000 }) {
-  const stop = new AbortController(), lifetime = AbortSignal.any([owned.session.signal, stop.signal, ...[signal].filter(Boolean)]);
+  const stop = new AbortController(), lifetime = AbortSignal.any([owned.session.signal, stop.signal, signal].filter(Boolean));
   let notice, dirty = false, processing, adapter, adapterAbort, adapterRevision, blockedRevision;
   let expiryTimer, retryTimer, failures = 0, adapterTask;
   const tasks = new Set();
@@ -61,6 +61,8 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, propo
         const results = owned.processPairings ? await owned.processPairings({ signal: lifetime }) : [];
         failures = 0; clearTimeout(expiryTimer); expiryTimer = undefined;
         for (const result of results) report({ pairing: result });
+        if (results.some(result => result.state === 'committed') && await owned.session.orderingPause?.()) dirty = true;
+        if (results.some(result => result.state === 'committing')) retry();
         // One local deadline for active human review, never idle server polling.
         const deadlines = results.filter(result => ['pending', 'approved', 'committing'].includes(result.state))
           .map(result => result.expiresAt).filter(at => Number.isSafeInteger(at) && at > Date.now());
@@ -69,7 +71,8 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, propo
         if (lifetime.aborted) return;
         report({ state: 'pairing_unavailable', code: safeCode(error), participantRunning: true });
         // Missing owner claim is resolved by its notification; don't poll it.
-        if (!['pairing_account_required', 'pairing_account_revoked', 'forbidden', 'agent_binding_revoked'].includes(error.code)) retry();
+        if (!['pairing_account_required', 'pairing_account_revoked', 'forbidden', 'agent_binding_revoked'].includes(error.code) &&
+          (!String(error.code).startsWith('PAIRING_') || error.code === 'PAIRING_OUTCOME_UNCERTAIN')) retry();
       }
     }
   }

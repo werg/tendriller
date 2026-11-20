@@ -39,10 +39,11 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   const selected = paths(profile);
   let binding = await readPrivate(selected.credential, true);
   if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey() });
-  let session, control, pairing, processPairings;
+  let session, control, pairing, processPairings, setupHandle;
   const supervisor = await createNativeSessionSupervisor({ directory: selected.directory, profileId: profile, signal,
     bindings: [binding], openOwner: async () => {
       const { host, handle } = await project({ signal });
+      setupHandle = handle;
       const authority = await host.peers.application({ signal });
       const descriptor = await readPrivate('descriptor.json');
       await verifyAuthorityBundle(authority, descriptor);
@@ -73,13 +74,13 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
         return createApplicationOwner(session, { host: control });
       } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
     } });
-  return { session, control, supervisor, pairing, processPairings, close: () => supervisor.close() };
+  return { session, control, supervisor, pairing, processPairings,
+    watchSetup: callbacks => watchApplicationSetup({ api: setupHandle.api, token: setupHandle.token, ...callbacks }), close: () => supervisor.close() };
 }
 
 export async function runPeer({ signal, profile = 'main' } = {}) {
   const owned = await openSession({ signal, profile });
-  const { handle } = await project({ signal });
-  const lifecycle = superviseParticipant({ owned, signal, watch: callbacks => watchApplicationSetup({ api: handle.api, token: handle.token, ...callbacks }),
+  const lifecycle = superviseParticipant({ owned, signal, watch: owned.watchSetup,
     report: status => console.log(JSON.stringify(status)) });
   try {
     console.log(JSON.stringify({ running: true, profile, deviceId: owned.session.deviceId,

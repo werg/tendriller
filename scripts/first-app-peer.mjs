@@ -5,7 +5,7 @@ export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transpor
   return `import assert from 'node:assert/strict';
 import {createInterface} from 'node:readline';
 import {openSession} from './session.mjs';
-import {startReviewedPairingLoop} from './pairing-native.mjs';
+import {superviseParticipant} from './helpers/participant-lifecycle.mjs';
 import {servePeerInference} from './media/inference-service.mjs';
 ${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transportModule)};` : 'const closeLocalTransport = async () => {};'}
 const owned = await openSession(), {session,supervisor} = owned;
@@ -22,9 +22,8 @@ const close = () => closing ??= (async () => {
   if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed: ' + errors.map(error => error.message).join('; '));
 })();
 try {
-  pairings = startReviewedPairingLoop(owned.processPairings,
-    {durationMs:600000,intervalMs:250,maxIdleMs:500,
-      report:({pairing}) => { pairingStatus={state:pairing.state,code:pairing.code ?? null}; }});
+  pairings = superviseParticipant({owned,watch:owned.watchSetup,
+    report:({pairing}) => { if(pairing) pairingStatus={state:pairing.state,code:pairing.code ?? null}; }});
   inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: 2,
     async infer({bytes, mediaType, source, signal}) {
       signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');

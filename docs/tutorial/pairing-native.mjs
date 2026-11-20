@@ -5,17 +5,9 @@ import { createDevicePairingClient } from '@tendriller/core/pairing';
 import { readPrivate, savePrivate } from './local.mjs';
 
 const PREFIX = 'pairing:';
-const MAX_WINDOW_MS = 600_000;
 const pauseId = id => PREFIX + id;
 const saved = (id, kind) => `pairing-${id}-${kind}.json`;
 const fail = (code, message) => Object.assign(new Error(message), { code });
-const delay = (ms, signal) => new Promise((resolve, reject) => {
-  if (signal.aborted) { reject(signal.reason); return; }
-  const abort = () => { clearTimeout(timer); reject(signal.reason); };
-  const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
-  signal.addEventListener('abort', abort, { once: true });
-});
-
 /** Pure identity checks used before a host result can influence retained state. */
 export function assertPairingContext(status, { applicationId, serviceOrigin, pageOrigin }, pairingId) {
   const c = status?.challenge;
@@ -165,48 +157,3 @@ export function createReviewedPairingProcessor({ handle, host, descriptor, sessi
   };
 }
 
-export function startReviewedPairingLoop(process, { signal, report = () => {}, intervalMs = 2000,
-  maxIdleMs = 30000, durationMs = MAX_WINDOW_MS } = {}) {
-  if (!Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > MAX_WINDOW_MS ||
-      !Number.isSafeInteger(intervalMs) || intervalMs < 250 || intervalMs > 10000 ||
-      !Number.isSafeInteger(maxIdleMs) || maxIdleMs < intervalMs || maxIdleMs > 30000)
-    throw fail('PAIRING_WINDOW_INVALID', 'Use a finite pairing window of at most ten minutes with bounded idle backoff.');
-  const stopped = new AbortController(), lifetime = AbortSignal.any([stopped.signal, AbortSignal.timeout(durationMs), ...[signal].filter(Boolean)]);
-  const completion = (async () => {
-    let delayMs = intervalMs;
-    for (let checks = 0; checks < Math.ceil(durationMs / intervalMs) + 1 && !lifetime.aborted; checks++) {
-      try {
-        const results = await process({ signal: lifetime });
-        for (const result of results) report({ pairing: result });
-        delayMs = results.some(result => ['pending', 'approved', 'committing', 'committed'].includes(result.state))
-          ? intervalMs : Math.min(maxIdleMs, delayMs * 2);
-      } catch (error) {
-        if (lifetime.aborted) break;
-        report({ pairing: { state: 'inspection_unavailable', code: error.code || error.name, nextAction: error.message } });
-        delayMs = Math.min(maxIdleMs, delayMs * 2);
-      }
-      try { await delay(delayMs, lifetime); } catch { break; }
-    }
-  })();
-  return Object.freeze({ done: completion, async close() { stopped.abort(); await completion; } });
-}
-
-/** Starts at most ten minutes of polling. A timeout or close never releases an
- * uncertain ordering pause; reopening the same owner resumes its exact journal. */
-export function startPairingWindow({ owned, durationMs = MAX_WINDOW_MS, intervalMs = 2000, maxIdleMs = 30000, signal, onStatus = () => {} }) {
-  if (!Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > MAX_WINDOW_MS ||
-      !Number.isSafeInteger(intervalMs) || intervalMs < 250 || intervalMs > 10000)
-    throw fail('PAIRING_WINDOW_INVALID', 'Use a finite pairing window of at most ten minutes.');
-  if (!owned?.session || !owned.pairing) throw fail('PAIRING_OWNER_REQUIRED', 'Use the existing retained native owner returned by openSession.');
-  const process = owned.processPairings ?? createReviewedPairingProcessor({ session: owned.session, pairing: owned.pairing });
-  const loop = startReviewedPairingLoop(process, { durationMs, intervalMs, maxIdleMs,
-    signal: AbortSignal.any([owned.session.signal, ...[signal].filter(Boolean)]), report: ({ pairing }) => onStatus(pairing) });
-  const done = (async () => {
-    await loop.done;
-    const pause = await owned.session.orderingPause().catch(() => undefined);
-    onStatus({ state: 'window_closed', orderingPaused: Boolean(pause),
-      nextAction: pause ? 'A reviewed or uncertain transition still holds ordering. Restart this same native peer to inspect its original request.'
-        : 'This finite pairing window ended. Restart the same native peer to open another window.' });
-  })();
-  return Object.freeze({ done, async close() { await loop.close(); await done; } });
-}

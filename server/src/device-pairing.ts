@@ -326,7 +326,7 @@ async function commit(t: Tendril, req: Request, principal: Principal, input: Rec
     await fresh(t, principal);
     if (result.generation && result.state !== 'reconciliation_required') {
       record.state = 'committed'; record.generation = result.generation;
-      t.transaction(() => save(t, record));
+      t.transaction(() => { save(t, record); notifySetupChanged(t); });
     }
     return result;
   });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,18 +13,21 @@ async function participant(t, { failInference = false, failPairing = false, orph
   const directory = await mkdtemp(join(tmpdir(), 'peer-close-'));
   const calls = join(directory, 'cleanup-calls');
   await mkdir(join(directory, 'media'));
+  await mkdir(join(directory, 'helpers'));
+  await copyFile(new URL('../../docs/tutorial/helpers/participant-lifecycle.mjs', import.meta.url),join(directory,'helpers/participant-lifecycle.mjs'));
   await writeFile(join(directory, 'session.mjs'), `import {appendFile} from 'node:fs/promises';
 export async function openSession() {
   const resource = setInterval(() => {}, 1000);
-  return {session:{deviceId:'fixture-device',close(){throw Error('Must close the entire owned bootstrap');}},
+  const watched=Promise.withResolvers();
+  return {
+    watchSetup(){return {closed:watched.promise,async close(){
+      await appendFile(${JSON.stringify(calls)},'pairing\\n');watched.resolve();
+      ${failPairing ? "throw Error('setup close failed');" : ''}
+    }};},
+    session:{deviceId:'fixture-device',close(){throw Error('Must close the entire owned bootstrap');}},
     supervisor:{ownerInstanceId:'fixture-owner'},
     async close(){await appendFile(${JSON.stringify(calls)},'owner\\n');clearInterval(resource);}};
 }`);
-  await writeFile(join(directory, 'pairing-native.mjs'), `import {appendFile} from 'node:fs/promises';
-export function startReviewedPairingLoop(){return {async close(){
-  await appendFile(${JSON.stringify(calls)},'pairing\\n');
-  ${failPairing ? "throw Error('pairing close failed');" : ''}
-}};}`);
   await writeFile(join(directory, 'media/inference-service.mjs'), `import {appendFile} from 'node:fs/promises';
 export function servePeerInference(){return {snapshot(){return {};},async close(){
   await appendFile(${JSON.stringify(calls)},'inference\\n');

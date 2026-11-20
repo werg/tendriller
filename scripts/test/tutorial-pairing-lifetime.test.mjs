@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
+import { superviseParticipant } from '../../docs/tutorial/helpers/participant-lifecycle.mjs';
 import { createClient } from '../../contract/client.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -14,7 +15,7 @@ const built = await build({ entryPoints: [root + 'docs/tutorial/pairing-native.m
   } }] });
 const native = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
 
-for (const ending of ['close', 'deadline']) test(`pairing ${ending} cancels its blocked authority HTTP read and preserves the durable pause`, { timeout: 3_000 }, async () => {
+for (const ending of ['close', 'abort']) test(`pairing ${ending} cancels its blocked authority HTTP read and preserves the durable pause`, { timeout: 3_000 }, async () => {
   const applicationId = '11'.repeat(32), pairingId = '22'.repeat(32);
   const handle = { api: 'https://service.example/api/t/aaaaaaaaaaaa', token: 'synthetic-test-token',
     application: { id: applicationId }, page_url: 'https://aaaaaaaaaaaa.pages.example/s/synthetic/' };
@@ -48,14 +49,16 @@ for (const ending of ['close', 'deadline']) test(`pairing ${ending} cancels its 
     client: { inspect: async () => structuredClone(status) },
     store: { load: async () => { throw Error('No authority result was received'); },
       save: async () => { throw Error('No private evidence may be changed'); } } });
-  const loop = native.startReviewedPairingLoop(process, { durationMs: ending === 'deadline' ? 50 : 10_000,
-    intervalMs: 250, maxIdleMs: 250 });
+  const stop = new AbortController(), channelClosed = Promise.withResolvers();
+  const loop = superviseParticipant({ owned: { session, processPairings: process }, signal: stop.signal,
+    watch({onChange}) { queueMicrotask(() => onChange({type:'setup',version:1,assistant:{proposalId:null,approved:false,revision:null}}));
+      return {closed:channelClosed.promise, close(){channelClosed.resolve();}}; } });
   try {
     await entered.promise;
     assert.ok(requestSignal instanceof AbortSignal, 'the helper signal reaches the public host fetch');
-    if (ending === 'close') await loop.close(); else await loop.done;
+    if (ending === 'close') await loop.close(); else { stop.abort(); await loop.done; }
     assert.equal(aborted, true);
-    assert.equal(requestSignal.reason.name, ending === 'deadline' ? 'TimeoutError' : 'AbortError');
+    assert.equal(requestSignal.reason.name, 'AbortError');
     assert.equal(pendingRequests, 0, 'the cancelled request releases its fixture-owned timer and listener');
     assert.equal(requests, 1, 'the ended window does not start another authority read');
     assert.equal(resumed, 0, 'cancelling inspection cannot release uncertain ordering');
