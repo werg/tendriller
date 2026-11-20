@@ -39,6 +39,9 @@ test('receipt timeline validates vocabulary, discards labels/secrets and bounds 
   assert.equal(record(s,{source:'native',kind:'requests'},NaN),false);
   const result=report(s); assert(!JSON.stringify(result).includes('SECRET'));
   assert.equal(result.activityTimelineDropped,17); assert.equal(result.coverage.eventsForwarding,false);
+  assert.equal(s.coverage.byteScope,'websocket-frames');
+  delete s.coverage.byteScope;
+  assert.equal(report(s).coverage.byteScope,'websocket-frames');
   assert.match(result.wakeupScope,/setup\/pairing/); assert.match(result.wakeupScope,/excludes kernel-internal.*AI/);
 });
 
