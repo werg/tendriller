@@ -1,11 +1,12 @@
 import { PEER_DIRECTORY_LIMITS as LIMITS, validatePeerAdvertisement, validatePeerId,
   type PeerAdvertisement } from '../../contract/discovery.mjs';
+import { PEER_DISCOVERY_PROTOCOL as PROTOCOL } from '../../contract/discovery-watch.mjs';
 import { accountActive, currentPrincipal, freshPrincipal, pageAccessAllowed, participantIdentity, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
-const PROTOCOL = 'tendriller.discovery.v1', TAG = 'peer-discovery', key = 'peer_directory';
+const TAG = 'peer-discovery', key = 'peer_directory';
 interface Attachment { kind: typeof TAG; peerId: string; owner: string; connection: string; principal: Principal }
 interface StoredAdvertisement { advertisement: PeerAdvertisement; owner: string; principal: Principal; connection: string }
 const attachment = (ws: WebSocket): Attachment | null => {
@@ -78,12 +79,13 @@ export function closeDiscoverySocket(t: Tendril, ws: WebSocket): void {
 export async function exchangeDiscovery(t: Tendril, principal: Principal, action: 'read' | 'advertise' | 'withdraw', input?: any): Promise<unknown> {
   await fresh(t, principal);
   if (action === 'read') {
-    const before = active(t), permitted = new Map(await Promise.all(before.map(async row => {
-      try { await fresh(t, row.principal); return [row.connection, true] as const; }
-      catch { return [row.connection, false] as const; }
+    const before = active(t), principals = new Map(before.map(row => [row.owner, row.principal]));
+    const permitted = new Map(await Promise.all([...principals].map(async ([owner, value]) => {
+      try { await fresh(t, value); return [owner, true] as const; }
+      catch { return [owner, false] as const; }
     })));
     identity(t, principal);
-    return { applicationId: selectedApplication(t).id, peers: active(t).filter(row => permitted.get(row.connection)).map(presence) };
+    return { applicationId: selectedApplication(t).id, peers: active(t).filter(row => permitted.get(row.owner)).map(presence) };
   }
   let advertisement: PeerAdvertisement | undefined, peerId: string;
   try {
