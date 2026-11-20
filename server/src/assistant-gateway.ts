@@ -33,7 +33,8 @@ const tools = [
     { topic: { type: 'string', enum: Object.keys(assistantGuides), default: 'start' } }, []), securitySchemes: [{ type: 'noauth' }] },
   { ...tool('get_profile', 'Identify the linked account and this service origin. Includes setup links when the installed guide tool is unavailable.', null, {}, []),
     _meta: { 'openai/profile': true }, outputSchema: { type: 'object', properties: {
-      id: { type: 'string' }, serviceOrigin: { type: 'string' }, environment: { type: 'object' }, build: { type: 'object' }, setup: { type: 'object' },
+      id: { type: 'string' }, serviceOrigin: { type: 'string' }, environment: { type: 'object' }, build: { type: 'object' },
+      readiness: { type: 'object' }, setup: { type: 'object' },
     }, required: ['id'] } },
   tool('list_tendrils', 'List this account’s assistant-connected applications, not all hosted pages. For a new app or an empty list, call tendril_guide; for an existing result, call describe_application.',
     'tendrils:list', {}, []),
@@ -195,7 +196,8 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       capabilities: { tools: {}, events: {}, resources: {} }, serverInfo: { name: 'tendriller', version: serviceIdentity(env).build.coreRelease },
       _meta: { 'tendriller/service': serviceIdentity(env) },
       instructions: instructions + ' Connected service: ' + config.issuer + '. All guide links target this deployment. If tendril_guide is missing from the installed tools, read ' + config.issuer + assistantGuides.start + ' directly. Never substitute another service origin.' });
-    if (method === 'server/discover') return result(id, { resultType: 'complete', supportedVersions: ['2026-07-28'], capabilities: { tools: {}, events: {}, resources: {} } });
+    if (method === 'server/discover') return result(id, { resultType: 'complete', supportedVersions: ['2026-07-28'],
+      capabilities: { tools: {}, events: {}, resources: {} }, _meta: { 'tendriller/service': serviceIdentity(env) } });
     if (method === 'ping') return result(id, {});
     if (method === 'tools/list') return complete({ tools: tools.filter(item => !item.scope || !principal || principal.scopes.includes(item.scope)).map(({ scope, ...item }) => item) });
     if (method === 'resources/list') {
@@ -242,11 +244,11 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       }
       if (selected.name === 'get_profile') return complete(toolResult({
         id: 'profile_' + await sha256Hex(JSON.stringify([config.issuer, principal.account])),
-        ...assistantDiscovery(env, config.issuer),
+        ...await assistantDiscovery(env, config.issuer),
       }));
       if (selected.name === 'list_tendrils') {
         const connected = await listConnected(env, principal.account);
-        return complete(toolResult({ applications: connected, ...assistantDiscovery(env, config.issuer, connected.length === 0) }));
+        return complete(toolResult({ applications: connected, ...await assistantDiscovery(env, config.issuer, connected.length === 0) }));
       }
       const applicationId = string(args.applicationId, 64, APP_ID);
       const connected = await resolveConnection(env, principal.account, applicationId);

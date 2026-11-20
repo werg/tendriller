@@ -69,6 +69,13 @@ device permissions. `docs/AGENT_DELIVERY.md` defines completion as the live
 connected application with explicit process lifetime and resume evidence;
 the strict existing `/api/service` JSON contract remains unchanged. Staging and
 branch previews rewrite host documentation links to their own service origin.
+Live creation/write availability is separate at `/api/readiness`, advertised in
+the navigation descriptor and HTTP Link headers. The read-only preflight fails
+closed when service state is unavailable and reserves no account, page or quota.
+MCP discovery identifies its canonical origin; optional public
+`SERVICE_ENVIRONMENT` and `SERVICE_SOURCE_COMMIT` values label the deployment
+without guessing which custom hosts are production. An absent source checkpoint
+is reported as null; core release and runtime identity remain explicit.
 
 `scripts/onboarding.mjs` generates `llms-full.txt` from maintained guides and
 packages the explicitly enumerated tutorial source files into a download.

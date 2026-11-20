@@ -93,6 +93,7 @@ it('provides a complete public MCP onboarding route without browsing or account 
     environment: { id: origin, label: 'Staging QA', kind: 'deployment' },
     build: { coreRelease: CORE_RELEASE, sourceCommit: 'c'.repeat(40), runtimeId: expect.stringMatching(/^[a-f0-9]{64}$/) },
   });
+  expect((await call('server/discover')).body.result._meta['tendriller/service']).toEqual(initialized.body.result._meta['tendriller/service']);
   const catalog = await call('tools/list');
   const guideTool = catalog.body.result.tools.find((item: any) => item.name === 'tendril_guide');
   expect(guideTool.securitySchemes).toEqual([{ type: 'noauth' }]);
@@ -110,6 +111,8 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(start.build).toEqual(initialized.body.result._meta['tendriller/service'].build);
   expect(start.setup).toMatchObject({ startHere: origin + '/docs/MCP_AGENT_GUIDE.md', originPolicy: 'same-origin-only',
     guideUnavailableAction: expect.stringContaining(origin + '/.well-known/tendriller.json') });
+  expect(start.readiness).toMatchObject({ serviceOrigin: origin, mode: 'open', creation: { available: true } });
+  expect(start.setup.readinessUrl).toBe(origin + '/api/readiness');
   expect(start.text).toContain('Node 24');
   expect(start.text).toContain('POST ' + origin + '/api/tendrils');
   expect(start.text).not.toContain('https://tendriller.dev');
@@ -117,6 +120,14 @@ it('provides a complete public MCP onboarding route without browsing or account 
   const build = await readGuide({ topic: 'build' });
   expect(build.text).toContain('npm run create');
   expect(build.text).toContain(origin + '/downloads/tendriller-first-app.tgz');
+  await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
+  try {
+    const paused = await readGuide({ topic: 'build' });
+    expect(paused.readiness).toMatchObject({ mode: 'creation_paused', creation: { available: false }, writes: { available: true } });
+    expect(paused.text).toMatch(/^New application setup is blocked:/);
+    expect(paused.text.indexOf('Stop new-app setup before downloading')).toBeLessThan(paused.text.indexOf('npm install'));
+    expect(paused.text).not.toContain('https://tendriller.dev');
+  } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
   for (const topic of ['capabilities', 'connect', 'delivery', 'troubleshooting']) {
     const guide = await readGuide({ topic });
     expect(guide.url).toBe(origin + '/docs/' + ({ capabilities: 'CAPABILITIES', connect: 'CLOUDFLARE_ASSISTANT', delivery: 'AGENT_DELIVERY', troubleshooting: 'TROUBLESHOOTING' } as Record<string, string>)[topic] + '.md');
@@ -1114,6 +1125,14 @@ it('uses an operator-pinned client metadata document for public PKCE without fet
       setup: { startHere: listing.setup.startHere, guideUnavailableAction: listing.setup.guideUnavailableAction } });
     expect(identity).not.toHaveProperty('email');
     expect(identity).not.toHaveProperty('account');
+    await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
+    try {
+      const blocked = await jsonPost('/mcp', { jsonrpc: '2.0', id: 3, method: 'tools/call',
+        params: { name: 'list_tendrils', arguments: {} } }, settings, result.access_token);
+      expect((await blocked.json() as any).result.structuredContent).toMatchObject({ applications: [], serviceOrigin: ISSUER,
+        readiness: { mode: 'creation_paused', creation: { available: false } },
+        setup: { nextAction: expect.stringContaining('Stop new-app setup before downloading or installing packages') } });
+    } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
   } finally { outbound.mockRestore(); }
 });
 

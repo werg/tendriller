@@ -21,7 +21,7 @@ import { serviceDescriptor } from "./descriptor";
 import { onboardingDescriptor, onboardingLinks } from "./onboarding";
 import { capabilityCatalog } from "./capability-catalog";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
-import { requireCreationOpen, reserveCreationIp } from "./service-state";
+import { requireCreationOpen, reserveCreationIp, serviceReadiness } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
 import type { CacheContext } from "./immutable-cache";
 
@@ -233,6 +233,12 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   try {
     if (path === "/api/service" && req.method === "GET")
       return json(serviceDescriptor(), 200, { Link: onboardingLinks(publicBase(env)) });
+    if (path === "/api/readiness") {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return errorResponse(405, 'method_not_allowed', 'Readiness is read-only');
+      const readiness = await serviceReadiness(env);
+      const response = json(readiness, readiness.mode === 'unavailable' ? 503 : 200, { Link: onboardingLinks(publicBase(env)) });
+      return req.method === 'HEAD' ? new Response(null, response) : response;
+    }
     if (path === "/api/tendrils") {
       if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
       await requireCreationOpen(env);

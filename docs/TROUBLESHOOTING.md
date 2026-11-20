@@ -24,6 +24,14 @@ for the existing participant's proposal and owner review. Check Node 24, retaine
 storage and actual process lifetime before promising a connected new app. A
 missing runtime requires a concrete runtime handoff, not another website plugin.
 
+Before installing packages for a new app, read the selected origin's
+`/api/readiness` and check `creation.available`, not just HTTP success. A paused
+service returns a concrete next action without creating an account or page.
+`mode: "unavailable"`, a network failure or an invalid response means stop setup;
+404 means the host needs the readiness endpoint. Keep the original service
+origin. Restoring creation is an operator action, not a reason to create on
+production or repeat rejected requests.
+
 If the guide tool is absent, refresh the client's cached tool catalog or recreate
 the custom connection after confirming the intended service origin and deployed
 release. Keep the same origin for all setup requests; do not switch staging to

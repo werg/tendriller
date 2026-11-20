@@ -42,6 +42,31 @@ the code and exact commands before asking for those actions. A missing grant or
 package is a setup issue to diagnose; it is not a reason to silently substitute
 another persistence service.
 
+## Check the selected host before installing
+
+Use the MCP connection's `serviceOrigin`, or the exact origin the user supplied.
+Read its advertised `interfaces.readiness` at `/api/readiness` before downloading
+packages, installing dependencies or asking for the owner's email. MCP guide,
+profile and application-list responses include the same live `readiness` data.
+
+```sh
+TENDRILLER_ORIGIN=https://tendriller.dev
+curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/readiness"
+```
+
+Continue only after an HTTP 200 response with `schemaVersion: 1`, the matching
+`serviceOrigin`, `mode: "open"` and `creation.available: true`. A successful HTTP
+read can still report `creation_paused` or `read_only`; stop new-app setup and
+report `creation.nextAction`. Missing preflight (404) requires a host update;
+network errors, 503 and malformed responses leave readiness unverified. Do not
+silently fall back to creating on this or another host. The result is advisory:
+creation still checks current service state, rate limits and admission.
+
+The response identifies the environment by its canonical origin, with an optional
+operator label, and reports the core release and immutable runtime ID. A missing
+`build.sourceCommit` is explicit; a runtime hash alone does not identify every
+Worker source change. The separate `/api/service` contract remains unchanged.
+
 ## 1. Get the starter and matching public packages
 
 Use **Node 24**, npm, Git, curl and a SHA-256 checker. Public artifact downloads

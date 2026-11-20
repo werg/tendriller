@@ -1,5 +1,6 @@
 import type { Env } from "./env";
 import { HttpError } from "./http";
+import { serviceIdentity } from './service-identity';
 import ipaddr from "ipaddr.js";
 
 export type ServiceMode = "open" | "creation_paused" | "read_only";
@@ -11,6 +12,39 @@ export async function serviceMode(env: Env): Promise<ServiceMode> {
   }
   return row.mode;
 }
+
+/** An advisory service-level preflight; creation still checks live state and admission. */
+export async function serviceReadiness(env: Env) {
+  const identity = serviceIdentity(env), origin = identity.serviceOrigin;
+  let mode: ServiceMode | 'unavailable';
+  try { mode = await serviceMode(env); }
+  catch { mode = 'unavailable'; }
+  const available = mode === 'open';
+  return {
+    schemaVersion: 1,
+    ...identity,
+    mode,
+    creation: {
+      available,
+      code: available ? null : mode === 'unavailable' ? 'unavailable' : 'creation_paused',
+      message: available ? 'New page creation is enabled; each request still checks current availability and admission.'
+        : mode === 'unavailable' ? 'Service readiness could not be established.' : 'New tendrils are temporarily paused.',
+      nextAction: available ? `Continue setup on ${origin}; the creation request will recheck current service state.`
+        : mode === 'unavailable'
+          ? `Stop new-app setup before downloading or installing packages. Ask the operator to restore readiness at ${origin}. Keep this service origin; do not fall back to another host.`
+          : `Stop new-app setup before downloading or installing packages. Ask the operator to enable page creation at ${origin}. Do not repeatedly retry creation or fall back to another host.`,
+    },
+    writes: {
+      available: mode === 'open' || mode === 'creation_paused',
+      code: mode === 'unavailable' ? 'unavailable' : mode === 'read_only' ? 'read_only' : null,
+    },
+    readinessUrl: origin + '/api/readiness',
+    statusUrl: origin + '/status',
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+export type ServiceReadiness = Awaited<ReturnType<typeof serviceReadiness>>;
 
 export async function requireCreationOpen(env: Env): Promise<void> {
   if (await serviceMode(env) !== "open") throw new HttpError(503, "creation_paused", "New tendrils are temporarily paused");
