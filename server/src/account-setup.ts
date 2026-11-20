@@ -171,7 +171,6 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
     await requireCreationOpen(env);
     const email = await verifiedEmail(env, principal.account), { ip, day } = await checkCreationIp(env, req);
     if (env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: ip })).success) throw new HttpError(429, 'rate_limited');
-    const now = Date.now();
     await requireSetupPrincipal(env, principal);
     const pageId = await accountSetupPageId(origin,principal.account,principal.client,input.operationId);
     const probe = await env.TENDRIL.get(env.TENDRIL.idFromName(pageId)).fetch(new Request('https://tendril.internal/setup/allocation', {
@@ -193,6 +192,11 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
       if (row) break allocate;
       throw new HttpError(409,'reconciliation_required','The page has retained admission evidence without its setup journal. Do not reserve or recreate it.');
     }
+    // The two remote probes can outlive the access token or admitting grant.
+    // Check the current principal and take the allocation timestamp at the
+    // actual write boundary; an earlier timestamp must not extend admission.
+    await requireSetupPrincipal(env, principal);
+    const now = Date.now();
     try {
       await env.ACCOUNTS.prepare(`INSERT OR IGNORE INTO account_setups(service_origin,account_id,client_id,operation_id,request_digest,
         credential_commitment,grant_id,intended_email,page_id,application_id,request_json,creator_ip,creation_day,state,created_at,expires_at,updated_at)

@@ -160,6 +160,33 @@ it('preserves precise trigger refusal codes when account readiness changes at al
   }
 });
 
+it('does not allocate or charge when the admitting grant expires during the remote allocation probes', async () => {
+  const f = await fixture(), intent = await f.intent(), transport = f.settings.ADMISSION;
+  let expired = false;
+  f.settings.ADMISSION = { idFromName: name => transport.idFromName(name), get(id) {
+    const object = transport.get(id);
+    return { async fetch(request: Request) {
+      const response = await object.fetch(request);
+      if (!expired && new URL(request.url).pathname === '/status') {
+        expired = true;
+        await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET expires_at=? WHERE id=?').bind(Date.now(), f.grant).run();
+      }
+      return response;
+    } } as DurableObjectStub;
+  } } as DurableObjectNamespace;
+  const denied = await f.prepare(intent);
+  expect(expired).toBe(true);
+  expect(denied.response.status).toBe(401);
+  expect(denied.body.error?.code).toBe('invalid_token');
+  expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind(f.account).first()).toEqual({ n: 0 });
+  expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM account_setup_allocations WHERE account_id=?').bind(f.account).first()).toEqual({ n: 0 });
+  expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toBeNull();
+  const pageId = await accountSetupPageId(ORIGIN, f.account, f.client, intent.operationId);
+  expect(await inDO(pageId, t => t.exists())).toBe(false);
+  expect(await runInDurableObject(env.ADMISSION.get(env.ADMISSION.idFromName('global')), (_instance, state) =>
+    state.storage.sql.exec('SELECT COUNT(*) AS n FROM creations WHERE id=?', pageId).one())).toEqual({ n: 0 });
+});
+
 async function ownerSession(account: string) {
   const raw = crypto.randomUUID(), hash = await sha256Hex(raw);
   await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
