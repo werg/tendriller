@@ -19,7 +19,7 @@ export function validatePeerDiscoveryWatchOptions({ timeoutMs = PEER_DISCOVERY_W
 export function createPeerDiscoveryWatcher(openSocket, options = {}) {
   const { signal } = options, { timeoutMs, retryMs, maxRetryMs } = validatePeerDiscoveryWatchOptions(options);
   let ended = false, failure, socket, detach = () => {}, openTimer, retryTimer, failures = 0;
-  let reading = false, waiting, resolveReady, rejectReady, resolveClosed;
+  let reading = false, waiting, resolveReady, rejectReady, resolveClosed, probing, probeController;
   const queue = [], ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   const closed = new Promise(resolve => { resolveClosed = resolve; });
   ready.catch(() => {});
@@ -31,16 +31,42 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
   }
   function finish(error, code = 1000, reason = 'Discovery watch closed') {
     if (ended) return;
-    ended = true; failure = error; clearTimeout(retryTimer); disconnect(code, reason); queue.length = 0;
+    ended = true; failure = error; probeController?.abort(); clearTimeout(retryTimer); disconnect(code, reason); queue.length = 0;
     signal?.removeEventListener('abort', cancelled);
     rejectReady(error ?? fail('discovery_closed', reason)); wake(); resolveClosed(Object.freeze({ code, reason }));
   }
   const cancelled = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
-  function retry() {
-    disconnect(); queue.length = 0;
+  function scheduleRetry() {
     if (ended || retryTimer) return;
     const ms = Math.min(maxRetryMs, retryMs * 2 ** Math.min(failures++, 16));
     retryTimer = setTimeout(() => { retryTimer = undefined; connect(); }, ms);
+  }
+  function retry() {
+    disconnect(); queue.length = 0;
+    if (ended || retryTimer || probing) return;
+    if (!options.probeAccess) { scheduleRetry(); return; }
+    // Upgrade errors conceal HTTP status. Diagnose access only after failure;
+    // the authenticated caller owns credential and page-proxy handling.
+    const controller = probeController = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    probing = (async () => {
+      try {
+        await new Promise((resolve, reject) => {
+          const abort = () => reject(controller.signal.reason);
+          controller.signal.addEventListener('abort', abort, { once: true });
+          Promise.resolve().then(() => {
+            controller.signal.throwIfAborted(); return options.probeAccess({ signal: controller.signal });
+          }).then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', abort));
+        });
+      } catch (error) {
+        if (!ended && [401, 403, 409].includes(error?.status))
+          finish(fail('discovery_access_revoked', 'Discovery access was refused'), 4003, 'Discovery access refused');
+        // Network failures and unavailable/unknown self routes remain retryable.
+      } finally {
+        clearTimeout(timeout); probeController = undefined;
+      }
+    })();
+    probing.finally(() => { probing = undefined; scheduleRetry(); }).catch(() => {});
   }
   function connect() {
     if (ended) return;
