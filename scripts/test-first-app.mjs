@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -604,6 +604,47 @@ export async function closeLocalTransport() {
     await page.locator('#close').click();
     await expect(page.locator('#connection')).toContainText('Connection closed');
     await closeTestPeer(peer); peer = undefined;
+
+    checkpoint('continue the same application with owner-reviewed host access');
+    const retainedDescriptor = await readFile(join(project, '.tendriller/descriptor.json'));
+    const retainedInitialization = await readFile(join(project, '.tendriller/initialized.json'));
+    const management = await context.newPage();
+    await management.goto(new URL('_tendril/manage', handle.page_url).href);
+    const delegation = management.locator('form:has(input[name="action"][value="delegate-agent"])');
+    await delegation.locator('input[name="name"]').fill('native-continuation');
+    for (const scope of ['host:read', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'])
+      await delegation.locator(`input[name="scopes"][value="${scope}"]`).check();
+    await delegation.getByRole('button', { name: 'Add agent', exact: true }).click();
+    const notice = await management.locator('[role="status"]').textContent();
+    const code = notice?.match(new RegExp(`\\b${handle.id}-[0-9]{6}\\b`))?.[0];
+    assert.ok(code, 'The actual owner review must return a one-use code for the retained page.');
+    await writeFile(join(project, '.tendriller/delegation-code.txt'), code + '\n', { mode: 0o600, flag: 'wx', flush: true });
+    // Retain a private checkpoint but make the original handle unavailable to
+    // the tutorial. Recovery must use the public receipt and signed descriptor.
+    await rename(join(project, '.tendriller/handle.json'), join(project, '.tendriller/handle-before-reviewed-adoption.json'));
+    const adopted = JSON.parse(await node(['host-adoption.mjs', SERVICE, '.tendriller/delegation-code.txt']));
+    assert.equal(adopted.state, 'host_credential_saved');
+    assert.equal(adopted.pageId, handle.id); assert.equal(adopted.applicationId, handle.application.id);
+    const resumedAdoption = JSON.parse(await node(['host-adoption.mjs', SERVICE, '.tendriller/delegation-code.txt']));
+    assert.equal(resumedAdoption.attemptId, adopted.attemptId);
+    assert.equal(resumedAdoption.resumed, true, 'A retained response completes locally without redeeming the code twice.');
+    await management.locator('form:has(input[name="agent"][value="setup"])').getByRole('button', { name: 'Disconnect', exact: true }).click();
+    await expect(management.locator('[role="status"]')).toContainText('Disconnected setup.');
+    await management.close();
+    const rejectedSetup = await fetch(handle.api, { headers: { Authorization: 'Bearer ' + handle.token }, redirect: 'error' });
+    assert.equal(rejectedSetup.status, 401, 'The old setup credential must no longer authorize host access.');
+    await rejectedSetup.body?.cancel();
+    const resumedCreation = JSON.parse(await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'Retain the existing application']));
+    assert.equal(resumedCreation.resumed, true); assert.equal(resumedCreation.page_url, handle.page_url);
+    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind('e2e-owner').first()).n, 1);
+    assert.deepEqual(await readFile(join(project, '.tendriller/descriptor.json')), retainedDescriptor);
+    assert.deepEqual(await readFile(join(project, '.tendriller/initialized.json')), retainedInitialization);
+    assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
+      { publication: preparedPublication.publication, receipt: preparedPublication });
+    report.host_continuation = { application_id: handle.application.id, native_device_id: device.deviceId,
+      original_setup_revoked: true, original_handle_unavailable: true, retained_response_reused: true };
+    passed('actual owner-scoped delegation, retained response recovery and same-app continuation after setup revocation and handle loss');
+
     await startPeer(); assert.equal((await peer.request('query')).value.length, 4);
     await page.reload(); await page.locator('#connect').click();
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
