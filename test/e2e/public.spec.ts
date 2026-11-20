@@ -9,9 +9,9 @@ type Handle = { id: string; page_url: string; api: string; token: string; applic
 const client = (handle: Handle) => createClient(handle, { applicationId: handle.application.id });
 const handles: Handle[] = [];
 const createAttempts: number[] = [];
-let owner: ReturnType<typeof stagingSession>;
+let owner: Awaited<ReturnType<typeof stagingSession>>;
 
-test.beforeAll(() => { owner = stagingSession(); });
+test.beforeAll(async () => { owner = await stagingSession(); });
 test.beforeEach(async ({ context }) => { await owner.signIn(context); });
 async function cleanPages() {
   const failed = await Promise.all(handles.map(async handle => {
@@ -283,7 +283,7 @@ test('private intake permits corrections and releases only a reviewed aggregate 
   const { runStagingSql } = await import('./staging-sql');
   const handle = await createPage('Private intake');
   await openHoldingPage(page, handle);
-  const outsider = stagingSession();
+  const outsider = await stagingSession();
   const context = await browser.newContext();
   try {
     await outsider.signIn(context);
@@ -361,7 +361,7 @@ for (const isPrivate of [false, true]) {
     const { openBrowserSqlSpecimen } = await import('./staging-browser-sql');
     const handle = await createPage(isPrivate ? 'Browser intake' : 'Browser checklist');
     const secondContext = await browser.newContext();
-    const guest = stagingSession();
+    const guest = await stagingSession();
     try {
       await guest.signIn(secondContext);
       const second = await secondContext.newPage();

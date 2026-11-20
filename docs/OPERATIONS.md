@@ -4,7 +4,7 @@ Tendriller deploys one generic engine with a filtered Chronolog participant. Hos
 
 ## Fresh baseline
 
-Use `node scripts/storage-schema.mjs` to identify the current Durable Object schema. Reviewed browser pairing requires revision 10. This pre-release version supports only fresh matching storage. Apply the checked-in account migrations in order through the provisioning workflow and create fresh `Tendril` and `Admission` namespaces. Do not point a new application baseline at existing page storage or translate old application records. Revision 9 page storage is not compatible with this release and is left unchanged when refused.
+Use `node scripts/storage-schema.mjs` to identify the current Durable Object schema: **revision 10**, including the pairing ledger and account-setup metadata. This pre-release version supports only fresh matching storage. Apply the account migrations in order, `0001_accounts.sql` through `0004_account_setup.sql`, and create fresh `Tendril` and `Admission` namespaces. The required account-setup migration identifies its own schema revision 2 and retains allocation fences. Do not point this baseline at revision 9 page storage, reinterpret an earlier setup ledger or translate old application records. Missing or mismatched storage disables the affected operation.
 
 `scripts/provision.mjs` plans/provisions explicitly named fresh resources and writes a complete configuration. Review the intended Worker, D1 database, R2 bucket, service domain and page-domain isolation before deploying that configuration. Checked-in staging/production configuration is not evidence that resources have been prepared for the current baseline. The service workflow requires an explicit ready variable and matching storage-schema declaration; advance these only after fresh provisioning and verification.
 
@@ -42,9 +42,12 @@ The service starts with creation paused. Configure and exercise owner sign-in, p
 The optional [first-party integration OAuth server](INTEGRATION_OAUTH.md) uses the
 same current GitHub/Google account login. Enable it only after applying the
 additive `0002_integration_oauth.sql` account migration and registering exact
-clients, MCP resource, bridge credentials and signing keys. It adds no Durable
-Object schema revision. Ordinary host deployments keep OAuth disabled when
-`OAUTH_CONFIG_JSON` is absent.
+clients, MCP resource, bridge credentials and signing keys. That OAuth migration
+alone adds no Durable Object schema revision; the complete current engine uses
+the fresh revision 10 baseline above. Account-bound setup additionally requires
+`0004_account_setup.sql` and the client's currently granted `tendrils:create`
+scope. Ordinary host deployments keep OAuth disabled when `OAUTH_CONFIG_JSON`
+is absent, and existing clients acquire no new scope automatically.
 
 ## Durable Object traffic budgets
 
@@ -52,7 +55,7 @@ The host charges authenticated page HTTP/API requests and host control WebSocket
 
 Cloudflare's rate limiting counters are approximate and local to a Cloudflare location. They bound ordinary request volume without adding a database write to each request; they are not exact daily SQL-row quotas or a guarantee against a single expensive query. Monitor actual Durable Object rows read and written at the account and namespace level. A query plan that scans a growing table still needs an index or a bounded query. The Free plan's daily Durable Object row allowances are shared: one production page can exhaust the quota for subsequent reads or writes in other namespaces, including staging.
 
-Use [the Free-tier operating guide](FREE_TIER.md) for separate Worker, Durable Object, D1 and R2 budgets and the cost-conscious defaults. Idle relays do not renew authorization; their next traffic reauthorizes before forwarding under the same 30-second bound. Authenticated ad-hoc activity is persisted in minute buckets, granting a full idle window with at most one extra minute of retention after eviction. Public bundled runtime/brand assets can bypass the Worker, and immutable R2 bytes are cached behind the existing access checks. Custom/error logs remain enabled at full sampling while automatic invocation records are disabled. Production and staging have independent resources but share quotas in the same account. These traffic optimizations do not waive the fresh matching storage requirement above. Local regression counts establish avoided work, not deployed quota headroom.
+Use [the Free-tier operating guide](FREE_TIER.md) for separate Worker, Durable Object, D1 and R2 budgets and the cost-conscious defaults. Idle relays do not renew authorization; their next traffic reauthorizes before forwarding under the same 30-second bound. Authenticated ad-hoc activity is persisted in minute buckets, granting a full idle window with at most one extra minute of retention after eviction. Public bundled runtime/brand assets can bypass the Worker, and immutable R2 bytes are cached behind the existing access checks. Custom/error logs remain enabled at full sampling while automatic invocation records are disabled. Production and staging have independent resources but share quotas in the same account. Those traffic reductions originally required no schema change; the later setup/pairing implementation requires fresh schema revision 10 and preserves the same retained signed-code semantics. Local regression counts establish avoided work, not deployed quota headroom.
 
 Successful OAuth callbacks include `Server-Timing` for state lookup, provider token exchange, provider profile, and account writes. Authenticated dashboard responses include session lookup, account database work, and page-summary time. Use browser Network timing on the callback and dashboard to identify the slow phase. Page summaries have a three-second deadline and a missing summary does not prevent dashboard navigation.
 
@@ -128,14 +131,16 @@ replacement row, reset storage, or relax schema checks as a repair. Recovery
 from read-only is a separate deliberate operator decision after its cause is
 resolved.
 
-For a temporary qualification window whose previous mode was `creation_paused`,
-restore that mode after the test with the same configuration and
+If an operator explicitly authorizes a temporary qualification window whose
+previous mode was `creation_paused`, the operator records that decision and
+restores the previous mode after the test with the same configuration and
 `UPDATE service_state SET mode='creation_paused' WHERE id=1 AND mode='open'`.
 Verify the changed-row count and readiness again; a concurrent read-only
-incident must remain read-only. `scripts/run-staging-acceptance.mjs` performs
-this conditional temporary-open/restore sequence for its own staging run. It is
-not a read-only readiness probe. Repository checks and onboarding repair work do
-not change any deployed service mode.
+incident must remain read-only. Qualification workflows, the native reviewer,
+`scripts/run-staging-acceptance.mjs` and direct browser fixtures never perform
+that transition. They require open public readiness and the exact selected
+source before fixture/account creation, and stop on a pause or identity mismatch.
+Repository checks and onboarding repair work do not change deployed service modes.
 
 ### Recover an interrupted native MCP qualification fixture
 
@@ -148,12 +153,11 @@ separately identifies native tool execution, browser snapshot/login checks,
 browser-owned application peers, first-app kit qualification, ChatGPT web and
 model behavior.
 
-Before temporarily opening staging, the fixture writes its selected origin and
-original mode to a private `creation-mode.json` file. If a mode-write response is
-lost or restoration cannot establish the paused state, cleanup fails and retains
-the private fixture. Review that record and current operator activity before
-applying the restoration above. The fixture does not reopen production or
-replace a concurrent read-only decision.
+The current fixture never opens staging or records a mode-change operation.
+If recovery files from an older runner include `creation-mode.json`, preserve
+them as historical evidence of that older operation. Inspect the current mode
+and operator activity before any separately authorized restoration; do not replay
+an old mode write or override a concurrent read-only decision.
 
 If the create child fails after saving its handle, cleanup uses that handle on
 its verified original origin. If no handle survived, creation remains uncertain:
@@ -168,7 +172,7 @@ The account dashboard shows host lifecycle/publication activity. Local camera, m
 
 ## Headless staging validation
 
-Run `npm run test:e2e:public` from the repo root with Wrangler authenticated to the staging Cloudflare account and Chromium installed for Playwright, after explicitly provisioning and verifying the fresh revision 10 composition. The suite targets `https://staging.tendriller.dev`; the hostname or an older checked-in configuration alone does not establish readiness. If writes or creation are paused, report that gate without changing service policy as part of qualification. The suite provisions a disposable owner and 15-minute service session directly in the staging D1 database. The session uses the same cookie and account lookup as an OAuth session. No public test endpoint or permanent credential is required. The suite exercises the normal page claim, signed publication and live invitation routes, then removes its pages and account. OAuth provider consent and callback behavior are separate from this fixture.
+Run `npm run test:e2e:public` from a clean checkout matching the deployed source, with Wrangler authenticated to the staging Cloudflare account and Chromium installed for Playwright. First verify the fresh revision 10 namespace, required account migrations, source/runtime identity and open creation readiness. If staging is paused, the test stops before provisioning accounts or sessions; only an explicitly authorized operator may restore readiness under the procedure above. The suite targets `https://staging.tendriller.dev` and then provisions a disposable owner and 15-minute service session through the configured `ACCOUNTS` binding. The session uses the same cookie and account lookup as an OAuth session. No public test endpoint or permanent credential is required. The suite exercises normal page claim, signed publication and live invitation routes, then removes its known pages and account. OAuth provider consent and callback behavior are separate from this fixture.
 
 The suite creates four pages by default, or six with Chronolog SQL enabled, and paces creation for the staging per-IP limit. Allow the per-minute window to reset before rerunning it from the same runner. Separate daily IP limits still apply.
 
@@ -176,6 +180,6 @@ To include the live database case, build the Chronolog checkout's public archive
 
 For browser-owned SQL, pack the Chronolog session with both `--sql-native --sql-browser` and install that archive in the consumer directory. Build the matching WASM assets using `node tools/build-wasm-engine.mjs --emsdk <pinned-emsdk> --output <wasm-directory>` from the same Chronolog checkout. Set `E2E_CHRONOLOG_WASM=<wasm-directory>` alongside `E2E_CHRONOLOG_CONSUMER`. This adds two pages to the suite. It publishes the browser Worker and verified WASM assets as signed page files, admits a separate guest through the browser approval flow, and exercises checklist actions and private answer corrections across two Chromium contexts over the deployed relay. The test runner supplies test-device enrollment and keys out of band. The inspection camera check uses Chromium's virtual camera.
 
-Run the **Live staging acceptance** workflow from `master` for the complete jig. The service workflow calls the same gate after a successful staging deployment and before production promotion. The hosted runner uses the normal staging quota. The suite creates at most ten pages per clean run and paces requests to respect the five-per-minute budget. Keep parallel runs off the same staging environment. To run locally, install Chromium and WebKit with `npx playwright install --with-deps chromium webkit`, set `E2E_MOBILE_MATRIX=1` and the optional Chronolog asset paths above, then run `node scripts/run-staging-acceptance.mjs`. The wrapper temporarily opens creation when paused and restores it when the run exits.
+Run the **Live staging acceptance** workflow from `master` for the complete jig. Its public source/readiness job runs before the separate SQL fixture checkout and dependency builds. The service workflow calls the same gate after a successful staging deployment and before production promotion. The hosted runner uses the normal staging quota. The suite creates at most ten pages per clean run and paces requests to respect the five-per-minute budget. Keep parallel runs off the same staging environment. To run locally, install Chromium and WebKit with `npx playwright install --with-deps chromium webkit`, set `E2E_MOBILE_MATRIX=1` and the optional Chronolog asset paths above, then run `node scripts/run-staging-acceptance.mjs`. The wrapper checks current readiness before spawning Playwright, and each directly invoked staging fixture repeats that check before writing an account. Neither path opens or restores a service mode. These separately pinned SQL fixtures do not qualify the new events-only first-app composition; the exact-kit first-app runner records that evidence independently.
 
 The mobile jig uses an iPhone WebKit profile and an Android Chromium profile. It simulates camera permission denial, touch controls and loss of connectivity. The regular Chromium check uses a virtual camera and verifies that capture releases its track. These results do not qualify camera switching, permission prompts or operating system suspension on physical phones.

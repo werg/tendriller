@@ -117,8 +117,10 @@ and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
   remain explicit, distinguishable authority steps with resumable instructions.
 - [x] Browser enrollment instructions prevent claiming external browser
   authentication from a user's separate successful sign-in.
-- [x] Consider reviewed pairing/account-bound initiation where feasible; track
-  any new protocol or UI work explicitly instead of implying it already exists.
+- [x] Implement account-bound initiation through the scoped API/MCP/SDK, durable
+  allocation journal, locally retained credential and exact intended-account claim.
+- [x] Implement browser proof, service-origin owner review and exact native signed
+  enrollment with retained retry state; login alone grants no device authority.
 
 ### 6. Usage and operational documentation
 
@@ -148,17 +150,23 @@ and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
 - [ ] Paused staging fails early and clearly, without creating a production app.
 - [ ] Deployed/plugin/browser acceptance records exact build IDs and evidence.
 
-## Protocol and interaction follow-ups
+## Required account setup and reviewed pairing
 
-The required account-bound initiation and reviewed browser-pairing improvements
-are specified in [ONBOARDING_PROTOCOL_FOLLOWUPS.md](ONBOARDING_PROTOCOL_FOLLOWUPS.md).
-All 20 implementation/acceptance tasks there remain open and are also enumerated
-in the core draft PR description. Implementation is in progress; these are new
-protocol/UI capabilities that are not provided by discovery repairs alone.
-Account creation needs a bounded durable operation
-ledger and recoverable credential commitment; pairing needs proof of possession,
-exact owner review and the existing signed-control authority path. Existing
-OAuth tokens receive no implicit new rights.
+Both required capabilities are implemented across the host, public SDK/MCP and
+starter. [ONBOARDING_PROTOCOL_FOLLOWUPS.md](ONBOARDING_PROTOCOL_FOLLOWUPS.md) maps
+the exact APIs, limits, storage identities, tests and two remaining integrated/live
+acceptance items. Account setup retains one allocation and credential commitment;
+browser pairing retains one proved, reviewed proposal and signed-control attempt.
+Existing OAuth grants acquire no implicit new rights. The per-page baseline is
+fresh Durable Object revision 10; account setup requires the explicit
+`0004_account_setup.sql` migration and its schema revision 2 allocation fences.
+
+Committed focused tests cover same-operation recovery, account/client isolation,
+scope and credential freshness, wrong-account claim, allocation failures,
+proof/account/origin isolation, exact review/CSRF, interrupted admission, expiry,
+stale generations and replay after revocation. Full integrated checks, packed
+browser lifecycle and deployed/installed-client observations remain separate
+gates above; a source implementation is not a deployment claim.
 
 ## Attribution and work outside these repositories
 
@@ -211,7 +219,7 @@ GitHub CLI has no authenticated account.
 - Final integrated core/kit qualification is a separate gate above; this earlier
   evidence must not be relabeled as a final-head pass. Live release, operator,
   installed-plugin and unaided-agent acceptance remain open.
-- Final companion integration advances to clean Chronolog commit
+- A later companion checkpoint advances to clean Chronolog commit
   `e7f90ae8761f19a6111b1a1b18f095132454f4ff`, archive SHA-256
   `187f0e8c6bae155823df2d52e6f441ddeddf7f2a85150f2a22a9a7efa4140753`.
   This adds storage-version consistency checks; 25 targeted tests, full lint and
@@ -226,3 +234,27 @@ GitHub CLI has no authenticated account.
   credential commitments, authenticated device proofs, exact owner review and
   signed-control enrollment across the host, SDK/MCP and starter. Continue to
   distinguish implemented repository behavior from live deployment/owner gates.
+- Account implementation checkpoints add retained private SDK/starter intents,
+  OAuth API/MCP prepare/inspect/list, verified ownership, exact claim binding,
+  D1 allocation fences and idempotent per-page initialization. Subsequent tests
+  cover interrupted dispatch, expiry/orphan cleanup, missing/corrupt journals and
+  retained credential scope/revocation. Focused results: 21 setup worker plus 6
+  authority tests, 44 Admission/alarm/lifetime regressions and 6 setup SDK tests.
+- Pairing implementation checkpoints add authenticated bounded challenge/proof/
+  status, a script-free service-origin review, one-use session-bound CSRF and
+  the native signed-control consumer. Ten pairing worker tests plus database and
+  signed-control regressions passed 43 tests; pairing plus fresh setup-authority
+  checks passed 16. SDK proof tests and five starter retry/lifetime tests passed.
+- The current exact-kit browser candidate reached account-linked creation,
+  retained browser proof, exact owner review, native enrollment and commands in
+  both directions. Its first run stopped at native shutdown before complete
+  reopen qualification. Keep the final packed-browser gate open until that
+  complete run passes; earlier successful steps do not certify the whole journey.
+- Contrib PR #30 advances to `02a6079426c275d6d45399aba598bdf14f07a8d7`, documenting
+  implemented account setup and reviewed pairing with selected-host deployment
+  boundaries. Its build/check passed 59 guides, 237 source decisions and 74 tests.
+- Staging acceptance now checks public readiness and exact source before the SQL
+  fixture build, test spawn or account/session writes. Neither its wrapper nor
+  the native MCP reviewer opens a paused service. Any readiness recovery is a
+  separately authorized operator action; tests retain existing uncertain-result
+  recovery behavior and do not switch origins or modes.

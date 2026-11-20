@@ -28,10 +28,13 @@ consent, publish code, or establish a live ChatGPT connection.
    must be its exact HTTPS origin, without a trailing slash. The issuer is that
    origin; `/auth/*` continues to own upstream provider login.
 2. Apply `server/migrations/0002_integration_oauth.sql` to that account database
-   before enabling the feature. An existing current account database already
-   has `0001_accounts.sql`; apply only the additive migration. For a fresh
-   database, apply 0001 and then 0002. No existing account or page data is
-   rewritten, and no Durable Object schema revision changes.
+   before enabling the feature. The OAuth migration itself is additive and
+   does not rewrite existing account/page data. The current complete engine
+   also packages `0003_assistant_connections.sql` and the required
+   `0004_account_setup.sql` (account-setup schema revision 2); apply pending
+   compatible account migrations in order. Provision fresh matching Durable
+   Object revision 10 storage for this setup/pairing release under
+   [operations](OPERATIONS.md); do not point it at revision 9 page records.
 3. Choose the Node service's exact public HTTPS MCP resource, such as
    `https://assistant.example/mcp`. The same complete value must appear in the
    host configuration, Node resource metadata, OAuth authorization request,
@@ -55,15 +58,23 @@ consent, publish code, or establish a live ChatGPT connection.
    source does not deploy a Worker, apply a remote migration or configure
    ChatGPT.
 
-The public engine archive includes the account, OAuth and assistant connection migrations. Existing consumers keep
+The public engine archive includes the account, OAuth, assistant connection and
+account-setup migrations. Existing consumers keep
 `@tendriller/engine/accounts-schema`; the new
 `@tendriller/engine/integration-oauth-schema` export resolves the additive SQL.
-`@tendriller/engine/assistant-connections-schema` exports the connection index. All are included in the engine provenance. An external Worker
-deployment must deliberately apply the second file before configuring OAuth.
+`@tendriller/engine/assistant-connections-schema` exports the connection index and
+`@tendriller/engine/account-setup-schema` exports the setup ledger and allocation
+fences. All are included in engine provenance. An external Worker deployment
+must deliberately apply the matching account migrations before using these APIs.
 The repository's normal service and isolated branch-preview workflows already
 apply pending D1 migrations before deployment, including this additive file.
-The extra tables remain dormant when OAuth is disabled. The existing
-`scripts/storage-schema.mjs` gate still reports Durable Object revision 9.
+The extra tables remain dormant when OAuth is disabled. The current
+`scripts/storage-schema.mjs` gate reports Durable Object revision **10**, which
+requires a fresh matching namespace; the OAuth SQL migration alone did not
+change that revision. Account-bound setup additionally requires an explicitly
+configured/granted `tendrils:create` scope and a retained local credential
+commitment. It does not infer ownership from `get_profile` or silently widen
+existing grants. See [account setup and pairing](ONBOARDING_PROTOCOL_FOLLOWUPS.md).
 An enabled host missing the optional tables returns a 503 naming
 `0002_integration_oauth.sql`, including from discovery and bridge preflight.
 The read-only schema readiness result is cached for at most five seconds.

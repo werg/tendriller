@@ -12,7 +12,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  readiness:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify selected live source and open readiness before fixture work
+        run: node scripts/review/preflight.mjs --source-only --origin https://staging.tendriller.dev
+
   fixture:
+    needs: [readiness]
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
