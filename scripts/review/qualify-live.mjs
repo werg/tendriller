@@ -50,9 +50,19 @@ try {
   const host = createClient(handle, { applicationId: handle.application.id });
   let participantError;
   child.once('error', () => { participantError = true; });
-  let publication;
+  // Wait for the consumer's atomic publication checkpoint locally. Polling its
+  // host API during startup competes with its bounded control admission budget.
   const deadline = Date.now() + 30000;
-  while (!(publication = await readWithAdmissionRetry(() => host.peers.publication()))) { assert(Date.now() < deadline, 'Preclaim publication deadline'); assert(!participantError && child.exitCode === null, 'Synthetic participant must remain running'); await delay(); }
+  let published = false;
+  while (!published) {
+    assert(Date.now() < deadline, 'Preclaim publication deadline');
+    assert(!participantError && child.exitCode === null, 'Synthetic participant must remain running');
+    try { published = JSON.parse(readFileSync(join(project, '.private/pending-publication.json'))) === null; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (!published) await delay();
+  }
+  const publication = await readWithAdmissionRetry(() => host.peers.publication());
+  assert(publication, 'Verify the committed publication on the actual host');
   assert.equal((await host.info()).owner_account_id, null);
   const browser = await chromium.launch();
   try {
