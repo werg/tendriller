@@ -20,7 +20,8 @@ function operationRows(native, config, operationId, author, marker) {
     same(events.length, 1, 'operation-event-count');
     same(events[0].attemptId, native.operation.attempt.id, 'event-signed-attempt');
     same(events[0].operationId, operationId, 'event-operation'); same(events[0].author, author, 'event-author');
-    const id = need(at(events[0], need(q.eventId, 'event-row-key')), 'event-row-id');
+    const id = q.eventIdEncoding === 'author-operation-json' ? JSON.stringify([events[0].author, events[0].operationId])
+      : need(at(events[0], need(q.eventId, 'event-row-key')), 'event-row-id');
     rows = native.rows.filter(row => at(row, need(q.rowId, 'query-row-key')) === id);
   } else rows = native.rows.filter(row => at(row, q.operationId ?? '/operationId') === operationId && at(row, q.author ?? '/author') === author);
   same(rows.length, 1, 'operation-application-count');
@@ -52,7 +53,9 @@ export async function browserMeasurement(owner, config) {
   need(runtime, 'browser-runtime-identity');
   same(runtime.page, config.handle.id, 'browser-runtime-page');
   const rows = await page.locator(need(spec.rows, 'browser-rows-selector')).allInnerTexts();
-  const rowIds = spec.rowIdentityAttribute ? await page.locator(spec.rows).evaluateAll((nodes, attribute) => nodes.map(node => node.getAttribute(attribute)), spec.rowIdentityAttribute) : null;
+  const rowIds = spec.rowIdentityAttribute ? await page.locator(spec.rows).evaluateAll((nodes, { attribute, selector }) =>
+    nodes.map(node => (selector ? node.querySelector(selector) : node)?.getAttribute(attribute) ?? null),
+  { attribute: spec.rowIdentityAttribute, selector: spec.rowIdentitySelector ?? null }) : null;
   return { deviceId, runtime, rows, url: page.url(), at: now(), actionIndex: owner.actions?.length ?? 0,
     rowIds, status: spec.status ? await field(page, spec.status, 'browser-status-selector') : null };
 }
@@ -89,7 +92,11 @@ export class StarterObserver {
     const authority = await sdk.verifyAuthorityBundle(bundle, config.descriptor);
     same(authority.descriptor.applicationId, config.applicationId, 'authority-application');
     same(authority.descriptor.historyId, config.historyId, 'authority-history');
-    return { host, sdk, authority };
+    const info = await host.info();
+    same(info.id, config.handle.id, 'host-page-id');
+    same(info.application?.id, config.applicationId, 'host-application-id');
+    same(info.page_url, config.handle.page_url, 'host-authoritative-page-url');
+    return { host, sdk, authority, info };
   }
   async publication(config, { host, sdk, authority }) {
     const receipt = need(await host.peers.publication(), 'selected-publication');
@@ -213,8 +220,8 @@ export class StarterObserver {
     if (['browser-reload', 'native-reopen'].includes(check)) return this.retained(config, check, options);
     if (check === 'lost-publication-response') return this.publicationRetry(config, options);
     if (['authority', 'preclaim-publication', 'publication'].includes(check)) {
-      const context = await this.host(config), { host, authority } = context;
-      const receipt = await this.publication(config, context), info = await host.info();
+      const context = await this.host(config), { authority, info } = context;
+      const receipt = await this.publication(config, context);
       if (check === 'preclaim-publication') {
         same(info.owner_account_id, null, 'already-claimed');
         this.checkpoint('preclaim-publication', { receipt, info });

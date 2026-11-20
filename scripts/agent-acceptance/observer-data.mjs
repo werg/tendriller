@@ -51,10 +51,9 @@ export function loadObserverConfig(path, request) {
   same(handle.api, request.origin + '/api/t/' + handle.id, 'handle-origin-and-page');
   if (!/^[a-z2-7]{12}$/.test(handle.id ?? '')) throw new MeasurementError('handle-page-id', 'failed');
   need(handle.token, 'host-credential');
-  const page = new URL(handle.page_url), origin = new URL(config.origin);
+  const page = new URL(handle.page_url);
   if (page.protocol !== 'https:' || page.username || page.password || page.search || page.hash ||
       !page.hostname.startsWith(handle.id + '.') && !page.hostname.startsWith(handle.id + '--p-') ||
-      !page.hostname.endsWith('.' + origin.hostname) && !page.hostname.endsWith('--p-' + origin.hostname) ||
       !/^\/s\/[a-z2-7]{26}\/$/.test(page.pathname)) throw new MeasurementError('handle-page-url', 'failed');
   const modulePath = realpathSync(resolve(project, config.native.module ?? 'session.mjs'));
   if (!inside(project, modulePath)) throw new MeasurementError('native-module-outside-project', 'failed');

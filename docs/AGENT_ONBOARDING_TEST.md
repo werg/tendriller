@@ -422,6 +422,9 @@ device field and rendered rows. They require the configured app's page URL and a
 distinct browser identity. `owner navigate` and `reopen` may use that one
 observer-validated page URL on the service's page subdomain; this does not enable
 arbitrary foreign navigation. No browser state or receipts are injected.
+Preview page origins may differ from the service hostname. The configured handle
+must still name the selected service API, and that authenticated host must confirm
+the exact page ID, application ID and page URL before publication qualifies.
 
 For checklist projections without operation/author columns, set
 `query.operationId` to `null` and configure `query.eventTopic`, `query.eventId`
@@ -431,7 +434,11 @@ revision**; changed revisions block and require another observation. A missing
 join cannot pass from a matching label alone. The browser row must expose the
 operation ID (notes mode) or joined item ID (event mode), either in its text or
 through an actual DOM attribute named by `browser.rowIdentityAttribute` (for
-example `data-item-id`). If the produced app exposes neither, record the missing
+example `data-item-id`). `browser.rowIdentitySelector` selects a nested element
+within each measured row when that attribute is on a checkbox rather than its
+container. `query.eventIdEncoding: "author-operation-json"` supports projections
+whose row ID is JSON.stringify([event.author, event.operationId]). No arbitrary
+projection code is accepted by the observer. If the produced app exposes neither, record the missing
 metric; do not provide implementation advice to repair the baseline's score.
 
 Use the normal `observe --input /private/check.json` controller command. Supported
