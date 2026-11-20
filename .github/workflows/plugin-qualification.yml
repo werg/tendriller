@@ -2,6 +2,11 @@ name: Native MCP live qualification
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        default: staging
   schedule:
     - cron: '17 6 * * 1'
   workflow_run:
@@ -18,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        environment: [staging, production]
+        environment: ${{ fromJSON(github.event_name == 'workflow_run' && '["production"]' || inputs.environment == 'staging' && '["staging"]' || inputs.environment == 'production' && '["production"]' || '["staging","production"]') }}
     environment: ${{ matrix.environment }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15

@@ -153,7 +153,8 @@ rejections and reload, then deletes only its own fixture. It leaves the stable
 reviewer sample untouched. It does not establish ChatGPT web or model behavior.
 
 The [qualification workflow](../.github/workflows/plugin-qualification.yml)
-runs after successful master deployments and weekly on staging and production.
+gates production promotion on staging, verifies production after successful
+master deployments, and runs weekly on both environments.
 Private account records live in each environment's `TENDRILLER_REVIEW_ACCESS_JSON`
 secret; the same account is renewed automatically. Reports, screenshots and video
 use an explicit artifact allowlist; private fixture credentials stay outside it.

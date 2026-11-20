@@ -48,8 +48,8 @@ restored immediately. If cleanup fails, the private temporary project is retaine
 for operator recovery. `--no-video` explicitly skips recording for diagnostics.
 
 [Native MCP live qualification](../../../.github/workflows/plugin-qualification.yml)
-runs after successful master deployment, weekly and on demand, on staging and
-production. Each environment supplies `CLOUDFLARE_API_TOKEN`,
+gates production promotion with a staging run, checks production after successful
+master deployment, and runs on both environments weekly and on demand. Each environment supplies `CLOUDFLARE_API_TOKEN`,
 `CLOUDFLARE_ACCOUNT_ID` and private `TENDRILLER_REVIEW_ACCESS_JSON`. Qualification
 renews the same dedicated account for 90 days without rotating its code. Only
 the allowlisted sanitized report, screenshot and video are uploaded. Missing
