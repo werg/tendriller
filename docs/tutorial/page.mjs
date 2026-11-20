@@ -339,7 +339,7 @@ $('#retry').addEventListener('click', async () => {
   let release;
   try {
     release = submission.begin('retry');
-    const id = $('#operation-id').value;
+    const id = pending.id;
     const original = await session.operations.get(id);
     retainObservedReference(original);
     if (!original && pending?.id === id) {
@@ -368,7 +368,7 @@ $('#reapply').addEventListener('click', async () => {
     const id = crypto.randomUUID();
     savePending({ id, command: commandOf(previous), input: inputOf(previous), basedOn: before.revision,
       reapplies: previous.id, originOperationId: previous.originOperationId ?? previous.reapplies ?? previous.id });
-    $('#operation-id').value = id; writeLocal('operation', id);
+    $('#operation-id').value = id; submission.update({ selected: id }); writeLocal('operation', id);
     const operation = await session.reapply(previous.id, commandOf(previous), inputOf(previous), { operationId: id, basedOn: before.revision });
     observeOperation(id, operation);
     const result = await operation.applied({ signal: AbortSignal.timeout(15_000) });
