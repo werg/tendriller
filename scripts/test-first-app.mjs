@@ -498,8 +498,16 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     const reviewPage = await context.newPage();
     await reviewPage.goto(reviewUrl);
     await expect(reviewPage.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
+    await expect(reviewPage.locator('#pairing-proposal')).toContainText(paused.base.point.generation);
+    await reviewPage.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await reviewPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
+      'The complete pairing proposal must remain readable without horizontal page overflow.');
+    await reviewPage.screenshot({ path: join(dirname(reportPath), 'first-app-pairing-review-mobile.png'), fullPage: true });
+    report.screenshots.pairing_review_narrow_viewport = 'first-app-pairing-review-mobile.png';
     await expect(reviewPage.getByRole('button', { name: 'Approve this device', exact: true })).toBeEnabled({ timeout: 30_000 });
-    await reviewPage.getByRole('button', { name: 'Approve this device', exact: true }).click();
+    await reviewPage.locator('#pairing-approve').focus();
+    await expect(reviewPage.locator('#pairing-approve')).toBeFocused();
+    await reviewPage.keyboard.press('Enter');
     await expect(reviewPage.locator('[role=status]')).toContainText('approved');
     await reviewPage.close();
     await expect.poll(async () => {
