@@ -131,10 +131,8 @@ export async function inspectTendrilSetup(env: Env, principal: Principal, operat
   const row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...namespace(publicBase(env), principal, op)).first<SetupRow>();
   if (!row) {
     const allocation = await env.ACCOUNTS.prepare('SELECT * FROM account_setup_allocations WHERE ' + query).bind(...namespace(publicBase(env), principal, op)).first<Allocation>();
-    if (allocation) {
-      await requireSetupPrincipal(env, principal);
-      return result(allocation, 'reconciliation_required', 'setup_journal_missing');
-    }
+    await requireSetupPrincipal(env, principal);
+    if (allocation) return result(allocation, 'reconciliation_required', 'setup_journal_missing');
     throw new HttpError(404, 'setup_not_found', 'No setup with this operation ID belongs to this linked account and OAuth client.');
   }
   const inspected = await inspectRow(env, row);
@@ -146,8 +144,8 @@ export async function listTendrilSetups(env: Env, principal: Principal) {
   const rows = await env.ACCOUNTS.prepare(`SELECT a.*,s.state,s.failure_code FROM account_setup_allocations a LEFT JOIN account_setups s ON s.page_id=a.page_id
     WHERE a.service_origin=? AND a.account_id=? AND a.client_id=? ORDER BY a.created_at DESC LIMIT 100`)
     .bind(publicBase(env), principal.account, principal.client).all<ResultRow>();
-  // The bounded account view does not wake every page; inspect an exact operation to reconcile it.
   await requireSetupPrincipal(env, principal);
+  // The bounded account view does not wake every page; inspect an exact operation to reconcile it.
   return { serviceOrigin: publicBase(env), setups: rows.results.map(row => !row.state ? result(row, 'reconciliation_required', 'setup_journal_missing')
     : result(row, row.expires_at <= Date.now() ? 'expired' : row.state)) };
 }
@@ -165,9 +163,9 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
       // A concurrent exact call may have completed allocation since the first read.
       row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...key).first<SetupRow>();
       if (row) break allocate;
+      await requireSetupPrincipal(env, principal);
       if (allocation.request_digest !== digest || allocation.credential_commitment !== input.credentialCommitment)
         throw new HttpError(409, 'setup_operation_conflict', 'The original allocation still reserves this operation and its exact request.');
-      await requireSetupPrincipal(env, principal);
       return result(allocation, 'reconciliation_required', 'setup_journal_missing');
     }
     await requireCreationOpen(env);
@@ -205,10 +203,10 @@ export async function prepareTendrilSetup(env: Env, principal: Principal, raw: u
       if (String(error).includes('setup_journal_missing') || String(error).includes('setup_allocation_conflict'))
         throw new HttpError(409,'reconciliation_required','This allocation has retained or conflicting evidence. No replacement page or quota charge was created.');
       if (code === 'reconciliation_required') throw new HttpError(409, code, 'The original allocation is retained but its operation journal is missing. Inspect it without creating a replacement.');
-      if (code) throw new HttpError(code==='creation_paused'?503:['setup_binding_inactive','owner_verification_required'].includes(code)?403:429, code,
-        ['setup_binding_inactive','owner_verification_required','creation_paused'].includes(code)
-          ? 'Setup authorization, verification or readiness changed before allocation. Inspect this service and retain the original operation.'
-          : 'Setup capacity is full. Inspect retained operations or ask the operator for reviewed retirement; uncertain operation IDs are never discarded.');
+      if (code === 'creation_paused') throw new HttpError(503, code, 'Creation was paused before allocation. Ask the operator to restore creation on this service, then retry this same operation.');
+      if (code === 'owner_verification_required') throw new HttpError(403, code, 'The verified owner identity changed before allocation. Verify the linked account identity, then retry this same operation.');
+      if (code === 'setup_binding_inactive') throw new HttpError(403, code, 'The linked account grant became inactive before allocation. Review the account connection and its create permission before retrying this same operation.');
+      if (code) throw new HttpError(429, code, 'Setup capacity is full. Inspect retained operations or ask the operator for reviewed retirement; uncertain operation IDs are never discarded.');
       throw error;
     }
     row = await env.ACCOUNTS.prepare('SELECT * FROM account_setups WHERE ' + query).bind(...key).first<SetupRow>();

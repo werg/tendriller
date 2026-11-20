@@ -83,6 +83,68 @@ async function fixture(options: { verified?: boolean; scope?: string; account?: 
     failReservationAlarm: () => { failReservationAlarm = true; }, pauseAfterAdmission: () => { pauseAfterAdmission = true; } };
 }
 
+// Inject a change on the real D1 boundary without replacing the query result or
+// the allocation trigger. This exposes revocation between its two auth checks.
+function atDatabaseBoundary(f: Awaited<ReturnType<typeof fixture>>, matches: (sql: string) => boolean,
+  method: 'all' | 'first' | 'run', timing: 'before' | 'after', effect: () => Promise<unknown>) {
+  const database = f.settings.ACCOUNTS;
+  let fired = false;
+  const statement = (value: D1PreparedStatement, sql: string): D1PreparedStatement => new Proxy(value, {
+    get(target, key) {
+      if (key === 'bind') return (...args: unknown[]) => statement(target.bind(...args), sql);
+      if (key === method && matches(sql)) return async (...args: unknown[]) => {
+        if (!fired && timing === 'before') { fired = true; await effect(); }
+        const result = await (target[method] as (...args: unknown[]) => Promise<unknown>)(...args);
+        if (!fired && timing === 'after') { fired = true; await effect(); }
+        return result;
+      };
+      const member = Reflect.get(target, key);
+      return typeof member === 'function' ? member.bind(target) : member;
+    },
+  });
+  f.settings.ACCOUNTS = new Proxy(database, { get(target, key) {
+    if (key === 'prepare') return (sql: string) => statement(target.prepare(sql), sql);
+    const member = Reflect.get(target, key);
+    return typeof member === 'function' ? member.bind(target) : member;
+  } });
+}
+
+it('rechecks the grant before exposing a list or a retained allocation after its D1 read', async () => {
+  for (const view of ['list', 'inspect-missing-journal', 'prepare-missing-journal'] as const) {
+    const f = await fixture(), intent = await f.intent(), ready = await f.prepare(intent);
+    if (view !== 'list') await env.ACCOUNTS.prepare('DELETE FROM account_setups WHERE page_id=?').bind(ready.body.pageId).run();
+    atDatabaseBoundary(f, sql => view === 'list' ? sql.startsWith('SELECT a.*') : sql.startsWith('SELECT * FROM account_setup_allocations WHERE service_origin='),
+      view === 'list' ? 'all' : 'first', 'after', () => env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), f.grant).run());
+    const response = view === 'prepare-missing-journal' ? (await f.prepare(intent)).response
+      : await f.request('/api/setup' + (view === 'list' ? '' : '?operationId=' + intent.operationId));
+    expect(response.status).toBe(401);
+    if (view !== 'prepare-missing-journal') {
+      const denied = await response.json();
+      expect(denied).toMatchObject({ error: { code: 'invalid_token' } });
+      expect(JSON.stringify(denied)).not.toContain(ready.body.pageId);
+    }
+  }
+});
+
+it('preserves precise trigger refusal codes when account readiness changes at allocation', async () => {
+  for (const reason of ['creation_paused', 'owner_verification_required', 'setup_binding_inactive'] as const) {
+    const f = await fixture(), intent = await f.intent();
+    atDatabaseBoundary(f, sql => sql.startsWith('INSERT OR IGNORE INTO account_setups'), 'run', 'before', async () => {
+      if (reason === 'creation_paused') await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
+      else if (reason === 'owner_verification_required') await env.ACCOUNTS.prepare("DELETE FROM identity_emails WHERE provider='google' AND subject=?").bind(f.account).run();
+      else await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), f.grant).run();
+    });
+    try {
+      const denied = await f.prepare(intent);
+      expect(denied.response.status).toBe(reason === 'creation_paused' ? 503 : 403);
+      expect(denied.body.error?.code).toBe(reason);
+      expect(JSON.stringify(denied.body)).not.toContain('capacity is full');
+      expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind(f.account).first()).toEqual({ n: 0 });
+      expect(await env.ACCOUNTS.prepare('SELECT count FROM creation_ip WHERE ip=?').bind(f.ip).first()).toBeNull();
+    } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
+  }
+});
+
 it('prepares and inspects one account-bound page with a retained credential and no returned secret', async () => {
   const f = await fixture(), intent = await f.intent(), prepared = await f.prepare(intent);
   expect(prepared.response.status).toBe(200); expect(prepared.body.state).toBe('ready');
