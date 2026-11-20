@@ -22,7 +22,8 @@ test('guide uses the chosen service origin for all hosted links and validates pu
   const guide = onboardingGuide({}, { TENDRIL_SERVER: 'https://staging.example.com/' });
   assert.deepEqual(guide.onboarding, onboardingDescriptor('https://staging.example.com'));
   assert.equal(guide.mcp_guide, guide.onboarding.documentation.mcp);
-  assert.match(guide.workflow[3].ready_when, /selected initial generation/);
+  assert.deepEqual(guide.workflow, guide.onboarding.workflow);
+  assert.equal(guide.workflow[3].id, 'configure');
   for (const key of ['start_here', 'agent_guide', 'troubleshooting', 'service_descriptor'])
     assert.equal(new URL(guide[key]).origin, 'https://staging.example.com');
   assert.equal(onboardingGuide({ server: 'https://branch.example.com' }, { TENDRIL_SERVER: 'https://ignored.example.com' }).service,
