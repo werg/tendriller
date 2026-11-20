@@ -110,22 +110,42 @@ which operations are exposed for a particular app, use that app's
 The public listing is an operator task. A deployed MCP endpoint and a shared
 workspace plugin do not create a directory listing.
 
-1. Complete publisher verification under [OpenAI organization settings](https://platform.openai.com/settings/organization/general).
-   Use an organization owner or an account with Apps Management Write.
-2. Prepare a plugin ZIP pointing to the universal `https://tendriller.dev/mcp`
-   endpoint. Include the public name, logo, support contact, [privacy policy](https://tendriller.dev/privacy),
-   and [terms](https://tendriller.dev/terms). Prepare a dedicated reviewer account
-   and a seeded, connected Tendriller app with sample data, a walkthrough, and
-   separate read, write, and access-denied test cases. Use review credentials
-   only in OpenAI's review form. [Plugin packaging](https://developers.openai.com/plugins/build/plugins)
-3. Upload at [OpenAI Platform Plugins](https://platform.openai.com/plugins).
-   Verify the Tendriller domain when prompted, connect and scan the MCP server,
-   test OAuth using the connection's displayed metadata and redirect, and
-   complete **Review details**. [Submission walkthrough](https://developers.openai.com/plugins/deploy/submission)
-4. Submit for review. After approval, publish and give users the exact listing
-   link. Test installation and account linking as a user outside the publisher's
-   workspace. Until the listing is published, use the custom or workspace
-   setup above. [OpenAI review requirements](https://developers.openai.com/plugins/deploy/app-review)
+1. Open [OpenAI organization settings](https://platform.openai.com/settings/organization/general)
+   in the publishing organization. Verify as an individual to publish under
+   your own name, or verify a business to publish under its name. An organization
+   owner can submit, or can assign Apps Management Write in
+   [Organization roles](https://platform.openai.com/settings/organization/people/roles).
+2. From the repository root, run
+   `node integrations/chatgpt/plugin/build.mjs` with Node 22.15 or newer and
+   `zip` installed. Upload `dist/tendriller-chatgpt-plugin.zip` at
+   [OpenAI Platform Plugins](https://platform.openai.com/plugins) through
+   **Upload new or existing plugin**. Select the verified **Developer identity**
+   and the project that will own the listing. The ZIP includes the universal
+   `https://tendriller.dev/mcp` endpoint, CIMD OAuth, logo, setup skill, and review
+   cases. Update the package's publisher metadata if publishing as a business.
+3. Open the draft's **MCPs** tab, choose **tendriller**, then select **Connect**.
+   If the portal requests domain verification, copy the exact challenge URL and
+   token to the Tendriller operator. The operator serves the token as plain text
+   at the displayed URL and checks the response before you continue. Complete
+   the portal's OAuth connection with a dedicated test account. Wait for the
+   tool scan and resolve any required findings in **Metadata & Skills** or
+   **MCPs**. [Domain verification and scanning](https://developers.openai.com/plugins/deploy/submission#connect-and-scan-your-mcp-server)
+4. Prepare a dedicated reviewer account that can sign in without MFA or an
+   email or SMS challenge. Give it a claimed, assistant-connected **Review
+   checklist** with synthetic data. Seed an incomplete **Check labels** item
+   plus another item, approve its list query and a command to mark only the
+   selected item complete, and forward the approved completion event to the
+   inbox. Keep an eligible participant running and verify the five positive and
+   three negative cases from the package with that account. Reset sample state
+   after recording the walkthrough. In **Metadata & Skills → Review information
+   → Review details**, enter the private test credentials, sign-in instructions,
+   and the reviewer-accessible video link. Keep credentials out of the ZIP and
+   chat. [Review details](https://developers.openai.com/plugins/deploy/submission#complete-review-information)
+5. Select the draft and choose **Submit for review**. Complete the required
+   attestations with the publisher. After approval, publish and give users the
+   exact listing link. Test installation and account linking as a user outside
+   the publisher's workspace. Until then, use the custom or workspace setup
+   above. [OpenAI review and publication](https://developers.openai.com/plugins/deploy/app-review#publication-and-distribution)
 
 ## Troubleshoot setup
 

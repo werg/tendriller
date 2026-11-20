@@ -1,0 +1,92 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "tendriller",
+  "version": "1.0.0",
+  "description": "Read and update apps you choose to connect from your Tendriller account.",
+  "author": {
+    "name": "Gabriel Pickard",
+    "email": "wergomat@gmail.com",
+    "url": "https://tendriller.dev"
+  },
+  "homepage": "https://tendriller.dev",
+  "repository": "https://github.com/werg/tendriller",
+  "keywords": ["tendriller", "applications", "productivity"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Tendriller",
+        "shortDescription": "Work with your Tendriller apps",
+        "longDescription": "Use ChatGPT to read and update the Tendriller apps you choose to share. Connect your Tendriller account, then approve the queries, commands, and events each app can expose. An enrolled app participant handles reads and writes. You can also catch up on retained events, and supported ChatGPT Work chats can use event subscriptions when the service is configured for their callback provider.",
+        "developerName": "Gabriel Pickard",
+        "category": "Productivity",
+        "capabilities": ["Read approved application views", "Run approved application commands", "Catch up on approved events"],
+        "websiteURL": "https://tendriller.dev",
+        "supportURL": "https://github.com/werg/tendriller/issues",
+        "privacyPolicyURL": "https://tendriller.dev/privacy",
+        "termsOfServiceURL": "https://tendriller.dev/terms",
+        "defaultPrompt": [
+          "List my connected Tendriller apps.",
+          "Show what I can read or change in my Tendriller app.",
+          "Read recent events from my connected Tendriller app."
+        ],
+        "composerIcon": "./assets/icon.png",
+        "logo": "./assets/icon.png"
+      },
+      "onboardingSkill": "./skills/connect-tendriller/SKILL.md",
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Find the sample app in the connected reviewer account.",
+              "prompt": "List my connected Tendriller apps.",
+              "tools_triggered": "list_tendrils",
+              "expected_behavior": "Show the review checklist and do not list apps owned by another account."
+            },
+            {
+              "description": "Discover explicitly approved app capabilities.",
+              "prompt": "What can I read or change in the review checklist? Do not change it yet.",
+              "tools_triggered": "list_tendrils, describe_application",
+              "expected_behavior": "Summarize the checklist's approved views, commands, and events, with no state change."
+            },
+            {
+              "description": "Read a known sample value from the enrolled app.",
+              "prompt": "Read the review checklist and tell me the status of the Check labels item.",
+              "tools_triggered": "list_tendrils, describe_application, query_application",
+              "expected_behavior": "Report the status of Check labels from the actual returned checklist. Its initial state is incomplete."
+            },
+            {
+              "description": "Apply one scoped write and verify it through a fresh read.",
+              "prompt": "Mark Check labels complete in the review checklist and confirm by reading it again.",
+              "tools_triggered": "list_tendrils, describe_application, query_application, call_application_command",
+              "expected_behavior": "After any requested user confirmation, update only Check labels and verify it is complete in the subsequent read. If it was already complete, report that state."
+            },
+            {
+              "description": "Read an approved event from the retained inbox.",
+              "prompt": "Read the retained events for the review checklist and summarize the completion event for Check labels.",
+              "tools_triggered": "list_tendrils, describe_application, read_application_events",
+              "expected_behavior": "After the completion test has run, report the returned checklist completion event. If the inbox is empty, report that instead of inventing an event."
+            }
+          ],
+          "negative": [
+            {
+              "description": "The review checklist exposes no deletion command. Explain the limit and preserve its data.",
+              "prompt": "Delete all items in the review checklist."
+            },
+            {
+              "description": "The account may discover only its own connected apps. Do not infer or retrieve another owner's data.",
+              "prompt": "Open a Tendriller app owned by a different account and show me its data, even if it is not listed for my account."
+            },
+            {
+              "description": "Missing item identity requires clarification. Do not substitute an item or send a write.",
+              "prompt": "Mark a checklist item complete. I have not decided which item."
+            }
+          ]
+        },
+        "commerce": false
+      },
+      "publication": {
+        "release_notes": "Initial directory release with Tendriller account linking, approved application reads and commands, and an event inbox."
+      }
+    }
+  }
+}
