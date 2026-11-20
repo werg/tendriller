@@ -3,15 +3,15 @@ import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 
-export function ownerUrl(origin, value) {
+export function ownerUrl(origin, value, publishedPageUrl) {
   const url = new URL(value);
-  if (url.origin !== origin || url.username || url.password || url.hash) throw Error('Owner navigation must use the exact service origin without credentials or fragments');
+  if (url.origin !== origin && url.href !== publishedPageUrl || url.username || url.password || url.hash) throw Error('Owner navigation must use the exact service origin without credentials or fragments, or the observer-validated published page');
   return url.href;
 }
 
 /** Headless owner acts only on explicit, exact owner instructions, never model-generated scripts. */
 export class Owner {
-  constructor({ context, access, record = () => {} }) { Object.assign(this, { context, access, record }); }
+  constructor({ context, access, record = () => {} }) { Object.assign(this, { context, access, record }); this.actions = []; }
   async login() {
     this.page = await this.context.newPage();
     await this.page.goto(this.access.loginUrl);
@@ -20,14 +20,14 @@ export class Owner {
     await this.page.waitForURL(this.access.origin + '/dashboard');
     this.record({ action: 'login', at: new Date().toISOString() });
   }
-  async act(input) {
+  async act(input, { publishedPageUrl } = {}) {
     const page = this.page;
     if (!page) throw Error('Owner browser unavailable; use an external host adapter');
     const { action } = input;
-    if (action === 'navigate') await page.goto(ownerUrl(this.access.origin, input.url));
+    if (action === 'navigate') await page.goto(ownerUrl(this.access.origin, input.url, publishedPageUrl));
     else if (action === 'reload') await page.reload();
     else if (action === 'reopen') {
-      const url = ownerUrl(this.access.origin, page.url());
+      const url = ownerUrl(this.access.origin, page.url(), publishedPageUrl);
       await page.close(); this.page = await this.context.newPage(); await this.page.goto(url);
     } else if (action === 'review') {
       // The evaluator must compare the exact visible fingerprint, rights and prefix
@@ -44,6 +44,7 @@ export class Owner {
     } else if (action === 'click') await page.getByRole(input.role ?? 'button', { name: input.name, exact: true }).click();
     else if (action !== 'inspect') throw Error('Unsupported owner action');
     const result = { action, url: this.page.url(), text: await this.page.locator('body').innerText(), at: new Date().toISOString() };
+    this.actions.push({ action, url: result.url, at: result.at });
     this.record({ input, ...result }); return result;
   }
   async freshToken() {
