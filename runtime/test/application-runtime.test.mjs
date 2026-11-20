@@ -46,7 +46,7 @@ class Element extends EventTarget {
 function environment({ defaultEntry = false } = {}) {
   const calls = { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] };
   let nextTimer = 0;
-  const timers = new Map(), intervals = new Map();
+  const timers = new Map(), intervals = new Map(), sockets = [];
   const window = Object.assign(new EventTarget(), { isSecureContext: true, Notification: { permission: 'granted' }, PushManager: class {} });
   const observers = new Set();
   const document = Object.assign(new EventTarget(), { visibilityState: 'visible', readyState: 'complete',
@@ -71,7 +71,7 @@ function environment({ defaultEntry = false } = {}) {
     clearTimeout(id) { timers.delete(id); },
     setInterval(fn, ms) { const id = ++nextTimer; intervals.set(id, { fn, ms }); return id; },
     clearInterval(id) { intervals.delete(id); },
-    WebSocket: class { constructor() { calls.sockets++; throw Error('Page host is unreachable'); } },
+    WebSocket: class { constructor() { calls.sockets++; sockets.push(this); queueMicrotask(()=>this.receive(1)); } close() {} receive(current) { this.onmessage?.({data:JSON.stringify({type:'publication',version:1,current})}); } },
     indexedDB: { open() { calls.stores++; throw Error('Host outbox must not be opened'); } },
     async fetch(url, options) { calls.fetch.push({ url, options }); return new Response(JSON.stringify({ explicit: true })); },
     MessageChannel: class {
@@ -97,7 +97,7 @@ function environment({ defaultEntry = false } = {}) {
   } else {
     runInNewContext(compiled.outputFiles[0].text, context); api = context.Kernel.startRuntime(configuration);
   }
-  return { api, context, calls, window, document,
+  return { api, context, calls, window, document, sockets,
     mutate() { for (const observer of observers) observer.callback(); },
     reloadScript() { runInNewContext(bootstrap.outputFiles[0].text, context); },
     async advance() {
@@ -155,7 +155,7 @@ test('signals work before any durable backend is installed and never open a host
 });
 
 test('the served bootstrap mounts working management and sensor controls without touching hosted application services', async () => {
-  const env = environment({ defaultEntry: true });
+  const env = environment({ defaultEntry: true }); await flush();
   assert.equal(env.window.tendril, env.api);
   const host = env.document.body.children.find(element => element.tagName === 'tendril-utility');
   assert.ok(host, 'the complete default entry must mount its operational utility');
@@ -193,9 +193,9 @@ test('the served bootstrap mounts working management and sensor controls without
   assert.equal(env.document.body.children.filter(element => element.tagName === 'tendril-utility').length, 1);
   for (const type of ['load', 'online', 'offline', 'pagehide']) env.window.dispatchEvent(new Event(type));
   env.window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
-  env.document.dispatchEvent(new Event('visibilitychange'));
+  env.document.dispatchEvent(new Event('visibilitychange')); await flush();
   for (let i = 0; i < 3; i++) await env.advance();
-  assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
+  assert.deepEqual(env.calls, { fetch: [], sockets: 2, stores: 0, registrations: 0, publications: [] });
 });
 
 test('host operations remain explicit and publication saving registers offline support on demand', async () => {
@@ -266,4 +266,18 @@ test('application runtime exposes only supported services and leaves authority t
   assert.equal(Object.isFrozen(env.api), true); assert.equal(Object.isFrozen(env.api.host), true);
   await env.advance();
   assert.equal(env.calls.fetch.length, 0); assert.equal(env.calls.sockets, 0); assert.equal(env.calls.stores, 0);
+});
+
+test('unpaired utility notices selection changes explicitly and clears stale notices on rollback',async()=>{
+ const env=environment({defaultEntry:true});await flush();
+ const host=env.document.body.children.find(e=>e.tagName==='tendril-utility');
+ const notice=host.shadowRoot.children.find(e=>e.attributes.get('aria-label')==='Publication update');
+ assert.equal(notice.hidden,true);assert.equal(env.api.application.available,false);
+ env.sockets[0].receive(2);assert.equal(notice.hidden,false);
+ const link=notice.children.find(e=>e.tagName==='a');assert.equal(link.textContent,'Open update');
+ assert.equal(link.href,'https://fixture.test/page/');assert.equal(link.target,undefined);
+ assert.equal(env.context.location.href,'https://fixture.test/page/_publications/1/app.html');
+ env.sockets[0].receive(1);assert.equal(notice.hidden,true);
+ env.sockets[0].receive(3);assert.equal(notice.hidden,false);env.sockets[0].receive(0);assert.equal(notice.hidden,true);
+ assert.equal(env.calls.fetch.length,0);assert.equal(env.calls.sockets,1);
 });
