@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { verifyRestoredDeployment } from './deployment-bundle.mjs';
 import { packedArchive, sourceIdentity } from './release-composition.mjs';
 import { verifyRuntimeManifest } from './runtime-manifest.mjs';
 
@@ -15,6 +16,7 @@ export function verifyDeploymentArtifacts(root, expected) {
       ['compositionId', 'runtimeId', 'engineSha256', 'starterSha256'].some(key => !/^[a-f0-9]{64}$/.test(expected[key] ?? '')) ||
       typeof expected.coreRelease !== 'string' || !expected.coreRelease)
     throw Error('Deployment requires exact source, composition, release, runtime, engine and starter identities from the artifacts job.');
+  if (expected.manifestSha256) verifyRestoredDeployment(root, expected.manifestSha256);
   const identity = sourceIdentity(root), proof = json(join(root, 'dist/provenance.json'));
   if (identity.dirty || proof.dirty !== false || identity.source !== expected.sourceCommit ||
       proof.source !== identity.source || proof.sourceTree !== identity.sourceTree)
@@ -52,7 +54,7 @@ export function verifyDeploymentArtifacts(root, expected) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const expected = Object.fromEntries(Object.entries({ sourceCommit: 'SOURCE_COMMIT', compositionId: 'COMPOSITION_ID',
-    coreRelease: 'CORE_RELEASE', runtimeId: 'RUNTIME_ID', engineSha256: 'ENGINE_SHA256', starterSha256: 'STARTER_SHA256' })
+    coreRelease: 'CORE_RELEASE', runtimeId: 'RUNTIME_ID', engineSha256: 'ENGINE_SHA256', starterSha256: 'STARTER_SHA256', manifestSha256: 'MANIFEST_SHA256' })
     .map(([key, name]) => [key, process.env[`TENDRILLER_EXPECTED_${name}`]]));
   const result = verifyDeploymentArtifacts(resolve(import.meta.dirname, '..'), expected);
   console.log(`Matched deployment artifacts to source ${result.sourceCommit} and composition ${result.compositionId}`);

@@ -81,17 +81,17 @@ function fixture(t) {
     ? readFileSync(join(root, 'remote/commands.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
   return {
     root, source, manifest, commands, files: artifacts.map(item => item.file), composition,
-    publish: (ref = 'refs/heads/release/v1.2.3', extraFiles = [], env = {}) => spawnSync(process.execPath, [join(root, 'publisher/publish-release.mjs'), ref, ...extraFiles], {
+    publish: (ref = 'refs/heads/master', extraFiles = [], env = {}) => spawnSync(process.execPath, [join(root, 'publisher/publish-release.mjs'), ref, ...extraFiles], {
       encoding: 'utf8', env: { ...process.env, TMPDIR: root, PATH: `${join(root, 'bin')}:${process.env.PATH}`, TEST_RELEASE_ROOT: join(root, 'remote'), GITHUB_SHA: source, ...env },
     }),
-    setTag: (sha = source, type = 'commit') => writeFileSync(join(root, 'remote/ref.json'), JSON.stringify({ ref: 'refs/tags/v1.2.3', object: { type, sha } })),
-    setRelease: () => writeFileSync(join(root, 'remote/release'), 'v1.2.3'),
+    setTag: (sha = source, type = 'commit') => writeFileSync(join(root, 'remote/ref.json'), JSON.stringify({ ref: `refs/tags/source-${source}`, object: { type, sha } })),
+    setRelease: () => writeFileSync(join(root, 'remote/release'), `source-${source}`),
     setManifest: changes => writeFileSync(join(root, 'dist/manifest.json'), JSON.stringify({ ...manifest, ...changes })),
     uploads: () => commands().filter(command => command[1] === 'upload').map(command => basename(command[3])),
   };
 }
 
-test('a release branch creates its absent tag at the exact checked-out source and publishes the manifest last', t => {
+test('trusted master creates its absent tag at the exact checked-out source and publishes the manifest last', t => {
   const f = fixture(t), result = f.publish();
   assert.equal(result.status, 0, result.stderr);
   const create = f.commands().find(command => command[1] === 'create');
@@ -105,7 +105,7 @@ test('an exact existing tag can create a release without changing the tag', t =>
   const f = fixture(t);
   f.setTag();
   const before = readFileSync(join(f.root, 'remote/ref.json'), 'utf8');
-  const result = f.publish('refs/tags/v1.2.3');
+  const result = f.publish();
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(join(f.root, 'remote/ref.json'), 'utf8'), before);
 });
@@ -116,7 +116,7 @@ test('annotated tags are resolved to their source commit', t => {
   writeFileSync(join(f.root, 'remote/annotations.json'), JSON.stringify({
     [annotation]: { type: 'tag', sha: nested }, [nested]: { type: 'commit', sha: f.source },
   }));
-  const result = f.publish('refs/tags/v1.2.3');
+  const result = f.publish();
   assert.equal(result.status, 0, result.stderr);
 });
 
@@ -129,7 +129,7 @@ test('release publication verifies existing assets and uploads only missing name
   assert.equal(f.commands().filter(command => command[1] === 'download').length, 1);
   assert.deepEqual(f.uploads(), [...f.files.filter(file => file !== 'tool.mjs'), 'manifest.json']);
   writeFileSync(join(f.root, 'remote/commands.jsonl'), '');
-  assert.equal(f.publish('refs/tags/v1.2.3').status, 0);
+  assert.equal(f.publish().status, 0);
   assert.equal(f.commands().filter(command => command[1] === 'download').length, f.files.length + 1);
   assert.deepEqual(f.uploads(), []);
 });
@@ -137,7 +137,7 @@ test('release publication verifies existing assets and uploads only missing name
 test('additional release metadata is verified and uploaded before discovery', t => {
   const f = fixture(t);
   writeFileSync(join(f.root, 'dist/SHA256SUMS'), `${f.manifest.artifacts[0].sha256}  tool.mjs\n`);
-  const result = f.publish('refs/heads/release/v1.2.3', ['SHA256SUMS']);
+  const result = f.publish('refs/heads/master', ['SHA256SUMS']);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(f.uploads(), [...f.files, 'SHA256SUMS', 'manifest.json']);
 });
@@ -207,9 +207,9 @@ test('publication refuses a mismatched graph even with matching manifest and com
   assert.deepEqual(f.commands(), []);
 });
 
-test('only exact package-version tags and release branches can publish', t => {
+test('only trusted master can publish', t => {
   const f = fixture(t);
-  for (const ref of ['refs/heads/main', 'refs/heads/release/v1.2.4', 'refs/heads/release/v1.2.3/extra', 'refs/tags/v1.2.4', 'v1.2.3']) {
+  for (const ref of ['refs/tags/v1.2.3', 'refs/heads/release/v1.2.3', 'refs/heads/main', 'refs/heads/release/v1.2.4', 'refs/heads/release/v1.2.3/extra', 'refs/tags/v1.2.4', 'v1.2.3']) {
     const result = f.publish(ref);
     assert.notEqual(result.status, 0, ref);
     assert.match(result.stderr, /release ref must be/);
@@ -231,7 +231,7 @@ test('manifest and workflow source must both equal checked-out HEAD', t => {
   f.setManifest({ source_commit: 'a'.repeat(40) });
   assert.notEqual(f.publish().status, 0);
   f.setManifest({});
-  const result = f.publish('refs/heads/release/v1.2.3', [], { GITHUB_SHA: 'b'.repeat(40) });
+  const result = f.publish('refs/heads/master', [], { GITHUB_SHA: 'b'.repeat(40) });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /exact checked-out source commit/);
   assert.deepEqual(f.commands(), []);

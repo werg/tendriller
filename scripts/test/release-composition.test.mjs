@@ -163,3 +163,33 @@ test('different package bytes produce a different complete composition identity'
   f.files.tools['index.mjs'] += '\nexport const changed = true;'; f.packAll();
   assert.notEqual(f.prepare().composition.id, original);
 });
+
+test('deployment sealing restores all qualified bytes and rejects tampering and extra served files', async t => {
+  const { sealDeployment, restoreDeployment, verifyRestoredDeployment } = await import('../deployment-bundle.mjs');
+  const f = fixture(t);
+  f.prepare();
+  for (const path of ['dist/engine', 'dist/runtime', 'dist/sdk', 'dist/tools']) {
+    mkdirSync(join(f.root, path), { recursive: true });
+    writeFileSync(join(f.root, path, 'qualified.mjs'), `exact ${path} bytes`);
+  }
+  const manifest = sealDeployment(f.root);
+  const expectedHash = digest(readFileSync(join(f.root, 'dist/manifest.json')));
+  assert.equal(manifest.artifacts.at(-1).role, 'deployment');
+  verifyReleaseArtifacts(f.root, manifest);
+  writeFileSync(join(f.root, 'server/public/stale.html'), 'unqualified');
+  assert.throws(() => verifyRestoredDeployment(f.root, expectedHash), /differ from the qualified bundle/);
+  rmSync(join(f.root, 'dist/engine'), { recursive: true });
+  restoreDeployment(f.root, expectedHash);
+  verifyRestoredDeployment(f.root, expectedHash);
+  assert.equal(readFileSync(join(f.root, 'dist/engine/qualified.mjs'), 'utf8'), 'exact dist/engine bytes');
+  assert.throws(() => readFileSync(join(f.root, 'server/public/stale.html')), /ENOENT/);
+  assert.throws(() => restoreDeployment(f.root, '0'.repeat(64)), /manifest SHA-256 mismatch/);
+  writeFileSync(join(f.root, 'dist/tendriller-deployment.tgz'), 'tampered');
+  assert.throws(() => restoreDeployment(f.root, expectedHash), /does not match manifest/);
+});
+
+test('release URLs are source qualified even when package version is unchanged', t => {
+  const f = fixture(t), manifest = f.prepare();
+  for (const item of manifest.artifacts)
+    assert.equal(item.url, `https://github.com/werg/tendriller/releases/download/source-${f.identity.source}/${item.file}`);
+});

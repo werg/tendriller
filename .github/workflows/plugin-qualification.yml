@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
+      manifest_sha256:
+        type: string
+        default: ''
       environment:
         type: string
         default: staging
@@ -16,14 +19,15 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   qualify:
     if: >-
-      github.event_name != 'workflow_run' ||
+      github.ref == 'refs/heads/master' && (github.event_name != 'workflow_run' ||
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
-       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch'))
+       (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')))
     strategy:
       fail-fast: false
       matrix:
@@ -53,8 +57,23 @@ jobs:
       - name: Check selected host source and readiness before package acquisition
         run: node scripts/review/preflight.mjs --source-only --origin "$REVIEW_ORIGIN"
       - run: npm ci
-      - run: npm run build:artifacts
-      - run: npm run release:artifacts
+      - uses: actions/download-artifact@v4
+        if: inputs.manifest_sha256 != '' || github.event_name == 'workflow_run'
+        with:
+          name: public-packages
+          path: dist
+          run-id: ${{ github.event.workflow_run.id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Restore the promoted graph
+        if: inputs.manifest_sha256 != '' || github.event_name == 'workflow_run'
+        run: |
+          export TENDRILLER_EXPECTED_MANIFEST_SHA256="${{ inputs.manifest_sha256 }}"
+          if [ -z "$TENDRILLER_EXPECTED_MANIFEST_SHA256" ]; then
+            export TENDRILLER_EXPECTED_MANIFEST_SHA256=$(sha256sum dist/manifest.json | cut -d' ' -f1)
+          fi
+          node scripts/deployment-bundle.mjs
+      - if: inputs.manifest_sha256 == '' && github.event_name != 'workflow_run'
+        run: node scripts/download-release.mjs
       - name: Load private reviewer credentials
         env:
           REVIEW_ACCESS_JSON: ${{ secrets.TENDRILLER_REVIEW_ACCESS_JSON }}

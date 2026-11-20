@@ -25,12 +25,12 @@ function redirectTarget(location, previous, initial) {
   return target;
 }
 
-export async function verifyPublishedRelease(expected, { fetcher = globalThis.fetch, limits = RELEASE_DOWNLOAD_LIMITS, signal } = {}) {
+export async function verifyPublishedRelease(expected, { fetcher = globalThis.fetch, limits = RELEASE_DOWNLOAD_LIMITS, signal, onVerified } = {}) {
   if (!commit(expected.sourceCommit) || !sha256(expected.compositionId) || !sha256(expected.runtimeId) ||
       !sha256(expected.manifestSha256) || typeof expected.coreRelease !== 'string' || expected.coreRelease.length > 64 ||
       !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(expected.coreRelease))
     fail('release_expectation_invalid', 'Require the exact source, release, runtime, composition and manifest SHA-256 from the artifacts job.');
-  const base = `https://github.com/werg/tendriller/releases/download/v${expected.coreRelease}`;
+  const base = `https://github.com/werg/tendriller/releases/download/source-${expected.sourceCommit}`;
   const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(limits.timeoutMs)]) : AbortSignal.timeout(limits.timeoutMs);
   let totalBytes = 0;
   async function download(file, expectedHash, expectedSize, retain = false) {
@@ -64,7 +64,7 @@ export async function verifyPublishedRelease(expected, { fetcher = globalThis.fe
         bytes += chunk.byteLength; totalBytes += chunk.byteLength;
         if (bytes > maximum || expectedSize !== undefined && bytes > expectedSize || totalBytes > limits.totalBytes)
           fail('release_size_limit', `Public release asset ${file} exceeds its expected size or download bound.`);
-        digest.update(chunk); if (retain) chunks.push(Buffer.from(chunk));
+        digest.update(chunk); if (retain || onVerified) chunks.push(Buffer.from(chunk));
       }
     } catch (error) {
       if (error?.code?.startsWith('release_')) throw error;
@@ -72,7 +72,9 @@ export async function verifyPublishedRelease(expected, { fetcher = globalThis.fe
     }
     if (expectedSize !== undefined && bytes !== expectedSize || digest.digest('hex') !== expectedHash)
       fail('release_bytes_mismatch', `Public release asset ${file} does not match the prepared artifact bytes.`);
-    return retain ? Buffer.concat(chunks) : undefined;
+    const content = retain || onVerified ? Buffer.concat(chunks) : undefined;
+    if (onVerified) await onVerified(file, content);
+    return retain ? content : undefined;
   }
   function parse(bytes, file) {
     try { return JSON.parse(bytes.toString('utf8')); }
