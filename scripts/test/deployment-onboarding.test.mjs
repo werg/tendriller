@@ -120,6 +120,8 @@ test('deployment smoke verifies the selected readiness and complete expected dep
 test('deployment smoke fails for missing readiness or mismatched deployment identity', async t => {
   for (const [name, change, error] of [
     ['missing readiness', value => { value.readinessStatus = 404; }, /does not expose \/api\/readiness/],
+    ['incomplete environment', value => { delete value.readiness.environment.kind; }, /incompatible readiness document/],
+    ['missing observation time', value => { delete value.readiness.checkedAt; }, /incompatible readiness document/],
     ['wrong readiness origin', value => { value.readiness.serviceOrigin = 'https://wrong.example'; }, /Readiness identifies another service/],
     ['wrong release', value => { value.readiness.build.coreRelease = 'old-release'; }, /Readiness does not match/],
     ['wrong runtime', value => { value.readiness.build.runtimeId = 'd'.repeat(64); }, /Readiness does not match/],
