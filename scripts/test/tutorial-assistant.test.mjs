@@ -128,3 +128,54 @@ test('proposal errors leave native pairing live and abort fences late preparatio
   assert(!late.calls.includes('online'));
   assert.equal(late.calls.filter(x => x === 'owner_closed').length, 1);
 });
+
+
+test('canonical event recovery review preserves a healthy provider and its exact cursor without idle redials', async t => {
+  const { module, directory } = await fixture(t), f = runtime({ events: true }), providers = [];
+  const cursor = '"retained-private-event-cursor"\n', cursorFile = join(directory, '.tendriller/assistant-event-cursor.json');
+  await mkdir(join(directory, '.tendriller'), { mode: 0o700 });
+  await writeFile(cursorFile, cursor, { mode: 0o600 });
+  let change, forwards = 0;
+  const originalOpen = f.dependencies.open;
+  f.dependencies.open = async options => {
+    const owned = await originalOpen(options), originalWatch = owned.watchSetup;
+    // Use the actual public forwardApplicationEvents, not a throwing substitute.
+    owned.session.changes = async function* () { forwards++; yield { kind: 'recovery' }; };
+    owned.session.readView = () => { throw Error('Recovery must be reviewed before reading or advancing'); };
+    owned.watchSetup = callbacks => { change = callbacks.onChange; return originalWatch(callbacks); };
+    return owned;
+  };
+  delete f.dependencies.forward;
+  f.dependencies.connect = ({ signal }) => {
+    const done = Promise.withResolvers(), provider = { signal, done, closes: 0 };
+    providers.push(provider);
+    return { closed: done.promise, waitUntilOnline: async () => {}, close() { provider.closes++; done.resolve(); } };
+  };
+  // Install virtual time after the asynchronous filesystem fixture is prepared.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const run = module.runAssistant({ signal: f.stop.signal, events: true }, f.dependencies);
+  t.after(async () => { f.stop.abort(); await run; });
+  const settled = async count => { for (let i=0; i<50 && f.reports.filter(x=>x.state==='adapter_activity_failed').length<count; i++) await flush(); };
+  await settled(1);
+  assert.equal(forwards, 1); assert.equal(providers.length, 1); assert.equal(providers[0].closes, 0);
+  assert.equal(providers[0].signal.aborted, false); assert(!f.calls.includes('owner_closed'));
+  assert.deepEqual(f.reports.filter(x=>x.state==='adapter_activity_failed'), [{ state:'adapter_activity_failed',code:'adapter_activity_failed',participantRunning:true }]);
+  const pairingCalls = f.calls.filter(x=>x==='pairings').length;
+  t.mock.timers.tick(48 * 3600000); await flush();
+  assert.equal(providers.length, 1); assert.equal(forwards, 1);
+  assert.equal(f.calls.filter(x=>x==='pairings').length, pairingCalls);
+  assert(!f.reports.some(x=>['assistant_retry','adapter_offline'].includes(x.state)));
+  assert.equal(await readFile(cursorFile,'utf8'), cursor);
+  // An actual consent revision replaces only its component, then retries the
+  // reviewed activity once with the original cursor; unchanged consent does not.
+  change({type:'setup',version:1,assistant:{proposalId:'a'.repeat(64),approved:true,revision:'consent'}});
+  await flush(); assert.equal(providers.length,1);
+  change({type:'setup',version:1,assistant:{proposalId:'a'.repeat(64),approved:true,revision:'new-consent'}});
+  await settled(2); assert.equal(providers.length,2); assert.equal(providers[0].signal.aborted,true);
+  assert.equal(providers[1].closes,0); assert.equal(await readFile(cursorFile,'utf8'),cursor);
+  providers[1].done.resolve(); await flush(); await flush();
+  t.mock.timers.tick(1000); await settled(3);
+  assert.equal(providers.length,3); assert.equal(providers[2].signal.aborted,false);
+  assert.equal(forwards,3); assert.equal(await readFile(cursorFile,'utf8'),cursor);
+  assert(!f.calls.includes('owner_closed'));
+});
