@@ -183,3 +183,27 @@ For browser-owned SQL, pack the Chronolog session with both `--sql-native --sql-
 Run the **Live staging acceptance** workflow from `master` for the complete jig. Its public source/readiness job runs before the separate SQL fixture checkout and dependency builds. The service workflow calls the same gate after a successful staging deployment and before production promotion. The hosted runner uses the normal staging quota. The suite creates at most ten pages per clean run and paces requests to respect the five-per-minute budget. Keep parallel runs off the same staging environment. To run locally, install Chromium and WebKit with `npx playwright install --with-deps chromium webkit`, set `E2E_MOBILE_MATRIX=1` and the optional Chronolog asset paths above, then run `node scripts/run-staging-acceptance.mjs`. The wrapper checks current readiness before spawning Playwright, and each directly invoked staging fixture repeats that check before writing an account. Neither path opens or restores a service mode. These separately pinned SQL fixtures do not qualify the new events-only first-app composition; the exact-kit first-app runner records that evidence independently.
 
 The mobile jig uses an iPhone WebKit profile and an Android Chromium profile. It simulates camera permission denial, touch controls and loss of connectivity. The regular Chromium check uses a virtual camera and verifies that capture releases its track. These results do not qualify camera switching, permission prompts or operating system suspension on physical phones.
+
+## Revision-10 canonical cutover
+
+The canonical staging/production configurations select new `-s10` Workers so
+their unchanged generic Tendril and Admission classes receive fresh namespaces.
+The existing account D1 databases and immutable R2 buckets are retained. Apply
+the additive account migrations, provision secrets on each new Worker and verify
+namespace identity before routing its existing service and page domains there.
+Do not deploy revision 10 into the `-s9` Worker or reset account sign-in records.
+
+Record the old active page IDs and account database backup before the cutover.
+Retire only those old namespace's page references and reservations; do not copy
+their revision-9 object contents into revision 10. Keep the old namespace data
+for recovery, disable the old Worker's scheduled reconciliation, and replace
+the synthetic reviewer fixture on the new host. New applications use the normal
+setup path. Transfer the canonical routes deliberately after the matching
+immutable release and runtime assets are public. Verify owner sign-in, OAuth,
+readiness, exact build identity and new page creation on staging before production.
+
+OAuth signing-key rotation may retain the old public JWKS so already issued
+tokens remain verifiable. Existing grants retain their original scopes; the
+new plugin requests `tendrils:create` explicitly, requiring fresh consent for
+that additional permission. Application signing devices are not rotated by
+the host cutover. Keep all deployment secrets and database backups private.

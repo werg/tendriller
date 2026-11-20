@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-test('local Worker DNS retains host routing for Playwright readiness and API clients', { timeout: 15_000 }, async t => {
+test('local Worker DNS retains host routing for Playwright readiness and API clients', { timeout: 45_000 }, async t => {
+  // Process/compiler startup can compete with the full Node suite. The actual
+  // HTTP readiness deadline remains five seconds below.
   const directory = await mkdtemp(join(tmpdir(), 'tendriller-e2e-network-'));
   const requests = [];
   const server = createServer((request, response) => {

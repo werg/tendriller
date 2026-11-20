@@ -9,7 +9,7 @@
           "auth": {
             "type": "oauth",
             "client": { "mode": "cimd" },
-            "baseScopes": ["tendrils:list", "applications:read", "applications:write", "events:subscribe"],
+            "baseScopes": ["tendrils:list", "tendrils:create", "applications:read", "applications:write", "events:subscribe"],
             "defaultScopes": []
           }
         }

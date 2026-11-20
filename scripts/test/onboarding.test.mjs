@@ -139,3 +139,23 @@ test('building a starter excludes nested private state, provider secrets, genera
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+// Tool discovery is scope-filtered: a packaged connection must actually request
+// the permission used by the documented account-bound setup path.
+test('the installable MCP connection requests account setup permission explicitly', () => {
+  const manifest = JSON.parse(readFileSync(join(root, 'integrations/chatgpt/plugin/mcp.json'), 'utf8'));
+  const auth = manifest.mcpServers.tendriller.extensions['com.openai'].auth;
+  assert(auth.baseScopes.includes('tendrils:create'));
+  assert.equal(new Set(auth.baseScopes).size, auth.baseScopes.length);
+});
+
+test('events and SQL starter qualification use the current pinned session source', () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  const archive = join(root, pkg.devDependencies['@chronolog/peer-session'].replace(/^file:/, ''));
+  const provenance = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/provenance.json'], { encoding: 'utf8' }));
+  const source = provenance.source;
+  assert.match(source, /^[a-f0-9]{40}$/);
+  const workflow = readFileSync(join(root, '.github/workflows/agent-onboarding.yml'), 'utf8');
+  assert.equal(workflow.split('ref: ' + source).length - 1, 2, 'Both starter profiles must use the qualified session source');
+  assert(workflow.includes(`chronolog-peer-session-${source.slice(0, 8)}-sql.tgz`));
+});
