@@ -122,6 +122,12 @@ if (assistant) {
   const catalog = await call('tools/list');
   if (!catalog.ok || !(await catalog.json()).result?.tools?.some(tool => tool.name === 'get_application_delivery'))
     throw new Error('Assistant tool discovery failed');
+  const guideResponse = await call('tools/call', { name: 'tendril_guide', arguments: {} });
+  const guide = (await guideResponse.json()).result?.structuredContent;
+  if (!guideResponse.ok || guide?.topic !== 'start' || guide.serviceOrigin !== base ||
+      guide.onboarding?.interfaces?.create_page?.url !== `${base}/api/tendrils` ||
+      !guide.text?.includes('Node 24') || !guide.text?.includes(`${base}/api/tendrils`))
+    throw new Error('Assistant app-building guidance is unavailable or targets another deployment');
   const templates = await call('resources/templates/list');
   if (!templates.ok || !Array.isArray((await templates.json()).result?.resourceTemplates))
     throw new Error('Assistant resource-template discovery failed');
