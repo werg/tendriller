@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      CHRONOLOG_SHA: 19fb7ac015044b5ce8590516ffac5a68d69fa9e8
+      CHRONOLOG_SHA: 15573014f4536369d7bd2f8a4b894a0d9fb69812
       EMSDK_VERSION: '4.0.20'
       EMSDK_SHA: e4fe26ef59168ff44f4c23c466e497bf60b3411e
     steps:
@@ -91,8 +91,8 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: staging-chronolog-fixture
-          path: .chronolog-fixture
-      - run: npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts .chronolog-fixture/session/*.tgz
+          path: ${{ runner.temp }}/chronolog-fixture
+      - run: npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts "$RUNNER_TEMP"/chronolog-fixture/session/*.tgz
       - name: Smoke and exercise staging
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -100,6 +100,6 @@ jobs:
           E2E_MOBILE_MATRIX: '1'
         run: |
           export E2E_CHRONOLOG_CONSUMER="$RUNNER_TEMP/consumer"
-          export E2E_CHRONOLOG_WASM="$GITHUB_WORKSPACE/.chronolog-fixture/wasm"
+          export E2E_CHRONOLOG_WASM="$RUNNER_TEMP/chronolog-fixture/wasm"
           node scripts/check-deployment.mjs https://staging.tendriller.dev
           node scripts/run-staging-acceptance.mjs
