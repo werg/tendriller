@@ -6,8 +6,9 @@ import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 
-const { values } = parseArgs({ options: { entry: { type: "string" } } });
+const { values } = parseArgs({ options: { entry: { type: "string" }, 'no-bundle': { type: 'boolean', default: false } } });
 const entry = values.entry ? [resolve(values.entry)] : [];
+const bundle = values['no-bundle'] ? ['--no-bundle', '--local'] : [];
 
 const state = mkdtempSync(join(tmpdir(), "tendriller-e2e-"));
 const config = "server/wrangler.jsonc";
@@ -41,7 +42,7 @@ async function main() {
     `INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES ('${otherHash}', 'e2e-other', ${now}, ${now + 86_400_000})`,
   ].join("; ") + ";";
   await run(["d1", "execute", "ACCOUNTS", "--local", "--config", config, "--persist-to", state, "--command", sql]);
-  worker = spawn("npx", ["wrangler", "dev", ...entry, "--config", config, "--ip", "127.0.0.1", "--port", "8790",
+  worker = spawn("npx", ["wrangler", "dev", ...entry, ...bundle, "--config", config, "--ip", "127.0.0.1", "--port", "8790",
     "--local-protocol", "https", "--persist-to", state, "--var", "PUBLIC_BASE:https://service.localhost:8790",
     "--var", "PAGE_BASE_DOMAIN:pages.localhost"], { stdio: "inherit" });
   worker.once("exit", code => { console.error(`local Worker exited ${code}`); cleanup(); process.exit(code ?? 1); });

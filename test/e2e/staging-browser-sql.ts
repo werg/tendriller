@@ -131,6 +131,18 @@ export async function openBrowserSqlSpecimen(options: {
     entry: 'index.html', files }, signer);
   await peers.publish(publication, assets);
   await Promise.all(pages.map(page => expect(page.getByRole('heading', { name: 'Shared work' })).toBeVisible({ timeout: 25_000 })));
+  // Metadata/device startup can differ across origins. Finish it on both sides
+  // before starting either bounded physical connection; a peer's network-read
+  // latency must not consume the other peer's relay opening deadline.
+  // This SQL specimen deliberately wires a one-shot relay, without participate().
+  // Canonical session participation owns discovery, bounded attempts and failure
+  // backoff for asymmetric startup; this barrier is not a product readiness rule
+  // or a substitute for qualification of that controller.
+  await Promise.all(fixtures.map(async fixture => {
+    await fixture.page.waitForFunction(() => typeof (window as any).prepareAcceptanceSession === 'function');
+    await fixture.page.evaluate(async input => (window as any).prepareAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
+      { name: fixture.name, key: Array.from(key), respondent: isPrivate ? first.id : undefined });
+  }));
   const open = async (fixture: Fixture, remote?: string, channel?: string) => {
     await fixture.page.waitForFunction(() => typeof (window as any).openAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).openAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),

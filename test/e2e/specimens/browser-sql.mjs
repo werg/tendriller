@@ -94,7 +94,9 @@ window.inspectAcceptanceBrowserCapabilities = () => new Promise((resolve, reject
 
 // Test deployments supply enrollment from outside the signed code graph.
 // The Worker owns commands, signing, the relay and the pinned record backend; SQL owns a distinct OPFS VFS.
-window.openAcceptanceSession = async options => {
+let preparation;
+window.prepareAcceptanceSession = options => preparation ??= (async () => {
+  const { remote, channel, ...preparedOptions } = options;
   const worker = new Worker(new URL('./browser-sql-worker.mjs', import.meta.url), { type: 'module' });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('Browser SQL Worker did not open within 25 seconds')), 25_000);
@@ -105,31 +107,9 @@ window.openAcceptanceSession = async options => {
     });
     worker.addEventListener('error', event => finish(reject, new Error(event.message)), { once: true });
     worker.postMessage({ type: 'open', base: window.tendril.identity.base,
-      applicationId: window.__TENDRIL__.application.id, ...options });
+      applicationId: window.__TENDRIL__.application.id, ...preparedOptions });
   }).catch(error => { worker.terminate(); throw error; });
   session = await connectApplicationWorker(worker, { timeoutMs: 20_000 });
-  const isIntake = Boolean(options.respondent);
-  el('task-form').hidden = isIntake;
-  el('intake').hidden = !isIntake;
-  el('answer-form').hidden = !isIntake || session.deviceId !== options.respondent;
-  document.querySelector('h1').textContent = isIntake ? 'Private intake' : 'Shared checklist';
-  if (!isIntake) {
-    draftKey = `checklist-draft:${session.deviceId}`;
-    el('title').value = localStorage.getItem(draftKey) || '';
-    if (el('title').value) el('task-draft').textContent = 'Restored draft from this device. It has not been submitted.';
-  }
-  await refresh(isIntake);
-  if (isIntake) selectCurrentAnswer();
-  status('Ready');
-  void (async () => {
-    for await (const change of session.changes({ signal: owner.signal })) {
-      if (change) await refresh(isIntake);
-      if (change?.kind === 'recovery') {
-        latestSubmission++;
-        status('History recovered. Review changes that had not been shared.');
-      }
-    }
-  })().catch(error => { if (!owner.signal.aborted) errorStatus(error); });
   window.reconnectAcceptanceSession = (channel, remote) => new Promise((resolve, reject) => {
     const finish = (callback, value) => { clearTimeout(timer); worker.removeEventListener('message', listen); callback(value); };
     const listen = ({ data }) => {
@@ -152,6 +132,34 @@ window.openAcceptanceSession = async options => {
     });
     worker.terminate();
   };
+})();
+
+window.openAcceptanceSession = async options => {
+  await window.prepareAcceptanceSession(options);
+  if (options.remote) await window.reconnectAcceptanceSession(options.channel, options.remote);
+  const isIntake = Boolean(options.respondent);
+  el('task-form').hidden = isIntake;
+  el('intake').hidden = !isIntake;
+  el('answer-form').hidden = !isIntake || session.deviceId !== options.respondent;
+  document.querySelector('h1').textContent = isIntake ? 'Private intake' : 'Shared checklist';
+  if (!isIntake) {
+    draftKey = `checklist-draft:${session.deviceId}`;
+    el('title').value = localStorage.getItem(draftKey) || '';
+    if (el('title').value) el('task-draft').textContent = 'Restored draft from this device. It has not been submitted.';
+  }
+  await refresh(isIntake);
+  if (isIntake) selectCurrentAnswer();
+  status('Ready');
+  void (async () => {
+    for await (const change of session.changes({ signal: owner.signal })) {
+      if (change) await refresh(isIntake);
+      if (change?.kind === 'recovery') {
+        latestSubmission++;
+        status('History recovered. Review changes that had not been shared.');
+      }
+    }
+  })().catch(error => { if (!owner.signal.aborted) errorStatus(error); });
+
 };
 
 el('title').oninput = () => {

@@ -107,6 +107,11 @@ jobs:
           name: staging-chronolog-fixture
           path: ${{ runner.temp }}/chronolog-fixture
       - run: npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts "$RUNNER_TEMP"/chronolog-fixture/session/*.tgz
+      - name: Qualify asymmetric SQL startup against the restored engine
+        run: |
+          export E2E_CHRONOLOG_CONSUMER="$RUNNER_TEMP/consumer"
+          export E2E_CHRONOLOG_WASM="$RUNNER_TEMP/chronolog-fixture/wasm"
+          node node_modules/@playwright/test/cli.js test --config test/e2e/browser-sql-opening.playwright.config.ts
       - name: Smoke and exercise staging
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
