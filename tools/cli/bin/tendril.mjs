@@ -177,7 +177,8 @@ function flushOutput(stream) {
   });
 }
 main().catch(error => {
-  process.exitCode = error?.exit ?? 1;
+  const exit = error?.exit;
+  process.exitCode = Number.isInteger(exit) && exit >= 1 && exit <= 255 ? exit : 1;
   console.error(JSON.stringify({ error: { code: error.code ?? 'command_failed', message: error.message },
     diagnostic: diagnosticFinding(error, { scope: error.scope ?? {} }),
     ...(Number.isInteger(error.status) ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}),
