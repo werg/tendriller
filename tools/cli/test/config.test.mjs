@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveConfig, saveConfig } from '../lib/config.mjs';
+import { onboardingDescriptor } from '@tendriller/core/onboarding';
 import { onboardingGuide } from '../lib/guide.mjs';
 
 test('saving and reopening the page handle preserves its independent application identity', async t => {
@@ -19,6 +20,8 @@ test('saving and reopening the page handle preserves its independent application
 
 test('guide uses the chosen service origin for all hosted links and validates public origins', () => {
   const guide = onboardingGuide({}, { TENDRIL_SERVER: 'https://staging.example.com/' });
+  assert.deepEqual(guide.onboarding, onboardingDescriptor('https://staging.example.com'));
+  assert.equal(guide.mcp_guide, guide.onboarding.documentation.mcp);
   assert.match(guide.workflow[3].ready_when, /selected initial generation/);
   for (const key of ['start_here', 'agent_guide', 'troubleshooting', 'service_descriptor'])
     assert.equal(new URL(guide[key]).origin, 'https://staging.example.com');

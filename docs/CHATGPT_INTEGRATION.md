@@ -6,6 +6,20 @@ application's existing Chronolog participant handles its commands and queries.
 Follow the [Cloudflare setup](CLOUDFLARE_ASSISTANT.md) for enrollment, client
 registration and a complete participant SDK example.
 
+## Start inside a connected chat
+
+Call `tendril_guide` with `topic: "start"` before deciding how to build or connect
+an app. The server supplies these instructions even for custom MCP installs
+without a bundled skill. For a new app, request `topic: "build"`; for an existing
+app's participant setup, request `topic: "connect"`. The tool returns the actual
+maintained documents and same-origin links without needing a separate browsing
+tool. [MCP agent workflow](MCP_AGENT_GUIDE.md)
+
+An empty `list_tendrils` means no **assistant-connected** apps for this account,
+not a missing plugin. New apps use the supplied starter and HTTP creation route;
+MCP application calls require their running enrolled participant. Check the
+agent's Node/process capabilities and name a concrete handoff when unavailable.
+
 ## Choose how to install Tendriller
 
 One Tendriller plugin can access all the applications that a person chooses
@@ -45,7 +59,7 @@ connection and approves what to share for each application.
 1. Open [ChatGPT Plugins](https://chatgpt.com/plugins) on the web and switch to
    the workspace where you plan to use Tendriller. Select **+**, then
    **Add custom MCP server**. [OpenAI's setup walkthrough](https://developers.openai.com/plugins/deploy/connect-chatgpt#add-the-mcp-server)
-2. Enter `Tendriller` as the name and `Read and update the Tendriller apps you
+2. Enter `Tendriller` as the name and `Build connected UI and sensor apps, or read and update the Tendriller apps you
    choose to connect` as the description. Under **Connection**, enter
    `https://tendriller.dev/mcp`. For a staging test use
    `https://staging.tendriller.dev/mcp` and give it a distinct name.

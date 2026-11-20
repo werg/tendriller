@@ -1,22 +1,26 @@
+import { onboardingDescriptor } from '@tendriller/core/onboarding';
 import { serverBase } from './config.mjs';
 
 /** Public navigation only: generating a guide creates no page, identity or session. */
 export function onboardingGuide(flags = {}, env = process.env) {
   const service = publicServiceOrigin(serverBase(env, flags));
+  const shared = onboardingDescriptor(service);
   const url = path => service + path;
   return {
     service,
     network_checked: false,
-    start_here: url('/docs/BUILD_AN_APP.md'),
-    agent_guide: url('/agent.md'),
-    capabilities: url('/.well-known/tendriller-capabilities.json'),
-    capability_guide: url('/docs/CAPABILITIES.md'),
-    delivery_guide: url('/docs/AGENT_DELIVERY.md'),
+    onboarding: shared,
+    mcp_guide: shared.documentation.mcp,
+    start_here: shared.start_here,
+    agent_guide: shared.agent_instructions,
+    capabilities: shared.capabilities,
+    capability_guide: shared.documentation.capabilities,
+    delivery_guide: shared.documentation.delivery,
     patterns: url('/docs/APP_PATTERNS.md'),
     preview: url('/docs/tools/PREVIEW.md'),
     primary_deliverable: 'A live hosted application with a connected native/browser session, verified signed publication, and honest process lifetime/resume instructions.',
-    troubleshooting: url('/docs/TROUBLESHOOTING.md'),
-    service_descriptor: url('/api/service'),
+    troubleshooting: shared.documentation.troubleshooting,
+    service_descriptor: shared.interfaces.service_descriptor,
     next: `tendril service --server ${service}`,
     workflow: [
       { step: 1, action: 'Create and claim the application page',

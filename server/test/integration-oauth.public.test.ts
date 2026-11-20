@@ -69,6 +69,54 @@ it('challenges an empty OAuth setup probe and serves the public resource-templat
   expect(await templates.json()).toMatchObject({ result: { resourceTemplates: [] } });
 });
 
+it('provides a complete public MCP onboarding route without browsing or account access, including staging', async () => {
+  const origin = 'https://staging.tendriller.dev';
+  const settings = configured({ PUBLIC_BASE: origin, OAUTH_CONFIG_JSON: JSON.stringify({ resource: origin + '/mcp', clients: [
+    { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] },
+  ] }) });
+  const call = async (method: string, params: object = {}) => {
+    const response = await route(new Request(origin + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }), settings);
+    return { response, body: await response.json() as Record<string, any> };
+  };
+  const before = await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first();
+  const initialized = await call('initialize', { protocolVersion: '2025-11-25' });
+  expect(initialized.body.result.instructions).toContain('tendril_guide');
+  expect(initialized.body.result.instructions).toContain(origin);
+  const catalog = await call('tools/list');
+  const guideTool = catalog.body.result.tools.find((item: any) => item.name === 'tendril_guide');
+  expect(guideTool.securitySchemes).toEqual([{ type: 'noauth' }]);
+  expect(guideTool.inputSchema.properties.topic.enum).toContain('build');
+  const readGuide = async (args: object = {}) => {
+    const reply = await call('tools/call', { name: 'tendril_guide', arguments: args });
+    expect(reply.response.status).toBe(200);
+    expect(reply.body.result.isError).not.toBe(true);
+    return reply.body.result.structuredContent;
+  };
+  const start = await readGuide();
+  expect(start.topic).toBe('start');
+  expect(start.serviceOrigin).toBe(origin);
+  expect(start.text).toContain('Node 24');
+  expect(start.text).toContain('POST ' + origin + '/api/tendrils');
+  expect(start.text).not.toContain('https://tendriller.dev');
+  expect(start.onboarding.interfaces.create_page.url).toBe(origin + '/api/tendrils');
+  const build = await readGuide({ topic: 'build' });
+  expect(build.text).toContain('npm run create');
+  expect(build.text).toContain(origin + '/downloads/tendriller-first-app.tgz');
+  for (const topic of ['capabilities', 'connect', 'delivery', 'troubleshooting']) {
+    const guide = await readGuide({ topic });
+    expect(guide.url).toBe(origin + '/docs/' + ({ capabilities: 'CAPABILITIES', connect: 'CLOUDFLARE_ASSISTANT', delivery: 'AGENT_DELIVERY', troubleshooting: 'TROUBLESHOOTING' } as Record<string, string>)[topic] + '.md');
+    expect(guide.text.length).toBeGreaterThan(100);
+  }
+  const resources = await call('resources/list');
+  expect(resources.body.result.resources).toContainEqual(expect.objectContaining({ uri: start.url, mimeType: 'text/markdown' }));
+  expect((await call('resources/read', { uri: start.url })).body.result.contents[0].text).toBe(start.text);
+  const invalid = await call('tools/call', { name: 'tendril_guide', arguments: { topic: 'https://untrusted.example/' } });
+  expect(invalid.body.result).toMatchObject({ isError: true, structuredContent: { code: 'invalid_guide_topic' } });
+  expect((await call('tools/call', { name: 'list_tendrils', arguments: {} })).response.status).toBe(401);
+  expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first()).toEqual(before);
+});
+
 it('enabled OAuth names its missing additive migration while the ordinary host still works with OAuth disabled', async () => {
   const settings = configured();
   await env.ACCOUNTS.prepare('ALTER TABLE integration_oauth_management_sessions RENAME TO temporarily_absent_management_sessions').run();
@@ -984,7 +1032,10 @@ it('uses an operator-pinned client metadata document for public PKCE without fet
     const result = await response.json() as { access_token: string };
     const listed = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call',
       params: { name: 'list_tendrils', arguments: {} } }, settings, result.access_token);
-    expect(await listed.json()).toMatchObject({ result: { structuredContent: { applications: [] } } });
+    expect(await listed.json()).toMatchObject({ result: { structuredContent: { applications: [], setup: {
+      guideTool: 'tendril_guide', topic: 'start', serviceOrigin: ISSUER,
+      startHere: ISSUER + '/docs/MCP_AGENT_GUIDE.md', nextAction: expect.stringContaining('For a new app'),
+    } } } });
   } finally { outbound.mockRestore(); }
 });
 

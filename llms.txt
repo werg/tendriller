@@ -16,6 +16,7 @@
 - [Multi-participant composition](https://tendriller.dev/docs/MULTIPARTICIPANT.md): one profile owner with many views/tools, addressed work, immutable SQL claims, frozen fan-in, independent drafts and recovery.
 - [Agent bindings](https://tendriller.dev/docs/AGENT_BINDINGS.md): scoped additive host credentials, approved consumers, explicit provider selection, targeted revocation and honest delivery evidence.
 - [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries and reference snippets after setup.
+- [MCP agent start](https://tendriller.dev/docs/MCP_AGENT_GUIDE.md): direct guide-tool instructions for new apps, empty lists, existing-app connections and runtime prerequisites.
 - [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md#agent-walkthrough): step-by-step plugin setup, workspace sharing, account linking, app approvals, and event delivery.
 - [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): identify the incomplete stage and the exact next action.
 

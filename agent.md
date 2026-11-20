@@ -19,6 +19,17 @@ retained owner; native tools attach or deliberately choose a separately enrolled
 profile. Shared observation does not assign work: use explicit recipients and
 guarded claims. Keep per-view drafts and full original operation references.
 
+## If you arrived through MCP
+
+Call `tendril_guide` with `topic: "start"` for the same-origin
+[MCP app-building and connection route](docs/MCP_AGENT_GUIDE.md). The tool returns
+maintained documentation without requiring browsing. An empty `list_tendrils`
+means no assistant-connected apps for this account, not a missing plugin. For a
+new app, use the build guide and HTTP creation route below; check the native
+execution environment and actual process lifetime. For an existing app, connect
+its existing participant. The account-linked MCP does not execute a newly
+created application's code by itself.
+
 ## If the user gave you only a domain
 
 1. Read that origin's `/api/service` for its contract/release and
@@ -72,9 +83,10 @@ device grants, first generation, connected session or selected code release.
 
 The agent needs an environment that can run the native session. The browser needs
 its own Worker and authorized device. The Tendriller host does not run an
-always-running agent; its MCP endpoint exposes host administration. For remote
-application tools, explicit supported event subscriptions, a mounted assistance
-card or a separate Workspace Agent route, use the optional
+always-running agent; its account-linked MCP supplies build/setup guides and
+routes approved application tools to enrolled participants. For explicit supported
+event subscriptions, a mounted assistance card or a separate Workspace Agent
+route, use the optional
 [ChatGPT integration](docs/CHATGPT_INTEGRATION.md#agent-walkthrough). Check for a
 shared plugin first, then guide the person through workspace setup and their own
 account link. Attach `@tendriller/core/assistant` to the existing application

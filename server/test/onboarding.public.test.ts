@@ -17,6 +17,7 @@ const documents = [
   ['/llms-full.txt', 'text/plain'],
   [guidePath, 'text/markdown'],
   ['/docs/SESSION_BOOTSTRAP.md', 'text/markdown'],
+  ['/docs/MCP_AGENT_GUIDE.md', 'text/markdown'],
   ['/docs/TROUBLESHOOTING.md', 'text/markdown'],
   ['/docs/AGENT_ONBOARDING_TEST.md', 'text/markdown'],
   ['/docs/CAPABILITIES.md', 'text/markdown'],
