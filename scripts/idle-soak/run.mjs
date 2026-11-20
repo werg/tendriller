@@ -116,14 +116,14 @@ export async function run(configPath, directory) {
       const transitionStart = Date.now();
       const residency = await boundedActive(() => browser.phase(phase), {attempts:1, expiresAt:Date.now()+60000, signal:abort.signal});
       await boundedActive(() => browser.settle(), {attempts:1, expiresAt:Date.now()+60000, signal:abort.signal});
-      s.events.push({ kind: 'residency', phase, ...residency, at: Date.now(), transitionMs: Date.now() - transitionStart });
+      s.events.push({ kind: 'residency', phase, ...residency, workerBootstrap: browser.workerBootstrapEvidence(), at: Date.now(), transitionMs: Date.now() - transitionStart });
       // Complete startup and drain boundary traffic before measuring; continuous
       // activity fails this bounded barrier instead of earning idle credit.
       await boundary.wait();
       beginSegment(s, phase); s.segments.at(-1).pendingClientRequestsAtStart = { ...pending }; persist();
       await waitUntil(s.segments.at(-1).deadline, abort.signal);
       endSegment(s); persist();
-      if (phase !== 'closed') { s.events.push({ kind: 'reconnect', phase, ...await browser.reconnect(), at: Date.now() }); persist(); }
+      if (phase !== 'closed') { s.events.push({ kind: 'reconnect', phase, ...await browser.reconnect(), workerBootstrap: browser.workerBootstrapEvidence(), at: Date.now() }); persist(); }
     }
     s.status = 'collecting'; persist();
     stopping = true;
