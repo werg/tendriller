@@ -55,6 +55,11 @@ renews the same dedicated account for 90 days without rotating its code. Only
 the allowlisted sanitized report, screenshot and video are uploaded. Missing
 credentials fail qualification; they do not produce a passing result.
 
+The [2026-11-20 production walkthrough](https://github.com/werg/tendriller/releases/download/v0.3.0-rc.11/tendriller-native-mcp-review-2026-11-20.mp4)
+is a native-client recording from an actual passing run. New workflow artifacts
+provide evidence for later deployments; this dated video is not a claim about
+future versions or ChatGPT web behavior.
+
 ## Dedicated reviewer account
 
 Provision a dedicated synthetic account:
