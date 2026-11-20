@@ -111,6 +111,7 @@ jobs:
       - run: node scripts/deployment-bundle.mjs
         env:
           TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+      - run: npm --prefix tools ci
       - run: npm run test:collaboration:native
 
   artifacts:

@@ -68,3 +68,13 @@ test('every checkout in the release qualification graph disables persisted crede
       assert.match(checkout.split(/\n      - /)[0], /persist-credentials: false/, name);
   }
 });
+
+
+test('native owner qualification installs tools dependencies after restoring public packages', () => {
+  const job = graph['native-owner'];
+  const restore = job.indexOf('run: node scripts/deployment-bundle.mjs');
+  const install = job.indexOf('run: npm --prefix tools ci');
+  const qualify = job.indexOf('run: npm run test:collaboration:native');
+  assert(restore >= 0 && install > restore && qualify > install,
+    'The source CLI imports @tendriller/core from tools/node_modules, installed from the restored SDK');
+});
