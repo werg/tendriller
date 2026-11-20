@@ -66,7 +66,7 @@ function runtime({ events = false, failConnect = false, failClose = false } = {}
     forward: async () => { calls.push('events_forwarded'); },
     report: value => { reports.push(value); },
   };
-  return { dependencies, calls, reports };
+  return { dependencies, calls, reports, session };
 }
 
 test('ordinary assistant connection reports observed states without forwarding events or promising wake', async t => {
@@ -84,6 +84,36 @@ test('requested event forwarding shares one owner and closes it even if adapter 
   const { module } = await fixture(t), { dependencies, calls } = runtime({ events: true, failClose: true });
   await assert.rejects(module.runAssistant({ events: true }, dependencies), { name: 'AggregateError', message: 'Assistant participant cleanup failed' });
   assert.deepEqual(calls, ['online', 'events_forwarded', 'adapter_closed', 'owner_closed']);
+});
+
+test('unapproved optional events are checkpointed with bounded skipped status and no delivery claim', async t => {
+  const { module, directory } = await fixture(t), { dependencies, reports, session } = runtime({ events: true });
+  await mkdir(join(directory, '.tendriller'), { mode: 0o700 });
+  const attempted = [], cursor = 'checkpoint-after-unapproved-event';
+  let released = 0;
+  Object.assign(session, {
+    signal: new AbortController().signal,
+    async *changes() { yield { kind: 'revision' }; },
+    async readView() {
+      return { readEvents: () => ({ events: [{ id: 'private-event-id', operationId: 'private-operation-id', payload: 'private-note-payload' }],
+        cursor, hasMore: false, revision: { generation: 'selected-generation' } }),
+      release() { released++; } };
+    },
+  });
+  const connect = dependencies.connect;
+  dependencies.connect = options => ({ ...connect(options), async publish(value) {
+    attempted.push(value);
+    throw Object.assign(Error('sensitive provider response text'), { code: 'event_not_approved' });
+  } });
+  delete dependencies.forward; // Exercise the actual public forwardApplicationEvents helper.
+  await module.runAssistant({ events: true }, dependencies);
+  assert.equal(attempted.length, 1, 'a rejected event is skipped, not retried as delivered work');
+  assert.equal(released, 1);
+  assert.equal(JSON.parse(await readFile(join(directory, '.tendriller/assistant-event-cursor.json'), 'utf8')), cursor);
+  assert.deepEqual(reports.filter(value => value.state === 'event_skipped'), [{ state: 'event_skipped', name: 'note.added',
+    reason: 'event_not_approved', delivered: false, roundTripVerified: false, futureWakeVerified: false }]);
+  assert.doesNotMatch(JSON.stringify(reports), /private-event-id|private-operation-id|private-note-payload|sensitive provider response text/);
+  assert.equal(reports.some(value => value.delivered === true || value.roundTripVerified === true || value.futureWakeVerified === true), false);
 });
 
 test('failed connection closes the owned supervisor without reporting online', async t => {

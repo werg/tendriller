@@ -55,6 +55,8 @@ export async function runAssistant({ signal, events = false } = {}, {
         catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
       }, save: checkpoint },
       project: event => ({ name: 'note.added', payload: { operationId: event.operationId } }),
+      onSkipped: () => report({ state: 'event_skipped', name: 'note.added', reason: 'event_not_approved',
+        delivered: false, roundTripVerified: false, futureWakeVerified: false }),
     });
   } catch (error) { failure = error; throw error; }
   finally {
