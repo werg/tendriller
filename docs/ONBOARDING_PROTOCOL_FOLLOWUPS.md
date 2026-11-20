@@ -137,13 +137,17 @@ tool dispatch. Allocation-fence tests cover a lost request before page dispatch,
 failure before Admission, retained-state loss/corruption, alarm failure and
 absolute expiry including late Admission reservation. The setup-authority
 regressions cover retained scopes, metadata corruption, post-claim expiry,
-original-grant revocation and cached adapter admission. The committed focused
-checkpoints passed 21 setup worker tests plus 6 authority tests, with 44 related
-Admission/alarm/lifetime tests. Per-account retained capacity and the last daily
+original-grant revocation and cached adapter admission. The account setup suite
+now passes 39 actual endpoint tests, including six direct D1 fault cases, plus
+the separately verified authority and schema suites. Per-account retained
+capacity and the last daily
 IP slot are exercised; the 10,000-row global ceiling is enforced by the schema
-but was not separately stress-tested to its maximum. The exhaustive allocation
-fault task remains open: direct lost replies from the D1 allocation, index and
-final status writes are not established by the current scenarios.
+but was not separately stress-tested to its maximum. Direct before-delivery and
+after-commit reply loss is exercised for the D1
+allocation insert, account-index/stage transaction and ready-result update. Each
+case evicts the page and Admission objects and recovers one original page,
+credential, reservation and quota charge. These checks also found and fixed
+unread internal Admission responses in setup, expiry, claim and deletion callers.
 
 ### Implementation and acceptance tasks
 
@@ -164,7 +168,7 @@ final status writes are not established by the current scenarios.
   not reinterpret existing rows or bypass a schema mismatch.
 - [x] Persist the client credential and operation before networking; verify a lost
   HTTP/MCP response can reconstruct the same handle without a returned raw secret.
-- [ ] Inject failures before and after every allocation boundary: ledger write,
+- [x] Inject failures before and after every allocation boundary: ledger write,
   admission reserve, account index, page initialization, result persistence and
   response delivery. Restart each object and recover one page, one credential
   binding and one quota charge.
@@ -302,7 +306,7 @@ or uncertain evidence.
 - [x] Test wrong-account, wrong-app, wrong-origin, substituted-key and
   substituted-rights proofs; duplicate nonces; expired/replayed reviews; changed
   authority; and revoked or suspended accounts during asynchronous work.
-- [ ] Test offline coordinator, simultaneous approvals, lost replies, object
+- [x] Test offline coordinator, simultaneous approvals, lost replies, object
   eviction, browser reload and native-process restart. Exact retries converge on
   the same committed transition; they do not duplicate or restore a revoked grant.
 - [x] Test generation changes before commitment: the original outcome remains
@@ -317,12 +321,18 @@ Focused evidence is in
 [SDK proof/transport tests](../contract/test/pairing.test.mjs),
 [worker lifecycle tests](../server/test/device-pairing.public.test.ts) and
 [starter resume tests](../scripts/test/tutorial-pairing.test.mjs).
-The pairing worker tests plus existing database and signed-control regressions
-passed **43 tests** at the focused checkpoint. The real-browser route in
+The pairing worker suite passes **15 tests**, including actual concurrent form
+submission and two approved proposals targeting the same generation. One form
+is consumed once; only the exact winning proposal commits, while the original
+losing proposal remains inspectable as stale. Separate database, signed-control
+and native-helper regressions cover authority and retained-pause recovery.
+Revocation without a commit cannot hide a later server-confirmed expiry; the
+helper still requires fresh verified authority before releasing that pause.
+The real-browser route in
 [the first-app runner](../scripts/test-first-app.mjs) exercises the actual review
 form and native consumer; its final integrated result belongs to the separate
-acceptance record. The simultaneous-distinct-approval scenario remains open;
-ordinary signed-control race tests do not establish that complete pairing path.
+acceptance record. A local timer, uncertain response or unresolved receipt never
+substitutes for that authority check.
 
 ## Delivery boundary
 
