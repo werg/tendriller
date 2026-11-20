@@ -87,6 +87,7 @@ mkdir shared-notes
 cd shared-notes
 curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/readiness" -o readiness.json
 curl --fail --show-error --silent "$TENDRILLER_ORIGIN/api/service" -o service.json
+curl --fail --show-error --silent "$TENDRILLER_ORIGIN/.well-known/tendriller.json" -o onboarding.json
 node --input-type=module <<'JS'
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -102,6 +103,12 @@ assert.equal(service.contract, 3, 'This starter requires core contract 3.');
 assert.equal(service.core_release, readiness.build?.coreRelease, 'Host descriptors disagree.');
 assert.match(service.core_release, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
 assert.match(readiness.build?.runtimeId, /^[a-f0-9]{64}$/);
+assert.match(readiness.build?.sourceCommit, /^[a-f0-9]{40}$/);
+assert.match(readiness.build?.compositionId, /^[a-f0-9]{64}$/);
+const onboarding = JSON.parse(readFileSync('onboarding.json'));
+const releaseUrl = 'https://github.com/werg/tendriller/releases/download/source-' + readiness.build.sourceCommit;
+assert.equal(onboarding.firstApp?.release?.manifest, releaseUrl + '/manifest.json');
+assert.equal(onboarding.firstApp.release.archive, releaseUrl + '/tendriller-first-app-' + service.core_release + '.tgz');
 JS
 ```
 
@@ -115,7 +122,7 @@ Download the first-app archive from the host's advertised immutable release:
 
 ```sh
 TENDRILLER_RELEASE=$(node -p "JSON.parse(require('fs').readFileSync('service.json','utf8')).core_release")
-TENDRILLER_RELEASE_URL="https://github.com/werg/tendriller/releases/download/v$TENDRILLER_RELEASE"
+TENDRILLER_RELEASE_URL=$(node -p "JSON.parse(require('fs').readFileSync('onboarding.json','utf8')).firstApp.release.manifest.slice(0, -'/manifest.json'.length)")
 mkdir artifacts
 for artifact in "tendriller-first-app-$TENDRILLER_RELEASE.tgz" SHA256SUMS manifest.json
 do
@@ -139,10 +146,8 @@ assert.equal(composition.version, readiness.build.coreRelease, 'Core release mis
 assert.equal(composition.runtime, readiness.build.runtimeId, 'Host runtime mismatch.');
 assert.equal(composition.core.dirty, false);
 assert.equal(composition.core.source, release.source_commit);
-if (readiness.build.sourceCommit !== null)
-  assert.equal(composition.core.source, readiness.build.sourceCommit, 'Host source checkpoint mismatch.');
-if (readiness.build.compositionId != null)
-  assert.equal(id, readiness.build.compositionId, 'Host release composition mismatch.');
+assert.equal(composition.core.source, readiness.build.sourceCommit, 'Host source checkpoint mismatch.');
+assert.equal(id, readiness.build.compositionId, 'Host release composition mismatch.');
 JS
 (cd packages && sha256sum --check SHA256SUMS)
 TENDRILLER_SESSION_ARCHIVE=$(node -p "JSON.parse(require('fs').readFileSync('composition.json','utf8')).components.find(x=>x.role==='session').file")

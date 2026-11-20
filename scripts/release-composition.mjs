@@ -88,6 +88,8 @@ export function verifyReleaseArtifacts(root, manifest) {
     if (typeof item.file !== 'string' || item.file !== basename(item.file) || !/^[a-zA-Z0-9._-]+$/.test(item.file) ||
         names.has(item.file) || !Number.isSafeInteger(item.size) || item.size < 0 || !/^[a-f0-9]{64}$/.test(item.sha256 ?? ''))
       fail('Release artifact records require unique safe filenames, sizes and SHA-256 hashes.');
+    if (item.url !== `https://github.com/werg/tendriller/releases/download/source-${identity.source}/${item.file}`)
+      fail('Release artifacts must use canonical source-qualified URLs.');
     names.add(item.file);
     const bytes = readFileSync(join(dist, item.file));
     if (bytes.length !== item.size || digest(bytes) !== item.sha256)

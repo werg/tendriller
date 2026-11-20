@@ -59,7 +59,8 @@ function fixture(t) {
   const component = (role, file, value) => {
     const bytes = Buffer.from(typeof value === 'object' ? JSON.stringify(value) : value);
     writeFileSync(join(root, 'dist', file), bytes);
-    return { role, file, size: bytes.length, sha256: digest(bytes) };
+    return { role, file, size: bytes.length, sha256: digest(bytes),
+      url: `https://github.com/werg/tendriller/releases/download/source-${source}/${file}` };
   };
   const identity = { repository: 'werg/tendriller', source, sourceTree, dirty: false };
   const components = ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter'].map(role =>

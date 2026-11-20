@@ -193,3 +193,9 @@ test('release URLs are source qualified even when package version is unchanged',
   for (const item of manifest.artifacts)
     assert.equal(item.url, `https://github.com/werg/tendriller/releases/download/source-${f.identity.source}/${item.file}`);
 });
+
+test('publication verification rejects version-derived URLs even with unchanged artifact bytes', t => {
+  const f = fixture(t), manifest = f.prepare();
+  manifest.artifacts[0].url = `https://github.com/werg/tendriller/releases/download/v${f.version}/${manifest.artifacts[0].file}`;
+  assert.throws(() => verifyReleaseArtifacts(f.root, manifest), /canonical source-qualified URLs/);
+});
