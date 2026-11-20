@@ -45,7 +45,7 @@ const options = { api: handle.api, token: handle.token,
 if (mode === 'propose') {
   const proposal = await proposeApplicationAssistant(options);
   await save('assistant-proposal.json', { proposed: proposal.proposed, adapterHash: createHash('sha256').update(options.key).digest('hex') });
-  console.log(JSON.stringify({ reviewUrl: proposal.reviewUrl }));
+  console.log(JSON.stringify({ reviewUrl: proposal.reviewUrl, proposed: proposal.proposed, approved: proposal.approved }));
   process.exit(0);
 }
 if (!['init', 'run'].includes(mode)) throw Error('Choose create, init, propose, or run');
