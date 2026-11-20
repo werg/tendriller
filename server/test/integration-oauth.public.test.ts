@@ -828,10 +828,15 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     // A deployment with OAuth temporarily unavailable preserves existing jobs.
     await advance(a.page.id, 100);
     await runAlarm(a.page.id);
+    // A real alarm can already own the job when runAlarm returns. Observe that
+    // exact lease finishing before restoring configuration; otherwise the
+    // fixture itself can re-enable egress during its unavailable-policy check.
+    await expect.poll(() => inDO(a.page.id, t =>
+      t.db.one('SELECT block_reason,attempts,lease FROM assistant_jobs')), { timeout: 5000 })
+      .toMatchObject({ block_reason: 'oauth_unavailable', attempts: 0, lease: null });
     expect(sent).toHaveLength(0);
     await inDO(a.page.id, t => {
       Object.assign(t.env, settings);
-      expect(t.db.one('SELECT block_reason,attempts FROM assistant_jobs')).toMatchObject({ block_reason: 'oauth_unavailable', attempts: 0 });
       t.db.run('UPDATE assistant_jobs SET due=?', t.now() - 1);
     });
     const inbox = (await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent;
