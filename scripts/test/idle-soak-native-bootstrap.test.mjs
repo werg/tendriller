@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runNativeBootstrap, bootstrapOptions } from '../idle-soak/native-bootstrap.mjs';
-import { nativeCoverage, newState, report } from '../idle-soak/state.mjs';
+import { newState, report } from '../idle-soak/state.mjs';
+import { nativeCoverage } from '../idle-soak/run.mjs';
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture({assistant=true,events=false,queryFailure=false,missingPairings=false}={}) {
  const stop=new AbortController(),sessionStop=new AbortController(),query=Promise.withResolvers(),reconciliation=Promise.withResolvers();
