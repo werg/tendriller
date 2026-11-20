@@ -39,7 +39,8 @@ test('approval starts an adapter, revocation stops only that component, and new 
 
 test('a replaced adapter is fenced until a new consent revision and never aborts pairing', async () => {
   const f = fixture(); f.notice(approved()); await flush();
-  f.adapters[0].onStatus({ state: 'disconnected', reason: 'participant_replaced' }); f.adapters[0].done.resolve();
+  f.adapters[0].onStatus({ state: 'disconnected', reason: 'participant_replaced' });
+  assert(f.adapters[0].signal.aborted); f.adapters[0].done.resolve();
   await flush(); await flush(); f.notice(approved()); await flush(); assert.equal(f.adapters.length, 1);
   assert(f.count() >= 2); f.notice(approved('next')); await flush(); await flush(); assert.equal(f.adapters.length, 2);
   await f.lifecycle.close();
@@ -164,4 +165,16 @@ test('a failed adapter transport while starting cannot leave an unhandled reject
   f.notice(approved()); await flush(); transport.reject(Error('transport failed')); await flush();
   f.notice({...approved(),assistant:{proposalId:null,approved:false,revision:null}}); await flush();
   assert.equal(f.count(), 2); await f.lifecycle.close();
+});
+
+
+test('a synchronous approval-change status during adapter start cannot forward or restart stale consent', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] }); let forwards = 0, starts = 0, closes = 0;
+  const f = fixture({onOnline:()=>{forwards++;}, startAdapter({onStatus}) {
+    starts++; onStatus({state:'disconnected',reason:'approval_changed'});
+    return {closed:new Promise(()=>{}),waitUntilOnline:async()=>{},close:()=>{closes++;}};
+  }});
+  f.notice(approved()); await flush(); t.mock.timers.tick(86400000); await flush();
+  assert.equal(forwards, 0); assert.equal(starts, 1); assert.equal(closes, 1);
+  f.notice(approved()); await flush(); assert.equal(starts, 1); await f.lifecycle.close();
 });
