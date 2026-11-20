@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "tendriller",
   "version": "1.0.0",
-  "description": "Read and update apps you choose to connect from your Tendriller account.",
+  "description": "Build connected UI and sensor apps with a supported agent runtime, or read and update apps from your Tendriller account.",
   "author": {
     "name": "Gabriel Pickard",
     "email": "wergomat@gmail.com",
@@ -10,21 +10,30 @@
   },
   "homepage": "https://tendriller.dev",
   "repository": "https://github.com/werg/tendriller",
-  "keywords": ["tendriller", "applications", "productivity"],
+  "keywords": [
+    "tendriller",
+    "applications",
+    "productivity"
+  ],
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "Tendriller",
         "shortDescription": "Work with your Tendriller apps",
-        "longDescription": "Use ChatGPT to read and update the Tendriller apps you choose to share. Connect your Tendriller account, then approve the queries, commands, and events each app can expose. An enrolled app participant handles reads and writes. You can also catch up on retained events, and supported ChatGPT Work chats can use event subscriptions when the service is configured for their callback provider.",
+        "longDescription": "Find the setup guide for a new UI and sensor application, or read and update the Tendriller apps you choose to share. Building a new app uses a supported native agent runtime and the supplied starter. Connect your account and approve the queries, commands and events each app exposes. Its enrolled participant handles reads and writes. Catch up on retained events, or use subscriptions in supported chats when the callback provider is configured.",
         "developerName": "Gabriel Pickard",
         "category": "Productivity",
-        "capabilities": ["Read approved application views", "Run approved application commands", "Catch up on approved events"],
+        "capabilities": [
+          "Read approved application views",
+          "Run approved application commands",
+          "Catch up on approved events"
+        ],
         "websiteURL": "https://tendriller.dev",
         "supportURL": "https://github.com/werg/tendriller/issues",
         "privacyPolicyURL": "https://tendriller.dev/privacy",
         "termsOfServiceURL": "https://tendriller.dev/terms",
         "defaultPrompt": [
+          "Help me set up a connected UI and sensor page using Tendriller.",
           "List my connected Tendriller apps.",
           "Show what I can read or change in my Tendriller app.",
           "Read recent events from my connected Tendriller app."
@@ -65,6 +74,12 @@
               "prompt": "Read the retained events for the review checklist and summarize the completion event for Check labels.",
               "tools_triggered": "list_tendrils, describe_application, read_application_events",
               "expected_behavior": "After the completion test has run, report the returned checklist completion event. If the inbox is empty, report that instead of inventing an event."
+            },
+            {
+              "description": "Find app-building guidance before any application is connected.",
+              "prompt": "I do not have a Tendriller app yet. How can we build a small page connected to this chat?",
+              "tools_triggered": "tendril_guide",
+              "expected_behavior": "Read the current start and build guides, preserve the connected service origin, explain the supported starter and creation route, and check native runtime/process capabilities. An empty list is not a missing plugin. Do not claim a running app without the required setup and verification."
             }
           ],
           "negative": [

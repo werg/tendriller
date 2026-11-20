@@ -1,5 +1,12 @@
 # Optional Tendriller ↔ ChatGPT integration
 
+For the normal hosted service, use its existing `/mcp` endpoint and the
+[Cloudflare assistant setup](../../docs/CLOUDFLARE_ASSISTANT.md). Start with
+`tendril_guide` and the [MCP agent workflow](../../docs/MCP_AGENT_GUIDE.md) for
+new applications, empty lists and existing-app connections. That route uses the
+application's existing participant and needs no separately deployed Node server.
+The rest of this README documents the optional external service/test harness.
+
 This separately deployed Node 24 service connects an explicitly enrolled native
 Chronolog application to remote MCP tools, consented MCP Events subscriptions,
 an assistance widget, and optional published Workspace Agent/lifecycle adapters.
