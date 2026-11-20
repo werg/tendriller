@@ -34,7 +34,7 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
   const ready = () => {
     if (sentReady || lifetime.aborted || !participationReady || !reconciled || !activated || !adapterReady) return;
     sentReady = true;
-    send({ idleSoakCoverage: 1, bootstrapScope: assistant ? 'native-with-mcp-adapter' : 'native-only-without-mcp-adapter', wakeups: true, modelTurns: false });
+    send({ idleSoakCoverage: 1, bootstrapScope: assistant ? 'native-with-mcp-adapter' : 'native-only-without-mcp-adapter', wakeups: true, modelTurns: false, eventsForwarding: assistant && events });
     send({ idleSoakReady: 1 });
   };
   try {

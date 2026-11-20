@@ -13,6 +13,7 @@ export const NATIVE_BOOTSTRAP_SCOPES = Object.freeze(['native-only-without-mcp-a
 export function nativeCoverage(state, message) {
   if (message?.idleSoakCoverage !== 1 || !NATIVE_BOOTSTRAP_SCOPES.includes(message.bootstrapScope)) return false;
   state.coverage.bootstrapScope = message.bootstrapScope;
+  state.coverage.eventsForwarding = message.bootstrapScope === 'native-with-mcp-adapter' && message.eventsForwarding === true;
   state.coverage.wakeups ||= message.wakeups === true;
   state.coverage.modelTurns ||= message.modelTurns === true;
   return true;
