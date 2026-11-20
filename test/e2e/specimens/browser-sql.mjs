@@ -1,4 +1,5 @@
 import { connectApplicationWorker } from '@chronolog/peer-session/browser';
+import { startSqlFixtureWorker } from './browser-sql-startup.mjs';
 
 const el = id => document.getElementById(id);
 const status = text => { el('status').textContent = text; };
@@ -98,17 +99,20 @@ let preparation;
 window.prepareAcceptanceSession = options => preparation ??= (async () => {
   const { remote, channel, ...preparedOptions } = options;
   const worker = new Worker(new URL('./browser-sql-worker.mjs', import.meta.url), { type: 'module' });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Browser SQL Worker did not open within 25 seconds')), 25_000);
-    const finish = (callback, value) => { clearTimeout(timer); callback(value); };
-    worker.addEventListener('message', ({ data }) => {
-      if (data.type === 'open') finish(resolve);
-      if (data.type === 'failure') finish(reject, new Error(data.message));
-    });
-    worker.addEventListener('error', event => finish(reject, new Error(event.message)), { once: true });
-    worker.postMessage({ type: 'open', base: window.tendril.identity.base,
-      applicationId: window.__TENDRIL__.application.id, ...preparedOptions });
-  }).catch(error => { worker.terminate(); throw error; });
+  const stages = [];
+  window.inspectAcceptanceState = () => {
+    const state = session?.status, text = el('status').textContent;
+    return { stages: stages.slice(), phase: state?.phase ?? null, database: state?.database ?? null,
+      connectedPeers: state?.connectedPeers ?? null, sequence: session?.revision?.point.sequence ?? null,
+      closed: session?.signal.aborted ?? null,
+      display: text === 'Saving…' ? 'saving' : text.startsWith('Applied here') ? 'applied'
+        : text.startsWith('Shared with') ? 'shared' : text === 'Ready' ? 'ready'
+          : text.startsWith('Could not complete') ? 'failed' : 'other' };
+  };
+  await startSqlFixtureWorker(worker, { type: 'open', base: window.tendril.identity.base,
+    applicationId: window.__TENDRIL__.application.id, ...preparedOptions },
+  value => { if (stages.length < 8) stages.push(value); })
+    .catch(error => { throw new Error(`${error.message}; startup stages: ${JSON.stringify(stages)}`, { cause: error }); });
   session = await connectApplicationWorker(worker, { timeoutMs: 20_000 });
   window.reconnectAcceptanceSession = (channel, remote) => new Promise((resolve, reject) => {
     const finish = (callback, value) => { clearTimeout(timer); worker.removeEventListener('message', listen); callback(value); };

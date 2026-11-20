@@ -48,9 +48,17 @@ and WASM engine, run `E2E_CHRONOLOG_CONSUMER=/absolute/consumer E2E_CHRONOLOG_WA
 Staging acceptance runs this local regression before the live scenarios, using the
 packaged Worker with bundling disabled. It retains SQL replication, correction and
 reopen checks while delaying either peer's metadata response by twelve seconds,
-and delaying cold SQL engine loading beyond the page RPC deadline. This explicit
-SQL fixture activates its database inside the existing Worker startup deadline
-before exposing the page facade; metadata readiness alone does not qualify SQL.
+and combining a six-second metadata delay with a cold SQL response held for at
+least twenty-one seconds. This explicit SQL fixture keeps metadata preparation's
+25-second bound and gives SQL activation a separate fixed 30-second readiness
+phase before exposing the page facade. Only metadata readiness starts that phase;
+engine progress cannot renew it, and a successful first SQL read is required.
+The ordinary page RPC deadline stays 20 seconds. This separates fixture startup
+qualification from an operation latency bound; metadata alone does not qualify SQL.
+Replication checks first observe the source's applied result within its declared
+15-second bound, then start the unchanged five-second remote-display check.
+Fixed startup stages/timings and cached session-state diagnostics identify which
+boundary failed without logging keys, request bodies or authored data.
 The SQL specimen deliberately opens a one-shot relay rather than canonical
 `participate()` discovery. Both sessions must finish preparation before either
 physical connection starts; canonical participation instead owns bounded

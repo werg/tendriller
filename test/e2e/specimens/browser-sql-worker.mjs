@@ -42,6 +42,8 @@ self.addEventListener('message', async ({ data }) => {
     } catch (error) { self.postMessage({ type: 'failure', message: error.message }); }
   }
   if (data?.type !== 'open' || session) return;
+  const started = performance.now();
+  const progress = stage => self.postMessage({ type: 'startup-progress', stage, elapsedMs: performance.now() - started });
   let device;
   try {
     // The acceptance harness checks scratch diagnostics before enrollment.
@@ -62,17 +64,22 @@ self.addEventListener('message', async ({ data }) => {
       device, definition, authority: await peers.application(), schema: advertised.schema,
       epochKeys: new Map([[0, data.key]]), databasePath: '/application.sqlite',
       async createEngine() {
+        progress('engine-load-start');
         const loaded = await loadBrowserEngine(new URL('./engine/', self.location.href));
+        progress('engine-load-ready');
         pool = await loaded.module.installOpfsSAHPoolVfs({ name: 'acceptance-sql',
           directory: `acceptance-sql-${data.name}`, initialCapacity: 12 });
+        progress('opfs-ready');
         return createBrowserSqlEngine({ ...loaded, vfs: pool.vfsName });
       },
     });
+    progress('metadata-ready');
     // openSqlApplication is metadata-ready, with SQL still lazy. Qualify this
-    // explicitly SQL fixture inside its existing Worker startup deadline before
-    // exposing the page RPC facade; otherwise the first UI query spends its
-    // shorter RPC deadline downloading/compiling the cold engine.
+    // explicitly SQL fixture in its SQL-readiness phase before exposing the
+    // page RPC facade; metadata preparation and SQL activation have separate
+    // bounded budgets, and normal UI RPCs retain their shorter deadline.
     await session.query(data.respondent ? 'answer' : 'board', null);
+    progress('sql-read-ready');
     if (data.remote) await connect(data.channel, data.remote);
     serveApplicationWorker(session, self);
     self.postMessage({ type: 'open' });
