@@ -1,16 +1,21 @@
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { boundedActive } from './state.mjs';
+import { observeWorkerBootstraps } from './worker-bootstrap.mjs';
 import { classifyTransport } from './classification.mjs';
 
-export async function startBrowser(c, emit, { chromium, launchContext = launchResidentContext } = {}) {
+export async function startBrowser(c, emit, { chromium, launchContext = launchResidentContext, observeBootstraps = observeWorkerBootstraps } = {}) {
   if (!chromium) ({ chromium } = await import('@playwright/test'));
-  const { context, close } = await launchContext(c, chromium);
+  const { context, close, endpoint } = await launchContext(c, chromium);
   let page, cover;
   const bytes = v => typeof v === 'string' ? Buffer.byteLength(v) : v?.length ?? 0;
-  const pending = new Set();
+  const pending = new Set(), completedWorkerLoads = new Map();
+  let workerBootstrapCompletions = 0;
   const activity = () => emit({ source: 'browser', kind: 'activity', pending: pending.size });
-  context.on('request', request => { pending.add(request); activity(); emit({ source: 'browser', kind: 'requests', category: classifyTransport(request.url()) }); });
+  context.on('request', request => {
+    const completed = completedWorkerLoads.get(request.url()) ?? 0;
+    if (request.resourceType() === 'script' && completed > 0) completedWorkerLoads.set(request.url(), completed - 1); else pending.add(request);
+    activity(); emit({ source: 'browser', kind: 'requests', category: classifyTransport(request.url()) }); });
   const finished = request => { pending.delete(request); activity(); };
   context.on('requestfinished', finished); context.on('requestfailed', finished);
   context.on('page', p => p.on('websocket', ws => {
@@ -25,14 +30,27 @@ export async function startBrowser(c, emit, { chromium, launchContext = launchRe
   for (const p of context.pages().slice(1)) await p.close();
   const adapter = await import(pathToFileURL(c.adapter).href);
   if (typeof adapter.ready !== 'function' || typeof adapter.reconnect !== 'function') { await close(); throw Error('ADAPTER_READY_AND_RECONNECT_REQUIRED'); }
-  const open = async () => {
+  const withWorkerBootstrap = async action => {
+    completedWorkerLoads.clear();
+    const observer = endpoint && await observeBootstraps(endpoint, url => {
+      // Retain the original request counter. Only complete an exact script URL
+      // after worker-target main requestId === targetId and an executable reply.
+      const request = [...pending].find(request => request.resourceType() === 'script' && request.url() === url);
+      if (request) pending.delete(request); else completedWorkerLoads.set(url, (completedWorkerLoads.get(url) ?? 0) + 1);
+      workerBootstrapCompletions++; activity();
+    });
+    try { const result = await action(); await observer?.finish(); return result; }
+    finally { await observer?.close(); }
+  };
+  const open = async () => withWorkerBootstrap(async () => {
     page = await context.newPage();
     await page.goto(c.pageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.bringToFront();
     await adapter.ready({ page, context, config: c });
-  };
+  });
   return {
     context, adapter,
+    workerBootstrapEvidence: () => ({ completedLoads: workerBootstrapCompletions, correlatedNetworkFinished: workerBootstrapCompletions > 0, executableReply: workerBootstrapCompletions > 0, boundaryOnly: true }),
     async phase(phase) {
       if (phase === 'closed') { cover ??= await context.newPage(); if (page) await page.close(); page = undefined; return { observed: 'closed' }; }
       if (!page) await open();
@@ -53,7 +71,7 @@ export async function startBrowser(c, emit, { chromium, launchContext = launchRe
       // One explicit boundary outage; no network polling during the quiet phase.
       await context.setOffline(true);
       await context.setOffline(false);
-      const outcome = await boundedActive((_attempt, signal) => adapter.reconnect({ page, context, config: c, signal }), { attempts: 3 });
+      const outcome = await boundedActive((_attempt, signal) => withWorkerBootstrap(() => adapter.reconnect({ page, context, config: c, signal })), { attempts: 3 });
       if (outcome !== true) throw Error('RECONNECT_NOT_VERIFIED');
       return { elapsedMs: Date.now() - started, verified: true };
     },
@@ -89,6 +107,6 @@ export async function launchResidentContext(c, chromium) {
     child.stderr.resume();
     browser = await chromium.connectOverCDP(endpoint, { noDefaults: true, timeout: 30000 });
     const context = browser.contexts()[0]; if (!context) throw Error('CHROMIUM_CONTEXT_MISSING');
-    return { context, close: stop };
+    return { context, close: stop, endpoint };
   } catch { await stop(); throw Error('RESIDENT_CHROMIUM_START_FAILED'); }
 }
