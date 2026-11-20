@@ -364,8 +364,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const invitationSocket = agentRest === "peers/invitations" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const relaySocket = agentRest === "peers/relay" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
       const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
+      const discoverySocket = agentRest === 'peers/discovery/watch' && req.headers.get('Upgrade')?.toLowerCase() === 'websocket';
       const setupSocket = agentRest === 'setup/watch' && req.headers.get('Upgrade')?.toLowerCase() === 'websocket';
-      const socketToken = setupSocket && protocols.includes('tendriller.setup.v1') || peerSocket && protocols.includes("tendriller.rendezvous.v1") ||
+      const socketToken = discoverySocket && protocols.includes('tendriller.discovery.v1') || setupSocket && protocols.includes('tendriller.setup.v1') || peerSocket && protocols.includes("tendriller.rendezvous.v1") ||
         invitationSocket && protocols.includes("tendriller.invitations.v1") || relaySocket && protocols.includes("tendriller.relay.v1")
         ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
       const token = socketToken || /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];

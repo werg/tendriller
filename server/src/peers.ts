@@ -4,11 +4,12 @@ import type { Principal } from './access';
 import { HttpError, json, readJson } from './http';
 import type { Tendril } from './tendril';
 import { handlePeerParticipant } from './peer-participant';
+import { handleDiscoveryWatch } from './discovery';
 import { handleInvitations } from './peer-invitations';
 import { handleRelay } from './peer-relay';
 import { handleDevicePairing } from './device-pairing';
 
-export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|pairing)$/;
+export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|pairing|discovery\/watch)$/;
 /** Public connection configuration is read while serving the page, without a second discovery request. */
 export function peerBootstrap(t: Tendril) {
   return validatePeerBootstrap(t.db.get('peer_bootstrap', { version: 2, endpoints: [] }));
@@ -50,6 +51,7 @@ export function expirePeers(t: Tendril): void { peers(t); }
 
 export async function handlePeers(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
   if (!authorized(t, principal) || !await freshPrincipal(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
+  if (path === 'peers/discovery/watch') return handleDiscoveryWatch(t, req, url, principal);
   if (path === 'peers/pairing') return handleDevicePairing(t, req, url, principal);
   if (path === 'peers/participant') return handlePeerParticipant(t, req, principal);
   if (path === 'peers/invitations') return handleInvitations(t, req, url, principal);

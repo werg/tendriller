@@ -8,6 +8,9 @@ export interface TestHostTraffic {
   invitationUpgrades: number;
   invitationSentBytes: number;
   invitationReceivedBytes: number;
+  discoveryUpgrades: number;
+  discoverySentBytes: number;
+  discoveryReceivedBytes: number;
   relayUpgrades: number;
   relaySentBytes: number;
   relayReceivedBytes: number;
@@ -15,7 +18,7 @@ export interface TestHostTraffic {
 const bytes = (value: string | ArrayBuffer | ArrayBufferView) => typeof value === 'string' ? new TextEncoder().encode(value).byteLength : value.byteLength;
 
 /** Matches the public PeerSocket port, including cancellation before the upgrade resolves. */
-export function testPeerSocket(upgrade: () => Promise<Response>, traffic: TestHostTraffic, kind: 'rendezvous' | 'invitation' | 'relay') {
+export function testPeerSocket(upgrade: () => Promise<Response>, traffic: TestHostTraffic, kind: 'rendezvous' | 'invitation' | 'relay' | 'discovery') {
   class Socket extends EventTarget {
     readyState = 0;
     binaryType = 'arraybuffer';
