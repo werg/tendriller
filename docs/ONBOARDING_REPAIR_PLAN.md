@@ -34,102 +34,111 @@ Starting points for this repair:
 
 ## Completion checklist
 
+Checked items describe implemented repository behavior and focused validation.
+They do not certify a deployment or an installed ChatGPT connection. The draft
+PR records exact final qualification heads and results as they complete.
+Companion drafts: [Chronolog #12](https://github.com/werg/chronolog-db/pull/12)
+and [Contrib #30](https://github.com/werg/tendriller-contrib/pull/30).
+
 ### 1. Origin and connector discovery
 
-- [ ] Every account-linked discovery path identifies its canonical service
+- [x] Every account-linked discovery path identifies its canonical service
   origin, environment/instance, contract, and build/composition identity.
-- [ ] An empty application list explains that it lists assistant connections,
+- [x] An empty application list explains that it lists assistant connections,
   not every page owned by the account, and includes a same-origin next step.
-- [ ] `tendril_guide` is advertised and exercised through the actual MCP catalog;
+- [x] `tendril_guide` is advertised and exercised through the actual MCP catalog;
   clients missing the tool have an explicit same-origin HTTP fallback.
-- [ ] Setup rejects a saved-handle/requested-origin mismatch before mutation.
-- [ ] Staging documentation and links never silently switch to production.
+- [x] Setup rejects a saved-handle/requested-origin mismatch before mutation.
+- [x] Staging documentation and links never silently switch to production.
 - [ ] Installed-plugin acceptance verifies that every suggested tool is callable
   after both fresh installation and upgrade. This is a live release gate.
 
 ### 2. Operational readiness and paused creation
 
-- [ ] Publish an anonymous, machine-readable readiness surface without changing
+- [x] Publish an anonymous, machine-readable readiness surface without changing
   the strict `/api/service` descriptor contract.
-- [ ] Include creation availability, stable reason code, and actionable next
+- [x] Include creation availability, stable reason code, and actionable next
   step in MCP onboarding and public discovery.
-- [ ] Tutorial and CLI check readiness before creating a page; a paused service
+- [x] Tutorial and CLI check readiness before creating a page; a paused service
   does not lead to an alternate origin, repeated creation, or an expensive build.
-- [ ] Tests cover open, creation-paused/read-only modes, unavailable readiness,
+- [x] Tests cover open, creation-paused/read-only modes, unavailable readiness,
   and races where readiness changes before the create request.
 - [ ] Operator runbook records how to inspect/restore the intended staging
   readiness. No service mode is changed as part of this PR.
 
 ### 3. Release composition and usable public packages
 
-- [ ] Build one immutable composition manifest containing exact source commits,
+- [x] Build one immutable composition manifest containing exact source commits,
   archive hashes, capability/export requirements, starter identity, and pinned
   Chronolog dependency identity.
-- [ ] Release qualification installs the actual public archives in an isolated
+- [x] Release qualification installs the actual public archives in an isolated
   consumer and imports assistant, onboarding, collaboration/browser,
   collaboration/native, worker, diagnostics, and the starter's real graph.
-- [ ] A version/build mismatch produces a diagnostic before partial setup.
-- [ ] The supported events-only path consumes a qualified pinned archive or an
+- [x] A version/build mismatch produces a diagnostic before partial setup.
+- [x] The supported events-only path consumes a qualified pinned archive or an
   equivalent single documented bootstrap, without requiring agents to reconstruct
   several source repositories.
-- [ ] Release publication rejects incomplete, mismatched, dirty, or overwritten
+- [x] Release publication rejects incomplete, mismatched, dirty, or overwritten
   compositions as appropriate; source-built candidates retain distinct identity.
+- [x] Ordinary staging/production deployment verifies that every exact advertised
+  public release asset is already available before migrations, uploads or deploy.
+  Separately scoped unpublished branch previews retain their own lifecycle.
 - [ ] Publish and deploy the qualified composition, then verify deployed starter,
   MCP build identity, SDK, tools, and Chronolog agree. This is a release gate.
 
 ### 4. Publication outcomes and timeout recovery
 
-- [ ] A verified publication receipt remains available if selected-head refresh
+- [x] A verified publication receipt remains available if selected-head refresh
   fails after the host has accepted the upload.
-- [ ] Distinguish an unknown upload outcome, a known accepted publication with
+- [x] Distinguish an unknown upload outcome, a known accepted publication with
   head verification pending, and a verified current selection.
-- [ ] CLI timeout/cancellation retains its original cause when session cleanup
+- [x] CLI timeout/cancellation retains its original cause when session cleanup
   raises `APPLICATION_SESSION_CLOSED` or another secondary error.
-- [ ] Error/result output retains the original publication operation identity
+- [x] Error/result output retains the original publication operation identity
   and safe recovery guidance. Retry must reuse the same publication intent.
-- [ ] Reconcile an uncertain publication against the signed selected head before
+- [x] Reconcile an uncertain publication against the signed selected head before
   creating any new publication operation.
-- [ ] Regression tests inject delayed reads, lost replies, cancellation, and
+- [x] Regression tests inject delayed reads, lost replies, cancellation, and
   cleanup failure; preserve validation failures rather than report false success.
-- [ ] Help and examples consistently state that `--timeout` is in seconds.
+- [x] Help and examples consistently state that `--timeout` is in seconds.
 
 ### 5. Starter lifecycle, authority, and process status
 
-- [ ] Use the current assistant-enabled starter and close the owned supervisor,
+- [x] Use the current assistant-enabled starter and close the owned supervisor,
   not only its session; attachments detach without shutting down the owner.
-- [ ] Match adapter capabilities to query, command, inspect, retry, wait, and
+- [x] Match adapter capabilities to query, command, inspect, retry, wait, and
   reapply operations; explain original versus native operation references.
-- [ ] Preserve the same device identity and exact saved attempts on resume.
-- [ ] Report actual assistant approval/online status, process lifetime, and
+- [x] Preserve the same device identity and exact saved attempts on resume.
+- [x] Report actual assistant approval/online status, process lifetime, and
   required native participant; proposing a connection is not live connectivity.
-- [ ] Keep optional event forwarding/wake opt-in and distinct from ordinary
+- [x] Keep optional event forwarding/wake opt-in and distinct from ordinary
   assistant reads/writes and from persistence of the native process.
-- [ ] Owner claim, assistant permission review, and browser device enrollment
+- [x] Owner claim, assistant permission review, and browser device enrollment
   remain explicit, distinguishable authority steps with resumable instructions.
-- [ ] Browser enrollment instructions prevent claiming external browser
+- [x] Browser enrollment instructions prevent claiming external browser
   authentication from a user's separate successful sign-in.
-- [ ] Consider reviewed pairing/account-bound initiation where feasible; track
+- [x] Consider reviewed pairing/account-bound initiation where feasible; track
   any new protocol or UI work explicitly instead of implying it already exists.
 
 ### 6. Usage and operational documentation
 
-- [ ] The notes query example passes JSON `null` explicitly; tooling explains
+- [x] The notes query example passes JSON `null` explicitly; tooling explains
   omitted-input semantics without silently changing existing applications.
-- [ ] `--shared` explains its additional eligible-participant requirement.
-- [ ] Recovery instructions explain signer-scoped operation inspection and
+- [x] `--shared` explains its additional eligible-participant requirement.
+- [x] Recovery instructions explain signer-scoped operation inspection and
   external/native references.
-- [ ] Backup/resume instructions verify checkpoint availability and exclude
+- [x] Backup/resume instructions explain how to verify checkpoint availability and exclude
   private state from authored UI and public archives.
-- [ ] Document independent browser login, managed execution lifetime, lack of
+- [x] Document independent browser login, managed execution lifetime, lack of
   public preview relay, and unsupported future ChatGPT wake without promising
   infrastructure the environment does not provide.
-- [ ] Keep first-app guide, CLI/MCP discovery, plugin skill, tutorial, and
+- [x] Keep first-app guide, CLI/MCP discovery, plugin skill, tutorial, and
   onboarding checks synchronized.
 
 ### 7. Acceptance and residual external constraints
 
 - [ ] Core `npm ci` and `npm run check` pass at the integrated branch head.
-- [ ] Relevant Chronolog unit/integration/package checks pass.
+- [x] Relevant Chronolog unit/integration/package checks pass.
 - [ ] Downloaded first-app qualification covers native write/reopen/retry,
   signed publication, and browser enrollment/replication/reload using the exact
   candidate composition; identify any environment-limited portions as partial.
@@ -138,6 +147,17 @@ Starting points for this repair:
   browser-to-MCP and MCP-to-browser round trips after owner actions.
 - [ ] Paused staging fails early and clearly, without creating a production app.
 - [ ] Deployed/plugin/browser acceptance records exact build IDs and evidence.
+
+## Protocol and interaction follow-ups
+
+The optional account-bound initiation and reviewed browser-pairing improvements
+are specified in [ONBOARDING_PROTOCOL_FOLLOWUPS.md](ONBOARDING_PROTOCOL_FOLLOWUPS.md).
+All 20 implementation/acceptance tasks there remain open and are also enumerated
+in the core draft PR description. These are new protocol/UI work, not capabilities
+provided by the repairs above. Account creation needs a bounded durable operation
+ledger and recoverable credential commitment; pairing needs proof of possession,
+exact owner review and the existing signed-control authority path. Existing
+OAuth tokens receive no implicit new rights.
 
 ## Attribution and work outside these repositories
 
@@ -168,3 +188,24 @@ GitHub CLI has no authenticated account.
 
 - Planning checkpoint: recorded the original evidence, current upstream fixes,
   cross-repository ownership, regression gates, and external release work.
+
+- Implementation checkpoints: same-origin discovery and fail-closed readiness;
+  packed API/export verification; CLI cancellation/outcome preservation; durable
+  Chronolog receipts and reopen inspection; explicit assistant/event lifecycle;
+  exact rc.12 composition and first-app kit; predeploy byte/identity/public-asset
+  gates; current cookbook guidance; and protocol follow-up assessment.
+- Dependency checkpoint: core pins clean Chronolog commit
+  `2d4af2f458236b6871b14f9da004168169583a3b`, archive SHA-256
+  `740ebc0d2e21bcaf689483f221626535fdec4a1316f33f2ed77bf981e39a2d07`.
+  Its 22 targeted publication tests, lint/typecheck and independent packed
+  consumer passed, including retained receipts after failure and same-device reopen.
+- Intermediate integrated checkpoint `4c7090e69529d0bfd50265f1172de82dfe9a8aa6`:
+  full core check and GitHub Public service/Agent onboarding passed. A later
+  ChatGPT builder pin mismatch was corrected; all 203 local integration tests
+  passed and the merged checkpoint's GitHub ChatGPT integration passed.
+- Upstream `25b6b3bd6091e53e374ab3d2fcf4fef4cc27722c` was merged so its native
+  MCP reviewer qualification and bounded Durable Object restart retries remain.
+  The review runner's exact companion/live build identity is being integrated.
+- Final integrated core/kit qualification is a separate gate above; this earlier
+  evidence must not be relabeled as a final-head pass. Live release, operator,
+  installed-plugin and unaided-agent acceptance remain open.

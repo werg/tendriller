@@ -81,7 +81,15 @@ Build and deploy the selected core commit to fresh staging storage. Run `node sc
 
 The automatic staging and production jobs take source, composition, release,
 runtime, engine and starter identities from the public-artifacts job. Before
-deploying they run `check-deployment-artifacts.mjs`: the checkout must still be
+any deployment mutation, `check-published-release.mjs` requires the canonical
+public release manifest to match the artifact job's SHA-256, then verifies every
+referenced artifact, including the exact versioned first-app kit and companion
+packages. Missing or different bytes stop deployment. Publish the qualified
+immutable release first, then rerun the service workflow against that same
+current master commit; a newer source revision requires a new release identity.
+Intentional unpublished branch previews use their separate workflow.
+
+The deployment jobs also run `check-deployment-artifacts.mjs`: the checkout must still be
 clean, its engine archive and served starter must match the prepared hashes,
 and the served runtime bytes must match their manifest. Wrangler then receives
 `SERVICE_SOURCE_COMMIT` and `SERVICE_COMPOSITION_ID` as public deployment metadata.
