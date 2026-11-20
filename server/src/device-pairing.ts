@@ -130,7 +130,10 @@ async function status(t: Tendril, record: PairingRecord, authority: PeerAuthorit
     if (c.expiresAt <= t.now()) state = 'expired';
     else if (authority.current?.id !== c.expectedGeneration || authority.control.payload.revision !== c.controlRevision) state = 'stale';
   }
-  if (!['denied', 'reconciliation_required'].includes(state)) {
+  // Expiry is terminal only after this serialized authority snapshot found no
+  // accepted transition. A revoked guest must not hide that evidence forever
+  // and strand the native coordinator's retained ordering pause.
+  if (!['denied', 'expired', 'reconciliation_required'].includes(state)) {
     if (!await accountActive(t, c.accountId) || c.accountId !== t.db.get('owner_account', null) &&
       !t.db.one('SELECT 1 FROM guest_accounts WHERE account_id=? AND approved=1', c.accountId)) state = 'revoked';
   }

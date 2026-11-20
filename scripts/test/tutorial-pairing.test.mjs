@@ -127,6 +127,23 @@ test('fresh terminal denial releases only its original pause; unavailable or rev
   await assert.rejects(uncertain.tick(), /offline/); assert.ok(uncertain.pause);
 });
 
+test('revocation releases no pause until the server confirms expiry and fresh signed authority proves no original commit', async t => {
+  const f = await fixture(); await f.tick(); f.approve();
+  f.status = { ...f.status, state: 'revoked' };
+  t.mock.timers.enable({ apis: ['Date'], now: f.status.expiresAt + 1 });
+  await assert.rejects(f.tick(), { code: 'PAIRING_ACCOUNT_REVOKED' });
+  assert.ok(f.pause, 'a local timer cannot resolve an uncertain or revoked host outcome');
+  f.status = { ...f.status, state: 'expired' };
+  const readAuthority = f.pairing.authority;
+  f.pairing.authority = async () => { throw Error('authority unavailable'); };
+  await assert.rejects(f.tick(), /authority unavailable/); assert.ok(f.pause);
+  f.pairing.authority = readAuthority;
+  await f.tick();
+  assert.equal(f.pause, null); assert.equal(f.actions.filter(action => action === 'resume').length, 1);
+  assert.equal(f.actions.includes('commit'), false); assert.equal((await f.registry.read()).generations.length, 1);
+  assert.ok(f.records.has(`pairing-${f.status.pairingId}-prepared.json`), 'terminal recovery retains the original proposal');
+});
+
 test('native pairing windows are finite and closing does not erase an unresolved durable pause', async () => {
   const f = await fixture(); await f.tick();
   assert.throws(() => native.startPairingWindow({ owned: f, durationMs: 600001 }), { code: 'PAIRING_WINDOW_INVALID' });

@@ -284,6 +284,31 @@ it('refuses a corrupt retained attempt without selecting a replacement or droppi
   expect(await inDO(h.id, t => t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM device_pairings')!.n)).toBe(1);
 });
 
+it('exposes verified expiry after uncommitted guest revocation without permitting a late admission', async () => {
+  const { h, native, device, cookie } = await fixture(), g = await guest(h);
+  const c = await jsonResponse(await browser(g.handle, { action: 'challenge', requestId: 'revoked-then-expired',
+    publicKey: device.publicKey, rights: { reader: true, writer: true } }, undefined, g.headers));
+  await jsonResponse(await browser(g.handle, { action: 'prove', pairingId: c.pairingId,
+    signature: await signDevicePairingChallenge(c.challenge, device) }, undefined, g.headers));
+  const prepared = await prepare(h, native, c);
+  await jsonResponse(await stage(h, c, prepared)); expect((await review(c, cookie)).status).toBe(200);
+  await inDO(h.id, t => t.db.run('DELETE FROM guest_accounts WHERE account_id=?', g.accountId));
+  const revoked = await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId);
+  expect(revoked.state).toBe('revoked'); expect(revoked.generation).toBeUndefined();
+  await advance(h.id, DEVICE_PAIRING_LIMITS.lifetimeMs + 1);
+  const expired = await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId);
+  expect(expired.state).toBe('expired'); expect(expired.generation).toBeUndefined();
+  expect(expired.prepared).toEqual(prepared); expect(expired.preparedDigest).toBe(revoked.preparedDigest);
+  // Even restoring account admission cannot allow a delayed old commit after
+  // the authoritative expiry was observed and the helper releases its pause.
+  await inDO(h.id, t => t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)',
+    g.accountId, g.linkId, t.now()));
+  await jsonResponse(await commit(h, c, prepared), 409);
+  const authority = await verifyAuthorityBundle(await peerApiJson(h, 'control/read'));
+  expect(authority.grant(device.publicKey)).toBeNull(); expect(authority.bundle.generations).toHaveLength(1);
+  expect((await apiJson<DevicePairingStatus>(h, 'GET', 'peers/pairing?pairingId=' + c.pairingId)).prepared).toEqual(prepared);
+});
+
 it('refuses corrupt prepared review evidence before issuing an approval form', async () => {
   const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
   await jsonResponse(await stage(h, c, prepared));
