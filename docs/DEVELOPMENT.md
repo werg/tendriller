@@ -43,6 +43,17 @@ Use `test:contract` for wire filters and SDK semantics; `test:runtime-unit` for 
 
 The application session's command/query/replication implementation is qualified in Chronolog and by independent contrib consumers. A static browser fixture does not establish RTC, recovery or database guarantees. The public host fixture permits combining those real boundaries without private imports.
 
+With a restored qualified deployment graph and the matching combined SQL consumer
+and WASM engine, run `E2E_CHRONOLOG_CONSUMER=/absolute/consumer E2E_CHRONOLOG_WASM=/absolute/wasm node node_modules/@playwright/test/cli.js test --config test/e2e/browser-sql-opening.playwright.config.ts`.
+Staging acceptance runs this local regression before the live scenarios, using the
+packaged Worker with bundling disabled. It retains SQL replication, correction and
+reopen checks while delaying either peer's metadata response by twelve seconds.
+The SQL specimen deliberately opens a one-shot relay rather than canonical
+`participate()` discovery. Both sessions must finish preparation before either
+physical connection starts; canonical participation instead owns bounded
+connection failures and backoff during asymmetric startup. This fixture check
+does not replace qualification of that controller or rebuild deployed bytes.
+
 ## Public Worker fixture
 
 `@tendriller/engine/testing` initializes fresh synthetic accounts and pages inside the Cloudflare Vitest pool. `createTestPage({application:{id}})` exposes authenticated `api`, `ownerApi`, `exchange`, `ownerExchange`, `asset(path)`, participant access, invitation/rendezvous sockets, clock advance and actual Durable Object restart.
