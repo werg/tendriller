@@ -5,10 +5,11 @@ import { once } from 'node:events';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { closeTestPeer, nativeTestPeerSource } from '../first-app-peer.mjs';
 
-async function participant(t, { failInference = false, failPairing = false, orphan = false } = {}) {
+async function participant(t, { failInference = false, failPairing = false, orphan = false, fixtureTransport = false } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'peer-close-'));
   const calls = join(directory, 'cleanup-calls');
   await mkdir(join(directory, 'media'));
@@ -29,11 +30,19 @@ export function servePeerInference(){return {snapshot(){return {};},async close(
   await appendFile(${JSON.stringify(calls)},'inference\\n');
   ${failInference ? "throw Error('inference close failed');" : ''}
 }};}`);
+  const transportModule = pathToFileURL(join(directory, 'transport.mjs')).href;
+  if (fixtureTransport) await writeFile(join(directory, 'transport.mjs'), `import {appendFile,readFile} from 'node:fs/promises';
+const pool=setInterval(()=>{},1000);
+export async function closeLocalTransport(){
+  const calls=await readFile(${JSON.stringify(calls)},'utf8');
+  if(!calls.endsWith('owner\\n'))throw Error('The application must close before its fixture transport');
+  await appendFile(${JSON.stringify(calls)},'transport\\n');clearInterval(pool);
+}`);
   await writeFile(join(directory, 'peer.mjs'), orphan ? `import {createInterface} from 'node:readline';
 setInterval(() => {},1000);console.log(JSON.stringify({ready:true}));
 for await (const line of createInterface({input:process.stdin})) {
   const request=JSON.parse(line);console.log(JSON.stringify({id:request.id,closed:true}));
-}` : nativeTestPeerSource({ evidenceBase64: 'AA==', browserDeviceId: 'a'.repeat(64) }));
+}` : nativeTestPeerSource({ evidenceBase64: 'AA==', browserDeviceId: 'a'.repeat(64), ...(fixtureTransport ? { transportModule } : {}) }));
   const child = spawn(process.execPath, [join(directory, 'peer.mjs')], { stdio: ['pipe', 'pipe', 'pipe'] });
   const ended = once(child, 'close'), ready = Promise.withResolvers(), waiting = new Map(), forced = [];
   const kill = child.kill.bind(child);
@@ -90,6 +99,13 @@ test('pairing cleanup failure still closes inference and the owner and fails qua
   const f = await participant(t, { failPairing: true });
   await assert.rejects(closeTestPeer(f.peer), /Native test participant cleanup failed/);
   assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
+});
+
+test('fixture transport drains after the owned application and permits natural child exit', { timeout: 5_000 }, async t => {
+  const f = await participant(t, { fixtureTransport: true });
+  await closeTestPeer(f.peer);
+  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner', 'transport']);
+  assert.deepEqual(f.forced, []);
 });
 
 test('an acknowledged but orphaned child is terminated as failure, never counted as clean shutdown', { timeout: 5_000 }, async t => {

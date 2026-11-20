@@ -253,7 +253,25 @@ try {
 ${createLocalDispatcher.toString()}
 const dispatcher = createLocalDispatcher();
 setGlobalDispatcher(dispatcher);
-globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []) { super(url, { protocols, dispatcher }); } };
+const sockets = new Set();
+globalThis.WebSocket = class extends WebSocket {
+  constructor(url, protocols = []) {
+    super(url, { protocols, dispatcher }); sockets.add(this);
+    this.addEventListener('close', () => sockets.delete(this), {once:true});
+  }
+};
+export async function closeLocalTransport() {
+  // Never turn a leaked OPEN application socket into a successful owner close.
+  if ([...sockets].some(socket => socket.readyState < 2)) throw Error('Native owner left an open fixture WebSocket');
+  await Promise.all([...sockets].map(socket => new Promise((resolve, reject) => {
+    const close = () => { clearTimeout(timer); socket.removeEventListener('close', close); resolve(); };
+    const timer = setTimeout(() => { socket.removeEventListener('close', close); reject(Error('Native WebSocket close handshake did not finish')); }, 3000);
+    socket.addEventListener('close', close, {once:true}); if (socket.readyState === 3) close();
+  })));
+  // This pool belongs to the loopback/TLS fixture, not to the public bootstrap.
+  // Graceful close drains outstanding requests; it does not destroy live work.
+  await dispatcher.close();
+}
 `);
   const project = sqlOnly ? join(app, 'sql') : app;
   const node = async args => run(process.execPath, ['--import', preload, ...args], { cwd: project });
@@ -444,7 +462,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     // process. Signals, encrypted content and reviewed commands remain real.
     const evidencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
     await writeFile(join(app, 'test-peer.mjs'), nativeTestPeerSource({
-      evidenceBase64: evidencePng.toString('base64'), browserDeviceId: browserDevice,
+      evidenceBase64: evidencePng.toString('base64'), browserDeviceId: browserDevice, transportModule: pathToFileURL(preload).href,
     }));
     async function startPeer() {
       const child = spawn(process.execPath, ['--import', preload, join(app, 'test-peer.mjs')], { cwd: app, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -496,7 +514,8 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
     // A pending proof alone cannot authorize enrollment. The actual native
     // participant prepares and retains the full signed control change first.
     const reviewPage = await context.newPage();
-    await reviewPage.goto(reviewUrl);
+    const reviewResponse = await reviewPage.goto(reviewUrl);
+    assert.match(reviewResponse.headers()['content-security-policy'], /frame-ancestors 'none'/);
     await expect(reviewPage.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
     await expect(reviewPage.locator('#pairing-proposal')).toContainText(paused.base.point.generation);
     await reviewPage.setViewportSize({ width: 390, height: 844 });

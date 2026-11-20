@@ -1,12 +1,13 @@
 import { once } from 'node:events';
 
 /** The test participant owns the complete bootstrap, including its supervisor. */
-export function nativeTestPeerSource({ evidenceBase64, browserDeviceId }) {
+export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transportModule }) {
   return `import assert from 'node:assert/strict';
 import {createInterface} from 'node:readline';
 import {openSession} from './session.mjs';
 import {startReviewedPairingLoop} from './pairing-native.mjs';
 import {servePeerInference} from './media/inference-service.mjs';
+${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transportModule)};` : 'const closeLocalTransport = async () => {};'}
 const owned = await openSession(), {session,supervisor} = owned;
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
 let pairings, pairingStatus = null, inference, input, closing, inferenceCalls = 0, inferenceSource = null;
@@ -15,6 +16,9 @@ const close = () => closing ??= (async () => {
   try { await pairings?.close(); } catch (error) { errors.push(error); }
   try { await inference?.close(); } catch (error) { errors.push(error); }
   try { await owned.close(); } catch (error) { errors.push(error); }
+  // The local fixture owns its custom HTTP/WebSocket dispatcher separately from
+  // the application. It must drain only after the real owner closes its sockets.
+  try { await closeLocalTransport(); } catch (error) { errors.push(error); }
   if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed');
 })();
 try {
