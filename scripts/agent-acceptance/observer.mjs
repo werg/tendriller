@@ -21,6 +21,7 @@ function operationRows(native, config, operationId, author, marker) {
     same(events[0].attemptId, native.operation.attempt.id, 'event-signed-attempt');
     same(events[0].operationId, operationId, 'event-operation'); same(events[0].author, author, 'event-author');
     const id = q.eventIdEncoding === 'author-operation-json' ? JSON.stringify([events[0].author, events[0].operationId])
+      : q.eventIdEncoding === 'author-operation-colon' ? `${events[0].author}:${events[0].operationId}`
       : need(at(events[0], need(q.eventId, 'event-row-key')), 'event-row-id');
     rows = native.rows.filter(row => at(row, need(q.rowId, 'query-row-key')) === id);
   } else rows = native.rows.filter(row => at(row, q.operationId ?? '/operationId') === operationId && at(row, q.author ?? '/author') === author);

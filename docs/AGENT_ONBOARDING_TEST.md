@@ -476,7 +476,10 @@ through an actual DOM attribute named by `browser.rowIdentityAttribute` (for
 example `data-item-id`). `browser.rowIdentitySelector` selects a nested element
 within each measured row when that attribute is on a checkbox rather than its
 container. `query.eventIdEncoding: "author-operation-json"` supports projections
-whose row ID is JSON.stringify([event.author, event.operationId]). No arbitrary
+whose row ID is JSON.stringify([event.author, event.operationId]);
+`"author-operation-colon"` supports `${event.author}:${event.operationId}`.
+Both encodings use the independently verified event author and operation, never
+a label supplied by the evaluator. No arbitrary
 projection code is accepted by the observer. If the produced app exposes neither, record the missing
 metric; do not provide implementation advice to repair the baseline's score.
 
