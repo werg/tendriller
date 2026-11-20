@@ -5,8 +5,15 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { control, observeInController } from '../agent-acceptance/cli.mjs';
+import { control, observeInController, prerequisiteFailure } from '../agent-acceptance/cli.mjs';
 import { externalReport, innocentPrompt, Evidence } from '../agent-acceptance/evidence.mjs';
+
+test('omitted owner-access record names the exact missing prerequisite without publishing a private path', () => {
+  const failure = prerequisiteFailure({ code: 'ENOENT', path: '/private/owner.json' }, { access: '/private/owner.json' }, 'preflight-or-owner');
+  assert.equal(failure.prerequisiteCode, 'owner_access_missing'); assert.match(failure.nextAction, /No model turn or application/);
+  assert(!JSON.stringify(failure).includes('/private/'));
+  assert.equal(prerequisiteFailure({ code: 'ENOENT', path: '/other/file' }, { access: '/private/owner.json' }, 'preflight-or-owner').prerequisiteCode, 'see-private-failure-record');
+});
 
 test('bounded CLI subprocess starts isolated app-server thread, reports model, and cleans copied auth without invoking a model', t => {
   const directory = mkdtempSync(join(tmpdir(), 'acceptance-cli-')); t.after(() => rmSync(directory, { recursive: true, force: true }));

@@ -513,7 +513,7 @@ identity and do not relabel the entire run as having used a newer harness.
 | `lost-publication-response` | Configure `publication.intent` (a file reference selecting the existing signed publication) and `publication.assets` (its saved public SDK asset array). `options.action: "drop"` retains the exact intent before calling publish, discards the real acknowledgement, and retains only its witness digest. `action: "retry"` must recover the identical versioned receipt and selected signed head. This is evaluator-side acknowledgement loss, not a network partition or browser retry qualification. No publication is newly signed by this observer. |
 | `connected` | Requires measured native peer status containing the browser's device, exact process details, explicit browser grant and a file reference `native.transport` containing the maintained relay probe’s complete current observation. Protocol, live PID/birth, page and both device identities, freshness, paired lanes and binary traffic are verified. A string label or configured desired transport is not evidence. WebRTC requires separately attributed external-host evidence. Many attachment facades do not expose participation status; report this check blocked rather than infer it. |
 | `unavailable-peer` | `options.phase: "before"` measures the native process and browser. Stop only this disposable participant externally. `phase: "offline"` verifies its exit and actual visible waiting text. Resume the same device and observe with normal browser-to-agent marker/operation options. |
-| `discovery` | Measures successful model terminal reads of same-origin service, discovery, readiness and build guide URLs, requiring readiness before any observed install. Opaque or web-only tool traces stay blocked. |
+| `discovery` | Domain mode measures successful model terminal reads of same-origin service, discovery, readiness and build guide URLs. MCP mode measures actual `get_profile` and `tendril_guide` (`build`) calls from the sole selected server, requiring trusted returned origin, exact deployment/build, open readiness and the same-origin build-guide URL/body. Both must precede any observed install. Arbitrary tools, opaque responses, wrong origin/build or late discovery cannot pass. |
 | `missing-setup` | Configure `missingSetup.report` to a separate actual harness run report and `expectedCode` to its prerequisite code. It must name this origin, a different attempt, blocked status and a concrete next action. |
 | `cleanup` | After the agent/operator cleans up only the disposable app and stops its participant, verify actual host `not_found` plus the disappearance of the previously measured process birth token. Requires the preclaim and native process checkpoints. The observer does no deletion or service control. |
 
@@ -681,6 +681,15 @@ intervention hashes, first shared-command time, first unresolved stage and proce
 lifetime. Detailed receipt/operation/identity/resume evidence is deliberately private.
 Unknown or unperformed observations stay explicit. Preserve the failed attempt
 before starting a fresh one; do not retrofit a baseline with hidden maintainer help.
+
+A bounded omitted-owner-access check can use a new output directory, exact
+qualified release root and deliberately absent `--access` file. It reaches the
+anonymous preflight, then stops with `owner_access_missing` and the explicit
+next action before OAuth, model turns or application creation. Retain that real
+report for `missingSetup`; it qualifies this omitted prerequisite only, not a
+model's diagnosis of every missing application setup. The owner driver also
+supports `open-details` with an exact visible summary name for ordinary recovery
+forms; it never selects hidden actions by script or expands unrelated panels.
 
 ### Classify frontend repairs separately from data synchronization
 
