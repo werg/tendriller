@@ -651,7 +651,7 @@ globalThis.WebSocket = class extends WebSocket { constructor(url, protocols = []
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
   if (page && !page.isClosed()) {
     report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
-      'connection', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
+      'connection', 'pairing-status', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
     ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
     try {
       await page.screenshot({ path: join(dirname(reportPath), 'first-app-failure.png'), fullPage: true, timeout: 10_000 });
