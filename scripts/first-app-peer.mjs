@@ -36,7 +36,11 @@ try {
         const before=await session.query('notes',null);
         const operation=await session.command('addNote',{text:request.text},{operationId:request.operationId,basedOn:before.revision});
         result=await operation.applied({signal:AbortSignal.timeout(30000)});
-      } else if(request.action==='close') {await close(); console.log(JSON.stringify({id:request.id,closed:true})); break;}
+      } else if(request.action==='close') {
+        await close();
+        console.log(JSON.stringify({id:request.id,closed:true,resources:process.getActiveResourcesInfo()}));
+        break;
+      }
       else throw Error('Unknown test action');
       console.log(JSON.stringify({id:request.id,result}));
     } catch(error) {console.log(JSON.stringify({id:request.id,error:error.message})); if(request.action==='close') break;}
@@ -61,19 +65,22 @@ async function close(peer, timeoutMs) {
   const exited = child.exitCode !== null || child.signalCode !== null;
   const ended = exited ? Promise.resolve([child.exitCode, child.signalCode]) : once(child, 'close');
   void ended.catch(() => {});
-  let timer;
+  let timer, acknowledgment;
   try {
     if (exited) throw Error('Native peer exited before owned shutdown was acknowledged.');
     const graceful = (async () => {
       const reply = await peer.request('close', {}, timeoutMs);
       if (reply?.closed !== true) throw Error('Native peer did not acknowledge owned shutdown.');
+      acknowledgment = reply;
       child.stdin.end();
       const [code, signal] = await ended;
       if (code !== 0 || signal !== null) throw Error(`Native peer shutdown failed (exit ${code}, signal ${signal}).`);
       return { exitCode: code, signal };
     })();
     return await Promise.race([graceful, new Promise((_resolve, reject) => {
-      timer = setTimeout(() => reject(Error('Native peer did not exit after owned cleanup before the shutdown deadline.')), timeoutMs);
+      timer = setTimeout(() => reject(Error('Native peer did not exit after owned cleanup before the shutdown deadline. ' +
+        (acknowledgment ? 'Shutdown acknowledged; active resource kinds: ' + JSON.stringify(acknowledgment.resources ?? [])
+          : 'The owned participant has not acknowledged shutdown.'))), timeoutMs);
     })]);
   } catch (error) {
     if (child.exitCode === null && child.signalCode === null) {
