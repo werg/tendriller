@@ -64,17 +64,22 @@ test('stop is persisted before abort, with UTC receipt time and phase attributio
 
 test('assistant status timeline accepts only fixed booleans and does not invent traffic or model/wakeup counts', () => {
   const s=newState(config,0), before={...s.counts}; beginSegment(s,'background',10);
-  assert.equal(s.coverage.mcpOnline,null); assert.equal(s.coverage.mcpStatusAt,null);
-  assert(record(s,{source:'native',kind:'assistant-status',online:true,eventsForwarding:false,url:'SECRET',status:'SECRET'},11));
-  assert.equal(record(s,{source:'native',kind:'assistant-status',online:'SECRET',eventsForwarding:true},12),false);
-  assert.equal(record(s,{source:'browser',kind:'assistant-status',online:true,eventsForwarding:true},12),false);
-  assert.equal(record(s,{source:'native',kind:'assistant-status',online:true,eventsForwarding:1},12),false);
-  assert.equal(record(s,{source:'native',kind:'assistant-status',online:true,eventsForwarding:true,count:2},12),false);
+  assert.equal(s.coverage.mcpOnline,null); assert.equal(s.coverage.mcpStatusAt,null); assert.equal(s.coverage.eventsForwardingBlocked,null);
+  assert(record(s,{source:'native',kind:'assistant-status',eventsForwardingBlocked:false,online:true,eventsForwarding:false,url:'SECRET',status:'SECRET'},11));
+  assert.equal(record(s,{source:'native',kind:'assistant-status',eventsForwardingBlocked:false,online:'SECRET',eventsForwarding:true},12),false);
+  assert.equal(record(s,{source:'browser',kind:'assistant-status',eventsForwardingBlocked:false,online:true,eventsForwarding:true},12),false);
+  assert.equal(record(s,{source:'native',kind:'assistant-status',eventsForwardingBlocked:false,online:true,eventsForwarding:1},12),false);
+  assert.equal(record(s,{source:'native',kind:'assistant-status',eventsForwardingBlocked:false,online:true,eventsForwarding:true,count:2},12),false);
   markStopRequested(s,12);
-  assert(record(s,{source:'native',kind:'assistant-status',online:false,eventsForwarding:false},13));
+  assert(record(s,{source:'native',kind:'assistant-status',eventsForwardingBlocked:false,online:false,eventsForwarding:false},13));
   assert.deepEqual(s.counts,before); assert.equal(s.activityTimeline[0].category,'assistant-provider');
   assert.equal(s.activityTimeline[0].phase,'background'); assert.equal(s.activityTimeline.at(-1).stopping,true);
   assert(!JSON.stringify(report(s)).includes('SECRET'));
+  assert.equal(record(s,{source:'native',kind:'assistant-status',online:true,eventsForwarding:true,eventsForwardingBlocked:'SECRET'},14),false);
+  assert(record(s,{source:'native',kind:'assistant-status',online:true,eventsForwarding:true,eventsForwardingBlocked:true},15));
+  assert.equal(s.activityTimeline.at(-1).eventsForwardingBlocked,true);
+  assert.deepEqual(s.counts,before);
+  assert.equal(report(s).coverage.eventsForwardingBlocked,null);
 });
 
 test('persistence failure still aborts after recording the stop boundary', () => {
