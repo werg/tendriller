@@ -43,7 +43,7 @@ test('assistant readiness requires actual adapter online, native participation, 
  f.query.resolve({revision:{},value:[]});await flush();assert.equal(f.messages.length,0);
  f.assistantReport({state:'adapter_online'});await flush();assert.equal(f.messages.length,0);
  f.status({...readyStatus,recovery:{id:'review'}});assert.equal(f.messages.length,0);
- f.status(readyStatus);assert.deepEqual(f.messages,[{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',wakeups:true,modelTurns:false},{idleSoakReady:1}]);
+ f.status(readyStatus);assert.deepEqual(f.messages,[{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',wakeups:true,modelTurns:false,eventsForwarding:true},{idleSoakReady:1}]);
  f.status(readyStatus);f.assistantReport({state:'adapter_online'});assert.equal(f.messages.length,2);
  assert(!JSON.stringify(f.messages).includes('MUST_NOT_LEAK'));
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert(f.calls.includes('unsubscribe'));
@@ -55,7 +55,7 @@ test('an earlier online callback is invalidated by adapter loss before the remai
 });
 test('native-only mode still counts real reconciliation, participation and change callbacks and closes once',async()=>{
  const f=fixture({assistant:false});await flush();f.status(readyStatus);const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;f.query.resolve({});await flush();
- assert.equal(f.messages[0].bootstrapScope,'native-only-without-mcp-adapter');assert.equal(f.stats().assistantCalls,0);
+ assert.equal(f.messages[0].bootstrapScope,'native-only-without-mcp-adapter');assert.equal(f.messages[0].eventsForwarding,false);assert.equal(f.stats().assistantCalls,0);
  const before=f.wakeups.length;f.change({kind:'applied'});await flush();assert.equal(f.wakeups.length,before+1);
  await f.reconcile({signal:f.stop.signal});assert.equal(f.wakeups.length,before+2);assert(f.wakeups.every(x=>x==='wakeups'));
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert.equal(f.stats().supervisorCloses,1);
@@ -74,7 +74,8 @@ test('coverage IPC uses a fixed native scope whitelist and MCP does not imply ob
  assert.equal(nativeCoverage(s,{idleSoakCoverage:1,bootstrapScope:'UNTRUSTED',wakeups:true,modelTurns:true}),false);
  assert.equal(s.coverage.bootstrapScope,'operator-command-unverified');
  for(const bootstrapScope of ['native-only-without-mcp-adapter','native-with-mcp-adapter']){
-  assert.equal(nativeCoverage(s,{idleSoakCoverage:1,bootstrapScope,wakeups:true,modelTurns:false}),true);
+  assert.equal(nativeCoverage(s,{idleSoakCoverage:1,bootstrapScope,wakeups:true,modelTurns:false,eventsForwarding:true}),true);
+  assert.equal(report(s).coverage.eventsForwarding,bootstrapScope==='native-with-mcp-adapter');
   assert.equal(report(s).counts.modelTurns,null);assert.equal(report(s).coverage.bootstrapScope,bootstrapScope);
  }
 });
