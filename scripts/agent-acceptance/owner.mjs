@@ -1,7 +1,19 @@
 import { readReviewAccess, authorizeReview } from '../review/access.mjs';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
+
+// Also bounds injected callbacks that do not themselves honor AbortSignal. Late
+// results/rejections are consumed, and can never install a credential after close.
+function abortable(task, signal) {
+  return new Promise((resolve, reject) => {
+    const clear = () => signal.removeEventListener('abort', abort);
+    const abort = () => { clear(); reject(signal.reason ?? Error('Cancelled')); };
+    Promise.resolve(task).then(value => { clear(); resolve(value); }, error => { clear(); reject(error); });
+    if (signal.aborted) abort(); else signal.addEventListener('abort', abort, { once: true });
+  });
+}
 
 export function ownerUrl(origin, value, publishedPageUrl) {
   const url = new URL(value);
@@ -11,7 +23,7 @@ export function ownerUrl(origin, value, publishedPageUrl) {
 
 /** Headless owner acts only on explicit, exact owner instructions, never model-generated scripts. */
 export class Owner {
-  constructor({ context, access, record = () => {} }) { Object.assign(this, { context, access, record }); this.actions = []; }
+  constructor({ context, access, record = () => {}, authorize = authorizeReview }) { Object.assign(this, { context, access, record, authorize }); this.actions = []; }
   async login() {
     this.page = await this.context.newPage();
     await this.page.goto(this.access.loginUrl);
@@ -47,9 +59,30 @@ export class Owner {
     this.actions.push({ action, url: result.url, at: result.at });
     this.record({ input, ...result }); return result;
   }
-  async freshToken() {
-    const { token, page } = await authorizeReview(this.context, this.access);
-    await page.close(); return token;
+  async freshToken({ signal = AbortSignal.timeout(45000) } = {}) {
+    signal.throwIfAborted();
+    let page, closing;
+    const close = () => closing ??= page ? abortable(Promise.resolve().then(() => page.close()), AbortSignal.timeout(3000)).catch(() => {}) : Promise.resolve();
+    const abort = () => { if (page) void close(); };
+    signal.addEventListener('abort', abort, { once: true });
+    // Capture only this OAuth page, so cancellation never closes the owner's app
+    // or an unrelated page. Every HTTP exchange also has its own finite deadline.
+    const context = {
+      newPage: async () => {
+        signal.throwIfAborted(); page = await this.context.newPage();
+        if (signal.aborted) { await close(); signal.throwIfAborted(); }
+        return page;
+      },
+      request: Object.fromEntries(['get', 'post'].map(method => [method, (url, options) => {
+        signal.throwIfAborted(); return this.context.request[method](url, { ...options, timeout: 15000 });
+      }])),
+    };
+    try {
+      const result = await abortable(this.authorize(context, this.access), signal);
+      signal.throwIfAborted(); return result.token;
+    } finally {
+      signal.removeEventListener('abort', abort); if (page) await close();
+    }
   }
 }
 
@@ -67,23 +100,76 @@ export async function createOwner({ accessPath, chromium, record, executablePath
 /** Transport-only proxy: genuine selected-origin catalog/results, no invented tools.
  * Bearer credentials stay in this process, outside the model's shell environment.
  */
-export async function mcpBridge({ origin, token: initialToken, fetch: fetcher = globalThis.fetch }) {
-  let token = initialToken;
+export async function mcpBridge({ origin, token: initialToken, freshToken, fetch: fetcher = globalThis.fetch,
+  requestTimeoutMs = 60000, renewalTimeoutMs = 30000 }) {
+  let token = initialToken, generation = 0, renewal, closing;
+  const lifetime = new AbortController();
+  const install = value => {
+    lifetime.signal.throwIfAborted();
+    if (typeof value !== 'string' || !value) throw Error('OAuth credential unavailable');
+    token = value; generation++;
+  };
+  const renew = async (rejectedGeneration, signal) => {
+    if (generation !== rejectedGeneration) return; // A delayed 401 used an older credential.
+    if (!renewal) {
+      const controller = new AbortController(), flight = { controller, waiters: 0 };
+      const renewalSignal = AbortSignal.any([lifetime.signal, controller.signal, AbortSignal.timeout(renewalTimeoutMs)]);
+      flight.promise = abortable(Promise.resolve().then(() => {
+        renewalSignal.throwIfAborted(); return freshToken({ signal: renewalSignal });
+      }), renewalSignal).then(value => {
+        renewalSignal.throwIfAborted();
+        if (generation === rejectedGeneration) install(value);
+      }).finally(() => { if (renewal === flight) renewal = undefined; });
+      renewal = flight;
+    }
+    const flight = renewal; flight.waiters++;
+    try { await abortable(flight.promise, signal); }
+    finally {
+      flight.waiters--;
+      if (!flight.waiters) flight.controller.abort();
+    }
+  };
   const path = '/' + randomBytes(24).toString('hex');
   const server = createServer(async (req, res) => {
     if (req.url !== path || !['GET', 'POST', 'DELETE'].includes(req.method)) { res.writeHead(404).end(); return; }
+    const cancelled = new AbortController();
+    const signal = AbortSignal.any([lifetime.signal, cancelled.signal, AbortSignal.timeout(requestTimeoutMs)]);
+    const disconnect = () => { if (!res.writableFinished) cancelled.abort(); };
+    req.once('aborted', disconnect); res.once('close', disconnect);
     try {
       let size = 0; const chunks = [];
       for await (const chunk of req) { size += chunk.length; if (size > 4 * 1024 * 1024) throw Error('MCP request too large'); chunks.push(chunk); }
-      const headers = { authorization: 'Bearer ' + token };
+      const headers = {};
       for (const key of ['content-type', 'accept', 'mcp-session-id', 'mcp-protocol-version', 'last-event-id']) if (req.headers[key]) headers[key] = req.headers[key];
-      const response = await fetcher(origin + '/mcp', { method: req.method, headers, redirect: 'error',
-        ...(req.method === 'POST' ? { body: Buffer.concat(chunks) } : {}), signal: AbortSignal.timeout(60000) });
-      res.writeHead(response.status, Object.fromEntries(['content-type', 'mcp-session-id'].filter(k => response.headers.has(k)).map(k => [k, response.headers.get(k)])));
-      if (response.body) Readable.fromWeb(response.body).pipe(res); else res.end();
-    } catch { if (!res.headersSent) res.writeHead(502); res.end(); }
+      const body = req.method === 'POST' ? Buffer.concat(chunks) : undefined;
+      const dispatch = () => {
+        signal.throwIfAborted();
+        return abortable(fetcher(origin + '/mcp', { method: req.method,
+          headers: { ...headers, authorization: 'Bearer ' + token }, redirect: 'error',
+          ...(body === undefined ? {} : { body }), signal }), signal);
+      };
+      const sentGeneration = generation;
+      let response = await dispatch();
+      // This service authenticates before MCP dispatch: only an HTTP 401 permits
+      // one exact replay. A tool error, 403, or second 401 is never retried.
+      if (response.status === 401 && freshToken) {
+        void response.body?.cancel().catch(() => {});
+        await renew(sentGeneration, signal);
+        response = await dispatch();
+      }
+      res.writeHead(response.status, Object.fromEntries(['content-type', 'mcp-session-id', 'www-authenticate']
+        .filter(k => response.headers.has(k)).map(k => [k, response.headers.get(k)])));
+      if (response.body) await pipeline(Readable.fromWeb(response.body), res, { signal }); else res.end();
+    } catch {
+      if (!res.destroyed) { if (!res.headersSent) res.writeHead(502); res.end(); }
+    } finally { req.removeListener('aborted', disconnect); res.removeListener('close', disconnect); }
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { url: `http://127.0.0.1:${server.address().port}${path}`, refresh: value => { token = value; },
-    close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
+  return { url: `http://127.0.0.1:${server.address().port}${path}`, refresh: install,
+    close: () => closing ??= (async () => {
+      lifetime.abort();
+      const pending = renewal?.promise;
+      await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+      if (pending) await pending.catch(() => {});
+    })() };
 }
