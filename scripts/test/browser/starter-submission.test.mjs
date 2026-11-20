@@ -22,7 +22,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
           let resolveRead, fail = false, hold = true, lose = true, beforeSave = false;
           const saved = JSON.parse(localStorage.getItem('fixture-saved') || '{}');
           const calls = [];
-          const session = { applicationId:'app', historyId:'history', deviceId:'b'.repeat(64), endpoint:{context},
+          const session = { applicationId:'c'.repeat(64), historyId:'history', deviceId:'b'.repeat(64), endpoint:{context},
             signals: {}, signal: new AbortController().signal,
             onStatus(fn) {statuses.push(fn); fn(status); return () => {};},
             onRecovery(fn) {recoveries.push(fn); return () => {};},
@@ -53,7 +53,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   const server = createServer((req, res) => {
     res.setHeader('Content-Type', req.url === '/page.mjs' ? 'text/javascript' : req.url === '/configuration.json' ? 'application/json' : 'text/html');
     res.end(req.url === '/page.mjs' ? bundle.outputFiles[0].text : req.url === '/configuration.json'
-      ? JSON.stringify({applicationId:'app',nativeDeviceId:'a'.repeat(64),page_url:`http://127.0.0.1:${server.address().port}/`}) : html);
+      ? JSON.stringify({applicationId:'c'.repeat(64),nativeDeviceId:'a'.repeat(64),page_url:`http://127.0.0.1:${server.address().port}/`}) : html);
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const browser = await chromium.launch({headless:true, executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined});
