@@ -1,7 +1,7 @@
 import { PEER_INVITATION_LIMITS as LIMITS, PEER_INVITATION_PROTOCOL, validatePeerInvitation,
   type PeerInvitation } from '../../contract/invitations.mjs';
 import { validatePeerId } from '../../contract/discovery.mjs';
-import { accountActive, currentPrincipal, pageAccessAllowed, participantIdentity, type Principal } from './access';
+import { accountActive, currentPrincipal, freshPrincipal, pageAccessAllowed, participantIdentity, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
@@ -21,7 +21,7 @@ function identity(t: Tendril, principal: Principal): string {
 }
 async function fresh(t: Tendril, principal: Principal): Promise<void> {
   identity(t, principal);
-  if (!await pageAccessAllowed(t) || principal.kind === 'page' && principal.accountId && !await accountActive(t, principal.accountId))
+  if (!await pageAccessAllowed(t) || principal.kind === 'page' && principal.accountId && !await accountActive(t, principal.accountId) || !await freshPrincipal(t, principal))
     throw new HttpError(403, 'forbidden', 'Peer invitation access is no longer active');
   identity(t, principal);
 }

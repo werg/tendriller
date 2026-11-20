@@ -81,7 +81,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
   }
   if (method === 'describe_application') {
     await checkGrant('applications:read'); check();
-    const online = onlineAssistantAdapters(t), provider = selectedProvider(t), active = online.find(item => item.hash === provider?.adapterHash);
+    const online = await onlineAssistantAdapters(t), provider = selectedProvider(t), active = online.find(item => item.hash === provider?.adapterHash);
     return json({ value: { applicationId, pageId: t.tid, label: approved.label, online: online.length > 0, onlineParticipants: online.length,
       caller: consumer, provider: provider && { ...provider, online: !!active, deviceId: active?.deviceId ?? null, connectionEpoch: active?.connectionEpoch ?? null },
       queries: approved.queries.filter(item => consumer.queries.includes(item.name)),
@@ -169,7 +169,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
       if (!generation) throw new HttpError(409, 'application_generation_missing');
       if (writes) await requireWritesOpen(t.env);
       check(); deadline.throwIfAborted();
-      const online = onlineAssistantAdapters(t).filter(candidate => !excluded.has(candidate.hash));
+      const online = (await onlineAssistantAdapters(t)).filter(candidate => !excluded.has(candidate.hash));
       const candidates = [];
       for (const candidate of online) if (await canUseDevice(candidate.deviceId, writes)) candidates.push(candidate);
       await checkGrant(scope); check(); deadline.throwIfAborted();

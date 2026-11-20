@@ -24,6 +24,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
     if (action === 'delegate-agent') {
       const name = form.get('name')?.trim() ?? '';
       if (!/^[A-Za-z0-9_.@-]{1,64}$/.test(name)) throw new HttpError(400, 'invalid_agent_name', 'Choose a short agent name.');
+      if (name === 'setup') throw new HttpError(400, 'reserved_agent_name', 'Choose an agent name other than the fixed setup binding.');
       if (t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(409, 'agent_name_in_use');
       if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
       const selected = form.getAll('scopes'), scopes = agentScopes(selected.length ? selected : ['host:read', 'participants:connect']);

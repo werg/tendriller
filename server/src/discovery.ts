@@ -1,6 +1,6 @@
 import { PEER_DIRECTORY_LIMITS as LIMITS, validatePeerAdvertisement, validatePeerId, validatePeerTtl,
   type PeerAdvertisement, type PeerAdvertisementLease } from '../../contract/discovery.mjs';
-import { accountActive, currentPrincipal, participantIdentity, type Principal } from './access';
+import { accountActive, currentPrincipal, freshPrincipal, participantIdentity, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
@@ -20,13 +20,18 @@ function publicLease(row: StoredAdvertisement): PeerAdvertisementLease {
 /** On-demand only. Directory expiry never wakes a Durable Object or selects authority. */
 export async function exchangeDiscovery(t: Tendril, principal: Principal, action: 'read' | 'advertise' | 'withdraw', input?: any): Promise<unknown> {
   identity(t, principal);
+  if (!await freshPrincipal(t, principal)) throw new HttpError(403, 'forbidden');
   if (action === 'read') {
     const before = active(t), accounts = [...new Set(before.flatMap(row => row.principal.kind === 'page' && row.principal.accountId ? [row.principal.accountId] : []))];
     const permitted = new Map(await Promise.all(accounts.map(async account => [account, await accountActive(t, account)] as const)));
+    const setup = new Map(before.flatMap(row => row.principal.kind === 'agent' && row.principal.name === 'setup'
+      ? [[row.principal.credentialHash, row.principal] as const] : []));
+    const permittedSetup = new Map(await Promise.all([...setup].map(async ([hash, value]) => [hash, !!await freshPrincipal(t, value)] as const)));
     identity(t, principal);
     // Take another local snapshot after account reads; a concurrent withdrawal,
     // revocation or replacement must not leak its prior route into this response.
-    const peers = active(t).filter(row => row.principal.kind !== 'page' || permitted.get(row.principal.accountId!) === true);
+    const peers = active(t).filter(row => row.principal.kind === 'page' ? permitted.get(row.principal.accountId!) === true
+      : row.principal.name !== 'setup' || permittedSetup.get(row.principal.credentialHash) === true);
     return { applicationId: selectedApplication(t).id, peers: peers.map(publicLease) };
   }
   let advertisement: PeerAdvertisement | undefined, ttlMs: number | undefined, peerId: string;

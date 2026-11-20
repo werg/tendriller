@@ -9,7 +9,7 @@ import {
   type ApplicationDescription, type SignedApplicationSchema,
   type PeerAuthority,
 } from '@chronolog/peer-generation/control';
-import { accountActive, pageAccessAllowed, currentPrincipal, type Principal } from './access';
+import { accountActive, pageAccessAllowed, currentPrincipal, freshPrincipal, type Principal } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
@@ -64,7 +64,8 @@ async function freshAccess(t: Tendril, principal: Principal): Promise<void> {
   const account = identity(t, principal), owner = t.db.get<string | null>('owner_account', null);
   // Page policy already joins and checks this owner's active account. A guest
   // still needs its own fresh account query; neither result survives this call.
-  if (!await pageAccessAllowed(t) || owner !== null && account !== owner && !await accountActive(t, account)) throw new HttpError(403, 'forbidden');
+  if (!await pageAccessAllowed(t) || owner !== null && account !== owner && !await accountActive(t, account) || !await freshPrincipal(t, principal))
+    throw new HttpError(403, 'forbidden');
   if (t.db.get<string | null>('owner_account', null) !== owner || identity(t, principal) !== account)
     throw new HttpError(403, 'forbidden');
 }

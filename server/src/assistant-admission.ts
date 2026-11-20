@@ -1,6 +1,6 @@
 import { escapeHtml } from './inject';
 import { browserIdentity, redirect } from './accounts/oauth-data';
-import { pagePolicy, currentPrincipal, type AgentPrincipal } from './access';
+import { pagePolicy, currentPrincipal, freshPrincipal, type AgentPrincipal } from './access';
 import { selectedApplication } from './application';
 import { pendingPeerOwner, exchangePeerControl } from './peer-generations';
 import type { Tendril } from './tendril';
@@ -54,12 +54,13 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
   // A replacement is a new grant even when the published schemas look alike.
   const id = await sha256Hex(JSON.stringify([owner, applicationId, agent.credentialHash, label, adapterHashes, queries, commands, events]));
   return t.serializeAssistant(async () => {
-    if (owner !== (t.db.get('owner_account', null) ?? pendingPeerOwner(t)) || !currentPrincipal(t, agent)) throw new HttpError(403, 'forbidden');
+    if (owner !== (t.db.get('owner_account', null) ?? pendingPeerOwner(t)) || !await freshPrincipal(t, agent)) throw new HttpError(403, 'forbidden');
     const previous = proposal(t);
     if (previous?.id !== id) {
       if (claimedOwner) await t.env.ACCOUNTS.prepare(`INSERT INTO assistant_connections(page_id,application_id,owner_account,label) VALUES(?,?,?,?)
         ON CONFLICT(page_id) DO UPDATE SET label=CASE WHEN enabled=0 THEN excluded.label ELSE label END`)
         .bind(t.tid, applicationId, owner, label).run();
+      if (!await freshPrincipal(t, agent)) throw new HttpError(403, 'forbidden');
       t.db.set('assistant_proposal', { id, owner, applicationId, label, adapterHashes, agent, queries, commands, events });
     }
     return json({ applicationId, proposed: id, approved: connection(t)?.id === id,
@@ -106,7 +107,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
       <input type="hidden" name="revision" value="${agent.revision}">${agent.status === 'pending' ? '<button name="action" value="approve-agent">Approve this agent</button>' : ''}
       ${agent.status !== 'revoked' ? '<button name="action" value="revoke-agent">Revoke this agent</button>' : ''}</form></li>`).join('');
     const provider = selectedProvider(t);
-    const providerForms = current ? activeAdapters(t).map(hash => {
+    const providerForms = current ? (await freshAdapters(t)).map(hash => {
       const device = t.db.one<{ device_id: string }>('SELECT device_id FROM assistant_devices WHERE adapter_hash=?', hash)?.device_id;
       return `<li>Provider key <code>${escapeHtml(hash.slice(0, 12))}</code> · ${hash === provider?.adapterHash ? 'Selected executor' : 'Read replica'}
         <p>${device ? 'Enrolled signer: <code>' + escapeHtml(device) + '</code>' : 'No enrolled process has connected.'}</p>
@@ -147,7 +148,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
     } else if (form.get('action') === 'select-provider') {
       await requireWritesOpen(t.env);
       const hash = form.get('provider') ?? '';
-      if (!current || !activeAdapters(t).includes(hash) || !t.db.one('SELECT 1 FROM assistant_devices WHERE adapter_hash=?', hash))
+      if (!current || !(await freshAdapters(t)).includes(hash) || !t.db.one('SELECT 1 FROM assistant_devices WHERE adapter_hash=?', hash))
         throw new HttpError(403, 'provider_not_approved');
       if (String(selectedProvider(t)?.selectionEpoch ?? 0) !== form.get('epoch')) throw new HttpError(409, 'provider_changed');
       selectProvider(t, hash);
@@ -162,7 +163,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
       await t.env.ACCOUNTS.prepare("UPDATE assistant_connections SET enabled=0 WHERE page_id=?").bind(t.tid).run();
     } else if (form.get('action') === 'approve') {
       await requireWritesOpen(t.env);
-      if (!currentPrincipal(t, item.agent)) throw new HttpError(409, 'adapter_agent_revoked');
+      if (!await freshPrincipal(t, item.agent)) throw new HttpError(409, 'adapter_agent_revoked');
       const version = crypto.randomUUID();
       const approved = { id: item.id, version, inboxVersion: version, owner: item.owner, applicationId: item.applicationId, label: item.label,
         queries: names(form.getAll('queries'), item.queries), commands: names(form.getAll('commands'), item.commands),
@@ -186,7 +187,9 @@ export async function reviewAssistant(t: Tendril, req: Request) {
         event.name === previous.name && event.description === previous.description)).map(event => event.name);
       const sameEvents = current && JSON.stringify(current.events) === JSON.stringify(approved.events);
       if (sameEvents) approved.inboxVersion = current.inboxVersion;
+      if (!await freshPrincipal(t, item.agent)) throw new HttpError(409, 'adapter_agent_revoked');
       t.transaction(() => {
+        if (!currentPrincipal(t, item.agent)) throw new HttpError(409, 'adapter_agent_revoked');
         for (const name of removed) {
           t.db.run('DELETE FROM assistant_jobs WHERE watcher_id IN (SELECT id FROM assistant_watchers WHERE name=?)', name);
           t.db.run('DELETE FROM assistant_watchers WHERE name=?', name);
@@ -252,4 +255,14 @@ export function activeAdapters(t: Tendril): readonly string[] {
   const approved = connection(t), adapters = t.db.get<{ agent: AgentPrincipal; hashes: string[] } | null>('assistant_adapters', null);
   return approved && adapters && approved.owner === t.db.get('owner_account', null) &&
     currentPrincipal(t, adapters.agent) ? adapters.hashes : [];
+}
+
+/** Cached adapter keys cannot outlive the OAuth grant that admitted a setup agent. */
+export async function freshAdapters(t: Tendril): Promise<readonly string[]> {
+  const adapters = t.db.get<{ agent: AgentPrincipal; hashes: string[] } | null>('assistant_adapters', null);
+  if (!adapters || !await freshPrincipal(t, adapters.agent)) return [];
+  // Reread after external policy lookup: concurrent owner revocation or a changed
+  // proposal must not retain the old adapter's permission through this await.
+  const current = t.db.get<{ agent: AgentPrincipal; hashes: string[] } | null>('assistant_adapters', null);
+  return JSON.stringify(current?.agent) === JSON.stringify(adapters.agent) ? activeAdapters(t) : [];
 }
