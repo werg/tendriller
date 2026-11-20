@@ -125,7 +125,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const result = action === 'create' ? await createProject(...args)
       : action === 'init' ? await initializeProject()
         : action === 'enroll' ? await enrollBrowser(args[0])
-          : (() => { throw Error('Use create, init, or enroll. See https://tendriller.dev/docs/BUILD_AN_APP.md.'); })();
+          : (() => { throw Error('Use create, init, or enroll. See /docs/BUILD_AN_APP.md on the selected service origin.'); })();
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; }
 }

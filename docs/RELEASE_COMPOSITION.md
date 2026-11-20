@@ -58,8 +58,9 @@ npm run test:first-app -- --first-app-archive /absolute/tendriller-first-app-VER
 This uses the packed engine, verifies the kit against the release manifest,
 compares its source with the actual served starter, installs the bundled public
 archives in a separate empty-cache consumer, and exercises native and Chromium
-behavior. The core release workflow requires this gate before publication and
-retains `.results/first-app.json`. `--native-only` is an explicitly partial local
+behavior. The agent-onboarding PR workflow and core release workflow require
+this gate before publication and retain `.results/first-app.json`.
+`--native-only` is an explicitly partial local
 check and does not satisfy that workflow's full browser gate. Generating a
 composition is not itself qualification; assess the recorded checks and limits.
 

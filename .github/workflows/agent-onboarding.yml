@@ -45,9 +45,13 @@ jobs:
           node tools/package-peer-session.mjs
       - run: npm run build:artifacts
         working-directory: core
-      - name: Exercise the downloaded tutorial in a real browser
+      - run: npm run release:artifacts
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-2d4af2f4.tgz"
+      - name: Exercise the exact first-app release kit in a real browser
+        working-directory: core
+        run: |
+          release_version=$(node -p "require('./package.json').version")
+          npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$release_version.tgz"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
