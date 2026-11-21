@@ -43,12 +43,12 @@ export async function writePrivateJsonAtomic(root, name, data) {
   const target = join(root, name);
   const file = await open(temporary, 'wx', 0o600);
   try {
-    await file.writeFile(JSON.stringify(data));
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-  try {
+    try {
+      await file.writeFile(JSON.stringify(data));
+      await file.sync();
+    } finally {
+      await file.close();
+    }
     await rename(temporary, target);
     if (!isWindows()) {
       const parent = await open(root, 'r');
@@ -203,16 +203,22 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
 
   let lastError;
   for (const kind of transportOrder) {
+    let server, boundAddress;
+    const cleanup = async () => {
+      if (server?.listening) await new Promise(done => server.close(() => done()));
+      if (boundAddress) await unlink(boundAddress).catch(() => {});
+    };
     if (kind === 'unix-socket') {
       const address = resolveUnixSocketPath(root);
       try {
         const st = await lstat(address).catch(() => null);
         if (st?.isSocket()) await unlink(address).catch(() => {});
-        const server = createServer(onConnection);
+        server = createServer(onConnection);
         await new Promise((resolvePromise, reject) => {
           server.once('error', reject);
           server.listen(address, () => { server.removeListener('error', reject); resolvePromise(); });
         });
+        boundAddress = address;
         await chmod(address, 0o600);
         const descriptor = Object.freeze({ version: 1, transport: 'unix-socket', address, pid: process.pid });
         await writePrivateJsonAtomic(root, 'endpoint.json', descriptor);
@@ -227,12 +233,13 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
           },
         });
       } catch (error) {
+        await cleanup();
         lastError = error;
       }
     } else if (kind === 'windows-named-pipe') {
       const address = resolveWindowsPipePath(root);
       try {
-        const server = createServer(onConnection);
+        server = createServer(onConnection);
         await new Promise((resolvePromise, reject) => {
           server.once('error', reject);
           server.listen(address, () => { server.removeListener('error', reject); resolvePromise(); });
@@ -249,13 +256,14 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
           },
         });
       } catch (error) {
+        await cleanup();
         lastError = error;
       }
     } else if (kind === 'loopback-tcp') {
       try {
         const loopbackToken = randomBytes(32).toString('hex');
         const expectedBuf = Buffer.from(loopbackToken, 'hex');
-        const server = createServer(onConnection);
+        server = createServer(onConnection);
         await new Promise((resolvePromise, reject) => {
           server.once('error', reject);
           server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolvePromise(); });
@@ -277,6 +285,7 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
           },
         });
       } catch (error) {
+        await cleanup();
         lastError = error;
       }
     }
