@@ -2,7 +2,7 @@ import { createBrowserRtcBroker, rtcEndpoint, checkRtcMessage, BROWSER_RTC_PROTO
 import { acquireApplicationOwnerLock, createApplicationOwner } from '@chronolog/peer-session/worker';
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastOwner, checkOwnerFrame } from './browser-transport.mjs';
 import { prepareCollaborationCommand } from './protocol.mjs';
-import { rootLifetimeWitness } from './root-lifetime.mjs';
+import { createDocumentLifetimeObserver } from './root-lifetime.mjs';
 
 const defaults = { maxPorts: 64, pendingTimeoutMs: 30000, idleTimeoutMs: 60000, parkedSweepMs: 60000, retireGraceMs: 5000 };
 // rootLimits.retireGraceMs: a retired elected owner with no routes stays this long,
@@ -24,7 +24,7 @@ export function serveBrowserOwner(options) {
   const rtc = createBrowserRtcBroker({signal:lifetime.signal,onNetworkChange:() => owned?.session?.participation?.reconsiderConnections()});
   const addRtcRoute = endpoint => rtc.addRoute(endpoint,{authorize:()=>!closed});
   let profileId, openSession, createIdentity, ownerOptions, limits = defaults;
-  let sweepTimer, sweepTask, pendingAdmission;
+  let lifetimes, pendingAdmission;
   let owner, owned, lease, opening, channel, election, broadcast, broadcastStarting, closed = false, retiring = false, retireTimer, closing, scopeRoot, sessionAborted;
   const post = (endpoint, value) => { try { endpoint.postMessage(value); } catch { /* The remote page may have gone away. */ } };
   const failure = (record, id, error) => post(record.endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'failure', id,
@@ -44,59 +44,18 @@ export function serveBrowserOwner(options) {
     record.endpoint.removeEventListener('close', record.portClosed);
     record.rtc?.dispatchEvent(new Event('close')); record.detach?.(); roots.delete(record.endpoint);
     if (record.shared) record.endpoint.close?.();
-    scheduleSweep();
+    record.lifetime?.close();
   }
   function renew(record) {
     clearTimeout(record.timer);
     if (!record.shared || record.disposed) return;
-    if (record.parked) { scheduleSweep(); return; }
-    scheduleSweep();
+    record.lifetime?.setParked(record.parked);
+    if (record.parked) return;
     const timeout = record.ready ? limits.idleTimeoutMs : limits.pendingTimeoutMs;
     record.timer = setTimeout(() => dispose(record, record.ready ? 'ENDPOINT_STALE' : 'OWNER_HANDSHAKE_TIMEOUT'), timeout);
     record.timer.unref?.();
   }
 
-  async function queryLifetimes() {
-    let timer, abort;
-    try {
-      lifetime.signal.throwIfAborted();
-      if (typeof globalThis.navigator?.locks?.query !== 'function') throw Error('OWNER_CAPABILITY_UNAVAILABLE');
-      return await Promise.race([
-        globalThis.navigator.locks.query(),
-        new Promise((_, reject) => { abort = () => reject(lifetime.signal.reason); lifetime.signal.addEventListener('abort', abort, { once: true }); }),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(Error('OWNER_LIFETIME_QUERY_TIMEOUT')), limits.pendingTimeoutMs); }),
-      ]);
-    } finally { clearTimeout(timer); if (abort) lifetime.signal.removeEventListener('abort', abort); }
-  }
-  function scheduleSweep() {
-    if (closed || ![...roots.values()].some(record => record.ready && record.parked)) {
-      clearTimeout(sweepTimer); sweepTimer = undefined; return;
-    }
-    if (sweepTimer || sweepTask) return;
-    sweepTimer = setTimeout(() => { sweepTimer = undefined; void sweepRoots(); }, limits.parkedSweepMs);
-    sweepTimer.unref?.();
-  }
-  function sweepRoots() {
-    if (sweepTask) return sweepTask;
-    // Capture identities before the query. Its snapshot must never retire a
-    // root admitted or rebound after this scan started.
-    const candidates = [...roots.values()].filter(record => record.ready && record.witness)
-      .map(record => ({ record, witness: record.witness }));
-    sweepTask = (async () => {
-      const snapshot = await queryLifetimes();
-      if (closed) return;
-      // Validate the complete snapshot before making any destructive decision.
-      if (!Array.isArray(snapshot?.held)) throw Error('OWNER_LIFETIME_QUERY_INVALID');
-      for (const { record, witness } of candidates) {
-        if (record.disposed || roots.get(record.endpoint) !== record || record.witness !== witness) continue;
-        const live = rootLifetimeWitness(snapshot, profileId, record.rootId);
-        if (!live || live.clientId !== witness.clientId) dispose(record, 'ENDPOINT_STALE');
-      }
-    })().catch(() => {
-      // Failed or incomplete browser evidence cannot establish document death.
-    }).finally(() => { sweepTask = undefined; scheduleSweep(); });
-    return sweepTask;
-  }
   function waitForAdmission(endpoint) {
     if (pendingAdmission) { post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'failure', code: 'OWNER_BUSY' }); endpoint.close?.(); return; }
     const admission = { endpoint };
@@ -118,11 +77,7 @@ export function serveBrowserOwner(options) {
     void (async () => {
       await configured;
       if (closed || pendingAdmission !== admission) return;
-      // A pressure scan must start after this connection arrived. A coalesced
-      // earlier scan may release slots, but its old snapshot is insufficient.
-      if (sweepTask) await sweepTask;
-      if (closed || pendingAdmission !== admission) return;
-      await sweepRoots();
+      await lifetimes.reapFresh();
       if (closed || pendingAdmission !== admission) return;
       if (roots.size >= limits.maxPorts) { finish('OWNER_BUSY'); return; }
       if (finish()) attachBootstrap(endpoint, true, true);
@@ -135,6 +90,8 @@ export function serveBrowserOwner(options) {
     ({ profileId, openSession, createIdentity, ownerOptions = {} } = value);
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(profileId) || typeof openSession !== 'function') throw Error('OWNER_CONFIGURATION_INVALID');
     limits = rootLimits(value.rootLimits);
+    lifetimes = createDocumentLifetimeObserver({ profileId, signal: lifetime.signal,
+      sweepMs: limits.parkedSweepMs, timeoutMs: limits.pendingTimeoutMs });
     let count = 0;
     for (const record of roots.values()) { if (++count > limits.maxPorts) dispose(record, 'OWNER_BUSY'); else renew(record); }
   });
@@ -170,7 +127,7 @@ export function serveBrowserOwner(options) {
     if (election) return election;
     channel = new BroadcastChannel(ownerChannelName(profileId));
     election = open(true).then(async () => {
-      broadcast = await createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32, onRtcEndpoint:addRtcRoute,
+      broadcast = await createBroadcastOwner(channel, owner, { profileId, lifetimes, maxRoutes: ownerOptions.maxAttachments ?? 32, onRtcEndpoint:addRtcRoute,
         onRoutesChanged: count => { if (count > 0) { clearTimeout(retireTimer); retireTimer = undefined; } else if (retiring) retireSoon(); } });
       if (closed) { await broadcast.close(); return; }
       if (retiring && broadcast.routes === 0) { retireSoon(); return; }
@@ -184,7 +141,7 @@ export function serveBrowserOwner(options) {
   function serveBroadcast() {
     if (broadcastStarting || closed) return broadcastStarting;
     channel ??= new BroadcastChannel(ownerChannelName(profileId));
-    broadcastStarting = createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32, onRtcEndpoint:addRtcRoute }).then(async value => {
+    broadcastStarting = createBroadcastOwner(channel, owner, { profileId, lifetimes, maxRoutes: ownerOptions.maxAttachments ?? 32, onRtcEndpoint:addRtcRoute }).then(async value => {
       if (closed) { await value.close(); return; }
       broadcast = value; value.announce();
     });
@@ -197,7 +154,7 @@ export function serveBrowserOwner(options) {
   }
   function attachBootstrap(endpoint, shared = false, scanned = false) {
     if (closed) { post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'failure', code: 'OWNER_UNREACHABLE' }); if (shared) endpoint.close?.(); return; }
-    if (shared && !scanned && (roots.size >= limits.maxPorts || [...roots.values()].some(record => record.ready && record.parked))) { waitForAdmission(endpoint); return; }
+    if (shared && !scanned && (roots.size >= limits.maxPorts || lifetimes?.hasParked)) { waitForAdmission(endpoint); return; }
     const record = { endpoint, shared, ready: false, suspended: false, parked: false, frozen: false, disposed: false, pending: 0 };
     record.failed = () => dispose(record, 'OWNER_MESSAGE_INVALID');
     record.portClosed = () => dispose(record);
@@ -266,13 +223,14 @@ export function serveBrowserOwner(options) {
         if (data.type !== 'boot') throw Error('OWNER_HANDSHAKE_INVALID');
         if (data.mode === 'elected' && !shared) { void startElection().catch(error => failure(record, data.id, error)); return; }
         if (data.mode !== 'shared' || !shared) throw Error('OWNER_MODE_INVALID');
-        const witness = rootLifetimeWitness(await queryLifetimes(), profileId, record.rootId);
+        const witness = await lifetimes.prove(record.rootId);
         if (record.disposed || closed) return;
         if (!witness) throw Error('OWNER_ROOT_LIFETIME_MISSING');
         record.witness = witness;
         await open(false); lifetime.signal.throwIfAborted(); if (record.disposed) return;
         if (typeof BroadcastChannel === 'function') void serveBroadcast();
         if (!record.detach) record.detach = owner.attach(endpoint);
+        record.lifetime = lifetimes.register(record.rootId, witness, () => dispose(record, 'ENDPOINT_STALE'));
         record.ready = true; renew(record);
         post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'ready', id: data.id, ownerInstanceId: owner.ownerInstanceId });
       })().catch(error => { if (!record.disposed) { failure(record, data.id, error); if (data.type === 'boot' && !record.ready) dispose(record); } }).finally(() => { record.pending--; });
@@ -285,7 +243,7 @@ export function serveBrowserOwner(options) {
 
   function close() {
     if (closing) return closing;
-    closed = true; rtc.close(); clearTimeout(retireTimer); clearTimeout(sweepTimer); pendingAdmission?.cancel(); lifetime.abort(Error('OWNER_UNREACHABLE')); scope.removeEventListener('connect', connect);
+    closed = true; rtc.close(); clearTimeout(retireTimer); lifetimes?.close(); pendingAdmission?.cancel(); lifetime.abort(Error('OWNER_UNREACHABLE')); scope.removeEventListener('connect', connect);
     for (const record of [...roots.values()]) dispose(record, 'OWNER_UNREACHABLE');
     if (scopeRoot) dispose(scopeRoot);
     closing = (async () => {

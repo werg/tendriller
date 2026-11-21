@@ -93,17 +93,18 @@ The worker must call `serveBrowserOwner({ load: async ({ signal }) => ... })`
 synchronously and perform asynchronous configuration inside `load`, so its root
 message listeners exist before the first attachment arrives.
 
-Shared roots have a document-owned lifetime witness, an exclusive Web Lock with a
-unique name derived from the profile and root UUID. The page acquires it before
-boot and releases it on detach or attachment failure. Hidden and frozen documents
+Shared roots and elected BroadcastChannel routes have a document-owned lifetime
+witness, an exclusive Web Lock with a unique name derived from the profile and
+root or route UUID. The page acquires it before boot or elected hello and releases it on detach or attachment failure. Hidden and frozen documents
 keep the lock without page timers or heartbeats. Document destruction releases it
 in the browser, even when the page cannot send a detach message.
 
-The owner queries witnesses with one coalesced worker-local sweep while roots are
-parked (`rootLimits.parkedSweepMs`, default 60000, range 100–120000 milliseconds),
-and a fresh scan before admitting another shared root when parked roots exist or
-capacity is full. At most one incoming port waits for admission, bounded by
-`pendingTimeoutMs`; its boot messages remain queued until listeners are installed.
+The owner queries witnesses with one coalesced worker-local sweep while roots or
+elected routes are parked (`rootLimits.parkedSweepMs`, default 60000, range 100–120000 milliseconds),
+and a fresh scan before admitting another root or elected route when parked
+documents exist or capacity is full. Each transport admits at most one pending
+arrival, bounded by `pendingTimeoutMs`; shared boot messages remain queued until
+listeners are installed, and elected endpoints retry their original hello.
 A successful query must show the original lock name and client ID. A missing or
 changed witness retires only that attachment and its RTC route. Query errors,
 timeouts and malformed snapshots cannot establish death. They preserve existing

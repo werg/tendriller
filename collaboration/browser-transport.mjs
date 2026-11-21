@@ -1,3 +1,4 @@
+import { acquireRootLifetime, createDocumentLifetimeObserver } from './root-lifetime.mjs';
 import { rtcEndpoint, checkRtcMessage, BROWSER_RTC_PROTOCOL } from './browser-rtc.mjs';
 import { createOwnerLiveness } from './browser-liveness.mjs';
 export const BROWSER_OWNER_PROTOCOL = 'tendriller/browser-owner/v3';
@@ -145,17 +146,19 @@ function queues(record, channel, ownerInstanceId, route, outgoing) {
 }
 
 /** The elected owner binds private ports behind authenticated, replay-fenced routes. */
-export async function createBroadcastOwner(channel, owner, { profileId, timeoutMs = 30000, idleTimeoutMs = 60000, maxRoutes = 32, onRoutesChanged, onRtcEndpoint } = {}) {
+export async function createBroadcastOwner(channel, owner, { profileId, timeoutMs = 30000, idleTimeoutMs = 60000, maxRoutes = 32, onRoutesChanged, onRtcEndpoint, lifetimes } = {}) {
   if (!validId(profileId) || !validId(owner.ownerInstanceId) || !Number.isSafeInteger(maxRoutes) || maxRoutes < 1 || maxRoutes > 128 ||
       !Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 120000 ||
       !Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 100 || idleTimeoutMs > 120000) throw Error('OWNER_CONFIGURATION_INVALID');
-  const pair = await keys(), routes = new Map(); let closed = false;
+  const pair = await keys(), routes = new Map(); let closed = false, pendingAdmission;
+  const ownLifetimes = !lifetimes;
+  lifetimes ??= createDocumentLifetimeObserver({ profileId, sweepMs: idleTimeoutMs, timeoutMs });
   const announcement = { protocol: BROWSER_OWNER_PROTOCOL, type: 'ready', profileId, ownerInstanceId: owner.ownerInstanceId, publicKey: pair.publicKey };
   const announce = () => { if (!closed) channel.postMessage(announcement); };
   const routesChanged = () => { try { onRoutesChanged?.(routes.size); } catch { /* Observers do not control private routes. */ } };
   function retire(route) {
     const record = routes.get(route); if (!record) return;
-    record.closed = true; clearTimeout(record.timer); clearTimeout(record.idleTimer); record.rtc?.dispatchEvent(new Event('close')); record.detach?.(); record.port?.close(); routes.delete(route); routesChanged();
+    record.lifetime?.close(); record.closed = true; clearTimeout(record.timer); clearTimeout(record.idleTimer); record.rtc?.dispatchEvent(new Event('close')); record.detach?.(); record.port?.close(); routes.delete(route); routesChanged();
   }
   function observeLiveness(record, route) {
     clearTimeout(record.idleTimer);
@@ -165,14 +168,31 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
     }
     record.idleTimer = setTimeout(() => observeLiveness(record, route), Math.max(50, idleTimeoutMs / 3)); record.idleTimer.unref?.();
   }
-  async function hello(data) {
+  async function hello(data, scanned = false) {
     if (!publicKeyValid(data.publicKey) || !(data.nonce instanceof Uint8Array) || data.nonce.length !== 32) return;
     const existing = routes.get(data.route);
     if (existing) {
       if (bytesEqual(existing.publicKey, data.publicKey) && bytesEqual(existing.nonce, data.nonce) && existing.welcome) channel.postMessage(existing.welcome);
       return;
     }
-    if (routes.size >= maxRoutes) return;
+    if (!scanned && (routes.size >= maxRoutes || lifetimes.hasParked)) {
+      // Exactly one bounded admission; other endpoints retry their existing hello.
+      if (pendingAdmission) return;
+      const admission = pendingAdmission = {};
+      admission.timer = setTimeout(() => { if (pendingAdmission === admission) pendingAdmission = undefined; }, timeoutMs);
+      admission.timer.unref?.();
+      try {
+        await lifetimes.reapFresh();
+        if (closed || pendingAdmission !== admission) return;
+        pendingAdmission = undefined;
+        await hello(data, true);
+      } finally {
+        clearTimeout(admission.timer);
+        if (pendingAdmission === admission) pendingAdmission = undefined;
+      }
+      return;
+    }
+    if (closed || routes.size >= maxRoutes) return;
     const record = { publicKey: data.publicKey.slice(), nonce: data.nonce.slice(), closed: false };
     routes.set(data.route, record); routesChanged(); record.timer = setTimeout(() => retire(data.route), timeoutMs); record.timer.unref?.();
     try {
@@ -193,6 +213,9 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
       if (value?.kind !== 'attach' || typeof value.facadeProtocol !== 'string' || !(value.releaseToken instanceof Uint8Array) || value.releaseToken.length !== 32) { retire(route); return; }
       record.releaseToken = value.releaseToken.slice();
       checkOwnerFrame(value.handshake);
+      const witness = await lifetimes.prove(route);
+      if (closed || record.closed || routes.get(route) !== record) return;
+      record.lifetime = lifetimes.register(route, witness, () => retire(route));
       const ports = new MessageChannel(), endpoint = new EventTarget(); endpoint.postMessage = () => {};
       record.rtc = rtcEndpoint(message => { const sent = record.send({kind:'rtc',message}); void sent.catch(() => record.rtc.dispatchEvent(new Event('close'))); return sent; });
       onRtcEndpoint?.(record.rtc);
@@ -205,8 +228,8 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
       }); record.port.start();
       endpoint.dispatchEvent(new MessageEvent('message', { data: { protocol: value.facadeProtocol, handshake: value.handshake, port: ports.port1 } }));
     } else if (value?.kind === 'frame') {
-      if (value.frame?.method === 'endpoint.suspend') { record.suspended = true; clearTimeout(record.idleTimer); }
-      if (value.frame?.method === 'endpoint.resume') { record.suspended = false; observeLiveness(record, route); }
+      if (value.frame?.method === 'endpoint.suspend') { record.suspended = true; record.lifetime.setParked(true); clearTimeout(record.idleTimer); }
+      if (value.frame?.method === 'endpoint.resume') { record.suspended = false; record.lifetime.setParked(false); observeLiveness(record, route); }
       record.port.postMessage(value.frame);
     }
     else if (value?.kind === 'rtc') record.rtc.dispatchEvent(new MessageEvent('message',{data:value.message}));
@@ -235,7 +258,9 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
   };
   channel.addEventListener('message', receive);
   return Object.freeze({ announce, get routes() { return routes.size; }, async close() {
-    if (closed) return; closed = true; channel.removeEventListener('message', receive);
+    if (closed) return; closed = true; clearTimeout(pendingAdmission?.timer); pendingAdmission = undefined;
+    if (ownLifetimes) lifetimes.close();
+    channel.removeEventListener('message', receive);
     await Promise.allSettled([...routes].map(async ([route, record]) => {
       try { if (record.port) await record.send({ kind: 'frame', frame: ended('ENDPOINT_STALE') }); } finally { retire(route); }
     }));
@@ -253,13 +278,18 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     if(!record?.key){if(message?.protocol===BROWSER_RTC_PROTOCOL&&['register','unregister'].includes(message.type)){rtcRegistration=message.type==='register'?message:undefined;return;}throw Error('OWNER_HANDSHAKE_INVALID');}
     const sent = record.send({kind:'rtc',message}); void sent.catch(() => rtc.dispatchEvent(new Event('close'))); return sent;
   });
+  const acquisition = new AbortController();
+  const releaseLifetime = () => {
+    acquisition.abort(Error('ENDPOINT_STALE'));
+    return record?.lifetime?.release() ?? Promise.resolve();
+  };
   const finishResume = error => {
     if (!resumeProbe) return;
     clearTimeout(resumeProbe.timer); const probe = resumeProbe; resumeProbe = undefined;
     error ? probe.reject(error) : probe.resolve();
   };
   const replaced = code => {
-    if (closed) return; closed = true; rtc.dispatchEvent(new Event('close')); finishResume(Error(code)); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
+    if (closed) return; closed = true; void releaseLifetime().catch(() => {}); rtc.dispatchEvent(new Event('close')); finishResume(Error(code)); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
     if (record) { record.port.postMessage(ended(code)); record.closed = true; record.port.close(); }
     try { onReplaced?.({ previous: ownerInstanceId, reason: code }); } catch { /* Product callbacks cannot keep an invalid route alive. */ }
   };
@@ -299,7 +329,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
       if (value?.kind === 'frame') {
         record.port.postMessage(value.frame);
         if (value.frame?.ended) {
-          record.closed = true; closed = true; rtc.dispatchEvent(new Event('close')); finishResume(Error(value.frame.ended.code ?? 'ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive); record.port.close();
+          record.closed = true; closed = true; void releaseLifetime().catch(() => {}); rtc.dispatchEvent(new Event('close')); finishResume(Error(value.frame.ended.code ?? 'ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive); record.port.close();
           if (['ENDPOINT_STALE', 'OWNER_UNREACHABLE'].includes(value.frame.ended.code)) {
             try { onReplaced?.({ previous: ownerInstanceId, reason: value.frame.ended.code }); } catch { /* A product callback cannot reopen the route. */ }
           }
@@ -318,6 +348,8 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
       catch { replaced('OWNER_MESSAGE_LIMIT'); }
     }); record.port.start();
     record.opening = (async () => {
+      record.lifetime = await acquireRootLifetime(profileId, record.route, { signal: acquisition.signal });
+      acquisition.signal.throwIfAborted();
       const pair = await keys(), nonce = crypto.getRandomValues(new Uint8Array(32));
       record.context = transcript(profileId, ownerInstanceId, record.route, ownerKey, pair.publicKey, nonce);
       record.shared = await material(pair.privateKey, ownerKey); record.base = await derive(record.shared, nonce, [...record.context, 'welcome']);
@@ -356,11 +388,13 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     // This capability is prepared before the facade opens. No Promise or key
     // operation is needed in pagehide, including a follower's immediate reload.
     try { if (record?.key) channel.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'release', ownerInstanceId, route: record.route, token: record.releaseToken }); }
-    catch { /* The normal route lease still bounds an interrupted release. */ }
+    catch { /* The witness observer also reclaims an interrupted release. */ }
+    void releaseLifetime().catch(() => {});
   },
   async close() {
     if (closed) return;
     this.relinquish(); closed = true; rtc.dispatchEvent(new Event('close')); finishResume(Error('ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
     if (record) { record.closed = true; record.port.close(); }
+    await releaseLifetime();
   } };
 }
