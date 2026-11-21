@@ -31,7 +31,7 @@ test('verified owner claims a page and executes its signed authored module', asy
     expect(await page.evaluate(() => (window as any).tendril.identity.page)).toBe(handle.id);
     expect(await page.evaluate(() => (window as any).__TENDRIL__.application)).toEqual(handle.application);
     expect((await client(handle).peers.publication())?.publication.id).toBe(release.publication.id);
-    expect(page.url()).toContain(`/_publications/${release.version}/`);
+    expect(page.url(), 'The address stays canonical, so a reload opens the latest release.').not.toContain('/_publications/');
     expect(page.url()).not.toContain('/auth/page');
   } finally { await deletePage(handle); }
 });
@@ -44,21 +44,106 @@ test('a different verified account cannot claim the owner invitation', async ({ 
   } finally { await deletePage(handle); }
 });
 
-test('each signed release serves one immutable graph and canonical navigation selects the next', async ({ page, context }) => {
+test('the page shows the latest release: open tabs switch when idle, wait for unsaved input, and only an explicit release URL pins', async ({ page, context }) => {
   const handle = await createPage();
   try {
     await signInFixture(context); await claim(context, handle);
-    const first = await publish(handle, '<h1 id="release">one</h1>');
-    await openClaimed(page, handle); const originalUrl = page.url();
+    const first = await publish(handle, '<h1 id="release">one</h1><input id="draft">');
+    await openClaimed(page, handle);
     await expect(page.locator('#release')).toHaveText('one');
-    const second = await publish(handle, '<h1 id="release">two</h1>');
+    const second = await publish(handle, '<h1 id="release">two</h1><input id="draft">');
     expect(second.version).toBe(first.version + 1);
-    await expect(page.locator('#release')).toHaveText('one');
-    await page.goto(localPageUrl(handle));
+    // An idle open tab switches by itself.
+    await expect(page.locator('#release')).toHaveText('two', { timeout: 15_000 });
+    expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(false);
+    // Unsaved input defers the switch until it is no longer being edited.
+    await page.locator('#draft').fill('unsaved');
+    await publish(handle, '<h1 id="release">three</h1><input id="draft">');
+    await expect.poll(() => page.evaluate(() => (window as any).tendril.publication.updateAvailable), { timeout: 15_000 }).toBe(true);
+    await page.waitForTimeout(1500);
     await expect(page.locator('#release')).toHaveText('two');
-    await page.goto(originalUrl);
+    await page.locator('#draft').fill('');
+    await page.locator('#draft').blur();
+    await expect(page.locator('#release')).toHaveText('three', { timeout: 15_000 });
+    // A reload and a new tab open the latest release.
+    await page.reload(); await expect(page.locator('#release')).toHaveText('three');
+    const other = await context.newPage(); await other.goto(page.url());
+    await expect(other.locator('#release')).toHaveText('three'); await other.close();
+    // A phone tab frozen in the background while a release is published switches on resume.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const lifecycle = await context.newCDPSession(page);
+    await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
+    await publish(handle, '<h1 id="release">resumed</h1><input id="draft">');
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
+    await expect(page.locator('#release')).toHaveText('resumed', { timeout: 20_000 });
+    // Pinning is explicit: the immutable release URL stays on that release.
+    await page.goto(new URL(`_publications/${first.version}/`, localPageUrl(handle)).href);
+    await expect(page.locator('#release')).toHaveText('one');
+    expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(true);
+    await publish(handle, '<h1 id="release">four</h1><input id="draft">');
+    await page.waitForTimeout(3000);
     await expect(page.locator('#release')).toHaveText('one');
     expect((await client(handle).peers.publication(first.publication.id))?.publication).toEqual(first.publication);
+  } finally { await deletePage(handle); }
+});
+
+test('publication switching preserves hidden form drafts, checkedness, selects and open-shadow input until reset', async ({ page, context }) => {
+  const handle = await createPage();
+  const form = '<form><input id="checked" type="checkbox" value="yes"><select id="selection"><option>A</option><option>B</option></select><textarea id="preview">original</textarea></form><div id="editor"></div>';
+  try {
+    await signInFixture(context); await claim(context, handle);
+    await publish(handle, '<h1 id="release">draft release</h1>' + form);
+    await openClaimed(page, handle);
+    await page.locator('#checked').check(); await page.locator('#selection').selectOption({ label: 'B' });
+    await page.locator('#preview').fill('unsaved preview');
+    await page.evaluate(() => {
+      (document.querySelector('#preview') as HTMLTextAreaElement).readOnly = true;
+      const shadow = document.querySelector('#editor')!.attachShadow({ mode: 'open' });
+      shadow.innerHTML = '<textarea id="shadow">original</textarea>';
+      (shadow.firstChild as HTMLTextAreaElement).value = 'unsaved shadow';
+      (document.activeElement as HTMLElement)?.blur();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await publish(handle, '<h1 id="release">next release</h1>' + form);
+    await expect.poll(() => page.evaluate(() => (window as any).tendril.publication.updateAvailable)).toBe(true);
+    await page.waitForTimeout(5200); // Include a periodic safe-point check while hidden.
+    await expect(page.locator('#release')).toHaveText('draft release');
+    await expect(page.locator('#checked')).toBeChecked(); await expect(page.locator('#selection')).toHaveValue('B');
+    await expect(page.locator('#preview')).toHaveValue('unsaved preview'); await expect(page.locator('#shadow')).toHaveValue('unsaved shadow');
+    await page.evaluate(() => {
+      document.querySelector('form')!.reset();
+      (document.querySelector('#editor')!.shadowRoot!.firstChild as HTMLTextAreaElement).value = 'original';
+      document.dispatchEvent(new Event('change'));
+    });
+    await expect(page.locator('#release')).toHaveText('next release', { timeout: 15_000 });
+  } finally { await deletePage(handle); }
+});
+
+test('nested live documents containing _publications stay live and pinned document updates preserve their path', async ({ page, context }) => {
+  const handle = await createPage(), path = 'docs/_publications/help.html';
+  const files = (label: string) => ({ 'index.html': { type: 'text/html', body: '<h1>Entry</h1>' },
+    [path]: { type: 'text/html', body: '<h1 id="release">' + label + '</h1>' } });
+  try {
+    await signInFixture(context); await claim(context, handle);
+    const first = await publishFiles(handle, files('nested one')); await openClaimed(page, handle);
+    const live = new URL(path, localPageUrl(handle)).href; await page.goto(live);
+    await expect(page.locator('#release')).toHaveText('nested one');
+    expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(false);
+    await publishFiles(handle, files('nested two'));
+    await expect(page.locator('#release')).toHaveText('nested two', { timeout: 15_000 }); expect(page.url()).toBe(live);
+    const pinned = new URL('_publications/' + first.version + '/' + path, localPageUrl(handle)).href;
+    await page.goto(pinned); await expect(page.locator('#release')).toHaveText('nested one');
+    expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(true);
+    await publishFiles(handle, files('nested three'));
+    await expect.poll(() => page.evaluate(() => (window as any).tendril.publication.updateAvailable)).toBe(true);
+    await expect(page.getByRole('link', { name: 'Open update', exact: true })).toHaveAttribute('href', live);
+    await page.getByRole('link', { name: 'Open update', exact: true }).click();
+    await expect(page.locator('#release')).toHaveText('nested three'); expect(page.url()).toBe(live);
+    await page.goto(pinned); await expect(page.locator('#release')).toHaveText('nested one');
+    await page.evaluate(() => (window as any).tendril.publication.update());
+    await expect(page.locator('#release')).toHaveText('nested three'); expect(page.url()).toBe(live);
   } finally { await deletePage(handle); }
 });
 

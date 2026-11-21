@@ -34,15 +34,17 @@ test('startup rejects missing or undeclared document context before browser side
   assert.throws(() => context.Kernel.startRuntime({ ...configuration, documentPath: script.path,
     publication: { ...publication, assets: [...publication.assets, script] } }), /documentPath must identify/);
 });
-test('startup pins the explicit current document while preserving search and fragment', () => {
+test('startup keeps the page URL so reloads and new tabs open the latest release; only a /_publications/ URL pins', () => {
   for (const documentPath of ['index.html', 'notes #1?/café 100%/review.html']) {
-    const pinned = [], stop = new Error('stop before connecting the core');
+    const rewritten = [], stop = new Error('stop before connecting the core');
     const context = { URL, location: new URL('https://fixture.test/page/?review=1#draft'),
-      history: { state: { draft: true }, replaceState(state, title, url) { pinned.push({ state, title, url }); throw stop; } } };
+      history: { state: { draft: true }, replaceState(state, title, url) { rewritten.push(url); } } };
+    // A non-browser policy is inert; sensor bootstrap is the deliberate boundary.
+    context.navigator = {};
+    context.window = { get MediaStreamTrack() { throw stop; } };
     runInNewContext(compiled.outputFiles[0].text, context);
     assert.throws(() => context.Kernel.startRuntime({ ...configuration, documentPath }), error => error === stop);
-    assert.deepEqual(pinned, [{ state: { draft: true }, title: '',
-      url: 'https://fixture.test/page/_publications/7/' + documentPath.split('/').map(encodeURIComponent).join('/') + '?review=1#draft' }]);
+    assert.deepEqual(rewritten, [], 'The address bar is not pinned to the release that happened to load.');
     assert.equal(publication.entry, 'app.html');
   }
 });

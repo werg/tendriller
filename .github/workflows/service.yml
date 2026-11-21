@@ -65,6 +65,10 @@ jobs:
       - run: node scripts/test-browser.mjs
       - name: Qualify the exact immutable first-app kit
         run: npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz"
+      - name: Qualify the immutable first-app kit without SharedWorker
+        env:
+          FIRST_APP_NO_SHARED_WORKER: '1'
+        run: npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz" --report .results/first-app-elected.json
       - name: Qualify shared and elected application owners in Chromium
         run: npm run test:collaboration:browser
       - uses: actions/upload-artifact@v4

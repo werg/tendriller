@@ -83,6 +83,28 @@ it('forwards opaque binary over isolated reliable and live lanes through real au
   } finally { a.close(); b.close(); }
 });
 
+it('delivers a live reply of several hundred KB in order through the negotiated window without refusing a piece', async () => {
+  const page = await createTestPage(), guest = await page.participant(), window = { liveWindow: String(LIMITS.livePendingPackets) };
+  const relay = (target: typeof page | typeof guest, peerId: string, remotePeerId: string) => createPeerRelay({
+    reliable: target.relaySocket('reply-relay', peerId, remotePeerId, 'reliable', window), live: target.relaySocket('reply-relay', peerId, remotePeerId, 'live', window),
+  }, { peerId, remotePeerId });
+  const a = relay(page, left, right), b = relay(guest, right, left), live: Uint8Array[] = [];
+  b.live.addEventListener('message', event => { live.push(new Uint8Array(event.data)); });
+  try {
+    await Promise.all([a.ready, b.ready]);
+    const pieces = Array.from({ length: 40 }, (_value, index) => new Uint8Array(16_448).fill(index));
+    for (const piece of pieces) {
+      // Chronolog's live channel refuses a frame once bufferedAmount + frame exceeds 64 KiB.
+      expect(a.live.bufferedAmount + piece.length).toBeLessThanOrEqual(65_536);
+      a.live.send(piece);
+    }
+    await expect.poll(() => live.length, { timeout: 10_000 }).toBe(pieces.length);
+    expect(live.map(value => value[0])).toEqual(pieces.map((_value, index) => index));
+    expect(live.every(value => value.length === 16_448)).toBe(true);
+    await expect.poll(() => a.live.stats.pendingPackets + a.live.stats.queuedPackets).toBe(0);
+  } finally { a.close(); b.close(); }
+});
+
 it('requires authenticated protocol admission and exact reciprocal peer/lane pairing', async () => {
   const h = await create({ mode: 'dashboard', listener: false });
   expect((await req(`${h.api}/${path('auth')}`, { headers, anonymous: true })).status).toBe(401);
@@ -129,11 +151,12 @@ it('requires an unpredictable recipient receipt before releasing send credit', a
 it('drops excess disposable packets without stalling the reliable lane', async () => {
   const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'live');
   try {
-    p.a.live.socket.send(packet(1)); p.a.live.socket.send(packet(2)); p.a.reliable.socket.send(packet(1));
+    for (let sequence = 1; sequence <= LIMITS.livePendingPackets + 1; sequence++) p.a.live.socket.send(packet(sequence));
+    p.a.reliable.socket.send(packet(1));
     await expect.poll(() => p.a.live.messages.length).toBe(2);
-    expect(JSON.parse(p.a.live.messages[1] as string)).toEqual({ t: 'credit', session: p.session, sequence: 2 });
+    expect(JSON.parse(p.a.live.messages[1] as string)).toEqual({ t: 'credit', session: p.session, sequence: LIMITS.livePendingPackets + 1 });
     await expect.poll(() => p.b.reliable.messages.length).toBe(2);
-    expect(p.b.live.messages.filter(value => value instanceof ArrayBuffer).length).toBe(1);
+    expect(p.b.live.messages.filter(value => value instanceof ArrayBuffer).length).toBe(LIMITS.livePendingPackets);
   } finally { p.close(); }
 });
 
@@ -214,16 +237,18 @@ it('shares one traffic-triggered policy read across a full bidirectional burst a
       p.a.reliable.socket.send(packet(i, LIMITS.pendingBytes / LIMITS.pendingPackets));
       p.b.reliable.socket.send(packet(i, LIMITS.pendingBytes / LIMITS.pendingPackets));
     }
-    p.a.live.socket.send(packet(1, LIMITS.packetBytes)); p.b.live.socket.send(packet(1, LIMITS.packetBytes));
+    for (let sequence = 1; sequence <= LIMITS.livePendingPackets; sequence++) {
+      p.a.live.socket.send(packet(sequence, LIMITS.packetBytes)); p.b.live.socket.send(packet(sequence, LIMITS.packetBytes));
+    }
     await started.promise;
     expect(p.all.every(value => value.messages.length === 1)).toBe(true);
     expect(checks).toBe(1);
     release.resolve();
-    // Drain the full megabyte burst through real Worker sockets. The default
+    // Drain the full two-megabyte burst through real Worker sockets. The default
     // one-second assertion window is shorter than a contended test transport;
     // this bound remains well inside the relay's 30-second progress lease.
     await expect.poll(() => p.a.reliable.messages.length + p.b.reliable.messages.length, { timeout: 5000 }).toBe(2 + 2 * LIMITS.pendingPackets);
-    await expect.poll(() => p.a.live.messages.length + p.b.live.messages.length, { timeout: 5000 }).toBe(4);
+    await expect.poll(() => p.a.live.messages.length + p.b.live.messages.length, { timeout: 5000 }).toBe(2 + 2 * LIMITS.livePendingPackets);
     await inDO(h.id, async t => {
       for (const [peerId, lanes] of [[left, p.a], [right, p.b]] as const) for (const lane of ['reliable', 'live'] as const) {
         const delivered = lanes[lane].messages.slice(1) as ArrayBuffer[];
@@ -236,7 +261,7 @@ it('shares one traffic-triggered policy read across a full bidirectional burst a
       }
     });
     await expect.poll(() => p.all.reduce((sum, value) => sum + value.messages.filter(message => typeof message === 'string').length, 0), { timeout: 5000 })
-      .toBe(4 + 2 * LIMITS.pendingPackets + 2);
+      .toBe(4 + 2 * (LIMITS.pendingPackets + LIMITS.livePendingPackets));
     expect(checks).toBe(1);
     // A later authorization window must read policy again; no account-policy TTL outlives it.
     await advance(h.id, LIMITS.authorizationMs + 1);
@@ -400,7 +425,7 @@ it('bounds queued events and bytes while a shared policy request is stalled', as
         const sender = t.ctx.getWebSockets('peer-relay').find(ws => { const value = ws.deserializeAttachment(); return value.peerId === left && value.lane === 'reliable'; })!;
         const waiting = handleRelayMessage(t, sender, packet(1, size));
         // Tiny frames hit the event cap; maximal frames hit the byte cap first.
-        for (let sequence = 2; sequence <= 4 * (LIMITS.pendingPackets + 1) + 1; sequence++) handleRelayMessage(t, sender, packet(sequence, size));
+        for (let sequence = 2; sequence <= 4 * (LIMITS.pendingPackets + LIMITS.livePendingPackets) + 1; sequence++) handleRelayMessage(t, sender, packet(sequence, size));
         return waiting;
       });
       expect(await p.b.reliable.closed).toBe(1008);
@@ -429,6 +454,33 @@ it('reconstructs expired admission from hibernation attachments and reauthorizes
       expect(await p.b.reliable.closed).toBe(1008);
       expect(p.b.reliable.messages.length).toBe(2);
     } finally { await restore(); }
+  } finally { p.close(); }
+});
+
+it('retains the live window and outstanding receipts across hibernation', async () => {
+  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'hibernate-live');
+  // Real Worker socket delivery shares the test transport with all parallel suites.
+  // Allow the same 5-second observation budget as the full-window burst test;
+  // production authorization, progress and lifetime deadlines stay unchanged.
+  const delivery = { timeout: 5000 };
+  try {
+    for (let sequence = 1; sequence <= LIMITS.livePendingPackets; sequence++) p.a.live.socket.send(packet(sequence, LIMITS.packetBytes));
+    await expect.poll(() => p.b.live.messages.length, delivery).toBe(1 + LIMITS.livePendingPackets);
+    await evictDurableObject(stub(h.id));
+    await inDO(h.id, t => {
+      const sender = t.ctx.getWebSockets('peer-relay').find(ws => {
+        const value = ws.deserializeAttachment(); return value.peerId === left && value.lane === 'live';
+      })!.deserializeAttachment();
+      expect(sender.liveWindow).toBe(LIMITS.livePendingPackets);
+      expect(sender.received).toBe(LIMITS.livePendingPackets);
+      expect(sender.pending.byteLength).toBe(24 * LIMITS.livePendingPackets);
+    });
+    for (const message of p.b.live.messages.slice(1)) p.b.live.socket.send(receipt(p.session, message as ArrayBuffer));
+    await expect.poll(() => p.a.live.messages.length, delivery).toBe(1 + LIMITS.livePendingPackets);
+    expect(p.a.live.messages.slice(1).map(message => JSON.parse(message as string).sequence)).toEqual(
+      Array.from({ length: LIMITS.livePendingPackets }, (_, index) => index + 1));
+    p.a.live.socket.send(packet(LIMITS.livePendingPackets + 1));
+    await expect.poll(() => p.b.live.messages.length, delivery).toBe(2 + LIMITS.livePendingPackets);
   } finally { p.close(); }
 });
 

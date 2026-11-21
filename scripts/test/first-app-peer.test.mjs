@@ -24,10 +24,11 @@ export async function openSession() {
       await appendFile(${JSON.stringify(calls)},'pairing\\n');watched.resolve();
       ${failPairing ? "throw Error('setup close failed');" : ''}
     }};},
-    session:{deviceId:'fixture-device',close(){throw Error('Must close the entire owned bootstrap');}},
+    session:{deviceId:'fixture-device',participation:{status:{phase:'closed',connectedPeers:[]},onStatus(){return()=>{};}},close(){throw Error('Must close the entire owned bootstrap');}},
     supervisor:{ownerInstanceId:'fixture-owner'},
     async close(){await appendFile(${JSON.stringify(calls)},'owner\\n');clearInterval(resource);}};
 }`);
+  await writeFile(join(directory, 'helpers/signal-request.mjs'), 'export function serveSignalRequests(){return Promise.resolve();} export async function sendPieces(){return 0;}');
   await writeFile(join(directory, 'media/inference-service.mjs'), `import {appendFile} from 'node:fs/promises';
 export function servePeerInference(){return {snapshot(){return {};},async close(){
   await appendFile(${JSON.stringify(calls)},'inference\\n');

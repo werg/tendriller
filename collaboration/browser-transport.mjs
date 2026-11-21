@@ -4,6 +4,9 @@ export const ownerChannelName = profileId => `tendriller:owner:v3:${profileId}`;
 export const ownerWorkerName = profileId => `tendriller:${profileId}:v3`;
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
 const MAX_BYTES = 1048576, MAX_WIRE_BYTES = 2 * MAX_BYTES, MAX_QUEUED_BYTES = 4 * MAX_BYTES;
+// Frames in flight per route direction. A burst of small signal pieces (a reply
+// of many 16 KiB signals) must queue, not retire the route; bytes stay bounded.
+const MAX_QUEUED_FRAMES = 1024;
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
 const bytesEqual = (left, right) => left instanceof Uint8Array && right instanceof Uint8Array &&
   left.length === right.length && left.every((value, index) => value === right[index]);
@@ -107,7 +110,7 @@ function queues(record, channel, ownerInstanceId, route, outgoing) {
   record.queuedSend = 0; record.queuedReceive = 0; record.sending = 0; record.receiving = 0;
   record.send = value => {
     const bytes = encode(value);
-    if (record.closed || record.sending >= 32 || record.queuedSend + bytes.length > MAX_QUEUED_BYTES) return Promise.reject(Error('OWNER_MESSAGE_LIMIT'));
+    if (record.closed || record.sending >= MAX_QUEUED_FRAMES || record.queuedSend + bytes.length > MAX_QUEUED_BYTES) return Promise.reject(Error('OWNER_MESSAGE_LIMIT'));
     record.queuedSend += bytes.length; record.sending++;
     const result = record.outgoing.then(async () => {
       if (record.closed) throw Error('ENDPOINT_STALE');
@@ -120,7 +123,10 @@ function queues(record, channel, ownerInstanceId, route, outgoing) {
   };
   record.receive = (packet, deliver) => {
     const direction = outgoing === 'owner' ? 'client' : 'owner';
-    if (!validPacket(packet, direction) || record.closed || record.receiving >= 32 || record.queuedReceive + packet.ciphertext.length > MAX_QUEUED_BYTES) return;
+    if (!validPacket(packet, direction) || record.closed) return;
+    // This is still unauthenticated public-channel traffic. Bound its queue,
+    // but never let copied route IDs and oversized forged bursts retire a peer.
+    if (record.receiving >= MAX_QUEUED_FRAMES || record.queuedReceive + packet.ciphertext.length > MAX_QUEUED_BYTES) return;
     record.queuedReceive += packet.ciphertext.length; record.receiving++;
     const next = record.incoming.then(async () => {
       if (record.closed || packet.sequence !== record.receiveSequence + 1) return;

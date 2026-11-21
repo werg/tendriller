@@ -4,6 +4,8 @@ Import these modules from the [first-app source archive](/downloads/tendriller-f
 beside your authored `page.mjs`:
 
 ```js
+import { createOwnerConnection, describeConnectionError } from './connection.mjs';
+import { mountConnectionView } from './connect-view.mjs';
 import { createLiveView } from './helpers/live-view.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { createReviewedInput } from './helpers/reviewed-input.mjs';
@@ -21,6 +23,66 @@ bootstrap, enrollment and publication path. These helpers observe and interact
 with its existing session. They do not own its signer, database, transport,
 recovery policy or process lifetime.
 
+## Connect the browser
+
+Every delivered page uses the connection component. **Do not ship the old
+two-button flow** ("Request browser access" / "Connect existing device"), a
+stepper, or raw error codes. Opening the page is the whole flow:
+
+```js
+const pairing = createBrowserPairing({ configuration, profileId, workerUrl: new URL('./pairing-worker.mjs', import.meta.url) });
+const view = mountConnectionView(document.querySelector('#connection-slot'));
+const connection = createOwnerConnection({ configuration, pairing, appName: 'Shared notes',
+  // Attach (openBrowserOwner), start the app's views, and return once data is usable.
+  // Throw the attach error unchanged: its code tells the component to set up, wait or retry.
+  connect: connectSession,
+  onState(state) { view.render(state); document.querySelector('#app').hidden = state.phase !== 'connected'; } });
+void connection.start();
+```
+
+| Browser state | What the person sees | Action |
+| --- | --- | --- |
+| Enrolled (every later visit, any tab) | Nothing; the app opens | none |
+| New browser, request being prepared | "Setting up this browser…" with progress | none |
+| Prepared | The service-origin approval opens once, returns by itself | one **Approve** tap there |
+| Approved, native owner committing | "Finishing setup…" | none |
+| Another tab is starting the owner | "Connecting…" | none (retries) |
+| Declined | "The request was declined" | **Ask again** |
+| Approval left without a decision | "Approve this browser" | **Approve this browser** |
+| Signed out, private mode, other failures | Plain words from `describeConnectionError`; code under *Technical details* | **Reload** or **Try again** where useful |
+
+While not connected, show only this card: no empty tables, "no data yet" or
+stale-data warnings above it. Keep data views hidden until `phase` is
+`connected`. Pass `onOwnerReplaced: reloadOnOwnerReplaced()` to
+`openBrowserOwner`; the runtime binding installs once per page, so install it
+only after `connect` has made the app usable.
+
+User-facing copy for the codes an app can meet (developer causes are in
+[troubleshooting](TROUBLESHOOTING.md)):
+
+| Code | Message |
+| --- | --- |
+| `APPLICATION_DEVICE_NOT_FOUND`, `DEVICE_NOT_ENROLLED` | Not an error: "Setting up this browser…", then the approval |
+| `OWNER_BUSY`, `OWNER_UNREACHABLE`, `ENDPOINT_STALE` | "Connecting…" (another tab is starting); retried |
+| `pairing_account_required`, 401 | "Sign in to continue" · Reload |
+| `PAIRING_STORAGE_REQUIRED`, `PAIRING_LOCK_REQUIRED`, `QuotaExceededError` | "This browser can't keep the app's key" · use a normal tab |
+| `pairing_rate_limited`, `pairing_ledger_full` | "Too many attempts"; retried |
+| `denied` | "The request was declined" · Ask again |
+| network and timeouts | "The connection is slow. Retrying…" |
+
+Large live answers: a reply of several signals (each at most 16 KiB) can be sent
+piece by piece, awaiting each `send`; the relay paces the pieces. Reassemble by
+reply ID and piece index on the page.
+
+### Views that fit the data
+
+A structured record editor (JSON or a plain form of fields) is a fallback, never
+the deliverable for a "full-featured" or "rich" request. Build list/detail with
+search and filter, an inspector side panel, diff/compare views, inline editing
+with review and undo, timelines and conversations, tables with named links,
+and explicit empty and loading states. Walk the flows on a phone-sized viewport
+and desktop before delivery ([acceptance bar](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)).
+
 ## 1. A coherent live query
 
 This function mounts the first-app `notes` query into its existing HTML elements.
@@ -28,6 +90,8 @@ Call it after opening the session. When adapting `page.mjs`, replace the
 corresponding existing rendering block instead of installing duplicate observers.
 
 ```js
+import { createOwnerConnection, describeConnectionError } from './connection.mjs';
+import { mountConnectionView } from './connect-view.mjs';
 import { createLiveView } from './helpers/live-view.mjs';
 
 export function mountNotes(session, root = document) {

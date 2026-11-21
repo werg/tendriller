@@ -37,10 +37,12 @@ return { profileId,
       const authority = await peers.application();
       const verified = await verifyAuthorityBundle(authority, configuration.descriptor);
       if (!verified.grant(device.identity.publicKey)?.reader)
-        throw Object.assign(Error('This retained browser is not enrolled. Request browser access, review its exact proposal on the service origin, and keep the native peer running to commit it.'), { code: 'DEVICE_NOT_ENROLLED' });
+        throw Object.assign(Error('This browser is not enrolled yet. The connection component requests access and opens the one-tap approval on the service origin; keep the native peer running to commit it.'), { code: 'DEVICE_NOT_ENROLLED' });
       signal.throwIfAborted();
+      // Queues sized for multi-piece live replies (each signal is at most 16 KiB): a
+      // page reading a reply of a few hundred KB must not overflow its subscription.
       session = await openBrowserApplication({ device, definition, authority,
-        signals: { localEcho: true, delivery: 'neighbors', limits: { maxSubscriptions: 256 } } });
+        signals: { localEcho: true, delivery: 'neighbors', limits: { maxSubscriptions: 256, maxQueuedSignals: 1024, maxQueuedBytes: 8 * 1024 * 1024 } } });
       const control = session.connectControlParticipant({ exchange: (message, options) => peers.exchange(message, options) });
       await session.participate({ control, ...createPeerIntroductions({
         peers, identity: session.deviceId,

@@ -275,9 +275,29 @@ test('unpaired utility notices selection changes explicitly and clears stale not
  assert.equal(notice.hidden,true);assert.equal(env.api.application.available,false);
  env.sockets[0].receive(2);assert.equal(notice.hidden,false);
  const link=notice.children.find(e=>e.tagName==='a');assert.equal(link.textContent,'Open update');
- assert.equal(link.href,'https://fixture.test/page/');assert.equal(link.target,undefined);
+ assert.equal(link.href,'https://fixture.test/page/app.html');assert.equal(link.target,undefined);
  assert.equal(env.context.location.href,'https://fixture.test/page/_publications/1/app.html');
  env.sockets[0].receive(1);assert.equal(notice.hidden,true);
  env.sockets[0].receive(3);assert.equal(notice.hidden,false);env.sockets[0].receive(0);assert.equal(notice.hidden,true);
  assert.equal(env.calls.fetch.length,0);assert.equal(env.calls.sockets,1);
+});
+
+
+test('document URL construction is inert and preserves the live or explicitly pinned context', async () => {
+  const env = environment();
+  assert.equal(env.api.documentUrl('other.html'), 'https://fixture.test/page/_publications/1/other.html');
+  assert.equal(env.api.documentUrl('#section'), 'https://fixture.test/page/_publications/1/app.html#section');
+  assert.throws(() => env.api.documentUrl('https://elsewhere.test/'), /must stay within/);
+  const before = env.context.location.href;
+  env.context.location.href = 'https://fixture.test/page/app.html?review=1';
+  // Resolve against the address-bar document; this constructed API retains its
+  // explicit pin decision, so use a new live runtime for the canonical case.
+  const live = env.context.Kernel.startRuntime({ id: 'page', base: '/page/', version: 0,
+    documentPath: null, application: { id: '12'.repeat(32) } });
+  assert.equal(live.documentUrl('other.html'), 'https://fixture.test/page/other.html');
+  assert.equal(live.documentUrl('#section'), 'https://fixture.test/page/app.html?review=1#section');
+  assert.equal(env.context.location.href, 'https://fixture.test/page/app.html?review=1');
+  assert.notEqual(before, env.context.location.href);
+  await flush();
+  assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
 });

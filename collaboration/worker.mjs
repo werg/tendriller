@@ -2,13 +2,17 @@ import { acquireApplicationOwnerLock, createApplicationOwner } from '@chronolog/
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastOwner, checkOwnerFrame } from './browser-transport.mjs';
 import { prepareCollaborationCommand } from './protocol.mjs';
 
-const defaults = { maxPorts: 64, pendingTimeoutMs: 30000, idleTimeoutMs: 60000 };
+const defaults = { maxPorts: 64, pendingTimeoutMs: 30000, idleTimeoutMs: 60000, retireGraceMs: 5000 };
+// rootLimits.retireGraceMs: a retired elected owner with no routes stays this long,
+// so the same page can reattach (an app-level reconnect) without restarting the
+// session and its peer connections. A new route cancels the retirement wait.
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(value);
 function rootLimits(value = {}) {
   const limits = { ...defaults, ...value };
   if (Object.keys(value).some(key => !Object.hasOwn(defaults, key)) ||
       !Number.isSafeInteger(limits.maxPorts) || limits.maxPorts < 1 || limits.maxPorts > 128 ||
-      [limits.pendingTimeoutMs, limits.idleTimeoutMs].some(ms => !Number.isFinite(ms) || ms < 100 || ms > 120000)) throw Error('OWNER_CONFIGURATION_INVALID');
+      [limits.pendingTimeoutMs, limits.idleTimeoutMs].some(ms => !Number.isFinite(ms) || ms < 100 || ms > 120000) ||
+      !Number.isFinite(limits.retireGraceMs) || limits.retireGraceMs < 0 || limits.retireGraceMs > 60000) throw Error('OWNER_CONFIGURATION_INVALID');
   return limits;
 }
 
@@ -16,7 +20,7 @@ function rootLimits(value = {}) {
 export function serveBrowserOwner(options) {
   const scope = options.scope ?? globalThis, lifetime = new AbortController(), roots = new Map(), identities = new Set();
   let profileId, openSession, createIdentity, ownerOptions, limits = defaults;
-  let owner, owned, lease, opening, channel, election, broadcast, closed = false, retiring = false, closing, scopeRoot, sessionAborted;
+  let owner, owned, lease, opening, channel, election, broadcast, broadcastStarting, closed = false, retiring = false, retireTimer, closing, scopeRoot, sessionAborted;
   const post = (endpoint, value) => { try { endpoint.postMessage(value); } catch { /* The remote page may have gone away. */ } };
   const failure = (record, id, error) => post(record.endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'failure', id,
     profileId, rootId: record.rootId, ownerInstanceId: owner?.ownerInstanceId,
@@ -76,17 +80,34 @@ export function serveBrowserOwner(options) {
     })().catch(error => { opening = undefined; owned = undefined; owner = undefined; throw error; });
     return opening;
   }
+  function retireSoon() {
+    if (retireTimer || closed) return;
+    retireTimer = setTimeout(() => { retireTimer = undefined; if (!broadcast || broadcast.routes === 0) void close().catch(() => {}); }, limits.retireGraceMs);
+  }
   function startElection() {
     if (election) return election;
     channel = new BroadcastChannel(ownerChannelName(profileId));
     election = open(true).then(async () => {
       broadcast = await createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32,
-        onRoutesChanged: count => { if (retiring && count === 0) void close().catch(() => {}); } });
+        onRoutesChanged: count => { if (count > 0) { clearTimeout(retireTimer); retireTimer = undefined; } else if (retiring) retireSoon(); } });
       if (closed) { await broadcast.close(); return; }
-      if (retiring && broadcast.routes === 0) { void close().catch(() => {}); return; }
+      if (retiring && broadcast.routes === 0) { retireSoon(); return; }
       broadcast.announce();
     });
     return election;
+  }
+  // Every owner, shared or elected, also answers BroadcastChannel discovery, so a
+  // page whose own Worker cannot take the profile (another publication's Worker,
+  // or a fallback owner) attaches to the owner that holds it instead of failing.
+  function serveBroadcast() {
+    if (broadcastStarting || closed) return broadcastStarting;
+    channel ??= new BroadcastChannel(ownerChannelName(profileId));
+    broadcastStarting = createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32 }).then(async value => {
+      if (closed) { await value.close(); return; }
+      broadcast = value; value.announce();
+    });
+    void broadcastStarting.catch(() => {});
+    return broadcastStarting;
   }
   function result(record, id) {
     post(record.endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'root.result', id,
@@ -134,7 +155,8 @@ export function serveBrowserOwner(options) {
           post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'retired', id: data.id, profileId });
           // A detached page stops competing for ownership. An existing owner
           // serves authenticated siblings until its last active/pending route ends.
-          if (!owner || broadcast?.routes === 0) void close().catch(() => {});
+          if (!owner) void close().catch(() => {});
+          else if (broadcast?.routes === 0) retireSoon();
           return;
         }
         if (data.type === 'identity') {
@@ -155,6 +177,7 @@ export function serveBrowserOwner(options) {
         if (data.mode === 'elected' && !shared) { void startElection().catch(error => failure(record, data.id, error)); return; }
         if (data.mode !== 'shared' || !shared) throw Error('OWNER_MODE_INVALID');
         await open(false); lifetime.signal.throwIfAborted(); if (record.disposed) return;
+        if (typeof BroadcastChannel === 'function') void serveBroadcast();
         if (!record.detach) record.detach = owner.attach(endpoint);
         record.ready = true; renew(record);
         post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'ready', id: data.id, ownerInstanceId: owner.ownerInstanceId });
@@ -168,12 +191,12 @@ export function serveBrowserOwner(options) {
 
   function close() {
     if (closing) return closing;
-    closed = true; lifetime.abort(Error('OWNER_UNREACHABLE')); scope.removeEventListener('connect', connect);
+    closed = true; clearTimeout(retireTimer); lifetime.abort(Error('OWNER_UNREACHABLE')); scope.removeEventListener('connect', connect);
     for (const record of [...roots.values()]) dispose(record, 'OWNER_UNREACHABLE');
     if (scopeRoot) dispose(scopeRoot);
     closing = (async () => {
       try {
-        await Promise.allSettled([opening, ...identities]);
+        await Promise.allSettled([opening, broadcastStarting, ...identities]);
         owned?.session?.signal.removeEventListener('abort', sessionAborted);
         try { await broadcast?.close(); }
         finally { try { await owner?.close(); } finally { await owned?.close?.(); } }

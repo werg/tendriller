@@ -1,7 +1,8 @@
 /** Physical relay admission and flow control. Application bytes stay opaque. */
 export const PEER_RELAY_PROTOCOL = 'tendriller.relay.v1';
 export const PEER_RELAY_LIMITS = Object.freeze({ packetBytes: 64 * 1024, pendingPackets: 32,
-  pendingBytes: 512 * 1024, liveBufferedBytes: 64 * 1024, sessions: 16, sessionsPerPrincipal: 8,
+  pendingBytes: 512 * 1024, liveBufferedBytes: 64 * 1024, livePendingPackets: 8, liveQueueBytes: 1024 * 1024, liveQueuePackets: 64,
+  sessions: 16, sessionsPerPrincipal: 8,
   pairingMs: 30_000, progressMs: 30_000, authorizationMs: 30_000, lifetimeMs: 3_600_000,
   reliablePacketsPerSecond: 2048, livePacketsPerSecond: 128 });
 const identity = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
@@ -36,6 +37,10 @@ export function createPeerRelay(sockets, { peerId, remotePeerId, signal, timeout
   const lanes = [];
   class Lane extends EventTarget {
     #socket; #lane; #ready = false; #sequence = 0; #received = 0; #pending = [];
+    // Live packets beyond the host's in-flight window wait here, in order, and
+    // leave as receipts return. A multi-piece live message is therefore paced by
+    // the relay instead of being refused piece by piece. Both bytes and entries are bounded.
+    #window; #queue = []; #queuedBytes = 0;
     #listeners; #sentBytes = 0; #receivedBytes = 0;
     binaryType = 'arraybuffer';
     constructor(socket, lane) {
@@ -53,18 +58,24 @@ export function createPeerRelay(sockets, { peerId, remotePeerId, signal, timeout
     get readyState() { return ended ? 3 : this.#ready ? 1 : 0; }
     get bufferedAmount() {
       const native = Number.isFinite(this.#socket.bufferedAmount) ? this.#socket.bufferedAmount : 0;
-      return native + (this.#lane === 'live' ? (this.#pending.length ? PEER_RELAY_LIMITS.liveBufferedBytes : 0)
+      // Live: report full only when the local queue cannot take another full packet.
+      return native + (this.#lane === 'live'
+        ? (this.#queue.length >= PEER_RELAY_LIMITS.liveQueuePackets || this.#queuedBytes + PEER_RELAY_LIMITS.packetBytes > PEER_RELAY_LIMITS.liveQueueBytes ? PEER_RELAY_LIMITS.liveBufferedBytes : 0)
         : this.#pending.reduce((sum, item) => sum + Math.max(16 * 1024, item.bytes), 0));
     }
     get stats() { return Object.freeze({ sentBytes: this.#sentBytes, receivedBytes: this.#receivedBytes,
-      pendingPackets: this.#pending.length, bufferedAmount: this.bufferedAmount }); }
+      pendingPackets: this.#pending.length, queuedPackets: this.#queue.length, bufferedAmount: this.bufferedAmount }); }
     #message(data) {
       if (typeof data === 'string') {
         assert(byteLength(data) <= 512, 'Relay control exceeds its bound');
         const value = JSON.parse(data);
         assert(value && typeof value === 'object' && !Array.isArray(value), 'Invalid relay control');
         if (value.t === 'ready') {
-          assert(!this.#ready && Object.keys(value).length === 6 && value.version === 1 && value.lane === this.#lane &&
+          // The host explicitly grants the bounded window; no legacy-host fallback.
+          const granted = value.liveWindow;
+          assert(Number.isSafeInteger(granted) && granted >= 1 && granted <= PEER_RELAY_LIMITS.livePendingPackets, 'Invalid relay window');
+          this.#window = granted;
+          assert(!this.#ready && Object.keys(value).length === 7 && value.version === 1 && value.lane === this.#lane &&
             value.peerId === peerId && value.remotePeerId === remotePeerId && typeof value.session === 'string' &&
             /^[0-9a-f-]{36}$/.test(value.session) && (session === undefined || session === value.session), 'Invalid relay pairing');
           session = value.session; this.#ready = true; paired++;
@@ -74,7 +85,7 @@ export function createPeerRelay(sockets, { peerId, remotePeerId, signal, timeout
         }
         assert(this.#ready && value.t === 'credit' && Object.keys(value).length === 3 && value.session === session &&
           Number.isSafeInteger(value.sequence) && this.#pending[0]?.sequence === value.sequence, 'Invalid relay credit');
-        this.#pending.shift(); this.dispatchEvent(new Event('bufferedamountlow')); return;
+        this.#pending.shift(); this.#drain(); this.dispatchEvent(new Event('bufferedamountlow')); return;
       }
       assert(this.#ready && data instanceof ArrayBuffer && data.byteLength > 20 && data.byteLength <= PEER_RELAY_LIMITS.packetBytes + 20,
         'Relay accepts bounded binary packets');
@@ -89,9 +100,21 @@ export function createPeerRelay(sockets, { peerId, remotePeerId, signal, timeout
       const input = data instanceof ArrayBuffer ? new Uint8Array(data)
         : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : null;
       assert(input && input.length > 0 && input.length <= PEER_RELAY_LIMITS.packetBytes, 'Relay accepts bounded binary packets');
-      const maximum = this.#lane === 'live' ? 1 : PEER_RELAY_LIMITS.pendingPackets;
+      if (this.#lane === 'live' && (this.#queue.length || this.#pending.length >= this.#window)) {
+        assert(this.#queue.length < PEER_RELAY_LIMITS.liveQueuePackets && this.#queuedBytes + input.length <= PEER_RELAY_LIMITS.liveQueueBytes, 'Relay send credit exhausted');
+        this.#queue.push(input.slice()); this.#queuedBytes += input.length; return;
+      }
+      const maximum = this.#lane === 'live' ? this.#window : PEER_RELAY_LIMITS.pendingPackets;
       assert(this.#pending.length < maximum && this.#pending.reduce((sum, value) => sum + value.bytes, 0) + input.length <= PEER_RELAY_LIMITS.pendingBytes,
         'Relay send credit exhausted');
+      this.#transmit(input);
+    }
+    #drain() {
+      while (this.#queue.length && this.#pending.length < this.#window && !ended) {
+        const next = this.#queue.shift(); this.#queuedBytes -= next.length; this.#transmit(next);
+      }
+    }
+    #transmit(input) {
       assert(this.#sequence < 0xffffffff, 'Relay packet sequence exhausted');
       const sequence = ++this.#sequence, packet = new Uint8Array(4 + input.length);
       new DataView(packet.buffer).setUint32(0, sequence); packet.set(input, 4);
@@ -102,7 +125,7 @@ export function createPeerRelay(sockets, { peerId, remotePeerId, signal, timeout
     close() { close(); }
     finish(reason) {
       for (const [type, listener] of this.#listeners) this.#socket.removeEventListener(type, listener);
-      this.#pending.length = 0;
+      this.#pending.length = 0; this.#queue.length = 0; this.#queuedBytes = 0;
       try { if (this.#socket.readyState < 2) this.#socket.close(1000, 'Peer relay closed'); } catch {}
       this.dispatchEvent(Object.assign(new Event('close'), { code: 1000, reason: String(reason.code || 'relay_closed') }));
     }

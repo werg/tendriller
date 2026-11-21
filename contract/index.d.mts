@@ -68,10 +68,24 @@ export interface RuntimeServices {
   readonly identity: Readonly<{ page: string; version: number; publication: string | null; documentPath: string | null; base: string; managementUrl: string }>;
   /** Browser installation state and an explicit native prompt; never registers offline support. */
   readonly installation: RuntimeInstallation;
+  /** Pure URL builder for authored document/fragment links; preserves live or explicit pinned navigation. No fetch or navigation. */
+  documentUrl(reference: string): string;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
   assetUrl(path: string): string;
   /** Resolves only after the exact required publication graph is saved by its service worker. */
-  publication: { saveOffline(): Promise<{ id: string; status: "ready" }> };
+  publication: {
+    saveOffline(): Promise<{ id: string; status: "ready" }>;
+    /** True only when this document was opened at its immutable /_publications/ID/ URL. */
+    readonly pinned: boolean;
+    /** A newer release is selected; the page switches at its next safe point. */
+    readonly updateAvailable: boolean;
+    /** Called with the selected version when it differs from this document's release; version null when the selection returns to it. */
+    onUpdate(listener: (update: { version: number | null }) => void): () => void;
+    /** Defer the automatic switch while there is unsaved work; call the result to release. */
+    hold(): () => void;
+    /** Load the latest selected release now. */
+    update(): void;
+  };
   sensors: { status(): SensorStatus; on(listener: (status: SensorStatus) => void): () => void; stopAll(): number };
 }
 /** Application work belongs to the installed session; host services are explicit. */

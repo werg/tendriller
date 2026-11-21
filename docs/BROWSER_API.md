@@ -50,9 +50,11 @@ Safari device-qualification guarantee.
 | `sensors` | Observe tracked use and cancel active or pending acquisitions |
 | `assetUrl(path)` | Resolve an explicit dependency in the pinned runtime |
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
+| `documentUrl(reference)` | Build a document or fragment URL in this page’s current live or explicitly pinned context; performs no navigation |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
+| `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
 
-Construction starts no host connection, fetch, IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
+The hosted `tendril.js` entry opens one receive-only publication metadata WebSocket during construction, including on holding and explicitly pinned pages. The bare `startRuntime()` kernel opens it only when passed `watchPublication: true`; otherwise construction starts no host connection or fetch. A healthy publication watch sends no heartbeat or periodic HTTP request; transport failure can trigger bounded recovery reads and reconnects. This watch does not install an application transport. Construction creates no IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
 
 ## Home Screen setup
 
@@ -60,7 +62,7 @@ Open **Page options** to add the page to the Home Screen or read the current pla
 
 Startup does not open an install prompt. On eligible published mobile pages, a small suggestion may appear after a 12-second delay following a trusted page interaction. It stays out of focused form editing, active or pending sensor use, and hidden pages. **Not now** suppresses suggestions for that page on this browser for 30 days; Page options remains available. Already standalone pages do not show installation suggestions.
 
-The default manifest uses the page's stable base URL for `id`, `start_url` and `scope`. Each Tendriller page has its own identity and launch target; a fresh Home Screen launch requests its currently selected publication. An open tab remains pinned to its immutable publication, including on reload. **Page options → Open latest version** explicitly opens the selected release. Authored metadata takes precedence over host defaults. An authored manifest also suppresses the host's icon, Apple title and theme defaults so its branding remains in control; viewport defaults still fill a missing viewport tag.
+The default manifest uses the page's stable base URL for `id`, `start_url` and `scope`. Each Tendriller page has its own identity and launch target; a fresh Home Screen launch requests its currently selected publication. A page always shows the latest release by default (see below). Authored metadata takes precedence over host defaults. An authored manifest also suppresses the host's icon, Apple title and theme defaults so its branding remains in control; viewport defaults still fill a missing viewport tag.
 
 For the default manifest, a custom page `icon` URL ending in `.png`, `.webp`, or `.svg` replaces the generated installation artwork. Serve a square image large enough for the target browsers. Use an authored manifest to declare exact sizes, provide alternate icons, or reference artwork at a URL without a supported file extension.
 
@@ -116,8 +118,90 @@ Load optional voice from `import(runtime.assetUrl('voice.mjs'))` or `@tendriller
 
 ## Immutable code and offline use
 
-Each publication pins its complete authored file graph and runtime. **Page options → Save for offline use** calls `publication.saveOffline()`, which registers offline support on demand and resolves only after the required graph is verified and saved by the service worker. Home Screen installation does not implicitly call it. It is code retention, not an application-data backup or synchronization guarantee. Different open publications keep their own assets through lazy loads and offline reload; live features still depend on the page's data and connection lifecycle.
+Each publication pins its complete authored file graph and runtime. **Page options → Save for offline use** calls `publication.saveOffline()`, which registers offline support on demand and resolves only after the required graph is verified and saved by the service worker. Home Screen installation does not implicitly call it. It is code retention, not an application-data backup or synchronization guarantee. Different open publications keep their own assets through lazy loads; an offline reload of the page URL opens the latest saved release (see below); live features still depend on the page's data and connection lifecycle.
 
 The service-owned management page remains available if authored JavaScript fails. It manages account access and displays publication history. Changing selected code requires a new signed Chronolog publication.
 
-While visible, the holding page checks for a signed publication and opens the selected release as soon as it is available. Once a version is open, its URL pins that publication so a reload can recover the same code. Use **Open latest version** in the page controls to load the currently selected release.
+The holding page uses the same publication watch to open the first selected signed release as soon as it is available; it does not poll while the watch is healthy.
+
+## Storage durability of a browser device
+
+A browser device keeps its only signing key, its journal and its unsent signed work in
+origin storage. The SDK (`openBrowserOwner`, `createBrowserIdentity`) asks the browser to
+persist that storage (`requestPersistentStorage()`; the attachment's `storagePersisted`;
+`persistStorage: false` opts out).
+
+Chromium's in-memory storage (private windows and automation contexts) drops the files
+of an origin-private (OPFS) directory that nothing has touched for about ten minutes,
+even while the owner holds it open; the next open then fails closed with
+`APPLICATION_DATA_STORAGE_MISSING`. A normal profile keeps them. Opening the
+directory's handle resets that clock, so an attached page does so, leanly:
+
+- nothing runs when the browser reports the storage as persisted;
+- it runs only while the page is visible, every 4 minutes (`storageKeepAliveMs`,
+  default 240000; 0 disables), and never wakes a hidden or frozen tab;
+- hiding, freezing, showing or resuming the page touches once, so a backgrounded
+  tab has a full window: a private-window tab hidden for more than about ten minutes
+  can still lose its store;
+- one tick opens each `chronolog-*` directory handle without listing records:
+  about 4 ms for one store and 23 ms for 50 stores of 10,000 records in total
+  (measured in headless Chromium).
+
+The in-memory case cannot be detected directly: quota, `persisted()` and `persist()`
+read the same as on a normal profile, so the keep-alive runs wherever storage is not
+known to be persistent.
+
+## The latest release by default
+
+The address bar keeps the page's own URL; the document's assets resolve through
+its injected `<base>`, which names the immutable publication graph. So:
+
+- opening or reloading a canonical page URL, including a Home Screen launch,
+  loads the release that is selected **now**; explicit immutable URLs retain their pin;
+- an open tab holds the page's one hibernating publication watch
+  (`contract/publication-watch.mjs`, opened by the hosted `tendril.js` entry; the
+  bare `startRuntime` kernel opens it only with `watchPublication: true`) and learns
+  of every change of the selected release, rollbacks included. It switches once no editable field is focused, no inspectable form control differs from its initial HTML defaults, and no `tendril.publication.hold()` is active. These protections also apply while hidden or resumed. The check includes open shadow roots, checkbox/radio checkedness, selected options, and changed disabled or read-only controls. Clean, unfocused pages can switch immediately. While a switch waits, Page options shows **New version
+  published** with an **Open update** link to the page's own address;
+- pinning is explicit: a document opened at its immutable
+  `…/_publications/ID/` URL stays on that release (for a review or a comparison),
+  and `publication.pinned` is `true`.
+
+The immutable `<base>` also applies to authored relative links. A plain
+`<a href="other.html">` follows that signed release’s document and therefore opens
+a pinned URL, even when the source page was live. A plain `href="#section"` also
+resolves against the immutable base, rather than necessarily the current document.
+The runtime does not intercept clicks or rewrite authored links.
+
+For navigation that follows the current live/pinned document context, assign the
+URL explicitly:
+
+```js
+otherLink.href = tendril.documentUrl('other.html');
+sectionLink.href = tendril.documentUrl('#section');
+```
+
+The pure builder resolves standard URL references relative to the address-bar
+document, retaining query strings and fragments as normal URL resolution does.
+On a live page it returns a canonical page URL; on an explicitly pinned page it
+stays within that immutable publication. It rejects references that escape that
+context. Use an explicit canonical URL or `publication.update()` to leave a pin.
+Asset references and explicit immutable links remain unchanged. This is an
+authored navigation choice; it does not save drafts or establish a connection.
+
+Every release is still the signed, verified publication the host selected; the
+switch is an ordinary navigation, so the runtime verifies it as on any load.
+Device keys and retained operations remain in their existing browser storage. Applications must persist drafts explicitly; runtime inspection does not save them. Closed shadow roots, custom editors, blurred contenteditable content, detached controls and other application work are not covered by the form-default check. Such an app calls
+`const release = tendril.publication.hold()` while that work is unsaved, then
+`release()`. `publication.onUpdate(listener)` lets an app show its own notice;
+`publication.update()` explicitly switches immediately, overriding draft protection and active holds. An application should offer it only when the person has saved or accepted discarding local work. A pinned document opens its corresponding document in the current release.
+
+Why pages used to stay on their first release, and how that is kept: (1) a reload
+recovered the exact code that held unsent work; drafts and pending operation
+references are retained in storage and the switch waits for unsaved input or an
+explicit hold. (2) A new release's owner Worker could not take a profile from an
+older one still running in another tab; pages now attach to the running owner
+whatever its Worker version, and a changed application definition still needs a
+new application rather than a publish. (3) Offline launches use the saved graph
+when the network is unavailable; an offline reload of the page URL opens the
+latest complete saved release, falling back to the tab's own.

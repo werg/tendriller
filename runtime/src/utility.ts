@@ -1,4 +1,4 @@
-import { watchPublicationUpdates } from '../../contract/publication-watch.mjs';
+import { encodePublicationPath } from "./paths";
 import type { RuntimeApi } from "../../contract/index.mjs";
 
 const labels: Record<string, string> = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", motion: "Motion" };
@@ -42,27 +42,19 @@ export function mountUtility(api: RuntimeApi): () => void {
     const node = element("button", text, className); node.type = "button"; return node;
   };
 
-  let disposed = false, openingPublication = false;
+  let disposed = false;
+  // The runtime owns the page's one publication watch and switches at the next safe
+  // point. This card is shown while a switch waits (unsaved input, an application hold,
+  // or a page pinned to its release), with an explicit way to open the update now.
   const update = element("aside", undefined, "card"); update.hidden = true;
   update.setAttribute("aria-label", "Publication update"); update.setAttribute("role", "status"); update.setAttribute("aria-live", "polite");
-  const openUpdate = element("a", "Open update", "primary"); openUpdate.href = api.identity.base;
-  update.append(element("strong", "New version published"), element("p", "Your current page stays open until you choose the update. Finish or retain any work first.", "note"), openUpdate);
-  const publicationWatch = watchPublicationUpdates({ base: api.identity.base,
-    onCurrent(value) {
-      if (disposed) return;
-      if (api.identity.version === 0) {
-        if (value.current > 0 && !openingPublication) { openingPublication = true; location.reload(); }
-      } else update.hidden = value.current === 0 || value.current === api.identity.version;
-    },
-    onStatus(value) {
-      if (api.identity.version !== 0) return;
-      const status = document.getElementById("publication-status");
-      if (!status) return;
-      status.textContent = value.state === "connected" ? "Your agent is preparing the first version. It will open here automatically."
-        : value.state === "reconnecting" ? "Connection interrupted. Retrying automatically."
-        : "This page could not be opened. Select Check now to try again.";
-    },
-  });
+  // A link to the page's own address: following it loads the latest selected release.
+  const openUpdate = element("a", "Open update", "primary"); openUpdate.href = api.identity.documentPath && api.identity.documentPath !== "index.html"
+    ? new URL(encodePublicationPath(api.identity.documentPath), api.identity.base).href : api.identity.base;
+  update.append(element("strong", "New version published"), element("p", api.publication.pinned
+    ? "This address shows a fixed version. Open the latest version when you are ready."
+    : "This page switches to it as soon as no unsaved changes are open.", "note"), openUpdate);
+  const offUpdate = api.publication.onUpdate(({ version }) => { if (!disposed) update.hidden = version === null; });
   const nav = element("nav"); nav.setAttribute("aria-label", "Page operations");
   const active = element("span", undefined, "sensors"); active.setAttribute("role", "status");
   const stop = button("Stop sensors", "stop");
@@ -254,7 +246,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
   renderInstallation(); renderSensors(); attach(); observer.observe(document, { childList: true, subtree: true });
   return () => {
-    disposed = true; publicationWatch?.close(); cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
+    disposed = true; offUpdate(); cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();
   };

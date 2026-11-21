@@ -6,7 +6,7 @@ window.verifyParticipantPanel=verifyParticipantPanel;
 const query=new URL(location.href).searchParams,profileId=query.get('profile')||'browser-owner-test';
 window.ownerStage='identity';
 window.ready=(async()=>{
-  const workerUrl=new URL(`./worker.mjs?profile=${profileId}`,import.meta.url);
+  const workerUrl=new URL(`./worker.mjs?profile=${profileId}${query.get('variant')?`&variant=${query.get('variant')}`:''}`,import.meta.url);
   if(query.get('identity')==='create'){await createBrowserIdentity({workerUrl,profileId});const retained=new URL(location.href);retained.searchParams.delete('identity');history.replaceState(null,'',retained);}
   window.ownerStage='attachment';
   const ownerOptions={workerUrl,profileId,
@@ -23,6 +23,11 @@ window.ready=(async()=>{
       instances.add(current.session.endpoint.ownerInstanceId);await current.session.authority();await current.detach();
     }
     return [...instances];
+  };
+  window.reattach=async()=>{
+    await window.attachment.detach();
+    const next=await openBrowserOwner(ownerOptions);window.attachment=next;window.session=next.session;
+    return next.session.endpoint;
   };
   window.closeUnderlyingSession=()=>{
     const control=new SharedWorker(workerUrl,{type:'module',name:ownerWorkerName(profileId)});

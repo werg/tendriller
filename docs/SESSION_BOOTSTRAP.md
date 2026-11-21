@@ -108,7 +108,8 @@ reader supplies them. A known coordinator need not currently be reachable.
 
 ## Enroll a browser without distributing secrets
 
-The explicit browser setup action retains one public request and creates or
+The page's connection component (`connection.mjs`) starts this when a browser
+without a grant opens the page; there is no separate setup button. It retains one public request and creates or
 reopens that browser's own device under its exclusive profile lock. A short-lived
 Worker signs a bounded service challenge with that identity; the key, account,
 application, origins, rights, expected generation and expiry are fixed by the
@@ -121,9 +122,16 @@ prepares the usual `reason: 'control-change'` transition with the exact drained
 prefix, next control revision and proved account binding. All existing grants
 and key commitments remain intact. The complete signed request and full control
 update are saved and staged with `client.prepare` **before** the service-origin
-owner review. The owner approves that fingerprint, narrow rights and exact
-proposal digest. The normal serialized host selector rechecks current authority
-and account access when committing it.
+owner review. The page then opens the service-origin review once with
+`?return_to=` set to itself; the host accepts only that request's page origin
+(also in the CSP `form-action`), keeps it through sign-in, and redirects back
+after **Approve** or **Reject**. The owner approves that exact proposal (the
+fingerprint, narrow rights, origins and proposal digest are on the same page,
+folded under technical details). The normal serialized host selector rechecks
+current authority and account access when committing it. The page waits for the
+commit and connects; it also connects when it later finds a request the native
+owner committed while it was away. Approval never happens in author-controlled
+page HTML, and the review page cannot be framed.
 
 The native participant subscribes to authenticated setup notifications over a
 hibernating WebSocket. Later devices can pair without restarting it. Idle setup

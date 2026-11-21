@@ -35,10 +35,10 @@ npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --op
 npm run serve # Native participant with optional reviewed MCP access.
 # Now give the owner the ready page URL; they sign in to open this version.
 # Do not wait for a claimed reply before publishing or starting the participant.
-# In the published page, choose Request browser access.
-# The native peer pauses ordering and stages the exact signed proposal.
-# Open the service review link and review that proposal before approving it.
-# Check pairing status; after Enrollment committed, Connect existing device.
+# The owner opens the page. It connects by itself: a new browser creates its own
+# key, the native peer pauses ordering and stages the exact signed proposal, and
+# the page opens the service-origin approval once. One Approve tap returns to the
+# page, which connects as soon as the peer commits. Later visits just connect.
 ```
 
 The account-linked route derives the verified owner on the host and requires its
@@ -106,11 +106,16 @@ commitments are preserved.
 The native participant remains available for later devices through an
 authenticated setup WebSocket on the existing hibernating page object. Idle
 setup has no polling or heartbeat. Each review expires after ten minutes, with
-one local active-request deadline; requests never renew automatically. The browser has no
-continuous polling loop: **Check pairing status**, or returning from review,
-performs one bounded read. Browser reloads retain the same public request and key;
-private signing keys stay in Worker storage. A new review for an expired, denied
-or stale request is an explicit action for that same device.
+one local active-request deadline. Every request still needs the owner's
+approval on the service origin.
+
+The page uses `connection.mjs` and `connect-view.mjs`: opening it attaches to
+this browser's existing device owner (any tab), sets up a new browser, opens the
+approval with a return to the page, waits for the commit and connects. A request
+the participant committed while the page was away is found on the next open.
+Browser reloads retain the same public request and key; private signing keys stay
+in Worker storage. An expired or stale request is renewed for the same device; a
+denied one waits for an explicit "Ask again".
 
 Private native records are `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json` under `.tendriller/`.

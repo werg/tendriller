@@ -62,24 +62,32 @@ test('application installation adds no transport to the healthy publication watc
   await expectOnlyHealthyPublicationWatch(page, fixture);
 });
 
-test('publications retain distinct code graphs across two tabs and offline reload', async ({ page, context }) => {
+test('open tabs keep the code graph of their release; reloads open the latest; an explicit release URL pins, also offline', async ({ page, context }) => {
   const fixture = mock.create({ noSw: false, html: '<h1 id="h">Page A</h1><script src="app.js"></script>' });
   fixture.files['app.js'] = { type: 'text/javascript', body: "window.__app = 'A';" };
   fixture.files['lazy.js'] = { type: 'text/javascript', body: "window.__lazy = 'A';" };
   await open(page, fixture); expect(await savedForOffline(page)).toBe('1');
-  await expect(page).toHaveURL(/\/_publications\/1\/index.html$/);
+  // The address stays the page's own URL, so a reload opens the latest release.
+  expect(page.url()).toBe(mock.url(fixture));
   fixture.version = 2; fixture.html = '<h1 id="h">Page B</h1><script src="app.js"></script>';
   fixture.files['app.js'] = { type: 'text/javascript', body: "window.__app = 'B';" };
   fixture.files['lazy.js'] = { type: 'text/javascript', body: "window.__lazy = 'B';" };
   const next = await context.newPage(); await open(next, fixture); expect(await savedForOffline(next)).toBe('2');
   expect(await page.evaluate(() => window.tendril.version)).toBe(1);
+  const pinned = await context.newPage();
+  await pinned.goto(mock.url(fixture) + '_publications/1/index.html'); await pinned.waitForFunction(() => !!window.tendril);
+  expect(await pinned.evaluate(() => window.tendril.publication.pinned)).toBe(true);
   await context.setOffline(true);
-  for (const [tab, label] of [[page, 'A'], [next, 'B']] as const) {
+  // Each open tab still resolves lazy code within its own release.
+  for (const [tab, label] of [[page, 'A'], [next, 'B'], [pinned, 'A']] as const) {
     await tab.evaluate(() => new Promise<void>((resolve, reject) => {
       const script = document.createElement('script'); script.src = 'lazy.js'; script.onload = () => resolve();
       script.onerror = () => reject(Error('lazy asset failed')); document.head.append(script);
     }));
     expect(await tab.evaluate(() => (window as any).__lazy)).toBe(label);
+  }
+  // Offline reloads: the page URL opens the latest saved release, the release URL its own.
+  for (const [tab, label] of [[page, 'B'], [next, 'B'], [pinned, 'A']] as const) {
     await tab.reload(); await expect(tab.locator('#h')).toHaveText(`Page ${label}`);
     expect(await tab.evaluate(() => (window as any).__app)).toBe(label);
     expect(await tab.evaluate(() => 'state' in window.tendril || 'connected' in window.tendril)).toBe(false);

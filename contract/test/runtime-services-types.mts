@@ -18,4 +18,8 @@ runtime.device;
 runtime.on('state_result', () => {});
 // @ts-expect-error Host services are explicit.
 runtime.peers;
+const documentHref: string = services.documentUrl('other.html#section');
+void documentHref;
+// @ts-expect-error URL references must be strings.
+runtime.documentUrl({ path: 'other.html' });
 void services;

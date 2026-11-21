@@ -478,6 +478,50 @@ it('fails closed for missing storage and finite retained and device-binding capa
   expect(await inDO(other.h.id, t => t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM device_pairings')!.n)).toBe(0);
 });
 
+it('returns the owner to the requesting page after one approval, and only to that page', async () => {
+  const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  const page = new URL('some/view?tab=2#data', h.page_url).href, back = `${c.reviewUrl}?return_to=${encodeURIComponent(page)}`;
+  const signedOut = await req(back, { redirect: 'manual', anonymous: true });
+  expect(signedOut.status).toBe(303);
+  expect(new URL(signedOut.headers.get('Location')!).searchParams.get('return_to')).toBe(new URL(back).pathname + new URL(back).search);
+  const waiting = await req(back, { headers: { Cookie: cookie } }), waitingHtml = await waiting.text();
+  expect(waitingHtml).toContain('<meta http-equiv="refresh" content="2">'); expect(waitingHtml).not.toContain('id="pairing-approve"');
+  await jsonResponse(await stage(h, c, prepared));
+  const response = await req(back, { headers: { Cookie: cookie } }), html = await response.text();
+  expect(response.status, html).toBe(200);
+  expect(response.headers.get('Content-Security-Policy')).toContain(`form-action 'self' ${c.challenge.pageOrigin}`);
+  expect(response.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
+  expect(html).toContain('Add this browser to'); expect(html).toContain('id="pairing-approve"');
+  const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1], digest = /name="digest" value="([^"]+)"/.exec(html)![1];
+  const action = /<form method="post" action="([^"]+)"/.exec(html)![1].replaceAll('&amp;', '&');
+  expect(action, html.slice(0, 0)).toBe(back);
+  for (const wrong of ['https://evil.example/', h.api, `${c.challenge.serviceOrigin}/dashboard`, `blob:${c.challenge.pageOrigin}/not-a-page`, `${c.challenge.pageOrigin.replace('https://', 'https://user@')}/`])
+    expect((await req(`${c.reviewUrl}?return_to=${encodeURIComponent(wrong)}`, { headers: { Cookie: cookie } })).status).toBe(400);
+  expect((await req(`${back}&return_to=${encodeURIComponent(page)}`, { headers: { Cookie: cookie } })).status).toBe(400);
+  expect((await req(`${c.reviewUrl}?other=1`, { headers: { Cookie: cookie } })).status).toBe(400);
+  const approved = await req(action, { method: 'POST', redirect: 'manual', headers: { Cookie: cookie, Origin: new URL(c.reviewUrl).origin,
+    'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, digest, action: 'approve' }).toString() });
+  expect(approved.status, await approved.clone().text() + ' ' + action).toBe(303); expect(approved.headers.get('Location')).toBe(page);
+  expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('approved');
+  const after = await (await req(back, { headers: { Cookie: cookie } })).text();
+  expect(after).toContain(`<meta http-equiv="refresh" content="1;url=${page.replaceAll('&', '&amp;')}">`);
+  expect(after).toContain('id="pairing-return"');
+});
+
+it('reports the exact staged proposal as committed when its native administrator selects it directly', async () => {
+  const { h, native, device } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  await jsonResponse(await stage(h, c, prepared));
+  await peerApiJson(h, 'control/select', prepared);
+  const result = await jsonResponse(await browser(h, undefined, c.pairingId));
+  expect(result.state).toBe('committed');
+  for (let retry = 0; retry < 2; retry++) {
+    expect((await jsonResponse(await commit(h, c, prepared))).state).toBe('committed');
+    expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('committed');
+  }
+  const retained = await inDO(h.id, t => JSON.parse(t.db.one<{ data: string }>('SELECT data FROM device_pairings WHERE id=?', c.pairingId)!.data));
+  expect(retained.state).toBe('pending'); expect(retained.reviewedDigest).toBeUndefined();
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)?.writer).toBe(true);
+});
 
 it('notifies a resident native owner when a later browser proves its key and review is approved', async () => {
   const { h, native, device, cookie } = await fixture();

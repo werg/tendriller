@@ -9,6 +9,8 @@ interface Attachment {
   kind: 'peer-relay'; channel: string; session: string; peerId: string; remotePeerId: string; lane: Lane;
   owner: string; principal: Principal; ready: boolean; expiresAt: number; authorizedUntil: number;
   received: number; pending: Pending[]; progressAt: number; window: number; packets: number;
+  /** Live packets this endpoint may have in flight; echoed in ready and retained through hibernation. */
+  liveWindow: number;
 }
 type QueuedMessage = { socket: WebSocket; message: ArrayBuffer } | { socket: WebSocket; credit: string };
 interface Route { value: Attachment; other: WebSocket; recipient: Attachment }
@@ -18,8 +20,8 @@ interface Refresh {
 }
 // The existing two peers' reliable/live credit plus all corresponding receipts.
 // Only an active policy check retains these bytes; nothing enters storage or an attachment.
-const refreshMessages = 4 * (LIMITS.pendingPackets + 1);
-const refreshBytes = 2 * (LIMITS.pendingBytes + LIMITS.liveBufferedBytes) + refreshMessages * 256;
+const refreshMessages = 4 * (LIMITS.pendingPackets + LIMITS.livePendingPackets);
+const refreshBytes = 2 * (LIMITS.pendingBytes + LIMITS.livePendingPackets * LIMITS.packetBytes) + refreshMessages * 256;
 const refreshTimeoutMs = 5_000;
 const refreshing = new WeakMap<Tendril, Map<string, Refresh>>();
 const attachment = (ws: WebSocket): Attachment | null => {
@@ -185,6 +187,10 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
   if (!channel || !/^[A-Za-z0-9_.:-]{1,160}$/.test(channel) || !peerId || !remotePeerId ||
       !/^[0-9a-f]{64}$/.test(peerId) || !/^[0-9a-f]{64}$/.test(remotePeerId) || peerId === remotePeerId || !['reliable', 'live'].includes(lane ?? ''))
     throw new HttpError(400, 'bad_request', 'Relay needs a bounded channel, reciprocal signing identities and lane');
+  const requestedWindow = url.searchParams.get('liveWindow');
+  const liveWindow = requestedWindow === null ? LIMITS.livePendingPackets : Number(requestedWindow);
+  if (requestedWindow !== null && (!/^[1-9][0-9]?$/.test(requestedWindow) || liveWindow > LIMITS.livePendingPackets))
+    throw new HttpError(400, 'bad_request', `liveWindow must be 1-${LIMITS.livePendingPackets}`);
   const authorizedUntil = await authorize(t, principal);
   const owned = owner(t, principal), sockets = active(t), existing = sockets.filter(ws => attachment(ws)!.channel === channel);
   if (existing.some(ws => {
@@ -201,7 +207,7 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
   const [client, server] = Object.values(new WebSocketPair()), now = t.now();
   const value: Attachment = { kind: 'peer-relay', channel, session: first?.session ?? crypto.randomUUID(), peerId, remotePeerId, lane: lane as Lane,
     owner: owned, principal, ready: false, expiresAt: first?.expiresAt ?? now + LIMITS.pairingMs,
-    authorizedUntil, received: 0, pending: [], progressAt: now, window: now, packets: 0 };
+    authorizedUntil, received: 0, pending: [], progressAt: now, window: now, packets: 0, liveWindow };
   t.ctx.acceptWebSocket(server, ['peer-relay']); write(server, value);
   const group = [...existing, server];
   if (group.length === 4) {
@@ -211,7 +217,8 @@ export async function handleRelay(t: Tendril, req: Request, url: URL, principal:
     }
     for (const socket of group) {
       const current = attachment(socket)!;
-      socket.send(JSON.stringify({ t: 'ready', version: 1, session: current.session, lane: current.lane, peerId: current.peerId, remotePeerId: current.remotePeerId }));
+      socket.send(JSON.stringify({ t: 'ready', version: 1, session: current.session, lane: current.lane, peerId: current.peerId, remotePeerId: current.remotePeerId,
+        liveWindow: current.liveWindow }));
     }
   }
   t.scheduleAlarm();
@@ -279,7 +286,7 @@ function forward(t: Tendril, ws: WebSocket, message: string | ArrayBuffer, check
     const now = t.now(), packets = now - value.window < 1000 ? value.packets + 1 : 1;
     if (packets > (value.lane === 'live' ? LIMITS.livePacketsPerSecond : LIMITS.reliablePacketsPerSecond)) throw new Error('Relay packet rate exceeded');
     const next = { ...value, received: sequence, packets, window: now - value.window < 1000 ? value.window : now };
-    if (value.pending.length >= (value.lane === 'live' ? 1 : LIMITS.pendingPackets) || value.pending.reduce((sum, item) => sum + item[2], 0) + bytes > LIMITS.pendingBytes) {
+    if (value.pending.length >= (value.lane === 'live' ? value.liveWindow : LIMITS.pendingPackets) || value.pending.reduce((sum, item) => sum + item[2], 0) + bytes > LIMITS.pendingBytes) {
       if (value.lane !== 'live') throw new Error('Relay send credit exhausted');
       write(ws, next); ws.send(JSON.stringify({ t: 'credit', session: value.session, sequence })); return;
     }

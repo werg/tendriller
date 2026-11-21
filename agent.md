@@ -116,6 +116,29 @@ arbitrary ordinary chat. Keep the selected participant/agent processes running
 and report their restart state. If that environment is unavailable, choose the
 guide's native-tool or manual-handoff fallback and name the exact prerequisite.
 
+## Ship a finished experience
+
+- **Connection:** keep the starter's connection component (`connection.mjs`,
+  `connect-view.mjs`). Opening the page connects; a new browser is approved once
+  on the service origin and returns by itself; later visits and other tabs show
+  nothing. Never ship separate "Request access"/"Connect" buttons, steppers or
+  raw error codes; use `describeConnectionError` for user-facing copy, and show
+  one connection card instead of empty or stale data while disconnected.
+- **Latest release:** a page shows the latest published release by default
+  (reloads, new tabs, resumed tabs; open tabs switch when idle). Tell the owner
+  to reload, not to use a special link. Pin only with an explicit
+  `/_publications/ID/` URL.
+- **Views that fit the data:** conversations, timelines, diffs, list/detail with
+  search, tables with named links, inline editing with review. A JSON or
+  field-by-field record editor is a fallback, never the deliverable when the
+  request is a "full-featured" or "rich" experience.
+- **UX pass before delivery:** walk every main flow on a phone-sized viewport and
+  desktop from a fresh profile, fix friction, and report before/after
+  screenshots ([acceptance bar](docs/AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)).
+- **Live answers:** use `helpers/signal-request.mjs` for on-demand answers over
+  signals: it waits for the answering peer, retries with the same ID and
+  reassembles multi-piece replies.
+
 Use [troubleshooting](docs/TROUBLESHOOTING.md) at the failing stage. In particular,
 `peer_application_unconfigured` means configuration is missing; an unavailable
 browser backend means its session bootstrap has not completed. Neither is evidence

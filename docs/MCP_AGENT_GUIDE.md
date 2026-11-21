@@ -76,7 +76,14 @@ email, account credentials or application keys.
    route in the build guide.
 6. Follow **create → define state → configure authority and initial
    generation → publish signed UI → owner sign-in → connect devices → verify**. Creating a host
-   handle does not create application commands or a running session.
+   handle does not create application commands or a running session. Keep the
+   starter's connection component (`connection.mjs`, `connect-view.mjs`): opening
+   the page connects, and a new browser is approved with one tap on the service
+   origin that returns to the page. Never ship separate request/connect buttons.
+   Design views that fit the data; a JSON or field-by-field record editor is a
+   fallback, never the deliverable for a "full-featured" request. After the first
+   working version, run the UX pass in the delivery guide (phone and desktop,
+   fresh profile, screenshots).
 7. To use the app from this MCP connection, read `topic: "connect"`. Attach
    `@tendriller/core/assistant` to the *existing* application participant, propose
    its declared capabilities before claim, and give the owner the ready page and

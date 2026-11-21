@@ -18,3 +18,15 @@ export function validateDocumentContext(cfg: RuntimeConfiguration): void {
 export function documentUrl(cfg: RuntimeConfiguration, base: URL): URL {
   return cfg.documentPath === null ? base : new URL(encodePublicationPath(cfg.documentPath), base);
 }
+
+/** Pure authored navigation: retain the live/pinned context without changing asset bases. */
+export function resolveDocumentUrl(cfg: RuntimeConfiguration, reference: string, pinned: boolean, href = location.href): string {
+  if (typeof reference !== "string") throw new TypeError("Document navigation requires a URL reference");
+  const page = new URL(cfg.base, href), scope = pinned && cfg.publication ? new URL(cfg.publication.base, page) : page;
+  const current = new URL(href);
+  const from = current.origin === scope.origin && current.pathname.startsWith(scope.pathname) ? current : documentUrl(cfg, scope);
+  const target = new URL(reference, from);
+  if (target.origin !== scope.origin || !target.pathname.startsWith(scope.pathname) || target.username || target.password)
+    throw new TypeError("Document navigation must stay within this page's live or pinned context");
+  return target.href;
+}

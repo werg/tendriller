@@ -1,12 +1,12 @@
 import type { PeerSocket } from './peers.mjs';
 export declare const PEER_RELAY_PROTOCOL: 'tendriller.relay.v1';
 export declare const PEER_RELAY_LIMITS: Readonly<{ packetBytes: number; pendingPackets: number; pendingBytes: number;
-  liveBufferedBytes: number; sessions: number; sessionsPerPrincipal: number; pairingMs: number; progressMs: number;
+  liveBufferedBytes: number; livePendingPackets: number; liveQueueBytes: number; liveQueuePackets: number; sessions: number; sessionsPerPrincipal: number; pairingMs: number; progressMs: number;
   authorizationMs: number; lifetimeMs: number; reliablePacketsPerSecond: number; livePacketsPerSecond: number }>;
 export interface PeerRelaySocket extends PeerSocket {
   binaryType: 'arraybuffer';
   readonly bufferedAmount: number;
-  readonly stats: Readonly<{ sentBytes: number; receivedBytes: number; pendingPackets: number; bufferedAmount: number }>;
+  readonly stats: Readonly<{ sentBytes: number; receivedBytes: number; pendingPackets: number; queuedPackets: number; bufferedAmount: number }>;
 }
 export interface PeerRelay {
   readonly reliable: PeerRelaySocket;

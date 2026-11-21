@@ -36,6 +36,11 @@ try{
     const url=(path,view='copied-view')=>`${base}/${path}?profile=${profile}&mode=${mode}&view=${view}`;
     const a=await stage(`${mode}:identity-and-first-attachment`,async()=>{await one.goto(url('board.html')+'&identity=create');return one.evaluate(()=>window.ready);});
     await stage(`${mode}:participant-focus`,()=>one.evaluate(()=>window.verifyParticipantPanel()));
+    await stage(`${mode}:same-page-reattach-keeps-the-owner`,async()=>{
+      // An app-level reconnect in the only page must not restart the owner (and its peer connections).
+      const endpoint=await one.evaluate(()=>window.reattach());
+      assert.equal(endpoint.ownerInstanceId,a.endpoint.ownerInstanceId,JSON.stringify(await one.evaluate(()=>window.reattachTrace)));
+    });
     const b=await stage(`${mode}:second-attachment`,async()=>{await two.goto(url('discussion.html'));return two.evaluate(()=>window.ready);});
     assert.equal(a.deviceId,b.deviceId);assert.equal(a.endpoint.ownerInstanceId,b.endpoint.ownerInstanceId);
     assert.notEqual(a.endpoint.endpointIncarnation,b.endpoint.endpointIncarnation);assert.notEqual(a.endpoint.context.viewId,b.endpoint.context.viewId);
@@ -54,7 +59,7 @@ try{
     await stage(`${mode}:cross-endpoint-signal`,async()=>{
       await one.evaluate(()=>window.session.signals.send('progress',{run:'one'},{stream:{streamId:'run-one'}}));
       const signal=await two.evaluate(async()=>{const value=await window.signalNext;await window.signalIterator.return();return{value,status:window.session.status};});
-      assert.equal(signal.value.stream.endpointId,a.endpoint.endpointId);assert.equal(signal.status.database,'idle');
+      assert.equal(signal.value.stream.endpointId,await one.evaluate(()=>window.session.endpoint.endpointId));assert.equal(signal.status.database,'idle');
     });
     await stage(`${mode}:drafts-and-commands`,async()=>{
       await one.evaluate(()=>window.viewStore.writeDraft({text:'board draft'}));await two.evaluate(()=>window.viewStore.writeDraft({text:'discussion draft'}));
@@ -64,8 +69,9 @@ try{
       assert.equal(await two.evaluate(async()=>(await window.session.query('messages',null)).value.events.length),2);
     });
     await stage(`${mode}:suspend-resume`,async()=>{
+      const before=await one.evaluate(()=>window.session.endpoint.endpointIncarnation);
       await one.evaluate(()=>window.attachment.suspend());await one.evaluate(()=>window.attachment.resume());
-      assert.equal(await one.evaluate(()=>window.session.endpoint.endpointIncarnation),a.endpoint.endpointIncarnation);
+      assert.equal(await one.evaluate(()=>window.session.endpoint.endpointIncarnation),before);
     });
     await stage(`${mode}:follower-reload-retains-view`,async()=>{
       await two.reload();const reloaded=await two.evaluate(()=>window.ready);
@@ -75,6 +81,16 @@ try{
       assert.equal(reloaded.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
     });
     if(mode==='shared'){
+      await stage('shared:another-worker-version-attaches-to-the-existing-owner',async()=>{
+        // A tab on a different publication's Worker URL gets its own SharedWorker,
+        // which cannot take the held profile. It must attach to the owner, not fail OWNER_BUSY.
+        const three=await context.newPage();observe(three,'shared:three');
+        await three.goto(url('board.html','third-view')+'&variant=next');
+        const c=await three.evaluate(()=>window.ready);
+        assert.equal(c.deviceId,a.deviceId);assert.equal(c.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
+        await three.evaluate(async()=>{const op=await window.session.command('say','third',{operationId:'third'});await op.applied();});
+        await three.close();
+      });
       await stage('shared:repeated-root-detach',async()=>{
         assert.deepEqual(await two.evaluate(()=>window.cycleRoots(12)),[a.endpoint.ownerInstanceId]);
       });
@@ -108,7 +124,7 @@ try{
       });
     }
     evidence.scenarios.push({mode,oneSigner:true,twoDocuments:true,duplicateViewFenced:true,protocolOnlyCold:true,signedLocalSignals:true,
-      concurrentCommands:true,independentDrafts:true,suspendResume:true,detachPreservesSibling:true,detachOrCrashReopen:true,
+      concurrentCommands:true,independentDrafts:true,...(mode==='shared'?{otherWorkerVersionAttaches:true}:{}),samePageReattachKeepsOwner:true,suspendResume:true,detachPreservesSibling:true,detachOrCrashReopen:true,
       asyncIdentityBootstrap:true,participantFocus:true,reloadPreservesDraft:true,...(mode==='shared'?{boundedRootReuse:true,sessionCloseReleasesFence:true}:{})});
     await context.close();
   }

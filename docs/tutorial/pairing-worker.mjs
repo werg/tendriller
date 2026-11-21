@@ -19,7 +19,9 @@ self.addEventListener('message', async ({ data }) => {
       throw Object.assign(new Error('Resume the saved browser pairing request.'), { code: 'PAIRING_REQUEST_INVALID' });
     if (new URL(configuration.page_url).origin !== self.location.origin)
       throw Object.assign(new Error('Open the published page at its own Tendriller address. Keep configuration.page_url from that page handle; do not substitute the service origin.'), { code: 'PAIRING_PAGE_ORIGIN_MISMATCH' });
-    lock = await acquireApplicationOwnerLock(profileId, { signal });
+    // Wait for the profile's owner fence instead of failing while another tab's
+    // attempt briefly holds it; the signal still bounds the whole request.
+    lock = await acquireApplicationOwnerLock(profileId, { wait: true, signal });
     device = await openBrowserDevice({ name: profileId, create: data.publicKey === undefined });
     if (data.publicKey && data.publicKey !== device.identity.publicKey) throw Error('The retained browser key changed. Preserve this request and recover the original profile.');
     const client = createDevicePairingClient({ url: new URL('_tendril/peers/pairing', configuration.page_url) });

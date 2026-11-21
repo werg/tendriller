@@ -98,7 +98,7 @@ export async function enrollBrowser(publicKey) {
     // Lost replies resend the exact signed request, grants and account binding.
     await host.peers.selectGeneration(previous.request, { control: previous.control });
     await verifyAuthorityBundle(await host.peers.application(), descriptor);
-    return { enrolled: publicKey, next: 'Run npm run peer, then click Connect existing device in the page.' };
+    return { enrolled: publicKey, next: 'Run npm run peer, then open or reload the page; it connects by itself.' };
   }
   const authority = await host.peers.application();
   const verified = await verifyAuthorityBundle(authority, descriptor);
@@ -128,14 +128,14 @@ export async function enrollBrowser(publicKey) {
     await savePrivate(savedName, { request, control });
     await host.peers.selectGeneration(request, { control });
     await verifyAuthorityBundle(await host.peers.application(), descriptor);
-    return { enrolled: publicKey, next: 'Run npm run peer, then click Connect existing device in the page.' };
+    return { enrolled: publicKey, next: 'Run npm run peer, then open or reload the page; it connects by itself.' };
   } finally { if (session) await session.close(); else await device.close(); }
 }
 
 export async function pairReviewedBrowsers() {
   const { openSession } = await import('./session.mjs');
   const owned = await openSession();
-  try { return { pairings: await owned.processPairings(), next: 'Start npm run peer and refresh browser pairing status before connecting.' }; }
+  try { return { pairings: await owned.processPairings(), next: 'Start npm run peer; the page finishes setup and connects by itself.' }; }
   finally { await owned.close(); }
 }
 
