@@ -478,3 +478,53 @@ test("pinned and ordinary directory navigation resolves only declared index file
   // An explicit publication pin takes precedence over the current client binding.
   assert.equal(await (await sw.request(a.publication.base + "docs/", "b", true)).text(), "1: docs/index.html");
 });
+
+test("a delayed older navigation cannot rewind latest, while a later intentional rollback can", { timeout: 5000 }, async () => {
+  const a = release("1"), b = release("2"), net = network(a), originalFetch = net.fetch;
+  const requested = Promise.withResolvers(), resume = Promise.withResolvers();
+  let holdFirst = true;
+  net.fetch = async request => {
+    const response = await originalFetch(request);
+    if ((typeof request === 'string' ? request : request.url) === scope && holdFirst) {
+      holdFirst = false; requested.resolve(); await resume.promise;
+    }
+    return response;
+  };
+  const sw = await worker(net);
+  await sw.install(); await sw.announce('a', a.publication);
+  const old = sw.request('', 'old', true); await requested.promise;
+  net.current = b;
+  assert.match(await (await sw.request('', 'new', true)).text(), /<h1>2<\/h1>/);
+  resume.resolve(); assert.match(await (await old).text(), /<h1>1<\/h1>/);
+  net.online = false;
+  assert.match(await (await sw.request('', 'fresh', true)).text(), /<h1>2<\/h1>/, 'late old response does not become latest');
+  // A pin has no selection request and cannot promote even when issued last.
+  net.online = true;
+  await sw.request(a.publication.base + 'index.html', 'pinned', true);
+  net.online = false;
+  assert.match(await (await sw.request('', 'fresh', true)).text(), /<h1>2<\/h1>/);
+  net.online = true; net.current = a;
+  await sw.request('', 'rollback', true);
+  net.online = false;
+  const restarted = await worker(net, sw.stores, sw.clients);
+  assert.match(await (await restarted.request('', 'fresh', true)).text(), /<h1>1<\/h1>/, 'intentional rollback persists across worker restart');
+});
+
+test("a newer discovery selection fences an older delayed navigation save", { timeout: 5000 }, async () => {
+  const a = release('1'), b = release('2'), net = network(a), originalFetch = net.fetch;
+  const requested = Promise.withResolvers(), resume = Promise.withResolvers();
+  let delayed = false;
+  net.fetch = async request => {
+    const response = await originalFetch(request);
+    if (delayed && (typeof request === 'string' ? request : request.url) === scope) {
+      delayed = false; requested.resolve(); await resume.promise;
+    }
+    return response;
+  };
+  const sw = await worker(net); await sw.install(); await sw.announce('a', a.publication);
+  delayed = true; const old = sw.request('', 'old', true); await requested.promise;
+  net.current = b; await sw.activate();
+  resume.resolve(); await old;
+  net.online = false;
+  assert.match(await (await sw.request('', 'fresh', true)).text(), /<h1>2<\/h1>/);
+});

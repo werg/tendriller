@@ -275,7 +275,7 @@ test('unpaired utility notices selection changes explicitly and clears stale not
  assert.equal(notice.hidden,true);assert.equal(env.api.application.available,false);
  env.sockets[0].receive(2);assert.equal(notice.hidden,false);
  const link=notice.children.find(e=>e.tagName==='a');assert.equal(link.textContent,'Open update');
- assert.equal(link.href,'https://fixture.test/page/');assert.equal(link.target,undefined);
+ assert.equal(link.href,'https://fixture.test/page/app.html');assert.equal(link.target,undefined);
  assert.equal(env.context.location.href,'https://fixture.test/page/_publications/1/app.html');
  env.sockets[0].receive(1);assert.equal(notice.hidden,true);
  env.sockets[0].receive(3);assert.equal(notice.hidden,false);env.sockets[0].receive(0);assert.equal(notice.hidden,true);

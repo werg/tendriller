@@ -18,6 +18,11 @@ interface Registry {
 }
 interface RuntimeResource { url: string; sha256: string; type: string }
 let registry: Registry | null = null;
+// Order canonical selection requests, not publication IDs or response completion.
+// A later request can intentionally observe a rollback to a lower version. These
+// counters are local to this worker lifetime; an old worker's requests cannot
+// complete after that worker has been terminated and restarted.
+let selectionRequest = 0, savedSelectionRequest = 0;
 let sequence: Promise<void> = Promise.resolve();
 const queued = (task: () => Promise<void>): Promise<void> => {
   const pending = sequence.then(task, task);
@@ -88,7 +93,7 @@ async function saveAsset(cache: Cache, url: string, asset: PublicationAsset, pub
   await cache.put(url, response);
 }
 
-async function savePublication(publication: PublicationManifest, latest = false): Promise<void> {
+async function savePublication(publication: PublicationManifest, selection?: number): Promise<void> {
   if (!validManifest(publication)) throw new Error("Invalid publication manifest");
   const meta = await readRegistry();
   meta.publications[publication.id] = publication;
@@ -109,15 +114,18 @@ async function savePublication(publication: PublicationManifest, latest = false)
     ...runtime.assets.filter((asset: PublicationAsset & { preload?: boolean }) => asset.preload === true).map((asset: PublicationAsset) => saveAsset(cache, absolute(encodePublicationPath(asset.path), absolute(publication.runtime.base)), asset, publication)),
   ]);
   if (!meta.complete.includes(publication.id)) meta.complete.push(publication.id);
-  if (latest) meta.latest = publication.id;
+  if (selection !== undefined && selection >= savedSelectionRequest) {
+    savedSelectionRequest = selection; meta.latest = publication.id;
+  }
   await writeRegistry(meta);
 }
 
 async function update(): Promise<void> {
+  const selection = ++selectionRequest;
   const response = await fetch(SCOPE + "_tendril/info", { cache: "no-store" });
   if (!response.ok) return;
   const info = await response.json();
-  await savePublication(info.publication, true);
+  await savePublication(info.publication, selection);
   await cleanup();
 }
 
@@ -176,6 +184,7 @@ async function navigate(event: FetchEvent): Promise<Response> {
   const savedURL = publication && declared ? absolute(encodePublicationPath(declared.path), absolute(publication.base)) : undefined;
   const saved = publication && savedURL ? await (await caches.open(cacheName(publication.id))).match(savedURL) : undefined;
   let networkPublicationId: string | undefined;
+  const selection = pin ? undefined : ++selectionRequest;
   const network = fetch(event.request).then(async response => {
     if (response.ok && !noStore(response)) {
       const text = await response.clone().text();
@@ -197,7 +206,7 @@ async function navigate(event: FetchEvent): Promise<Response> {
               next.publications[current.id] = current;
               await writeRegistry(next);
               if (refreshed) await (await caches.open(cacheName(current.id))).put(refreshed.url, refreshed.response);
-              await savePublication(current, !pin);
+              await savePublication(current, selection);
             }).catch(() => {}));
           }
         } catch { /* A non-page navigation has no runtime configuration. */ }

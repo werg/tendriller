@@ -39,8 +39,11 @@ test('startup keeps the page URL so reloads and new tabs open the latest release
     const rewritten = [], stop = new Error('stop before connecting the core');
     const context = { URL, location: new URL('https://fixture.test/page/?review=1#draft'),
       history: { state: { draft: true }, replaceState(state, title, url) { rewritten.push(url); } } };
+    // A non-browser policy is inert; sensor bootstrap is the deliberate boundary.
+    context.navigator = {};
+    context.window = { get MediaStreamTrack() { throw stop; } };
     runInNewContext(compiled.outputFiles[0].text, context);
-    try { context.Kernel.startRuntime({ ...configuration, documentPath }); } catch (error) { if (error === stop) throw error; }
+    assert.throws(() => context.Kernel.startRuntime({ ...configuration, documentPath }), error => error === stop);
     assert.deepEqual(rewritten, [], 'The address bar is not pinned to the release that happened to load.');
     assert.equal(publication.entry, 'app.html');
   }

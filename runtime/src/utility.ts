@@ -1,3 +1,4 @@
+import { encodePublicationPath } from "./paths";
 import type { RuntimeApi } from "../../contract/index.mjs";
 
 const labels: Record<string, string> = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", motion: "Motion" };
@@ -48,7 +49,8 @@ export function mountUtility(api: RuntimeApi): () => void {
   const update = element("aside", undefined, "card"); update.hidden = true;
   update.setAttribute("aria-label", "Publication update"); update.setAttribute("role", "status"); update.setAttribute("aria-live", "polite");
   // A link to the page's own address: following it loads the latest selected release.
-  const openUpdate = element("a", "Open update", "primary"); openUpdate.href = api.identity.base;
+  const openUpdate = element("a", "Open update", "primary"); openUpdate.href = api.identity.documentPath && api.identity.documentPath !== "index.html"
+    ? new URL(encodePublicationPath(api.identity.documentPath), api.identity.base).href : api.identity.base;
   update.append(element("strong", "New version published"), element("p", api.publication.pinned
     ? "This address shows a fixed version. Open the latest version when you are ready."
     : "This page switches to it as soon as no unsaved changes are open.", "note"), openUpdate);

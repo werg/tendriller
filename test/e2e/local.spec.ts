@@ -88,6 +88,65 @@ test('the page shows the latest release: open tabs switch when idle, wait for un
   } finally { await deletePage(handle); }
 });
 
+test('publication switching preserves hidden form drafts, checkedness, selects and open-shadow input until reset', async ({ page, context }) => {
+  const handle = await createPage();
+  const form = '<form><input id="checked" type="checkbox" value="yes"><select id="selection"><option>A</option><option>B</option></select><textarea id="preview">original</textarea></form><div id="editor"></div>';
+  try {
+    await signInFixture(context); await claim(context, handle);
+    await publish(handle, '<h1 id="release">draft release</h1>' + form);
+    await openClaimed(page, handle);
+    await page.locator('#checked').check(); await page.locator('#selection').selectOption({ label: 'B' });
+    await page.locator('#preview').fill('unsaved preview');
+    await page.evaluate(() => {
+      (document.querySelector('#preview') as HTMLTextAreaElement).readOnly = true;
+      const shadow = document.querySelector('#editor')!.attachShadow({ mode: 'open' });
+      shadow.innerHTML = '<textarea id="shadow">original</textarea>';
+      (shadow.firstChild as HTMLTextAreaElement).value = 'unsaved shadow';
+      (document.activeElement as HTMLElement)?.blur();
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await publish(handle, '<h1 id="release">next release</h1>' + form);
+    await expect.poll(() => page.evaluate(() => (window as any).tendril.publication.updateAvailable)).toBe(true);
+    await page.waitForTimeout(5200); // Include a periodic safe-point check while hidden.
+    await expect(page.locator('#release')).toHaveText('draft release');
+    await expect(page.locator('#checked')).toBeChecked(); await expect(page.locator('#selection')).toHaveValue('B');
+    await expect(page.locator('#preview')).toHaveValue('unsaved preview'); await expect(page.locator('#shadow')).toHaveValue('unsaved shadow');
+    await page.evaluate(() => {
+      document.querySelector('form')!.reset();
+      (document.querySelector('#editor')!.shadowRoot!.firstChild as HTMLTextAreaElement).value = 'original';
+      document.dispatchEvent(new Event('change'));
+    });
+    await expect(page.locator('#release')).toHaveText('next release', { timeout: 15_000 });
+  } finally { await deletePage(handle); }
+});
+
+test('nested live documents containing _publications stay live and pinned document updates preserve their path', async ({ page, context }) => {
+  const handle = await createPage(), path = 'docs/_publications/help.html';
+  const files = (label: string) => ({ 'index.html': { type: 'text/html', body: '<h1>Entry</h1>' },
+    [path]: { type: 'text/html', body: '<h1 id="release">' + label + '</h1>' } });
+  try {
+    await signInFixture(context); await claim(context, handle);
+    const first = await publishFiles(handle, files('nested one')); await openClaimed(page, handle);
+    const live = new URL(path, localPageUrl(handle)).href; await page.goto(live);
+    await expect(page.locator('#release')).toHaveText('nested one');
+    expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(false);
+    await publishFiles(handle, files('nested two'));
+    await expect(page.locator('#release')).toHaveText('nested two', { timeout: 15_000 }); expect(page.url()).toBe(live);
+    const pinned = new URL('_publications/' + first.version + '/' + path, localPageUrl(handle)).href;
+    await page.goto(pinned); await expect(page.locator('#release')).toHaveText('nested one');
+    expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(true);
+    await publishFiles(handle, files('nested three'));
+    await expect.poll(() => page.evaluate(() => (window as any).tendril.publication.updateAvailable)).toBe(true);
+    await expect(page.getByRole('link', { name: 'Open update', exact: true })).toHaveAttribute('href', live);
+    await page.getByRole('link', { name: 'Open update', exact: true }).click();
+    await expect(page.locator('#release')).toHaveText('nested three'); expect(page.url()).toBe(live);
+    await page.goto(pinned); await expect(page.locator('#release')).toHaveText('nested one');
+    await page.evaluate(() => (window as any).tendril.publication.update());
+    await expect(page.locator('#release')).toHaveText('nested three'); expect(page.url()).toBe(live);
+  } finally { await deletePage(handle); }
+});
+
 test('Chromium reads authenticated per-page install metadata and launches the latest release', async () => {
   const handle = await createPage();
   const directory = await mkdtemp(join(tmpdir(), 'tendriller-install-'));
