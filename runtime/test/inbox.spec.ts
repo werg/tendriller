@@ -4,7 +4,7 @@ import {readFileSync} from 'node:fs';
 // Serve the maintained card and modules unchanged. Only the standard MCP Apps
 // parent and activity socket are fixtures; no legacy adapter or fake DOM.
 const inbox = new URL('../../server/inbox/', import.meta.url);
-async function card(page: Page, handshake: 'allow'|'deny'|'timeout' = 'allow') {
+async function card(page: Page, handshake: 'allow'|'deny'|'timeout' = 'allow', holdMessage = false) {
   const errors: string[] = [], sockets: string[] = [], closed: number[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.routeWebSocket('wss://activity.test/**', socket => {
@@ -25,7 +25,7 @@ addEventListener('message', event => {
       ? {error:{code:-32000,message:'Host policy denied initialization'}}
       : {result:{protocolVersion:'2026-01-26',hostCapabilities:{message:{text:{}}}}})});
   }
-  if (message.method === 'ui/message') window.sendToCard({jsonrpc:'2.0',id:message.id,result:{}});
+  if (message.method === 'ui/message' && !${JSON.stringify(holdMessage)}) window.sendToCard({jsonrpc:'2.0',id:message.id,result:{}});
 });
 </script><iframe title="Application inbox" src="/card"></iframe>`});
     if (path === '/card') return route.fulfill({contentType: 'text/html', body:
@@ -95,5 +95,31 @@ test('standard resource teardown acknowledges the host and closes the active act
   await result(page);
   expect(sockets).toHaveLength(1);
   expect(await messageCount(page)).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+
+test('teardown while a follow-up is pending keeps the retained card disabled', async ({page}) => {
+  const {frame, errors, sockets, closed} = await card(page, 'allow', true);
+  await expect.poll(() => page.evaluate(() => (window as any).messages.some((m: any) => m.method === 'ui/notifications/initialized'))).toBe(true);
+  await result(page);
+  await expect(frame.getByRole('status')).toHaveText('Watching for activity while this card is open.');
+  await frame.getByRole('button').click();
+  await expect.poll(() => messageCount(page)).toBe(1);
+  await expect(frame.getByRole('button')).toBeDisabled();
+  await page.evaluate(() => (window as any).sendToCard({jsonrpc:'2.0',id:'pending-teardown',method:'ui/resource-teardown',params:{}}));
+  await expect.poll(() => closed.length).toBe(1);
+  // close() rejects the pending send; wait for its catch/finally to finish,
+  // rather than accepting the temporary disabled state during submission.
+  await expect(frame.getByRole('status')).toHaveText('The chat did not confirm receipt. Check the conversation before trying again.');
+  await expect(frame.getByRole('button')).toBeDisabled();
+  // A late host reply cannot revive a closed bridge or trigger another send.
+  await page.evaluate(() => {
+    const host = window as any;
+    const pending = host.messages.find((message: any) => message.method === 'ui/message');
+    host.sendToCard({jsonrpc:'2.0',id:pending.id,result:{}});
+  });
+  expect(sockets).toHaveLength(1);
+  expect(await messageCount(page)).toBe(1);
   expect(errors).toEqual([]);
 });
