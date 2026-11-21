@@ -13,3 +13,11 @@ test('expired heartbeat never replaces a live same-host owner with unreachable I
   await assert.rejects(acquireAtomicLock(root,{probeReachable:async()=>false}),{code:'INSTANCE_UNRESPONSIVE'});
   assert.deepEqual(JSON.parse(await readFile(join(root,'owner.lock'),'utf8')),record);
 });
+
+test('private metadata serialization failure removes its temporary file',async t=>{
+  const {writePrivateJsonAtomic}=await import('../../session/ipc.mjs');
+  const {readdir}=await import('node:fs/promises');
+  const root=await mkdtemp(join(tmpdir(),'ipc-serialization-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  await assert.rejects(writePrivateJsonAtomic(root,'state.json',{unsupported:1n}),TypeError);
+  assert.deepEqual(await readdir(root),[]);
+});

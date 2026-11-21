@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { serialize } from 'node:v8';
@@ -31,17 +31,6 @@ async function privatePath(path, kind, mode) {
 }
 async function directory(path, create = false) {
   return ensurePrivateDirectory(path, create);
-}
-async function atomicJSON(root, name, data) {
-  const temporary = join(root, `pending-${randomUUID()}.json`), target = join(root, name);
-  const file = await open(temporary, 'wx', 0o600);
-  try { await file.writeFile(JSON.stringify(data)); await file.sync(); }
-  finally { await file.close(); }
-  try {
-    await rename(temporary, target);
-    const parent = await open(root, 'r');
-    try { await parent.sync(); } finally { await parent.close(); }
-  } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
 }
 async function retainedJSON(root, name, maximum = 131072) {
   const path = join(root, name);
@@ -190,7 +179,7 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
       definitionId: description.id, definitionVersion: description.version };
     const previous = await retainedJSON(root, 'profile.json', 4096);
     if (previous && JSON.stringify(previous) !== JSON.stringify(profile)) throw failure('SUPERVISOR_PROFILE_CHANGED', 'Resume the original signer and immutable definition; enroll another profile explicitly.');
-    if (!previous) await atomicJSON(root, 'profile.json', profile);
+    if (!previous) await writePrivateJsonAtomic(root, 'profile.json', profile);
     const onConnection = socket => {
       if (stopped || clients.size >= maxClients) { socket.destroy(); return; }
       const client = { socket, bindingId: null, revision: null, detach: undefined, port: undefined, snapshot: null, failed: false };

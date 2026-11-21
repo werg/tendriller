@@ -48,3 +48,16 @@ test('capability probe never infers a working SQL engine from WebAssembly presen
   assert.equal(report.runtime.sqlDefaultEngine,typeof WebAssembly==='object'?'unknown':'unavailable');
   assert.equal(report.networking.wssRelay443,'unknown');assert.equal(report.networking.https443,'unknown');
 });
+
+test('failed IPC descriptor publication closes the listening socket',async t=>{
+  const directory=await mkdtemp(join(await realpath(tmpdir()),'portable-listen-failure-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const {mkdir}=await import('node:fs/promises');
+  await mkdir(join(directory,'endpoint.json'));
+  const servers=()=>process.getActiveResourcesInfo().filter(type=>type==='TCPServerWrap').length;
+  const before=servers();
+  await assert.rejects(listenLocalIpc(directory,socket=>socket.destroy(),{preferredTransport:'loopback-tcp'}));
+  // libuv destroys the closed server resource after its close callback.
+  for(let turn=0;turn<16 && servers()>before;turn++)await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(servers(),before);
+});
