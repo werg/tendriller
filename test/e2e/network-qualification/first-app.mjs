@@ -34,6 +34,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
   let backgroundProof;
   let hiddenNote;
   let initialRouteEvidence;
+  let hostTraffic;
   const routeWaits = [];
   const adapter = {
     faults, ...browser,
@@ -127,6 +128,8 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     async snapshot({ signal }) {
       signal.throwIfAborted();
       const [host, link] = await Promise.all([transportCounters(), peer.request('transport-snapshot')]);
+      // Reuse the required counter read: never add traffic or idle probes.
+      hostTraffic = { observedAt: Date.now(), httpRequests: host.httpRequests, requestActivity: host.requestActivity };
       return { instance: `${host.instance}:${link.connectionRevision}`, kind: link.kind,
         connectionRevision: link.connectionRevision, browserLinks: link.browserLinks, otherLinks: link.otherLinks,
         hostRequests: host.httpRequests, relayBytes: host.relayBinaryBytes,
@@ -141,7 +144,12 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
           evidence,
           snapshot: () => peer.request('transport-snapshot'),
           wait: () => peer.request('transport-wait', { kind: 'direct' }, 60_000),
-          counters: transportCounters,
+          counters: async () => {
+            // Keep the bounded activity ring once per profile, rather than
+            // duplicating it in every route-wait/progress counter observation.
+            const { requestActivity, ...counters } = await transportCounters();
+            return counters;
+          },
           publish: process.env.NETWORK_LAB_PROGRESS ? routeEvidence =>
             progressWriter(process.env.NETWORK_LAB_PROGRESS)({
               state: routeEvidence.completed && !routeEvidence.diagnosticFailed ?
@@ -268,6 +276,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     report.reopenProof = reopenProof;
     report.backgroundProof = backgroundProof;
     report.routeWaits = routeWaits;
+    report.hostTraffic = hostTraffic;
     assert.equal(report.success, true, 'Requested network profile is unsupported in this browser');
     return report;
   } catch (error) {
@@ -280,6 +289,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     if (backgroundProof) error.networkReport.backgroundProof = backgroundProof;
     if (initialRouteEvidence) error.networkReport.routeEvidence = initialRouteEvidence;
     error.networkReport.routeWaits = routeWaits;
+    error.networkReport.hostTraffic = hostTraffic;
     throw error;
   } finally { await adapter.cleanup(); }
 }

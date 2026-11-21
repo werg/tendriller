@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { Agent, WebSocket, buildConnector } from 'undici';
-import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from '../first-app-websocket-host.mjs';
+import { FIRST_APP_WEBSOCKET_PROXY_WORKER, createFirstAppRequestActivity } from '../first-app-websocket-host.mjs';
 
 // No Tendriller or Chronolog code: isolate the native runtime's close boundary.
 const fixture = `
@@ -180,9 +180,55 @@ test('isolated host forwards WebSocket ownership and finishes the cold hibernata
   relay.socket.send(binary); await deadline(echoed, 'Measured relay did not echo');
   const after = await (await fetch(new URL('/__first_app_transport', proxied))).json();
   assert.equal(after.instance, before.instance);
+  assert.equal(after.httpRequests, before.httpRequests + 1);
+  const receipt = after.requestActivity.items.at(-1);
+  assert.equal(receipt.sequence, after.httpRequests);
+  assert.equal(receipt.category, 'relay');
+  assert.equal(receipt.method, 'GET');
+  assert.equal(typeof receipt.receivedAt, 'number');
+  const repeatedMeasurement = await (await fetch(new URL('/__first_app_transport', proxied))).json();
+  assert.deepEqual(repeatedMeasurement, after, 'Measurement reads must not count or record themselves');
   assert.equal(after.relayUpgrades - before.relayUpgrades, 1);
   assert.equal(after.relayBinaryFrames - before.relayBinaryFrames, 2);
   assert.equal(after.relayBinaryBytes - before.relayBinaryBytes, binary.byteLength * 2);
   relay.socket.close(1000, 'measurement finished');
   await closedCleanly(relay, {code:1000,reason:'measurement finished'});
+});
+
+
+test('host activity keeps bounded receipt metadata, fixed labels and no private request material', () => {
+  const activity = createFirstAppRequestActivity();
+  const paths = [
+    ['/agent/private/peers/discovery/watch', 'discovery-watch'],
+    ['/agent/private/peers/rendezvous', 'rendezvous'],
+    ['/agent/private/peers/invitations', 'invitations'],
+    ['/agent/private/peers/relay', 'relay'],
+    ['/agent/private/setup/watch', 'setup-watch'],
+    ['/s/private/publication-ready', 'publication-watch'],
+    ['/agent/private/peers/participant', 'peer-control'],
+    ['/s/private/_publications/7/worker.mjs', 'publication-asset'],
+    ['/secret-file.wasm', 'asset'], ['/s/private', 'page'],
+    ['/api/private', 'api-control'], ['/secret-unrecognized', 'other'],
+  ];
+  const before = Date.now();
+  for (const [path] of paths) activity.record(new Request(`https://private-origin.invalid${path}?token=private-token`, {
+    method: 'POST', headers: { Authorization: 'Bearer private-auth' }, body: 'private-body',
+  }));
+  activity.record(new Request('https://private-origin.invalid/secret', { method: 'PRIVATE-METHOD' }));
+  const snapshot = activity.snapshot();
+  assert.deepEqual(snapshot.items.slice(0, paths.length).map(x => x.category), paths.map(x => x[1]));
+  assert.equal(snapshot.items.at(-1).method, 'OTHER');
+  assert.ok(snapshot.items.every(x => x.receivedAt >= before && x.receivedAt <= Date.now()));
+  assert.ok(snapshot.items.every(x => JSON.stringify(Object.keys(x)) === JSON.stringify(['sequence', 'receivedAt', 'method', 'category'])));
+  for (const secret of ['private', 'token', 'Authorization', 'Bearer', 'private-body', 'PRIVATE-METHOD', 'secret']) {
+    assert.ok(!JSON.stringify(snapshot).includes(secret));
+  }
+  snapshot.items[0].category = 'MUTATED';
+  assert.equal(activity.snapshot().items[0].category, 'discovery-watch');
+  for (let n = 0; n < 300; n++) activity.record(new Request('https://private-origin.invalid/secret'));
+  const bounded = activity.snapshot();
+  assert.equal(bounded.items.length, 256);
+  assert.equal(bounded.dropped, 57);
+  assert.equal(bounded.items[0].sequence, 58);
+  assert.equal(bounded.items.at(-1).sequence, 313);
 });
