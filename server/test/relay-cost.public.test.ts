@@ -14,10 +14,26 @@ async function pair(role: RemoteRole = 'guest') {
   const { id } = await (await page.api('GET', '')).json() as { id: string };
   const remote = role === 'guest' ? (await page.participant()).relaySocket
     : role === 'owner' ? page.ownerRelaySocket : page.relaySocket;
-  const open = (socket: typeof page.relaySocket, peerId: string, remotePeerId: string) => createPeerRelay({
-    reliable: socket('read-cost', peerId, remotePeerId, 'reliable'),
-    live: socket('read-cost', peerId, remotePeerId, 'live'),
-  }, { peerId, remotePeerId });
+  const closed: { endpoint: number; lane: string; code: number; category: string }[] = [];
+  let endpoints = 0;
+  const open = (socket: typeof page.relaySocket, peerId: string, remotePeerId: string) => {
+    const endpoint = ++endpoints;
+    const sockets = {
+      reliable: socket('read-cost', peerId, remotePeerId, 'reliable'),
+      live: socket('read-cost', peerId, remotePeerId, 'live'),
+    };
+    for (const [lane, transport] of Object.entries(sockets)) transport.addEventListener('close', event => {
+      if (closed.length < 4) {
+        const close = event as CloseEvent;
+        closed.push({ endpoint, lane, code: close.code,
+          category: close.reason === 'Peer authorization timed out' ? 'authorization-timeout'
+            : close.reason === 'Peer host access revoked' ? 'access-revoked'
+              : close.reason === 'Invalid or unauthorized peer relay' ? 'invalid-or-unauthorized'
+                : close.reason === 'Peer relay expired' ? 'expired' : 'other' });
+      }
+    });
+    return createPeerRelay(sockets, { peerId, remotePeerId });
+  };
   const a = open(page.relaySocket, left, right), b = open(remote, right, left);
   const received = { a: 0, b: 0 };
   a.reliable.addEventListener('message', () => { received.a++; });
@@ -27,8 +43,17 @@ async function pair(role: RemoteRole = 'guest') {
     async exchange(count = 1) {
       const expected = { a: received.a + count, b: received.b + count };
       for (let i = 0; i < count; i++) { a.reliable.send(new Uint8Array([i])); b.reliable.send(new Uint8Array([i])); }
-      await expect.poll(() => received).toEqual(expected);
-      await expect.poll(() => a.reliable.bufferedAmount + b.reliable.bufferedAmount).toBe(0);
+      try {
+        await expect.poll(() => received).toEqual(expected);
+        await expect.poll(() => a.reliable.bufferedAmount + b.reliable.bufferedAmount).toBe(0);
+      } catch (error) {
+        // Read-only, bounded failure evidence before finally closes the fixture.
+        // Never retain peer/session identifiers, credentials or packet contents.
+        console.error('relay-exchange-failure', JSON.stringify({ expected, received,
+          a: { aborted: a.signal.aborted, readyState: a.reliable.readyState, ...a.reliable.stats },
+          b: { aborted: b.signal.aborted, readyState: b.reliable.readyState, ...b.reliable.stats }, closed }));
+        throw error;
+      }
     },
     close() { a.close(); b.close(); },
   };
