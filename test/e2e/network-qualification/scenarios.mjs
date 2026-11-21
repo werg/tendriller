@@ -153,8 +153,14 @@ export async function runNetworkScenario(adapter, {
     elapsedMs: performance.now() - started, supported, success: !failure && supported, cleanup, idle,
     scope: 'sealed-first-app-browser-network-emulation', timeline: timeline.snapshot(),
     hardwareScope: 'No physical mobile radio, carrier NAT or OS sleep qualification.' };
-  await onProgress({ state: failure ? 'failed' : supported ? 'complete' : 'unsupported', profile,
-    at: new Date().toISOString(), idle, cleanup, success: report.success });
+  try {
+    await onProgress({ state: failure ? 'failed' : supported ? 'complete' : 'unsupported', profile,
+      at: new Date().toISOString(), idle, cleanup, success: report.success });
+  } catch (error) {
+    report.success = false;
+    report.progressPublished = false;
+    failure ??= error;
+  }
   // Preserve the original assertion for the caller while making its safe report
   // available. Arbitrary exception messages never enter the public evidence.
   if (failure) { failure.networkReport = report; throw failure; }

@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import { createServer, connect } from 'node:net';
 import { createFaults } from './faults.mjs';
 import { udpProbe, openUdpProbes } from './udp-probe.mjs';
-import { runControlProbe } from './control-probe.mjs';
+import { runControlProbe, closeTcpServer } from './control-probe.mjs';
 
 // A strict in-memory syscall model: repeated deletion of an already removed
 // hook/chain fails, just as it does with the real tools. Never execute host tools.
@@ -65,7 +66,7 @@ for (const action of ['-D', '-F', '-X']) {
     const retried = model.calls.slice(start);
     assert.ok(retried.every(call => call[0] === 'iptables'));
     if (action !== '-D') assert.ok(retried.every(call => !call.includes('-D')));
-    await faults.blockUdp();
+    await assert.rejects(faults.blockUdp(), /NETWORK_LAB_CLOSED/);
     await faults.close();
     assert.equal(model.empty(), true);
   });
@@ -80,7 +81,7 @@ test('failed rollback and close preserve cleanup false in the saved control repo
   const server = new EventEmitter();
   let serverClosed = false, probeClosed = false, saved;
   server.listen = () => queueMicrotask(() => server.emit('listening'));
-  server.close = () => { serverClosed = true; };
+  server.close = callback => { serverClosed = true; queueMicrotask(callback); };
   const report = await runControlProbe({ faults, server,
     openProbes: async () => [{ echoes: async () => true, close: () => { probeClosed = true; } }],
     saveReport: async value => { saved = structuredClone(value); },
@@ -163,4 +164,158 @@ test('successful dual-family startup retains both probes for caller cleanup', as
   assert.ok(fake.created.every(socket => socket.bound && socket.closeCalls === 0));
   for (const probe of probes) { probe.close(); probe.close(); }
   assert.ok(fake.created.every(socket => !socket.bound));
+});
+
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+const turn = () => new Promise(setImmediate);
+
+for (const kind of ['udp', 'shape']) {
+  test(`close owns an in-flight first ${kind} syscall until setup stops and resources are removed`, async () => {
+    const started = deferred(), release = deferred(), calls = [];
+    let resources = 0;
+    const faults = createFaults({ isolated: true, run: async (tool, args) => {
+      calls.push([tool, ...args]);
+      if (calls.length === 1) { started.resolve(); await release.promise; resources++; }
+      if (args.includes('-X') || args.includes('del')) resources--;
+    } });
+    const setup = kind === 'udp' ? faults.blockUdp() : faults.impair();
+    const rejected = assert.rejects(setup, /NETWORK_LAB_CLOSED/);
+    await started.promise;
+    let done = false;
+    const close = faults.close().then(() => { done = true; });
+    await turn();
+    assert.equal(done, false, 'first syscall still owns cleanup');
+    await assert.rejects(faults.blockApplicationNetwork(), /NETWORK_LAB_CLOSED/);
+    await assert.rejects(faults.impair(), /NETWORK_LAB_CLOSED/);
+    release.resolve(); await rejected; await close;
+    assert.equal(resources, 0);
+    const count = calls.length;
+    await turn(); await faults.close();
+    assert.equal(calls.length, count, 'no commands after successful cleanup');
+    assert.equal(calls.filter(call => call.includes('-N') || call.includes('add')).length, 1);
+    assert.equal(calls.some(call => call.includes('-A') || call.includes('-I')), false);
+  });
+}
+
+test('close immediately after admission fences setup before its first syscall', async () => {
+  const calls = [];
+  const faults = createFaults({ isolated: true, run: async (...args) => calls.push(args) });
+  const setup = faults.blockUdp(), closed = faults.close();
+  await assert.rejects(setup, /NETWORK_LAB_CLOSED/); await closed;
+  assert.deepEqual(calls, []);
+});
+
+test('close fences a queued setup and waits for an admitted restore without duplicate removals', async () => {
+  const model = firewall(), started = deferred(), release = deferred();
+  let hold = false;
+  const faults = createFaults({ isolated: true, run: async (tool, args) => {
+    if (hold && tool === 'iptables' && args.includes('-D')) { started.resolve(); await release.promise; }
+    return model.run(tool, args);
+  } });
+  await faults.blockUdp(); hold = true;
+  const restore = faults.restoreUdp(); await started.promise;
+  const setup = faults.impair(), rejected = assert.rejects(setup, /NETWORK_LAB_CLOSED/);
+  const close = faults.close();
+  release.resolve(); await restore; await rejected; await close;
+  assert.equal(model.empty(), true);
+  assert.ok(model.calls.every(call => call[0] !== 'tc'));
+});
+
+test('bounded close reports uncertainty for an uncooperative syscall and retains ownership for retry', async () => {
+  const started = deferred(), release = deferred(), model = firewall();
+  const faults = createFaults({ isolated: true, cleanupTimeoutMs: 20, run: async (tool, args) => {
+    if (args.includes('-N')) { started.resolve(); await release.promise; }
+    return model.run(tool, args);
+  } });
+  const setup = faults.blockUdp(), rejected = assert.rejects(setup, /NETWORK_LAB_CLOSED/);
+  await started.promise;
+  await assert.rejects(faults.close(), /NETWORK_LAB_CLEANUP_TIMEOUT/);
+  await assert.rejects(faults.blockUdp(), /NETWORK_LAB_CLOSED/);
+  release.resolve(); await rejected; await faults.close();
+  assert.equal(model.empty(), true);
+  assert.equal(model.calls.filter(call => call.includes('-N')).length, 1);
+});
+
+test('late first-syscall failure still settles close without installing any rules', async () => {
+  const started = deferred(), release = deferred(), calls = [];
+  const faults = createFaults({ isolated: true, run: async (...args) => {
+    calls.push(args); started.resolve(); await release.promise; throw new Error('syscall failed');
+  } });
+  const setup = faults.blockUdp(), rejected = assert.rejects(setup, /syscall failed/);
+  await started.promise;
+  const close = faults.close(); release.resolve(); await rejected; await close;
+  assert.equal(calls.length, 1);
+});
+
+test('TCP cleanup waits for the actual close acknowledgement before saving a report', async () => {
+  const server = new EventEmitter(), closing = deferred();
+  let callback, saved = false;
+  server.listen = () => queueMicrotask(() => server.emit('listening'));
+  server.close = done => { callback = done; closing.resolve(); };
+  const run = runControlProbe({ server, faults: { close: async () => {} },
+    openProbes: async () => { throw new Error('stop before packet controls'); },
+    saveReport: async () => { saved = true; },
+  });
+  await closing.promise; await turn(); assert.equal(saved, false);
+  callback(); const report = await run;
+  assert.equal(saved, true); assert.equal(report.cleanup, true);
+  assert.equal(server.listenerCount('connection'), 0);
+});
+
+test('TCP close failure and missing acknowledgement cannot report cleanup success', async () => {
+  for (const mode of ['callback-error', 'never-calls-back', 'throw']) {
+    const server = new EventEmitter();
+    server.listen = () => queueMicrotask(() => server.emit('listening'));
+    server.close = callback => {
+      if (mode === 'throw') throw new Error('close failed');
+      if (mode === 'callback-error') queueMicrotask(() => callback(new Error('close failed')));
+    };
+    const report = await runControlProbe({ server, faults: { close: async () => {} },
+      tcpShutdown: { drainMs: 0, timeoutMs: 20 },
+      openProbes: async () => { throw new Error('stop before packet controls'); }, saveReport: async () => {},
+    });
+    assert.equal(report.cleanup, false, mode); assert.equal(report.success, false, mode);
+  }
+});
+
+test('a TCP server that never listened has no listener to drain', async () => {
+  const server = new EventEmitter();
+  let closeCalls = 0;
+  server.listen = () => queueMicrotask(() => server.emit('error', new Error('listen failed')));
+  server.close = () => { closeCalls++; };
+  const report = await runControlProbe({ server, faults: { close: async () => {} },
+    saveReport: async () => {},
+  });
+  assert.equal(report.cleanup, true); assert.equal(report.success, false); assert.equal(closeCalls, 0);
+});
+
+test('TCP drain destroys a held real loopback connection and awaits server closure', async t => {
+  const sockets = new Set(), accepted = deferred();
+  const server = createServer({ allowHalfOpen: true }, socket => {
+    sockets.add(socket); socket.once('close', () => sockets.delete(socket)); accepted.resolve(socket);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const client = connect({ host: '127.0.0.1', port: server.address().port });
+  client.on('error', () => {});
+  t.after(() => { client.destroy(); for (const socket of sockets) socket.destroy(); if (server.listening) server.close(); });
+  await once(client, 'connect'); const socket = await accepted.promise;
+  const clientClosed = once(client, 'close'), socketClosed = once(socket, 'close');
+  let acknowledged = false;
+  server.once('close', () => { acknowledged = true; });
+  const closing = closeTcpServer(server, sockets, { drainMs: 20, timeoutMs: 1000 });
+  assert.equal(acknowledged, false); assert.equal(server.listening, false);
+  await Promise.all([closing, clientClosed, socketClosed]);
+  assert.equal(socket.destroyed, true); assert.equal(acknowledged, true); assert.equal(sockets.size, 0);
+});
+
+test('a socket destroy failure does not skip other sockets or turn cleanup into success', async () => {
+  let secondDestroyed = false, callback;
+  const server = { close(done) { callback = done; } };
+  const sockets = new Set([{ destroy() { throw new Error('destroy failed'); } }, { destroy() { secondDestroyed = true; callback(); } }]);
+  await assert.rejects(closeTcpServer(server, sockets, { drainMs: 0, timeoutMs: 100 }), /destroy failed/);
+  assert.equal(secondDestroyed, true);
 });
