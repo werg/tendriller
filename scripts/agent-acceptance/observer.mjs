@@ -5,7 +5,7 @@ import { importReviewPackages } from '../review/packages.mjs';
 import { nativeMeasurement } from './observer-native.mjs';
 import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement, publicationAddress, relayTransportMeasurement } from './observer-data.mjs';
 import { hash, now, checks } from './evidence.mjs';
-import { mcpDiscovery, discoveryTiming, installationItems } from './discovery.mjs';
+import { mcpDiscovery, domainDiscovery } from './discovery.mjs';
 
 function token(text, value) {
   return text.split(/[^A-Za-z0-9_.:-]+/u).includes(value);
@@ -325,12 +325,7 @@ export class StarterObserver {
         return mcpDiscovery(items, { origin: config.origin, build: { coreRelease: deployment.sdkVersion, sourceCommit: deployment.sourceRevision,
           runtimeId: deployment.runtimeId, compositionId: deployment.compositionId }, catalog: catalogs[0]?.status });
       }
-      const successful = items.filter(i => i.type === 'commandExecution' && i.exitCode === 0 && typeof i.command === 'string');
-      const paths = ['/api/service', '/.well-known/tendriller.json', '/api/readiness', '/docs/BUILD_AN_APP.md'];
-      const reads = paths.map(path => need(successful.find(i => i.command.includes(config.origin + path)), 'model-read-' + path));
-      const installations = installationItems(items), timing = discoveryTiming(reads, installations);
-      return { urls: paths.map((path, i) => ({ url: config.origin + path, observedAt: reads[i].completedAt, commandHash: hash(reads[i].command) })),
-        source: 'Successful model terminal reads; web-only or opaque tool traces remain unmeasured', installObserved: installations.length > 0, ...timing };
+      return domainDiscovery(items, { origin: config.origin });
     }
     if (check === 'unavailable-peer') {
       if (options.phase === 'before') {
