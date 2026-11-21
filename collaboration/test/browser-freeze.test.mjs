@@ -6,16 +6,23 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
+import {BROWSER_RTC_PROTOCOL} from '../browser-rtc.mjs';
 import {defineApplication,defineQuery,describeApplication,PEER_GENERATION_CAPABILITIES} from '@chronolog/peer-session';
 
 // Real public owner composition and Chronolog attachment RPC. Only RTC mechanics
 // are stubbed: this fixture verifies lifecycle/provider ownership, not P2P data.
 const rtc={name:'freeze-rtc',setup(build){build.onLoad({filter:/\/peer-session\/webrtc\.mjs$/},()=>({loader:'js',contents:`
- export function serveWorkerWebRtcConnections(){
+ export function serveWorkerWebRtcConnections(endpoint){
   const probe=globalThis.__freezeProbe,id=++probe.started;probe.active.add(id);let closed=false;
-  return{async close(){if(closed)return;closed=true;probe.closed++;probe.active.delete(id);}};
+  const receive=({data})=>{if(!closed&&data?.protocol==='fixture/opaque-rtc')endpoint.postMessage({...data,providerId:id});};endpoint.addEventListener('message',receive);
+  return{async close(){if(closed)return;closed=true;endpoint.removeEventListener('message',receive);probe.closed++;probe.active.delete(id);}};
  }
- export async function openWorkerWebRtcConnection(){throw Error('NO_NETWORK_IN_FREEZE_FIXTURE');}
+ export async function openWorkerWebRtcConnection(endpoint,{signal}){return{signal,async close(){},roundTrip(packet){return new Promise((resolve,reject)=>{
+  const id=crypto.randomUUID(),done=(error,value)=>{endpoint.removeEventListener('message',receive);signal.removeEventListener('abort',abort);error?reject(error):resolve(value);};
+  const receive=({data})=>{if(data?.protocol==='fixture/opaque-rtc'&&data.id===id)done(null,data);},abort=()=>done(signal.reason);
+  signal.throwIfAborted();endpoint.addEventListener('message',receive);signal.addEventListener('abort',abort,{once:true});endpoint.postMessage({protocol:'fixture/opaque-rtc',id,packet});
+ });}};}
+
  `}));}};
 const root=new URL('../..',import.meta.url).pathname;
 // Freeze only the page clock. The Worker remains alive on its independent real
@@ -40,15 +47,19 @@ async function fixture(t,mode){
  doc.visibilityState='visible';doc.hidden=false;
  const keys=['navigator','location','document','window','SharedWorker','Worker','RTCPeerConnection','addEventListener','removeEventListener','dispatchEvent','__freezeClock','__freezeProbe','__freezeWorkerChannel'];
  const globals=new Map(keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
- const ports=[],channels=[],replaced=[],gate={silent:false,hold:false,queued:[]},probe={started:0,closed:0,active:new Set()};let held=0,opened=0,service,attachment,pageWorker;
+ const sharedRoots=[],ports=[],channels=[],replaced=[],gate={silent:false,hold:false,queued:[]},probe={started:0,closed:0,active:new Set()};let held=0,opened=0,service,attachment,pageWorker,openDirectConnection;const siblingAttachments=[];
  const deliver=send=>{if(gate.silent)return;if(gate.hold)gate.queued.push(send);else send();};
  const NativeChannel=globalThis.BroadcastChannel;
  class WorkerChannel extends NativeChannel{constructor(...args){super(...args);channels.push(this);}postMessage(value){deliver(()=>super.postMessage(value));}}
- const stop=new AbortController();
+ const stop=new AbortController(),signalListeners=new Set();
+ const signals={delivery:'neighbors',async send(topic,payload){for(const receive of signalListeners)receive({topic,payload});return null;},async *subscribe({signal}){
+  const queue=[];let wake;const receive=value=>{queue.push(value);wake?.();},ended=()=>wake?.();signalListeners.add(receive);signal.addEventListener('abort',ended,{once:true});
+  try{while(!signal.aborted){if(!queue.length)await new Promise(resolve=>{wake=resolve;});if(!signal.aborted&&queue.length)yield queue.shift();}}finally{signalListeners.delete(receive);signal.removeEventListener('abort',ended);}
+ }};
  const definition=defineApplication({id:'freeze-fixture',version:'1',commands:{},queries:{state:defineQuery({description:'Read retained fixture identity',input:{type:'null'},read:()=>[]})}}),description=describeApplication(definition);
  const revision={applicationId:'a'.repeat(64),historyId:'retained',generation:'c'.repeat(64),point:{generation:'c'.repeat(64),sequence:0,root:'d'.repeat(64)},controlRevision:0,materializationRevision:'0'};
  const session={applicationId:'a'.repeat(64),historyId:'retained',storageId:'retained',deviceId:'b'.repeat(64),signal:stop.signal,revision:null,
-  status:{phase:'ready',database:'idle',role:'coordinator',generation:'c'.repeat(64),coordinator:'b'.repeat(64),connectedPeers:0},signals:{delivery:'neighbors'},
+  status:{phase:'ready',database:'idle',role:'coordinator',generation:'c'.repeat(64),coordinator:'b'.repeat(64),connectedPeers:0},signals,
   describe:()=>({...description,capabilities:{...PEER_GENERATION_CAPABILITIES,sql:false}}),onStatus(fn){fn(this.status);return()=>{};},onRecovery:()=>()=>{},
   async query(){return{revision,value:['retained identity']};},async close(){stop.abort(Error('FIXTURE_OWNER_CLOSED'));}};
  class Scope extends EventTarget{postMessage(value){deliver(()=>queueMicrotask(()=>pageWorker?.dispatchEvent(new MessageEvent('message',{data:value}))));}close(){}connect(port){this.dispatchEvent(Object.assign(new Event('connect'),{ports:[port]}));}}
@@ -61,23 +72,27 @@ async function fixture(t,mode){
   SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();const wire=new MessageChannel();ports.push(wire.port1,wire.port2);this.port=wire.port2;
     // Gate both root replies and the transferred RPC endpoint before the owner
     // consumes its handshake; otherwise a "silent" root could still answer RPC.
-    wire.port1.addEventListener('message',({data})=>{if(data?.port)outgoing(data.port);});outgoing(wire.port1);scope.connect(wire.port1);}}:undefined,
+    const root={port:wire.port2};sharedRoots.push(root);wire.port1.addEventListener('message',({data})=>{if(data?.type==='boot')root.id=data.id;if(data?.port)outgoing(data.port);});outgoing(wire.port1);scope.connect(wire.port1);}}:undefined,
   Worker:class extends EventTarget{constructor(){super();pageWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}},
  };
  for(const[key,value]of Object.entries(values))Object.defineProperty(globalThis,key,{configurable:true,value});
  t.after(async()=>{
   gate.silent=false;gate.hold=false;for(const send of gate.queued.splice(0))send();
   try{
-   let done=false;const closing=Promise.allSettled([service?.close(),attachment?.detach()]).then(()=>done=true);
+   let done=false;const closing=Promise.allSettled([service?.close(),attachment?.detach(),...siblingAttachments.map(value=>value.detach())]).then(()=>done=true);
    for(let i=0;!done&&i<100;i++){await delay(2);clock.advance(1000);}await bounded(closing,'cleanup');
   }finally{for(const port of ports)port.close();for(const channel of channels)channel.close();for(const[key,value]of globals)if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];await rm(directory,{recursive:true,force:true});}
  });
  await writeFile(join(directory,'page.mjs'),pageBundle.outputFiles[0].text);await writeFile(join(directory,'worker.mjs'),workerBundle.outputFiles[0].text);
  const page=await import(pathToFileURL(join(directory,'page.mjs')).href),worker=await import(pathToFileURL(join(directory,'worker.mjs')).href);
- service=worker.serveBrowserOwner({scope,profileId:'retained',async openSession(){opened++;return{session};}});
+ service=worker.serveBrowserOwner({scope,profileId:'retained',async openSession(options){openDirectConnection=options.openDirectConnection;opened++;return{session};}});
  attachment=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0,onOwnerReplaced:value=>replaced.push(value)}),'initial attach');
  await until(()=>clock.heartbeats.length>0,'initial heartbeat armed');
- return{attachment,clock,doc,events,probe,gate,replaced,session,get opened(){return opened;},get held(){return held;}};
+ async function sibling(){
+  const previous=globalThis.document,next=new EventTarget();next.hidden=false;next.visibilityState='visible';Object.defineProperty(globalThis,'document',{configurable:true,value:next});
+  try{const value=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0}),'sibling attach');siblingAttachments.push(value);return value;}finally{Object.defineProperty(globalThis,'document',{configurable:true,value:previous});}
+ }
+ return{attachment,clock,doc,events,probe,gate,replaced,session,sibling,registerOriginal(){const root=sharedRoots[0];root.port.postMessage({protocol:BROWSER_RTC_PROTOCOL,profileId:'retained',rootId:root.id,payload:{protocol:BROWSER_RTC_PROTOCOL,type:'register',available:true}});},get signalObservers(){return signalListeners.size;},openDirect:options=>openDirectConnection({timeoutMs:1000,...options}),get opened(){return opened;},get held(){return held;}};
 }
 
 for(const mode of['shared','elected'])for(const event of['freeze','visibilitychange'])for(const manual of[false,true])test(`${mode} automatic ${event} pauses synchronously and authenticated resume preserves the owner${manual?' with coalesced BFCache calls':''}`,async t=>{
@@ -149,4 +164,67 @@ for(const mode of['shared'])test(`${mode} an obsolete resume timeout cannot fenc
  f.doc.dispatchEvent(new Event('resume'));
  await until(()=>f.clock.heartbeats.length>0,'fresh visible resume after obsolete timeout');
  assert.equal(f.opened,1);assert.deepEqual(f.clock.errors,[]);
+});
+
+for(const mode of ['shared','elected'])test(`${mode} observational parking forwards active opaque RTC frames and preserves ordinary queries`,async t=>{
+ const f=await fixture(t,mode),connection=await f.openDirect();t.after(()=>connection.close());
+ const streamStop=new AbortController();t.after(()=>streamStop.abort());const stream=f.attachment.session.signals.subscribe({topics:['position'],signal:streamStop.signal})[Symbol.asyncIterator](),nextSignal=stream.next();
+ await until(()=>f.signalObservers===1,'signal subscription established before hiding');
+ const packet=new Uint8Array([1,9,7,4]),before=await bounded(connection.roundTrip(packet),'active RTC packet');
+ f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event('visibilitychange'));
+ await until(()=>f.clock.tasks.size===0,'parked root and endpoint state acknowledged');
+ const after=await bounded(connection.roundTrip(packet),'hidden provider forwards RTC packet');
+ assert.deepEqual(after.packet,packet);assert.equal(after.providerId,before.providerId);assert.equal(connection.signal.aborted,false);
+ assert.deepEqual((await bounded(f.attachment.session.query('state',null),'background query')).value,['retained identity']);
+ await f.attachment.session.signals.send('position',{x:7});assert.deepEqual((await bounded(nextSignal,'background signal stream')).value,{topic:'position',payload:{x:7}});assert.equal(f.signalObservers,1,'observation parking must not cancel active signal streams');
+ assert.equal(f.replaced.length,0);assert.equal(f.opened,1);
+ // Merely hidden providers remain eligible. Only a frozen provider is skipped
+ // for new opens; selection must not abort its retained connection.
+ const hidden=await f.openDirect();await hidden.close();f.doc.dispatchEvent(new Event('freeze'));
+ await until(()=>f.clock.tasks.size===0,'freeze acknowledged');
+ let opened=false;const pending=f.openDirect().then(value=>{opened=true;return value;});
+ await delay(10);assert.equal(opened,false);assert.equal(connection.signal.aborted,false);
+ f.doc.dispatchEvent(new Event('resume'));
+ const fresh=await bounded(pending,'resume wakes pending selection');await fresh.close();
+ assert.equal(connection.signal.aborted,false);assert.equal(f.clock.heartbeats.length,0,'resume while hidden keeps observation parked');
+});
+test('shared selection uses a visible sibling without aborting the frozen first provider',async t=>{
+ const f=await fixture(t,'shared'),first=await f.openDirect();t.after(()=>first.close());
+ const original=await bounded(first.roundTrip(new Uint8Array([3])),'first provider');await f.sibling();
+ f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event('freeze'));
+ await until(()=>f.clock.tasks.size===f.clock.heartbeats.length,'first root frozen');
+ const second=await f.openDirect();t.after(()=>second.close());
+ const reply=await bounded(second.roundTrip(new Uint8Array([5])),'visible provider packet');assert.notEqual(reply.providerId,original.providerId);
+ assert.equal(first.signal.aborted,false);f.doc.dispatchEvent(new Event('resume'));
+ await until(()=>f.clock.tasks.size===f.clock.heartbeats.length,'hidden resume acknowledged');
+ const third=await f.openDirect();const thirdReply=await bounded(third.roundTrip(new Uint8Array([8])),'hidden resumed selection');assert.equal(thirdReply.providerId,original.providerId);await third.close();
+ assert.deepEqual((await bounded(first.roundTrip(new Uint8Array([6])),'retained hidden provider packet')).packet,new Uint8Array([6]));
+ assert.equal(f.opened,1);
+});
+
+for(const mode of ['shared','elected'])test(`${mode} explicit suspension closes its providers and forbids new work until resume`,async t=>{
+ const f=await fixture(t,mode),first=await f.openDirect();t.after(()=>first.close());
+ await f.attachment.suspend();await until(()=>first.signal.aborted,'explicit provider shutdown');assert.equal(f.probe.active.size,0);
+ let opened=false;const pending=f.openDirect().then(value=>{opened=true;return value;});await delay(10);assert.equal(opened,false);
+ await f.attachment.resume();const next=await bounded(pending,'explicit resume permits a new open');await next.close();assert.equal(f.opened,1);
+});
+
+test('a delayed old SharedWorker ping cannot create a second heartbeat after park/resume',async t=>{
+ const f=await fixture(t,'shared');f.gate.hold=true;f.clock.advance(5000);
+ await until(()=>f.gate.queued.length>0,'old ping reply held');
+ const oldReplies=f.gate.queued.splice(0);f.gate.hold=false;f.doc.dispatchEvent(new Event('freeze'));f.doc.dispatchEvent(new Event('resume'));
+ await until(()=>f.clock.heartbeats.length===1,'fresh resumed heartbeat');
+ for(const send of oldReplies)send();
+ await until(()=>f.clock.tasks.size===f.clock.heartbeats.length,'old ping settled');
+ assert.equal(f.clock.heartbeats.length,1,'an obsolete pulse must not schedule another loop');assert.equal(f.replaced.length,0);
+});
+
+test('observational park cannot clear an explicitly suspended SharedWorker RTC route',async t=>{
+ const f=await fixture(t,'shared');await f.attachment.suspend();
+ f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event('freeze'));f.doc.dispatchEvent(new Event('resume'));
+ await until(()=>f.clock.tasks.size===0,'park hint updated while explicitly suspended');
+ // Simulate a late provider registration on the same private root. Only an
+ // explicit authenticated root.resume may restore its authority.
+ f.registerOriginal();let opened=false;const pending=f.openDirect().then(value=>{opened=true;return value;});await delay(10);assert.equal(opened,false);
+ await f.attachment.resume();const connection=await bounded(pending,'explicit resume restores route authority');await connection.close();
 });

@@ -50,17 +50,18 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
   };
   const pulse = async () => {
     clearTimeout(pulseTimer); if (disposed || closing || paused) return;
+    const epoch = pauseEpoch;
     const remaining = liveness.deadline() - performance.now();
     if (remaining <= 0) { fail('OWNER_UNREACHABLE'); return; }
     try { await request('ping', Math.min(livenessTimeoutMs, remaining)); }
     catch {
-      if (disposed || closing || paused) return;
+      if (disposed || closing || paused || epoch !== pauseEpoch) return;
       const left = liveness.deadline() - performance.now();
       if (left <= 0) { fail('OWNER_UNREACHABLE'); return; }
       pulseTimer = setTimeout(pulse, Math.min(left, Math.max(50, Math.min(5000, livenessTimeoutMs / 3))));
       pulseTimer.unref?.(); return;
     }
-    if (!disposed && !closing && !paused) {
+    if (!disposed && !closing && !paused && epoch === pauseEpoch) {
       pulseTimer = setTimeout(pulse, Math.max(50, Math.min(5000, livenessTimeoutMs / 3))); pulseTimer.unref?.();
     }
   };
@@ -93,12 +94,12 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
     root.postMessage({ ...frame, port: wire.port2 }, [wire.port2]);
   }, addEventListener() {}, removeEventListener() {},
   bindRequestSource: session => liveness.bind(session),
-  park() {
+  park({frozen=false}={}) {
     if (disposed || closing) throw new CollaborationError('ENDPOINT_STALE');
     paused = true; pauseEpoch++; clearTimeout(pulseTimer);
     // A freeze event cannot await an acknowledgement. The private root port
     // scopes this one-way pause; only a fresh resume reply rearms liveness.
-    root.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'root.suspend', profileId, ownerInstanceId, rootId, id: crypto.randomUUID() });
+    root.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'root.park', frozen, profileId, ownerInstanceId, rootId, id: crypto.randomUUID() });
   },
   async suspend() {
     if (disposed || closing) throw new CollaborationError('ENDPOINT_STALE');

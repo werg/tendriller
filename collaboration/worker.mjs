@@ -44,7 +44,7 @@ export function serveBrowserOwner(options) {
   }
   function renew(record) {
     clearTimeout(record.timer);
-    if (!record.shared || record.disposed || record.suspended) return;
+    if (!record.shared || record.disposed || record.parked) return;
     const timeout = record.ready ? limits.idleTimeoutMs : limits.pendingTimeoutMs;
     record.timer = setTimeout(() => dispose(record, record.ready ? 'ENDPOINT_STALE' : 'OWNER_HANDSHAKE_TIMEOUT'), timeout);
     record.timer.unref?.();
@@ -120,7 +120,7 @@ export function serveBrowserOwner(options) {
     if (shared && (closed || roots.size >= limits.maxPorts)) {
       post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'failure', code: closed ? 'OWNER_UNREACHABLE' : 'OWNER_BUSY' }); endpoint.close?.(); return;
     }
-    const record = { endpoint, shared, ready: false, suspended: false, disposed: false, pending: 0 };
+    const record = { endpoint, shared, ready: false, suspended: false, parked: false, frozen: false, disposed: false, pending: 0 };
     record.failed = () => dispose(record, 'OWNER_MESSAGE_INVALID');
     record.message = ({ data }) => {
       if(closed || record.disposed)return;
@@ -132,13 +132,13 @@ export function serveBrowserOwner(options) {
       if (data?.protocol !== BROWSER_OWNER_PROTOCOL) return;
       try {
         checkOwnerFrame(data);
-        if (Object.keys(data).some(key => !['protocol', 'type', 'id', 'profileId', 'mode', 'rootId', 'ownerInstanceId'].includes(key))) throw Error('OWNER_HANDSHAKE_INVALID');
+        if (Object.keys(data).some(key => !['protocol', 'type', 'id', 'profileId', 'mode', 'rootId', 'ownerInstanceId', ...(data.type==='root.park'?['frozen']:[])].includes(key))) throw Error('OWNER_HANDSHAKE_INVALID');
         if (!validId(data.id) || typeof data.type !== 'string') throw Error('OWNER_HANDSHAKE_INVALID');
         if (record.pending >= 8) throw Error('OWNER_BUSY');
         if (data.type === 'boot') {
           if (record.rootId && record.rootId !== data.id) throw Error('OWNER_HANDSHAKE_INVALID');
           record.rootId = data.id;record.profileId=data.profileId;
-          if(!record.rtc){record.rtc=rtcEndpoint(payload=>post(record.endpoint,{protocol:BROWSER_RTC_PROTOCOL,profileId:record.profileId,rootId:record.rootId,payload}));rtc.addRoute(record.rtc,{authorize:()=>!closed&&!record.disposed&&!record.suspended&&(profileId===undefined||record.profileId===profileId)});}
+          if(!record.rtc){record.rtc=rtcEndpoint(payload=>post(record.endpoint,{protocol:BROWSER_RTC_PROTOCOL,profileId:record.profileId,rootId:record.rootId,payload}));rtc.addRoute(record.rtc,{authorize:()=>!closed&&!record.disposed&&!record.suspended&&(profileId===undefined||record.profileId===profileId),available:()=>!record.frozen});}
         }
         // Explicit cancellation also releases a pending root while load/openSession
         // is awaiting. It cannot cancel a different root or the shared owner.
@@ -153,8 +153,9 @@ export function serveBrowserOwner(options) {
         if (data.profileId !== profileId) throw Error('OWNER_PROFILE_MISMATCH');
         if (data.type.startsWith('root.')) {
           if (!record.shared || !record.ready || data.rootId !== record.rootId || data.ownerInstanceId !== owner?.ownerInstanceId) throw Error('ENDPOINT_STALE');
-          if (data.type === 'root.suspend') record.suspended = true;
-          else if (data.type === 'root.resume') record.suspended = false;
+          if (data.type === 'root.park') {if(typeof data.frozen!=='boolean')throw Error('OWNER_HANDSHAKE_INVALID');record.parked = true;record.frozen=data.frozen;rtc.availabilityChanged();}
+          else if (data.type === 'root.suspend') record.suspended = record.parked = true;
+          else if (data.type === 'root.resume') {record.suspended = record.parked = record.frozen = false;rtc.availabilityChanged();}
           else if (data.type !== 'root.ping' && data.type !== 'root.detach') throw Error('OWNER_HANDSHAKE_INVALID');
           renew(record); result(record, data.id);
           if (data.type === 'root.detach') dispose(record);

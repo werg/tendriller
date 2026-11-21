@@ -124,7 +124,7 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     observationPaused=true;observationEpoch++;
     // Pause the local fence synchronously, before promises or RTC cleanup. A
     // hidden page retains its RTC provider and can still process allowed inputs.
-    try{if(transport.park)transport.park();else transport.suspend();}catch{}
+    try{if(transport.park)transport.park({frozen});else transport.suspend();}catch{}
     try{void Promise.resolve(session.suspend()).catch(()=>{});}catch{}
   }
   function resumeObservation(){
@@ -150,8 +150,8 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     return observationResume;
   }
   const visibility=()=>{if(away())pauseObservation();else void resumeObservation().catch(()=>{});};
-  const freeze=()=>{frozen=true;pauseObservation();};
-  const resume=()=>{frozen=false;visibility();};
+  const freeze=()=>{frozen=true;pauseObservation(true);};
+  const resume=()=>{frozen=false;if(away())pauseObservation(true);else visibility();};
   document?.addEventListener?.('visibilitychange',visibility);
   document?.addEventListener?.('freeze',freeze);
   document?.addEventListener?.('resume',resume);
