@@ -170,7 +170,18 @@ test('owner claim, reconnect for pushed first publication and live invitations',
     listener.close();
   }
 
+  const canonicalBase = await page.evaluate(() => (window as any).tendril.identity.base);
   await publish(peers, 'Second signed release');
+  await expect(page.getByRole('heading')).toHaveText('Second signed release', { timeout: 15_000 });
+  await page.reload();
+  await expect(page.getByRole('heading')).toHaveText('Second signed release');
+  expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(false);
+
+  // Only an explicitly versioned URL retains the old release. Its standard menu
+  // must still offer a return to the latest selected release.
+  await page.goto(new URL(`_publications/${release.version}/`, canonicalBase).href);
+  await expect(page.getByRole('heading')).toHaveText('First signed release');
+  expect(await page.evaluate(() => (window as any).tendril.publication.pinned)).toBe(true);
   await page.reload();
   await expect(page.getByRole('heading')).toHaveText('First signed release');
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
