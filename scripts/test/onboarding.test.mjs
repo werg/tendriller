@@ -94,7 +94,7 @@ test('the downloadable starter contains complete parseable source and no local p
     }
   }
   for (const path of ['session.mjs', 'local.mjs', 'worker.mjs', 'account-setup.mjs', 'host-adoption.mjs',
-    'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
+    'helpers/cli-lifetime.mjs', 'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
     'media/panel.mjs', 'media/inference-client.mjs', 'media/inference-peer.mjs', 'media/provider-openai.mjs',
     'sql/setup.mjs', 'sql/session.mjs', 'sql/engine.mjs', 'sql/domain.mjs', 'sql/demo.mjs', 'sql/worker.mjs'])
     assert(TUTORIAL_FILES.includes(path), `The documented starter is missing ${path}`);

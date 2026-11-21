@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, statSync 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { AppServer, observable } from '../agent-acceptance/protocol.mjs';
+import { AppServer, observable, observableTracker } from '../agent-acceptance/protocol.mjs';
 import { Evidence, checks, innocentPrompt, privateDirectory } from '../agent-acceptance/evidence.mjs';
 import { adapterCall } from '../agent-acceptance/adapter.mjs';
 
@@ -20,6 +20,8 @@ createInterface({input:process.stdin}).on('line',line=>{
    send({method:'item/completed',params:{item:{type:'reasoning',summary:['SECRET_THOUGHT']}}});
    send({method:'item/reasoning/summaryTextDelta',params:{delta:'SECRET_THOUGHT'}});
    send({method:'item/completed',params:{item:{id:'msg',type:'agentMessage',text:'Ready page'}}});
+   send({method:'item/started',params:{item:{id:'cmd',type:'commandExecution',private:'PRIVATE_START_PAYLOAD'}}});
+   send({method:'item/completed',params:{item:{id:'cmd',type:'commandExecution',command:'echo ready',aggregatedOutput:'ready',exitCode:0}}});
    send({method:'turn/completed',params:{turn:{id:'turn',status:'completed',items:[{type:'reasoning',text:'SECRET_THOUGHT'}]}}});
  }
  send({id:m.id,result:m.method==='thread/start'?{thread:{id:'fresh'},model:'fixture'}:m.method==='turn/start'?{turn:{id:'turn'}}:{}});
@@ -34,8 +36,10 @@ test('real stdio child handles turns, server requests, reasoning exclusion, RPC 
   t.after(() => host.close());
   await host.initialize(); assert.equal((await host.rpc('thread/start')).thread.id, 'fresh');
   await host.rpc('turn/start');
-  assert.deepEqual(events.map(e => e.event), ['item', 'turn']);
+  assert.deepEqual(events.map(e => e.event), ['item', 'item', 'turn']);
   assert(!JSON.stringify(events).includes('SECRET_THOUGHT'));
+  assert(!JSON.stringify(events).includes('PRIVATE_START_PAYLOAD'));
+  assert(Number.isFinite(Date.parse(events[1].startedAt))); assert(Number.isFinite(Date.parse(events[1].completedAt)));
   await assert.rejects(host.rpc('bad'), error => /RPC failed/.test(error.message) && !error.message.includes('PRIVATE_CREDENTIAL'));
   host.deadlineMs = 25;
   await assert.rejects(host.rpc('hang'), /deadline/);
@@ -49,6 +53,19 @@ test('notification allowlist rejects unknown items and never copies whole turn o
   assert.equal(observable({ method: 'item/agentMessage/delta', params: { delta: 'partial' } }), null);
   const event = observable({ method: 'turn/completed', params: { turn: { id: 't', status: 'failed', secret: 'no' } } });
   assert.deepEqual(event, { event: 'turn', id: 't', status: 'failed' });
+});
+
+test('typed timing retains only ID/start time, never starts or reasoning payloads, and marks missing starts unknown', () => {
+  let tick = 0; const track = observableTracker(() => new Date(++tick * 1000).toISOString());
+  assert.equal(track({ method: 'item/started', params: { item: { id: 'reason', type: 'reasoning', text: 'SECRET' } } }), null);
+  assert.equal(tick, 0);
+  track({ method: 'item/started', params: { item: { id: 'mcp', type: 'mcpToolCall', arguments: { private: 'SECRET' } } } });
+  track({ method: 'item/started', params: { item: { id: 'mcp', type: 'mcpToolCall' } } });
+  const event = track({ method: 'item/completed', params: { item: { id: 'mcp', type: 'mcpToolCall', server: 'tendriller', tool: 'get_profile' } } });
+  assert.equal(event.startedAt, new Date(1000).toISOString()); assert.equal(event.completedAt, new Date(2000).toISOString());
+  assert(!JSON.stringify(event).includes('SECRET'));
+  const missing = track({ method: 'item/completed', params: { item: { id: 'missing', type: 'commandExecution' } } });
+  assert.equal(missing.startedAt, null);
 });
 
 test('initial prompts contain only domain and ordinary outcome, with separate source-free MCP prompt', () => {

@@ -3,8 +3,9 @@ import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { importReviewPackages } from '../review/packages.mjs';
 import { nativeMeasurement } from './observer-native.mjs';
-import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement, publicationAddress } from './observer-data.mjs';
+import { MeasurementError, need, same, at, loadObserverConfig, recordFile, processMeasurement, publicationAddress, relayTransportMeasurement } from './observer-data.mjs';
 import { hash, now, checks } from './evidence.mjs';
+import { mcpDiscovery, domainDiscovery } from './discovery.mjs';
 
 function token(text, value) {
   return text.split(/[^A-Za-z0-9_.:-]+/u).includes(value);
@@ -21,6 +22,7 @@ function operationRows(native, config, operationId, author, marker) {
     same(events[0].attemptId, native.operation.attempt.id, 'event-signed-attempt');
     same(events[0].operationId, operationId, 'event-operation'); same(events[0].author, author, 'event-author');
     const id = q.eventIdEncoding === 'author-operation-json' ? JSON.stringify([events[0].author, events[0].operationId])
+      : q.eventIdEncoding === 'author-operation-colon' ? `${events[0].author}:${events[0].operationId}`
       : need(at(events[0], need(q.eventId, 'event-row-key')), 'event-row-id');
     rows = native.rows.filter(row => at(row, need(q.rowId, 'query-row-key')) === id);
   } else rows = native.rows.filter(row => at(row, q.operationId ?? '/operationId') === operationId && at(row, q.author ?? '/author') === author);
@@ -304,22 +306,26 @@ export class StarterObserver {
       if (!this.state.checkpoints['native-process']) this.checkpoint('native-process', { process });
       const peers = snapshot.native.participation?.connectedPeers;
       if (!peers?.includes(snapshot.browser.deviceId)) throw new MeasurementError('native-connected-peer-metric');
-      const transport = recordFile(config.native.project, need(config.native.transport, 'selected-transport-metric')).value;
-      if (!['websocket-relay', 'webrtc'].includes(transport)) throw new MeasurementError('selected-transport-value', 'failed');
+      const transportEvidence = relayTransportMeasurement(recordFile(config.native.project,
+        need(config.native.transport, 'selected-transport-metric')).value,
+      { process, pageId: config.handle.id, deviceId: snapshot.native.deviceId, remoteDeviceId: snapshot.browser.deviceId });
       return { applicationId: config.applicationId, nativeDeviceId: snapshot.native.deviceId, browserDeviceId: snapshot.browser.deviceId,
-        transport, nativeProcess: process, snapshot };
+        transport: transportEvidence.transport, transportEvidence, nativeProcess: process, snapshot };
     }
     if (check === 'discovery') {
       const file = join(this.runDirectory, 'observable.jsonl');
       if (!existsSync(file)) throw new MeasurementError('model-discovery-trace');
       const items = readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-      const successful = items.filter(i => i.type === 'commandExecution' && i.exitCode === 0 && typeof i.command === 'string');
-      const paths = ['/api/service', '/.well-known/tendriller.json', '/api/readiness', '/docs/BUILD_AN_APP.md'];
-      const reads = paths.map(path => need(successful.find(i => i.command.includes(config.origin + path)), 'model-read-' + path));
-      const install = successful.find(i => /\b(npm|pnpm|yarn)\b.*\b(install|ci|add)\b/u.test(i.command));
-      if (install && Date.parse(reads[2].at) >= Date.parse(install.at)) throw new MeasurementError('model-installed-before-readiness', 'failed');
-      return { urls: paths.map((path, i) => ({ url: config.origin + path, observedAt: reads[i].at, commandHash: hash(reads[i].command) })),
-        source: 'Successful model terminal reads; web-only or opaque tool traces remain unmeasured', installObserved: Boolean(install) };
+      const reportPath = join(this.runDirectory, 'report.json');
+      const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : {};
+      if (report.mode === 'mcp') {
+        same(report.mcp?.origin, config.origin, 'mcp-discovery-configured-origin');
+        const catalogs = readFileSync(join(this.runDirectory, 'catalog.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+        const deployment = need(report.deployment, 'mcp-discovery-deployment');
+        return mcpDiscovery(items, { origin: config.origin, build: { coreRelease: deployment.sdkVersion, sourceCommit: deployment.sourceRevision,
+          runtimeId: deployment.runtimeId, compositionId: deployment.compositionId }, catalog: catalogs[0]?.status });
+      }
+      return domainDiscovery(items, { origin: config.origin });
     }
     if (check === 'unavailable-peer') {
       if (options.phase === 'before') {

@@ -37,11 +37,62 @@ in a page's eager import graph.
 
 Run `contract:generate` after executable metadata-schema edits. `contract:check` rejects stale generated files. `check:boundaries` examines source imports and built dependency graphs. `test:consumer` installs only public archives in an independent directory and checks runtime imports and strict declarations.
 
+The collaboration browser owner's base silence fence is 15 seconds. A pending
+finite facade call observed to have started before that fence expires can use
+one fixed grace window, ending at its original request deadline (30 seconds from
+request start by default). Classification belongs to Chronolog's public
+`boundedRequest` getter; core does not inspect private RPC methods. New,
+cancelled, or replacement caller requests cannot slide the selected deadline.
+Only an authenticated owner response rearms the window. Passive applied/shared/
+event waits grant no grace; without a finite call the silence fence stays 15 seconds.
+
+This changes the **connection fence**, not RPC deadlines: with defaults, the first
+eligible finite call can start just before 15 seconds of silence and retain its
+original 30-second budget. The resulting logical connection fence is therefore
+less than 45 seconds from the last authenticated response, subject to normal
+browser/event-loop scheduling. For example, a first call at silence +10 seconds
+can retain the route until +40 seconds; later calls cannot extend it. Owner-loss
+qualification must use this separate connection-fence bound rather than a global
+30-second operation timeout, and measure the actual pending request/closure.
+An elected route resumes suspension only after a bounded authenticated reply.
+Initial connection readiness retains its own existing opening deadline; the
+finite-request source binds only after that initial facade connection returns.
+This does not preempt a synchronous SQL call or qualify passive-only SQL stalls.
+
 ## Verification
 
 Use `test:contract` for wire filters and SDK semantics; `test:runtime-unit` for inert composition, capability/sensor lifecycle and immutable publication caching; `test:server` for real workerd authorization, controls, signed releases, storage CAS and restart. `test:tools` exercises public-session tooling and extracted artifacts. Browser tests cover actual runtime behavior, owner claim/origin boundaries, signed code serving and explicit speech use.
 
 The application session's command/query/replication implementation is qualified in Chronolog and by independent contrib consumers. A static browser fixture does not establish RTC, recovery or database guarantees. The public host fixture permits combining those real boundaries without private imports.
+
+With a restored qualified deployment graph and the matching combined SQL consumer
+and WASM engine, run `E2E_CHRONOLOG_CONSUMER=/absolute/consumer E2E_CHRONOLOG_WASM=/absolute/wasm node node_modules/@playwright/test/cli.js test --config test/e2e/browser-sql-opening.playwright.config.ts`.
+Staging acceptance runs this local regression before the live scenarios, using the
+packaged Worker with bundling disabled. It retains SQL replication, correction and
+reopen checks while delaying either peer's metadata response by twelve seconds,
+and combining a six-second metadata delay with a cold SQL response held for at
+least twenty-one seconds. This explicit SQL fixture keeps metadata preparation's
+25-second bound and gives SQL activation a separate fixed 30-second readiness
+phase before exposing the page facade. Only metadata readiness starts that phase;
+engine progress cannot renew it, and a successful first SQL read is required.
+The ordinary page RPC deadline stays 20 seconds. This separates fixture startup
+qualification from an operation latency bound; metadata alone does not qualify SQL.
+The view subscribes before reading and consumes the initial change snapshot;
+revision equality coalesces that notification instead of starting a second read
+after “Ready”. Its bounded 20-second initial observation exposes Ready only after
+a coherent read, including changes arriving during that read. Deterministic
+blocked-read tests run in `test:ci`; the browser regression requires one initial
+view read on both peers. This removes fixture overlap without qualifying a kernel
+latency claim.
+Replication checks first observe the source's applied result within its declared
+15-second bound, then start the unchanged five-second remote-display check.
+Fixed startup stages/timings and cached session-state diagnostics identify which
+boundary failed without logging keys, request bodies or authored data.
+The SQL specimen deliberately opens a one-shot relay rather than canonical
+`participate()` discovery. Both sessions must finish preparation before either
+physical connection starts; canonical participation instead owns bounded
+connection failures and backoff during asymmetric startup. This fixture check
+does not replace qualification of that controller or rebuild deployed bytes.
 
 ## Public Worker fixture
 

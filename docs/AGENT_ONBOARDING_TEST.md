@@ -476,12 +476,31 @@ through an actual DOM attribute named by `browser.rowIdentityAttribute` (for
 example `data-item-id`). `browser.rowIdentitySelector` selects a nested element
 within each measured row when that attribute is on a checkbox rather than its
 container. `query.eventIdEncoding: "author-operation-json"` supports projections
-whose row ID is JSON.stringify([event.author, event.operationId]). No arbitrary
+whose row ID is JSON.stringify([event.author, event.operationId]);
+`"author-operation-colon"` supports `${event.author}:${event.operationId}`.
+Both encodings use the independently verified event author and operation, never
+a label supplied by the evaluator. No arbitrary
 projection code is accepted by the observer. If the produced app exposes neither, record the missing
 metric; do not provide implementation advice to repair the baseline's score.
 
 Use the normal `observe --input /private/check.json` controller command. Supported
 check inputs and their sequence:
+
+For an MCP-authored operation in the same native signer's separate adapter
+namespace, the terminal attachment may correctly refuse inspection. Do not
+broaden that binding or open another owner. If the model actually called
+`inspect_application_operation`, `native.mcpOperations` may map its canonical
+operation ID to the retained completed event, for example a file reference to
+`observable.jsonl` with `format: "jsonl"` and the exact zero-based `line`.
+The observer accepts only that selected server/tool and matching client request,
+application/history/device/operation/attempt reference. The response must contain
+the **raw signed attempt**, whose signature and historical grant are verified
+independently. It still requires the exact authenticated applied event in a
+coherent native read and the matching browser row. A receipt, saved status or
+model completion message alone cannot substitute for those bytes. Native probe
+results record their implementation SHA-256, including when a separately forked
+probe was fixed after controller launch; retain the controller's original source
+identity and do not relabel the entire run as having used a newer harness.
 
 | Check | Input/options and observed proof |
 | --- | --- |
@@ -492,9 +511,9 @@ check inputs and their sequence:
 | `browser-reload`, `native-reopen` | Supply `options` with `phase: "before"`, `operationId`, `author`, `command`, `marker`. Perform actual owner reload/reopen or explicit same-store native restart, then observe with `phase: "after"` and the same fields. Native restart requires a new process birth token and the same measured store inode/device/signing identity and signed attempt. No process is restarted by the observer. |
 | `lost-command-response` | `options.action: "submit-lost"` submits the configured operation, then deliberately interrupts its applied waiter. This remains blocked until `action: "retry"` inspects/retries the same saved signed attempt and sees one applied result in native and browser rows. If a response won the interruption race, it reports that the loss was not established. |
 | `lost-publication-response` | Configure `publication.intent` (a file reference selecting the existing signed publication) and `publication.assets` (its saved public SDK asset array). `options.action: "drop"` retains the exact intent before calling publish, discards the real acknowledgement, and retains only its witness digest. `action: "retry"` must recover the identical versioned receipt and selected signed head. This is evaluator-side acknowledgement loss, not a network partition or browser retry qualification. No publication is newly signed by this observer. |
-| `connected` | Requires measured native peer status containing the browser's device, exact process details, explicit browser grant and a file reference `native.transport` selecting the actual `websocket-relay` or `webrtc` metric. A configured desired transport is not evidence. Many attachment facades do not expose participation status; report this check blocked rather than infer it. |
+| `connected` | Requires measured native peer status containing the browser's device, exact process details, explicit browser grant and a file reference `native.transport` containing the maintained relay probe’s complete current observation. Protocol, live PID/birth, page and both device identities, freshness, paired lanes and binary traffic are verified. A string label or configured desired transport is not evidence. WebRTC requires separately attributed external-host evidence. Many attachment facades do not expose participation status; report this check blocked rather than infer it. |
 | `unavailable-peer` | `options.phase: "before"` measures the native process and browser. Stop only this disposable participant externally. `phase: "offline"` verifies its exit and actual visible waiting text. Resume the same device and observe with normal browser-to-agent marker/operation options. |
-| `discovery` | Measures successful model terminal reads of same-origin service, discovery, readiness and build guide URLs, requiring readiness before any observed install. Opaque or web-only tool traces stay blocked. |
+| `discovery` | Domain mode measures successful model terminal reads of same-origin service, discovery, readiness and build guide URLs. MCP mode measures an actual `tendril_guide` (`build`) result from the sole selected server, requiring trusted returned origin, exact deployment/build, open readiness and the same-origin build-guide URL/body; `get_profile` is optional. Both must precede any observed install. Arbitrary tools, opaque responses, wrong origin/build or late discovery cannot pass. |
 | `missing-setup` | Configure `missingSetup.report` to a separate actual harness run report and `expectedCode` to its prerequisite code. It must name this origin, a different attempt, blocked status and a concrete next action. |
 | `cleanup` | After the agent/operator cleans up only the disposable app and stops its participant, verify actual host `not_found` plus the disappearance of the previously measured process birth token. Requires the preclaim and native process checkpoints. The observer does no deletion or service control. |
 
@@ -507,7 +526,58 @@ For example, after the owner adds a note:
 }
 ```
 
+Take `connected` as soon as both participants are enrolled and the native process
+configuration is measured. It retains the process checkpoint before checking the
+optional transport metric, so a transport-blocked observation still supplies the
+owned-process prerequisite for later cleanup. Record every subsequent native
+restart and stop all actual run-owned processes before the cleanup observation.
+
+Discovery timing uses only allowlisted `commandExecution` and `mcpToolCall`
+`item/started` IDs/timestamps held in memory. Their completed observations include
+`startedAt` and `completedAt`; no raw start notification or reasoning is logged.
+Every required HTTP read or MCP build-guide result must finish before
+the earliest installation starts, including a failed or parallel installation.
+Missing/malformed timestamps block; comparing completion notification times alone
+cannot establish this order. Older attempts without start timing retain that
+limitation and must not be relabeled as timing-qualified.
+
+Domain discovery also recognizes literal origin variables in a narrow successful
+`set -e` shell prefix of constant assignments and `curl --fail` reads. It never
+executes captured code or interprets general shell control flow. When the same
+command subsequently runs a guide bootstrap, the proof records prefix/continuation
+order; its timestamps still bound the whole command. `firstInstallCommandStartedAt`
+is that enclosing command's start, not an invented HTTP or npm timestamp. Acquisition
+coverage includes recognized install/exec/dlx/npx commands and npm-shaped output;
+silent arbitrary subprocess installers remain outside that coverage. Overlapping
+installations in another command still fail the measured timing check.
+
 The controller returns `status` and explicit `missing`/`mismatches` metrics.
+If the native attachment exposes connected peers but no transport diagnostic,
+leave transport unknown. For the existing public WebSocket relay only, the
+maintained evaluator preload `scripts/agent-acceptance/transport-probe.mjs` can
+observe a scoped same-store participant restart. Put a private JSON config
+outside the model project with `api` (the exact owned handle API), `deviceId`,
+`remoteDeviceId` (the measured browser key), `runDirectory`, and `output` (a
+private file inside that run). Start the participant's original resume command
+with `TENDRILLER_ACCEPTANCE_TRANSPORT_CONFIG=/private/probe.json` and Node's
+`--import /absolute/harness/scripts/agent-acceptance/transport-probe.mjs`.
+This is evaluator instrumentation; record the changed argv and restart, and do
+not send the config, preload, or implementation advice to the fresh model.
+The probe observes actual matching application/device relay sockets, both
+matching paired-lane handshakes, and sent/received binary traffic. Construction
+or a configured transport alone never establishes success. It records no
+authorization protocols, URLs, application payloads, or private channel values;
+a close/error clears the measured transport. Failure to persist an observation
+terminates the instrumented participant with exit 74, so an old positive file
+cannot qualify as a live process. Set `native.transport` to that complete file
+without a pointer. The observer validates its protocol, live PID/birth, exact
+page/native/browser identities, matching paired lanes and binary traffic. The
+observation must be at most five seconds old (with one second clock tolerance);
+observe immediately after an ordinary application command to produce activity,
+without background polling or heartbeat traffic. It cannot
+measure WebRTC or recover transport evidence from an earlier uninstrumented
+process. Keep those cases blocked.
+
 Missing files, unsupported attachment diagnostics, absent browser/session metrics
 and incomplete before/after sequences remain `blocked`; a mismatched measured
 identity, signature, operation, row or receipt is `failed`. It never fills gaps
@@ -636,6 +706,15 @@ intervention hashes, first shared-command time, first unresolved stage and proce
 lifetime. Detailed receipt/operation/identity/resume evidence is deliberately private.
 Unknown or unperformed observations stay explicit. Preserve the failed attempt
 before starting a fresh one; do not retrofit a baseline with hidden maintainer help.
+
+A bounded omitted-owner-access check can use a new output directory, exact
+qualified release root and deliberately absent `--access` file. It reaches the
+anonymous preflight, then stops with `owner_access_missing` and the explicit
+next action before OAuth, model turns or application creation. Retain that real
+report for `missingSetup`; it qualifies this omitted prerequisite only, not a
+model's diagnosis of every missing application setup. The owner driver also
+supports `open-details` with an exact visible summary name for ordinary recovery
+forms; it never selects hidden actions by script or expands unrelated panels.
 
 ### Classify frontend repairs separately from data synchronization
 

@@ -30,14 +30,14 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
   const lifetime = AbortSignal.any([opening, owned.session.signal].filter(Boolean));
   let lifecycle, unsubscribe, assistantTask, changesTask, closing;
   let participationReady = false, reconciled = false, activated = false, adapterReady = !assistant, sentReady = false;
-  let observing = true, lastOnline, lastBlocked, eventsForwardingBlocked = false;
+  let observing = true, lastOnline, lastBlocked, eventsForwardingBlocked = false, ownerClosed = false, observersSettled = false;
   const assistantStatus = online => {
     adapterReady = online;
     if (!assistant || lastOnline === online && lastBlocked === eventsForwardingBlocked) return;
     lastOnline = online; lastBlocked = eventsForwardingBlocked;
     send({ idleSoakAssistantStatus: 1, online, eventsForwarding: events, eventsForwardingBlocked });
   };
-  const closeOwned = () => closing ??= Promise.resolve().then(() => owned.close());
+  const closeOwned = () => closing ??= Promise.resolve().then(async () => { await owned.close(); ownerClosed = true; });
   const ready = () => {
     if (sentReady || lifetime.aborted || !participationReady || !reconciled || !activated || !adapterReady || eventsForwardingBlocked) return;
     sentReady = true;
@@ -83,10 +83,25 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
     stop.abort();
     if (typeof unsubscribe === 'function') unsubscribe();
     try {
+      // Close the aborted owner before waiting for readers which can be
+      // blocked on that owner's transport. The canonical hook shares this promise.
+      await closeOwned();
       await lifecycle?.close();
       await Promise.allSettled([assistantTask, changesTask].filter(Boolean));
+      observersSettled = true;
     } finally { await closeOwned(); }
   }
+  return { ownerClosed, observersSettled, assistantSettled: !assistant || observersSettled };
+}
+
+// The dedicated runner child owns its process too. Dispose it only after all
+// application work/bytes close; a peer-initiated Undici close handshake may otherwise
+// retain TCP handles indefinitely. This is explicit process disposal, not a
+// claim that every WebSocket completed a graceful remote close handshake.
+export async function disposeStoppedBootstrap(receipt, { send, disconnect, exit }) {
+  if (!receipt?.ownerClosed || !receipt.observersSettled || !receipt.assistantSettled) throw Error('NATIVE_OWNED_SHUTDOWN_REQUIRED');
+  await send({ idleSoakStopped: 1, ownerClosed: true, observersSettled: true, assistantSettled: true, processDisposal: true });
+  disconnect(); exit(0);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -100,6 +115,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const dependencies = options.assistant
       ? { openSession, runAssistant: (await import(pathToFileURL(resolve('assistant.mjs')).href)).runAssistant }
       : { openSession, superviseParticipant: (await import(pathToFileURL(resolve('helpers/participant-lifecycle.mjs')).href)).superviseParticipant };
-    await runNativeBootstrap({ ...options, record, send: value => process.send(value), signal: stop.signal }, dependencies);
+    const receipt = await runNativeBootstrap({ ...options, record, send: value => process.send(value), signal: stop.signal }, dependencies);
+    await disposeStoppedBootstrap(receipt, { send: value => new Promise((resolve, reject) => process.send(value, error => error ? reject(error) : resolve())),
+      disconnect: () => { if (process.connected) process.disconnect(); }, exit: code => process.exit(code) });
   } finally { for (const event of ['SIGTERM', 'SIGINT']) process.removeListener(event, abort); }
 }

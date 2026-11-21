@@ -106,7 +106,7 @@ test('browser emits fixed path categories for requests and every socket/frame co
   let browser;
   try {
     browser=await startBrowser({adapter},event=>events.push(event),{chromium:{},launchContext:async()=>({context,close:async()=>{}})});
-    const request={url:()=> 'https://example.test/_tendril/info?token=SECRET_TOKEN'};
+    const request={url:()=> 'https://example.test/_tendril/info?token=SECRET_TOKEN',resourceType:()=> 'fetch'};
     context.emit('request',request); context.emit('requestfinished',request);
     const page=await context.newPage(), socket=new EventEmitter();socket.url=()=> 'wss://example.test/_tendril/publication-ready?key=SECRET_KEY';
     page.emit('websocket',socket);socket.emit('framesent',{payload:'SECRET_PAYLOAD'});socket.emit('framereceived',{payload:Buffer.from('SECRET_PAYLOAD')});socket.emit('close');

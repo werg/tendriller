@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      CHRONOLOG_SHA: 1e4e8406499f3aff0da988046103d0900ca2bd42
+      CHRONOLOG_SHA: 3ca38259bcd246b7d990506cd63b4a0aa998baeb
       EMSDK_VERSION: '4.0.20'
       EMSDK_SHA: e4fe26ef59168ff44f4c23c466e497bf60b3411e
     steps:
@@ -107,6 +107,11 @@ jobs:
           name: staging-chronolog-fixture
           path: ${{ runner.temp }}/chronolog-fixture
       - run: npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts "$RUNNER_TEMP"/chronolog-fixture/session/*.tgz
+      - name: Qualify asymmetric SQL startup against the restored engine
+        run: |
+          export E2E_CHRONOLOG_CONSUMER="$RUNNER_TEMP/consumer"
+          export E2E_CHRONOLOG_WASM="$RUNNER_TEMP/chronolog-fixture/wasm"
+          node node_modules/@playwright/test/cli.js test --config test/e2e/browser-sql-opening.playwright.config.ts
       - name: Smoke and exercise staging
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -7,6 +7,7 @@ import { openSqlApplication } from '@chronolog/peer-session/sql';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { createPeerIntroductions } from '@tendriller/core/peers';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
+import { createCliLifetime } from '../helpers/cli-lifetime.mjs';
 import { definition } from './domain.mjs';
 import { createNativeEngine } from './engine.mjs';
 import { databasePath, devicePath, privateDirectory, project, readPrivate, savePrivate } from './local.mjs';
@@ -57,20 +58,22 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   return { session, control, supervisor, close: () => supervisor.close() };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const stopped = new AbortController(), stop = () => stopped.abort();
-  process.once('SIGINT', stop); process.once('SIGTERM', stop);
+export async function runPeer({ signal, profile = 'main' } = {}, { onOwned, onClosed } = {}) {
   let owned;
   try {
-    owned = await openSession({ signal: stopped.signal, profile: process.argv[2] ?? 'main' });
+    owned = await openSession({ signal, profile }); onOwned?.();
     const { session, supervisor } = owned;
     console.log(JSON.stringify({ running: true, deviceId: session.deviceId, ownerInstanceId: supervisor.ownerInstanceId }));
     session.participation.onStatus(status => console.log(JSON.stringify({ connection: status.phase, error: status.error })));
-    for await (const change of session.changes({ signal: stopped.signal })) {
+    for await (const change of session.changes({ signal })) {
       const snapshot = await session.query('inventory', null);
       console.log(JSON.stringify({ stock: snapshot.value.stock, revision: snapshot.revision, change: change.kind }));
     }
-  } catch (error) {
-    if (!stopped.signal.aborted) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; }
-  } finally { await owned?.close(); process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
+  } finally { await owned?.close(); if (owned) onClosed?.(); }
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const cli = createCliLifetime();
+  try { await runPeer({ signal: cli.signal, profile: process.argv[2] ?? 'main' }, { onOwned: cli.opened, onClosed: cli.closed }); }
+  catch (error) { cli.fail(error); }
+  process.exit(await cli.finish());
 }

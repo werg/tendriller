@@ -117,7 +117,11 @@ cancelled still consumes the local request budget.
 The peer remains connected after its budget is exhausted, and reports an explicit
 budget error for a new inference request. Restarting it renews that process
 budget and its in-memory deduplication state. Restart is a deliberate operator
-decision, not an automatic retry or a durable spending ledger.
+decision, not an automatic retry or a durable spending ledger. The standalone
+launcher waits for active inference work, service cleanup and the native owner
+to close before flushing output and disposing its Node process. Failed cleanup
+or output flushing remains nonzero and preserves uncertainty. Importing
+`runInference` does not exit the caller's process or close its other listeners.
 
 ## 3. Analyze without giving the model command authority
 

@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { readFileSync, copyFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 
@@ -42,4 +43,12 @@ export async function cleanupFixturePage({ project, origin, creationAttempted, h
     if (!response.ok) return ['Could not delete the qualification-owned synthetic page'];
     return [];
   } catch { return ['Could not delete the qualification-owned synthetic page']; }
+}
+
+/** Reject missing identities before any approval or replay comparison. */
+export function validateReviewProposal(proposal) {
+  assert.equal(typeof proposal?.proposed, 'string', 'Proposal identity must be a hex64 string');
+  assert.match(proposal.proposed, /^[a-f0-9]{64}$/, 'Proposal identity must be a hex64 string');
+  assert.equal(typeof proposal.approved, 'boolean', 'Proposal approval must be boolean');
+  return proposal;
 }

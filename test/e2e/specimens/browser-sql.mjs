@@ -1,8 +1,10 @@
 import { connectApplicationWorker } from '@chronolog/peer-session/browser';
+import { startSqlFixtureWorker } from './browser-sql-startup.mjs';
+import { observeSqlFixture } from './browser-sql-view.mjs';
 
 const el = id => document.getElementById(id);
 const status = text => { el('status').textContent = text; };
-let session, editRevision = 0, currentAnswer = '', nextTask = 0, busy = false, painting = false, pending = false;
+let session, editRevision = 0, currentAnswer = '', nextTask = 0, busy = false, liveView;
 const rendered = new Map();
 const owner = new AbortController();
 let draftKey, latestSubmission = 0;
@@ -31,8 +33,7 @@ async function act(work) {
   finally { busy = false; }
 }
 
-async function renderTasks() {
-  const { value: rows } = await session.query('board', null);
+function renderTasks({ value: rows }) {
   const present = new Set(rows.map(row => row[0]));
   for (const [id, item] of rendered) {
     if (present.has(id)) continue;
@@ -55,24 +56,11 @@ async function renderTasks() {
   }
 }
 
-async function renderAnswer() {
-  const { value: rows } = await session.query('answer', null);
+function renderAnswer({ value: rows }) {
   const [body, revision] = rows[0] ?? ['', 0];
   currentAnswer = body;
   el('current').textContent = body ? `Current answer: ${body}` : 'No answer submitted yet.';
   el('current').dataset.revision = String(revision);
-}
-
-async function refresh(isIntake) {
-  pending = true;
-  if (painting) return;
-  painting = true;
-  try {
-    while (pending && !owner.signal.aborted) {
-      pending = false;
-      await (isIntake ? renderAnswer() : renderTasks());
-    }
-  } finally { painting = false; }
 }
 
 // This diagnostic is explicit. Opening the page/reading status never enrolls
@@ -94,42 +82,25 @@ window.inspectAcceptanceBrowserCapabilities = () => new Promise((resolve, reject
 
 // Test deployments supply enrollment from outside the signed code graph.
 // The Worker owns commands, signing, the relay and the pinned record backend; SQL owns a distinct OPFS VFS.
-window.openAcceptanceSession = async options => {
+let preparation;
+window.prepareAcceptanceSession = options => preparation ??= (async () => {
+  const { remote, channel, ...preparedOptions } = options;
   const worker = new Worker(new URL('./browser-sql-worker.mjs', import.meta.url), { type: 'module' });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Browser SQL Worker did not open within 25 seconds')), 25_000);
-    const finish = (callback, value) => { clearTimeout(timer); callback(value); };
-    worker.addEventListener('message', ({ data }) => {
-      if (data.type === 'open') finish(resolve);
-      if (data.type === 'failure') finish(reject, new Error(data.message));
-    });
-    worker.addEventListener('error', event => finish(reject, new Error(event.message)), { once: true });
-    worker.postMessage({ type: 'open', base: window.tendril.identity.base,
-      applicationId: window.__TENDRIL__.application.id, ...options });
-  }).catch(error => { worker.terminate(); throw error; });
+  const stages = [];
+  window.inspectAcceptanceState = () => {
+    const state = session?.status, text = el('status').textContent;
+    return { stages: stages.slice(), phase: state?.phase ?? null, database: state?.database ?? null,
+      viewReads: liveView?.reads ?? 0, connectedPeers: state?.connectedPeers ?? null, sequence: session?.revision?.point.sequence ?? null,
+      closed: session?.signal.aborted ?? null,
+      display: text === 'Saving…' ? 'saving' : text.startsWith('Applied here') ? 'applied'
+        : text.startsWith('Shared with') ? 'shared' : text === 'Ready' ? 'ready'
+          : text.startsWith('Could not complete') ? 'failed' : 'other' };
+  };
+  await startSqlFixtureWorker(worker, { type: 'open', base: window.tendril.identity.base,
+    applicationId: window.__TENDRIL__.application.id, ...preparedOptions },
+  value => { if (stages.length < 8) stages.push(value); })
+    .catch(error => { throw new Error(`${error.message}; startup stages: ${JSON.stringify(stages)}`, { cause: error }); });
   session = await connectApplicationWorker(worker, { timeoutMs: 20_000 });
-  const isIntake = Boolean(options.respondent);
-  el('task-form').hidden = isIntake;
-  el('intake').hidden = !isIntake;
-  el('answer-form').hidden = !isIntake || session.deviceId !== options.respondent;
-  document.querySelector('h1').textContent = isIntake ? 'Private intake' : 'Shared checklist';
-  if (!isIntake) {
-    draftKey = `checklist-draft:${session.deviceId}`;
-    el('title').value = localStorage.getItem(draftKey) || '';
-    if (el('title').value) el('task-draft').textContent = 'Restored draft from this device. It has not been submitted.';
-  }
-  await refresh(isIntake);
-  if (isIntake) selectCurrentAnswer();
-  status('Ready');
-  void (async () => {
-    for await (const change of session.changes({ signal: owner.signal })) {
-      if (change) await refresh(isIntake);
-      if (change?.kind === 'recovery') {
-        latestSubmission++;
-        status('History recovered. Review changes that had not been shared.');
-      }
-    }
-  })().catch(error => { if (!owner.signal.aborted) errorStatus(error); });
   window.reconnectAcceptanceSession = (channel, remote) => new Promise((resolve, reject) => {
     const finish = (callback, value) => { clearTimeout(timer); worker.removeEventListener('message', listen); callback(value); };
     const listen = ({ data }) => {
@@ -152,6 +123,34 @@ window.openAcceptanceSession = async options => {
     });
     worker.terminate();
   };
+})();
+
+window.openAcceptanceSession = async options => {
+  await window.prepareAcceptanceSession(options);
+  if (options.remote) await window.reconnectAcceptanceSession(options.channel, options.remote);
+  const isIntake = Boolean(options.respondent);
+  el('task-form').hidden = isIntake;
+  el('intake').hidden = !isIntake;
+  el('answer-form').hidden = !isIntake || session.deviceId !== options.respondent;
+  document.querySelector('h1').textContent = isIntake ? 'Private intake' : 'Shared checklist';
+  if (!isIntake) {
+    draftKey = `checklist-draft:${session.deviceId}`;
+    el('title').value = localStorage.getItem(draftKey) || '';
+    if (el('title').value) el('task-draft').textContent = 'Restored draft from this device. It has not been submitted.';
+  }
+  liveView?.close();
+  liveView = observeSqlFixture(session, { query: isIntake ? 'answer' : 'board', signal: owner.signal,
+    onSnapshot: isIntake ? renderAnswer : renderTasks,
+    onRecovery() {
+      latestSubmission++;
+      status('History recovered. Review changes that had not been shared.');
+    },
+    onError(error) { if (!owner.signal.aborted) errorStatus(error); },
+  });
+  await liveView.ready;
+  if (isIntake) selectCurrentAnswer();
+  status('Ready');
+
 };
 
 el('title').oninput = () => {

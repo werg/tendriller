@@ -160,6 +160,13 @@ requirements. With the peer running, ordinary CLI commands attach to its
 owner automatically. Use `--mode own` only for deliberate standalone ownership
 while the peer is stopped; it takes the same exclusive fence.
 
+Ctrl-C/SIGTERM waits for owned shutdown. Standalone peer/assistant/SQL/inference
+entry points then flush their output and dispose the dedicated Node process,
+including lingering socket close handshakes. A failed cleanup or flush is
+nonzero; preserve the original device and operation references. Importing these
+runners never exits an embedding process or closes its sibling listeners. The
+shared `helpers/cli-lifetime.mjs` is included in the downloaded kit.
+
 Several browser tabs attach to one profile owner. SharedWorker is preferred; the
 fallback uses an exclusive Web Lock and authenticated local routes. A tab closes
 its attachment, leaving the shared signer and sibling views intact. Drafts and

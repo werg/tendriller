@@ -159,6 +159,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
     throw new HttpError(409, 'operation_id_conflict', 'This operation ID already identifies different signed work.');
   const deadline = AbortSignal.any([req.signal, AbortSignal.timeout(7000)]), excluded = new Set<string>();
   let selectedGeneration = '', selectedDevice = '', providerBinding = '', value: unknown, uncertain: string | null = null;
+  let readTimeout: { error: HttpError; generation: string } | undefined;
   const reference = () => ({ applicationId, deviceId: selectedDevice || existing?.device_id, operationId,
     generation: existing?.source_generation ?? selectedGeneration,
     ...(existing?.reference ? JSON.parse(existing.reference) : {}), agentBindingId: consumer.id,
@@ -203,6 +204,12 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
           selectedGeneration = generation; selectedDevice = existing.device_id; providerBinding = existing.provider_binding_id;
           return { generation, adapter: null, pending: null };
         }
+        // Admission above rechecks the grant and connection. Exhausting read
+        // fallbacks must not turn a connected participant's timeout into offline.
+        if (readTimeout) {
+          if (generation !== readTimeout.generation) throw new HttpError(409, 'application_generation_changed');
+          throw readTimeout.error;
+        }
         throw new HttpError(503, writes ? 'provider_offline' : 'application_participant_offline',
           writes ? 'Start the selected provider or have the owner explicitly hand over new work. Existing operations keep their original signer.'
             : 'Start an enrolled application participant.');
@@ -238,6 +245,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
     catch (error) {
       if (operationId) { uncertain = error instanceof HttpError ? error.code : 'operation_uncertain'; break; }
       if (!(error instanceof HttpError) || !['application_participant_offline', 'application_call_timed_out'].includes(error.code) || deadline.aborted) throw error;
+      if (error.code === 'application_call_timed_out') readTimeout = { error, generation: admitted.generation! };
       excluded.add(admitted.adapter!.hash);
     }
   }

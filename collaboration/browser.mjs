@@ -111,6 +111,7 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
     globalThis.removeEventListener?.('pagehide',pagehide);globalThis.removeEventListener?.('pageshow',visibility);};
 }
 function facade({session,transport,channel,worker,route,options}){
+  transport.bindRequestSource(session);
   let detached=false,releasing;
   // An attached session holds a retained signing key and signed work: keep it durable.
   const storagePersisted=options.persistStorage===false?Promise.resolve(null):requestPersistentStorage();
@@ -151,7 +152,7 @@ async function sharedRoute(url,options,handshake){
     const ready=waitFor(worker.port,data=>data.type==='ready'&&data.id===id,options);
     worker.port.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'shared',id,profileId:options.profileId});
     const active=await ready;transport=createSharedRootEndpoint(worker.port,{profileId:options.profileId,rootId:id,
-      ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs});
+      ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
     const session=await connectApplicationOwner(transport,handshake);
     return facade({session,transport,worker,route:'shared',options});
   }catch(error){
@@ -167,7 +168,7 @@ async function attachExisting(options,handshake,waitMs){
     const ready=waitFor(channel,data=>isOwnerAnnouncement(data,options.profileId),{...options,timeoutMs:waitMs});
     channel.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'discover'});
     let active;try{active=await ready;}catch(error){if(error?.code==='OWNER_UNREACHABLE'){channel.close();return null;}throw error;}
-    transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs});
+    transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
     const session=await connectApplicationOwner(transport,handshake);
     return facade({session,transport,channel,route:'existing',options});
   }catch(error){await transport?.close();channel.close();throw error;}
@@ -183,7 +184,7 @@ async function elected(url,options,handshake){
     worker.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'elected',id,profileId:options.profileId});booted=true;
     channel.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'discover'});
     const active=await ready;transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,
-      onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs});
+      onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
     const session=await connectApplicationOwner(transport,handshake);
     return facade({session,transport,channel,worker,route:'elected',options});
   }catch(error){await transport?.close();channel.close();

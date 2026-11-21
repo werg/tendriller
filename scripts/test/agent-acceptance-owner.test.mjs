@@ -19,6 +19,7 @@ test('bounded local Chromium owner: login, exact review, checklist interaction, 
   <label><input type="checkbox">Allow checklist</label><button onclick="document.querySelector('output').textContent='Approved'">Approve</button><output></output>
   <label>New item<input id="new"></label><button onclick="localStorage.item=document.querySelector('#new').value;document.querySelector('#list').textContent=localStorage.item">Add</button>
   <div id="list"></div><input id="measured-device" value="${'11'.repeat(32)}"><ul id="measured-rows"><li><label><input data-item-id="row-1">Measured marker</label></li></ul>
+  <details><summary>Owned recovery</summary><button>Explicit recovery action</button></details>
   <script>document.querySelector('#list').textContent=localStorage.item||'';window.tendril={identity:{page:'fixture',publication:'pub',version:1}}</script>`;
   const server = createServer((req, res) => res.end(fixture));
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -29,6 +30,10 @@ test('bounded local Chromium owner: login, exact review, checklist interaction, 
   const origin = `http://127.0.0.1:${server.address().port}`, records = [];
   const owner = new Owner({ context, access: { origin, loginUrl: origin + '/auth/test', code: 'local-fixture-only' }, record: value => records.push(value) });
   await owner.login();
+  await owner.act({ action: 'open-details', name: 'Owned recovery' });
+  await owner.act({ action: 'open-details', name: 'Owned recovery' });
+  assert.equal(await owner.page.locator('details').evaluate(node => node.open), true);
+  await assert.rejects(owner.act({ action: 'open-details', name: 'Wrong recovery' }), /exact visible/);
   await assert.rejects(owner.act({ action: 'review', expected: ['a', 'b', 'c'], permissions: ['Allow checklist'], button: 'Approve' }), /exact visible/);
   await assert.rejects(owner.act({ action: 'review', expected: { fingerprint: 'Wrong', rights: 'Rights: checklist write', retainedPrefix: 'Retained prefix: 12' }, permissions: ['Allow checklist'], button: 'Approve' }));
   assert.equal(await owner.page.getByRole('checkbox').isChecked(), false);

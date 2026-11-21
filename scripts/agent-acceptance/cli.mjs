@@ -50,6 +50,14 @@ function exactOrigin(value) {
   return value;
 }
 
+export function prerequisiteFailure(error, values, stage) {
+  if (values.access && error.code === 'ENOENT' && error.path && resolve(error.path) === resolve(values.access))
+    return { stage, prerequisiteCode: 'owner_access_missing',
+      nextAction: 'Supply the private review-access record for the selected service origin, then start a new attempt. No model turn or application was started.' };
+  return { stage, prerequisiteCode: /^[a-z_]+$/.test(error.code ?? '') ? error.code : 'see-private-failure-record',
+    nextAction: 'Read failure.jsonl for the exact prerequisite and service next action. Preserve this run; start a new baseline after resolving it.' };
+}
+
 export async function run(values) {
   if (!values.output) throw Error('Explicit --output is required');
   const smoke = values.command === 'protocol-smoke';
@@ -222,9 +230,7 @@ export async function run(values) {
     await done; return directory;
   } catch (error) {
     evidence.private('failure', { code: error.code ?? 'harness-error', message: error.message });
-    evidence.data.failure = { stage: host ? 'agent-runtime' : 'preflight-or-owner',
-      prerequisiteCode: /^[a-z_]+$/.test(error.code ?? '') ? error.code : 'see-private-failure-record',
-      nextAction: 'Read failure.jsonl for the exact prerequisite and service next action. Preserve this run; start a new baseline after resolving it.' };
+    evidence.data.failure = prerequisiteFailure(error, values, host ? 'agent-runtime' : 'preflight-or-owner');
     await close(); throw Error('Acceptance run blocked; see the private report. Raw diagnostics withheld.');
   } finally { process.removeListener('SIGTERM', signal); process.removeListener('SIGINT', signal); }
 }

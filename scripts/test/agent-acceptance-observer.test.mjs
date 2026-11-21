@@ -86,6 +86,52 @@ test('maintained observer proves native-to-browser from measured rows and signed
   assert(!readFileSync(join(f.runDirectory, 'report.json'), 'utf8').includes('PRIVATE_HANDLE'));
 });
 
+test('colon-derived row identity binds the actual signed event, native projection and browser row', async t => {
+  const f = await fixture(t);
+  Object.assign(f.config.query, { operationId: null, eventTopic: 'note', eventIdEncoding: 'author-operation-colon', rowId: '/id' });
+  f.config.browser.rowIdentityAttribute = 'data-item-id'; f.save();
+  const config = loadObserverConfig(f.configPath, f.request);
+  const measured = await sessionMeasurement(f.session, config, p, { operationId: 'stable-observer-op', author: f.session.deviceId, command: 'addNote' });
+  const rowId = `${f.session.deviceId}:stable-observer-op`;
+  measured.rows = measured.rows.map(row => ({ ...row, id: `${row.author}:${row.operationId}` }));
+  let browserId = rowId;
+  f.page.locator = () => ({ count: async () => 1, inputValue: async () => f.browserSigner.publicKey,
+    allInnerTexts: async () => ['Observer marker'], evaluateAll: async () => [browserId] });
+  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath,
+    owner: { page: f.page }, native: async () => measured, packages: f.packages });
+  assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'passed');
+  browserId = `${f.browserSigner.publicKey}:stable-observer-op`;
+  assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'failed');
+  browserId = rowId; measured.events[0].author = f.browserSigner.publicKey;
+  const substituted = await observer.observe({ check: 'agent-to-browser' });
+  assert.equal(substituted.status, 'failed'); assert(substituted.evidence.mismatches.includes('event-author'));
+});
+
+test('MCP adapter inspection retains signed proof across terminal namespace isolation and rejects substitutions', async t => {
+  const f = await fixture(t), file = join(f.directory, 'mcp-inspection.json');
+  const event = { type: 'mcpToolCall', server: 'tendriller', tool: 'inspect_application_operation',
+    arguments: { applicationId: f.session.applicationId, operationId: 'client-alias' }, result: { content: [{ type: 'text', text: '' }] } };
+  const body = { operationId: 'client-alias', operationReference: { applicationId: f.session.applicationId, historyId: f.session.historyId,
+    deviceId: f.session.deviceId, operationId: 'stable-observer-op', attemptId: f.snapshot.operation.attempt.id },
+  operation: { state: f.snapshot.operation.state, attempt: f.snapshot.operation.attempt } };
+  const save = () => { event.result.content[0].text = JSON.stringify(body); writeFileSync(file, JSON.stringify(event)); };
+  save(); const config = { ...f.loaded, native: { ...f.loaded.native, mcpOperations: { 'stable-observer-op': { file } } } };
+  const attached = new Proxy(f.session, { get(target, key) {
+    if (key === 'operations') return { inspect: async () => null };
+    const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
+  } });
+  const options = { operationId: 'stable-observer-op', author: f.session.deviceId, command: 'addNote' };
+  const proof = await sessionMeasurement(attached, config, p, options);
+  assert.equal(proof.operation.signatureVerified, true); assert.equal(proof.operation.inspectionSource, 'recorded-selected-origin-mcp-inspection');
+  assert.match(proof.operation.inspectionEventSha256, /^[a-f0-9]{64}$/);
+  body.operation.attempt.signature = '00'.repeat(64); save();
+  await assert.rejects(sessionMeasurement(attached, config, p, options), /attempt-signature/);
+  body.operation.attempt = structuredClone(f.snapshot.operation.attempt); event.server = 'another-host'; save();
+  await assert.rejects(sessionMeasurement(attached, config, p, options), /inspection-mcp-server/);
+  event.server = 'tendriller'; body.operationReference.operationId = 'other-operation'; save();
+  await assert.rejects(sessionMeasurement(attached, config, p, options), /inspection-reference-operationId/);
+});
+
 test('missing measurements block; duplicate application, replaced signer and changed configured identity fail', async t => {
   const f = await fixture(t);
   const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, native: async () => f.snapshot, packages: f.packages });

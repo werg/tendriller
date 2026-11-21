@@ -156,11 +156,36 @@ async function main() {
     clearTimeout(timer); process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort);
   }
 }
+// Only this executable owns process lifetime. Session libraries must finish
+// their cleanup before we dispose lingering transport handles. In particular,
+// watch does not settle main() until its awaited change loop has stopped.
+let outputFailed = false;
+for (const stream of [process.stdout, process.stderr]) stream.on('error', () => { outputFailed = true; });
+function flushOutput(stream) {
+  if (stream.destroyed) return Promise.resolve(false);
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = error => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); stream.removeListener('error', finish); resolve(!error);
+    };
+    const timer = setTimeout(() => finish(Error('Output flush deadline')), 1000);
+    stream.once('error', finish);
+    // A queued callback follows all prior writes, including console.error's
+    // asynchronous pipe writes. Do not end shared stdio or wait without a bound.
+    try { stream.write('', finish); } catch (error) { finish(error); }
+  });
+}
 main().catch(error => {
+  const exit = error?.exit;
+  process.exitCode = Number.isInteger(exit) && exit >= 1 && exit <= 255 ? exit : 1;
   console.error(JSON.stringify({ error: { code: error.code ?? 'command_failed', message: error.message },
     diagnostic: diagnosticFinding(error, { scope: error.scope ?? {} }),
     ...(Number.isInteger(error.status) ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}),
     ...(error.publication ? { publication: error.publication } : {}),
     ...(error.cleanupError ? { cleanup: { code: error.cleanupError.code ?? 'cleanup_failed', message: error.cleanupError.message } } : {}) }));
-  process.exitCode = error.exit ?? 1;
+}).finally(async () => {
+  const flushed = await Promise.all([process.stdout, process.stderr].map(flushOutput));
+  if ((outputFailed || flushed.includes(false)) && !process.exitCode) process.exitCode = 1;
+  process.exit(process.exitCode ?? 0);
 });

@@ -10,6 +10,7 @@ import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupe
 import { definition } from './domain.mjs';
 import { devicePath, privateDirectory, project, readPrivate, readHostHandle, savePrivate } from './local.mjs';
 import { watchApplicationSetup } from '@tendriller/core/setup';
+import { createCliLifetime } from './helpers/cli-lifetime.mjs';
 import { superviseParticipant } from './helpers/participant-lifecycle.mjs';
 import { createReviewedPairingProcessor } from './pairing-native.mjs';
 
@@ -79,11 +80,13 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
     watchSetup: callbacks => watchApplicationSetup({ api: setupHandle.api, token: setupHandle.token, ...callbacks }), close: () => supervisor.close() };
 }
 
-export async function runPeer({ signal, profile = 'main' } = {}) {
+export async function runPeer({ signal, profile = 'main' } = {}, { onOwned, onClosed } = {}) {
   const owned = await openSession({ signal, profile });
-  const lifecycle = superviseParticipant({ owned, signal, watch: owned.watchSetup,
-    report: status => console.log(JSON.stringify(status)) });
+  let lifecycle;
   try {
+    onOwned?.();
+    lifecycle = superviseParticipant({ owned, signal, watch: owned.watchSetup,
+      report: status => console.log(JSON.stringify(status)) });
     console.log(JSON.stringify({ running: true, profile, deviceId: owned.session.deviceId,
       ownerInstanceId: owned.supervisor.ownerInstanceId, terminal: 'tendril --session ./session.mjs --mode attach self' }));
     owned.session.participation.onStatus(status => console.log(JSON.stringify({ connection: status.phase, error: status.error })));
@@ -91,14 +94,12 @@ export async function runPeer({ signal, profile = 'main' } = {}) {
       const snapshot = await owned.session.query('notes', null);
       console.log(JSON.stringify({ notes: snapshot.value.length, revision: snapshot.revision, change: change.kind }));
     }
-  } finally { try { await lifecycle.close(); } finally { await owned.close(); } }
+  } finally { try { await lifecycle?.close(); } finally { await owned.close(); } onClosed?.(); }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const stopped = new AbortController();
-  const stop = () => stopped.abort();
-  process.once('SIGINT', stop); process.once('SIGTERM', stop);
-  try { await runPeer({ signal: stopped.signal, profile: process.argv[2] ?? 'main' }); }
-  catch (error) { if (!stopped.signal.aborted) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; } }
-  finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
+  const cli = createCliLifetime();
+  try { await runPeer({ signal: cli.signal, profile: process.argv[2] ?? 'main' }, { onOwned: cli.opened, onClosed: cli.closed }); }
+  catch (error) { cli.fail(error); }
+  process.exit(await cli.finish());
 }

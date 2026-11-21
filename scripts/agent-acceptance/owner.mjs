@@ -43,6 +43,11 @@ export class Owner {
     if (!page) throw Error('Owner browser unavailable; use an external host adapter');
     const { action } = input;
     if (action === 'navigate') await page.goto(ownerUrl(this.access.origin, input.url, publishedPageUrl));
+    else if (action === 'open-details') {
+      const summary = page.locator('summary').filter({ hasText: input.name });
+      if (await summary.count() !== 1 || (await summary.innerText()).trim() !== input.name) throw Error('Select one exact visible details summary');
+      if (!await summary.evaluate(node => node.parentElement.open)) await summary.click();
+    }
     else if (action === 'open-link') {
       const href = await page.getByRole('link', { name: input.name, exact: true }).getAttribute('href');
       if (!href) throw Error('The selected link has no URL');

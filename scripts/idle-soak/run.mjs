@@ -30,6 +30,11 @@ export function nativeAssistantStatus(state, message, now = Date.now()) {
   record(state, { source: 'native', kind: 'assistant-status', online: message.online, eventsForwarding: message.eventsForwarding, eventsForwardingBlocked: message.eventsForwardingBlocked }, now);
   return true;
 }
+export function nativeStopped(state, message, now = Date.now()) {
+  if (message?.idleSoakStopped !== 1 || ['ownerClosed', 'observersSettled', 'assistantSettled', 'processDisposal'].some(key => message[key] !== true)) return false;
+  state.events.push({ kind: 'native-owned-shutdown', at: now, ownerClosed: true, observersSettled: true, assistantSettled: true, processDisposal: true });
+  return true;
+}
 export const nativeAssistantBusy = state => state?.coverage.bootstrapScope === 'native-with-mcp-adapter' && (state.coverage.mcpOnline !== true || state.coverage.eventsForwarding && state.coverage.eventsForwardingBlocked !== false);
 
 export const waitUntil = (deadline, signal) => new Promise((resolve, reject) => {
@@ -101,6 +106,7 @@ export async function run(configPath, directory) {
       if (message?.idleSoakActivity === 1) emit({ ...message, kind: 'activity' });
       if (nativeAssistantStatus(s, message)) { boundary.activity(); persist(); }
       if (nativeCoverage(s, message)) { boundary.activity(); persist(); }
+      if (nativeStopped(s, message)) persist();
     });
     native.on('error', () => { s.failures.push('NATIVE_START_FAILED'); stop(); });
     native.on('exit', (code, signal) => { s.nativeExitedAt = Date.now(); s.nativeExit = { code, signal }; s.events.push({kind:'native-exit',at:s.nativeExitedAt,code,signal}); if (!stopping) { s.failures.push('NATIVE_EXITED_DURING_SOAK'); stop(); } persist(); });
@@ -116,14 +122,14 @@ export async function run(configPath, directory) {
       const transitionStart = Date.now();
       const residency = await boundedActive(() => browser.phase(phase), {attempts:1, expiresAt:Date.now()+60000, signal:abort.signal});
       await boundedActive(() => browser.settle(), {attempts:1, expiresAt:Date.now()+60000, signal:abort.signal});
-      s.events.push({ kind: 'residency', phase, ...residency, at: Date.now(), transitionMs: Date.now() - transitionStart });
+      s.events.push({ kind: 'residency', phase, ...residency, workerBootstrap: browser.workerBootstrapEvidence(), at: Date.now(), transitionMs: Date.now() - transitionStart });
       // Complete startup and drain boundary traffic before measuring; continuous
       // activity fails this bounded barrier instead of earning idle credit.
       await boundary.wait();
       beginSegment(s, phase); s.segments.at(-1).pendingClientRequestsAtStart = { ...pending }; persist();
       await waitUntil(s.segments.at(-1).deadline, abort.signal);
       endSegment(s); persist();
-      if (phase !== 'closed') { s.events.push({ kind: 'reconnect', phase, ...await browser.reconnect(), at: Date.now() }); persist(); }
+      if (phase !== 'closed') { s.events.push({ kind: 'reconnect', phase, ...await browser.reconnect(), workerBootstrap: browser.workerBootstrapEvidence(), at: Date.now() }); persist(); }
     }
     s.status = 'collecting'; persist();
     stopping = true;
