@@ -5,6 +5,7 @@ import { basename, resolve } from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { NETWORK_PROFILES } from './scenarios.mjs';
+import { releaseAnchor, sha256 } from './anchor.mjs';
 
 const { values } = parseArgs({ options: {
   output: { type: 'string' }, image: { type: 'string', default: 'tendriller-network-lab:playwright-1.65' },
@@ -20,9 +21,10 @@ if (!application && values.profile) throw new Error('An application profile requ
 const idleMs = Number(values['idle-ms']);
 if (!Number.isSafeInteger(idleMs) || idleMs < 1000 || idleMs > 48 * 60 * 60 * 1000) throw new Error('Invalid bounded idle interval');
 let kit;
+let anchor;
 if (application) {
-  const manifest = JSON.parse(await readFile(resolve(values['artifact-root'], 'dist/manifest.json'), 'utf8'));
-  kit = manifest.first_app?.file;
+  anchor = await releaseAnchor(values['artifact-root']);
+  kit = anchor.kit;
   if (typeof kit !== 'string' || basename(kit) !== kit || !/^tendriller-first-app-[a-zA-Z0-9.-]+\.tgz$/.test(kit)) throw new Error('Invalid immutable first-app record');
 }
 const output = resolve(values.output);
@@ -30,6 +32,12 @@ await mkdir(output, { recursive: false, mode: 0o700 });
 const source = fileURLToPath(new URL('.', import.meta.url));
 const workspace = resolve(source, '../../..');
 const name = `tendriller-network-lab-${randomUUID()}`;
+await writeFile(resolve(output, 'run.json'), JSON.stringify({ version: 1, startedAt: new Date().toISOString(),
+  observerPid: process.pid, container: name, profile: values.profile ?? null, idleMs, anchor: anchor ?? null,
+  nodeSha256: sha256(await readFile(values['node-binary'])), harnessEntrySha256: sha256(await readFile(fileURLToPath(import.meta.url))),
+  config: { image: values.image, cpus: 2, memoryBytes: 7 * 1024 ** 3, publishedPorts: [], restart: 'no',
+    idleCounterSampling: 'closed-segment-endpoints-only', localProgressIntervalMs: 60_000 },
+  scope: 'local application/host traffic; not Cloudflare billing, physical OS sleep, or future model wake' }, null, 2) + '\n', { mode: 0o600 });
 let stopped = false;
 let child;
 const command = (args, timeout = 120_000) => new Promise((accept, reject) => {
@@ -61,6 +69,7 @@ try {
         '--mount', `type=bind,source=${workspace},target=/workspace,readonly`,
         '--mount', `type=bind,source=${resolve(values['artifact-root'], 'dist')},target=/workspace/dist,readonly`,
         '--env', `NETWORK_LAB_IDLE_MS=${idleMs}`,
+        '--env', 'NETWORK_LAB_PROGRESS=/evidence/network-progress.json',
       ] : []),
       values.image, ...(values['browser-controls'] || application ? ['xvfb-run', '-a'] : []), 'node',
       ...(application ? ['/workspace/scripts/test-first-app.mjs', '--first-app-archive', `/workspace/dist/${kit}`,

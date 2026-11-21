@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { activityTimeline, assertIdle, assertDirectWork, counterDelta } from './evidence.mjs';
+import { observeIdleDuration } from './idle-progress.mjs';
 
 export const NETWORK_PROFILES = Object.freeze(['relay-upgrade', 'offline', 'impaired', 'freeze', 'background', 'idle']);
 const proofFields = ['commandApplied', 'remoteRead', 'operationIdentityPreserved', 'signalDelivered', 'cameraDelivered'];
@@ -16,6 +17,7 @@ function assertWork(proof) {
 export async function runNetworkScenario(adapter, {
   profile, idleMs = 15_000, pauseMs = 2000, signal,
   phaseMs = 45_000, timeline = activityTimeline(),
+  onProgress = async () => {},
 } = {}) {
   assert.ok(NETWORK_PROFILES.includes(profile));
   for (const duration of [pauseMs, phaseMs]) assert.ok(Number.isSafeInteger(duration) && duration > 0 && duration <= 60_000);
@@ -49,6 +51,7 @@ export async function runNetworkScenario(adapter, {
 
   try {
     timeline.record(phase, 'start');
+    await onProgress({ state: 'qualifying', profile, startedAt, at: new Date().toISOString() });
     if (profile === 'relay-upgrade') {
       // The adapter has already observed direct, applied a real packet block,
       // and waited for authenticated relay fallback. This phase proves relay
@@ -121,11 +124,21 @@ export async function runNetworkScenario(adapter, {
       const initial = await bounded(signal => adapter.snapshot({ signal }));
       timeline.record(phase, 'start', initial);
       const idleStarted = performance.now();
-      await sleep(idleMs, undefined, { signal }); // No polling/requests during this segment.
+      const numeric = value => Object.fromEntries(Object.entries(value).filter(([, number]) => typeof number === 'number'));
+      idle = { before: numeric(initial), requestedMs: idleMs, closed: false };
+      const times = await observeIdleDuration(idleMs, { signal,
+        onProgress: value => {
+          Object.assign(idle, { idleStartedAt: value.idleStartedAt, idlePlannedEndAt: value.idlePlannedEndAt });
+          return onProgress({ ...value, profile, baseline: idle.before });
+        } }); // No polling/requests during this segment.
       const final = await bounded(signal => adapter.snapshot({ signal }));
       const observedMs = performance.now() - idleStarted;
-      idle = { ...assertIdle(initial, final), requestedMs: idleMs, observedMs };
+      // Retain exact endpoints and elapsed overruns even when the zero-cost
+      // assertion fails. The report must not erase an observed nonzero segment.
+      Object.assign(idle, { ...times, after: numeric(final), observedMs, closed: true });
       timeline.record(phase, 'end', final);
+      idle.delta = counterDelta(initial, final);
+      Object.assign(idle, assertIdle(initial, final));
     }
   } catch (error) {
     failure = error;
@@ -140,6 +153,8 @@ export async function runNetworkScenario(adapter, {
     elapsedMs: performance.now() - started, supported, success: !failure && supported, cleanup, idle,
     scope: 'sealed-first-app-browser-network-emulation', timeline: timeline.snapshot(),
     hardwareScope: 'No physical mobile radio, carrier NAT or OS sleep qualification.' };
+  await onProgress({ state: failure ? 'failed' : supported ? 'complete' : 'unsupported', profile,
+    at: new Date().toISOString(), idle, cleanup, success: report.success });
   // Preserve the original assertion for the caller while making its safe report
   // available. Arbitrary exception messages never enter the public evidence.
   if (failure) { failure.networkReport = report; throw failure; }

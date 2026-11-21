@@ -93,6 +93,22 @@ minimum 1000, maximum 48 hours) for each profile. Reports retain actual elapsed
 time and all overruns. Do not run a long suite on the existing 48-hour observer;
 use a new output directory and the independent lab container.
 
+For an independent 48-hour local lab, first require a successful short `suite`
+against the exact frozen graph, then use `--profile idle --idle-ms 172800000` in a
+separate one-shot unit. Use `Restart=no`, no boot enablement and a unique output
+directory: the runner refuses an existing output directory, so a manual restart
+cannot silently recreate the application. Freeze separate harness/dependency and
+release copies before starting; preserve their hashes and unit configuration.
+This lab does not resume an interrupted idle segment or reuse the live soak.
+`run.json` records the observer PID, container name, requested profile/duration,
+Node/entry hashes, resource bounds and verified product source, runtime,
+composition, manifest and package hashes. `network-progress.json` records the
+actual idle start/planned end, baseline counters and elapsed observer liveness
+every minute. These progress writes are local file operations, with no app,
+transport or host-counter polling. Counters are measured only at the closed
+segment endpoints; an interrupted segment stays incomplete. Final evidence
+retains nonzero endpoints, exact deltas and elapsed overruns even on failure.
+
 Browser offline/online, CDP freeze/resume and background-page cases qualify those
 browser mechanisms only. Mobile viewport/network emulation does not qualify a
 physical mobile radio handover or operating-system sleep. Hardware/carrier cases
