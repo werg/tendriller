@@ -81,6 +81,13 @@ test('real packet-fault application qualification binds the immutable graph befo
   assert.doesNotMatch(qualification, /npm run (build|check)|wrangler deploy|secrets: inherit/);
   assert.match(qualification, /contents: read/);
   assert.match(qualification, /actions: read/);
+  const bind = qualification.indexOf('name: Bind the restored graph');
+  const install = qualification.indexOf('run: npm ci --ignore-scripts');
+  const restore = qualification.indexOf('run: node scripts/deployment-bundle.mjs');
+  const container = qualification.indexOf('run: node test/e2e/network-qualification/run.mjs');
+  assert(bind >= 0 && install > bind && restore > install && container > restore,
+    'Flat CI archives must restore server/public before mounting the source tree read-only');
+  assert.match(qualification.slice(restore, container), /TENDRILLER_EXPECTED_MANIFEST_SHA256:.*inputs.manifest_sha256/);
 });
 
 
