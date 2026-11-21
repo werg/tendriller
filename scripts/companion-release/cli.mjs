@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { publishedTuple, qualifyContrib, json, REPOS, validateTuple, commit } from './tuple.mjs';
-import { githubApi, capabilities, openProposal, dispatchQualification } from './github.mjs';
+import { githubApi, capabilities, submitProposal } from './github.mjs';
 import { planProposal } from './proposal.mjs';
 import { waitingReceipt } from './receipt.mjs';
 
@@ -58,10 +58,8 @@ An apply run verifies everything again; it cannot apply a stored proposal file.`
     await mkdir(output, { recursive: true, mode: 0o700 });
     await writeFile(resolve(output, 'tuple.json'), json(tuple));
     await writeFile(resolve(output, 'proposal.json'), json(plan));
-    let result = !Object.keys(plan.files).length ? { state: 'unchanged', tupleId: tuple.id, noMutations: true } : values.apply ? await openProposal(plan, { authKind: values['auth-kind'] }) :
+    const result = !Object.keys(plan.files).length ? { state: 'unchanged', tupleId: tuple.id, noMutations: true } : values.apply ? await submitProposal(plan, { authKind: values['auth-kind'] }) :
       { state: 'dry-run', tupleId: tuple.id, repository: plan.repository, files: Object.keys(plan.files), noMutations: true };
-    if (values.apply && ['opened', 'existing'].includes(result.state)) result = { ...result,
-      qualification: await dispatchQualification(plan, result.head) };
     await writeFile(resolve(output, 'result.json'), json(result)); console.log(json(result));
   }
 } catch (error) {
