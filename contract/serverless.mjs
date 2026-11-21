@@ -66,15 +66,20 @@ export function createServerlessHostAdapter({
 
   async function withActiveSession(signal, run) {
     return serialize(async () => {
+      signal?.throwIfAborted();
       const owned = await openSession({ store, signal });
       if (!owned?.session) throw fail('SERVERLESS_SESSION_INVALID', 'openSession must return { session }.');
       try {
-        const result = await run(owned);
-        if (typeof owned.flush === 'function') await owned.flush();
-        return result;
+        signal?.throwIfAborted();
+        return await run(owned);
       } finally {
-        if (typeof owned.close === 'function') await owned.close();
-        else if (typeof owned.session.close === 'function') await owned.session.close();
+        // A rejected wait can follow a durable saved command. Flush that original
+        // intent on every exit, so a lost/aborted response remains inspectable.
+        try { if (typeof owned.flush === 'function') await owned.flush(); }
+        finally {
+          if (typeof owned.close === 'function') await owned.close();
+          else if (typeof owned.session.close === 'function') await owned.session.close();
+        }
       }
     });
   }
@@ -90,6 +95,11 @@ export function createServerlessHostAdapter({
         const allowed = await authorize(request);
         if (!allowed) throw fail('unauthorized', 'Unauthorized serverless host request.', 401);
       }
+      const commandInput = item => {
+        if (!item || typeof item.command !== 'string' || !item.command.length || typeof item.operationId !== 'string' || !item.operationId.length || item.operationId.length > 256)
+          throw fail('invalid_command', 'Supply a command and the original explicit operationId.', 400);
+        return item;
+      };
       const prefix = `/v1/apps/${applicationId}`;
       if (!url.pathname.startsWith(prefix)) throw fail('not_found', 'Unknown serverless route.', 404);
       const rest = url.pathname.slice(prefix.length);
@@ -105,7 +115,7 @@ export function createServerlessHostAdapter({
         return jsonResponse(value);
       }
       if (rest === '/commands' && request.method === 'POST') {
-        const body = await request.json();
+        const body = commandInput(await request.json());
         const result = await withActiveSession(request.signal, async ({ session }) => {
           const op = await session.command(body.command, body.input, {
             operationId: body.operationId,
@@ -123,6 +133,7 @@ export function createServerlessHostAdapter({
       if (rest === '/commands/batch' && request.method === 'POST') {
         const body = await request.json();
         if (!Array.isArray(body?.commands) || body.commands.length > 64) throw fail('invalid_batch', 'Supply 0..64 commands.', 400);
+        body.commands.forEach(commandInput);
         const results = await withActiveSession(request.signal, async ({ session }) => {
           const out = [];
           for (const item of body.commands) {

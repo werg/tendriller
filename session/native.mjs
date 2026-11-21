@@ -372,17 +372,12 @@ export async function connectOrStartNativeSession({
     try {
       owner = await openOwner({ signal, profileId });
       if (!owner?.session) throw failure('SUPERVISOR_OWNER_INVALID');
-      return {
-        session: owner.session,
-        mode: 'bounded',
-        owner,
-        async close() {
-          try { await owner.close(); } finally { await lock.release(); }
-        },
-        async detach() {
-          try { await owner.close(); } finally { await lock.release(); }
-        },
-      };
+      signal?.throwIfAborted();
+      let closing;
+      const close = () => closing ??= (async () => {
+        try { await owner.close(); } finally { await lock.release(); }
+      })();
+      return { session: owner.session, mode: 'bounded', owner, close, detach: close };
     } catch (error) {
       try { await owner?.close(); } catch {}
       await lock.release();
@@ -431,10 +426,8 @@ export async function connectOrStartNativeSession({
       });
       return { ...attached, startedSupervisor: false, close: attached.detach };
     } catch (attachError) {
-      if (!['ENOENT', 'ECONNREFUSED', 'OWNER_UNREACHABLE', 'IPC_PRIVATE_PATH_INVALID'].includes(attachError?.code)) {
-        // Re-check if the live supervisor is unresponsive vs genuine auth/definition mismatch.
-        if (['SUPERVISOR_BINDING_REVOKED', 'SUPERVISOR_AUTHENTICATION_REQUIRED'].includes(attachError?.code)) throw attachError;
-      }
+      signal?.throwIfAborted();
+      if (!['ENOENT', 'ECONNREFUSED', 'OWNER_UNREACHABLE'].includes(attachError?.code)) throw attachError;
     }
 
     // 2. No live instance answered; try starting the shared supervisor atomically.
