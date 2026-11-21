@@ -170,4 +170,19 @@ test('isolated host forwards WebSocket ownership and finishes the cold hibernata
   const retired = await (await fetch(route(proxied, '/state', 'owned'))).json();
   assert.equal(retired.code, 1000);
   assert.equal(retired.reason, 'Owner completed cleanup');
+
+  // Independent counters include both physical directions and distinguish relay
+  // application frames from control/signaling traffic and unrelated sockets.
+  const before = await (await fetch(new URL('/__first_app_transport', proxied))).json();
+  const relay = await open(proxied, 'measured-relay', '/peers/relay');
+  const binary = new Uint8Array([1,2,3,4,5,6]);
+  const echoed = new Promise(resolve => relay.socket.addEventListener('message', resolve, {once:true}));
+  relay.socket.send(binary); await deadline(echoed, 'Measured relay did not echo');
+  const after = await (await fetch(new URL('/__first_app_transport', proxied))).json();
+  assert.equal(after.instance, before.instance);
+  assert.equal(after.relayUpgrades - before.relayUpgrades, 1);
+  assert.equal(after.relayBinaryFrames - before.relayBinaryFrames, 2);
+  assert.equal(after.relayBinaryBytes - before.relayBinaryBytes, binary.byteLength * 2);
+  relay.socket.close(1000, 'measurement finished');
+  await closedCleanly(relay, {code:1000,reason:'measurement finished'});
 });

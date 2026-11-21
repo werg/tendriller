@@ -41,7 +41,7 @@ jobs:
   browser:
     needs: [artifacts]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +69,8 @@ jobs:
         env:
           FIRST_APP_NO_SHARED_WORKER: '1'
         run: npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz" --report .results/first-app-elected.json
+      - name: Qualify automatic relay fallback when RTC is unavailable
+        run: npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz" --transport relay --report .results/first-app-relay.json
       - name: Qualify shared and elected application owners in Chromium
         run: npm run test:collaboration:browser
       - uses: actions/upload-artifact@v4
