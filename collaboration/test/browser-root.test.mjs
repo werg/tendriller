@@ -63,9 +63,9 @@ async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = 
       const ready = next(pair.port2, data => ['ready', 'failure'].includes(data.type));
       pair.port2.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'boot', mode: 'shared', profileId: 'retained', id: rootId });
       return ready;
-    }, control(type, ownerInstanceId) {
+    }, control(type, ownerInstanceId, extra = {}) {
       const id = crypto.randomUUID(), response = next(pair.port2, data => data.id === id);
-      pair.port2.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: `root.${type}`, profileId: 'retained', ownerInstanceId, rootId, id });
+      pair.port2.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: `root.${type}`, profileId: 'retained', ownerInstanceId, rootId, id, ...extra });
       return response;
     } };
   }
@@ -107,10 +107,10 @@ test('pending roots are bounded and explicit cancellation or timeout releases th
   const attached = await f.attach(); assert.equal(attached.client.status.database, 'idle');
 });
 
-test('SharedWorker leases respect suspension and reclaim only an unreachable root', async t => {
+for (const action of ['suspend','park']) test(`SharedWorker leases respect ${action} and reclaim only an unreachable root`, async t => {
   const f = await fixture(t, { rootLimits: { idleTimeoutMs: 100 } }), active = await f.attach();
   const abandoned = f.root(), ready = await abandoned.boot();
-  await abandoned.control('suspend', ready.ownerInstanceId); await delay(170);
+  await abandoned.control(action, ready.ownerInstanceId, action === 'park' ? { frozen: false } : {}); await delay(170);
   assert.equal(abandoned.server.closed, false); assert.equal(active.client.signal.aborted, false);
   await abandoned.control('resume', ready.ownerInstanceId);
   await until(() => abandoned.server.closed, 'resumed unreachable root');
