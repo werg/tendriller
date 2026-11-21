@@ -12,6 +12,8 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
     plugins: [{ name: 'session-fixture', setup(build) {
       build.onResolve({ filter: /^(?:@tendriller\/core\/collaboration\/browser|@chronolog\/peer-session\/tendriller|\.\/pairing-browser\.mjs)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
       build.onResolve({ filter: /^@tendriller\/core\/collaboration$/ }, () => ({ path: new URL('../../../collaboration/index.mjs', import.meta.url).pathname }));
+      // Exercise the public SDK artifact, including its startup-ready lifecycle.
+      build.onResolve({ filter: /^@tendriller\/core\/collaboration\/live-view$/ }, () => ({ path: new URL('../../../dist/sdk/collaboration/live-view.mjs', import.meta.url).pathname }));
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `
         export const createApplicationBackend = () => ({});
         export const requestPersistentStorage = async () => null;
