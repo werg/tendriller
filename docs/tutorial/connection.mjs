@@ -28,8 +28,9 @@ export function describeConnectionError(error, { appName = 'this app' } = {}) {
     return copy('Sign in to continue', `Your sign-in for ${appName} has ended. Reload the page to sign in again.`, false, { action: 'reload' });
   if (['PAIRING_STORAGE_REQUIRED', 'PAIRING_LOCK_REQUIRED', 'OWNER_CAPABILITY_UNAVAILABLE', 'QuotaExceededError', 'PAIRING_STORAGE_CORRUPT'].includes(code))
     return copy('This browser can’t keep the app’s key', 'Private browsing or blocked site storage prevents it. Open the page in a normal tab.', false);
-  if (['pairing_rate_limited', 'pairing_ledger_full', 'PAIRING_HISTORY_FULL', 'rate_limited'].includes(code))
+  if (['pairing_rate_limited', 'pairing_ledger_full', 'rate_limited'].includes(code))
     return copy('Too many attempts', 'Wait a minute; the page tries again by itself.');
+  if (code === 'PAIRING_HISTORY_FULL') return copy('This browser needs setup help', 'Ask your agent to inspect the retained requests and enroll this browser’s existing device key using the manual enrollment route. Keep this browser’s storage and saved requests.', false, { action: 'help' });
   if (code === 'denied') return copy('The request was declined', `This browser was not added to ${appName}.`, false, { action: 'renew' });
   if (code === 'revoked') return copy('This browser’s access was removed', `Ask the owner of ${appName} to admit your account again.`, false);
   if (code === 'reconciliation_required') return copy('Setup needs attention', `${appName}’s participant has to reconcile this request. Keep it running; this page retries.`);
@@ -65,7 +66,7 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
     if (target.href.length > 2048) target.pathname = '/';
     const url = new URL(status.reviewUrl); url.searchParams.set('return_to', target.href); return url.href;
   };
-  let renewRequested = false, started = false;
+  let renewRequested = false, automaticRenewals = 0, started = false;
   const visibility = () => { if (document.visibilityState === 'visible') nudge(); };
   const deadline = () => AbortSignal.any([lifetime.signal, AbortSignal.timeout(35_000)]);
   const nudge = () => wake();
@@ -77,8 +78,17 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
     let status = retained?.pairingId ? await pairing.refresh({ signal: deadline() }) : await pairing.request({ signal: deadline() });
     lifetime.signal.throwIfAborted();
     if (status.state === 'challenge') status = await pairing.request({ signal: deadline() });
-    if (['expired', 'stale'].includes(status.state) || renewRequested && status.state === 'denied')
+    if (['expired', 'stale'].includes(status.state) || renewRequested && status.state === 'denied') {
+      // One automatic recovery per visit. An unattended tab must never consume
+      // the complete retained review ledger while its native participant is away.
+      if (!renewRequested && automaticRenewals >= 1) {
+        set({ phase: 'failed', title: 'Setup request expired', detail: `Keep ${appName}’s participant running, then request another review for this same browser.`,
+          action: { label: 'Request another review', run: () => (renewRequested = true, restart()) } });
+        return 'stop';
+      }
+      automaticRenewals++;
       status = await pairing.request({ newReview: true, signal: deadline() });
+    }
     renewRequested = false;
     lifetime.signal.throwIfAborted();
     if (status.state === 'committed') return 'connect';
@@ -122,7 +132,7 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
           catch (failure) {
             if (lifetime.signal.aborted) return;
             const copy = describeConnectionError(failure, { appName });
-            set({ phase: copy.retry ? 'connecting' : 'failed', ...copy, ...(copy.action === 'reload' ? { action: { label: 'Reload', run: () => location.reload() } } : {}) });
+            set({ phase: copy.retry ? 'connecting' : 'failed', ...copy, ...(copy.action === 'reload' ? { action: { label: 'Reload', run: () => location.reload() } } : copy.action === 'help' ? { action: { label: 'Setup recovery guide', run: () => navigate(new URL('/docs/TROUBLESHOOTING.md', configuration.serviceOrigin).href) } } : {}) });
             if (!copy.retry) return;
             next = 'wait';
           }

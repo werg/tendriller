@@ -39,3 +39,9 @@ test('retained inspection receives a finite abort scope and close cancels it',as
   let scope;const f=fixture(t,{pairing:{read:()=>({pairingId:'id'}),refresh:({signal})=>{scope=signal;return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));}}});
   const run=f.controller.start();await wait(()=>scope);f.controller.close();await run;assert.equal(scope.aborted,true);
 });
+test('an unattended offline participant cannot consume the retained review budget',async t=>{
+  let renewals=0;
+  const f=fixture(t,{pairing:{read:()=>({pairingId:'id'}),refresh:async()=>({state:'expired'}),request:async()=>{renewals++;return {state:'pending'};}}});
+  const run=f.controller.start();await wait(()=>renewals===1);await tick();f.events.dispatchEvent(new Event('focus'));await run;
+  assert.equal(renewals,1);assert.equal(f.controller.state.phase,'failed');assert.equal(f.controller.state.action.label,'Request another review');
+});

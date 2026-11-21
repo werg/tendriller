@@ -585,7 +585,7 @@ Opening the page is the whole flow; agents keep it when adapting the UI:
 
 If the owner leaves the approval without deciding, the page offers one
 **Approve this browser** action. Expired or stale requests are renewed for the
-same device; a denied request waits for an explicit **Ask again**. A request that
+same device once automatically per visit; further expiry waits for **Request another review**, so an unattended tab cannot exhaust its retained history. A denied request waits for an explicit **Ask again**. A request that
 the participant committed while the page was away is found on the next open.
 Errors are shown in user words (`describeConnectionError`), with the code folded
 into technical details; never show raw codes such as `APPLICATION_DEVICE_NOT_FOUND`
