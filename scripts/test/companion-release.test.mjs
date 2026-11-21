@@ -20,7 +20,7 @@ function archive(provenance, pkg) {
     return readFileSync(join(root, 'session.tgz'));
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
-function fixture() {
+function fixture({ provenanceChanges = {}, packageChanges = {} } = {}) {
   const core = { repository: REPOS.core, source: sha('a'), sourceTree: sha('b'), dirty: false };
   const kernel = { repository: REPOS.kernel, source: sha('d'), sourceTree: sha('e'), dirty: false };
   const bytes = new Map(), calls = [];
@@ -29,8 +29,8 @@ function fixture() {
     return { role, file, sha256: digest(bytes.get(file)), size: bytes.get(file).length,
       url: `https://github.com/werg/tendriller/releases/download/source-${core.source}/${file}` };
   };
-  const pkg = { name: '@chronolog/peer-session', exports: { './webrtc-native': './webrtc-native.mjs' }, dependencies: { werift: '0.27.0' } };
-  const provenance = { format: 'chronolog-peer-session-package/v1', ...kernel };
+  const pkg = { name: '@chronolog/peer-session', exports: { './webrtc-native': './webrtc-native.mjs' }, dependencies: { werift: '0.27.0' }, ...packageChanges };
+  const provenance = { format: 'chronolog-peer-session-package/v1', ...kernel, nativeRtc: true, sqlEngines: [], ...provenanceChanges };
   const components = ['sdk', 'runtime', 'engine', 'tools', 'starter'].map(role => asset(role, `${role}.tgz`));
   components.push(asset('session', 'session.tgz', archive(provenance, pkg)));
   const composition = seal({ format: 'tendriller-release-composition-v1', version: '1.2.3', contract: 3,
@@ -91,6 +91,14 @@ test('tuple mutation, shortened override and wrong stage are rejected', async ()
   assert.throws(() => select(tuple, 'contrib', { TENDRILLER_REF: 'main' }));
   assert.throws(() => select(tuple, 'chronolog'));
   assert.throws(() => validateTuple({ ...tuple, stage: 'qualified' }));
+});
+test('authenticated archives still must declare the exact clean standard session profile', async t => {
+  const variants = [
+    { provenanceChanges: { dirty: true } }, { provenanceChanges: { source: sha('f') } },
+    { provenanceChanges: { nativeRtc: false } }, { provenanceChanges: { sqlEngines: ['native'] } },
+    { packageChanges: { exports: {} } }, { packageChanges: { dependencies: { werift: '^0.27.0' } } },
+  ];
+  for (const [i, options] of variants.entries()) await t.test(String(i), async () => { await assert.rejects(fixture(options).check()); });
 });
 
 function addQualification(f, tuple) {

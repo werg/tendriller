@@ -94,6 +94,8 @@ export async function publishedTuple(source, { api, fetcher, manifestSha256, sig
   const p = session.provenance;
   assert.equal(p.format, 'chronolog-peer-session-package/v1');
   for (const key of ['repository', 'source', 'sourceTree', 'dirty']) assert.equal(p[key], kernel[key], `Session ${key} mismatch`);
+  assert.equal(p.nativeRtc, true, 'Require the standard default native RTC profile');
+  assert.deepEqual(p.sqlEngines, [], 'The default session archive must keep SQL engines separate');
   assert.equal(session.pkg.name, '@chronolog/peer-session');
   assert(session.pkg.exports?.['./webrtc-native'], 'Standard native RTC export missing');
   assert.equal(session.pkg.dependencies?.werift, '0.27.0', 'Standard native dependency must be exact');
