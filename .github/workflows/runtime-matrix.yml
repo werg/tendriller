@@ -14,6 +14,10 @@ on:
       - 'scripts/bootstrap/**'
       - 'scripts/tendriller-bootstrap.mjs'
 
+concurrency:
+  group: portable-primitives-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
