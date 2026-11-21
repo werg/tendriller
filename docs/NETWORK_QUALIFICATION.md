@@ -125,7 +125,11 @@ grow by zero; eventual success through fallback cannot qualify. Host metadata
 requests are measured separately. The normal DOM check follows foreground
 restoration, so paused hidden painting is not treated as replication failure.
 
-An idle segment starts after connection/recovery work settles. Counter snapshots
+An idle segment starts after application connection/recovery work settles and the
+independent native setup watch has reconnected, received its current initial notice,
+and completed the resulting pairing reconciliation. The test observes the real
+supervisor callbacks before sampling the baseline; direct data readiness alone
+does not establish control-channel recovery. This adds no polling or settling sleep. Counter snapshots
 must share one epoch and be monotonic. Its exact host-request and relay-payload
 deltas must both be zero; no overrun is subtracted. A short observed segment does
 not establish long-idle behavior. Model turns are `null` when not observed;
