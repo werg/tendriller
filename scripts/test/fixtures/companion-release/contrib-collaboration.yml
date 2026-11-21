@@ -1,0 +1,120 @@
+name: Exact multi-participant composition
+on:
+  push:
+    paths:
+      - 'distribution/download-core-release.mjs'
+      - '.github/workflows/collaboration.yml'
+      - 'cookbooks/coordinate-participants/**'
+      - 'cookbooks/share-live-signals/snippets/live-run.mjs'
+  pull_request:
+    paths:
+      - 'distribution/download-core-release.mjs'
+      - '.github/workflows/collaboration.yml'
+      - 'cookbooks/coordinate-participants/**'
+      - 'cookbooks/share-live-signals/snippets/live-run.mjs'
+  workflow_dispatch:
+    inputs:
+      chronolog_ref:
+        description: Exact immutable Chronolog commit
+        required: false
+        type: string
+        default: 'e802f1658cef71ab12711e0921cdc802bbb8d2d0'
+      tendriller_ref:
+        description: Exact immutable core collaboration commit
+        required: false
+        type: string
+        default: '79b6845df411e3a910b662b31bae789da38d0bf9'
+permissions:
+  contents: read
+concurrency:
+  group: collaboration-${{ github.head_ref || github.ref_name }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ inputs.chronolog_ref }}-${{ inputs.tendriller_ref }}
+  cancel-in-progress: true
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CHRONOLOG_REF: ${{ inputs.chronolog_ref || 'e802f1658cef71ab12711e0921cdc802bbb8d2d0' }}
+      CORE_REF: ${{ inputs.tendriller_ref || '79b6845df411e3a910b662b31bae789da38d0bf9' }}
+    steps:
+      - name: Require exact companion source
+        shell: bash
+        run: |
+          [[ "$CHRONOLOG_REF" =~ ^[0-9a-f]{40}$ ]] || { echo 'chronolog_ref must be a full commit SHA'; exit 1; }
+          [[ "$CORE_REF" =~ ^[0-9a-f]{40}$ ]] || { echo 'tendriller_ref must be a full commit SHA'; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10.12.4'
+      - run: npm ci && npm run check
+      - uses: actions/checkout@v4
+        with:
+          repository: werg/chronolog-db
+          ref: ${{ env.CHRONOLOG_REF }}
+          path: .chronolog-build
+          persist-credentials: false
+      - name: Verify the checked-out Chronolog source
+        run: test "$(git -C .chronolog-build rev-parse HEAD)" = "$CHRONOLOG_REF"
+      - name: Download the exact promoted public core graph
+        run: node distribution/download-core-release.mjs --source "$CORE_REF" --chronolog-source "$CHRONOLOG_REF" --output .tendriller-build/dist
+      - name: Install and build the native engine
+        working-directory: .chronolog-build
+        run: pnpm install --frozen-lockfile
+      - name: Build the exact public session archive
+        working-directory: .chronolog-build
+        run: node tools/package-peer-session.mjs --sql-native --sql-browser --output artifacts/collaboration
+      - name: Install the pinned WASM toolchain
+        run: |
+          git clone --depth 1 --branch 4.0.20 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/collaboration-emsdk"
+          test "$(git -C "$RUNNER_TEMP/collaboration-emsdk" rev-parse HEAD)" = e4fe26ef59168ff44f4c23c466e497bf60b3411e
+          "$RUNNER_TEMP/collaboration-emsdk/emsdk" install 4.0.20
+          "$RUNNER_TEMP/collaboration-emsdk/emsdk" activate 4.0.20
+      - name: Build the matching browser SQL engine
+        working-directory: .chronolog-build
+        run: node tools/build-wasm-engine.mjs --emsdk "$RUNNER_TEMP/collaboration-emsdk"
+      - name: Install the pinned browser
+        run: npm exec --yes --package=playwright@1.65.0 -- playwright install --with-deps chromium
+      - name: Exercise eight signers and 32 attached views
+        id: native
+        shell: bash
+        run: |
+          sessions=(.chronolog-build/artifacts/collaboration/chronolog-peer-session-*.tgz)
+          cores=(.tendriller-build/dist/tendriller-sdk-*.tgz)
+          test "${#sessions[@]}" -eq 1 && test "${#cores[@]}" -eq 1
+          node cookbooks/coordinate-participants/checks/run.mjs --session-artifact "${sessions[0]}" --core-artifact "${cores[0]}" --core-provenance .tendriller-build/dist/provenance.json --output test-results/collaboration/native
+      - name: Exercise actual authored browser views and OPFS recovery
+        if: ${{ !cancelled() && steps.native.outcome != 'skipped' }}
+        shell: bash
+        run: |
+          sessions=(.chronolog-build/artifacts/collaboration/chronolog-peer-session-*.tgz)
+          cores=(.tendriller-build/dist/tendriller-sdk-*.tgz)
+          test "${#sessions[@]}" -eq 1 && test "${#cores[@]}" -eq 1
+          node cookbooks/coordinate-participants/checks/run-browser.mjs --session-artifact "${sessions[0]}" --core-artifact "${cores[0]}" --core-provenance .tendriller-build/dist/provenance.json --wasm .chronolog-build/artifacts/wasm --output test-results/collaboration/browser
+      - name: Bind both gates to the same exact source tuple
+        run: node cookbooks/coordinate-participants/checks/composition.mjs --native test-results/collaboration/native/report.json --browser test-results/collaboration/browser/report.json --output test-results/collaboration/composition.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: collaboration-${{ github.sha }}-evidence
+          path: |
+            test-results/collaboration/**/report.json
+            test-results/collaboration/**/summary.json
+            test-results/collaboration/composition.json
+            test-results/collaboration/**/consumer/package-lock.json
+            test-results/collaboration/browser/*.png
+            .tendriller-build/dist/manifest.json
+            .tendriller-build/dist/composition.json
+            .tendriller-build/dist/provenance.json
+            .tendriller-build/dist/tendriller-sdk-*.tgz
+            .chronolog-build/artifacts/collaboration/*.tgz
+            .chronolog-build/artifacts/collaboration/package/provenance.json
+            .chronolog-build/artifacts/wasm/manifest.json
+            .chronolog-build/artifacts/wasm/sqlite3.mjs
+            .chronolog-build/artifacts/wasm/sqlite3.wasm
+            .chronolog-build/artifacts/wasm/sqlite3-opfs-async-proxy.js
+          retention-days: 30

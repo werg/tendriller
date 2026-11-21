@@ -1,0 +1,80 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { REPOS, json, validateTuple } from './tuple.mjs';
+
+const selector = readFileSync(new URL('./select.mjs', import.meta.url), 'utf8');
+const tuplePath = 'distribution/companion-release.json', selectorPath = 'distribution/select-companion-release.mjs';
+export function receiverWorkflow(mode) {
+  return `name: Propose qualified companion release\n\non:\n  schedule:\n    - cron: '23 * * * *'\n  workflow_dispatch:\n\npermissions:\n  contents: write\n  pull-requests: write\n  actions: write\n\nconcurrency:\n  group: companion-release-receiver\n  cancel-in-progress: false\n\njobs:\n  propose:\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 24\n      - name: Verify public graph and propose this repository's tuple update\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: node distribution/release-automation/companion-release/cli.mjs --receiver ${mode} --output "$RUNNER_TEMP/companion-release" --apply --auth-kind repository\n      - uses: actions/upload-artifact@v4\n        if: always()\n        with:\n          name: companion-release-proposal\n          path: \${{ runner.temp }}/companion-release/*.json\n`;
+}
+const step = mode => `      - name: Select verified companion tuple\n        env:\n          TENDRILLER_REF: \${{ inputs.${mode === 'contrib' ? 'tendriller_ref' : 'host_ref'} }}\n${mode === 'contrib' ? '          CHRONOLOG_REF_INPUT: ${{ inputs.chronolog_ref }}' : '          CONTRIB_REF_INPUT: ${{ inputs.contrib_ref }}'}\n        run: node ${selectorPath} ${mode} >> "$GITHUB_ENV"\n`;
+
+function once(text, from, to) {
+  assert.equal(text.split(from).length, 2, 'Unknown dependent workflow structure; review the adapter instead of guessing');
+  return text.replace(from, to);
+}
+function migrateContrib(text) {
+  if (text.includes(`node ${selectorPath} contrib`)) {
+    assert(!/inputs\.\w+_ref \|\| '[a-f0-9]{40}'/.test(text), 'Duplicate literal pin remains'); return text;
+  }
+  const compositionAt = text.indexOf('\n  composition:\n');
+  const tail = compositionAt === -1 ? '' : text.slice(compositionAt);
+  if (compositionAt !== -1) text = text.slice(0, compositionAt);
+  text = text.replace(/^        default: '[a-f0-9]{40}'\n/gm, '')
+    .replace(/^    env:\n(?:      (?:CHRONOLOG_REF|HOST_REF|CORE_REF): .*\n){2}/m, '');
+  const bootstrap = text.match(/      - uses: actions\/checkout@v4\n        with:\n          ref: \$\{\{ github.event.pull_request.head.sha \|\| github.sha \}\}\n      - uses: actions\/setup-node@v4\n        with:\n          node-version: '24'\n/)?.[0];
+  assert(bootstrap, 'Expected explicit PR-head checkout and Node24');
+  text = once(text, bootstrap, '');
+  text = once(text, '    steps:\n', `    steps:\n${bootstrap}${step('contrib')}`);
+  text = text.replaceAll("      - 'distribution/download-core-release.mjs'", `      - 'distribution/download-core-release.mjs'\n      - '${tuplePath}'\n      - '${selectorPath}'\n      - 'test/companion-workflow-pins.test.mjs'`);
+  assert.equal(text.split(`      - '${tuplePath}'`).length, 3, 'Both push/PR path filters must run qualification');
+  assert(!/default: '[a-f0-9]{40}'|inputs\.\w+_ref \|\| '[a-f0-9]{40}'/.test(text));
+  return text + tail;
+}
+function migrateChronolog(text) {
+  if (text.includes(`node ${selectorPath} chronolog`)) {
+    assert(!/inputs\.\w+_ref \|\| '[a-f0-9]{40}'/.test(text)); return text;
+  }
+  text = text.replace(/^    env:\n(?:      (?:HOST_REF|CONTRIB_REF): .*\n){2}/m, '');
+  text = once(text, '      - uses: actions/checkout@v6\n', '');
+  text = once(text, '    steps:\n', `    steps:\n      - uses: actions/checkout@v6\n      - uses: actions/setup-node@v6\n        with:\n          node-version: 24\n${step('chronolog')}`);
+  assert(!/inputs\.\w+_ref \|\| '[a-f0-9]{40}'/.test(text)); return text;
+}
+
+const guard = mode => `// Pins have one source: the content-addressed tuple, not this test.\nimport assert from 'node:assert/strict';\nimport { readFileSync } from 'node:fs';\nimport test from 'node:test';\nimport { select } from '../distribution/select-companion-release.mjs';\nconst tuple = JSON.parse(readFileSync(new URL('../distribution/companion-release.json', import.meta.url)));\n${(mode === 'contrib' ? ['peer-generation', 'collaboration'] : ['webrtc']).map(name => `test('${name} consumes the canonical tuple and retains exact checkout checks', () => {\n  const selected = select(tuple, '${mode}');\n  const text = readFileSync(new URL('../.github/workflows/${name}.yml', import.meta.url), 'utf8');\n  assert.ok(Object.values(selected).every(value => /^[a-f0-9]{40}$/.test(value)));\n  assert.ok(text.includes('node distribution/select-companion-release.mjs ${mode}'));\n  assert.doesNotMatch(text, /inputs\\.\\w+_ref \\|\\| '[a-f0-9]{40}'/);\n  ${mode === 'contrib' ? "assert.ok(text.includes('distribution/download-core-release.mjs'));\n  assert.equal(text.split(\"- 'distribution/companion-release.json'\").length - 1, 2);" : "assert.ok(text.includes('node tools/package-peer-session.mjs'));\n  assert.ok(text.includes('Build independent host test artifacts (not for deployment)'));"}\n  for (const key of ${mode === 'contrib' ? "['CHRONOLOG_REF']" : "['HOST_REF', 'CONTRIB_REF']"}) {\n    assert.ok(text.includes('ref: \\u0024{{ env.' + key + ' }}'));\n    assert.ok(text.includes('= \\"\\u0024' + key + '\\"'));\n  }\n});`).join('\n')}\n`;
+
+export async function planProposal(tuple, { api }) {
+  validateTuple(tuple);
+  const mode = tuple.stage === 'published' ? 'contrib' : 'chronolog';
+  const repository = REPOS[mode === 'contrib' ? 'contrib' : 'kernel'];
+  const repo = await api(`repos/${repository}`);
+  const base = await api(`repos/${repository}/commits/${repo.default_branch}`);
+  assert.match(base.sha, /^[a-f0-9]{40}$/);
+  const read = async path => {
+    const file = await api(`repos/${repository}/contents/${path}?ref=${base.sha}`);
+    assert.equal(file.encoding, 'base64'); assert(file.size < 256 * 1024);
+    return Buffer.from(file.content, 'base64').toString('utf8');
+  };
+  const files = { [tuplePath]: json(tuple), [selectorPath]: selector,
+    '.github/workflows/companion-release-receiver.yml': receiverWorkflow(mode) };
+  for (const name of ['tuple', 'select', 'proposal', 'github', 'cli']) files[`distribution/release-automation/companion-release/${name}.mjs`] =
+    readFileSync(new URL(`./${name}.mjs`, import.meta.url), 'utf8');
+  files['distribution/release-automation/check-published-release.mjs'] = readFileSync(new URL('../check-published-release.mjs', import.meta.url), 'utf8');
+  const names = mode === 'contrib' ? ['peer-generation', 'collaboration'] : ['webrtc'];
+  for (const name of names) {
+    const path = `.github/workflows/${name}.yml`;
+    files[path] = (mode === 'contrib' ? migrateContrib : migrateChronolog)(await read(path));
+  }
+  const guardPath = mode === 'contrib' ? 'test/companion-workflow-pins.test.mjs' : 'tools/test-companion-workflow-pins.mjs';
+  files[guardPath] = guard(mode);
+  const baseFiles = await api(`repos/${repository}/git/trees/${base.commit.tree.sha}?recursive=1`);
+  assert.equal(baseFiles.truncated, false, 'Need a complete base file index');
+  for (const path of Object.keys(files)) if (baseFiles.tree.some(item => item.path === path)) {
+    if (await read(path) === files[path]) delete files[path];
+  }
+  // Read and retain the actual base tree; applying never overwrites a branch.
+  return { repository, mode, base: base.sha, baseTree: base.commit.tree.sha, baseBranch: repo.default_branch,
+    branch: `release/tuple-${tuple.id.slice(0, 24)}`, tupleId: tuple.id,
+    title: `Qualify companion release ${tuple.core.source.slice(0, 12)}`,
+    body: `Consume verified release tuple ${tuple.id}.\n\nCore: ${tuple.core.source}\nKernel archive source: ${tuple.kernel.source}\nManifest SHA-256: ${tuple.release.manifestSha256}\n${tuple.contrib ? `Qualified merged Contrib: ${tuple.contrib.source}\n` : ''}\nNormal repository qualification and human review remain required. This PR does not merge or deploy.`, files };
+}

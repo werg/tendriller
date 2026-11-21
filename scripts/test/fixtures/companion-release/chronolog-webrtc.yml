@@ -1,0 +1,179 @@
+name: Independent application qualification
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      host_ref:
+        description: Exact 40-character Tendriller core commit to qualify
+        required: false
+        type: string
+      contrib_ref:
+        description: Exact 40-character cookbook commit to qualify
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: application-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HOST_REF: ${{ inputs.host_ref || '79b6845df411e3a910b662b31bae789da38d0bf9' }}
+      CONTRIB_REF: ${{ inputs.contrib_ref || '4eb5a8a98d9d35632ed4fd39b7bf2d5a683f0457' }}
+    steps:
+      - name: Require immutable companion commits
+        shell: bash
+        run: |
+          [[ "$HOST_REF" =~ ^[0-9a-f]{40}$ ]] || { echo 'host_ref must be a full commit SHA'; exit 1; }
+          [[ "$CONTRIB_REF" =~ ^[0-9a-f]{40}$ ]] || { echo 'contrib_ref must be a full commit SHA'; exit 1; }
+          echo "Core: $HOST_REF"
+          echo "Cookbooks: $CONTRIB_REF"
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Check companion source selection
+        run: node --test tools/test-companion-workflow-pins.mjs
+      - run: pnpm install --frozen-lockfile
+      - name: Check out exact independent consumers
+        uses: actions/checkout@v6
+        with:
+          repository: werg/tendriller-contrib
+          ref: ${{ env.CONTRIB_REF }}
+          path: artifacts/contrib
+          persist-credentials: false
+      - name: Check out exact hosted participant
+        uses: actions/checkout@v6
+        with:
+          repository: werg/tendriller
+          ref: ${{ env.HOST_REF }}
+          path: artifacts/host-source
+          persist-credentials: false
+      - name: Verify companion checkout identities
+        shell: bash
+        run: |
+          test "$(git -C artifacts/host-source rev-parse HEAD)" = "$HOST_REF"
+          test "$(git -C artifacts/contrib rev-parse HEAD)" = "$CONTRIB_REF"
+      - name: Build clean public session artifacts
+        id: session_artifacts
+        run: |
+          node tools/package-peer-session.mjs --output artifacts/session-rtc
+          node tools/package-peer-session.mjs --sql-native --output artifacts/session-sql
+      - name: Verify the standard archive installs and closes native RTC without extra dependencies
+        run: |
+          archives=(artifacts/session-rtc/chronolog-peer-session-*.tgz)
+          test "${#archives[@]}" -eq 1
+          node tools/test-peer-session-package.mjs --artifact "${archives[0]}" --output artifacts/default-session-package-check
+      # This is an independent interoperability build, never a deployment graph.
+      # Package the actual checked-out kernel, including workflow-only revisions;
+      # the host may intentionally embed an earlier qualified kernel revision.
+      - name: Build independent host test artifacts (not for deployment)
+        id: host_artifacts
+        working-directory: artifacts/host-source
+        run: |
+          npm ci
+          npm run build
+      - name: Qualify independent native events
+        if: ${{ !cancelled() && steps.session_artifacts.outcome == 'success' }}
+        shell: bash
+        run: |
+          archives=(artifacts/session-sql/chronolog-peer-session-*.tgz)
+          test "${#archives[@]}" -eq 1
+          node artifacts/contrib/cookbooks/run-a-peer-application/checks/run-peer-generation.mjs --artifact "${archives[0]}" --output artifacts/qualification/direct
+      - name: Qualify independent native RTC
+        if: ${{ !cancelled() && steps.session_artifacts.outcome == 'success' }}
+        shell: bash
+        run: |
+          archives=(artifacts/session-rtc/chronolog-peer-session-*.tgz)
+          test "${#archives[@]}" -eq 1
+          node artifacts/contrib/cookbooks/run-a-peer-application/checks/run-peer-generation.mjs --artifact "${archives[0]}" --transport native-rtc --output artifacts/qualification/native
+      - name: Qualify SQL and guarded task commands
+        if: ${{ !cancelled() && steps.session_artifacts.outcome == 'success' }}
+        shell: bash
+        run: |
+          archives=(artifacts/session-sql/chronolog-peer-session-*.tgz)
+          test "${#archives[@]}" -eq 1
+          node tools/test-peer-session-sql.mjs --artifact "${archives[0]}"
+          node artifacts/contrib/cookbooks/run-a-peer-application/checks/run-peer-generation.mjs --artifact "${archives[0]}" --domain tasks --output artifacts/qualification/tasks
+      - name: Install real Chromium
+        id: chromium
+        if: ${{ !cancelled() && steps.session_artifacts.outcome == 'success' }}
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Qualify portable SharedWorker and DedicatedWorker RTC endpoints
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: pnpm exec tsx tools/test-worker-webrtc-endpoint.ts
+      - name: Qualify both browser record stores and pinned ownership
+        if: ${{ !cancelled() && steps.chromium.outcome == 'success' }}
+        run: pnpm exec tsx tools/test-browser-storage.ts
+      - name: Qualify packed browser Worker, OPFS and native RTC
+        if: ${{ !cancelled() && steps.session_artifacts.outcome == 'success' && steps.chromium.outcome == 'success' }}
+        shell: bash
+        run: |
+          archives=(artifacts/session-rtc/chronolog-peer-session-*.tgz)
+          test "${#archives[@]}" -eq 1
+          node artifacts/contrib/cookbooks/run-a-peer-application/checks/run-peer-generation-browser.mjs --artifact "${archives[0]}" --output artifacts/qualification/browser
+      - name: Qualify the hosted participant
+        if: ${{ !cancelled() && steps.session_artifacts.outcome == 'success' && steps.host_artifacts.outcome == 'success' }}
+        shell: bash
+        run: |
+          archives=(artifacts/session-rtc/chronolog-peer-session-*.tgz)
+          test "${#archives[@]}" -eq 1
+          node artifacts/contrib/cookbooks/run-a-peer-application/checks/run-peer-generation-host.mjs --artifact "${archives[0]}" --artifacts artifacts/host-source/dist --output artifacts/qualification/host
+      - name: Qualify native WebSocket fallback through the hosted relay
+        if: ${{ !cancelled() && steps.session_artifacts.outcome == 'success' && steps.host_artifacts.outcome == 'success' }}
+        shell: bash
+        run: |
+          archives=(artifacts/session-sql/chronolog-peer-session-*.tgz)
+          test "${#archives[@]}" -eq 1
+          node artifacts/contrib/cookbooks/run-a-peer-application/checks/run-peer-generation-host.mjs --artifact "${archives[0]}" --artifacts artifacts/host-source/dist --transport websocket --output artifacts/qualification/relay
+      - name: Qualify Worker WebSocket fallback through the hosted relay
+        if: ${{ !cancelled() && steps.session_artifacts.outcome == 'success' && steps.host_artifacts.outcome == 'success' && steps.chromium.outcome == 'success' }}
+        shell: bash
+        run: |
+          archives=(artifacts/session-sql/chronolog-peer-session-*.tgz)
+          test "${#archives[@]}" -eq 1
+          node artifacts/contrib/cookbooks/run-a-peer-application/checks/run-peer-generation-host.mjs --artifact "${archives[0]}" --artifacts artifacts/host-source/dist --transport websocket --browser --output artifacts/qualification/browser-relay
+      - name: Bind all seven public gates to one exact composition
+        run: |
+          node artifacts/contrib/cookbooks/run-a-peer-application/checks/peer-composition.mjs \
+            --report artifacts/qualification/direct/report.json \
+            --report artifacts/qualification/native/report.json \
+            --report artifacts/qualification/tasks/report.json \
+            --report artifacts/qualification/browser/report.json \
+            --report artifacts/qualification/host/peers/report.json \
+            --report artifacts/qualification/relay/peers/report.json \
+            --report artifacts/qualification/browser-relay/peers/report.json \
+            --output artifacts/qualification/composition.json
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: application-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/session-rtc/*.tgz
+            artifacts/session-rtc/package/provenance.json
+            artifacts/session-sql/*.tgz
+            artifacts/session-sql/package/provenance.json
+            artifacts/peer-session-sql-check/report.json
+            artifacts/default-session-package-check/report.json
+            artifacts/default-session-package-check/native-process.json
+            artifacts/default-session-package-check/consumer/package-lock.json
+            artifacts/qualification/**/report.json
+            artifacts/qualification/**/summary.json
+            artifacts/qualification/**/host-artifacts.json
+            artifacts/qualification/**/*.png
+            artifacts/qualification/composition.json
+            artifacts/host-source/dist/*.tgz
+            artifacts/host-source/dist/provenance.json
+          if-no-files-found: error
+          retention-days: 30
