@@ -186,6 +186,14 @@ selected generation or retained coverage. The starter exposes these separately.
 
 Detach closes only the attachment. `suspend()` and `resume()` bound streams across
 a suspended page lifetime; they do not revoke the signer or cancel durable work.
+The browser attachment automatically pauses its owner-silence observation when
+the document becomes hidden or frozen. Becoming visible requires a fresh,
+authenticated owner reply before observation resumes; elapsed frozen time alone
+does not replace the owner or reload the page. This automatic pause retains the
+RTC provider so background work can continue where the browser permits it.
+Explicit `suspend()` additionally releases that attachment's RTC provider; pair it
+with `resume()` for a retained page lifetime such as BFCache. Neither mechanism
+keeps a page running against browser or operating-system suspension policy.
 A crashed fallback owner releases its actual Web Lock; a waiting worker can then
 reopen the same profile. Stale facades close and must reattach before inspecting
 their original operation references. No timeout grants ownership or silently

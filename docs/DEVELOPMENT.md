@@ -57,6 +57,11 @@ qualification must use this separate connection-fence bound rather than a global
 An elected route resumes suspension only after a bounded authenticated reply.
 Initial connection readiness retains its own existing opening deadline; the
 finite-request source binds only after that initial facade connection returns.
+Hidden/frozen documents automatically park their local observation fence before
+awaiting any RPC. A visible resume uses a fresh private-root acknowledgement or
+an authenticated elected-owner nonce reply. Queued old traffic and browser
+lifecycle events cannot renew that resume proof. Repeated hide/resume transitions
+must retain the same owner without rearming a still-suspended attachment.
 This does not preempt a synchronous SQL call or qualify passive-only SQL stalls.
 
 ## Verification
