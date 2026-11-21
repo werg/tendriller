@@ -94,11 +94,11 @@ physical connection starts; canonical participation instead owns bounded
 connection failures and backoff during asymmetric startup. This fixture check
 does not replace qualification of that controller or rebuild deployed bytes.
 
-### Pre-release relay protocol cutover
+### Pre-release participant composition
 
-The live relay window is an explicit part of readiness on both lanes. Deploy the
-host and consume the matching qualified SDK graph; older relay consumers are
-not supported. Republish existing apps with the current runtime and SDK and
+The relay window and reciprocal authenticated peer readiness are explicit parts
+of their respective connection protocols. Consume the matching qualified SDK and
+session graph; mixing old and new participant packages is not supported. Republish existing apps with the current runtime and SDK and
 upgrade their native participants. Close old app tabs before reopening after
 this cutover, so an earlier running SharedWorker cannot retain the old transport.
 Keep each device's storage, identity, signed attempts and application history.

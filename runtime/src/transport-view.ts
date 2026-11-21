@@ -24,7 +24,7 @@ export function mountTransportInspector(transport: RuntimeTransport): { element:
     for (const link of report.connections) {
       const item = document.createElement('li'), title = document.createElement('strong'), data = document.createElement('p');
       title.textContent = `Link ${link.link}: ${link.kind === 'direct' ? 'Direct' : link.kind === 'relay' ? 'Relay' : 'Transport unavailable'} (authenticated)`;
-      data.textContent = `Sent: ${amount(link.sentBytes, 'bytes')}; received: ${amount(link.receivedBytes, 'bytes')}. Transport requests: ${amount(link.sentRequests, 'sent')}; ${amount(link.receivedRequests, 'received')}.`;
+      data.textContent = `Sent: ${amount(link.sentBytes, 'bytes')}; received: ${amount(link.receivedBytes, 'bytes')}. Peer protocol requests: ${amount(link.sentRequests, 'sent')}; ${amount(link.receivedRequests, 'received')}.`;
       const lanes = document.createElement('p'); lanes.className = 'note';
       lanes.textContent = `Reliable: ${amount(link.sentReliableBytes, 'sent bytes')}; ${amount(link.receivedReliableBytes, 'received bytes')}. Live: ${amount(link.sentLiveBytes, 'sent bytes')}; ${amount(link.receivedLiveBytes, 'received bytes')}.`;
       item.append(title, data, lanes);
