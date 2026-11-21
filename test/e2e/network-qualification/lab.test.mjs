@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { createFaults } from './faults.mjs';
 import { activityTimeline, assertDirectWork, assertIdle, counterDelta } from './evidence.mjs';
 import { runNetworkScenario } from './scenarios.mjs';
-import { observeIdleDuration } from './idle-progress.mjs';
+import { observeIdleDuration, progressWriter } from './idle-progress.mjs';
 import { releaseAnchor, selectedProductVersion, sha256 } from './anchor.mjs';
 import { currentOperationApplied } from './first-app.mjs';
 import { authenticatedTransportSnapshot } from '../../../scripts/first-app-peer.mjs';
 import { prepareMountTargets } from './mounts.mjs';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -253,4 +253,18 @@ test('old applied/retention labels and reused IDs cannot prove a fresh browser c
   assert.equal(currentOperationApplied('old', 'new', 'new: Saved. 1 peer retention receipt(s) observed.'), false);
   assert.equal(currentOperationApplied('old', 'new', 'new: Applied: accepted. Peer retention has not been observed here.'), false);
   assert.equal(currentOperationApplied('old', 'new', status('new')), true);
+});
+
+// Docker runs as root for isolated NET_ADMIN, while Actions uploads as the host
+// user. Report permissions must permit that read without exposing the directory.
+test('redacted atomic progress remains readable by the host evidence uploader', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'network-progress-permissions-'));
+  try {
+    const path = join(dir, 'progress.json');
+    await progressWriter(path)({ state: 'idle-observation-open', elapsedMs: 5, modelTurns: null });
+    assert.equal((await stat(path)).mode & 0o777, 0o644);
+    assert.equal((await stat(dir)).mode & 0o077, 0);
+    assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { state: 'idle-observation-open', elapsedMs: 5, modelTurns: null });
+    assert.deepEqual(await readdir(dir), ['progress.json']);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
