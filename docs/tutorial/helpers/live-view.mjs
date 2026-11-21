@@ -43,9 +43,10 @@ export function createLiveView(session, {
           for (const listener of listeners) notify(listener, snapshot);
         } catch (failure) {
           if (closed || request !== requested) continue;
+          const quietRecovery = recovering(failure) && snapshot === null && initial.size > 0 && waiting.size === 0;
           error = failure; settle(failure, undefined, true);
           if (!recovering(failure)) settleInitial(failure);
-          notify(onError, failure);
+          if (!quietRecovery) notify(onError, failure);
         }
       }
     } finally { running = false; }

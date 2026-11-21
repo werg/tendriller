@@ -152,6 +152,10 @@ numbers to guess which generation wins. Every delivered snapshot is one
 | `view.status`, `view.error` | Separate session status and last read/observation error |
 | `view.close()` | Stops this observer and rejects its outstanding refresh waiters; does not close the session |
 
+While `ready()` is waiting, expected initial `PEER_RECOVERING` is retained in
+`view.error` without calling `onError`. Fatal errors and explicit refresh failures
+still call `onError`.
+
 Treat snapshot values as read-only. Keep the revision with its value when
 preparing a command. To change a query filter, close the old view and construct
 a new one with the new input. Do not merge independently queried values and
