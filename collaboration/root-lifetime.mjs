@@ -4,7 +4,7 @@
 // BFCache entries on query(); normal reload restores the retained application.
 // Hidden/frozen documents retain their witness without running JavaScript.
 export function rootLifetimeLockName(profileId, rootId) {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(profileId) ||
+  if (typeof profileId !== 'string' || typeof rootId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/u.test(profileId) ||
       !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u.test(rootId)) throw Error('OWNER_HANDSHAKE_INVALID');
   return `tendriller:root-lifetime:${profileId}:${rootId}`;
 }
