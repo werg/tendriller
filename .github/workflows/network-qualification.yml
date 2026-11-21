@@ -54,6 +54,10 @@ jobs:
         run: |
           node --input-type=module -e 'import assert from "node:assert/strict";import{readFile}from"node:fs/promises";import{createHash}from"node:crypto";const s=process.env.EXPECTED_SOURCE;assert.match(s,/^[a-f0-9]{40}$/);const b=await readFile("dist/manifest.json");assert.equal(createHash("sha256").update(b).digest("hex"),process.env.EXPECTED_MANIFEST_SHA256);assert.equal(JSON.parse(b).source_commit,s);'
       - run: npm ci --ignore-scripts
+      - name: Restore the exact sealed deployment before the read-only container mount
+        run: node scripts/deployment-bundle.mjs
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
       - run: node --test scripts/test/first-app-peer.test.mjs test/e2e/network-qualification/lab.test.mjs
       - run: docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
       - run: node test/e2e/network-qualification/run.mjs --output "$RUNNER_TEMP/network-controls"
