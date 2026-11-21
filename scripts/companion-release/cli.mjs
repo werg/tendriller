@@ -13,9 +13,9 @@ const { values } = parseArgs({ options: { help: { type: 'boolean' }, source: { t
   'auth-kind': { type: 'string' }, 'check-auth': { type: 'boolean' }, receiver: { type: 'string' },
   'automation-source': { type: 'string' } } });
 try {
-  if (values.help) console.log(`Usage: node scripts/companion-release/cli.mjs --source FULL_CORE_SHA --output PRIVATE_OR_TEMP_DIR
+  if (values.help) console.log(`Usage: node scripts/companion-release/cli.mjs --source FULL_CORE_SHA
+  --automation-source OWNER_APPROVED_CORE_AUTOMATION_SHA --output PRIVATE_OR_TEMP_DIR
   [--manifest-sha256 PUBLISHER_DIGEST] [--contrib-source QUALIFIED_MERGED_SHA]
-  --automation-source OWNER_APPROVED_CORE_AUTOMATION_SHA
   [--apply --auth-kind app|user|repository]
   --receiver contrib|chronolog selects published source from core master / merged Contrib tuple.
   --check-auth performs a read-only capability probe, with no graph or write.

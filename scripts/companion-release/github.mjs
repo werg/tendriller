@@ -85,8 +85,8 @@ export async function openProposal(plan, { api = githubApi, authKind, repository
       'Bootstrap workflow/code changes require the existing authorized owner/App credential once; the receiver only updates tuple data');
   }
   assert([REPOS.contrib, REPOS.kernel].includes(plan.repository));
-  commit(plan.base); commit(plan.baseTree); checksum(plan.tupleId);
-  assert.equal(plan.branch, `release/tuple-${plan.tupleId.slice(0, 24)}`);
+  commit(plan.base); commit(plan.baseTree); checksum(plan.tupleId); commit(plan.automationSource);
+  assert.equal(plan.branch, `release/tuple-${plan.tupleId.slice(0, 16)}-${plan.automationSource.slice(0, 12)}`);
   const root = `repos/${plan.repository}`;
   const current = await api(`${root}/commits/${plan.baseBranch}`);
   assert.equal(current.sha, plan.base, 'Default branch moved; replan against its new exact source');
