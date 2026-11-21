@@ -165,7 +165,7 @@ function pauseOwnerOutput(f, t) {
   return { queued, flush() { for (const packet of queued.splice(0)) send(packet); } };
 }
 
-for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay']) {
+for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay', 'late']) {
   test(`virtual elected liveness: ${mode} preserves the authenticated bounded fence`, async t => {
     const advance = virtualClock(t);
     let response;
@@ -179,7 +179,8 @@ for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay']) {
     const output = pauseOwnerOutput(f, t);
     client.port.postMessage({ id: 1, value: 'held' });
     await until(() => response, 'owner received private request');
-    for (let second = 1; second <= (mode === 'finite' ? 17 : ['hung', 'continuous'].includes(mode) ? 30 : 15); second++) {
+    for (let second = 1; second <= (mode === 'late' ? 40 : mode === 'finite' ? 17 : ['hung', 'continuous'].includes(mode) ? 30 : 15); second++) {
+      if (mode === 'late' && second === 10) request = { startedAt: 10000, deadline: 40000 };
       if (mode === 'continuous' && second < 30) {
         request = { startedAt: second * 1000, deadline: second * 1000 + 30000 };
         client.port.postMessage({ id: second + 1, value: 'new caller request' });
@@ -189,7 +190,7 @@ for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay']) {
       }
       if (mode === 'replay') f.observer.postMessage(replay);
       await advance(1000);
-      if (second < (['hung', 'continuous'].includes(mode) ? 30 : 15) || mode === 'finite') {
+      if (second < (mode === 'late' ? 40 : ['hung', 'continuous'].includes(mode) ? 30 : 15) || mode === 'finite') {
         assert.equal(client.frames.some(frame => frame.ended), false);
       }
     }

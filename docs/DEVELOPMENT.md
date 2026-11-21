@@ -37,12 +37,23 @@ in a page's eager import graph.
 
 Run `contract:generate` after executable metadata-schema edits. `contract:check` rejects stale generated files. `check:boundaries` examines source imports and built dependency graphs. `test:consumer` installs only public archives in an independent directory and checks runtime imports and strict declarations.
 
-The collaboration browser owner keeps its existing 15-second silence fence.
-A pending finite facade call can use one fixed grace window ending at its original
-request deadline (30 seconds by default). Classification belongs to Chronolog's
-public `boundedRequest` getter; core does not inspect private RPC methods.
-New or cancelled caller requests cannot renew that window. Only an authenticated
-owner response rearms it. Passive applied/shared/event waits grant no grace.
+The collaboration browser owner's base silence fence is 15 seconds. A pending
+finite facade call observed to have started before that fence expires can use
+one fixed grace window, ending at its original request deadline (30 seconds from
+request start by default). Classification belongs to Chronolog's public
+`boundedRequest` getter; core does not inspect private RPC methods. New,
+cancelled, or replacement caller requests cannot slide the selected deadline.
+Only an authenticated owner response rearms the window. Passive applied/shared/
+event waits grant no grace; without a finite call the silence fence stays 15 seconds.
+
+This changes the **connection fence**, not RPC deadlines: with defaults, the first
+eligible finite call can start just before 15 seconds of silence and retain its
+original 30-second budget. The resulting logical connection fence is therefore
+less than 45 seconds from the last authenticated response, subject to normal
+browser/event-loop scheduling. For example, a first call at silence +10 seconds
+can retain the route until +40 seconds; later calls cannot extend it. Owner-loss
+qualification must use this separate connection-fence bound rather than a global
+30-second operation timeout, and measure the actual pending request/closure.
 An elected route resumes suspension only after a bounded authenticated reply.
 Initial connection readiness retains its own existing opening deadline; the
 finite-request source binds only after that initial facade connection returns.

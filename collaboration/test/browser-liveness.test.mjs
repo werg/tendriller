@@ -73,3 +73,16 @@ test('close clears request source and rejects unavailable or duplicate facade bi
   const fresh = createOwnerLiveness({ livenessTimeoutMs: 15000, requestTimeoutMs: 30000 });
   assert.throws(() => fresh.bind({}), /CONTRACT_INCOMPATIBLE/);
 });
+
+
+test('a late first finite request has its original deadline, strictly below45s from last owner response', () => {
+  const f = fixture();
+  f.at(14999); f.request({ startedAt: 14999, deadline: 44999 });
+  assert.equal(f.state.deadline(), 44999);
+  assert.ok(f.state.deadline() < 45000);
+  for (let time = 15000; time < 44000; time += 1000) {
+    f.at(time); f.request({ startedAt: time, deadline: time + 30000 });
+    assert.equal(f.state.deadline(), 44999);
+  }
+  f.at(44999); assert.equal(f.state.deadline(), 44999);
+});
