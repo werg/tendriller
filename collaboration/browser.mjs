@@ -209,10 +209,17 @@ function facade({session,transport,channel,worker,route,options,provider:initial
           while(!detached){
             const epoch=observationEpoch;
             await transport?.resume();
-            if(epoch!==observationEpoch){if(away()||explicitSuspended)break;continue;}
-            if(away()||explicitSuspended){pauseObservation(true);break;}
+            if(explicitSuspended)break;
+            if(epoch!==observationEpoch&&!away())continue;
+            // A superseded transport proof is not a binding. Background work
+            // may resume while hidden, but only after this bounded owner RPC.
+            // Keep its health observation parked throughout the hidden read.
+            const parked=away();
+            if(parked)pauseObservation(true);
+            const proofEpoch=observationEpoch;
             await session.resumeAttachment();
-            if(epoch!==observationEpoch){if(away()||explicitSuspended)break;continue;}
+            if(explicitSuspended)break;
+            if(!away()&&(parked||proofEpoch!==observationEpoch))continue;
             break;
           }
           if(detached)throw new CollaborationError('ENDPOINT_STALE');
