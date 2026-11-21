@@ -336,3 +336,24 @@ test('a shared boot without a document witness cannot open owner storage', async
   await until(() => root.server.closed, 'unwitnessed root disposed');
   assert.equal(root.server.listeners.size, 0);
 });
+
+test('replayed shared boot replaces its lifetime registration without leaving parked sweeps behind', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = await fixture(t, { rootLimits: { parkedSweepMs: 100 } }), root = f.root();
+  const ready = await root.boot(); assert.equal(ready.type, 'ready');
+  await root.control('park', ready.ownerInstanceId, { frozen: true });
+  for (let index = 0; index < 8; index++) {
+    const replay = await root.boot();
+    assert.equal(replay.type, 'ready'); assert.equal(replay.ownerInstanceId, ready.ownerInstanceId);
+  }
+  await root.control('resume', ready.ownerInstanceId);
+  const queries = f.queryCalls;
+  t.mock.timers.tick(300); await new Promise(setImmediate);
+  assert.equal(f.queryCalls, queries, 'resuming the only root leaves no orphaned parked registration/timer');
+  assert.equal(root.server.closed, false); assert.equal(f.opened, 1); assert.equal(f.held, 1);
+  await root.control('park', ready.ownerInstanceId, { frozen: false });
+  await root.control('detach', ready.ownerInstanceId);
+  t.mock.timers.tick(300); await new Promise(setImmediate);
+  assert.equal(f.queryCalls, queries, 'detaching removes the final registration');
+  assert.equal(root.server.closed, true);
+});

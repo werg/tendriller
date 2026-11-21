@@ -230,6 +230,7 @@ export function serveBrowserOwner(options) {
         await open(false); lifetime.signal.throwIfAborted(); if (record.disposed) return;
         if (typeof BroadcastChannel === 'function') void serveBroadcast();
         if (!record.detach) record.detach = owner.attach(endpoint);
+        record.lifetime?.close();
         record.lifetime = lifetimes.register(record.rootId, witness, () => dispose(record, 'ENDPOINT_STALE'));
         record.ready = true; renew(record);
         post(endpoint, { protocol: BROWSER_OWNER_PROTOCOL, type: 'ready', id: data.id, ownerInstanceId: owner.ownerInstanceId });
