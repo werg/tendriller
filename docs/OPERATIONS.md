@@ -7,11 +7,152 @@ Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendrille
 Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 11** (consolidated page, pairing, publication, and assistant delivery tables).
 
 This pre-release target uses fresh matching storage only — there are no legacy migration paths or compatibility readers:
-1. Initialize the D1 `ACCOUNTS` database from the single unified schema `server/migrations/0001_accounts.sql` (exported as `@tendriller/engine/accounts-schema`, account-setup schema revision 3).
+1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and the single unified `server/migrations/0001_accounts.sql` baseline (exported as `@tendriller/engine/accounts-schema`, account-setup schema revision 3). Verify `d1_migrations` records `0001_accounts.sql`; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This initializes new storage only; it is not conversion of an older database.
 2. Provision fresh `Tendril` and `Admission` Durable Object namespaces matching revision 11.
 3. Missing or mismatched storage fails closed without mutating existing records.
 
 `scripts/provision.mjs` plans and provisions fresh named Worker, D1, R2, and domain resources and writes a complete Wrangler config. Review resource names and page-domain isolation before deploying.
+
+## Required s10 → fresh s11 cutover precondition
+
+Changing the configured Worker name to `tendriller-staging-s11` or
+`tendriller-production-s11` does **not** transfer existing public routes.
+Wrangler rejects a wildcard route assigned to another Worker. Noninteractive
+custom-domain replacement does not resolve that wildcard conflict. Keep normal
+deployment held until a qualified engine has been uploaded to the selected new
+Worker and the existing route owners have been reassigned and verified.
+
+This cutover retains the service origins, not the old application/account data.
+Use fresh s11 D1, `Tendril`/`Admission` namespaces and R2 bindings. There is no
+migration, export/conversion, compatibility reader, or old-namespace attachment.
+A namespace bootstrap must not invoke the older engine or initialize schema10
+objects: inspect the new namespace object inventories before deployment. Leave
+the fresh service in `creation_paused` while preparing it. Reuse privately held
+provider registrations/signing secrets as appropriate for the same origins, but
+validate OAuth configuration against the current strict schema and create new
+review/test accounts in the fresh D1. Never log credentials or private handles.
+
+### Hold automatic deployment before merging/publishing
+
+Read and retain previous values, then set these **repository Actions variables**
+(they are deployment gates, separate from the D1 service mode):
+
+| Variable | During cutover preparation |
+| --- | --- |
+| `STAGING_READY` | `false` |
+| `PRODUCTION_READY` | `false` |
+| `STAGING_STORAGE_SCHEMA` | `11` |
+| `PRODUCTION_STORAGE_SCHEMA` | `11` |
+
+For each READY variable, use the repository variable API and verify readback:
+
+```sh
+gh api repos/werg/tendriller/actions/variables/STAGING_READY
+gh api --method PATCH repos/werg/tendriller/actions/variables/STAGING_READY \
+  -f name=STAGING_READY -f value=false
+```
+
+Repeat for `PRODUCTION_READY`; inspect staging/production environment variables
+for overrides as well. Do not change the schema gates to bypass qualification.
+The hold allows immutable master publication while preventing a conflicting
+canonical deploy. A passing PR graph is not the published master graph. Keep
+both READY values false until qualified-publication GO and the environment's
+preparation below; never race an external route change against automatic deploy.
+
+### Upload qualified bytes before replacing any binding
+
+Perform staging first. Keep production's READY gate false and its routes on s10
+until remote staging acceptance and MCP qualification pass for the selected
+source and manifest.
+
+1. Verify the exact final master source, public source-tagged manifest/hash,
+   complete artifact hashes and restored sealed deployment graph as described in
+   [release composition](RELEASE_COMPOSITION.md). Run the existing public-release
+   and deployment-artifact checks with the artifact job's exact expectations.
+   Deployments consume those bytes with `--no-bundle`; do not rebuild or relabel
+   a PR/candidate graph as master. Abort if current master differs from the
+   qualified source.
+2. Check fresh D1's baseline journal and namespace inventories. Publish the
+   verified immutable runtime/resources to that environment's new FILES bucket
+   using `scripts/publish-runtime.mjs` and its selected canonical config.
+3. Derive a temporary route-free config **outside the clean source checkout**
+   from that final canonical config. Retain its exact s11 DO/D1/R2 bindings,
+   secrets and other runtime settings. Use absolute paths to the verified engine
+   and restored static assets, `routes: []`, `workers_dev: false`,
+   `preview_urls: false`, and `triggers: { crons: [] }`. Upload the actual engine
+   with Wrangler `deploy --no-bundle --durable-objects-code-update-mode immediate`
+   and the qualified `SERVICE_SOURCE_COMMIT`/`SERVICE_COMPOSITION_ID` values.
+   This upload must have no public routing targets.
+4. Record the successful deployment/version and verify the uploaded current main
+   module's bytes against the sealed engine SHA-256, plus its source/composition
+   settings and target s11 bindings. A temporary 503 namespace bootstrap is
+   **never** an eligible route target. Merely creating the Worker is insufficient.
+5. Refresh the existing routes/custom-domain inventory. Require each exact
+   pattern to belong to the expected old-s10 Worker (or the already-verified new
+   s11 Worker for an idempotent retry); an unknown owner is a stop condition.
+   After qualified upload, conditionally open only the selected fresh D1 as
+   described below and verify its mode. Do not overwrite `read_only` or mutate
+   old D1.
+6. Replace each existing route by its ID using the Cloudflare
+   [route replacement API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/update/):
+   `PUT /zones/{zone_id}/workers/routes/{route_id}` with the unchanged `pattern`
+   and the selected new `script`. Read back ID, pattern, owner and fail-open
+   setting. For production's service domain, use the
+   [domain attachment API](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)
+   to attach `tendriller.dev` to `tendriller-production-s11`, then verify ownership.
+   **Do not delete/unassign routes first**, move the domain to the bootstrap,
+   or alter unrelated/shared bindings.
+
+| Environment | Existing binding | Required new owner |
+| --- | --- | --- |
+| Staging | `staging.tendriller.dev/*` | `tendriller-staging-s11` |
+| Staging | `*--p-9a9a9a9a9a9a.tendriller.dev/*` | `tendriller-staging-s11` |
+| Production | `*.tendriller.site/*` | `tendriller-production-s11` |
+| Production | custom domain `tendriller.dev` | `tendriller-production-s11` |
+
+Each binding replacement points directly at the uploaded qualified engine.
+Cloudflare has no atomic transaction spanning all four bindings; record partial
+progress and observe propagation. If a step fails, stop further changes and
+reconcile the exact observed owners against the same graph. Do not create an
+unassigned-route/placeholder interval or claim an unsuccessful CI run passed.
+
+### Restore gates and run normal same-source qualification
+
+After staging's uploaded engine and route ownership are verified, restore
+`STAGING_READY=true` (its recorded normal value), keeping
+`PRODUCTION_READY=false`. Dispatch `.github/workflows/service.yml`:
+
+```sh
+gh api repos/werg/tendriller/commits/master --jq .sha
+# Require that full SHA to equal the qualified, published source before dispatch.
+gh api --method POST repos/werg/tendriller/actions/workflows/service.yml/dispatches \
+  -f ref=master
+```
+
+The workflow has no dispatch inputs and its deployment condition requires
+`refs/heads/master`; dispatching a bare SHA does not satisfy that gate. Verify
+the new run's `head_sha` and exact manifest/artifact identities rather than
+assuming it selected the intended source. A newer master needs its own qualified
+publication. Normal deployment must restore the sealed graph without rebuilding
+its bytes and find all selected routes already owned by s11.
+
+Require staging smoke, remote staging acceptance and MCP qualification green.
+Only then repeat qualified upload/verified takeover for production, restore
+`PRODUCTION_READY=true`, and dispatch the normal workflow again on the unchanged
+master. Its own staging acceptance and MCP gates still precede its production
+job. Verify actual production readiness source/runtime/composition and creation
+availability; a configured READY flag alone proves none of them. All restored
+artifact bytes must match the immutable public graph; stop on any mismatch.
+
+After qualified s11 production is healthy, remove the **old-s10** Workers' cron
+triggers with the
+[schedules API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/methods/update/)
+(`PUT /accounts/{account_id}/workers/scripts/{old_script}/schedules`, body `[]`)
+and verify both schedules are empty. Verify no public routes, custom domains,
+workers.dev or preview endpoints remain attached to those exact retired Workers.
+Only remove known obsolete bindings still owned by them; never detach s11 or
+unknown shared resources. Old stored resources may remain inert; this requires
+no data export, namespace transfer, resource deletion or local process restart.
 
 ## Configuration and secrets
 
