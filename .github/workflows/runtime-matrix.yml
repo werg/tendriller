@@ -60,5 +60,5 @@ jobs:
           bun -e "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') process.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
       - name: Smoke-test builtin archive and probe imports under Deno
         run: |
-          deno eval --allow-read --allow-write --allow-env --allow-sys "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') Deno.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
+          deno eval "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') Deno.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
           deno run --allow-read --allow-write --allow-env --allow-sys scripts/tendriller-bootstrap.mjs --probe-only
