@@ -1,9 +1,11 @@
 // Copied into dependent PRs. Node builtins only; never downloads or executes a tuple.
 import assert from 'node:assert/strict';
+import { log } from 'node:console';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import process from 'node:process';
+import { URL, pathToFileURL } from 'node:url';
 
 export function select(tuple, mode, env = {}) {
   const { id, ...body } = tuple;
@@ -23,5 +25,5 @@ export function select(tuple, mode, env = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const mode = process.argv[2];
   const tuple = JSON.parse(readFileSync(new URL('./companion-release.json', import.meta.url)));
-  for (const [key, value] of Object.entries(select(tuple, mode, process.env))) console.log(`${key}=${value}`);
+  for (const [key, value] of Object.entries(select(tuple, mode, process.env))) log(`${key}=${value}`);
 }
