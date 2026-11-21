@@ -1,5 +1,3 @@
-import type { ScopedApplicationToolCall } from '@chronolog/peer-session';
-
 export interface AssistantEventDefinition { name: string; description: string }
 export interface AssistantEndpoint { api: string; key: string }
 export interface AssistantExposure { queries?: readonly string[]; commands?: readonly string[] }
@@ -28,6 +26,17 @@ export interface AssistantParticipant {
   publish(event: { sourceEventId: string; name: string; generation: string; payload: unknown;
     context?: Omit<AssistantCallerContext['context'], 'evidence'> }): Promise<number>;
 }
+/** Portable host request; the supplied scoped controller validates native semantics. */
+export interface AssistantToolRequest {
+  readonly kind: 'query' | 'command' | 'reapply' | 'operation' | 'retry' | 'wait';
+  readonly name: string;
+  readonly input?: unknown;
+  readonly operationId?: string;
+  readonly basedOn?: unknown;
+  readonly originalOperationId?: string;
+  readonly originalAuthor?: string;
+  readonly generation?: string;
+}
 export function createAssistantKey(): string;
 export function createApplicationAgentKey(bindingId?: string): string;
 export function proposeApplicationAssistant(options: AssistantEndpoint & AssistantExposure & {
@@ -35,7 +44,7 @@ export function proposeApplicationAssistant(options: AssistantEndpoint & Assista
 }): Promise<{ applicationId: string; proposed: string; approved: boolean; reviewUrl: string }>;
 export function connectApplicationAssistant(options: AssistantEndpoint & {
   session: AssistantSession;
-  tools: { execute(call: ScopedApplicationToolCall, options?: { signal?: AbortSignal; caller?: Readonly<AssistantCallerContext> }): Promise<unknown> };
+  tools: { execute(call: AssistantToolRequest, options?: { signal?: AbortSignal; caller?: Readonly<AssistantCallerContext> }): Promise<unknown> };
   onStatus?: (status: { state: string; reason?: string; retryInMs?: number }) => void;
   openSocket?: (url: string, protocols: string[]) => WebSocket;
   /** Initial sign-in/consent window, 1000–600000 ms; defaults to ten minutes. */
