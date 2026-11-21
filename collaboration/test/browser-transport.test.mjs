@@ -4,8 +4,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { BROWSER_OWNER_PROTOCOL, createBroadcastOwner, createBroadcastEndpoint } from '../browser-transport.mjs';
 
-async function until(predicate, description = 'condition') {
-  const end = Date.now() + 3000;
+async function until(predicate, description = 'condition', timeoutMs = 3000) {
+  const end = Date.now() + timeoutMs;
   while (!predicate()) { if (Date.now() > end) throw Error(`Timed out: ${description}`); await new Promise(setImmediate); }
 }
 async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequest } = {}) {
@@ -147,11 +147,14 @@ test('synchronous pagehide release is scoped to one route and cannot be replayed
 });
 
 test('a burst of many signal-sized frames queues on the fallback route instead of retiring or stalling it', async t => {
-  const f = await fixture({ timeoutMs: 5000 }); t.after(() => f.close());
-  const client = await f.attach(), piece = 'x'.repeat(15_000);
+  // This is a delivery/ordering check, not a crypto throughput benchmark.
+  // Keep its fixture leases generous under parallel test/crypto load; the
+  // virtual-clock tests below retain the exact negative liveness fences.
+  const f = await fixture({ timeoutMs: 30000 }); t.after(() => f.close());
+  const client = await f.attach({ livenessTimeoutMs: 30000 }), piece = 'x'.repeat(15_000);
   // An application reply of 200 pieces, posted without waiting, as an owner forwards live signals.
   for (let id = 1; id <= 200; id++) client.port.postMessage({ id, value: piece });
-  await until(() => client.frames.filter(frame => frame.id).length === 200, 'all 200 replies');
+  await until(() => client.frames.filter(frame => frame.id).length === 200, 'all 200 replies', 30000);
   assert.deepEqual(client.frames.filter(frame => frame.id).map(frame => frame.id), Array.from({ length: 200 }, (_value, index) => index + 1));
   assert.deepEqual(client.replacements, []); assert.equal(f.bridge.routes, 1);
 });

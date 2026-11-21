@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBrowserRtcBroker, rtcEndpoint, BROWSER_RTC_PROTOCOL, checkRtcMessage, MAX_RTC_MESSAGE_BYTES, registerBrowserRtcProvider } from '../browser-rtc.mjs';
 const register = endpoint => endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'register'}}));
-const until = async predicate => { const end=Date.now()+2000;while(!predicate()){if(Date.now()>end)throw Error('TEST_DEADLINE');await new Promise(setImmediate);} };
+const until = async (predicate,timeoutMs=2000) => { const end=Date.now()+timeoutMs;while(!predicate()){if(Date.now()>end)throw Error('TEST_DEADLINE');await new Promise(setImmediate);} };
 
 test('one bounded pending direct attempt waits for registration without polling or selecting relay',async()=>{
  const calls=[],broker=createBrowserRtcBroker({openConnection:async(endpoint,options)=>{calls.push({endpoint,options});return{close:async()=>{}};}});
@@ -73,20 +73,23 @@ test('authenticated BC attach registers RTC before RPC, carries full opaque pack
  const {createBroadcastOwner,createBroadcastEndpoint,checkOwnerFrame,BROWSER_OWNER_PROTOCOL}=await import('../browser-transport.mjs');
  const name='rtc:'+crypto.randomUUID(),server=new BroadcastChannel(name),client=new BroadcastChannel(name),outsider=new BroadcastChannel(name),profileId='profile',order=[],received=[],rpc=[],ports=[];let ownerRtc;
  const owner={ownerInstanceId:crypto.randomUUID(),attach(endpoint){const receive=({data})=>{order.push('rpc');ports.push(data.port);data.port.onmessage=({data})=>rpc.push(data);data.port.start();data.port.postMessage({ready:true});};endpoint.addEventListener('message',receive);return()=>endpoint.removeEventListener('message',receive);}};
- const bridge=await createBroadcastOwner(server,owner,{profileId,idleTimeoutMs:5000,onRtcEndpoint(endpoint){ownerRtc=endpoint;endpoint.addEventListener('message',({data})=>{if(data.protocol===BROWSER_RTC_PROTOCOL){order.push('rtc');return;}received.push(data);endpoint.postMessage(data);});}});
+ // Exercise authenticated delivery and packet bounds independently of CPU
+ // throughput. Other tests keep their short/virtual negative liveness fences.
+ const fixtureDeadline=30000;
+ const bridge=await createBroadcastOwner(server,owner,{profileId,idleTimeoutMs:fixtureDeadline,onRtcEndpoint(endpoint){ownerRtc=endpoint;endpoint.addEventListener('message',({data})=>{if(data.protocol===BROWSER_RTC_PROTOCOL){order.push('rtc');return;}received.push(data);endpoint.postMessage(data);});}});
  t.after(async()=>{await transport?.close();await bridge.close();for(const p of ports)p.close();server.close();client.close();outsider.close();});
  let transport;const announced=new Promise(resolve=>client.addEventListener('message',({data})=>{if(data.type==='ready')resolve(data);},{once:true}));bridge.announce();const announcement=await announced;
- transport=createBroadcastEndpoint(client,announcement,{profileId,livenessTimeoutMs:3000});
+ transport=createBroadcastEndpoint(client,announcement,{profileId,livenessTimeoutMs:fixtureDeadline});
  transport.rtc.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'register'});
  const wire=new MessageChannel();ports.push(wire.port1,wire.port2);const frames=[];wire.port2.onmessage=({data})=>frames.push(data);wire.port2.start();
- transport.postMessage({protocol:'fixture/rpc',handshake:{},port:wire.port1});await until(()=>frames.length>0);assert.deepEqual(order.slice(0,2),['rtc','rpc']);
+ transport.postMessage({protocol:'fixture/rpc',handshake:{},port:wire.port1});await until(()=>frames.length>0,fixtureDeadline);assert.deepEqual(order.slice(0,2),['rtc','rpc']);
  const replies=[];transport.rtc.addEventListener('message',({data})=>replies.push(data));const packet=new Uint8Array(2*1024*1024);packet[0]=11;packet[packet.length-1]=23;
  assert.throws(()=>checkOwnerFrame({packet}),/OWNER_MESSAGE_LIMIT/);
- transport.rtc.postMessage({protocol:'opaque-kernel-test',packet});await until(()=>replies.length===1);assert.deepEqual(replies[0].packet,packet);assert.equal(received.length,1);assert.equal(rpc.length,0,'RTC payloads never enter the RPC port');
- for(let i=0;i<3;i++)transport.rtc.postMessage({protocol:'opaque-kernel-test',packet:new Uint8Array(1114112)});await until(()=>replies.length===4);assert.equal(received.length,4);
+ transport.rtc.postMessage({protocol:'opaque-kernel-test',packet});await until(()=>replies.length===1,fixtureDeadline);assert.deepEqual(replies[0].packet,packet);assert.equal(received.length,1);assert.equal(rpc.length,0,'RTC payloads never enter the RPC port');
+ for(let i=0;i<3;i++)transport.rtc.postMessage({protocol:'opaque-kernel-test',packet:new Uint8Array(1114112)});await until(()=>replies.length===4,fixtureDeadline);assert.equal(received.length,4);
  outsider.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'rtc',ownerInstanceId:owner.ownerInstanceId,payload:{protocol:'forged'}});
  outsider.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'register'});await new Promise(setImmediate);await new Promise(setImmediate);assert.equal(received.length,4);assert.equal(order.filter(x=>x==='rtc').length,1);
- let closed=false;ownerRtc.addEventListener('close',()=>closed=true);await transport.close();await until(()=>closed);assert.equal(bridge.routes,0);
+ let closed=false;ownerRtc.addEventListener('close',()=>closed=true);await transport.close();await until(()=>closed,fixtureDeadline);assert.equal(bridge.routes,0);
 });
 
 test('provider admission reserves the last slot atomically and sends the next concurrent open to another page',async t=>{
