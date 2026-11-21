@@ -8,6 +8,13 @@ import { build } from 'esbuild';
 // Real page/DOM and UI helpers; deterministic session boundary, no RTC claim.
 // Run: node --test scripts/test/browser/starter-submission.test.mjs
 test('starter readiness, retained retry/reload, rejection and reconnect in Chromium', {timeout:20000}, async t => {
+  // Use the actual runtime registration binding over the built public SDK
+  // observer, so additions to the page contract cannot disappear into a stub.
+  const transport = await build({ entryPoints: ['runtime/src/transport.ts'], bundle: true, write: false, format: 'iife', globalName: 'FixtureTransport',
+    plugins: [{name: 'public-transport', setup(build) {
+      build.onResolve({filter: /collaboration\/transport-diagnostics\.mjs$/}, () => ({path: new URL('../../../dist/sdk/collaboration/transport-diagnostics.mjs', import.meta.url).pathname}));
+    }}],
+  });
   const bundle = await build({ entryPoints: ['docs/tutorial/page.mjs'], bundle: true, write: false, format: 'esm',
     plugins: [{ name: 'session-fixture', setup(build) {
       build.onResolve({ filter: /^(?:@tendriller\/core\/collaboration\/browser|@chronolog\/peer-session\/tendriller|\.\/pairing-browser\.mjs)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
@@ -22,6 +29,8 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
           window.ownerAttachments = (window.ownerAttachments ?? 0) + 1;
           const statuses = [], recoveries = [], participation = [];
           const status = {phase:'ready',database:'ready',generation:'g'};
+          const participationStatus = {phase:'following',connectedPeers:[],connectionRevision:0};
+          window.transportReads = 0;
           const revision = {generation:'g'};
           let resolveRead, fail = false, hold = true, lose = true, beforeSave = false;
           const saved = JSON.parse(localStorage.getItem('fixture-saved') || '{}');
@@ -30,7 +39,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
             signals: {}, signal: new AbortController().signal,
             onStatus(fn) {statuses.push(fn); fn(status); return () => {};},
             onRecovery(fn) {recoveries.push(fn); return () => {};},
-            participation: {onStatus(fn) {participation.push(fn); fn({phase:'following'}); return () => {};}},
+            participation: {status:participationStatus,async diagnostics(){window.transportReads++;return [];},onStatus(fn) {participation.push(fn); fn({...participationStatus}); return () => {};}},
             changes() {return {async *[Symbol.asyncIterator]() {await new Promise(() => {});}};},
             async query() {if (hold) await new Promise(r => resolveRead = r); if(fail) throw Error('Read unavailable'); return {revision,value:[]};},
             async command(name,input,options) {
@@ -46,7 +55,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
             operations: {get:async id=>saved[id] || null, inspect:async id=>({state:saved[id] || null}),wait:async id=>saved[id]},
           };
           window.fixture = {calls, release() {hold=false; resolveRead?.();}, fail(value) {fail=value;},
-            connection(phase) {participation.forEach(fn=>fn({phase}));},
+            connection(phase) {participationStatus.phase=phase;participation.forEach(fn=>fn({...participationStatus}));},
             recovery() {recoveries.forEach(fn=>fn({abandoned:[],unknownLoss:false}));},
             abandon(id) {saved[id] = {...saved[id],status:'needsReapply'};}, hold() {hold=true;}, beforeSave(value) {beforeSave=value;}, responseLoss(value) {lose=value;}, session};
           return {session,detach:async()=>{},suspend:async()=>{},resume:async()=>{}};
@@ -64,7 +73,10 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   t.after(async () => { await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const page = await browser.newPage({viewport:{width:390,height:844}});
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(() => window.tendril = {application:{install(){}},signals:{install(){}},on:()=>()=>{},sensors:{status:()=>({active:[],pending:[]}),on:()=>()=>{},stopAll(){}}});
+  const runtimeFixture = () => {
+    window.tendril = {transport:FixtureTransport.createTransportBinding().api,application:{install(){}},signals:{install(){}},on:()=>()=>{},sensors:{status:()=>({active:[],pending:[]}),on:()=>()=>{},stopAll(){}}};
+  };
+  await page.addInitScript({content: transport.outputFiles[0].text + ';(' + runtimeFixture.toString() + ')();'});
   const url = `http://127.0.0.1:${server.address().port}/`;
   // The page attaches by itself (connection component); there is no connect button.
   await page.goto(url); await page.waitForFunction(() => window.fixture);
@@ -81,6 +93,8 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   await page.evaluate(() => fixture.release());
   await page.waitForFunction(() => !document.querySelector('#submit').disabled);
   assert.equal(await enabled('#media-file'), true);
+  assert.equal(await page.evaluate(() => window.tendril.transport.status().state), 'available');
+  assert.equal(await page.evaluate(() => window.transportReads), 0, 'registration must not sample or probe the participant');
   await page.evaluate(() => fixture.fail(true));
   await page.locator('#submit').click();
   await page.waitForFunction(() => document.querySelector('#result').textContent.includes('Read unavailable'));
