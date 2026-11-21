@@ -88,6 +88,15 @@ try {
   await new Promise(resolve => setTimeout(resolve, 1000));
   assert.equal(requests, initial);
   report.checks.push('closed-one-second-http-idle');
+  const beforeReload = await controls.diagnostics();
+  assert.equal(beforeReload.navigations, 0);
+  await page.reload();
+  const afterReload = await controls.diagnostics();
+  assert.equal(afterReload.navigations, 1);
+  assert.equal(afterReload.sameUrl, true);
+  assert.ok(afterReload.events.some(event => event.event === 'main-frame-navigation' && event.epoch === 1));
+  report.documentObserver = afterReload;
+  report.checks.push('document-epoch-survives-real-reload');
   report.modelTurns = null;
   report.success = true;
 } catch {

@@ -798,6 +798,11 @@ export async function closeLocalTransport() {
         await lifecycle.setFrozen(true, { signal });
         await new Promise(resolve => setTimeout(resolve, frozenMs));
         await lifecycle.setFrozen(false, { signal });
+        report.baseline_lifecycle = await lifecycle.diagnostics();
+        assert.equal(report.baseline_lifecycle.navigations, 0, 'Freeze/resume replaced the application document');
+      } catch (error) {
+        report.baseline_lifecycle = await lifecycle.diagnostics();
+        throw error;
       } finally { await lifecycle.cleanup(); }
     } else {
       const lifecycle = await context.newCDPSession(page);
