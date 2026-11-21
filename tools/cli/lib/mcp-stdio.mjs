@@ -18,7 +18,7 @@ const TOOLS = [
       properties: {
         command: { type: 'string', minLength: 1 },
         input: {},
-        operationId: { type: 'string', minLength: 1, maxLength: 256 },
+        operationId: { type: 'string', minLength: 1, maxLength: 512 },
         wait: { type: 'string', enum: ['applied', 'recorded'], default: 'applied' },
       },
       required: ['command', 'input', 'operationId'],
@@ -39,7 +39,7 @@ const TOOLS = [
             properties: {
               command: { type: 'string', minLength: 1 },
               input: {},
-              operationId: { type: 'string', minLength: 1, maxLength: 256 },
+              operationId: { type: 'string', minLength: 1, maxLength: 512 },
             },
             required: ['command', 'input', 'operationId'],
             additionalProperties: false,
@@ -57,7 +57,7 @@ const TOOLS = [
     description: 'Inspect an operation by its original operationId and return its honest lifecycle state.',
     inputSchema: {
       type: 'object',
-      properties: { operationId: { type: 'string', minLength: 1, maxLength: 256 } },
+      properties: { operationId: { type: 'string', minLength: 1, maxLength: 512 } },
       required: ['operationId'],
       additionalProperties: false,
     },
@@ -93,7 +93,7 @@ function validateArguments(name, args) {
       (spec.required ?? []).some(key => !Object.hasOwn(args, key))) throw invalid('Invalid tool arguments');
   const command = item => {
     if (!plain(item) || typeof item.command !== 'string' || !item.command.trim() || item.command.length > 128 ||
-        typeof item.operationId !== 'string' || !item.operationId.trim() || item.operationId.length > 256 ||
+        typeof item.operationId !== 'string' || !item.operationId.trim() || item.operationId.length > 512 ||
         /[\u0000-\u001f\u007f]/u.test(item.operationId) || !Object.hasOwn(item, 'input'))
       throw invalid('Every command needs a name, input and stable operationId');
   };
@@ -105,7 +105,7 @@ function validateArguments(name, args) {
       if (Object.keys(item).some(key => !['command', 'input', 'operationId'].includes(key))) throw invalid('Unknown command field');
     }
   }
-  if (name === 'operation_inspect' && (typeof args.operationId !== 'string' || !args.operationId.trim() || args.operationId.length > 256))
+  if (name === 'operation_inspect' && (typeof args.operationId !== 'string' || !args.operationId.trim() || args.operationId.length > 512))
     throw invalid('Supply the original operationId');
   if (name === 'state_query' && (typeof args.query !== 'string' || !args.query.trim() || args.query.length > 128)) throw invalid('Supply a query name');
   if (args.wait !== undefined && !['recorded', 'applied'].includes(args.wait)) throw invalid('wait must be recorded or applied');
@@ -166,15 +166,13 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
         return toolOk(lifecycleOf(args.operationId, state));
       }
       if (name === 'command_submit') {
-        const op = await session.command(args.command, args.input, { operationId: args.operationId });
-        if (args.wait === 'recorded') {
-          return toolOk(lifecycleOf(args.operationId, await op.get()));
-        }
         try {
+          const op = await session.command(args.command, args.input, { operationId: args.operationId });
+          if (args.wait === 'recorded') return toolOk(lifecycleOf(args.operationId, await op.get()));
           const applied = await op.applied({ signal });
           return toolOk({ operationId: args.operationId, lifecycle: applied.outcome === 'rejected' ? 'rejected' : 'applied', applied });
-        } catch (waitError) {
-          return toolOk(await uncertain(session, args.operationId, waitError));
+        } catch (error) {
+          return toolOk(await uncertain(session, args.operationId, error));
         }
       }
       if (name === 'command_submit_batch') {

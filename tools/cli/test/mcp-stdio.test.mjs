@@ -32,6 +32,15 @@ test('batch wait failures preserve saved work and never assert rejection', async
   assert.equal(response.result.structuredContent.results[0].lifecycle, 'unknown');
   assert.deepEqual(response.result.structuredContent.results[0].state, saved);
 });
+test('a lost command admission response remains inspectable under its original long identity', async () => {
+  const operationId = 'scope#' + 'x'.repeat(506), saved = { status: 'saved', operationId };
+  const response = await handleStdioMcpMessage({ session: {
+    command: async () => { throw Error('admission reply lost'); },
+    operations: { get: async id => { assert.equal(id, operationId); return saved; } },
+  } }, call('command_submit', { command: 'add', input: {}, operationId }));
+  assert.equal(response.result.structuredContent.lifecycle, 'unknown');
+  assert.deepEqual(response.result.structuredContent.state, saved);
+});
 test('stdio accepts cancellation while a tool is awaiting its applied response', async () => {
   const input = new PassThrough(), output = new PassThrough();
   let text = '', submitted;
