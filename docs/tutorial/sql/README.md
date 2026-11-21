@@ -42,3 +42,9 @@ returns `OWNER_STORAGE_UNSUPPORTED` before opening storage. All documents attach
 to that one SQL owner, and detaching a document does not close sibling views.
 The lazy WASM/VFS lifetime belongs to the owner, with database handles closed
 before pool cleanup.
+
+With the resident SQL peer running, `node session.mjs diagnostics` (or
+`node session.mjs status PROFILE`) takes one local authenticated-link sample and
+detaches. It opens no SQL engine or signing store. Counters are per current link,
+reset on replacement, and do not measure billing or applied/retained operations.
+See [transport diagnostics](https://tendriller.dev/docs/TRANSPORT_DIAGNOSTICS.md).

@@ -52,6 +52,7 @@ Safari device-qualification guarantee.
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
 | `documentUrl(reference)` | Build a document or fragment URL in this page’s current live or explicitly pinned context; performs no navigation |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
+| `transport.install(participation)`, `status()`, `onChange()`, `refresh()` | Bounded local authenticated-link diagnostics; no polling, probes or host queries. See [transport diagnostics](TRANSPORT_DIAGNOSTICS.md) |
 | `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
 
 The hosted `tendril.js` entry opens one receive-only publication metadata WebSocket during construction, including on holding and explicitly pinned pages. The bare `startRuntime()` kernel opens it only when passed `watchPublication: true`; otherwise construction starts no host connection or fetch. A healthy publication watch sends no heartbeat or periodic HTTP request; transport failure can trigger bounded recovery reads and reconnects. This watch does not install an application transport. Construction creates no IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
