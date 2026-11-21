@@ -115,7 +115,39 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
 function facade({session,transport,channel,worker,route,options,provider:initialProvider,bootstrapRtc}){
   initialProvider?.adopt(session);
   transport.bindRequestSource(session);
-  let detached=false,releasing,suspended=false,residency=Promise.resolve();
+  let detached=false,releasing,suspended=false,residency=Promise.resolve(), explicitSuspended=false;
+  const document=globalThis.document;
+  let frozen=false, observationPaused=false, observationResume;
+  const away=()=>frozen||document?.visibilityState==='hidden';
+  function pauseObservation(force=false){
+    if(detached||observationPaused&&!force&&!observationResume)return;
+    observationPaused=true;
+    // Pause the local fence synchronously, before promises or RTC cleanup. A
+    // hidden page retains its RTC provider and can still process allowed inputs.
+    try{if(transport.park)transport.park();else transport.suspend();}catch{}
+    try{void Promise.resolve(session.suspend()).catch(()=>{});}catch{}
+  }
+  function resumeObservation(){
+    if(detached||!observationPaused||suspended||explicitSuspended||away())return Promise.resolve(session);
+    if(observationResume)return observationResume;
+    observationResume=(async()=>{
+      await transport.resume();
+      if(away()||suspended||explicitSuspended){pauseObservation(true);return session;}
+      await session.resumeAttachment();
+      if(detached)throw new CollaborationError('ENDPOINT_STALE');
+      if(away()||suspended||explicitSuspended)pauseObservation(true);
+      else observationPaused=false;
+      return session;
+    })().finally(()=>{observationResume=undefined;});
+    return observationResume;
+  }
+  const visibility=()=>{if(away())pauseObservation();else void resumeObservation().catch(()=>{});};
+  const freeze=()=>{frozen=true;pauseObservation();};
+  const resume=()=>{frozen=false;visibility();};
+  document?.addEventListener?.('visibilitychange',visibility);
+  document?.addEventListener?.('freeze',freeze);
+  document?.addEventListener?.('resume',resume);
+  if(away())pauseObservation();
   const startRtc=()=>registerBrowserRtcProvider(transport.rtc,session);
   let provider=initialProvider ?? startRtc();
   // An attached session holds a retained signing key and signed work: keep it durable.
@@ -123,7 +155,11 @@ function facade({session,transport,channel,worker,route,options,provider:initial
   const stopKeepAlive=keepStorageInUse({intervalMs:options.storageKeepAliveMs??240_000,storagePersisted});
   function release(){
     if(releasing)return releasing;
-    detached=true;stopKeepAlive();session.signal.removeEventListener('abort',ended);globalThis.removeEventListener?.('pagehide',leaving);
+    detached=true;stopKeepAlive();
+    document?.removeEventListener?.('visibilitychange',visibility);
+    document?.removeEventListener?.('freeze',freeze);
+    document?.removeEventListener?.('resume',resume);
+    session.signal.removeEventListener('abort',ended);globalThis.removeEventListener?.('pagehide',leaving);
     releasing=(async()=>{
       const failures=[];
       try{await provider.close();}catch(error){failures.push(error);}
@@ -149,6 +185,8 @@ function facade({session,transport,channel,worker,route,options,provider:initial
   session.signal.addEventListener('abort',ended,{once:true});
   if(session.signal.aborted)ended();
   function changeResidency(nextSuspended){
+    explicitSuspended=nextSuspended;
+    if(nextSuspended)pauseObservation();
     const changing=residency.then(async()=>{
       if(detached){if(nextSuspended)return;throw new CollaborationError('ENDPOINT_STALE');}
       if(suspended===nextSuspended)return nextSuspended?undefined:session;
@@ -158,7 +196,9 @@ function facade({session,transport,channel,worker,route,options,provider:initial
       }else{
         await transport?.resume();await session.resumeAttachment();
         if(detached)throw new CollaborationError('ENDPOINT_STALE');
-        provider=startRtc();suspended=false;return session;
+        provider=startRtc();suspended=false;
+        if(away()||explicitSuspended)pauseObservation(true);else observationPaused=false;
+        return session;
       }
     });
     residency=changing.catch(()=>{});return changing;

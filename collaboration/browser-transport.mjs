@@ -159,7 +159,7 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
   }
   function observeLiveness(record, route) {
     clearTimeout(record.idleTimer);
-    if (record.closed) return;
+    if (record.closed || record.suspended) return;
     if (!record.suspended && performance.now() - record.lastReceived >= idleTimeoutMs) {
       void record.send({ kind: 'frame', frame: ended('OWNER_UNREACHABLE') }).finally(() => retire(route)).catch(() => undefined); return;
     }
@@ -205,12 +205,15 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
       }); record.port.start();
       endpoint.dispatchEvent(new MessageEvent('message', { data: { protocol: value.facadeProtocol, handshake: value.handshake, port: ports.port1 } }));
     } else if (value?.kind === 'frame') {
-      if (value.frame?.method === 'endpoint.suspend') record.suspended = true;
-      if (value.frame?.method === 'endpoint.resume') record.suspended = false;
+      if (value.frame?.method === 'endpoint.suspend') { record.suspended = true; clearTimeout(record.idleTimer); }
+      if (value.frame?.method === 'endpoint.resume') { record.suspended = false; observeLiveness(record, route); }
       record.port.postMessage(value.frame);
     }
     else if (value?.kind === 'rtc') record.rtc.dispatchEvent(new MessageEvent('message',{data:value.message}));
-    else if (value?.kind === 'ping') await record.send({ kind: 'pong' });
+    else if (value?.kind === 'ping') {
+      if (value.probe !== undefined && !validId(value.probe)) throw Error('OWNER_MESSAGE_INVALID');
+      await record.send({ kind: 'pong', ...(value.probe === undefined ? {} : {probe:value.probe}) });
+    }
     else if (value?.kind === 'detach') retire(route);
     else retire(route);
   }
@@ -244,7 +247,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   if (!isOwnerAnnouncement(announcement, profileId) || !Number.isFinite(livenessTimeoutMs) || livenessTimeoutMs < 100 || livenessTimeoutMs > 120000) throw Error('OWNER_HANDSHAKE_INVALID');
   const { ownerInstanceId } = announcement, ownerKey = announcement.publicKey.slice();
   const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs });
-  let record, closed = false, paused = false, heartbeat, handshakeTimer, resumeProbe, rtcRegistration;
+  let record, closed = false, paused = false, pauseEpoch = 0, heartbeat, handshakeTimer, resumeProbe, rtcRegistration;
   const rtc = rtcEndpoint(message => {
     if(closed)throw Error('ENDPOINT_STALE');
     if(!record?.key){if(message?.protocol===BROWSER_RTC_PROTOCOL&&['register','unregister'].includes(message.type)){rtcRegistration=message.type==='register'?message:undefined;return;}throw Error('OWNER_HANDSHAKE_INVALID');}
@@ -292,7 +295,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     if (data.type === 'welcome') { void welcome(data); return; }
     if (!record.key) return;
     record.receive(data, value => {
-      if(value?.kind !== 'rtc'){liveness.authenticated();finishResume();}
+      if(value?.kind !== 'rtc'){liveness.authenticated();if(value?.kind==='pong'&&value.probe===resumeProbe?.id)finishResume();}
       if (value?.kind === 'frame') {
         record.port.postMessage(value.frame);
         if (value.frame?.ended) {
@@ -326,7 +329,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     })(); record.opening.catch(() => replaced('OWNER_HANDSHAKE_INVALID'));
   }, addEventListener() {}, removeEventListener() {},
   bindRequestSource: session => liveness.bind(session),
-  suspend() { paused = true; clearTimeout(heartbeat); },
+  suspend() { paused = true; pauseEpoch++; clearTimeout(heartbeat); },
   async resume() {
     if (closed) throw Error('ENDPOINT_STALE');
     if (!paused) return;
@@ -334,11 +337,13 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     // by repeatedly invoking resume or by supplying a pending-request getter.
     if (resumeProbe) return resumeProbe.promise;
     let resolve, reject;
+    const epoch = pauseEpoch;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-    resumeProbe = { promise, resolve, reject, timer: setTimeout(() => { finishResume(Error('OWNER_UNREACHABLE')); replaced('OWNER_UNREACHABLE'); }, livenessTimeoutMs) };
-    void record.send({ kind: 'ping' }).catch(error => { finishResume(error); replaced('OWNER_UNREACHABLE'); });
+    resumeProbe = { id: crypto.randomUUID(), promise, resolve, reject, timer: setTimeout(() => { finishResume(Error('OWNER_UNREACHABLE')); replaced('OWNER_UNREACHABLE'); }, livenessTimeoutMs) };
+    void record.send({ kind: 'ping', probe:resumeProbe.id }).catch(error => { finishResume(error); replaced('OWNER_UNREACHABLE'); });
     await promise;
     if (closed) throw Error('ENDPOINT_STALE');
+    if(epoch !== pauseEpoch)return;
     paused = false; pulse();
   },
   relinquish() {
