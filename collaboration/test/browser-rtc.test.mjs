@@ -145,3 +145,32 @@ test('broker clamps explicit gathering time to the remaining negotiation budget 
  const shorter=await broker.openDirectConnection({timeoutMs:1000,gatheringTimeoutMs:200});assert.equal(calls[1].gatheringTimeoutMs,200);await shorter.close();
  const defaults=await broker.openDirectConnection({timeoutMs:1000});assert.equal(Object.hasOwn(calls[2],'gatheringTimeoutMs'),false);await defaults.close();
 });
+
+test('authenticated provider and network changes coalesce into explicit upgrade notifications',async()=>{
+ let changes=0,authorized=true;
+ const broker=createBrowserRtcBroker({onNetworkChange:()=>{changes++;}}),endpoint=rtcEndpoint(()=>{});
+ broker.addRoute(endpoint,{authorize:()=>authorized});
+ const change=()=>endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'network-change'}}));
+ change();await Promise.resolve();assert.equal(changes,0,'unregistered routes cannot trigger work');
+ register(endpoint);change();change();await Promise.resolve();assert.equal(changes,1);
+ register(endpoint);await Promise.resolve();assert.equal(changes,1,'duplicate registration cannot probe');
+ authorized=false;change();await Promise.resolve();assert.equal(changes,1);
+ authorized=true;change();await Promise.resolve();assert.equal(changes,2);
+ broker.close();change();await Promise.resolve();assert.equal(changes,2);
+});
+
+test('provider network listeners stop on close and hidden documents do not request upgrades',async t=>{
+ const originals=new Map(['addEventListener','removeEventListener','document','navigator','RTCPeerConnection'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+ t.after(()=>{for(const[key,value]of originals)if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];});
+ const events=new EventTarget(),doc=new EventTarget(),network=new EventTarget();doc.visibilityState='visible';
+ for(const[key,value]of Object.entries({addEventListener:events.addEventListener.bind(events),removeEventListener:events.removeEventListener.bind(events),document:doc,navigator:{connection:network},RTCPeerConnection:class{}}))Object.defineProperty(globalThis,key,{configurable:true,value});
+ const messages=[],endpoint=rtcEndpoint(value=>messages.push(value)),provider=registerBrowserRtcProvider(endpoint,{signal:new AbortController().signal},{serve:()=>({close(){}})});
+ assert.equal(messages.length,1);
+ events.dispatchEvent(new Event('online'));network.dispatchEvent(new Event('change'));assert.equal(messages.length,3);
+ doc.visibilityState='hidden';doc.dispatchEvent(new Event('visibilitychange'));events.dispatchEvent(new Event('online'));assert.equal(messages.length,3);
+ doc.visibilityState='visible';doc.dispatchEvent(new Event('visibilitychange'));assert.equal(messages.length,4);
+ await provider.close();const before=messages.length;
+ for(const name of ['online','pageshow'])events.dispatchEvent(new Event(name));
+ for(const name of ['visibilitychange','resume'])doc.dispatchEvent(new Event(name));
+ network.dispatchEvent(new Event('change'));assert.equal(messages.length,before);
+});

@@ -20,7 +20,7 @@ function rootLimits(value = {}) {
 /** One public owner composition for SharedWorker and the Web-Lock-elected fallback. */
 export function serveBrowserOwner(options) {
   const scope = options.scope ?? globalThis, lifetime = new AbortController(), roots = new Map(), identities = new Set();
-  const rtc = createBrowserRtcBroker({signal:lifetime.signal});
+  const rtc = createBrowserRtcBroker({signal:lifetime.signal,onNetworkChange:() => owned?.session?.participation?.reconsiderConnections()});
   const addRtcRoute = endpoint => rtc.addRoute(endpoint,{authorize:()=>!closed});
   let profileId, openSession, createIdentity, ownerOptions, limits = defaults;
   let owner, owned, lease, opening, channel, election, broadcast, broadcastStarting, closed = false, retiring = false, retireTimer, closing, scopeRoot, sessionAborted;
