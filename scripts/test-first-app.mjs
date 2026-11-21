@@ -784,10 +784,24 @@ export async function closeLocalTransport() {
 
     checkpoint('a backgrounded phone tab resumes');
     await page.setViewportSize({ width: 390, height: 844 });
-    const lifecycle = await context.newCDPSession(page);
-    await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
-    await new Promise(resolve => setTimeout(resolve, frozenMs));
-    await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
+    if (values['network-lab-profile']) {
+      // With real visibility, raw CDP frozen/active can leave an already-selected
+      // tab hidden. Use the observed background/freeze/resume/foreground cycle.
+      const { createBrowserNetworkControls } = await import('../test/e2e/network-qualification/browser-controls.mjs');
+      const lifecycle = await createBrowserNetworkControls(page);
+      const signal = AbortSignal.timeout(frozenMs + 15_000);
+      try {
+        await lifecycle.setFrozen(true, { signal });
+        await new Promise(resolve => setTimeout(resolve, frozenMs));
+        await lifecycle.setFrozen(false, { signal });
+      } finally { await lifecycle.cleanup(); }
+    } else {
+      const lifecycle = await context.newCDPSession(page);
+      await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
+      await new Promise(resolve => setTimeout(resolve, frozenMs));
+      await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
+      await lifecycle.detach();
+    }
     const resumedAt = Date.now();
     await burst(5);
     const resumeLog = await peer.request('participation-log');
@@ -824,6 +838,19 @@ export async function closeLocalTransport() {
     // tests. Interactive foreground actions must actually foreground this tab;
     // a hidden page can have no animation frames for Playwright's stability check.
     if (values['network-lab-profile']) await page.bringToFront();
+    if (values['network-lab-profile']) {
+      report.before_uncertain_click = await page.evaluate(() => new Promise(resolve => {
+        let finished = false;
+        const finish = raf => { if (finished) return; finished = true; clearTimeout(timer);
+          resolve({ raf, visibility: document.visibilityState, hasFocus: document.hasFocus(),
+            submitDisabled: document.querySelector('#submit')?.disabled,
+            width: innerWidth, height: innerHeight, screenWidth: screen.width, screenHeight: screen.height }); };
+        const timer = setTimeout(() => finish(false), 1000);
+        requestAnimationFrame(() => finish(true));
+      }));
+      assert.equal(report.before_uncertain_click.visibility, 'visible', 'Foreground lab tab remained hidden');
+      assert.equal(report.before_uncertain_click.raf, true, 'Foreground lab tab has no animation frames');
+    }
     await page.evaluate(() => {
       const timeout = AbortSignal.timeout.bind(AbortSignal);
       AbortSignal.timeout = milliseconds => milliseconds === 15_000

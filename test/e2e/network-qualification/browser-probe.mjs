@@ -52,6 +52,7 @@ try {
   await mark('freeze-resume');
   await controls.setFrozen(false, options);
   await mark('freeze-read');
+  assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
   const frozen = await page.evaluate(() => ({ before: window.frozenTicks, after: window.resumedTicks }));
   assert.ok(Number.isInteger(frozen.before));
   assert.equal(frozen.after, frozen.before);
