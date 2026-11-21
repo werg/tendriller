@@ -85,5 +85,6 @@ inspector.close(); // closes only this observer, never the participant or its li
 Each local read has a fixed five-second default deadline, configurable through
 `timeoutMs` up to 30 seconds. Concurrent refreshes coalesce. A timed-out physical
 read stays charged until it settles, so repeated clicks cannot accumulate owner
-calls. Closing or cancelling the observer fences late samples. Connection-revision
+calls. Later refreshes return current cached status while that physical read is
+still unresolved; they do not return the old timed-out snapshot. Closing or cancelling the observer fences late samples. Connection-revision
 bursts queue at most one follow-up read; there is no retry timer or idle loop.

@@ -75,3 +75,34 @@ test('asynchronous diagnostic observers cannot reject or delay local sampling',a
  const f=fixture(),view=createTransportDiagnostics(f.source);view.onChange(async()=>{throw Error('OBSERVER_FAILURE');});
  assert.equal((await view.refresh()).sampled,true);await tick();view.close();
 });
+
+for(const kind of ['capped','filtered'])test(`${kind} sample limitation survives duplicate status until a complete replacement sample`,async()=>{
+ let values=kind==='capped'?new Array(TRANSPORT_DIAGNOSTIC_LIMIT+1).fill(row()):[row(),row({peerId:other})];
+ const f=fixture(async()=>values),view=createTransportDiagnostics(f.source),reports=[];view.onChange(value=>reports.push(value));
+ const sample=await view.refresh();assert.equal(sample.limited,true);assert.equal(sample.sampled,true);const notices=reports.length;
+ f.change({...f.source.status});assert.deepEqual(view.status(),sample);assert.equal(reports.length,notices);assert.equal(f.calls,1);
+ values=[row()];const complete=await view.refresh();assert.equal(complete.limited,false);assert.equal(complete.sampled,true);assert.equal(f.calls,2);view.close();
+});
+
+test('refresh after a public timeout returns current status while the unresolved physical read stays charged',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let resolve;
+ const f=fixture(()=>new Promise(done=>resolve=done)),view=createTransportDiagnostics(f.source,{timeoutMs:100});
+ const pending=view.refresh();assert.equal(view.refresh(),pending);await tick();t.mock.timers.tick(100);
+ const timedOut=await pending;assert.equal(timedOut.phase,'connected');assert.equal(timedOut.authenticatedPeers,1);
+ f.change({phase:'connecting',connectedPeers:[]});const again=view.refresh();assert.notEqual(again,pending);
+ assert.deepEqual(await again,view.status());assert.equal((await again).phase,'connecting');assert.equal((await again).authenticatedPeers,0);assert.equal(f.calls,1);
+ resolve([row()]);await tick();assert.equal(view.status().connections.length,0);view.close();
+});
+test('connection revisions after timeout retain one follow-up without overlapping the charged physical read',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});const resolves=[];
+ const f=fixture(()=>new Promise(done=>resolves.push(done))),view=createTransportDiagnostics(f.source,{timeoutMs:100});
+ const first=view.refresh();await tick();t.mock.timers.tick(100);await first;
+ f.change({connectionRevision:1});f.change({connectionRevision:2});await view.refresh();assert.equal(f.calls,1);
+ resolves[0]([row({kind:'relay'})]);await tick();assert.equal(f.calls,2);
+ resolves[1]([row({kind:'direct'})]);await tick();assert.equal(view.status().connections[0].kind,'direct');assert.equal(view.status().connectionRevision,2);view.close();
+});
+test('status and sample limitations remain independent',async()=>{
+ const f=fixture(async()=>[row()]);f.source.status.connectedPeers=[id,...Array.from({length:64},(_,i)=>(i+1).toString(16).padStart(64,'0'))];
+ const view=createTransportDiagnostics(f.source);assert.equal((await view.refresh()).limited,true);
+ f.change({connectedPeers:f.source.status.connectedPeers.slice(0,64)});assert.equal(view.status().limited,false);assert.equal(f.calls,1);view.close();
+});
