@@ -99,8 +99,15 @@ Contrib selects the exact core `master` commit; if its manifest is not published
 verification fails and no pin PR is opened. Chronolog selects the tuple from
 merged Contrib main, then requires that main's exact push qualification. Thus
 neither follows an unqualified diagnostic kernel nor guesses a future source.
-Scheduled failure during publication/CI propagation is a blocked proposal, not a
-passing release. Re-run after the prerequisite completes.
+For known new-source release/manifest absence or absent/running required MAIN
+gates, a receiver writes a `waiting-prerequisite` receipt: exact source, stage,
+reason and `qualified:false`, with no PR or dispatch. It can retry on the next
+schedule. Explicit source/apply requests still fail. A previously recorded
+publication disappearing, auth errors, hash/identity mismatch, corrupt metadata,
+incomplete successful-job evidence and completed failed/cancelled CI remain hard
+failures. Waiting never means a passing release. This behavior is supplied by
+the selected approved automation version; existing receivers retain their pinned
+implementation until a reviewed source upgrade.
 
 GitHub repositories must allow Actions to create pull requests. An authorized
 owner can enable this once with existing credentials:

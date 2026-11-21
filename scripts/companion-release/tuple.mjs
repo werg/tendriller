@@ -12,6 +12,10 @@ export const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 export const json = value => JSON.stringify(value, null, 2) + '\n';
 export function commit(value) { assert.match(value ?? '', /^[a-f0-9]{40}$/, 'Require a full lowercase source SHA'); return value; }
 export function checksum(value) { assert.match(value ?? '', /^[a-f0-9]{64}$/, 'Require a SHA-256'); return value; }
+export function prerequisite(source, stage, reason) {
+  return Object.assign(Error(`Waiting for ${reason} at ${source}; no proposal or qualification is claimed.`),
+    { code: 'release_prerequisite_not_ready', source: commit(source), stage, reason });
+}
 export function seal(body) { return { ...body, id: digest(JSON.stringify(body)) }; }
 export function validateTuple(tuple) {
   const { id, ...body } = tuple;
@@ -66,10 +70,19 @@ async function identity(api, repository, source) {
 
 export async function publishedTuple(source, { api, fetcher, manifestSha256, signal } = {}) {
   commit(source);
-  const release = await api(`repos/${REPOS.core}/releases/tags/source-${source}`);
+  const core = await identity(api, REPOS.core, source);
+  const releaseEndpoint = `repos/${REPOS.core}/releases/tags/source-${source}`;
+  let release;
+  try { release = await api(releaseEndpoint); }
+  catch (error) {
+    if (error.code === 'github_request_failed' && error.status === 404 && error.endpoint === releaseEndpoint)
+      throw prerequisite(source, 'published', 'source-release-not-published');
+    throw error;
+  }
   assert.equal(release.draft, false, 'Require a published release');
   assert.equal(release.tag_name, `source-${source}`);
   const assets = release.assets.filter(asset => asset.name === 'manifest.json');
+  if (assets.length === 0) throw prerequisite(source, 'published', 'source-manifest-not-published');
   assert.equal(assets.length, 1, 'Require one public manifest');
   const apiDigest = assets[0].digest?.replace(/^sha256:/, ''); checksum(apiDigest);
   if (manifestSha256) assert.equal(apiDigest, checksum(manifestSha256), 'Publisher manifest digest differs');
@@ -87,7 +100,6 @@ export async function publishedTuple(source, { api, fetcher, manifestSha256, sig
     if (file === 'composition.json') composition = JSON.parse(content);
     if (file === sessionName) session = sessionMetadata(content);
   } });
-  const core = await identity(api, REPOS.core, source);
   assert.deepEqual(composition.core, core, 'Core composition/tree mismatch');
   const kernel = await identity(api, REPOS.kernel, composition.chronolog?.session?.source);
   assert.deepEqual(composition.chronolog.session, kernel, 'Kernel composition/tree mismatch');
@@ -118,6 +130,8 @@ export async function qualifyContrib(tuple, source, { api } = {}) {
   for (const workflow of GATES) {
     const run = runs.workflow_runs.filter(run => run.path === `.github/workflows/${workflow}` && run.head_sha === source &&
       run.event === 'push' && run.head_branch === repo.default_branch).sort((a, b) => b.id - a.id)[0];
+    if (!run || ['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(run.status))
+      throw prerequisite(source, 'qualified', `contrib-${workflow}-pending`);
     assert(run?.status === 'completed' && run.conclusion === 'success', `Merged Contrib ${workflow} gate is not green`);
     const jobs = await api(`repos/${REPOS.contrib}/actions/runs/${run.id}/jobs?per_page=100`);
     assert(jobs.jobs.length > 0 && jobs.total_count === jobs.jobs.length && jobs.jobs.every(job => job.conclusion === 'success'),
