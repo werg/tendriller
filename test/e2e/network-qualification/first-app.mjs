@@ -32,6 +32,8 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
   let reopenProof;
   let backgroundProof;
   let hiddenNote;
+  let initialRouteEvidence;
+  const routeWaits = [];
   const adapter = {
     faults, ...browser,
     async background(options) {
@@ -131,7 +133,29 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     },
     async waitForDirect({ signal }) {
       signal.throwIfAborted();
-      await peer.request('transport-wait', { kind: 'direct' }, 60_000);
+      const started = performance.now();
+      const before = await peer.request('transport-snapshot');
+      const hostBefore = await transportCounters();
+      const evidence = { expectedKind: 'direct', before, hostBefore };
+      if (routeWaits.length < 16) routeWaits.push(evidence);
+      try {
+        evidence.after = await peer.request('transport-wait', { kind: 'direct' }, 60_000);
+        evidence.completed = true;
+      }
+      catch (error) {
+        evidence.after = await peer.request('transport-snapshot'); evidence.completed = false;
+        initialRouteEvidence = evidence;
+        throw error;
+      } finally {
+        evidence.elapsedMs = performance.now() - started;
+        evidence.hostAfter = await transportCounters();
+        // Opaque counter instance is needed only for equality, never retained.
+        evidence.sameHostEpoch = evidence.hostBefore.instance === evidence.hostAfter.instance;
+        delete evidence.hostBefore.instance; delete evidence.hostAfter.instance;
+        if (process.env.NETWORK_LAB_PROGRESS) await progressWriter(process.env.NETWORK_LAB_PROGRESS)({
+          state: evidence.completed ? 'authenticated-direct-ready' : 'authenticated-direct-failed',
+          profile, at: new Date().toISOString(), routeEvidence: evidence });
+      }
       signal.throwIfAborted();
     },
     async exercise({ signal }) {
@@ -247,6 +271,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     report.sensorScope = 'Immutable PNG fixture carried by real encrypted content/inference signals; deterministic native inference, no physical camera/provider billing qualification.';
     report.reopenProof = reopenProof;
     report.backgroundProof = backgroundProof;
+    report.routeWaits = routeWaits;
     assert.equal(report.success, true, 'Requested network profile is unsupported in this browser');
     return report;
   } catch (error) {
@@ -257,6 +282,8 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     }
     if (reopenProof) error.networkReport.reopenProof = reopenProof;
     if (backgroundProof) error.networkReport.backgroundProof = backgroundProof;
+    if (initialRouteEvidence) error.networkReport.routeEvidence = initialRouteEvidence;
+    error.networkReport.routeWaits = routeWaits;
     throw error;
   } finally { await adapter.cleanup(); }
 }
