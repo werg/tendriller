@@ -124,3 +124,29 @@ for(const mode of['shared','elected'])test(`${mode} a delayed resume proof canno
  assert.deepEqual((await bounded(session.query('state',null),'query after second resume')).value,['retained identity']);
  assert.equal(f.opened,1);assert.equal(f.probe.active.size,mode==='shared'?1:2);assert.deepEqual(f.clock.errors,[]);
 });
+
+for(const mode of['shared','elected'])test(`${mode} rapid visible-hidden-visible obtains a new proof after a stale resume`,async t=>{
+ const f=await fixture(t,mode);
+ f.doc.dispatchEvent(new Event('freeze'));await until(()=>f.clock.tasks.size===0,'suspension acknowledged');
+ f.clock.elapse(30_001);f.gate.hold=true;f.doc.dispatchEvent(new Event('resume'));
+ await until(()=>f.gate.queued.length>0,'first resume proof held');
+ f.doc.dispatchEvent(new Event('freeze'));f.doc.dispatchEvent(new Event('resume'));
+ f.gate.hold=false;for(const send of f.gate.queued.splice(0))send();
+ await until(()=>f.clock.heartbeats.length>0,'final visible state obtains a new proof and rearms heartbeat');
+ assert.equal(f.replaced.length,0);assert.equal(f.attachment.session.signal.aborted,false);
+ assert.equal(f.opened,1);assert.deepEqual(f.clock.errors,[]);
+});
+for(const mode of['shared'])test(`${mode} an obsolete resume timeout cannot fence a reparked page`,async t=>{
+ const f=await fixture(t,mode);
+ f.doc.dispatchEvent(new Event('freeze'));await until(()=>f.clock.tasks.size===0,'suspension acknowledged');
+ f.clock.elapse(30_001);f.gate.hold=true;f.doc.dispatchEvent(new Event('resume'));
+ await until(()=>f.gate.queued.length>0,'resume proof withheld');
+ f.gate.hold=false;f.gate.queued.splice(0);f.doc.dispatchEvent(new Event('freeze'));
+ // New suspension RPCs reach the owner; only the obsolete proof was lost.
+ await delay(10);f.clock.advance(15_000);await delay(10);
+ assert.equal(f.replaced.length,0,'a superseded proof deadline is not evidence that the owner died');
+ assert.equal(f.attachment.session.signal.aborted,false);assert.equal(f.clock.heartbeats.length,0);
+ f.doc.dispatchEvent(new Event('resume'));
+ await until(()=>f.clock.heartbeats.length>0,'fresh visible resume after obsolete timeout');
+ assert.equal(f.opened,1);assert.deepEqual(f.clock.errors,[]);
+});

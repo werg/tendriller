@@ -329,7 +329,12 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     })(); record.opening.catch(() => replaced('OWNER_HANDSHAKE_INVALID'));
   }, addEventListener() {}, removeEventListener() {},
   bindRequestSource: session => liveness.bind(session),
-  suspend() { paused = true; pauseEpoch++; clearTimeout(heartbeat); },
+  suspend() {
+    paused = true; pauseEpoch++; clearTimeout(heartbeat);
+    // Settle the superseded attempt without authenticating it. Its epoch check
+    // prevents unpausing; a later visible state must obtain a new nonce proof.
+    finishResume();
+  },
   async resume() {
     if (closed) throw Error('ENDPOINT_STALE');
     if (!paused) return;
@@ -339,8 +344,8 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     let resolve, reject;
     const epoch = pauseEpoch;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-    resumeProbe = { id: crypto.randomUUID(), promise, resolve, reject, timer: setTimeout(() => { finishResume(Error('OWNER_UNREACHABLE')); replaced('OWNER_UNREACHABLE'); }, livenessTimeoutMs) };
-    void record.send({ kind: 'ping', probe:resumeProbe.id }).catch(error => { finishResume(error); replaced('OWNER_UNREACHABLE'); });
+    const probe = resumeProbe = { id: crypto.randomUUID(), promise, resolve, reject, timer: setTimeout(() => { if(resumeProbe !== probe)return; if(epoch !== pauseEpoch){finishResume();return;} finishResume(Error('OWNER_UNREACHABLE')); replaced('OWNER_UNREACHABLE'); }, livenessTimeoutMs) };
+    void record.send({ kind: 'ping', probe:resumeProbe.id }).catch(error => { if(resumeProbe !== probe)return; if(epoch !== pauseEpoch){finishResume();return;} finishResume(error); replaced('OWNER_UNREACHABLE'); });
     await promise;
     if (closed) throw Error('ENDPOINT_STALE');
     if(epoch !== pauseEpoch)return;

@@ -110,7 +110,7 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
     if (disposed || closing) throw new CollaborationError('ENDPOINT_STALE');
     const epoch = pauseEpoch;
     try { await request('resume'); if(epoch !== pauseEpoch)return; paused = false; void pulse(); }
-    catch (error) { paused = false; fail('OWNER_UNREACHABLE'); throw error; }
+    catch (error) { if(epoch !== pauseEpoch)return; paused = false; fail('OWNER_UNREACHABLE'); throw error; }
   },
   relinquish() {
     if (disposed) return;
