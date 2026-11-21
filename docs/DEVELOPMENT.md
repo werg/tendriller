@@ -118,7 +118,7 @@ Commit and push incremental changes before publishing clean artifacts. A source 
 
 The Public service workflow builds/checks once on Node 24, seals a deployment
 bundle into the manifest, then qualifies those same bytes in browser, exact-kit
-and native jobs. Node 22 retains a separate compatibility check. PR and branch
+and native jobs. Browser qualification runs the exact first-app kit with both the shared owner and the elected fallback (SharedWorker disabled). Both reports gate promotion. Node 22 retains a separate compatibility check. PR and branch
 jobs have read-only permissions and never publish or deploy. Only trusted master
 publishes, using `source-<full commit SHA>` release tags, with the manifest uploaded
 last. Package versions may stay unchanged across source checkpoints; the existing
