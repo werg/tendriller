@@ -114,11 +114,14 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
   }
 
   async function run() {
-    let delay = 1000, waitingSince = 0;
+    let delay = 1000, waitingSince = 0, needsEnrollment = false, enrollmentDelay = 1500;
     while (!lifetime.signal.aborted) {
       try {
         set({ ...state, phase: state.phase === 'connected' ? 'connecting' : state.phase,
           ...(['failed', 'connected'].includes(state.phase) ? { title: 'Connecting…', detail: '', action: undefined } : {}) });
+        // While one enrollment is outstanding, inspect that retained request
+        // instead of reopening a missing device owner on every status read.
+        if (needsEnrollment) throw Object.assign(Error('Browser enrollment pending'), { code: 'DEVICE_NOT_ENROLLED' });
         await connect({ signal: lifetime.signal });
         lifetime.signal.throwIfAborted();
         set({ phase: 'connected', title: 'Connected', detail: '' });
@@ -127,6 +130,7 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
         if (lifetime.signal.aborted) return;
         const described = describeConnectionError(error, { appName });
         if (described.enroll) {
+          needsEnrollment = true;
           let next;
           try { next = await enroll(); }
           catch (failure) {
@@ -137,11 +141,12 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
             next = 'wait';
           }
           if (next === 'stop') return;
-          if (next === 'connect') { delay = 1000; continue; }
+          if (next === 'connect') { needsEnrollment = false; delay = 1000; enrollmentDelay = 1500; continue; }
           waitingSince ||= Date.now();
           if (Date.now() - waitingSince > 45_000 && state.phase === 'finishing')
             set({ ...state, detail: `Waiting for ${appName}’s participant. Setup finishes as soon as it is running.` });
-          await new Promise(resolve => { wake = resolve; void sleep(1500, lifetime.signal).then(resolve); });
+          await new Promise(resolve => { wake = resolve; void sleep(enrollmentDelay, lifetime.signal).then(resolve); });
+          enrollmentDelay = Math.min(enrollmentDelay * 2, maxDelayMs);
           continue;
         }
         set({ phase: described.retry ? 'connecting' : 'failed', title: described.title, detail: described.detail, technical: described.technical,
