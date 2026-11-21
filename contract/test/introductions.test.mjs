@@ -338,3 +338,16 @@ test('an aborted acknowledgment or a failed changed payload cannot confirm any p
   await f.discovery.advertise({identity:local,storageId:'other-disk'},f.selected);assert.equal(attempts,5);
   await f.close();
 });
+
+test('transport selection reports bounded metadata once, and observers cannot cause a relay', async () => {
+  const events = [], peer = {identity:remote,route:route(remote)};
+  const direct = fixture({}, undefined, {onTransport:value=>{events.push(value);throw Error('observer failed');}});
+  await direct.transport.open({peer}, options());
+  assert.deepEqual(events,[{peerId:remote,kind:'direct'}]);
+  assert.equal(direct.relayOpenings.length,0);
+  const fallback = fixture({}, async()=>{throw Error('RTC unavailable');}, {onTransport:value=>events.push(value)});
+  await fallback.transport.open({peer}, options());
+  assert.deepEqual(events.at(-1),{peerId:remote,kind:'relay',reason:'direct_failed'});
+  assert.equal(fallback.relayOpenings.length,1);
+  assert.throws(()=>fixture({},undefined,{onTransport:null}),{code:'invalid_introduction'});
+});
