@@ -14,6 +14,7 @@ const submission = createSubmissionState(state => {
   $('#retry-op').disabled = !state.canRetry;
   $('#inspect-op').disabled = !state.canInspect;
   $('#refresh').disabled = !state.attached || state.working;
+  $('#op-id').disabled = state.working;
   for (const id of ['from-loc', 'to-loc', 'qty']) $('#' + id).disabled = Boolean(state.pending) || state.working;
   $('#operation-status').textContent = state.pending ? `Retained ${state.pending.id}. Inspect or retry the original reviewed transfer.`
     : state.canSubmit ? 'Ready to review and transfer units.' : 'Waiting for connection and a coherent inventory read.';
@@ -104,8 +105,10 @@ async function boot() {
   $('#create-device').disabled = true;
 }
 async function action(kind, run) {
+  if (working) return;
   let release;
-  try { if (working) return; working = true;
+  working = true;
+  try {
     if (kind === 'inspect') {
       if (!submission.snapshot.canInspect) throw Error('Connect this browser before inspecting its retained operation.');
       submission.update({ working: true }); release = () => submission.update({ working: false });

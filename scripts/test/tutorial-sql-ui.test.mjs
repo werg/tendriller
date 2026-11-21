@@ -109,7 +109,7 @@ test('page wiring retains before command, renders bins, locks edited input and r
     .replace(/^import .*;\n/gm, '').replaceAll('import.meta.url', JSON.stringify('https://page.example/page.mjs'));
   const journal = new Map(), contexts = new Map();
   const calls = [];
-  let failCommand = true;
+  let failCommand = true, failRetain = true;
   const flush = () => new Promise(resolve => setImmediate(resolve));
   async function page() {
     class Element {
@@ -151,7 +151,7 @@ test('page wiring retains before command, renders bins, locks edited input and r
       createBrowserIdentity: async () => 'device',
       createLiveView: (_session, opts) => { live.onStatus = opts.onStatus; return live; },
       createViewStore: () => ({ pending: () => [...contexts.values()],
-        retainOperation: (reference, context) => contexts.set(reference.operationId, { reference, context: structuredClone(context) }),
+        retainOperation: (reference, context) => { if (failRetain) throw Error('storage unavailable'); contexts.set(reference.operationId, { reference, context: structuredClone(context) }); },
         removeOperation: reference => contexts.delete(reference.operationId) }),
     });
     await flush(); await flush();
@@ -161,6 +161,10 @@ test('page wiring retains before command, renders bins, locks edited input and r
   assert.equal($('#submit-transfer').disabled, false);
   assert.equal($('#stock-rows').children[0].children[0].textContent, 'source');
   assert.equal($('#stock-rows').children[0].children[1].textContent, '10');
+  $('#transfer-form').fire('submit'); await flush();
+  assert.equal(calls.length, 0, 'A failed intent save must prevent the command');
+  assert.equal(contexts.size, 0);
+  failRetain = false;
   $('#transfer-form').fire('submit'); await flush();
   assert.equal(calls[0].command, 'transfer');
   assert.equal(calls[0].input.expectedSource, 10);
