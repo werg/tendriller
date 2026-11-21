@@ -1,0 +1,135 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { writeFile } from 'node:fs/promises';
+import { createBrowserNetworkControls } from './browser-controls.mjs';
+import { launchNetworkBrowser } from './browser-launch.mjs';
+import { expect } from '@playwright/test';
+
+let requests = 0;
+const server = createServer((_request, response) => {
+  requests++;
+  response.setHeader('Cache-Control', 'no-store');
+  response.end('<!doctype html><title>Network control probe</title><button id="action">Save</button><script>window.ticks=0;window.actions=0;action.onclick=()=>actions++;setInterval(()=>ticks++,50);document.addEventListener("freeze",()=>window.frozenTicks=ticks);document.addEventListener("resume",()=>window.resumedTicks=ticks)</script>');
+});
+server.listen(0, '127.0.0.1'); await once(server, 'listening');
+const origin = `http://127.0.0.1:${server.address().port}`;
+const report = { scope: 'browser-controls-only', applicationRecoveryQualified: false,
+  startedAt: new Date().toISOString(), checks: [], backgroundSupported: false };
+let browser;
+let launched;
+let controls;
+let phase = 'launch';
+async function mark(value) {
+  phase = value;
+  await writeFile('/evidence/browser-progress.json', JSON.stringify({ phase, at: new Date().toISOString() }) + '\n');
+}
+try {
+  await mark('launch');
+  launched = await launchNetworkBrowser(); browser = launched.browser;
+  report.browser = browser.version();
+  const context = launched.context;
+  const page = await context.newPage(); await mark('navigation'); await page.goto(origin);
+  await page.setViewportSize({ width: 390, height: 844 });
+  controls = await createBrowserNetworkControls(page);
+  // This control regression includes the same 30-second freeze as first-app.
+  const options = { signal: AbortSignal.timeout(60_000) };
+  await mark('network-change');
+  assert.equal((await controls.networkChange(options)).observed, true);
+  report.checks.push('browser-network-information-change');
+  await mark('offline-set');
+  await controls.setOffline(true, options);
+  await mark('offline-fetch');
+  assert.equal(await page.evaluate(async url => { try { await fetch(url); return false; } catch { return true; } }, origin), true);
+  await controls.setOffline(false, options);
+  await mark('online-fetch');
+  assert.equal(await page.evaluate(async url => (await fetch(url)).ok, origin), true);
+  report.checks.push('browser-offline-fetch-blocked-online-restored');
+  await mark('freeze-start');
+  await controls.setFrozen(true, options);
+  await mark('freeze-hold');
+  // Runtime evaluation can itself stall while a headed page is frozen. Capture
+  // the timer count in actual lifecycle event handlers, without waking the page.
+  report.freezeMs = 30_000;
+  await new Promise(resolve => setTimeout(resolve, report.freezeMs));
+  await mark('freeze-resume');
+  await controls.setFrozen(false, options);
+  await mark('freeze-read');
+  assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
+  const frozen = await page.evaluate(() => ({ before: window.frozenTicks, after: window.resumedTicks }));
+  assert.ok(Number.isInteger(frozen.before));
+  assert.equal(frozen.after, frozen.before);
+  await page.waitForFunction(previous => window.ticks > previous, frozen.after, { timeout: 5000 });
+  report.checks.push('page-timers-freeze-resume');
+  // Repeat the same real lifecycle cycle. An already-true first predicate must
+  // not be the only way a resume observation can pass in a hidden document.
+  for (let index = 0; index < 2; index++) {
+    const again = { signal: AbortSignal.timeout(10_000) };
+    await controls.setFrozen(true, again);
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await controls.setFrozen(false, again);
+    assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
+  }
+  report.checks.push('repeated-freeze-resume-foreground');
+  await mark('background');
+  let hiddenCallback = false;
+  report.backgroundSupported = (await controls.background({ ...options, pauseMs: 100, onHidden: async () => {
+    assert.equal(await page.evaluate(() => document.hidden), true); hiddenCallback = true;
+  } })).hiddenObserved;
+  assert.equal(hiddenCallback, true);
+  await mark('foreground-actionability');
+  const cover = await context.newPage(); await cover.bringToFront();
+  assert.equal(await page.evaluate(() => document.hidden), true);
+  await assert.rejects(page.locator('#action').click({ timeout: 500 }), /Timeout/);
+  assert.equal(await page.evaluate(() => window.actions), 0);
+  await page.bringToFront();
+  await page.locator('#action').click({ timeout: 5000 });
+  assert.equal(await page.evaluate(() => window.actions), 1);
+  await cover.close();
+  report.checks.push('hidden-tab-actionability-requires-foreground');
+  // No timer activity or JS query during the closed HTTP idle segment.
+  const initial = requests;
+  await mark('idle');
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  assert.equal(requests, initial);
+  report.checks.push('closed-one-second-http-idle');
+  await mark('reload');
+  const beforeReload = await controls.diagnostics();
+  assert.equal(beforeReload.navigations, 0);
+  await page.reload();
+  await expect.poll(async () => (await controls.diagnostics()).events.some(event =>
+    event.event === 'document' && event.epoch === 1), { timeout: 5000 }).toBe(true);
+  const afterReload = await controls.diagnostics();
+  assert.equal(afterReload.navigations, 1);
+  assert.equal(afterReload.sameUrl, true);
+  assert.ok(afterReload.events.some(event => event.event === 'main-frame-navigation' && event.epoch === 1));
+  assert.ok(afterReload.events.some(event => event.event === 'document' && event.epoch === 1));
+  await mark('iframe-isolation');
+  await page.evaluate(() => Promise.all(Array.from({ length: 40 }, () => new Promise(resolve => {
+    const frame = document.createElement('iframe'); frame.srcdoc = '<!doctype html><title>child</title>';
+    frame.onload = resolve; document.body.append(frame);
+  }))));
+  assert.deepEqual(await controls.diagnostics(), afterReload);
+  report.checks.push('iframe-events-cannot-evict-main-document-evidence');
+  report.documentObserver = afterReload;
+  report.checks.push('document-epoch-survives-real-reload');
+  await mark('observer-disposal');
+  await controls.cleanup(); controls = undefined;
+  for (let index = 0; index < 3; index++) {
+    const next = await createBrowserNetworkControls(page);
+    await next.cleanup();
+  }
+  await page.reload();
+  assert.deepEqual(await page.evaluate(() => Object.keys(window).filter(key => key.startsWith('__networkLabLifecycle_'))), []);
+  report.checks.push('profile-observers-disposed-before-next-document');
+  report.modelTurns = null;
+  report.success = true;
+} catch {
+  report.success = false; report.failure = 'NETWORK_LAB_BROWSER_PROBE_FAILED'; report.phase = phase; process.exitCode = 1;
+} finally {
+  try { await controls?.cleanup(); report.cleanup = true; }
+  catch { report.cleanup = false; process.exitCode = 1; }
+  await launched?.close(); server.close();
+  report.finishedAt = new Date().toISOString();
+  await writeFile('/evidence/browser-probe.json', JSON.stringify(report, null, 2) + '\n');
+}

@@ -1,5 +1,10 @@
 # Qualify a three-repository release
 
+Use the [companion release planner and target-owned receivers](COMPANION_RELEASE_AUTOMATION.md)
+to verify a published tuple and propose dependent pin PRs without copying source
+constants among workflows and tests. Normal qualification, review and production
+readiness gates still apply.
+
 Tendriller hosts the page and its controls. Chronolog owns the application session, durable history, and peer replication. The cookbook repository supplies independent examples and black-box qualification. A green check in any one repository does not prove that three new commits work together.
 
 ## Choose exact source

@@ -10,6 +10,7 @@ import { savePublicationOffline } from "./publication";
 import { createInstallation } from "./installation";
 import type { TendrilConfig } from "./types";
 import type { RuntimeApi, RuntimeServices } from "../../contract/index.mjs";
+import { createTransportBinding } from "./transport";
 import { createSignalBinding } from "../../contract/signals.mjs";
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<boolean> {
@@ -57,6 +58,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   });
   const tracker = installSensorWrappers();
   const installation = createInstallation();
+  const transport = createTransportBinding();
   const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null, documentPath: cfg.documentPath,
     base: new URL(cfg.base, location.href).href, managementUrl: new URL(cfg.base + "_tendril/manage", location.href).href });
   const observe = () => observeCapabilities(() => tracker.status().active, report => core.bus.emit("capabilities", report));
@@ -70,19 +72,19 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   // BFCache restores the same JavaScript realm without running startRuntime again.
   // Suspend observation while away, then reattach and resynchronize the utility.
   window.addEventListener("pagehide", () => {
-    installation.suspend();
+    installation.suspend(); transport.suspend();
     capabilityObserver?.dispose(); capabilityObserver = null;
     offSensors?.(); offSensors = null;
   });
   window.addEventListener("pageshow", event => {
     if (!event.persisted) return;
-    installation.resume();
+    installation.resume(); transport.resume();
     offSensors ??= tracker.onChange(sensorChanged);
     capabilityObserver ??= observe();
     sensorChanged();
   });
   const shared: RuntimeServices = {
-    host: core.host, application: core.application,
+    host: core.host, application: core.application, transport: transport.api,
     signals: createSignalBinding(options.signals),
     on: (type, listener) => core.bus.on(type, listener),
     ready: () => core.ready(),

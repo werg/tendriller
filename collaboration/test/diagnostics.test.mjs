@@ -56,3 +56,14 @@ test('cancelled diagnostics do not observe a session or convert cancellation int
   value.endpoints=async()=>{controller.abort(Error('cancelled while observing'));return[];};
   await assert.rejects(diagnoseApplicationSession(value,{signal:controller.signal}),/cancelled while observing/);
 });
+
+
+test('incompatible owner metadata preserves its exact code and directs a composition upgrade without resetting retained state',()=>{
+  for(const error of[Error('APPLICATION_WORKER_METADATA_INVALID'),{code:'APPLICATION_WORKER_METADATA_INVALID',message:'token=private'}]){
+    const finding=diagnosticFinding(error);
+    assert.equal(finding.code,'APPLICATION_WORKER_METADATA_INVALID');assert.equal(finding.retrySafe,false);
+    assert.match(finding.nextAction,/mixed package\/owner composition/);assert.match(finding.nextAction,/Preserve the existing device identity, storage and original signed operation references/);
+    assert.match(finding.nextAction,/Close old app tabs/);assert.match(finding.nextAction,/update native participants and the signed UI to the same qualified public package composition/);
+    assert.match(finding.nextAction,/reopen the retained profile/);assert.match(finding.nextAction,/Do not reset or clear app data/);assert.doesNotMatch(JSON.stringify(finding),/token=private/);
+  }
+});

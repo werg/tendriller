@@ -11,7 +11,7 @@ const service = workflow('service'), graph = jobs(service);
 const needs = job => graph[job].match(/^    needs: \[([^\]]+)\]/m)[1].split(',').map(value => value.trim());
 
 test('trusted publication joins every qualification, and staging/production depend on publication', () => {
-  assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'native-owner', 'sql-starter', 'chatgpt-integration', 'artifacts'].sort());
+  assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'native-owner', 'sql-starter', 'chatgpt-integration', 'network-qualification', 'artifacts'].sort());
   for (const job of ['publish', 'staging', 'production']) {
     assert.match(graph[job], /github\.ref == 'refs\/heads\/master'/);
     assert.match(graph[job], /github\.event_name == 'push'/);
@@ -61,12 +61,33 @@ test('live qualification reuses the promoted run or immutable public graph', () 
 });
 
 test('every checkout in the release qualification graph disables persisted credentials', () => {
-  for (const name of ['service', 'release', 'agent-onboarding', 'staging-acceptance', 'plugin-qualification', 'chatgpt-integration']) {
+  for (const name of ['service', 'release', 'agent-onboarding', 'staging-acceptance', 'plugin-qualification', 'chatgpt-integration', 'network-qualification']) {
     const checkouts = workflow(name).split('- uses: actions/checkout@v4').slice(1);
     assert(checkouts.length > 0, name);
     for (const checkout of checkouts)
       assert.match(checkout.split(/\n      - /)[0], /persist-credentials: false/, name);
   }
+});
+
+test('real packet-fault application qualification binds the immutable graph before publication', () => {
+  assert.deepEqual(needs('network-qualification'), ['artifacts']);
+  assert(needs('publish').includes('network-qualification'));
+  assert.match(graph['network-qualification'], /manifest_sha256:.*needs.artifacts.outputs.manifest_sha256/);
+  const qualification = workflow('network-qualification');
+  assert.match(qualification, /name: public-packages/);
+  assert.match(qualification, /EXPECTED_MANIFEST_SHA256/);
+  assert.match(qualification, /JSON.parse\(b\).source_commit,s/);
+  assert.match(qualification, /--artifact-root.*--profile suite/);
+  assert.doesNotMatch(qualification, /npm run (build|check)|wrangler deploy|secrets: inherit/);
+  assert.match(qualification, /contents: read/);
+  assert.match(qualification, /actions: read/);
+  const bind = qualification.indexOf('name: Bind the restored graph');
+  const install = qualification.indexOf('run: npm ci --ignore-scripts');
+  const restore = qualification.indexOf('run: node scripts/deployment-bundle.mjs');
+  const container = qualification.indexOf('run: node test/e2e/network-qualification/run.mjs');
+  assert(bind >= 0 && install > bind && restore > install && container > restore,
+    'Flat CI archives must restore server/public before mounting the source tree read-only');
+  assert.match(qualification.slice(restore, container), /TENDRILLER_EXPECTED_MANIFEST_SHA256:.*inputs.manifest_sha256/);
 });
 
 

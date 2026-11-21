@@ -195,6 +195,7 @@ import { serveBrowserOwner } from '@tendriller/core/collaboration/worker';
 import { createNativeAttachmentKey, createNativeSessionSupervisor, attachNativeSession } from '@tendriller/core/collaboration/native';
 import { diagnoseApplicationSession } from '@tendriller/core/collaboration/diagnostics';
 import { createLiveView } from '@tendriller/core/collaboration/live-view';
+import { createTransportDiagnostics, readTransportDiagnostics } from '@tendriller/core/collaboration/transport-diagnostics';
 import { createSetupIntent, setupRequest, completeSetupIntent, inspectTendrilSetup } from '@tendriller/core/setup';
 import { createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge } from '@tendriller/core/pairing';
 import { openPeerApplication, createApplicationOwner } from '@chronolog/peer-session';
@@ -202,13 +203,14 @@ import { openNativeDevice } from '@chronolog/peer-session/native';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 for (const api of [createCollaborationDefinition, createCollaborationClient, openBrowserOwner,
   createBrowserIdentity, serveBrowserOwner, createNativeSessionSupervisor, attachNativeSession,
-  diagnoseApplicationSession, createLiveView, openPeerApplication, createApplicationOwner,
+  diagnoseApplicationSession, createLiveView, createTransportDiagnostics, readTransportDiagnostics, openPeerApplication, createApplicationOwner,
   openNativeDevice, connectApplicationOwner, createSetupIntent, setupRequest, completeSetupIntent,
   inspectTendrilSetup, createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge]) assert.equal(typeof api, 'function');
 assert.match(createNativeAttachmentKey(), /^td_n_[a-f0-9]{64}$/);
 `);
   run(process.execPath, ['collaboration.mjs']);
   writeFileSync(join(directory, 'collaboration.mts'), `
+import type {} from '@tendriller/core/browser';
 import { createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant,
   type AssistantParticipant, type AssistantCallerContext } from '@tendriller/core/assistant';
 import { createCollaborationDefinition, createCollaborationClient, type CollaborationSession } from '@tendriller/core/collaboration';
@@ -216,6 +218,7 @@ import { openBrowserOwner, type BrowserOwnerOptions } from '@tendriller/core/col
 import { serveBrowserOwner, type BrowserOwnerConfiguration } from '@tendriller/core/collaboration/worker';
 import { createNativeSessionSupervisor, attachNativeSession, type NativeSessionOwner } from '@tendriller/core/collaboration/native';
 import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/core/collaboration/diagnostics';
+import { createTransportDiagnostics, readTransportDiagnostics, type TransportDiagnosticReport } from '@tendriller/core/collaboration/transport-diagnostics';
 import { createLiveView, type LiveView, type LiveViewSession } from '@tendriller/core/collaboration/live-view';
 import { defineApplication, defineQuery, type ApplicationSession } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
@@ -239,6 +242,11 @@ const browserView = createLiveView(attached.session, {query:'notes'});
 const viewDefinition = defineApplication({id:'views',version:'1',commands:{},queries:{notes:defineQuery({description:'Read notes',input:{type:'null'},read:()=>['typed']})}});
 declare const nativeSession: ApplicationSession<typeof viewDefinition>;
 declare const browserSession: WorkerApplicationSession<typeof viewDefinition>;
+const inspector=createTransportDiagnostics(browserSession.participation);
+const transportReport:TransportDiagnosticReport=await inspector.refresh();
+const oneShot:TransportDiagnosticReport=await readTransportDiagnostics(nativeSession.participation);
+if(browserSession.participation)window.tendril.transport.install(browserSession.participation);
+void transportReport;void oneShot;inspector.close();
 const typedBrowserView = createLiveView(browserSession, {query:'notes',input:null});
 const nativeView = createLiveView(nativeSession, {query:'notes',input:null});
 declare const typedQuery: LiveViewSession<'notes', null, readonly string[]>;

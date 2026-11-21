@@ -60,6 +60,8 @@ export interface RuntimeServices {
   readonly host: HostServices;
   readonly signals: import("./signals.mjs").SignalBinding;
   readonly application: import("./application.mjs").ApplicationBinding;
+  /** Local authenticated-link observation; explicit refresh never opens network work. */
+  readonly transport: import("./transport-diagnostics.mjs").RuntimeTransport;
   on<K extends keyof RuntimeLocalEventMap>(type: K, fn: (payload: RuntimeLocalEventMap[K]) => void): () => void;
   /** Page UI readiness, independent of application synchronization. */
   ready(): void;

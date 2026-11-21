@@ -5,6 +5,7 @@ import { defineApplication, describeApplication, PEER_GENERATION_CAPABILITIES } 
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { serveBrowserOwner } from '../worker.mjs';
 import { createSharedRootEndpoint } from '../browser-root.mjs';
+import { acquireRootLifetime, rootLifetimeLockName } from '../root-lifetime.mjs';
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastEndpoint, isOwnerAnnouncement } from '../browser-transport.mjs';
 
 async function until(condition, description) {
@@ -35,8 +36,19 @@ function next(port, predicate, timeoutMs = 1500) {
   });
 }
 async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = false } = {}) {
+  const witnesses = new Map(), witnessHandles = []; let queryCalls = 0, query = async () => ({ held: [...witnesses.values()], pending: [] });
+  const pageLocks = clientId => ({
+    query: () => query(),
+    async request(name, options, run) {
+      if (witnesses.has(name)) return run(null);
+      const witness = { name, mode: 'exclusive', clientId }; witnesses.set(name, witness);
+      try { return await run({ name, mode: 'exclusive' }); }
+      finally { if (witnesses.get(name) === witness) witnesses.delete(name); }
+    },
+  });
   const oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); let held = incumbent ? 1 : 0, resourceClosed = false, opened = 0;
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { async request(_name, options, run) {
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { query() { queryCalls++; return query(); }, async request(_name, options, run) {
+    if (_name.startsWith('tendriller:root-lifetime:')) return pageLocks(_name).request(_name, options, run);
     if (held && options.ifAvailable) return run(null);
     if (held) return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
     held++; try { return await run({}); } finally { held--; }
@@ -52,20 +64,21 @@ async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = 
   const config = { profileId: 'retained', openSession: async () => { opened++; return { session }; }, rootLimits };
   const service = serveBrowserOwner({ scope, ...(load ? { load: () => load(config) } : config) });
   t.after(async () => {
-    finishClose?.(); for (const transport of transports) await transport.close(); await service.close();
+    finishClose?.(); for (const witness of witnessHandles) await witness.release(); for (const transport of transports) await transport.close(); await service.close();
     for (const port of ports) port.close();
     if (oldNavigator) Object.defineProperty(globalThis, 'navigator', oldNavigator); else delete globalThis.navigator;
   });
   function root() {
     const pair = new MessageChannel(), server = tracked(pair.port1); ports.push(pair.port1, pair.port2); scope.connect(server);
-    const rootId = crypto.randomUUID();
-    return { server, port: pair.port2, rootId, async boot() {
+    const rootId = crypto.randomUUID(); let witness;
+    return { releaseWitness: () => witness?.release(), server, port: pair.port2, rootId, async boot({ acquire = true } = {}) {
+      if (acquire && !witness) { witness = await acquireRootLifetime('retained', rootId, { locks: pageLocks(rootId) }); witnessHandles.push(witness); }
       const ready = next(pair.port2, data => ['ready', 'failure'].includes(data.type));
       pair.port2.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'boot', mode: 'shared', profileId: 'retained', id: rootId });
       return ready;
-    }, control(type, ownerInstanceId) {
+    }, control(type, ownerInstanceId, extra = {}) {
       const id = crypto.randomUUID(), response = next(pair.port2, data => data.id === id);
-      pair.port2.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: `root.${type}`, profileId: 'retained', ownerInstanceId, rootId, id });
+      pair.port2.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: `root.${type}`, profileId: 'retained', ownerInstanceId, rootId, id, ...extra });
       return response;
     } };
   }
@@ -76,7 +89,8 @@ async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = 
     const client = await connectApplicationOwner(transport, { applicationId: session.applicationId, definitionId: description.id, definitionVersion: description.version, timeoutMs: 1000 });
     return { ...connection, transport, client };
   }
-  return { scope, session, controller, service, root, attach, finishClose,
+  return { scope, session, controller, service, root, attach, finishClose, witnesses,
+    get queryCalls() { return queryCalls; }, setQuery(value) { query = value; },
     get held() { return held; }, get resourceClosed() { return resourceClosed; }, get opened() { return opened; } };
 }
 
@@ -107,10 +121,10 @@ test('pending roots are bounded and explicit cancellation or timeout releases th
   const attached = await f.attach(); assert.equal(attached.client.status.database, 'idle');
 });
 
-test('SharedWorker leases respect suspension and reclaim only an unreachable root', async t => {
+for (const action of ['suspend','park']) test(`SharedWorker leases respect ${action} and reclaim only an unreachable root`, async t => {
   const f = await fixture(t, { rootLimits: { idleTimeoutMs: 100 } }), active = await f.attach();
   const abandoned = f.root(), ready = await abandoned.boot();
-  await abandoned.control('suspend', ready.ownerInstanceId); await delay(170);
+  await abandoned.control(action, ready.ownerInstanceId, action === 'park' ? { frozen: false } : {}); await delay(170);
   assert.equal(abandoned.server.closed, false); assert.equal(active.client.signal.aborted, false);
   await abandoned.control('resume', ready.ownerInstanceId);
   await until(() => abandoned.server.closed, 'resumed unreachable root');
@@ -131,8 +145,9 @@ test('session abort closes roots and releases the owner lock only after resource
 test('a dead SharedWorker root fails its facade closed and suspended observation resumes against the same binding', async t => {
   const f = await fixture(t), attached = await f.attach();
   await attached.client.suspend(); await attached.transport.suspend();
-  attached.server.close(); await delay(260); assert.equal(attached.client.signal.aborted, false);
-  await assert.rejects(attached.transport.resume(), /OWNER_UNREACHABLE/);
+  attached.server.close();
+  await until(() => attached.client.signal.aborted, 'native closed port fences its facade');
+  await assert.rejects(attached.transport.resume(), /OWNER_UNREACHABLE|ENDPOINT_STALE/);
   // A failed resume must close the old facade, not leave an apparently live session.
   await until(() => attached.client.signal.aborted, 'dead resumed facade');
   assert.equal(f.held, 1); assert.equal(f.session.signal.aborted, false);
@@ -170,4 +185,175 @@ test('retiring a queued dedicated candidate cancels its lock wait without openin
   await until(() => f.scope.closed, 'queued candidate retired');
   assert.equal(f.opened, 0); assert.equal(f.held, 1);
   assert.ok(f.scope.replies.some(value => value.type === 'retired' && value.id === 'retirement'));
+});
+
+function deferred() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+async function park(root, frozen = false) {
+  root.transport.park({ frozen });
+  await root.control('park', root.client.endpoint.ownerInstanceId, { frozen });
+}
+
+for (const frozen of [false, true]) test(`parked sweep preserves a healthy ${frozen ? 'frozen' : 'hidden'} witness beyond the ordinary lease and reclaims its discarded sibling`, async t => {
+  const f = await fixture(t, { rootLimits: { idleTimeoutMs: 100, parkedSweepMs: 100 } });
+  const sibling = await f.attach(), orphan = await f.attach();
+  await park(orphan, frozen);
+  const before = f.queryCalls;
+  await until(() => f.queryCalls >= before + 2, 'two independent parked sweeps');
+  assert.equal(orphan.server.closed, false); assert.equal(orphan.client.signal.aborted, false);
+  assert.equal(f.service.owner.endpoints().length, 2);
+  // Simulate browser document destruction: no detach message or page JS runs.
+  await orphan.releaseWitness();
+  await until(() => orphan.server.closed, 'discarded parked root reclaimed');
+  assert.equal(orphan.server.listeners.size, 0);
+  assert.equal(sibling.client.signal.aborted, false); assert.equal(f.held, 1); assert.equal(f.opened, 1);
+  assert.equal(f.session.signal.aborted, false);
+  assert.equal((await sibling.client.endpoints()).length, 1);
+});
+
+test('new admission reclaims an abandoned parked root at capacity without changing the owner', async t => {
+  const f = await fixture(t, { rootLimits: { maxPorts: 2, parkedSweepMs: 120000 } });
+  const sibling = await f.attach(), orphan = await f.attach();
+  const ownerId = sibling.client.endpoint.ownerInstanceId;
+  await park(orphan); await orphan.releaseWitness();
+  const before = f.queryCalls, fresh = await f.attach();
+  assert.equal(orphan.server.closed, true); assert.equal(orphan.server.listeners.size, 0);
+  assert.equal(fresh.client.endpoint.ownerInstanceId, ownerId);
+  assert.equal(f.service.owner.endpoints().length, 2); assert.ok(f.queryCalls > before);
+  assert.equal(f.held, 1); assert.equal(f.opened, 1); assert.equal(sibling.client.signal.aborted, false);
+});
+
+test('admission scans parked roots before capacity is full and does not keep a discarded RTC route around', async t => {
+  const f = await fixture(t, { rootLimits: { maxPorts: 3, parkedSweepMs: 120000 } });
+  const sibling = await f.attach(), orphan = await f.attach();
+  await park(orphan); await orphan.releaseWitness();
+  const fresh = await f.attach();
+  assert.equal(orphan.server.closed, true);
+  assert.equal(f.service.owner.endpoints().length, 2);
+  assert.equal(fresh.client.endpoint.ownerInstanceId, sibling.client.endpoint.ownerInstanceId);
+});
+
+for (const invalid of ['reject', 'malformed', 'bad-entry']) test(`a ${invalid} lifetime query preserves healthy parked roots`, async t => {
+  const f = await fixture(t, { rootLimits: { maxPorts: 2, parkedSweepMs: 100 } });
+  const sibling = await f.attach(), healthy = await f.attach(); await park(healthy, true);
+  let observed = 0;
+  f.setQuery(async () => {
+    observed++;
+    if (invalid === 'reject') throw Error('query unavailable');
+    if (invalid === 'malformed') return {};
+    return { held: [{ name: 'unrelated', mode: 'exclusive' }], pending: [] };
+  });
+  await until(() => observed >= 1, 'invalid sweep completed');
+  const denied = f.root(), reply = await denied.boot();
+  assert.equal(reply.type, 'failure'); assert.equal(reply.code, 'OWNER_BUSY');
+  assert.equal(healthy.server.closed, false); assert.equal(healthy.client.signal.aborted, false);
+  assert.equal(sibling.client.signal.aborted, false); assert.equal(f.service.owner.endpoints().length, 2);
+  assert.equal(f.held, 1); assert.equal(f.opened, 1);
+});
+
+test('only one incoming root waits on a coalesced query and queued boot is consumed after admission', async t => {
+  const f = await fixture(t, { rootLimits: { maxPorts: 3, parkedSweepMs: 120000, pendingTimeoutMs: 1000 } });
+  const sibling = await f.attach(), parked = await f.attach(); await park(parked);
+  const started = deferred(), release = deferred(); let scans = 0;
+  f.setQuery(async () => { scans++; if (scans === 1) { started.resolve(); await release.promise; } return { held: [...f.witnesses.values()], pending: [] }; });
+  t.after(() => release.resolve());
+  const pending = f.root(), boot = pending.boot(); await started.promise;
+  const extra = f.root(), denied = await extra.boot();
+  assert.equal(denied.type, 'failure'); assert.equal(denied.code, 'OWNER_BUSY');
+  assert.equal(scans, 1); assert.equal(f.service.owner.endpoints().length, 2);
+  release.resolve(); assert.equal((await boot).type, 'ready');
+  assert.equal(pending.server.closed, false); assert.equal(parked.server.closed, false);
+  assert.equal(sibling.client.signal.aborted, false); assert.equal(f.held, 1);
+});
+
+test('a blocked lifetime query times out admission without reaping healthy roots or admitting a late port', async t => {
+  const f = await fixture(t, { rootLimits: { maxPorts: 2, parkedSweepMs: 120000, pendingTimeoutMs: 100 } });
+  const sibling = await f.attach(), parked = await f.attach(); await park(parked);
+  const release = deferred();
+  f.setQuery(async () => { await release.promise; return { held: [], pending: [] }; });
+  t.after(() => release.resolve());
+  const pending = f.root(), reply = await pending.boot();
+  assert.equal(reply.type, 'failure'); assert.equal(reply.code, 'OWNER_BUSY');
+  assert.equal(pending.server.closed, true); assert.equal(parked.server.closed, false);
+  assert.equal(sibling.client.signal.aborted, false);
+  await delay(30); release.resolve(); await delay(0);
+  assert.equal(parked.server.closed, false); assert.equal(f.service.owner.endpoints().length, 2);
+  assert.equal(f.held, 1);
+});
+
+test('an old pending sweep cannot replace a fresh admission query or reap the new root', async t => {
+  const f = await fixture(t, { rootLimits: { maxPorts: 2, parkedSweepMs: 100, pendingTimeoutMs: 1000 } });
+  const sibling = await f.attach(), old = await f.attach(); await park(old);
+  const started = deferred(), release = deferred(); let scans = 0;
+  f.setQuery(async () => {
+    scans++;
+    const snapshot = { held: [...f.witnesses.values()], pending: [] };
+    if (scans === 1) { started.resolve(); await release.promise; }
+    return snapshot;
+  });
+  t.after(() => release.resolve());
+  await started.promise;
+  await old.releaseWitness();
+  const fresh = f.root(), boot = fresh.boot();
+  release.resolve(); const ready = await boot;
+  assert.equal(ready.type, 'ready'); assert.ok(scans >= 3, 'old sweep, fresh admission scan, and fresh boot proof');
+  assert.equal(old.server.closed, true); assert.equal(fresh.server.closed, false);
+  assert.equal(sibling.client.signal.aborted, false); assert.equal(f.held, 1); assert.equal(f.opened, 1);
+});
+
+test('a reused lock name from a different document does not keep the old root alive', async t => {
+  const f = await fixture(t, { rootLimits: { parkedSweepMs: 100 } });
+  const sibling = await f.attach(), old = await f.attach(); await park(old);
+  await old.releaseWitness();
+  const name = rootLifetimeLockName('retained', old.rootId);
+  f.witnesses.set(name, { name, mode: 'exclusive', clientId: 'different-document' });
+  await until(() => old.server.closed, 'original document witness lost');
+  assert.equal(sibling.client.signal.aborted, false); assert.equal(f.held, 1);
+  assert.equal(f.service.owner.endpoints().length, 1);
+});
+
+test('closing the worker cancels pending admission and fences a late lifetime snapshot', async t => {
+  const f = await fixture(t, { rootLimits: { maxPorts: 1, parkedSweepMs: 120000, pendingTimeoutMs: 1000 } });
+  const parked = await f.attach(); await park(parked);
+  const started = deferred(), release = deferred();
+  f.setQuery(async () => { started.resolve(); await release.promise; return { held: [], pending: [] }; });
+  t.after(() => release.resolve());
+  const pending = f.root(), boot = pending.boot(); await started.promise;
+  await f.service.close();
+  assert.equal((await boot).code, 'OWNER_UNREACHABLE'); assert.equal(pending.server.closed, true);
+  release.resolve(); await delay(0);
+  assert.equal(f.held, 0); assert.equal(f.resourceClosed, true); assert.equal(parked.server.listeners.size, 0);
+});
+
+test('a shared boot without a document witness cannot open owner storage', async t => {
+  const f = await fixture(t), root = f.root();
+  const reply = await root.boot({ acquire: false });
+  assert.equal(reply.type, 'failure'); assert.equal(reply.code, 'OWNER_ROOT_LIFETIME_MISSING');
+  assert.equal(f.opened, 0); assert.equal(f.held, 0);
+  await until(() => root.server.closed, 'unwitnessed root disposed');
+  assert.equal(root.server.listeners.size, 0);
+});
+
+test('replayed shared boot replaces its lifetime registration without leaving parked sweeps behind', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = await fixture(t, { rootLimits: { parkedSweepMs: 100 } }), root = f.root();
+  const ready = await root.boot(); assert.equal(ready.type, 'ready');
+  await root.control('park', ready.ownerInstanceId, { frozen: true });
+  for (let index = 0; index < 8; index++) {
+    const replay = await root.boot();
+    assert.equal(replay.type, 'ready'); assert.equal(replay.ownerInstanceId, ready.ownerInstanceId);
+  }
+  await root.control('resume', ready.ownerInstanceId);
+  const queries = f.queryCalls;
+  t.mock.timers.tick(300); await new Promise(setImmediate);
+  assert.equal(f.queryCalls, queries, 'resuming the only root leaves no orphaned parked registration/timer');
+  assert.equal(root.server.closed, false); assert.equal(f.opened, 1); assert.equal(f.held, 1);
+  await root.control('park', ready.ownerInstanceId, { frozen: false });
+  await root.control('detach', ready.ownerInstanceId);
+  t.mock.timers.tick(300); await new Promise(setImmediate);
+  assert.equal(f.queryCalls, queries, 'detaching removes the final registration');
+  assert.equal(root.server.closed, true);
 });

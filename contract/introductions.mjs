@@ -28,9 +28,58 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
     try { void Promise.resolve(onTransport?.(Object.freeze({ peerId, kind, ...(reason ? { reason } : {}) }))).catch(() => {}); }
     catch { /* Diagnostics cannot change connection selection or ownership. */ }
   };
+  const descriptions = new WeakMap();
   let activeListener, nextListener = Promise.withResolvers(), activeWatcher, nextWatcher = Promise.withResolvers();
   let advertisementEpoch = 0, advertisementRequest = 0, confirmedAdvertisement;
   const invalidateAdvertisement = () => { advertisementEpoch++; confirmedAdvertisement = undefined; };
+  async function open({ peer, invitation }, { signal }, directOnly) {
+        signal.throwIfAborted();
+        if (!identityKey(peer?.identity) || peer.identity === identity) invalid('An introduction must name a different signing identity');
+        let channel, invite = false;
+        if (invitation !== undefined) {
+          const token = validatePeerInvitation(invitation);
+          if (token.requesterPeerId !== peer.identity) invalid('Invitation sender does not match the expected peer');
+          channel = token.channel; directOnly ||= channel.startsWith('direct:');
+        } else {
+          const route = directOnly ? invitationRoute(peer.identity) : validatePeerRoute(peer.route);
+          if (route.kind === 'invitation' && route.peerId === peer.identity) {
+            channel = `${directOnly ? 'direct' : 'join'}:${crypto.randomUUID()}`; invite = true;
+          } else if (route.kind === 'rendezvous') channel = route.channel;
+          else invalid('This host adapter needs an invitation or rendezvous route');
+        }
+        const direct = new AbortController(), directSignal = AbortSignal.any([signal, direct.signal]);
+        const signaling = peers.rendezvous(channel, identity, { signal: directSignal });
+        let timer, timedOut = false;
+        try {
+          if (invite) await peers.invite(peer.identity, { channel, requesterPeerId: identity }, { signal });
+          timer = setTimeout(() => { timedOut = true; direct.abort(new Error('PEER_DIRECT_CONNECTION_TIMEOUT')); }, directTimeoutMs);
+          const opening = until(signaling.ready, directSignal).then(async ({ role }) => {
+            directSignal.throwIfAborted();
+            return openDirectConnection({ role, signaling, signal: directSignal });
+          });
+          // A slow platform opener cannot leak its connection after the fallback wins.
+          const owned = opening.then(async value => { if (directSignal.aborted) await value.close(); return value; });
+          void owned.catch(() => {});
+          try {
+            const connection = await until(owned, directSignal);
+            directSignal.throwIfAborted(); descriptions.set(connection, Object.freeze({kind:'direct'})); selected(peer.identity, 'direct'); return connection;
+          } catch (error) {
+            direct.abort(error);
+            // Keep an uncooperative platform opener charged to the session's
+            // physical-opening budget until it actually relinquishes resources.
+            await owned.catch(() => {}); signal.throwIfAborted();
+            if (directOnly) throw error;
+          }
+        } finally { clearTimeout(timer); signaling.close(); }
+        signal.throwIfAborted();
+        const relay = peers.relay(channel, identity, { remotePeerId: peer.identity, signal });
+        const opening = Promise.resolve().then(() => { signal.throwIfAborted(); return openRelayConnection({ relay, signal }); });
+        void opening.then(value => { if (signal.aborted) return value.close(); }, () => {}).catch(() => {});
+        try {
+          const connection = await until(opening, signal);
+          signal.throwIfAborted(); const reason = timedOut ? 'direct_timeout' : 'direct_failed'; descriptions.set(connection, Object.freeze({kind:'relay',reason})); selected(peer.identity, 'relay', reason); return connection;
+        } catch (error) { relay.close(); throw error; }
+  }
   return Object.freeze({
     discovery: Object.freeze({
       async *notifications({ signal }) {
@@ -102,7 +151,7 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
             signal.throwIfAborted();
             const token = validatePeerInvitation(value);
             if (identityKey(token.requesterPeerId) && token.requesterPeerId !== identity)
-              yield Object.freeze({ peer: hint(token.requesterPeerId, invitationRoute(token.requesterPeerId)), token });
+              yield Object.freeze({ peer: hint(token.requesterPeerId, invitationRoute(token.requesterPeerId)), token, ...(token.channel.startsWith('direct:') ? { upgrade: true } : {}) });
           }
         } finally {
           if (activeListener === listener) { invalidateAdvertisement(); activeListener = undefined; nextListener = Promise.withResolvers(); }
@@ -111,53 +160,9 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
       },
     }),
     transport: Object.freeze({
-      async open({ peer, invitation }, { signal }) {
-        signal.throwIfAborted();
-        if (!identityKey(peer?.identity) || peer.identity === identity) invalid('An introduction must name a different signing identity');
-        let channel, invite = false;
-        if (invitation !== undefined) {
-          const token = validatePeerInvitation(invitation);
-          if (token.requesterPeerId !== peer.identity) invalid('Invitation sender does not match the expected peer');
-          channel = token.channel;
-        } else {
-          const route = validatePeerRoute(peer.route);
-          if (route.kind === 'invitation' && route.peerId === peer.identity) {
-            channel = `join:${crypto.randomUUID()}`; invite = true;
-          } else if (route.kind === 'rendezvous') channel = route.channel;
-          else invalid('This host adapter needs an invitation or rendezvous route');
-        }
-        const direct = new AbortController(), directSignal = AbortSignal.any([signal, direct.signal]);
-        const signaling = peers.rendezvous(channel, identity, { signal: directSignal });
-        let timer, timedOut = false;
-        try {
-          if (invite) await peers.invite(peer.identity, { channel, requesterPeerId: identity }, { signal });
-          timer = setTimeout(() => { timedOut = true; direct.abort(new Error('PEER_DIRECT_CONNECTION_TIMEOUT')); }, directTimeoutMs);
-          const opening = until(signaling.ready, directSignal).then(async ({ role }) => {
-            directSignal.throwIfAborted();
-            return openDirectConnection({ role, signaling, signal: directSignal });
-          });
-          // A slow platform opener cannot leak its connection after the fallback wins.
-          const owned = opening.then(async value => { if (directSignal.aborted) await value.close(); return value; });
-          void owned.catch(() => {});
-          try {
-            const connection = await until(owned, directSignal);
-            directSignal.throwIfAborted(); selected(peer.identity, 'direct'); return connection;
-          } catch (error) {
-            direct.abort(error);
-            // Keep an uncooperative platform opener charged to the session's
-            // physical-opening budget until it actually relinquishes resources.
-            await owned.catch(() => {}); signal.throwIfAborted();
-          }
-        } finally { clearTimeout(timer); signaling.close(); }
-        signal.throwIfAborted();
-        const relay = peers.relay(channel, identity, { remotePeerId: peer.identity, signal });
-        const opening = Promise.resolve().then(() => { signal.throwIfAborted(); return openRelayConnection({ relay, signal }); });
-        void opening.then(value => { if (signal.aborted) return value.close(); }, () => {}).catch(() => {});
-        try {
-          const connection = await until(opening, signal);
-          signal.throwIfAborted(); selected(peer.identity, 'relay', timedOut ? 'direct_timeout' : 'direct_failed'); return connection;
-        } catch (error) { relay.close(); throw error; }
-      },
+      open: (input, options) => open(input, options, false),
+      upgrade: (input, options) => open(input, options, true),
+      describe: connection => descriptions.get(connection) ?? Object.freeze({kind:'unknown'}),
     }),
   });
 }

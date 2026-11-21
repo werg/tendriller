@@ -25,20 +25,27 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: core
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: werg/chronolog-db
-          ref: e802f1658cef71ab12711e0921cdc802bbb8d2d0
-          path: chronolog
-          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Read the canonical public session pin
+        id: session
+        working-directory: core
+        run: node scripts/session-pin.mjs
+      - uses: actions/checkout@v4
+        with:
+          repository: werg/chronolog-db
+          ref: ${{ steps.session.outputs.source }}
+          path: chronolog
+          persist-credentials: false
       - run: npm ci
         working-directory: core
       - name: Build the exact native SQL engine for this runner
         working-directory: chronolog
+        env:
+          CHRONOLOG_SHA: ${{ steps.session.outputs.source }}
         run: |
+          test "$(git rev-parse HEAD)" = "$CHRONOLOG_SHA"
           corepack pnpm install --frozen-lockfile
           node tools/package-peer-session.mjs --sql-native
       - uses: actions/download-artifact@v4
@@ -51,7 +58,9 @@ jobs:
           TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
       - name: Exercise SQL initialization, guarded writes and reopen
         working-directory: core
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/chronolog-peer-session-e802f165-sql.tgz" --sql-native-only
+        env:
+          SQL_ARCHIVE: ${{ steps.session.outputs.sql_archive }}
+        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/$SQL_ARCHIVE" --sql-native-only
       - uses: actions/upload-artifact@v4
         if: always()
         with:

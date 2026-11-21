@@ -2,13 +2,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
+import { rootLifetimeLockName } from '../root-lifetime.mjs';
 import { BROWSER_OWNER_PROTOCOL, createBroadcastOwner, createBroadcastEndpoint } from '../browser-transport.mjs';
 
 async function until(predicate, description = 'condition', timeoutMs = 3000) {
   const end = Date.now() + timeoutMs;
   while (!predicate()) { if (Date.now() > end) throw Error(`Timed out: ${description}`); await new Promise(setImmediate); }
 }
-async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequest } = {}) {
+async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequest, idleTimeoutMs = 60000 } = {}) {
+  const witnesses = new Map(); let queries = 0;
+  let query = async () => ({ held: [...witnesses.values()], pending: [] });
+  const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: {
+    query() { queries++; return query(); },
+    async request(name, _options, run) {
+      if (witnesses.has(name)) return run(null);
+      const witness = { name, mode: 'exclusive', clientId: crypto.randomUUID() }; witnesses.set(name, witness);
+      try { return await run({ name }); } finally { if (witnesses.get(name) === witness) witnesses.delete(name); }
+    },
+  } } });
   const profileId = crypto.randomUUID(), channelName = `test:${profileId}`;
   const ownerChannel = new BroadcastChannel(channelName), observer = new BroadcastChannel(channelName);
   const traffic = [], accepted = [], clients = [], ports = new Set(); let attachments = 0;
@@ -25,29 +37,39 @@ async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequ
     endpoint.addEventListener('message', listen);
     return () => { endpoint.removeEventListener('message', listen); for (const port of ports) port.unref?.(); };
   } };
-  const bridge = await createBroadcastOwner(ownerChannel, owner, { profileId, timeoutMs, maxRoutes });
+  const bridge = await createBroadcastOwner(ownerChannel, owner, { profileId, timeoutMs, maxRoutes, idleTimeoutMs });
   bridge.announce(); await until(() => traffic.some(frame => frame.type === 'ready'), 'owner announcement');
   const announcement = traffic.find(frame => frame.type === 'ready');
-  async function attach(options = {}) {
+  async function attach({ waitReady = true, ...options } = {}) {
     const channel = new BroadcastChannel(channelName), pair = new MessageChannel(), frames = [], replacements = [];
     const endpoint = createBroadcastEndpoint(channel, announcement, { profileId, livenessTimeoutMs: 1000,
       onReplaced: value => replacements.push(value), ...options });
     const record = { channel, endpoint, port: pair.port1, frames, replacements };
     clients.push(record); pair.port1.addEventListener('message', ({ data }) => frames.push(data)); pair.port1.start();
     endpoint.postMessage({ protocol: 'chronolog/peer-session/owner/v2', handshake: { context: { viewId: `private-view-${clients.length}` } }, port: pair.port2 });
-    await until(() => frames.some(frame => frame.ready), 'private facade handshake');
-    record.route = traffic.filter(frame => frame.type === 'hello').at(-1).route;
+    record.waitReady = async () => {
+      await until(() => frames.some(frame => frame.ready), 'private facade handshake');
+      record.route = traffic.filter(frame => frame.type === 'hello').at(-1).route;
+    };
+    if (waitReady) await record.waitReady();
     record.send = async (id, value) => {
       pair.port1.postMessage({ id, value }); await until(() => frames.some(frame => frame.id === id), 'private response');
       return frames.find(frame => frame.id === id);
     };
+    record.park = async () => {
+      record.endpoint.suspend();
+      const id = crypto.randomUUID(); pair.port1.postMessage({ id, method: 'endpoint.suspend' });
+      await until(() => frames.some(frame => frame.id === id), 'owner accepted suspension');
+    };
     return record;
   }
   return { profileId, channelName, ownerChannel, observer, traffic, accepted, bridge, announcement, attach,
+    witnesses, get queries() { return queries; }, setQuery(value) { query = value; },
     get attachments() { return attachments; },
     async close() {
       for (const client of clients) { await client.endpoint.close(); client.port.close(); client.channel.close(); }
       await bridge.close(); ownerChannel.close(); observer.close(); for (const port of ports) port.close();
+      if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator); else delete globalThis.navigator;
     } };
 }
 
@@ -295,4 +317,99 @@ test('forged oversized bursts cannot retire either authenticated route direction
     assert.equal(f.bridge.routes, 1);
     assert.deepEqual(client.replacements, []);
   } finally { release(); }
+});
+
+test('elected suspended documents keep their route without page timers; a discarded sibling is swept', async t => {
+  const f = await fixture({ idleTimeoutMs: 100 }); t.after(() => f.close());
+  const alive = await f.attach(), orphan = await f.attach();
+  await alive.park(); await orphan.park();
+  const before = f.queries;
+  await until(() => f.queries >= before + 3, 'multiple parked sweeps');
+  assert.equal(f.bridge.routes, 2); assert.equal(alive.frames.some(frame => frame.ended), false);
+  // Document destruction releases its browser lock without endpoint.detach.
+  f.witnesses.delete(rootLifetimeLockName(f.profileId, orphan.route));
+  await until(() => f.bridge.routes === 1, 'discarded document reclaimed');
+  assert.equal((await alive.send('still-here', 'healthy-hidden')).value, 'healthy-hidden');
+  assert.equal(f.attachments, 2);
+});
+
+for (const maxRoutes of [2, 3]) test(`elected admission reaps discarded parked routes before attach (quota ${maxRoutes})`, async t => {
+  const f = await fixture({ maxRoutes }); t.after(() => f.close());
+  const alive = await f.attach(), orphan = await f.attach();
+  await alive.park(); await orphan.park();
+  f.witnesses.delete(rootLifetimeLockName(f.profileId, orphan.route));
+  const newcomer = await f.attach();
+  assert.equal(f.bridge.routes, 2); assert.equal(f.attachments, 3);
+  assert.equal((await alive.send('retained', 'same-owner')).value, 'same-owner');
+  assert.equal((await newcomer.send('new', 'new-route')).value, 'new-route');
+});
+
+for (const failure of ['reject', 'malformed', 'partial']) test(`elected parked sweep preserves routes on ${failure} query evidence`, async t => {
+  const f = await fixture({ idleTimeoutMs: 100 }); t.after(() => f.close());
+  const client = await f.attach(); await client.park();
+  const before = f.queries;
+  f.setQuery(async () => {
+    if (failure === 'reject') throw Error('browser unavailable');
+    return failure === 'malformed' ? {} : { held: [{ name: 'unrelated', mode: 'exclusive' }] };
+  });
+  await until(() => f.queries >= before + 2, 'failed sweeps');
+  assert.equal(f.bridge.routes, 1); assert.equal(client.frames.some(frame => frame.ended), false);
+  f.setQuery(async () => ({ held: [...f.witnesses.values()] }));
+  assert.equal((await client.send('preserved', 'healthy-frozen')).value, 'healthy-frozen');
+});
+
+test('an elected opening acquires its witness before hello and explicit close releases it', async t => {
+  const f = await fixture(); t.after(() => f.close());
+  const client = await f.attach();
+  const name = rootLifetimeLockName(f.profileId, client.route);
+  assert.ok(f.witnesses.has(name));
+  await client.endpoint.close();
+  assert.equal(f.witnesses.has(name), false);
+  await until(() => f.bridge.routes === 0, 'explicit route release');
+});
+
+test('elected capacity admission has one bounded query and a late snapshot cannot reclaim or attach', async t => {
+  const f = await fixture({ maxRoutes: 1, timeoutMs: 100 }); t.after(() => f.close());
+  const alive = await f.attach(); await alive.park();
+  let resolve;
+  const before = f.queries;
+  f.setQuery(() => new Promise(yes => { resolve = yes; }));
+  const first = await f.attach({ waitReady: false });
+  await until(() => f.queries === before + 1, 'pending admission query');
+  const second = await f.attach({ waitReady: false });
+  await until(() => f.traffic.filter(frame => frame.type === 'hello').length >= 3, 'both incoming hellos');
+  assert.equal(f.queries, before + 1); assert.equal(f.bridge.routes, 1); assert.equal(f.attachments, 1);
+  await delay(150); // Cross the configured query/admission deadline, not a readiness guess.
+  resolve({ held: [] }); await new Promise(setImmediate);
+  assert.equal(f.bridge.routes, 1); assert.equal(f.attachments, 1);
+  assert.equal(first.frames.some(frame => frame.ready), false); assert.equal(second.frames.some(frame => frame.ready), false);
+  assert.equal(alive.frames.some(frame => frame.ended), false);
+  assert.equal((await alive.send('after-timeout', 'preserved')).value, 'preserved');
+});
+
+test('owner close fences an authenticated attach whose witness proof is still pending', async t => {
+  const f = await fixture(); t.after(() => f.close());
+  let resolve;
+  f.setQuery(() => new Promise(yes => { resolve = yes; }));
+  const client = await f.attach({ waitReady: false });
+  await until(() => typeof resolve === 'function', 'authenticated attach proof');
+  assert.equal(f.bridge.routes, 1); assert.equal(f.attachments, 0);
+  await f.bridge.close(); resolve({ held: [...f.witnesses.values()] });
+  await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.equal(f.bridge.routes, 0); assert.equal(f.attachments, 0);
+  assert.equal(client.frames.some(frame => frame.ready), false);
+});
+
+test('endpoint close cancels a pending document lock promptly and fences its late native grant before hello', async t => {
+  const f = await fixture(); t.after(() => f.close());
+  const locks = navigator.locks, request = locks.request.bind(locks);
+  let grant;
+  locks.request = (...args) => new Promise((resolve, reject) => { grant = () => request(...args).then(resolve, reject); });
+  const client = await f.attach({ waitReady: false });
+  await until(() => typeof grant === 'function', 'pending document lock');
+  await client.endpoint.close();
+  assert.equal(f.traffic.some(frame => frame.type === 'hello'), false);
+  grant(); await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.equal(f.witnesses.size, 0); assert.equal(f.attachments, 0);
+  assert.equal(f.traffic.some(frame => frame.type === 'hello'), false);
 });

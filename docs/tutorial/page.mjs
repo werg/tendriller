@@ -198,6 +198,7 @@ async function connectSession({ signal } = {}) {
     // The runtime binding installs once per page, so only after the app is usable.
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
     window.tendril.signals.install(session.signals);
+    window.tendril.transport.install(session.participation);
     installed = true;
   } catch (error) {
     if (!installed) {

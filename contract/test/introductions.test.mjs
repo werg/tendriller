@@ -360,3 +360,38 @@ test('rejecting asynchronous transport diagnostics cannot become an unhandled re
   assert.equal(direct.relayOpenings.length,0);
   await connection.close();
 });
+
+test('direct-only upgrades invite the existing peer without scanning or opening another relay', async () => {
+  const f = fixture();
+  const connection = await f.transport.upgrade({peer:{identity:remote,route:null}},options());
+  assert.equal(connection,f.connection);
+  assert.deepEqual(f.transport.describe(connection),{kind:'direct'});
+  assert.match(f.calls.find(call=>call[0]==='invite')[2].channel,/^direct:/);
+  assert.equal(f.calls.some(call=>['discover','relay','advertise'].includes(call[0])),false);
+});
+
+test('failed and timed-out upgrades never open a relay', async () => {
+  for (const timeout of [false,true]) {
+    const f = fixture({}, async ({signal}) => {
+      if (!timeout) throw Error('UDP_BLOCKED');
+      await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
+    }, {directTimeoutMs:5});
+    await assert.rejects(f.transport.upgrade({peer:{identity:remote,route:null}},options()));
+    assert.equal(f.relayOpenings.length,0);
+    assert.equal(f.calls.some(call=>call[0]==='closeSignaling'),true);
+  }
+});
+
+test('an incoming direct replacement cannot accidentally fall back to relay', async () => {
+  const f = fixture({},async()=>{throw Error('UDP_BLOCKED');});
+  await assert.rejects(f.transport.open({peer:{identity:remote,route:route(remote)},invitation:{channel:'direct:replacement',requesterPeerId:remote}},options()),/UDP_BLOCKED/);
+  assert.equal(f.relayOpenings.length,0);
+});
+
+test('diagnostics distinguish relay selection and never describe an unselected connection as direct', async () => {
+  const f = fixture({},async()=>{throw Error('UDP_BLOCKED');});
+  assert.deepEqual(f.transport.describe({}),{kind:'unknown'});
+  const connection = await f.transport.open({peer:{identity:remote,route:route(remote)}},options());
+  assert.deepEqual(f.transport.describe(connection),{kind:'relay',reason:'direct_failed'});
+  assert.equal(Object.isFrozen(f.transport.describe(connection)),true);
+});

@@ -3,6 +3,7 @@ import { verifyAuthorityBundle, signTransitionRequest } from '@chronolog/peer-se
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
+import { readTransportDiagnostics } from '@tendriller/core/collaboration/transport-diagnostics';
 import { participateNativeApplication } from '@tendriller/core/collaboration/native-rtc';
 import { createDevicePairingClient } from '@tendriller/core/pairing';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
@@ -94,7 +95,13 @@ export async function runPeer({ signal, profile = 'main' } = {}, { onOwned, onCl
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const cli = createCliLifetime();
-  try { await runPeer({ signal: cli.signal, profile: process.argv[2] ?? 'main' }, { onOwned: cli.opened, onClosed: cli.closed }); }
+  try {
+    if (['status', 'diagnostics'].includes(process.argv[2])) {
+      const attached = await attachSession({ signal: cli.signal, profile: process.argv[3] ?? 'main' }); cli.opened();
+      try { console.log(JSON.stringify(await readTransportDiagnostics(attached.session.participation, { signal: cli.signal }))); }
+      finally { await attached.detach(); cli.closed(); }
+    } else await runPeer({ signal: cli.signal, profile: process.argv[2] ?? 'main' }, { onOwned: cli.opened, onClosed: cli.closed });
+  }
   catch (error) { cli.fail(error); }
   process.exit(await cli.finish());
 }
