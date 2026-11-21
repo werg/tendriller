@@ -43,12 +43,36 @@ class PageClock{
 async function until(predicate,label){const end=Date.now()+3000;while(!predicate()){if(Date.now()>end)throw Error('FIXTURE_WAIT: '+label);await delay(2);}}
 async function bounded(promise,label){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('FIXTURE_WAIT: '+label)),3000);})]);}finally{clearTimeout(timer);}}
 
+// Model browser lock names independently: the document witness and protocol
+// owner are separate locks, and query() must not request or contend for either.
+class FixtureLocks{
+ held=new Map();pending=new Map();
+ query(){return Promise.resolve({held:[...this.held.values()].map(({name,mode,clientId})=>({name,mode,clientId})),pending:[...this.pending.values()].flat().map(({name,mode,clientId})=>({name,mode,clientId}))});}
+ request(name,options,run){
+  if(typeof options==='function'){run=options;options={};}
+  options.signal?.throwIfAborted();assert.equal(options.mode??'exclusive','exclusive');
+  if(this.held.has(name)&&options.ifAvailable)return Promise.resolve().then(()=>run(null));
+  return new Promise((resolve,reject)=>{
+   const job={name,mode:'exclusive',clientId:name==='chronolog-owner:retained'?'fixture-worker':`fixture-document:${name}`,run,resolve,reject,signal:options.signal};
+   job.abort=()=>{const queue=this.pending.get(name)??[],index=queue.indexOf(job);if(index<0)return;queue.splice(index,1);if(!queue.length)this.pending.delete(name);job.signal.removeEventListener('abort',job.abort);reject(job.signal.reason);};
+   if(this.held.has(name)){const queue=this.pending.get(name)??[];queue.push(job);this.pending.set(name,queue);job.signal?.addEventListener('abort',job.abort,{once:true});}
+   else this.grant(job);
+  });
+ }
+ grant(job){
+  job.signal?.removeEventListener('abort',job.abort);this.held.set(job.name,job);
+  void Promise.resolve().then(()=>job.run({name:job.name,mode:job.mode})).then(job.resolve,job.reject).finally(()=>{
+   this.held.delete(job.name);const queue=this.pending.get(job.name);if(!queue?.length)return;const next=queue.shift();if(!queue.length)this.pending.delete(job.name);this.grant(next);
+  });
+ }
+}
+
 async function fixture(t,mode){
  const directory=await mkdtemp(join(tmpdir(),'browser-freeze-')),clock=new PageClock(),doc=new EventTarget(),events=new EventTarget();
  doc.visibilityState='visible';doc.hidden=false;
  const keys=['navigator','location','document','window','SharedWorker','Worker','RTCPeerConnection','addEventListener','removeEventListener','dispatchEvent','__freezeClock','__freezeProbe','__freezeWorkerChannel'];
  const globals=new Map(keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
- const rootRequests=new Map(),dedicatedAvailability=[],sharedRoots=[],ports=[],channels=[],replaced=[],gate={silent:false,hold:false,queued:[],holdSuspendAck:false,suspendAcks:[]},probe={started:0,closed:0,active:new Set()};let held=0,opened=0,service,attachment,pageWorker,openDirectConnection;const siblingAttachments=[];
+ const rootRequests=new Map(),dedicatedAvailability=[],sharedRoots=[],ports=[],channels=[],replaced=[],gate={silent:false,hold:false,queued:[],holdSuspendAck:false,suspendAcks:[]},probe={started:0,closed:0,active:new Set()};const locks=new FixtureLocks(),ownerLockName='chronolog-owner:retained';let opened=0,service,attachment,pageWorker,openDirectConnection;const siblingAttachments=[];
  const deliver=send=>{if(gate.silent)return;if(gate.hold)gate.queued.push(send);else send();};
  const NativeChannel=globalThis.BroadcastChannel;
  class WorkerChannel extends NativeChannel{constructor(...args){super(...args);channels.push(this);}postMessage(value){deliver(()=>super.postMessage(value));}}
@@ -67,7 +91,7 @@ async function fixture(t,mode){
  const scope=new Scope();
  function outgoing(port){const post=port.postMessage.bind(port);port.postMessage=(...args)=>{const frame=args[0];if(gate.holdSuspendAck&&frame?.type==='root.result'&&rootRequests.get(frame.id)==='root.suspend'){gate.suspendAcks.push(()=>post(...args));return;}deliver(()=>post(...args));};}
  const values={__freezeClock:clock,__freezeProbe:probe,__freezeWorkerChannel:WorkerChannel,
-  navigator:{locks:{async request(_name,options,run){if(held&&options.ifAvailable)return run(null);held++;try{return await run({});}finally{held--;}}}},
+  navigator:{locks},
   location:new URL('https://fixture.test/'),document:doc,window:globalThis,RTCPeerConnection:class{},
   addEventListener:events.addEventListener.bind(events),removeEventListener:events.removeEventListener.bind(events),dispatchEvent:events.dispatchEvent.bind(events),
   SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();const wire=new MessageChannel();ports.push(wire.port1,wire.port2);this.port=wire.port2;
@@ -112,7 +136,7 @@ async function fixture(t,mode){
   const previous=globalThis.document,next=new EventTarget();next.hidden=false;next.visibilityState='visible';Object.defineProperty(globalThis,'document',{configurable:true,value:next});
   try{const value=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0}),'sibling attach');siblingAttachments.push(value);return value;}finally{Object.defineProperty(globalThis,'document',{configurable:true,value:previous});}
  }
- return{attachment,clock,doc,events,probe,gate,replaced,session,sibling,workerBarrier,rootRequests,registerOriginal(){const root=sharedRoots[0];root.port.postMessage({protocol:BROWSER_RTC_PROTOCOL,profileId:'retained',rootId:root.id,payload:{protocol:BROWSER_RTC_PROTOCOL,type:'register',available:true}});},get signalObservers(){return signalListeners.size;},openDirect:options=>openDirectConnection({timeoutMs:1000,...options}),get opened(){return opened;},get held(){return held;}};
+ return{attachment,clock,doc,events,probe,gate,replaced,session,sibling,workerBarrier,rootRequests,registerOriginal(){const root=sharedRoots[0];root.port.postMessage({protocol:BROWSER_RTC_PROTOCOL,profileId:'retained',rootId:root.id,payload:{protocol:BROWSER_RTC_PROTOCOL,type:'register',available:true}});},get signalObservers(){return signalListeners.size;},openDirect:options=>openDirectConnection({timeoutMs:1000,...options}),get opened(){return opened;},get held(){return Number(locks.held.has(ownerLockName));},get heldOwner(){return Number(locks.held.has(ownerLockName));},get rootDocLocks(){return [...locks.held.keys()].filter(name=>name!==ownerLockName).length;},locks};
 }
 
 for(const mode of['shared','elected'])for(const event of['freeze','visibilitychange'])for(const manual of[false,true])test(`${mode} automatic ${event} pauses synchronously and authenticated resume preserves the owner${manual?' with coalesced BFCache calls':''}`,async t=>{
@@ -319,4 +343,21 @@ test('an explicit resume superseded before its turn never sends a SharedWorker r
  const f=await fixture(t,'shared');await f.attachment.suspend();const before=[...f.rootRequests.values()].filter(type=>type==='root.resume').length,starts=f.probe.started;
  await bounded(Promise.all([f.attachment.resume(),f.attachment.suspend()]),'immediately superseded resume');await f.workerBarrier();
  assert.equal([...f.rootRequests.values()].filter(type=>type==='root.resume').length,before);assert.equal(f.probe.started,starts);
+});
+
+test('fixture Web Locks keep owner and document witness independent and expose query client IDs',async()=>{
+ const locks=new FixtureLocks();let releaseOwner,releaseDocument;
+ const owner=locks.request('chronolog-owner:retained',{ifAvailable:true},()=>new Promise(resolve=>{releaseOwner=resolve;}));
+ const document=locks.request('fixture-document-witness',{ifAvailable:true},lock=>{assert(lock);return new Promise(resolve=>{releaseDocument=resolve;});});
+ await until(()=>releaseOwner&&releaseDocument,'separate locks granted');
+ const state=await locks.query();assert.equal(state.held.length,2);assert.equal(state.pending.length,0);assert.equal(new Set(state.held.map(lock=>lock.clientId)).size,2);
+ const unavailable=await locks.request('chronolog-owner:retained',{ifAvailable:true},lock=>lock);assert.equal(unavailable,null);assert.equal((await locks.query()).held.length,2);
+ releaseDocument();await document;await until(()=>locks.held.size===1,'document witness released');assert(locks.held.has('chronolog-owner:retained'));
+ releaseOwner();await owner;await until(()=>locks.held.size===0,'owner released');
+});
+test('fixture Web Locks queue same-name contenders and remove aborted pending requests',async()=>{
+ const locks=new FixtureLocks();let release;const first=locks.request('same',{},()=>new Promise(resolve=>{release=resolve;}));await until(()=>release,'first lock held');
+ const stop=new AbortController(),reason=Error('FIXTURE_CANCELLED');const cancelled=locks.request('same',{signal:stop.signal},()=>assert.fail('aborted waiter must not run'));const rejected=assert.rejects(cancelled,error=>error===reason);
+ assert.equal((await locks.query()).pending.length,1);stop.abort(reason);await rejected;assert.equal((await locks.query()).pending.length,0);
+ let entered=false;const next=locks.request('same',{},()=>{entered=true;});assert.equal(entered,false);assert.equal((await locks.query()).pending.length,1);release();await first;await next;assert.equal(entered,true);
 });
