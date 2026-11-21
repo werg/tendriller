@@ -701,6 +701,7 @@ export async function closeLocalTransport() {
     passed('a second tab and its reload attach to the existing owner; no OWNER_BUSY or pairing UI');
 
     checkpoint('multi-piece replies and a quiet connection over the selected transport');
+    const bulkBefore = await transportCounters();
     const soakMs = Number(process.env.FIRST_APP_SOAK_MS ?? 60_000), frozenMs = Number(process.env.FIRST_APP_FROZEN_MS ?? 30_000);
     // Browser application status transitions, kept in sessionStorage so they survive reloads.
     const recordStatus = () => page.evaluate(async () => {
@@ -764,6 +765,11 @@ export async function closeLocalTransport() {
     report.background_resume = { frozenMs, firstReplyAfterMs: Date.now() - resumedAt, browserAbsent: churn(resumeLog.entries), statusChanges: resumeLog.entries.length };
     await expect(page.locator('#app-content')).toBeVisible();
     await page.setViewportSize({ width: 1280, height: 960 });
+    const bulkAfter = await transportCounters();
+    assert.equal(bulkAfter.instance, bulkBefore.instance);
+    report.bulkTransport = { relayByteDelta:bulkAfter.relayBinaryBytes-bulkBefore.relayBinaryBytes, before:bulkBefore, after:bulkAfter };
+    if (values.transport === 'direct') assert.equal(report.bulkTransport.relayByteDelta,0,'Bulk replies, soak and background resume must retain direct delivery');
+    else assert.ok(report.bulkTransport.relayByteDelta>600_000,'Forced fallback must carry the measured bulk traffic');
     passed('a frozen (backgrounded) tab receives live replies again after resuming, without reload or prompts');
 
     checkpoint('a request sent right after connecting is answered, and periodic updates arrive in every subscription mode');
