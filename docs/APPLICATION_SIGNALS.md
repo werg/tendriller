@@ -71,7 +71,9 @@ size or infinite answers:
 | Generated request/reply JSON payload, including helper envelope and escaping | 12 KiB, reserving 4 KiB for the kernel's signed 16 KiB frame |
 | One serialized reply | 4 MiB of UTF-8 JSON and at most 512 parts; both limits apply |
 | Outstanding requests per browser helper | 16 |
-| Native reply cache and pending computations | 32 entries |
+| Native reply cache | 32 entries |
+| Actually unsettled native handlers, including timed-out handlers | 32 |
+| Browser assemblies per request | 32 generations sharing one 4 MiB total fragment byte budget |
 | Cached encoded reply payloads | 8 MiB, with space reserved for bounded error replies |
 
 Oversized answers return `REQUEST_REPLY_TOO_LARGE` before sending answer pieces.
@@ -88,15 +90,20 @@ Cache entries are scoped to authenticated request author and ID. A repeat uses
 the original question/input while that entry is retained, and concurrent repeats
 share one active send. Entries expire after 60 seconds by default and may be
 evicted earlier to keep the cache bounded. Recomputed answers carry a new
-generation; the browser never combines pieces from different computations.
+generation; the browser retains independent bounded assemblies and never combines
+pieces from different computations. Every success and error fragment is bound to
+the authenticated requesting device; clients ignore fragments addressed to other
+members before changing assembly state.
 This is disposable deduplication, not durable operation idempotency. Signal
 topics are visible to authorized application members; an author-scoped cache
-does not create a private reply channel.
+does not create a private reply channel. Handlers must cooperate with their abort
+signal. A timed-out handler keeps its execution slot until its underlying promise
+settles. Shutdown cancels send work without waiting for uncooperative providers;
+their late results cannot send replies.
 
 Multi-piece messages are paced by the transport. Send each piece after the
 previous `send` resolves. The relay keeps a window of packets in flight and an
-ordered bounded local queue for the rest; the browser owner's fallback route and
-the browser fallback route is bounded to 4 MiB / 1,024 frames, the starter's
+ordered bounded local queue for the rest. The browser fallback route is bounded to 4 MiB / 1,024 frames, the starter's
 subscription queues to 8 MiB / 1,024 signals, and the relay's pending queue to
 1 MiB / 64 entries. Those separate bounds do not
 promise room for every reply or concurrent sender. `SIGNAL_BACKPRESSURE` means a

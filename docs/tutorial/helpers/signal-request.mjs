@@ -58,7 +58,7 @@ export function whenConnected(session, peer, { signal } = {}) {
 }
 
 /** Complete generated payloads leave room for the signed wire envelope. */
-function splitReply(id, g, value) {
+function splitReply(id, g, r, value) {
   const text = JSON.stringify(value);
   if (typeof text !== 'string') throw fail('REQUEST_REPLY_INVALID');
   if (encoder.encode(text).length > MAX_REPLY) throw fail('REQUEST_REPLY_TOO_LARGE');
@@ -69,12 +69,12 @@ function splitReply(id, g, value) {
     let low = start, high = Math.min(text.length, start + MAX_FRAME);
     while (low < high) {
       const middle = Math.ceil((low + high) / 2), end = boundary(middle);
-      if (bytes({ id, g, i: MAX_PARTS - 1, n: MAX_PARTS, z: text.slice(start, end) }) <= PAYLOAD_BUDGET) low = middle;
+      if (bytes({ id, g, r, i: MAX_PARTS - 1, n: MAX_PARTS, z: text.slice(start, end) }) <= PAYLOAD_BUDGET) low = middle;
       else high = middle - 1;
     }
     const end = boundary(low);
     if (end <= start) throw fail('REQUEST_REPLY_TOO_LARGE');
-    parts.push({ id, g, i: parts.length, n: 0, z: text.slice(start, end) }); start = end;
+    parts.push({ id, g, r, i: parts.length, n: 0, z: text.slice(start, end) }); start = end;
   }
   for (const part of parts) part.n = parts.length;
   return parts;
@@ -87,26 +87,27 @@ export function createSignalRequests(session, { peer, requestTopic = 'app/reques
   void (async () => {
     for await (const signal of session.signals.subscribe({ topics: [replyTopic], mode: 'all', signal: lifetime })) {
       if (signal.authorId !== peer) continue;
-      const { id, g, i, n, z, error, code } = signal.payload ?? {}, entry = waiting.get(id);
+      const { id, g, r, i, n, z, error, code } = signal.payload ?? {};
+      if (r !== session.deviceId) continue;
+      const entry = waiting.get(id);
       if (!entry || entry.done) continue;
       try {
         if (typeof g !== 'string' || !g.length || g.length > 128 || bytes(signal.payload) > MAX_FRAME) throw fail('REQUEST_REPLY_INVALID');
-        if (entry.retired.has(g)) continue;
-        if (g !== entry.g) {
-          if (entry.g) entry.retired.add(entry.g);
-          if (entry.retired.size > 32) throw fail('REQUEST_REPLY_INVALID');
-          entry.g = g; entry.pieces = new Map(); entry.total = 0; entry.n = undefined;
+        let assembly = entry.assemblies.get(g);
+        if (!assembly) {
+          if (entry.assemblies.size >= 32) throw fail('REQUEST_REPLY_INVALID');
+          entry.assemblies.set(g, assembly = { pieces: new Map(), n: undefined });
         }
         if (typeof error === 'string') throw fail(typeof code === 'string' ? code.slice(0, 128) : 'REQUEST_FAILED', error.slice(0, 2000));
         if (!Number.isSafeInteger(i) || !Number.isSafeInteger(n) || n < 1 || n > MAX_PARTS || i < 0 || i >= n || typeof z !== 'string' ||
-            (entry.n !== undefined && n !== entry.n)) throw fail('REQUEST_REPLY_INVALID');
-        entry.n = n;
-        if (entry.pieces.has(i)) { if (entry.pieces.get(i) !== z) throw fail('REQUEST_REPLY_INVALID'); continue; }
+            (assembly.n !== undefined && n !== assembly.n)) throw fail('REQUEST_REPLY_INVALID');
+        assembly.n = n;
+        if (assembly.pieces.has(i)) { if (assembly.pieces.get(i) !== z) throw fail('REQUEST_REPLY_INVALID'); continue; }
         entry.total += encoder.encode(z).length;
         if (entry.total > MAX_REPLY) throw fail('REQUEST_REPLY_TOO_LARGE');
-        entry.pieces.set(i, z); entry.progressAt = Date.now();
-        if (entry.pieces.size === n) {
-          const text = Array.from({ length: n }, (_, index) => entry.pieces.get(index)).join('');
+        assembly.pieces.set(i, z); entry.progressAt = Date.now();
+        if (assembly.pieces.size === n) {
+          const text = Array.from({ length: n }, (_, index) => assembly.pieces.get(index)).join('');
           let answer; try { answer = JSON.parse(text); } catch { throw fail('REQUEST_REPLY_INVALID'); }
           entry.done = true; entry.resolve(answer);
         }
@@ -121,7 +122,7 @@ export function createSignalRequests(session, { peer, requestTopic = 'app/reques
       const id = crypto.randomUUID(), payload = { id, q: name, input };
       if (typeof name !== 'string' || bytes(payload) > PAYLOAD_BUDGET) throw fail('REQUEST_TOO_LARGE');
       const scope = deadline(base, timeoutMs, 'REQUEST_TIMEOUT');
-      const entry = { pieces: new Map(), retired: new Set(), done: false, progressAt: 0 };
+      const entry = { assemblies: new Map(), total: 0, done: false, progressAt: 0 };
       const result = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
       waiting.set(id, entry);
       const abort = () => { entry.done = true; entry.reject(scope.signal.reason); };
@@ -172,16 +173,22 @@ export async function sendPieces(session, topic, parts, { signal, ttlMs = 30_000
  */
 export async function serveSignalRequests(session, { handle, requestTopic = 'app/request', replyTopic = 'app/reply', signal, cacheMs = 60_000 }) {
   if (!Number.isSafeInteger(cacheMs) || cacheMs < 0 || cacheMs > 300_000) throw fail('REQUEST_OPTIONS_INVALID');
-  const stop = new AbortController(), lifetime = combine(stop.signal, session.signal, signal), recent = new Map(), jobs = new Set();
-  let cachedBytes = 0, failure;
+  const stop = new AbortController(), lifetime = combine(stop.signal, session.signal, signal), recent = new Map(), jobs = new Set(), executions = new Set();
+  let cachedBytes = 0, failure, failed = false;
   const forget = key => { const entry = recent.get(key); if (entry) cachedBytes -= entry.bytes; recent.delete(key); };
   const evict = () => { for (const [key, entry] of recent) if (!entry.pending && !entry.active) { forget(key); return true; } return false; };
-  const errorPart = (id, g, error) => [{ id, g, error: String(error.message ?? error).slice(0, 2000), code: String(error.code || 'REQUEST_FAILED').slice(0, 128) }];
+  const errorPart = (id, g, r, error) => {
+    let message = 'Request failed', code = 'REQUEST_FAILED';
+    try { message = String(error?.message ?? error).slice(0, 2000); code = String(error?.code || code).slice(0, 128); } catch { /* Hostile thrown values are not protocol objects. */ }
+    const part = { id, g, r, error: message, code };
+    while (bytes(part) > PAYLOAD_BUDGET && part.error.length) part.error = part.error.slice(0, Math.floor(part.error.length / 2));
+    return [part];
+  };
   const dispatch = entry => {
     if (entry.active) return;
     const job = (async () => { const parts = await entry.parts; lifetime.throwIfAborted(); await sendPieces(session, replyTopic, parts, { signal: lifetime }); })();
     entry.active = job; jobs.add(job);
-    void job.catch(error => { if (!lifetime.aborted) { failure = error; stop.abort(error); } }).finally(() => { entry.active = null; jobs.delete(job); });
+    void job.catch(error => { if (!lifetime.aborted) { failed = true; failure = error; stop.abort(error); } }).finally(() => { entry.active = null; jobs.delete(job); });
   };
   try {
     lifetime.throwIfAborted();
@@ -198,8 +205,15 @@ export async function serveSignalRequests(session, { handle, requestTopic = 'app
       recent.set(key, entry);
       entry.parts = (async () => {
         const scope = deadline(lifetime, 30_000, 'REQUEST_TIMEOUT'); let parts;
-        try { parts = splitReply(id, g, await owned(Promise.resolve().then(() => handle(q, input ?? null, { from: request.authorId, signal: scope.signal })), scope.signal)); }
-        catch (error) { parts = errorPart(id, g, error); }
+        try {
+          if (executions.size >= MAX_CACHE) throw fail('REQUEST_BUSY');
+          const execution = Promise.resolve().then(() => handle(q, input ?? null, { from: request.authorId, signal: scope.signal }));
+          executions.add(execution);
+          // A deadline releases its waiter, not the underlying provider slot.
+          void execution.then(() => executions.delete(execution), () => executions.delete(execution));
+          parts = splitReply(id, g, request.authorId, await owned(execution, scope.signal));
+        }
+        catch (error) { parts = errorPart(id, g, request.authorId, error); }
         finally { scope.close(); }
         lifetime.throwIfAborted();
         let size = parts.reduce((sum, part) => sum + bytes(part), 0);
@@ -207,13 +221,15 @@ export async function serveSignalRequests(session, { handle, requestTopic = 'app
         // replies are active and therefore cannot be evicted.
         const limit = typeof parts[0]?.error === 'string' ? MAX_CACHE_BYTES : MAX_CACHE_BYTES - MAX_CACHE * MAX_FRAME;
         while (cachedBytes + size > limit && evict()) { /* retain active replies */ }
-        if (cachedBytes + size > limit) { parts = errorPart(id, g, fail('REQUEST_BUSY')); size = parts.reduce((sum, part) => sum + bytes(part), 0); }
+        if (cachedBytes + size > limit) { parts = errorPart(id, g, request.authorId, fail('REQUEST_BUSY')); size = parts.reduce((sum, part) => sum + bytes(part), 0); }
         entry.bytes = size; cachedBytes += size; entry.pending = false; entry.until = Date.now() + cacheMs;
         return parts;
       })();
       dispatch(entry);
     }
-  } catch (error) { if (!lifetime.aborted) failure = error; }
-  finally { stop.abort(failure ?? fail('REQUEST_CLOSED')); await Promise.allSettled([...jobs]); recent.clear(); }
-  if (failure) throw failure;
+  } catch (error) { if (!lifetime.aborted) { failed = true; failure = error; } }
+  // Uncooperative provider promises retain capacity until they settle, but do
+  // not prevent service shutdown. Late results cannot send or alter the cache.
+  finally { stop.abort(failed ? failure : fail('REQUEST_CLOSED')); await Promise.allSettled([...jobs]); recent.clear(); }
+  if (failed) throw failure;
 }

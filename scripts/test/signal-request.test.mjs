@@ -6,7 +6,7 @@ import { memoryAvailableGb, installSoakObserver, installStateSignalObservers } f
 
 // Two sessions on one in-memory live-signal bus. `faults` lets a test drop or refuse
 // individual sends, as a slow phone link or a stalled relay would.
-function bus(faults = {}) {
+function bus(faults = {}, browserId = 'browser') {
   const subscribers = new Set(), sent = [];
   const session = (deviceId, peer) => ({
     deviceId,
@@ -30,7 +30,7 @@ function bus(faults = {}) {
       },
     },
   });
-  return { browser: session('browser', 'native'), native: session('native', 'browser'), other: session('other', 'native'), sent, subscribers };
+  return { browser: session(browserId, 'native'), native: session('native', browserId), other: session('other', 'native'), sent, subscribers };
 }
 
 async function roundTrip(faults) {
@@ -69,7 +69,7 @@ async function fixture(t, { faults, handle, cacheMs } = {}) {
 test('complete JSON payloads fit the byte cap with Unicode, escaping and surrogate pairs', async t => {
   const answer = { value: '漢😀"\\\n'.repeat(6000) };
   const f = await fixture(t, { handle: () => answer, faults: { send({ topic, payload }) {
-    assert.ok(new TextEncoder().encode(JSON.stringify(payload)).length <= 16_384, topic);
+    assert.ok(new TextEncoder().encode(JSON.stringify(payload)).length <= 12 * 1024, topic);
   } } });
   assert.deepEqual(await f.requests.request('unicode'), answer);
   assert.ok(f.sent.filter(v => v.topic === 'app/reply').length > 2);
@@ -155,7 +155,7 @@ test('reply validation rejects huge indexes, changing counts and conflicting dup
     try {
       const pending = requests.request('q'); await until(() => f.sent.length);
       const id = f.sent[0].payload.id;
-      for (const part of fragments) await f.native.signals.send('app/reply', { id, g: 'generation', ...part });
+      for (const part of fragments) await f.native.signals.send('app/reply', { id, g: 'generation', r: 'browser', ...part });
       await assert.rejects(pending, { code: 'REQUEST_REPLY_INVALID' });
     } finally { requests.close(); }
   }
@@ -234,4 +234,127 @@ test('a piece refused with SIGNAL_SEND_TIMEOUT is retried and does not drop the 
   assert.equal(refused >= 3, true, 'the refused piece was attempted again');
   const pieces = new Set(sent.filter(item => item.topic === 'app/reply').map(item => item.payload.i));
   assert.equal(pieces.size, answer.rows.length ? Math.max(...pieces) + 1 : 0, 'every piece index was sent');
+});
+
+test('broadcast ID reuse cannot substitute another member answer or error', async t => {
+  for (const attackerFails of [false, true]) {
+    let release;
+    const f = await fixture(t, { handle: (_q, input, { from }) => {
+      if (from === 'browser') return new Promise(resolve => { release = resolve; });
+      if (attackerFails) throw Error('attacker failure');
+      return input;
+    } });
+    let settled = false;
+    const pending = f.requests.request('q', 'victim').finally(() => { settled = true; });
+    await until(() => release);
+    const id = f.sent.find(v => v.topic === 'app/request').payload.id;
+    await f.other.signals.send('app/request', { id, q: 'q', input: 'attacker' });
+    await until(() => f.sent.some(v => v.topic === 'app/reply' && v.payload.r === 'other'));
+    await turn(); assert.equal(settled, false);
+    release('victim'); assert.equal(await pending, 'victim');
+    assert.ok(f.sent.filter(v => v.topic === 'app/reply').every(v => ['browser', 'other'].includes(v.payload.r)));
+  }
+});
+
+test('delayed old generations do not retire a valid newer assembly', async () => {
+  const f = bus(), requests = createSignalRequests(f.browser, { peer: 'native' });
+  try {
+    const pending = requests.request('q'); await until(() => f.sent.length);
+    const id = f.sent[0].payload.id;
+    for (const part of [
+      { g: 'new', i: 0, n: 2, z: '"new' },
+      { g: 'old', i: 0, n: 2, z: '"old' },
+      { g: 'new', i: 1, n: 2, z: ' answer"' },
+    ]) await f.native.signals.send('app/reply', { id, r: 'browser', ...part });
+    assert.equal(await pending, 'new answer');
+  } finally { requests.close(); }
+});
+
+test('generation metadata and aggregate assembly bytes have shared hard bounds', async () => {
+  for (const kind of ['count', 'bytes']) {
+    const f = bus(), requests = createSignalRequests(f.browser, { peer: 'native' });
+    try {
+      const pending = requests.request('q');
+      const checked = assert.rejects(pending, { code: kind === 'count' ? 'REQUEST_REPLY_INVALID' : 'REQUEST_REPLY_TOO_LARGE' });
+      await until(() => f.sent.length); const id = f.sent[0].payload.id;
+      const count = kind === 'count' ? 33 : 360;
+      for (let i = 0; i < count; i++) await f.native.signals.send('app/reply', {
+        id, r: 'browser', g: kind === 'count' ? String(i) : String(i % 2),
+        i: Math.floor(i / 2), n: 512, z: kind === 'count' ? 'x' : 'x'.repeat(12_000),
+      });
+      await checked;
+    } finally { requests.close(); }
+  }
+});
+
+test('arbitrary thrown values yield bounded request errors without killing service', async t => {
+  const hostile = { get message() { throw Error('getter'); }, get code() { throw Error('getter'); } };
+  for (const thrown of [null, undefined, hostile]) {
+    const f = await fixture(t, { handle: q => { if (q === 'bad') throw thrown; return 'healthy'; } });
+    await assert.rejects(f.requests.request('bad'), { code: 'REQUEST_FAILED' });
+    assert.equal(await f.requests.request('good'), 'healthy');
+  }
+});
+
+test('timed-out providers retain actual execution capacity until real settlement', async () => {
+  const realTimeout = globalThis.setTimeout;
+  // Scale only the service's fixed 30s deadlines, not caller waits or retry timers.
+  globalThis.setTimeout = (callback, ms, ...args) => realTimeout(callback, ms === 30_000 ? 5 : ms, ...args);
+  const f = bus(), stop = new AbortController(), providers = []; let calls = 0;
+  const service = serveSignalRequests(f.native, { signal: stop.signal, cacheMs: 0, handle: () => {
+    calls++; return new Promise((resolve, reject) => providers.push({ resolve, reject }));
+  } });
+  try {
+    for (let i = 0; i < 32; i++) await f.browser.signals.send('app/request', { id: String(i), q: 'q' });
+    await until(() => f.sent.filter(v => v.topic === 'app/reply').length === 32);
+    assert.equal(calls, 32);
+    for (let i = 32; i < 64; i++) await f.browser.signals.send('app/request', { id: String(i), q: 'q' });
+    await until(() => f.sent.filter(v => v.topic === 'app/reply').length === 64);
+    assert.equal(calls, 32);
+    assert.ok(f.sent.filter(v => v.topic === 'app/reply').slice(32).every(v => v.payload.code === 'REQUEST_BUSY'));
+    stop.abort(); await service;
+    const sent = f.sent.length;
+    providers.forEach((p, i) => i % 2 ? p.reject(null) : p.resolve('too late'));
+    await turn(); assert.equal(f.sent.length, sent);
+  } finally { globalThis.setTimeout = realTimeout; stop.abort(); await service; }
+});
+
+test('generated replies fit the actual public session signed signal encoder', async () => {
+  const p = await import('@chronolog/peer-session');
+  const device = await p.openApplicationDevice({ store: new p.MemoryBytesStore(), create: true });
+  let session;
+  try {
+    const definition = p.defineApplication({ id: 'signal-budget', version: '1', commands: {}, queries: {} });
+    const signer = await p.createPeerIdentity(), key = crypto.getRandomValues(new Uint8Array(32));
+    const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest());
+    const descriptor = await p.signApplicationDescriptor({ applicationId: '73'.repeat(32), historyId: 'signal-budget',
+      profile: 'peer-generation-v1', policy: 'eligible-members-v1', controlPublicKey: signer.publicKey,
+      schemaAdministrator: device.identity.publicKey, definitionDigest: await p.applicationDefinitionDigest(definition),
+      executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), schemaDigest: null }, signer);
+    const control = await p.signControlRevision({ applicationId: descriptor.payload.applicationId,
+      profile: descriptor.payload.profile, policy: descriptor.payload.policy, revision: 0, previous: null,
+      epoch: 0, keyDigest: await p.bytesDigest(key), recoveryFloor: null,
+      grants: [p.participantGrant(device.identity.publicKey, { administrator: true })] }, signer);
+    const registry = await p.createGenerationRegistry({ store: new p.MemoryBytesStore(), descriptor, controls: [control], signer });
+    await registry.select(await p.signTransitionRequest({ applicationId: descriptor.payload.applicationId,
+      profile: descriptor.payload.profile, policy: descriptor.payload.policy, transitionId: 'initial', expectedGeneration: null,
+      coordinator: device.identity.publicKey, requester: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null }, device.identity));
+    session = await p.openPeerApplication({ device, definition, authority: await registry.read(), epochKeys: new Map([[0, key]]), signals: { localEcho: true } });
+    // Real encoder accepts 16KiB JSON but rejects its larger signed CBOR frame.
+    await assert.rejects(session.signals.send('app/reply', { z: 'x'.repeat(16_300) }), { code: 'SIGNAL_FRAME_TOO_LARGE' });
+    const f = bus({}, session.deviceId), stop = new AbortController();
+    assert.match(session.deviceId, /^[a-f0-9]{64}$/);
+    const service = serveSignalRequests(f.native, { signal: stop.signal, handle: () => ({ rows: '漢😀"\\\n'.repeat(12_000) }) });
+    try {
+      await f.browser.signals.send('app/request', { id: crypto.randomUUID(), q: 'rows' });
+      await until(() => f.sent.some(v => v.topic === 'app/reply' && v.payload.i === v.payload.n - 1));
+      const replies = f.sent.filter(v => v.topic === 'app/reply'); assert.ok(replies.length > 2);
+      assert.ok(replies.every(v => v.payload.r === session.deviceId));
+      for (const { payload } of replies) {
+        assert.ok(new TextEncoder().encode(JSON.stringify(payload)).length <= 12 * 1024);
+        await session.signals.send('app/reply', payload);
+      }
+      assert.equal(session.status.database, 'idle');
+    } finally { stop.abort(); await service; }
+  } finally { await session?.close(); await device.close(); }
 });
