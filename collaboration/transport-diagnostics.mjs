@@ -11,14 +11,14 @@ const counter = value => Number.isSafeInteger(value) && value >= 0 ? value : nul
  * Raw adapter onTransport selections deliberately have no input path here. */
 export function createTransportDiagnostics(participation, { signal, timeoutMs = 5000 } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw TypeError('Invalid local diagnostics deadline');
-  const listeners = new Set(); let closed = false, stopStatus = () => {}, version = 0, pending, refreshAfterPending = false, connectionRevision = null;
-  let phase = 'unknown', peers = null, sampled = false, limited = false, statusLimited = false, failure = null, rows = [];
+  const listeners = new Set(); let closed = false, stopStatus = () => {}, version = 0, pending, physicalPending = false, refreshAfterPending = false, connectionRevision = null;
+  let phase = 'unknown', peers = null, sampled = false, sampleLimited = false, statusLimited = false, failure = null, rows = [];
   let cancelRead = () => {};
   const supported = typeof participation?.diagnostics === 'function';
   function status() {
     return Object.freeze({ protocol: TRANSPORT_DIAGNOSTIC_PROTOCOL,
       state: closed ? 'closed' : !supported ? 'unavailable' : 'available', phase, connectionRevision,
-      authenticatedPeers: peers?.size ?? (sampled ? rows.length : null), sampled, limited, error: failure,
+      authenticatedPeers: peers?.size ?? (sampled ? rows.length : null), sampled, limited: statusLimited || sampleLimited, error: failure,
       connections: Object.freeze(rows.map((row, index) => Object.freeze({ link: index + 1, kind: row.kind, reason: row.reason,
         sentBytes: row.sentBytes, receivedBytes: row.receivedBytes, sentReliableBytes: row.sentReliableBytes, receivedReliableBytes: row.receivedReliableBytes, sentLiveBytes: row.sentLiveBytes, receivedLiveBytes: row.receivedLiveBytes, sentRequests: row.sentRequests, receivedRequests: row.receivedRequests }))),
     });
@@ -32,14 +32,15 @@ export function createTransportDiagnostics(participation, { signal, timeoutMs = 
     const routeChanged = connectionRevision !== null && nextRevision !== null && nextRevision !== connectionRevision;
     const ids = Array.isArray(value?.connectedPeers) ? value.connectedPeers.slice(0, TRANSPORT_DIAGNOSTIC_LIMIT).filter(peer) : null;
     const nextPeers = ids && new Set(ids);
-    statusLimited = Array.isArray(value?.connectedPeers) && value.connectedPeers.length > TRANSPORT_DIAGNOSTIC_LIMIT; limited = statusLimited;
+    const nextStatusLimited = Array.isArray(value?.connectedPeers) && value.connectedPeers.length > TRANSPORT_DIAGNOSTIC_LIMIT;
+    const sameStatusLimit = nextStatusLimited === statusLimited; statusLimited = nextStatusLimited;
     const samePeers = peers === null && nextPeers === null || peers !== null && nextPeers !== null && peers.size === nextPeers.size && [...peers].every(id => nextPeers.has(id));
-    if (nextPhase === phase && samePeers && nextRevision === connectionRevision) return;
+    if (nextPhase === phase && samePeers && nextRevision === connectionRevision && sameStatusLimit) return;
     phase = nextPhase; peers = nextPeers; connectionRevision = nextRevision; version++; sampled = false;
     if (phase === 'closed') { close(); return; }
     rows = !routeChanged && peers ? rows.filter(row => peers.has(row.peerId)) : [];
     emit();
-    if (routeChanged) { if (pending) refreshAfterPending = true; else void refresh(); }
+    if (routeChanged) { if (physicalPending) refreshAfterPending = true; else void refresh(); }
   }
   function close() {
     if (closed) return;
@@ -49,10 +50,11 @@ export function createTransportDiagnostics(participation, { signal, timeoutMs = 
   function refresh() {
     if (closed || !supported) return Promise.resolve(status());
     if (pending) return pending;
+    if (physicalPending) return Promise.resolve(status());
     const atVersion = version;
     let timer, finish, settled = false;
-    const result = new Promise(resolve => { finish = () => { if (settled) return; settled = true; clearTimeout(timer); cancelRead = () => {}; resolve(status()); }; });
-    pending = result;
+    const result = new Promise(resolve => { finish = () => { if (settled) return; settled = true; clearTimeout(timer); cancelRead = () => {}; pending = undefined; resolve(status()); }; });
+    pending = result; physicalPending = true;
     cancelRead = finish;
     timer = setTimeout(() => { if (!closed) { failure = 'timed_out'; sampled = false; rows = []; emit(); } finish(); }, timeoutMs);
     // Keep an uncooperative physical read charged until it settles. Repeated
@@ -60,19 +62,19 @@ export function createTransportDiagnostics(participation, { signal, timeoutMs = 
     void Promise.resolve().then(() => { if (closed) return; return participation.diagnostics(); }).then(value => {
       if (closed || settled || version !== atVersion) return;
       if (!Array.isArray(value)) { failure = 'invalid_diagnostics'; rows = []; sampled = false; emit(); return; }
-      const next = [], seen = new Set(); limited = statusLimited || value.length > TRANSPORT_DIAGNOSTIC_LIMIT;
+      const next = [], seen = new Set(); let nextSampleLimited = value.length > TRANSPORT_DIAGNOSTIC_LIMIT;
       for (const item of value.slice(0, TRANSPORT_DIAGNOSTIC_LIMIT)) {
-        if (!item || !peer(item.peerId) || seen.has(item.peerId) || peers && !peers.has(item.peerId)) { limited = true; continue; }
+        if (!item || !peer(item.peerId) || seen.has(item.peerId) || peers && !peers.has(item.peerId)) { nextSampleLimited = true; continue; }
         seen.add(item.peerId);
         next.push({ peerId: item.peerId, kind: kinds.has(item.kind) ? item.kind : 'unknown', reason: item.kind === 'relay' && reasons.has(item.reason) ? item.reason : null,
           sentBytes: counter(item.sentBytes), receivedBytes: counter(item.receivedBytes), sentReliableBytes: counter(item.sentReliableBytes), receivedReliableBytes: counter(item.receivedReliableBytes), sentLiveBytes: counter(item.sentLiveBytes), receivedLiveBytes: counter(item.receivedLiveBytes), sentRequests: counter(item.sentRequests), receivedRequests: counter(item.receivedRequests) });
       }
-      rows = next; sampled = true; failure = null; emit();
+      rows = next; sampleLimited = nextSampleLimited; sampled = true; failure = null; emit();
     }, () => {
       if (!closed && !settled && version === atVersion) { failure = 'read_failed'; rows = []; sampled = false; emit(); }
     }).catch(() => {
       if (!closed && !settled) { failure = 'invalid_diagnostics'; rows = []; sampled = false; emit(); }
-    }).finally(() => { finish(); pending = undefined; if (refreshAfterPending && !closed) { refreshAfterPending = false; void refresh(); } });
+    }).finally(() => { finish(); physicalPending = false; if (refreshAfterPending && !closed) { refreshAfterPending = false; void refresh(); } });
     return result;
   }
   try {

@@ -166,3 +166,21 @@ test('programmatic save under a hold releases only after inspectable defaults ma
   await page.evaluate(()=>{const editor=document.querySelector('#editor') as HTMLTextAreaElement;editor.defaultValue=editor.value;(window as any).release();});
   expect(await reloads(page)).toBe(1);
 });
+
+for (const held of [false,true]) test(`open-shadow native form reset waits for ${held?'explicit hold release':'another observed trigger'} without polling`,async({page})=>{
+ const notice=await policy(page);
+ await page.evaluate(held=>{
+  const w=window as any,host=document.createElement('section');document.body.append(host);
+  const shadow=host.attachShadow({mode:'open'});shadow.innerHTML='<form><textarea>saved</textarea></form>';
+  w.shadowForm=shadow.querySelector('form');w.shadowEditor=shadow.querySelector('textarea');
+  w.shadowResetAtDocument=0;document.addEventListener('reset',()=>w.shadowResetAtDocument++,true);
+  if(held)w.release=w.updates.hold();w.shadowEditor.value='unsaved';
+ },held);
+ await notice(2);expect(await reloads(page)).toBe(0);
+ await page.evaluate(()=>(window as any).shadowForm.reset());
+ expect(await page.evaluate(()=>(window as any).shadowEditor.value)).toBe('saved');
+ expect(await page.evaluate(()=>(window as any).shadowResetAtDocument)).toBe(0);
+ await page.clock.runFor(60_000);expect(await reloads(page)).toBe(0);
+ await page.evaluate(held=>{if(held)(window as any).release();else document.dispatchEvent(new Event('visibilitychange'));},held);
+ expect(await reloads(page)).toBe(1);
+});

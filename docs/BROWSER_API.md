@@ -196,7 +196,11 @@ Device keys and retained operations remain in their existing browser storage. Ap
 `const release = tendril.publication.hold()` while that work is unsaved, then
 `release()`. Update safety is checked on publication changes, input/change,
 focus leaving an editor, form reset, visibility changes, page restoration and hold
-release. There is no periodic safety scan. Programmatic changes that do not emit
+release. Form reset is observed at the document level. Native `reset` events from
+forms inside shadow roots are not composed, so they do not reach that listener;
+release an application hold after resetting such a form to trigger the safety
+check. A pending update otherwise waits for another observed trigger. There is
+no periodic safety scan. Programmatic changes that do not emit
 these events must use a hold while unsaved: persist the draft, update native form
 defaults to the saved values when appropriate, then release the hold. Custom
 editors and closed shadow roots require this explicit lifetime. Alternatively,
