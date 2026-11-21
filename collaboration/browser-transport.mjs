@@ -1,3 +1,4 @@
+import { createOwnerLiveness } from './browser-liveness.mjs';
 export const BROWSER_OWNER_PROTOCOL = 'tendriller/browser-owner/v3';
 export const ownerChannelName = profileId => `tendriller:owner:v3:${profileId}`;
 export const ownerWorkerName = profileId => `tendriller:${profileId}:v3`;
@@ -226,20 +227,27 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
 }
 
 /** Public discovery is pinned once; only authenticated route frames can affect a facade. */
-export function createBroadcastEndpoint(channel, announcement, { profileId, onReplaced, livenessTimeoutMs = 15000 } = {}) {
+export function createBroadcastEndpoint(channel, announcement, { profileId, onReplaced, livenessTimeoutMs = 15000, requestTimeoutMs = 30000 } = {}) {
   if (!isOwnerAnnouncement(announcement, profileId) || !Number.isFinite(livenessTimeoutMs) || livenessTimeoutMs < 100 || livenessTimeoutMs > 120000) throw Error('OWNER_HANDSHAKE_INVALID');
   const { ownerInstanceId } = announcement, ownerKey = announcement.publicKey.slice();
-  let record, closed = false, paused = false, heartbeat, handshakeTimer;
+  const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs });
+  let record, closed = false, paused = false, heartbeat, handshakeTimer, resumeProbe;
+  const finishResume = error => {
+    if (!resumeProbe) return;
+    clearTimeout(resumeProbe.timer); const probe = resumeProbe; resumeProbe = undefined;
+    error ? probe.reject(error) : probe.resolve();
+  };
   const replaced = code => {
-    if (closed) return; closed = true; clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
+    if (closed) return; closed = true; finishResume(Error(code)); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
     if (record) { record.port.postMessage(ended(code)); record.closed = true; record.port.close(); }
     try { onReplaced?.({ previous: ownerInstanceId, reason: code }); } catch { /* Product callbacks cannot keep an invalid route alive. */ }
   };
   function pulse() {
     clearTimeout(heartbeat); if (closed || paused || !record?.key) return;
-    if (performance.now() - record.lastReceived >= livenessTimeoutMs) { replaced('OWNER_UNREACHABLE'); return; }
+    const remaining = liveness.deadline() - performance.now();
+    if (remaining <= 0) { replaced('OWNER_UNREACHABLE'); return; }
     void record.send({ kind: 'ping' }).catch(() => replaced('OWNER_UNREACHABLE'));
-    heartbeat = setTimeout(pulse, Math.max(50, Math.min(5000, livenessTimeoutMs / 3))); heartbeat.unref?.();
+    heartbeat = setTimeout(pulse, Math.min(remaining, Math.max(50, Math.min(5000, livenessTimeoutMs / 3)))); heartbeat.unref?.();
   }
   async function welcome(data) {
     if (!record || record.key || record.welcoming || !(data.iv instanceof Uint8Array) || data.iv.length !== 12 ||
@@ -256,7 +264,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
       clearTimeout(handshakeTimer);
       queues(record, channel, ownerInstanceId, record.route, 'owner');
       await record.send({ kind: 'attach', facadeProtocol: record.facadeProtocol, handshake: record.handshake, releaseToken: record.releaseToken });
-      record.lastReceived = performance.now(); pulse();
+      liveness.authenticated(); pulse();
     } catch { replaced('OWNER_HANDSHAKE_INVALID'); }
     finally { if (record) record.welcoming = false; }
   }
@@ -266,11 +274,11 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     if (data.type === 'welcome') { void welcome(data); return; }
     if (!record.key) return;
     record.receive(data, value => {
-      record.lastReceived = performance.now();
+      liveness.authenticated(); finishResume();
       if (value?.kind === 'frame') {
         record.port.postMessage(value.frame);
         if (value.frame?.ended) {
-          record.closed = true; closed = true; clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive); record.port.close();
+          record.closed = true; closed = true; finishResume(Error(value.frame.ended.code ?? 'ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive); record.port.close();
           if (['ENDPOINT_STALE', 'OWNER_UNREACHABLE'].includes(value.frame.ended.code)) {
             try { onReplaced?.({ previous: ownerInstanceId, reason: value.frame.ended.code }); } catch { /* A product callback cannot reopen the route. */ }
           }
@@ -298,8 +306,22 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
       }; offer();
     })(); record.opening.catch(() => replaced('OWNER_HANDSHAKE_INVALID'));
   }, addEventListener() {}, removeEventListener() {},
+  bindRequestSource: session => liveness.bind(session),
   suspend() { paused = true; clearTimeout(heartbeat); },
-  resume() { if (closed) throw Error('ENDPOINT_STALE'); paused = false; if (record) record.lastReceived = performance.now(); pulse(); },
+  async resume() {
+    if (closed) throw Error('ENDPOINT_STALE');
+    if (!paused) return;
+    // Resume must obtain real owner evidence; a caller cannot refresh silence
+    // by repeatedly invoking resume or by supplying a pending-request getter.
+    if (resumeProbe) return resumeProbe.promise;
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    resumeProbe = { promise, resolve, reject, timer: setTimeout(() => { finishResume(Error('OWNER_UNREACHABLE')); replaced('OWNER_UNREACHABLE'); }, livenessTimeoutMs) };
+    void record.send({ kind: 'ping' }).catch(error => { finishResume(error); replaced('OWNER_UNREACHABLE'); });
+    await promise;
+    if (closed) throw Error('ENDPOINT_STALE');
+    paused = false; pulse();
+  },
   relinquish() {
     if (closed) return;
     // This capability is prepared before the facade opens. No Promise or key
@@ -309,7 +331,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   },
   async close() {
     if (closed) return;
-    this.relinquish(); closed = true; clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
+    this.relinquish(); closed = true; finishResume(Error('ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
     if (record) { record.closed = true; record.port.close(); }
   } };
 }
