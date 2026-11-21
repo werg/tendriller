@@ -7,8 +7,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: public-service-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Push and PR events for the same source branch qualify one graph.
+  # Keep forks independent, and never interrupt a master promotion.
+  group: public-service-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 permissions:
   contents: read
