@@ -1,8 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import { verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-import { createPeerIntroductions } from '@tendriller/core/peers';
+import { participateNativeApplication } from '@tendriller/core/collaboration/native-rtc';
 import { definition } from './domain.mjs';
 import { devicePath, project, readPrivate } from './local.mjs';
 
@@ -17,13 +16,7 @@ export async function openSession({ signal, deviceFile = devicePath } = {}) {
   try {
     session = await openNativeApplication({ device, definition, authority });
     const control = session.connectControlParticipant({ exchange: (message, options) => host.peers.exchange(message, options) });
-    await session.participate({ control, ...createPeerIntroductions({
-      peers: host.peers, identity: session.deviceId,
-      // The smallest default archive has no native RTC implementation. The
-      // maintained adapter falls back to its authenticated encrypted relay.
-      openDirectConnection: async () => { throw Error('TUTORIAL_NATIVE_RTC_NOT_CONFIGURED'); },
-      openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-    }) });
+    await participateNativeApplication(session, { peers: host.peers, control });
     signal?.throwIfAborted();
     return { session, control };
   } catch (error) { if (session) await session.close(); else await device.close(); throw error; }

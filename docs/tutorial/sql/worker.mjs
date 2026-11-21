@@ -2,9 +2,9 @@
 import { verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { openSqlApplication } from '@chronolog/peer-session/sql';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-import { createPeersClient, createPeerIntroductions } from '@tendriller/core/peers';
+import { createPeersClient } from '@tendriller/core/peers';
 import { serveBrowserOwner } from '@tendriller/core/collaboration/worker';
+import { participateApplication } from '@tendriller/core/collaboration/participation';
 import { definition } from './domain.mjs';
 
 serveBrowserOwner({ async load({ signal }) {
@@ -18,7 +18,7 @@ return { profileId,
     const device = await openBrowserDevice({ name: profileId, create: true });
     try { return device.identity.publicKey; } finally { await device.close(); }
   },
-  async openSession({ signal }) {
+  async openSession({ signal, openDirectConnection }) {
     if (new URL(configuration.page_url).origin !== self.location.origin)
       throw Error('Open this owner at its authorized page origin; localhost does not inherit its account or device.');
     const device = await openBrowserDevice({ name: profileId });
@@ -58,10 +58,7 @@ return { profileId,
         },
       });
       const control = session.connectControlParticipant({ exchange: (message, options) => peers.exchange(message, options) });
-      await session.participate({ control, ...createPeerIntroductions({ peers, identity: session.deviceId,
-        openDirectConnection: async () => { throw Error('SHARED_OWNER_USES_NATIVE_RELAY'); },
-        openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-      }) });
+      await participateApplication(session, { peers, control, openDirectConnection });
       // The owner closes the session's database handles before this external VFS.
       return { session, control, close: releasePool };
     } catch (error) {

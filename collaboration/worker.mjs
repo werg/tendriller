@@ -1,3 +1,4 @@
+import { createBrowserRtcBroker, rtcEndpoint, checkRtcMessage, BROWSER_RTC_PROTOCOL } from './browser-rtc.mjs';
 import { acquireApplicationOwnerLock, createApplicationOwner } from '@chronolog/peer-session/worker';
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastOwner, checkOwnerFrame } from './browser-transport.mjs';
 import { prepareCollaborationCommand } from './protocol.mjs';
@@ -19,6 +20,8 @@ function rootLimits(value = {}) {
 /** One public owner composition for SharedWorker and the Web-Lock-elected fallback. */
 export function serveBrowserOwner(options) {
   const scope = options.scope ?? globalThis, lifetime = new AbortController(), roots = new Map(), identities = new Set();
+  const rtc = createBrowserRtcBroker({signal:lifetime.signal});
+  const addRtcRoute = endpoint => rtc.addRoute(endpoint,{authorize:()=>!closed});
   let profileId, openSession, createIdentity, ownerOptions, limits = defaults;
   let owner, owned, lease, opening, channel, election, broadcast, broadcastStarting, closed = false, retiring = false, retireTimer, closing, scopeRoot, sessionAborted;
   const post = (endpoint, value) => { try { endpoint.postMessage(value); } catch { /* The remote page may have gone away. */ } };
@@ -36,7 +39,7 @@ export function serveBrowserOwner(options) {
     }
     record.endpoint.removeEventListener('message', record.message);
     record.endpoint.removeEventListener('messageerror', record.failed);
-    record.detach?.(); roots.delete(record.endpoint);
+    record.rtc?.dispatchEvent(new Event('close')); record.detach?.(); roots.delete(record.endpoint);
     if (record.shared) record.endpoint.close?.();
   }
   function renew(record) {
@@ -64,7 +67,7 @@ export function serveBrowserOwner(options) {
       lease = await acquireApplicationOwnerLock(profileId, { wait, signal: lifetime.signal });
       try {
         lifetime.signal.throwIfAborted();
-        owned = await openSession({ signal: lifetime.signal }); lifetime.signal.throwIfAborted();
+        owned = await openSession({ signal: lifetime.signal, openDirectConnection: rtc.openDirectConnection }); lifetime.signal.throwIfAborted();
         if (!owned?.session) throw Error('OWNER_SESSION_REQUIRED');
         owner = createApplicationOwner(owned.session, { ...ownerOptions, host: owned.control,
           prepareCommand: (endpoint, name, input) => prepareCollaborationCommand(endpoint, name, input, owned.session.deviceId) });
@@ -88,7 +91,7 @@ export function serveBrowserOwner(options) {
     if (election) return election;
     channel = new BroadcastChannel(ownerChannelName(profileId));
     election = open(true).then(async () => {
-      broadcast = await createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32,
+      broadcast = await createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32, onRtcEndpoint:addRtcRoute,
         onRoutesChanged: count => { if (count > 0) { clearTimeout(retireTimer); retireTimer = undefined; } else if (retiring) retireSoon(); } });
       if (closed) { await broadcast.close(); return; }
       if (retiring && broadcast.routes === 0) { retireSoon(); return; }
@@ -102,7 +105,7 @@ export function serveBrowserOwner(options) {
   function serveBroadcast() {
     if (broadcastStarting || closed) return broadcastStarting;
     channel ??= new BroadcastChannel(ownerChannelName(profileId));
-    broadcastStarting = createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32 }).then(async value => {
+    broadcastStarting = createBroadcastOwner(channel, owner, { profileId, maxRoutes: ownerOptions.maxAttachments ?? 32, onRtcEndpoint:addRtcRoute }).then(async value => {
       if (closed) { await value.close(); return; }
       broadcast = value; value.announce();
     });
@@ -120,7 +123,13 @@ export function serveBrowserOwner(options) {
     const record = { endpoint, shared, ready: false, suspended: false, disposed: false, pending: 0 };
     record.failed = () => dispose(record, 'OWNER_MESSAGE_INVALID');
     record.message = ({ data }) => {
-      if (data?.protocol !== BROWSER_OWNER_PROTOCOL || closed || record.disposed) return;
+      if(closed || record.disposed)return;
+      if(data?.protocol === BROWSER_RTC_PROTOCOL){
+        if(!record.rtc || record.suspended || data.profileId!==record.profileId || data.rootId!==record.rootId)return;
+        try{checkRtcMessage(data.payload);record.rtc?.dispatchEvent(new MessageEvent('message',{data:data.payload}));}catch{record.rtc?.dispatchEvent(new Event('close'));}
+        return;
+      }
+      if (data?.protocol !== BROWSER_OWNER_PROTOCOL) return;
       try {
         checkOwnerFrame(data);
         if (Object.keys(data).some(key => !['protocol', 'type', 'id', 'profileId', 'mode', 'rootId', 'ownerInstanceId'].includes(key))) throw Error('OWNER_HANDSHAKE_INVALID');
@@ -128,7 +137,8 @@ export function serveBrowserOwner(options) {
         if (record.pending >= 8) throw Error('OWNER_BUSY');
         if (data.type === 'boot') {
           if (record.rootId && record.rootId !== data.id) throw Error('OWNER_HANDSHAKE_INVALID');
-          record.rootId = data.id;
+          record.rootId = data.id;record.profileId=data.profileId;
+          if(!record.rtc){record.rtc=rtcEndpoint(payload=>post(record.endpoint,{protocol:BROWSER_RTC_PROTOCOL,profileId:record.profileId,rootId:record.rootId,payload}));rtc.addRoute(record.rtc,{authorize:()=>!closed&&!record.disposed&&!record.suspended&&(profileId===undefined||record.profileId===profileId)});}
         }
         // Explicit cancellation also releases a pending root while load/openSession
         // is awaiting. It cannot cancel a different root or the shared owner.
@@ -191,7 +201,7 @@ export function serveBrowserOwner(options) {
 
   function close() {
     if (closing) return closing;
-    closed = true; clearTimeout(retireTimer); lifetime.abort(Error('OWNER_UNREACHABLE')); scope.removeEventListener('connect', connect);
+    closed = true; rtc.close(); clearTimeout(retireTimer); lifetime.abort(Error('OWNER_UNREACHABLE')); scope.removeEventListener('connect', connect);
     for (const record of [...roots.values()]) dispose(record, 'OWNER_UNREACHABLE');
     if (scopeRoot) dispose(scopeRoot);
     closing = (async () => {

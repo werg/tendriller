@@ -48,6 +48,13 @@ runtime is unavailable, name that prerequisite and offer a concrete handoff to a
 coding-agent/runtime with the same origin and guide. MCP alone does not host a
 new app's executable participant.
 
+Keep the starter's P2P-first participation helpers for both native and browser
+owners. They share one direct-WebRTC/relay-fallback policy and include the native
+RTC capability and browser provider. Do not construct another transport selector,
+ship an always-failing RTC stub or defer P2P setup. Follow the selected service's
+peer-connection guide and verify real application traffic with no hosted relay
+payload when direct connectivity is available; explicitly qualify forced fallback.
+
 Use the starter's reviewed browser pairing flow. The browser retains its own
 key and request; the existing native owner durably pauses ordering and stages
 the exact signed proposal before owner review. The service-origin review binds

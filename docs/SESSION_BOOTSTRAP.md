@@ -74,31 +74,18 @@ inconsistent binding or missing retained store is an explicit failure.
 
 ## Attach control, then participation
 
-Create a host client with the stable application ID. Its construction and control
-attachment do not initiate ordinary application traffic:
+Create the host client and signed control attachment using the stable application
+ID, then keep the starter's platform owner helper. Native owners call
+`participateNativeApplication`; browser owner factories use the injected RTC
+opener with `participateApplication`. Both consume the same exported transport
+policy and automatic fallback; see [the canonical peer connection guide](PEER_CONNECTIONS.md).
 
-```js
-const host = createClient(handle, { applicationId: handle.application.id });
-const control = session.connectControlParticipant({
-  exchange: (message, options) => host.peers.exchange(message, options),
-});
-await session.participate({
-  control,
-  ...createPeerIntroductions({
-    peers: host.peers,
-    identity: session.deviceId,
-    openDirectConnection,
-    openRelayConnection: ({ relay, signal }) =>
-      openWebSocketConnection(relay, { ready: relay.ready, signal }),
-  }),
-});
-```
-
-Use the maintained native RTC opener or the Worker opener for direct transport.
-The starter explicitly has no native RTC capability and lets the same maintained
-adapter fall back to WebSocket. It creates no alternate command queue, replica,
-retry controller or election loop. [Peer connections](PEER_CONNECTIONS.md)
-details transport composition and bounded behavior.
+Direct RTC is the normal path, including the installed native capability and the
+page-side browser provider. No native-RTC installation detour or application-owned
+connection selector is required. Keep signing, state and peer authentication in
+the existing owner, and never substitute an always-failing RTC opener. The session
+owns retries and recovery. Verify actual direct application traffic and automatic
+fallback, rather than treating a connected WebSocket as proof of P2P.
 
 Read `session.status` for actual data/generation state and
 `session.participation.status` for discovery, connections and recovery progress.

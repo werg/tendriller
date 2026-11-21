@@ -1,7 +1,8 @@
+import { registerBrowserRtcProvider } from './browser-rtc.mjs';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, ownerWorkerName, createBroadcastEndpoint, isOwnerAnnouncement } from './browser-transport.mjs';
 import { CollaborationError } from './protocol.mjs';
-import { createSharedRootEndpoint } from './browser-root.mjs';
+import { createSharedRootEndpoint, createRootRtcEndpoint } from './browser-root.mjs';
 
 function waitFor(endpoint,predicate,{signal,timeoutMs=30000}={}){
   signal?.throwIfAborted();return new Promise((resolve,reject)=>{
@@ -111,9 +112,12 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
     doc.removeEventListener('freeze',pagehide);doc.removeEventListener('resume',visibility);
     globalThis.removeEventListener?.('pagehide',pagehide);globalThis.removeEventListener?.('pageshow',visibility);};
 }
-function facade({session,transport,channel,worker,route,options}){
+function facade({session,transport,channel,worker,route,options,provider:initialProvider,bootstrapRtc}){
+  initialProvider?.adopt(session);
   transport.bindRequestSource(session);
-  let detached=false,releasing;
+  let detached=false,releasing,suspended=false,residency=Promise.resolve();
+  const startRtc=()=>registerBrowserRtcProvider(transport.rtc,session);
+  let provider=initialProvider ?? startRtc();
   // An attached session holds a retained signing key and signed work: keep it durable.
   const storagePersisted=options.persistStorage===false?Promise.resolve(null):requestPersistentStorage();
   const stopKeepAlive=keepStorageInUse({intervalMs:options.storageKeepAliveMs??240_000,storagePersisted});
@@ -121,11 +125,17 @@ function facade({session,transport,channel,worker,route,options}){
     if(releasing)return releasing;
     detached=true;stopKeepAlive();session.signal.removeEventListener('abort',ended);globalThis.removeEventListener?.('pagehide',leaving);
     releasing=(async()=>{
-      await transport?.close();channel?.close();
-      if(route==='shared'){worker.port.close();return;}
-      // Explicit detachment cannot terminate an elected owner serving siblings.
-      // The worker retires immediately if queued, or after its last private route.
-      if(worker)await retireCandidate(worker,options.profileId,Math.min(options.timeoutMs??30000,3000));
+      const failures=[];
+      try{await provider.close();}catch(error){failures.push(error);}
+      bootstrapRtc?.dispose();
+      try{await transport?.close();}catch(error){failures.push(error);}finally{channel?.close();}
+      try{
+        if(route==='shared')worker.port.close();
+        // A detached elected candidate stops competing, but cannot terminate
+        // an owner still serving authenticated siblings.
+        else if(worker)await retireCandidate(worker,options.profileId,Math.min(options.timeoutMs??30000,3000));
+      }catch(error){failures.push(error);}
+      if(failures.length)throw new AggregateError(failures,'OWNER_DETACH_FAILED');
     })();return releasing;
   }
   const ended=()=>{void release().catch(()=>{});};
@@ -138,26 +148,42 @@ function facade({session,transport,channel,worker,route,options}){
   globalThis.addEventListener?.('pagehide',leaving);
   session.signal.addEventListener('abort',ended,{once:true});
   if(session.signal.aborted)ended();
+  function changeResidency(nextSuspended){
+    const changing=residency.then(async()=>{
+      if(detached){if(nextSuspended)return;throw new CollaborationError('ENDPOINT_STALE');}
+      if(suspended===nextSuspended)return nextSuspended?undefined:session;
+      if(nextSuspended){
+        suspended=true;
+        await provider.close();await session.suspend();await transport?.suspend();
+      }else{
+        await transport?.resume();await session.resumeAttachment();
+        if(detached)throw new CollaborationError('ENDPOINT_STALE');
+        provider=startRtc();suspended=false;return session;
+      }
+    });
+    residency=changing.catch(()=>{});return changing;
+  }
   return Object.freeze({session,mode:route==='shared'?'shared':'elected',storagePersisted,
-    async suspend(){if(!detached){await session.suspend();await transport?.suspend();}},
-    async resume(){if(detached)throw new CollaborationError('ENDPOINT_STALE');await transport?.resume();await session.resumeAttachment();return session;},
+    suspend(){return changeResidency(true);},
+    resume(){return changeResidency(false);},
     async detach(){if(detached){await releasing;return;}detached=true;try{await session.detach();}finally{await release();}},
   });
 }
 async function sharedRoute(url,options,handshake){
-  const id=crypto.randomUUID();let worker,transport;
+  const id=crypto.randomUUID();let worker,transport,provider,rtc;
   try{
     worker=new SharedWorker(url,{type:'module',name:ownerWorkerName(options.profileId)});worker.port.start();
     worker.addEventListener('error',event=>worker.port.dispatchEvent(new MessageEvent('message',{data:{
       protocol:BROWSER_OWNER_PROTOCOL,type:'failure',code:'OWNER_UNREACHABLE',message:event.message||'Shared owner module failed to load',id}})));
     const ready=waitFor(worker.port,data=>data.type==='ready'&&data.id===id,options);
     worker.port.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'shared',id,profileId:options.profileId});
+    rtc=createRootRtcEndpoint(worker.port,{profileId:options.profileId,rootId:id});provider=registerBrowserRtcProvider(rtc,{signal:options.signal??new AbortController().signal});
     const active=await ready;transport=createSharedRootEndpoint(worker.port,{profileId:options.profileId,rootId:id,
-      ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
+      ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000,rtc});
     const session=await connectApplicationOwner(transport,handshake);
-    return facade({session,transport,worker,route:'shared',options});
+    return facade({session,transport,provider,worker,route:'shared',options});
   }catch(error){
-    await transport?.close();
+    await provider?.close();rtc?.dispose();await transport?.close();
     try{worker?.port?.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'root.detach',profileId:options.profileId,rootId:id,id:crypto.randomUUID()});}catch{}
     worker?.port?.close();throw error;
   }
@@ -170,25 +196,29 @@ async function attachExisting(options,handshake,waitMs){
     channel.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'discover'});
     let active;try{active=await ready;}catch(error){if(error?.code==='OWNER_UNREACHABLE'){channel.close();return null;}throw error;}
     transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
-    const session=await connectApplicationOwner(transport,handshake);
-    return facade({session,transport,channel,route:'existing',options});
+    const provider=registerBrowserRtcProvider(transport.rtc,{signal:options.signal??new AbortController().signal});
+    let session;try{session=await connectApplicationOwner(transport,handshake);}catch(error){await provider.close();throw error;}
+    return facade({session,transport,provider,channel,route:'existing',options});
   }catch(error){await transport?.close();channel.close();throw error;}
 }
 async function elected(url,options,handshake){
   if(typeof BroadcastChannel!=='function'||typeof Worker!=='function')throw new CollaborationError('OWNER_CAPABILITY_UNAVAILABLE','The elected owner route needs Worker and BroadcastChannel');
-  const id=crypto.randomUUID(),channel=new BroadcastChannel(ownerChannelName(options.profileId));let worker,transport,booted=false;
+  const id=crypto.randomUUID(),channel=new BroadcastChannel(ownerChannelName(options.profileId));let worker,transport,booted=false,bootstrapRtc,bootstrapProvider,provider;
   try{
     worker=new Worker(url,{type:'module',name:`tendriller-owner-${id}`});
     const ready=waitFor(channel,data=>isOwnerAnnouncement(data,options.profileId),options);
     // The worker queues an exclusive Web Lock. Suspension never permits takeover.
     worker.addEventListener('message',({data})=>{if(data?.protocol===BROWSER_OWNER_PROTOCOL&&data.type==='failure')channel.dispatchEvent(new MessageEvent('message',{data}));});
     worker.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'elected',id,profileId:options.profileId});booted=true;
+    bootstrapRtc=createRootRtcEndpoint(worker,{profileId:options.profileId,rootId:id});bootstrapProvider=registerBrowserRtcProvider(bootstrapRtc,{signal:options.signal??new AbortController().signal});
     channel.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'discover'});
     const active=await ready;transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,
       onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
+    provider=registerBrowserRtcProvider(transport.rtc,{signal:options.signal??new AbortController().signal});
     const session=await connectApplicationOwner(transport,handshake);
-    return facade({session,transport,channel,worker,route:'elected',options});
-  }catch(error){await transport?.close();channel.close();
+    const providers={adopt(session){provider.adopt(session);bootstrapProvider.adopt(session);},async close(){await Promise.all([provider.close(),bootstrapProvider.close()]);}};
+    return facade({session,transport,provider:providers,bootstrapRtc,channel,worker,route:'elected',options});
+  }catch(error){await provider?.close();await bootstrapProvider?.close();bootstrapRtc?.dispose();await transport?.close();channel.close();
     if(booted)await retireCandidate(worker,options.profileId,Math.min(options.timeoutMs??30000,3000));else worker?.terminate();throw error;}
 }
 /** Enrollment is deliberate. A lock/storage failure never creates a replacement signer. */

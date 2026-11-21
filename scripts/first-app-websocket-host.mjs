@@ -19,16 +19,29 @@
  * packed Worker. Bindings such as ACCOUNTS remain on that named packed Worker.
  */
 export const FIRST_APP_WEBSOCKET_PROXY_WORKER = `
+const traffic = { instance: null, httpRequests: 0, relayUpgrades: 0,
+  relayBinaryFrames: 0, relayBinaryBytes: 0 };
 export default {
   async fetch(request, env) {
+    traffic.instance ??= crypto.randomUUID();
+    if (new URL(request.url).pathname === '/__first_app_transport')
+      return Response.json(traffic, { headers: { 'Cache-Control': 'no-store' } });
+    traffic.httpRequests++;
+    const relay = new URL(request.url).pathname.endsWith('/peers/relay');
     const response = await env.PACKED_HOST.fetch(request);
     if (!response.webSocket) return response;
 
+    if (relay) traffic.relayUpgrades++;
     const upstream = response.webSocket;
     const [client, server] = Object.values(new WebSocketPair());
     upstream.binaryType = server.binaryType = 'arraybuffer';
     for (const [from, to] of [[upstream, server], [server, upstream]]) {
-      from.addEventListener('message', event => to.send(event.data));
+      from.addEventListener('message', event => {
+        if (relay && typeof event.data !== 'string') {
+          traffic.relayBinaryFrames++; traffic.relayBinaryBytes += event.data.byteLength;
+        }
+        to.send(event.data);
+      });
       from.addEventListener('close', event => {
         if (event.code === 1005) to.close();
         else if (event.code === 1006) to.close(1011, 'Test host WebSocket closed abnormally');

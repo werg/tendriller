@@ -25,13 +25,14 @@ const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { values } = parseArgs({ options: {
   'session-archive': { type: 'string' }, 'first-app-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
-  'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' },
+  'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' }, transport: {type:'string', default:'direct'},
 } });
 if (!values['session-archive'] && !values['first-app-archive'])
   throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only] [--report FILE] [--keep]; or --session-archive FILE for an explicit source/SQL composition.');
 if (values['session-archive'] && values['first-app-archive']) throw Error('Use the companion inside the first-app archive; do not override its composition.');
 if (values['native-only'] && values['sql-native-only']) throw Error('Choose --native-only for events or --sql-native-only for SQL.');
 if (values['first-app-archive'] && values['sql-native-only']) throw Error('The first-app release archive has the SQL-free events profile.');
+if (!['direct','relay'].includes(values.transport)) throw Error('Choose --transport direct or relay for qualification.');
 const sqlOnly = Boolean(values['sql-native-only']);
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
 const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
@@ -45,7 +46,7 @@ const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql
   native_checks: 'running', browser_checks: 'not-run',
   limits: ['Synthetic local owner session; no OAuth provider tested.',
     sqlOnly ? 'Native SQL only; no browser SQL, publication, cross-device transport, Internet or mobile qualification.'
-      : 'Local Chromium and encrypted WebSocket relay; no Internet, native RTC or mobile qualification.',
+      : 'Local Chromium and real native/browser RTC, with forced-failure relay qualification; no Internet NAT or physical mobile qualification.',
     'Scripted tutorial execution; not an unassisted fresh-agent usability result.',
     'An ordinary test-host WebSocket forwarding boundary isolates workerd issue #8185; the packed host is unchanged. Direct production TCP closure is not qualified.'], steps: [] };
 let host, peer, browser, page, stage = 'preflight';
@@ -94,6 +95,25 @@ async function run(command, args, options = {}) {
   const result = await execute(command, args, { cwd: app, timeout: 120_000,
     maxBuffer: 16 * 1024 * 1024, ...options });
   return result.stdout;
+}
+async function transportCounters() {
+  const response = await fetch(SERVICE + '/__first_app_transport', {cache:'no-store'});
+  if (!response.ok) throw Error('TRANSPORT_MEASUREMENT_UNAVAILABLE');
+  return response.json();
+}
+async function browserRtcEvidence() {
+  return page.evaluate(async () => {
+    const result = [];
+    for (const peer of window.__firstAppRtcPeers ?? []) {
+      const stats = await peer.getStats();
+      for (const row of stats.values()) if (row.type === 'candidate-pair' && row.state === 'succeeded') {
+        const local = stats.get(row.localCandidateId), remote = stats.get(row.remoteCandidateId);
+        result.push({ local:local?.candidateType, remote:remote?.candidateType,
+          bytesSent:row.bytesSent ?? 0, bytesReceived:row.bytesReceived ?? 0 });
+      }
+    }
+    return result;
+  });
 }
 function checkpoint(name) { stage = name; console.log(`First app: ${name}`); }
 function passed(name) { report.steps.push(name); }
@@ -263,7 +283,7 @@ try {
   } else await run('tar', ['-xzf', sourceArchive, '-C', app]);
   const buildDependencies = sqlOnly ? [] : [await packDependency('esbuild'),
     await packDependency(`@esbuild/${process.platform}-${process.arch}`)];
-  await run('npm', ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund',
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
     '--cache', join(directory, 'npm-cache'), archives.sdk, archives.tools, sessionArchive, ...buildDependencies]);
   const sessionProof = await jsonFile(join(app, 'node_modules/@chronolog/peer-session/provenance.json'));
   assert.equal(sessionProof.dirty, false, 'Use a clean, explicitly selected public Chronolog archive.');
@@ -451,6 +471,46 @@ export async function closeLocalTransport() {
         `--ignore-certificate-errors-spki-list=${certificatePin}`] });
     report.browser = await browser.version();
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    report.connectionErrors = [];
+    await context.exposeBinding('__firstAppConnection',(_source,value)=>{if(report.connectionErrors.length<50&&/^(?:APPLICATION_|PEER_|DEVICE_|OWNER_|ENDPOINT_)[A-Z_]{1,90}$/.test(value))report.connectionErrors.push(value);});
+    report.rtcLifecycle = [];
+    report.rtcBridge = [];
+    await context.exposeBinding('__firstAppRtcBridge', (_source,value) => { if(report.rtcBridge.length<200) report.rtcBridge.push(value); });
+    await context.exposeBinding('__firstAppRtcLifecycle', (_source, value) => {
+      if (report.rtcLifecycle.length < 200 && value && ['created','state'].includes(value.type))
+        report.rtcLifecycle.push({ type:value.type, connection:value.connection, ice:value.ice, gathering:value.gathering });
+    });
+    await context.addInitScript(({mode}) => {
+      const callers = () => String(new Error().stack).split('\n').slice(2,10).map(line=>/^\s*at ([A-Za-z0-9_.$<> ]+) \(/.exec(line)?.[1]).filter(Boolean);
+      addEventListener('DOMContentLoaded',()=>{let last;new MutationObserver(()=>{const value=document.querySelector('#connection-card code')?.textContent;if(value&&value!==last){last=value;const code=/\b(?:APPLICATION_|PEER_|DEVICE_|OWNER_|ENDPOINT_)[A-Z_]{1,90}\b/.exec(value.slice(0,400))?.[0];if(code)void window.__firstAppConnection(code).catch(()=>{});}}).observe(document.documentElement,{subtree:true,childList:true,characterData:true});},{once:true});
+      const abort = AbortController.prototype.abort;
+      AbortController.prototype.abort = function(reason){
+        if(reason?.message==='RTC_PROVIDER_LOST')void window.__firstAppRtcBridge({action:'provider-closed',callers:callers()}).catch(()=>{});
+        return abort.call(this,reason);
+      };
+      const observe = (data,direction) => {
+        const value = data?.protocol === 'tendriller/browser-rtc-provider/v1' ? data.payload : data;
+        if(value?.type!=='chronolog/peer-session/rtc-endpoint/v1'||!['open','ready','send','description','sent','close-signaling','signaling-closed','ended','close'].includes(value.action)) return;
+        const error = typeof value.error==='string'&&/^(?:WEBRTC_|APPLICATION_|RTC_)[A-Z_]{1,100}$/.test(value.error) ? value.error : undefined;
+        void window.__firstAppRtcBridge({direction,action:value.action,...(error?{error}:{})}).catch(()=>{});
+      };
+      const post = MessagePort.prototype.postMessage;
+      MessagePort.prototype.postMessage = function(value,...rest){ observe(value,'page');return post.call(this,value,...rest); };
+      if(globalThis.SharedWorker){const Original=globalThis.SharedWorker;globalThis.SharedWorker=class extends Original{constructor(...args){super(...args);this.port.addEventListener('message',event=>observe(event.data,'worker'));}};}
+      if(globalThis.Worker){const Original=globalThis.Worker;globalThis.Worker=class extends Original{constructor(...args){super(...args);this.addEventListener('message',event=>observe(event.data,'worker'));}postMessage(value,...rest){observe(value,'page');return super.postMessage(value,...rest);}};}
+      const Native = globalThis.RTCPeerConnection;
+      window.__firstAppRtcPeers = [];
+      globalThis.RTCPeerConnection = class extends Native {
+        constructor(...args) {
+          if (mode === 'relay') throw new Error('QUALIFICATION_RTC_UNAVAILABLE');
+          super(...args); window.__firstAppRtcPeers.push(this);
+          const report = type => { void window.__firstAppRtcLifecycle({type,connection:this.connectionState,ice:this.iceConnectionState,gathering:this.iceGatheringState}).catch(()=>{}); };
+          report('created');
+          for (const type of ['connectionstatechange','iceconnectionstatechange','icegatheringstatechange']) this.addEventListener(type,()=>report('state'));
+        }
+      };
+    }, {mode:values.transport});
+    report.expected_transport = values.transport;
     // FIRST_APP_NO_SHARED_WORKER=1 runs the whole flow on the fallback owner, as on browsers without SharedWorker.
     if (process.env.FIRST_APP_NO_SHARED_WORKER === '1') { await context.addInitScript(() => { delete globalThis.SharedWorker; }); report.owner_route = 'elected'; }
     context.on('requestfailed', request => {
@@ -604,13 +664,26 @@ export async function closeLocalTransport() {
     checkpoint('exchange retained commands from the automatically connected browser');
     report.opfs_snapshots = { connected: await opfsInventory(page) };
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
+    const transportBefore = await transportCounters();
     await page.locator('#note').fill('Created in the browser'); await page.locator('#submit').click();
     await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
     await expect(page.locator('#operation-status')).toContainText('Applied: accepted', { timeout: 30_000 });
     await expect(page.locator('#operation-status')).toContainText('peer retention receipt(s) observed', { timeout: 30_000 });
     assert.deepEqual((await peer.request('query')).value.map(note => note.text),
       ['Native setup and durable reopen', 'Created in the browser']);
-    passed('browser command observed by the real native session through relay');
+    const transportAfter = await transportCounters();
+    assert.equal(transportAfter.instance, transportBefore.instance, 'Network counter restart invalidates measurement');
+    const rtc = await browserRtcEvidence();
+    report.transport = { expected:values.transport, before:transportBefore, after:transportAfter, rtc };
+    if (values.transport === 'direct') {
+      assert.equal(transportAfter.relayUpgrades, 0, 'The shipping default must establish RTC without a hosted relay');
+      assert.equal(transportAfter.relayBinaryBytes - transportBefore.relayBinaryBytes, 0, 'Direct application work used host relay bytes');
+      assert.ok(rtc.some(route => route.local !== 'relay' && route.remote !== 'relay' && route.bytesSent > 0 && route.bytesReceived > 0), 'Real RTC application traffic and a non-TURN route are required');
+    } else {
+      assert.ok(transportAfter.relayUpgrades > 0, 'A failed RTC capability must open the maintained fallback');
+      assert.ok(transportAfter.relayBinaryBytes > transportBefore.relayBinaryBytes, 'Fallback must carry the verified application command');
+    }
+    passed('browser command observed by the real native session, with independently measured ' + values.transport + ' transport');
     passed('public UI adapters expose actual operation outcome and separate retained coverage');
 
     report.opfs_snapshots.after_commands = await opfsInventory(page);
@@ -626,12 +699,30 @@ export async function closeLocalTransport() {
     await expect(page.locator('#notes')).toContainText('Created in a second tab', { timeout: 30_000 });
     await second.reload();
     await expect(second.locator('#app-content')).toBeVisible({ timeout: 60_000 });
-    await second.close();
+    if (values.transport === 'direct') {
+      // Lose the page actually hosting RTC, while a sibling keeps the same
+      // application open. A fresh native request must work over a new direct
+      // connection, not merely display an old materialized read.
+      const beforeHandoff = await transportCounters();
+      await page.close(); page = second;
+      await expect(async () => {
+        const value = await page.evaluate(() => window.appRequests.request('rows', {count:1,width:1}, {timeoutMs:5000}));
+        assert.equal(value.rows[0].label, 'row "0"');
+      }).toPass({timeout:60_000,intervals:[100,1000]});
+      const afterHandoff = await transportCounters();
+      assert.equal(afterHandoff.instance, beforeHandoff.instance);
+      assert.equal(afterHandoff.relayBinaryBytes, beforeHandoff.relayBinaryBytes, 'Provider handoff must reconnect P2P when another provider exists');
+      const rtc = await browserRtcEvidence();
+      assert.ok(rtc.some(route=>route.local!=='relay'&&route.remote!=='relay'&&route.bytesSent>0&&route.bytesReceived>0));
+      report.providerHandoff = {nativeRead:true,relayByteDelta:0,rtc};
+      passed('closing the RTC-serving page reconnects through the remaining view without hosted payloads');
+    } else await second.close();
     await expect(page.locator('#notes')).toContainText('Created in a second tab');
     report.opfs_snapshots.after_second_tab = await opfsInventory(page);
     passed('a second tab and its reload attach to the existing owner; no OWNER_BUSY or pairing UI');
 
-    checkpoint('multi-piece replies and a quiet connection over the real relay');
+    checkpoint('multi-piece replies and a quiet connection over the selected transport');
+    const bulkBefore = await transportCounters();
     const soakMs = Number(process.env.FIRST_APP_SOAK_MS ?? 60_000), frozenMs = Number(process.env.FIRST_APP_FROZEN_MS ?? 30_000);
     // Browser application status transitions, kept in sessionStorage so they survive reloads.
     const recordStatus = () => page.evaluate(async () => {
@@ -695,6 +786,11 @@ export async function closeLocalTransport() {
     report.background_resume = { frozenMs, firstReplyAfterMs: Date.now() - resumedAt, browserAbsent: churn(resumeLog.entries), statusChanges: resumeLog.entries.length };
     await expect(page.locator('#app-content')).toBeVisible();
     await page.setViewportSize({ width: 1280, height: 960 });
+    const bulkAfter = await transportCounters();
+    assert.equal(bulkAfter.instance, bulkBefore.instance);
+    report.bulkTransport = { relayByteDelta:bulkAfter.relayBinaryBytes-bulkBefore.relayBinaryBytes, before:bulkBefore, after:bulkAfter };
+    if (values.transport === 'direct') assert.equal(report.bulkTransport.relayByteDelta,0,'Bulk replies, soak and background resume must retain direct delivery');
+    else assert.ok(report.bulkTransport.relayByteDelta>600_000,'Forced fallback must carry the measured bulk traffic');
     passed('a frozen (backgrounded) tab receives live replies again after resuming, without reload or prompts');
 
     checkpoint('a request sent right after connecting is answered, and periodic updates arrive in every subscription mode');
@@ -864,7 +960,7 @@ export async function closeLocalTransport() {
     await closeTestPeer(peer); peer = undefined;
     passed('native supervisor cleanup and natural child exit without forced termination');
     report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = reviewedNotes.length;
-    console.log('First-app native/browser integration passed. Synthetic local claim and relay limits are recorded in the report.');
+    console.log('First-app native/browser integration passed. Synthetic local claim, selected transport and byte-measurement limits are recorded in the report.');
   }
   }
 } catch (error) {

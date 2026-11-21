@@ -3,7 +3,7 @@ import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
 import { createViewStore, operationReference } from '@tendriller/core/collaboration';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createSubmissionState } from './helpers/submission-state.mjs';
-import { createLiveView } from './helpers/live-view.mjs';
+import { createLiveView } from '@tendriller/core/collaboration/live-view';
 import { createSignalRequests } from './helpers/signal-request.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { mountReviewedMedia } from './media/panel.mjs';
@@ -193,7 +193,7 @@ async function connectSession({ signal } = {}) {
     // The draft editor is usable now; the submission state gates every action until reads succeed.
     $('#app-content').hidden = false;
     // The query activates data. Status observation handles later key delivery.
-    await refresh();
+    await liveView.ready({ signal, timeoutMs: 30_000 });
     signal?.throwIfAborted();
     // The runtime binding installs once per page, so only after the app is usable.
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));

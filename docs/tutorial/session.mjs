@@ -3,8 +3,7 @@ import { verifyAuthorityBundle, signTransitionRequest } from '@chronolog/peer-se
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-import { createPeerIntroductions } from '@tendriller/core/peers';
+import { participateNativeApplication } from '@tendriller/core/collaboration/native-rtc';
 import { createDevicePairingClient } from '@tendriller/core/pairing';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
 import { definition } from './domain.mjs';
@@ -67,11 +66,7 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
         processPairings = createReviewedPairingProcessor({ session, pairing });
         const controlHost = { exchange: (message, options) => host.peers.exchange(message, options) };
         control = session.connectControlParticipant(controlHost);
-        await session.participate({ control, ...createPeerIntroductions({
-          peers: host.peers, identity: session.deviceId,
-          openDirectConnection: async () => { throw Error('TUTORIAL_NATIVE_RTC_NOT_CONFIGURED'); },
-          openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-        }) });
+        participateNativeApplication(session, { peers: host.peers, control });
         signal?.throwIfAborted();
         return createApplicationOwner(session, { host: control });
       } catch (error) { if (session) await session.close(); else await device.close(); throw error; }

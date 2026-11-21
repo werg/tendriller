@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { setImmediate as tick } from 'node:timers/promises';
 import test from 'node:test';
-import { createLiveView } from '../../docs/tutorial/helpers/live-view.mjs';
+import { createLiveView } from '../../collaboration/live-view.mjs';
 import { createOperationView } from '../../docs/tutorial/helpers/operation-view.mjs';
 import { createReviewedInput } from '../../docs/tutorial/helpers/reviewed-input.mjs';
 
@@ -204,4 +204,107 @@ test('capture enforces its byte budget and JSON boundaries before analysis or co
   await assert.rejects(controller.capture({ blob: new Blob(['four']), context: {} }), /3-byte/);
   await assert.rejects(controller.capture({ blob: new Blob(['ok']), context: { version: NaN } }), /plain JSON/);
   assert.equal(controller.snapshot.candidate, null); controller.close();
+});
+
+test('initial coherent readiness retains one owner through PEER_RECOVERING and retries only on readiness events', async () => {
+  const f = fixture(), recover = Error('PEER_RECOVERING'), errors = []; let reads = 0, resolved = false;
+  f.status({ phase: 'recovering' });
+  f.session.query = async () => { reads++; if (f.session.status.phase !== 'ready') throw recover; return read('first', 2, ['retained']); };
+  const view = createLiveView(f.session, { query: 'notes', onError: error => errors.push(error) });
+  const ready = view.ready({ timeoutMs: 1000 }).then(value => { resolved = true; return value; });
+  await tick(); await tick();
+  assert.equal(resolved, false); assert.equal(reads, 1); assert.equal(f.closedSessions, 0);
+  assert.equal(view.error, recover); assert.deepEqual(errors, [], 'expected startup recovery must not become a visible error');
+  // Database activation may still be idle when protocol recovery becomes ready.
+  f.status({ phase: 'ready', database: 'idle' });
+  assert.deepEqual(await ready, read('first', 2, ['retained']));
+  assert.equal(reads, 2); assert.equal(f.closedSessions, 0);
+  assert.deepEqual(await view.ready(), view.snapshot); assert.equal(reads, 2); assert.deepEqual(errors, []);
+  f.status({ phase: 'recovering' });
+  await assert.rejects(view.refresh(), error => error === recover);
+  assert.deepEqual(errors, [recover], 'manual refresh errors remain visible after initial readiness');
+  view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+});
+
+for (const reason of ['cancel', 'timeout', 'fatal', 'view-close']) test(`initial readiness ${reason} rejects and removes its waiter without owning the session`, async t => {
+  const f = fixture(), controller = new AbortController(), active = new Set();
+  const add = controller.signal.addEventListener.bind(controller.signal), remove = controller.signal.removeEventListener.bind(controller.signal);
+  t.mock.method(controller.signal, 'addEventListener', (type, listener, options) => { if (type === 'abort') active.add(listener); return add(type, listener, options); });
+  t.mock.method(controller.signal, 'removeEventListener', (type, listener, options) => { if (type === 'abort') active.delete(listener); return remove(type, listener, options); });
+  let reads = 0; const failure = Error(reason === 'fatal' ? 'APPLICATION_QUERY_UNKNOWN' : 'PEER_RECOVERING');
+  f.session.query = async () => { reads++; throw failure; };
+  const view = createLiveView(f.session, { query: 'notes' });
+  const ready = view.ready({ signal: controller.signal, timeoutMs: reason === 'timeout' ? 20 : 1000 });
+  const expected = reason === 'cancel' ? Error('Caller cancelled') : reason === 'fatal' ? failure : null;
+  const rejected = assert.rejects(ready, error => reason === 'timeout' ? error.code === 'INITIAL_READ_TIMEOUT'
+    : reason === 'view-close' ? /closed/i.test(error.message) : error === expected);
+  assert.equal(active.size, 1);
+  if (reason === 'cancel') controller.abort(expected);
+  if (reason === 'view-close') view.close();
+  await rejected; assert.equal(active.size, 0); assert.equal(f.closedSessions, 0);
+  await tick(); assert.ok(reads <= 1, 'the readiness deadline must not poll or retry the read');
+  view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+});
+
+test('initial readiness ignores an invalidated recovery read and waits for the coherent replacement', async () => {
+  const f = fixture(), reads = [];
+  f.session.query = () => { const next = deferred(); reads.push(next); return next.promise; };
+  const view = createLiveView(f.session, { query: 'notes' });
+  let settled = false; const ready = view.ready({ timeoutMs: 1000 }).then(value => { settled = true; return value; });
+  await tick(); f.recover({ generation: 'replacement', unknownLoss: true, abandoned: [] });
+  reads[0].resolve(read('first', 9, ['excluded'])); await tick();
+  assert.equal(settled, false); assert.equal(reads.length, 2);
+  reads[1].resolve(read('replacement', 1, ['retained']));
+  assert.deepEqual(await ready, read('replacement', 1, ['retained'])); view.close(); assert.equal(f.observers, 0);
+});
+
+test('initial recovery notifications cannot renew the fixed readiness deadline', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(); let reads = 0;
+  f.session.query = async () => { reads++; throw Error('PEER_RECOVERING'); };
+  const view = createLiveView(f.session, { query: 'notes' });
+  const ready = view.ready({ timeoutMs: 100 });
+  const rejected = assert.rejects(ready, { code: 'INITIAL_READ_TIMEOUT' });
+  await tick(); t.mock.timers.tick(90);
+  f.status({ phase: 'recovering' }); f.status({ phase: 'ready' }); await tick();
+  assert.equal(reads, 2);
+  t.mock.timers.tick(10); await rejected; view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+});
+
+
+test('manual refresh during initial readiness and fatal initial errors still report visibly', async () => {
+  for (const fatal of [false, true]) {
+    const f = fixture(), errors = [], stop = new AbortController();
+    const failure = Error(fatal ? 'APPLICATION_QUERY_UNKNOWN' : 'PEER_RECOVERING');
+    f.session.query = async () => { throw failure; };
+    const view = createLiveView(f.session, { query: 'notes', onError: error => errors.push(error) });
+    const ready = view.ready({ signal: stop.signal });
+    const readyEnded = assert.rejects(ready, error => fatal ? error === failure : error === stop.signal.reason);
+    const refresh = assert.rejects(view.refresh(), error => error === failure);
+    await refresh; assert.deepEqual(errors, [failure]);
+    stop.abort(); await readyEnded; view.close();
+  }
+});
+
+for (const failure of [null, undefined, 0]) test(`initial and cached readiness reject the exact ${String(failure)} query failure`, async () => {
+  const f = fixture(); f.session.query = async () => { throw failure; };
+  const errors = [], view = createLiveView(f.session, { query: 'notes', onError: value => errors.push(value) });
+  await assert.rejects(view.ready({ timeoutMs: 100 }), value => Object.is(value, failure));
+  assert.equal(view.snapshot, null); assert.deepEqual(errors, [failure]);
+  await assert.rejects(view.ready({ timeoutMs: 20 }), value => Object.is(value, failure));
+  view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+});
+
+for (const reason of [null, undefined, 0]) test(`readiness cancellation preserves abort(${String(reason)}) for caller and owned signals`, async () => {
+  for (const owned of [false, true]) {
+    const f = fixture(), stop = new AbortController();
+    f.session.query = () => new Promise(() => {});
+    const view = createLiveView(f.session, { query: 'notes', ...(owned ? { signal: stop.signal } : {}) });
+    const ready = view.ready({ timeoutMs: 100, ...(!owned ? { signal: stop.signal } : {}) });
+    const rejected = assert.rejects(ready, value => Object.is(value, stop.signal.reason));
+    stop.abort(reason); await rejected;
+    if (owned) await assert.rejects(view.ready(), value => Object.is(value, stop.signal.reason));
+    else await assert.rejects(view.ready({ signal: stop.signal }), value => Object.is(value, stop.signal.reason));
+    view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+  }
 });

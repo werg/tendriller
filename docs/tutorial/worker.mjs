@@ -1,9 +1,9 @@
 import { browserProfileId } from './helpers/browser-profile.mjs';
 import { verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openBrowserDevice, openBrowserApplication } from '@chronolog/peer-session/worker';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-import { createPeersClient, createPeerIntroductions } from '@tendriller/core/peers';
+import { createPeersClient } from '@tendriller/core/peers';
 import { serveBrowserOwner } from '@tendriller/core/collaboration/worker';
+import { participateApplication } from '@tendriller/core/collaboration/participation';
 import { definition } from './domain.mjs';
 
 serveBrowserOwner({ async load({ signal }) {
@@ -17,7 +17,7 @@ return { profileId,
     const device = await openBrowserDevice({ name: profileId, create: true });
     try { return device.identity.publicKey; } finally { await device.close(); }
   },
-  async openSession({ signal }) {
+  async openSession({ signal, openDirectConnection }) {
     if (new URL(configuration.page_url).origin !== self.location.origin)
       throw Error('Enroll and connect from the signed publication at its own host origin.');
     const device = await openBrowserDevice({ name: profileId });
@@ -44,13 +44,7 @@ return { profileId,
       session = await openBrowserApplication({ device, definition, authority,
         signals: { localEcho: true, delivery: 'neighbors', limits: { maxSubscriptions: 256, maxQueuedSignals: 1024, maxQueuedBytes: 8 * 1024 * 1024 } } });
       const control = session.connectControlParticipant({ exchange: (message, options) => peers.exchange(message, options) });
-      await session.participate({ control, ...createPeerIntroductions({
-        peers, identity: session.deviceId,
-        // The shared owner uses the Worker-native encrypted relay. Closing a
-        // particular page does not remove its RTC helper or create another journal.
-        openDirectConnection: async () => { throw Error('SHARED_OWNER_USES_NATIVE_RELAY'); },
-        openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-      }) });
+      await participateApplication(session, { peers, control, openDirectConnection });
       return { session, control };
     } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
   },

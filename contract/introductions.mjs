@@ -1,3 +1,4 @@
+import { PEER_TRANSPORT_POLICY } from './transport-policy.mjs';
 import { validatePeerRoute, validatePeerAdvertisement } from './discovery.mjs';
 import { validatePeerDiscoveryNotification } from './discovery-watch.mjs';
 import { validatePeerInvitation } from './invitations.mjs';
@@ -18,11 +19,15 @@ function until(value, signal) {
 }
 
 /** Host routing only. The owned Chronolog session supplies policy and authenticates every opened peer. */
-export function createPeerIntroductions({ peers, identity, openDirectConnection, openRelayConnection, directTimeoutMs = 5000 }) {
-  if (!identityKey(identity) || typeof openDirectConnection !== 'function' || typeof openRelayConnection !== 'function' ||
+export function createPeerIntroductions({ peers, identity, openDirectConnection, openRelayConnection, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, onTransport }) {
+  if (onTransport !== undefined && typeof onTransport !== 'function' || !identityKey(identity) || typeof openDirectConnection !== 'function' || typeof openRelayConnection !== 'function' ||
       !Number.isSafeInteger(directTimeoutMs) || directTimeoutMs < 1 || directTimeoutMs > 30_000 ||
       !['watchDiscovery', 'discover', 'advertise', 'withdraw', 'listenInvitations', 'invite', 'rendezvous', 'relay'].every(key => typeof peers?.[key] === 'function'))
     invalid('Provide the session device identity, host peers client and direct/relay connection openers');
+  const selected = (peerId, kind, reason) => {
+    try { void Promise.resolve(onTransport?.(Object.freeze({ peerId, kind, ...(reason ? { reason } : {}) }))).catch(() => {}); }
+    catch { /* Diagnostics cannot change connection selection or ownership. */ }
+  };
   let activeListener, nextListener = Promise.withResolvers(), activeWatcher, nextWatcher = Promise.withResolvers();
   let advertisementEpoch = 0, advertisementRequest = 0, confirmedAdvertisement;
   const invalidateAdvertisement = () => { advertisementEpoch++; confirmedAdvertisement = undefined; };
@@ -123,10 +128,10 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
         }
         const direct = new AbortController(), directSignal = AbortSignal.any([signal, direct.signal]);
         const signaling = peers.rendezvous(channel, identity, { signal: directSignal });
-        let timer;
+        let timer, timedOut = false;
         try {
           if (invite) await peers.invite(peer.identity, { channel, requesterPeerId: identity }, { signal });
-          timer = setTimeout(() => direct.abort(new Error('PEER_DIRECT_CONNECTION_TIMEOUT')), directTimeoutMs);
+          timer = setTimeout(() => { timedOut = true; direct.abort(new Error('PEER_DIRECT_CONNECTION_TIMEOUT')); }, directTimeoutMs);
           const opening = until(signaling.ready, directSignal).then(async ({ role }) => {
             directSignal.throwIfAborted();
             return openDirectConnection({ role, signaling, signal: directSignal });
@@ -136,7 +141,7 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
           void owned.catch(() => {});
           try {
             const connection = await until(owned, directSignal);
-            directSignal.throwIfAborted(); return connection;
+            directSignal.throwIfAborted(); selected(peer.identity, 'direct'); return connection;
           } catch (error) {
             direct.abort(error);
             // Keep an uncooperative platform opener charged to the session's
@@ -150,7 +155,7 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
         void opening.then(value => { if (signal.aborted) return value.close(); }, () => {}).catch(() => {});
         try {
           const connection = await until(opening, signal);
-          signal.throwIfAborted(); return connection;
+          signal.throwIfAborted(); selected(peer.identity, 'relay', timedOut ? 'direct_timeout' : 'direct_failed'); return connection;
         } catch (error) { relay.close(); throw error; }
       },
     }),

@@ -2,9 +2,25 @@ import { readFile, lstat, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, resolve, relative, sep } from 'node:path';
 
-export const CHRONOLOG_SOURCE = '3ca38259bcd246b7d990506cd63b4a0aa998baeb';
 export const fail = code => { throw Object.assign(Error(code), { code }); };
 export const json = async path => JSON.parse(await readFile(path, 'utf8'));
+/** Resolve the public package beside this caller, in source or a portable release. */
+export async function installedSessionProvenance(resolveSession = specifier => import.meta.resolve(specifier)) {
+  try {
+    const entry = new URL(resolveSession('@chronolog/peer-session'));
+    if (entry.protocol !== 'file:') fail('DEPLOYMENT_SESSION_PROVENANCE_INVALID');
+    const [metadata, proof] = await Promise.all([
+      json(new URL('./package.json', entry)), json(new URL('./provenance.json', entry)),
+    ]);
+    if (metadata.name !== '@chronolog/peer-session' || proof.format !== 'chronolog-peer-session-package/v1' ||
+        proof.repository !== 'werg/chronolog-db' || !/^[a-f0-9]{40}$/u.test(proof.source ?? '') ||
+        !/^[a-f0-9]{40}$/u.test(proof.sourceTree ?? '') || proof.dirty !== false)
+      fail('DEPLOYMENT_SESSION_PROVENANCE_INVALID');
+    return proof;
+  } catch { fail('DEPLOYMENT_SESSION_PROVENANCE_INVALID'); }
+}
+export const CHRONOLOG_SOURCE = (await installedSessionProvenance()).source;
+
 export function absolutePath(value, code = 'DEPLOYMENT_PATH_INVALID') {
   if (typeof value !== 'string' || !isAbsolute(value) || !/^\/[A-Za-z0-9_./-]+$/u.test(value) ||
       value.split('/').includes('..') || resolve(value) !== value || value === '/') fail(code);

@@ -243,7 +243,7 @@ test('observer resumes stale cursor with recovery evidence, not silent replay', 
   await f.bridge.close();
 });
 
-test('native opener resumes the existing device and composes maintained participation ports', async () => {
+test('native opener resumes the existing device with canonical native participation and no manual RTC installation', async () => {
   const f = fixture(), calls = [], descriptor = { payload: { applicationId: id } };
   const host = { peers: { application: () => f.control.application(), exchange: async message => message } };
   const device = { close: async () => calls.push('device-closed') };
@@ -254,18 +254,16 @@ test('native opener resumes the existing device and composes maintained particip
       peer: { verifyAuthorityBundle: async (authority, pin) => { assert.deepEqual(pin, descriptor); assert.equal(authority.descriptor.payload.applicationId, id); } },
       native: { openNativeDevice: async input => { calls.push(input); return device; },
         openNativeApplication: async input => { assert.equal(input.device, device); return f.session; } },
-      peers: { createPeerIntroductions: input => { calls.push(input); return { discovery: {}, transport: {} }; } },
-      websocket: { openWebSocketConnection: async (relay, options) => ({ relay, options }) },
+      participation: { participateNativeApplication: async (session, options) => {
+        assert.equal(session, f.session); calls.push({ nativeParticipation: options });
+        await session.participate({ control: options.control, discovery: {}, transport: {} });
+      } },
     }),
   });
   const owned = await opener();
   assert.equal(owned.session, f.session);
   assert.deepEqual(calls[0], { path: '/private/existing.sqlite' });
-  const introductions = calls.find(value => value.identity === deviceId);
-  await assert.rejects(introductions.openDirectConnection(), { code: 'BRIDGE_NATIVE_RTC_NOT_CONFIGURED' });
-  const relay = { ready: Promise.resolve() };
-  const connection = await introductions.openRelayConnection({ relay });
-  assert.equal(connection.relay, relay);
+  assert.deepEqual(calls.find(value => value.nativeParticipation)?.nativeParticipation, { peers: host.peers, control: f.control });
   assert.equal(calls.some(value => value.control === f.control && value.discovery && value.transport), true);
   await owned.session.close();
 });
@@ -391,3 +389,20 @@ test('real native cursor pages filtered history beyond 128 transactions and reac
       assert.equal((await bridge.getEvent(id, second.events[1].sourceEventId)).event.operationId, 'record-129');
     } finally { await bridge?.close(); await native.close(); }
   });
+
+
+test('native canonical participation failure closes the resumed owner without creating another identity', async () => {
+  const f = fixture(), failure = Error('NATIVE_PARTICIPATION_FAILED'); let devices = 0, deviceCloses = 0;
+  const host = { peers: { application: () => f.control.application(), exchange: async message => message } };
+  const device = { close: async () => { deviceCloses++; } };
+  f.session.connectControlParticipant = () => f.control;
+  const opener = createNativeSessionOpener({ host, definition: {}, devicePath: '/private/existing.sqlite', pinnedDescriptor: {},
+    loadModules: async () => ({ peer: { verifyAuthorityBundle() {} },
+      native: { async openNativeDevice(options) { assert.deepEqual(options, { path: '/private/existing.sqlite' }); devices++; return device; },
+        async openNativeApplication(options) { assert.equal(options.device, device); return f.session; } },
+      participation: { async participateNativeApplication(session, options) { assert.equal(session, f.session); assert.equal(options.control, f.control); throw failure; } },
+    }),
+  });
+  await assert.rejects(opener(), error => error === failure);
+  assert.equal(devices, 1); assert.equal(f.counts().closed, 1); assert.equal(deviceCloses, 0, 'the resumed session owns device shutdown');
+});

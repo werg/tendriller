@@ -100,15 +100,15 @@ function proofIdentity(proof, expected, format) {
 async function packageIdentity(directory, name) {
   const value = await json(join(directory, 'package.json'));
   const peers = Object.entries(value.peerDependencies ?? {}), metadata = value.peerDependenciesMeta ?? {};
-  // The optional SDK collaboration entry consumes the exact session archive
-  // installed and verified below. This is the only permitted runtime peer;
-  // nothing here asks npm to resolve another version or dependency graph.
   const optionalSessionPeer = name === '@tendriller/core' && peers.length === 1 && peers[0][0] === '@chronolog/peer-session' && peers[0][1] === '*' &&
     Object.keys(metadata).length === 1 && metadata['@chronolog/peer-session']?.optional === true &&
     Object.keys(metadata['@chronolog/peer-session']).length === 1;
-  if (value.name !== name || Object.keys(value.dependencies ?? {}).length || Object.keys(value.optionalDependencies ?? {}).length ||
+  const dependencies = name === '@chronolog/peer-session'
+    ? JSON.stringify(value.dependencies) === JSON.stringify({ werift: '0.27.0' })
+    : Object.keys(value.dependencies ?? {}).length === 0;
+  if (value.name !== name || !dependencies || Object.keys(value.optionalDependencies ?? {}).length ||
       (peers.length || Object.keys(metadata).length) && !optionalSessionPeer)
-    fail('RELEASE_PUBLIC_PACKAGE_INVALID', 'The release requires the self-contained public SDK and events-only native session packages.');
+    fail('RELEASE_PUBLIC_PACKAGE_INVALID', 'Use the exact public SDK and standard SQL-free native-RTC session archive.');
   return value;
 }
 
@@ -149,22 +149,47 @@ export async function assembleRelease({ core, chronolog, destination, env, logDi
   archives.chronolog = { file: 'archives/' + chronoFile, sha256: await hashFile(chronoArchive) };
   const integration = join(destination, 'integrations/chatgpt');
   const sdk = join(integration, 'node_modules/@tendriller/core'), session = join(integration, 'node_modules/@chronolog/peer-session');
-  // The locked runtime dependency is installed before these public packages;
-  // npm must never substitute a registry SDK or prune these exact archive bytes.
-  await run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'],
-    { cwd: integration, env, logFile: join(logDirectory, 'runtime-dependencies.log') });
   await unpackPublicArchive(join(destination, archives.sdk.file), sdk, { run, env });
   await unpackPublicArchive(join(destination, archives.chronolog.file), session, { run, env });
   await packageIdentity(sdk, '@tendriller/core'); await packageIdentity(session, '@chronolog/peer-session');
+  const sdkFiles = Object.fromEntries(await Promise.all((await regularFiles(sdk)).map(async name => [name, await hashFile(join(sdk, name))])));
+  const verifySdk = async directory => {
+    if (JSON.stringify(await regularFiles(directory)) !== JSON.stringify(Object.keys(sdkFiles))) fail('RELEASE_SDK_PACKAGE_CHANGED');
+    for (const [name, hash] of Object.entries(sdkFiles)) if (await hashFile(join(directory, name)) !== hash) fail('RELEASE_SDK_PACKAGE_CHANGED');
+  };
   const chronoProof = await json(join(session, 'provenance.json'));
   proofIdentity(chronoProof, chronolog, 'chronolog-peer-session-package/v1');
-  if (chronoProof.optionalNativeRtc !== false || !Array.isArray(chronoProof.sqlEngines) || chronoProof.sqlEngines.length ||
+  if (chronoProof.nativeRtc !== true || !Array.isArray(chronoProof.sqlEngines) || chronoProof.sqlEngines.length ||
       !chronoProof.sha256 || typeof chronoProof.sha256 !== 'object') fail('RELEASE_NATIVE_PROFILE_INVALID');
   const expectedFiles = Object.keys(chronoProof.sha256).sort();
-  if (JSON.stringify((await regularFiles(session)).filter(name => name !== 'provenance.json').sort()) !== JSON.stringify(expectedFiles))
-    fail('RELEASE_NATIVE_PACKAGE_CHANGED');
-  for (const name of expectedFiles) if (!HASH.test(chronoProof.sha256[name]) || await hashFile(join(session, safeName(name))) !== chronoProof.sha256[name])
-    fail('RELEASE_NATIVE_PACKAGE_CHANGED');
+  const verifySession = async directory => {
+    await packageIdentity(directory, '@chronolog/peer-session');
+    const installedProof = await json(join(directory, 'provenance.json'));
+    if (JSON.stringify(installedProof) !== JSON.stringify(chronoProof) ||
+        JSON.stringify((await regularFiles(directory)).filter(name => name !== 'provenance.json').sort()) !== JSON.stringify(expectedFiles))
+      fail('RELEASE_NATIVE_PACKAGE_CHANGED');
+    for (const name of expectedFiles) if (!HASH.test(chronoProof.sha256[name]) || await hashFile(join(directory, safeName(name))) !== chronoProof.sha256[name])
+      fail('RELEASE_NATIVE_PACKAGE_CHANGED');
+  };
+  await verifySession(session);
+  // Retain the original locked integration dependency, then install both exact
+  // local archives together. Registry resolution is only for declared dependencies.
+  // Runtime libraries need no CLI shims; disable npm bin symlinks so every
+  // portable release input remains a regular, hash-sealed file.
+  await run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--bin-links=false'],
+    { cwd: integration, env, logFile: join(logDirectory, 'runtime-dependencies.log') });
+  const installPublic = async (directory, prefix, log) => {
+    const path = join(directory, 'package.json'), metadata = await json(path);
+    metadata.dependencies = { ...metadata.dependencies,
+      '@tendriller/core': `file:${prefix}${archives.sdk.file}`,
+      '@chronolog/peer-session': `file:${prefix}${archives.chronolog.file}` };
+    await writeFile(path, JSON.stringify(metadata, null, 2) + '\n');
+    await run('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--bin-links=false'],
+      { cwd: directory, env, logFile: join(logDirectory, log) });
+    await verifySdk(join(directory, 'node_modules/@tendriller/core'));
+    await verifySession(join(directory, 'node_modules/@chronolog/peer-session'));
+  };
+  await installPublic(integration, '../../', 'public-runtime-dependencies.log');
   await copyRegular(join(session, 'provenance.json'), join(destination, 'archives/chronolog-provenance.json'));
 
   const template = join(destination, 'bridge-template');
@@ -172,8 +197,7 @@ export async function assembleRelease({ core, chronolog, destination, env, logDi
   for (const name of TEMPLATE_FILES) await copyRegular(join(integration, 'examples/kitchen', name), join(template, name));
   await writeFile(join(template, 'package.json'), JSON.stringify({ name: 'tendriller-assistant-bridge-runtime', private: true,
     type: 'module', engines: { node: '>=24' } }, null, 2) + '\n');
-  for (const [from, name] of [[sdk, '@tendriller/core'], [session, '@chronolog/peer-session']])
-    for (const path of await regularFiles(from)) await copyRegular(join(from, path), join(template, 'node_modules', name, path));
+  await installPublic(template, '../', 'bridge-runtime-dependencies.log');
   for (const name of REQUIRED) if (!(await lstat(join(destination, name))).isFile()) fail('RELEASE_INCOMPLETE');
   return { archives, nativePackage: session };
 }
@@ -202,7 +226,12 @@ for (const [file, name] of [['integrations/chatgpt/integration.mjs','createInteg
  ['integrations/chatgpt/account.mjs','createTendrillerAccountAdapter'], ['bridge-template/bridge-session.mjs','openSession']])
  assert.equal(typeof (await import(pathToFileURL(root + '/' + file).href))[name], 'function');
 const native = await import(pathToFileURL(root + '/integrations/chatgpt/node_modules/@chronolog/peer-session/native.mjs').href);
-assert.equal(typeof native.openNativeDevice, 'function');`;
+assert.equal(typeof native.openNativeDevice, 'function');
+for (const prefix of ['integrations/chatgpt', 'bridge-template']) {
+ const rtc = await import(pathToFileURL(root + '/' + prefix + '/node_modules/@chronolog/peer-session/webrtc-native.mjs').href);
+ const peer = rtc.createNativePeerConnection({iceServers:[]});
+ await peer.close();
+}`;
 
 export async function buildRelease({ coreSource, coreRef, chronologSource, output } = {}, { run = execute, onProgress = () => {} } = {}) {
   if (Number(process.versions.node.split('.')[0]) < 24) fail('RELEASE_NODE24_REQUIRED');

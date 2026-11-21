@@ -1,17 +1,18 @@
 # Reuse the application helpers
 
-Import these modules from the [first-app source archive](/downloads/tendriller-first-app.tgz)
-beside your authored `page.mjs`:
+Import the shared observer from the SDK. Adapt the other UI components from the
+[first-app source archive](/downloads/tendriller-first-app.tgz) beside your authored `page.mjs`:
 
 ```js
 import { createOwnerConnection, describeConnectionError } from './connection.mjs';
 import { mountConnectionView } from './connect-view.mjs';
-import { createLiveView } from './helpers/live-view.mjs';
+import { createLiveView } from '@tendriller/core/collaboration/live-view';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { createReviewedInput } from './helpers/reviewed-input.mjs';
 ```
 
-They are executable application source, not additional package exports. The
+`createLiveView` is a public SDK composition helper. The other modules are
+executable application source supplied in the first-app archive. The
 starter's `page.mjs` already uses the first two. Its `media/panel.mjs` composes
 reviewed input with camera/file capture, an explicit inference request and a
 declared evidence command. The [capability map](CAPABILITIES.md) points to the
@@ -71,8 +72,10 @@ User-facing copy for the codes an app can meet (developer causes are in
 | network and timeouts | "The connection is slow. Retrying…" |
 
 Large live answers: a reply of several signals (each at most 16 KiB) can be sent
-piece by piece, awaiting each `send`; the relay paces the pieces. Reassemble by
-reply ID and piece index on the page.
+with the maintained `helpers/signal-request.mjs`, which reserves signed-frame overhead,
+bounds replies and retries backpressure. The shared P2P-first transport carries
+them directly where possible; the hosted relay is fallback only. Reassembly binds
+the request recipient and computation generation, not just a bare request ID.
 
 ### Views that fit the data
 
@@ -92,7 +95,7 @@ corresponding existing rendering block instead of installing duplicate observers
 ```js
 import { createOwnerConnection, describeConnectionError } from './connection.mjs';
 import { mountConnectionView } from './connect-view.mjs';
-import { createLiveView } from './helpers/live-view.mjs';
+import { createLiveView } from '@tendriller/core/collaboration/live-view';
 
 export function mountNotes(session, root = document) {
   const list = root.querySelector('#notes');
@@ -144,10 +147,15 @@ numbers to guess which generation wins. Every delivered snapshot is one
 | --- | --- |
 | `createLiveView(session, { query, input, onSnapshot?, onStatus?, onRecovery?, onError?, signal? })` | Captures the query input once and observes the existing session |
 | `view.subscribe(listener)` | Receives coherent snapshots; immediately receives the last snapshot when available; returns an unsubscribe function |
+| `await view.ready({ signal?, timeoutMs? })` | Waits for the first coherent read within a fixed 30-second default deadline; `PEER_RECOVERING` waits for readiness/change events on the same session, while fatal errors reject |
 | `await view.refresh()` | Requests a fresh coherent snapshot; overlapping requests can resolve from the same latest read |
 | `view.snapshot` | Last successful snapshot, or `null` before one arrives |
 | `view.status`, `view.error` | Separate session status and last read/observation error |
 | `view.close()` | Stops this observer and rejects its outstanding refresh waiters; does not close the session |
+
+While `ready()` is waiting, expected initial `PEER_RECOVERING` is retained in
+`view.error` without calling `onError`. Fatal errors and explicit refresh failures
+still call `onError`.
 
 Treat snapshot values as read-only. Keep the revision with its value when
 preparing a command. To change a query filter, close the old view and construct

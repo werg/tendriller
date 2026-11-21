@@ -1,9 +1,10 @@
+import { rtcEndpoint, checkRtcMessage, BROWSER_RTC_PROTOCOL } from './browser-rtc.mjs';
 import { createOwnerLiveness } from './browser-liveness.mjs';
 export const BROWSER_OWNER_PROTOCOL = 'tendriller/browser-owner/v3';
 export const ownerChannelName = profileId => `tendriller:owner:v3:${profileId}`;
 export const ownerWorkerName = profileId => `tendriller:${profileId}:v3`;
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
-const MAX_BYTES = 1048576, MAX_WIRE_BYTES = 2 * MAX_BYTES, MAX_QUEUED_BYTES = 4 * MAX_BYTES;
+const MAX_BYTES = 1048576, MAX_WIRE_BYTES = 2 * MAX_BYTES, MAX_RTC_WIRE_BYTES = 4 * MAX_BYTES, MAX_QUEUED_BYTES = 4 * MAX_BYTES, MAX_RTC_QUEUED_BYTES = 8 * MAX_BYTES;
 // Frames in flight per route direction. A burst of small signal pieces (a reply
 // of many 16 KiB signals) must queue, not retire the route; bytes stay bounded.
 const MAX_QUEUED_FRAMES = 1024;
@@ -41,7 +42,7 @@ function base64(bytes) {
 }
 function binary(value) { return Uint8Array.from(atob(value), character => character.charCodeAt(0)); }
 function encode(value) {
-  checkOwnerFrame(value);
+  if (value?.kind === 'rtc') checkRtcMessage(value); else checkOwnerFrame(value);
   const pack = item => {
     if (item === undefined) return ['undefined'];
     if (item === null) return ['null'];
@@ -49,10 +50,11 @@ function encode(value) {
     if (typeof item === 'number') return ['number', Object.is(item, -0) ? '-0' : Number.isFinite(item) ? item : String(item)];
     if (typeof item === 'bigint') return ['bigint', String(item)];
     if (item instanceof Uint8Array) return ['bytes', base64(item)];
+    if (item instanceof ArrayBuffer) return ['buffer', base64(new Uint8Array(item))];
     return Array.isArray(item) ? ['array', item.map(pack)] : ['object', Object.entries(item).map(([key, child]) => [key, pack(child)])];
   };
   const bytes = encoder.encode(JSON.stringify(pack(value)));
-  if (bytes.length > MAX_WIRE_BYTES - 32) throw Error('OWNER_MESSAGE_LIMIT');
+  if (bytes.length > (value?.kind === 'rtc' ? MAX_RTC_WIRE_BYTES : MAX_WIRE_BYTES) - 32) throw Error('OWNER_MESSAGE_LIMIT');
   return bytes;
 }
 function decode(bytes) {
@@ -67,6 +69,7 @@ function decode(bytes) {
     if (type === 'number' && (typeof value === 'number' || ['-0', 'NaN', 'Infinity', '-Infinity'].includes(value))) return Number(value);
     if (type === 'bigint' && typeof value === 'string' && /^-?(0|[1-9][0-9]*)$/u.test(value)) return BigInt(value);
     if (type === 'bytes' && typeof value === 'string') return binary(value);
+    if (type === 'buffer' && typeof value === 'string') return binary(value).buffer;
     if (type === 'array' && Array.isArray(value)) return value.map(child => unpack(child, depth + 1));
     if (type === 'object' && Array.isArray(value)) {
       const keys = new Set();
@@ -77,7 +80,7 @@ function decode(bytes) {
     }
     throw Error('OWNER_MESSAGE_INVALID');
   };
-  const value = unpack(JSON.parse(decoder.decode(bytes))); checkOwnerFrame(value); return value;
+  const value = unpack(JSON.parse(decoder.decode(bytes))); if (value?.kind === 'rtc') checkRtcMessage(value); else checkOwnerFrame(value); return value;
 }
 async function keys() {
   const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveBits']);
@@ -103,22 +106,22 @@ function sequenceIv(direction, sequence) {
 }
 function validPacket(value, direction) {
   return value?.type === 'sealed' && value.direction === direction && Number.isSafeInteger(value.sequence) && value.sequence > 0 &&
-    value.ciphertext instanceof Uint8Array && value.ciphertext.length >= 16 && value.ciphertext.length <= MAX_WIRE_BYTES;
+    value.ciphertext instanceof Uint8Array && value.ciphertext.length >= 16 && value.ciphertext.length <= MAX_RTC_WIRE_BYTES;
 }
 function queues(record, channel, ownerInstanceId, route, outgoing) {
   record.sendSequence = 0; record.receiveSequence = 0; record.outgoing = Promise.resolve(); record.incoming = Promise.resolve();
-  record.queuedSend = 0; record.queuedReceive = 0; record.sending = 0; record.receiving = 0;
+  record.queuedSend = 0; record.queuedRtcSend = 0; record.queuedReceive = 0; record.sending = 0; record.receiving = 0;
   record.send = value => {
-    const bytes = encode(value);
-    if (record.closed || record.sending >= MAX_QUEUED_FRAMES || record.queuedSend + bytes.length > MAX_QUEUED_BYTES) return Promise.reject(Error('OWNER_MESSAGE_LIMIT'));
-    record.queuedSend += bytes.length; record.sending++;
+    const bytes = encode(value), count = value?.kind === 'rtc' ? 'queuedRtcSend' : 'queuedSend', limit = count === 'queuedRtcSend' ? MAX_RTC_QUEUED_BYTES : MAX_QUEUED_BYTES;
+    if (record.closed || record.sending >= MAX_QUEUED_FRAMES || record[count] + bytes.length > limit) return Promise.reject(Error('OWNER_MESSAGE_LIMIT'));
+    record[count] += bytes.length; record.sending++;
     const result = record.outgoing.then(async () => {
       if (record.closed) throw Error('ENDPOINT_STALE');
       const sequence = ++record.sendSequence; if (!Number.isSafeInteger(sequence)) throw Error('ENDPOINT_STALE');
       const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: sequenceIv(outgoing, sequence),
         additionalData: aad(record, outgoing, sequence) }, record.key, bytes));
       if (!record.closed) channel.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'sealed', ownerInstanceId, route, direction: outgoing, sequence, ciphertext });
-    }).finally(() => { record.queuedSend -= bytes.length; record.sending--; });
+    }).finally(() => { record[count] -= bytes.length; record.sending--; });
     record.outgoing = result.catch(() => undefined); return result;
   };
   record.receive = (packet, deliver) => {
@@ -126,7 +129,7 @@ function queues(record, channel, ownerInstanceId, route, outgoing) {
     if (!validPacket(packet, direction) || record.closed) return;
     // This is still unauthenticated public-channel traffic. Bound its queue,
     // but never let copied route IDs and oversized forged bursts retire a peer.
-    if (record.receiving >= MAX_QUEUED_FRAMES || record.queuedReceive + packet.ciphertext.length > MAX_QUEUED_BYTES) return;
+    if (record.receiving >= MAX_QUEUED_FRAMES || record.queuedReceive + packet.ciphertext.length > MAX_QUEUED_BYTES + MAX_RTC_QUEUED_BYTES) return;
     record.queuedReceive += packet.ciphertext.length; record.receiving++;
     const next = record.incoming.then(async () => {
       if (record.closed || packet.sequence !== record.receiveSequence + 1) return;
@@ -142,7 +145,7 @@ function queues(record, channel, ownerInstanceId, route, outgoing) {
 }
 
 /** The elected owner binds private ports behind authenticated, replay-fenced routes. */
-export async function createBroadcastOwner(channel, owner, { profileId, timeoutMs = 30000, idleTimeoutMs = 60000, maxRoutes = 32, onRoutesChanged } = {}) {
+export async function createBroadcastOwner(channel, owner, { profileId, timeoutMs = 30000, idleTimeoutMs = 60000, maxRoutes = 32, onRoutesChanged, onRtcEndpoint } = {}) {
   if (!validId(profileId) || !validId(owner.ownerInstanceId) || !Number.isSafeInteger(maxRoutes) || maxRoutes < 1 || maxRoutes > 128 ||
       !Number.isFinite(timeoutMs) || timeoutMs < 100 || timeoutMs > 120000 ||
       !Number.isFinite(idleTimeoutMs) || idleTimeoutMs < 100 || idleTimeoutMs > 120000) throw Error('OWNER_CONFIGURATION_INVALID');
@@ -152,7 +155,7 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
   const routesChanged = () => { try { onRoutesChanged?.(routes.size); } catch { /* Observers do not control private routes. */ } };
   function retire(route) {
     const record = routes.get(route); if (!record) return;
-    record.closed = true; clearTimeout(record.timer); clearTimeout(record.idleTimer); record.detach?.(); record.port?.close(); routes.delete(route); routesChanged();
+    record.closed = true; clearTimeout(record.timer); clearTimeout(record.idleTimer); record.rtc?.dispatchEvent(new Event('close')); record.detach?.(); record.port?.close(); routes.delete(route); routesChanged();
   }
   function observeLiveness(record, route) {
     clearTimeout(record.idleTimer);
@@ -191,6 +194,9 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
       record.releaseToken = value.releaseToken.slice();
       checkOwnerFrame(value.handshake);
       const ports = new MessageChannel(), endpoint = new EventTarget(); endpoint.postMessage = () => {};
+      record.rtc = rtcEndpoint(message => { const sent = record.send({kind:'rtc',message}); void sent.catch(() => record.rtc.dispatchEvent(new Event('close'))); return sent; });
+      onRtcEndpoint?.(record.rtc);
+      if(value.rtcRegistration?.protocol===BROWSER_RTC_PROTOCOL&&value.rtcRegistration.type==='register')record.rtc.dispatchEvent(new MessageEvent('message',{data:value.rtcRegistration}));
       record.detach = owner.attach(endpoint); record.port = ports.port2; clearTimeout(record.timer); observeLiveness(record, route);
       record.port.addEventListener('message', ({ data: frame }) => {
         let sending;
@@ -203,6 +209,7 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
       if (value.frame?.method === 'endpoint.resume') record.suspended = false;
       record.port.postMessage(value.frame);
     }
+    else if (value?.kind === 'rtc') record.rtc.dispatchEvent(new MessageEvent('message',{data:value.message}));
     else if (value?.kind === 'ping') await record.send({ kind: 'pong' });
     else if (value?.kind === 'detach') retire(route);
     else retire(route);
@@ -237,14 +244,19 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   if (!isOwnerAnnouncement(announcement, profileId) || !Number.isFinite(livenessTimeoutMs) || livenessTimeoutMs < 100 || livenessTimeoutMs > 120000) throw Error('OWNER_HANDSHAKE_INVALID');
   const { ownerInstanceId } = announcement, ownerKey = announcement.publicKey.slice();
   const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs });
-  let record, closed = false, paused = false, heartbeat, handshakeTimer, resumeProbe;
+  let record, closed = false, paused = false, heartbeat, handshakeTimer, resumeProbe, rtcRegistration;
+  const rtc = rtcEndpoint(message => {
+    if(closed)throw Error('ENDPOINT_STALE');
+    if(!record?.key){if(message?.protocol===BROWSER_RTC_PROTOCOL&&['register','unregister'].includes(message.type)){rtcRegistration=message.type==='register'?message:undefined;return;}throw Error('OWNER_HANDSHAKE_INVALID');}
+    const sent = record.send({kind:'rtc',message}); void sent.catch(() => rtc.dispatchEvent(new Event('close'))); return sent;
+  });
   const finishResume = error => {
     if (!resumeProbe) return;
     clearTimeout(resumeProbe.timer); const probe = resumeProbe; resumeProbe = undefined;
     error ? probe.reject(error) : probe.resolve();
   };
   const replaced = code => {
-    if (closed) return; closed = true; finishResume(Error(code)); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
+    if (closed) return; closed = true; rtc.dispatchEvent(new Event('close')); finishResume(Error(code)); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
     if (record) { record.port.postMessage(ended(code)); record.closed = true; record.port.close(); }
     try { onReplaced?.({ previous: ownerInstanceId, reason: code }); } catch { /* Product callbacks cannot keep an invalid route alive. */ }
   };
@@ -269,7 +281,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
       record.key = await derive(record.shared, challenge, [...record.context, 'session']);
       clearTimeout(handshakeTimer);
       queues(record, channel, ownerInstanceId, record.route, 'owner');
-      await record.send({ kind: 'attach', facadeProtocol: record.facadeProtocol, handshake: record.handshake, releaseToken: record.releaseToken });
+      await record.send({ kind: 'attach', facadeProtocol: record.facadeProtocol, handshake: record.handshake, releaseToken: record.releaseToken,...(rtcRegistration?{rtcRegistration}: {}) });
       liveness.authenticated(); pulse();
     } catch { replaced('OWNER_HANDSHAKE_INVALID'); }
     finally { if (record) record.welcoming = false; }
@@ -280,20 +292,21 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     if (data.type === 'welcome') { void welcome(data); return; }
     if (!record.key) return;
     record.receive(data, value => {
-      liveness.authenticated(); finishResume();
+      if(value?.kind !== 'rtc'){liveness.authenticated();finishResume();}
       if (value?.kind === 'frame') {
         record.port.postMessage(value.frame);
         if (value.frame?.ended) {
-          record.closed = true; closed = true; finishResume(Error(value.frame.ended.code ?? 'ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive); record.port.close();
+          record.closed = true; closed = true; rtc.dispatchEvent(new Event('close')); finishResume(Error(value.frame.ended.code ?? 'ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive); record.port.close();
           if (['ENDPOINT_STALE', 'OWNER_UNREACHABLE'].includes(value.frame.ended.code)) {
             try { onReplaced?.({ previous: ownerInstanceId, reason: value.frame.ended.code }); } catch { /* A product callback cannot reopen the route. */ }
           }
         }
-      } else if (value?.kind !== 'pong') replaced('OWNER_MESSAGE_INVALID');
+      } else if (value?.kind === 'rtc') rtc.dispatchEvent(new MessageEvent('message',{data:value.message}));
+      else if (value?.kind !== 'pong') replaced('OWNER_MESSAGE_INVALID');
     });
   };
   channel.addEventListener('message', receive);
-  return { postMessage(frame) {
+  return { rtc, postMessage(frame) {
     if (closed || record || !frame?.port || typeof frame.port.postMessage !== 'function') throw Error('OWNER_HANDSHAKE_INVALID');
     checkOwnerFrame(frame.handshake);
     record = { route: crypto.randomUUID(), port: frame.port, facadeProtocol: frame.protocol, handshake: frame.handshake, releaseToken: crypto.getRandomValues(new Uint8Array(32)), closed: false };
@@ -337,7 +350,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   },
   async close() {
     if (closed) return;
-    this.relinquish(); closed = true; finishResume(Error('ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
+    this.relinquish(); closed = true; rtc.dispatchEvent(new Event('close')); finishResume(Error('ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
     if (record) { record.closed = true; record.port.close(); }
   } };
 }

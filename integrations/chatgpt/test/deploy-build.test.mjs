@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { assembleRelease, buildRelease, CHRONOLOG_SOURCE, hashFile, inspectSource, sealRelease, unpackPublicArchive } from '../deploy/build-release.mjs';
+import { assembleRelease, buildRelease, CHRONOLOG_SOURCE, IMPORT_SMOKE, hashFile, inspectSource, sealRelease, unpackPublicArchive } from '../deploy/build-release.mjs';
+
+import { installedSessionProvenance } from '../deploy/common.mjs';
+import { build } from 'esbuild';
 
 const command = promisify(execFile);
 
@@ -97,13 +100,13 @@ async function fixture(t) {
   await text(join(core.directory, prefix + 'examples/kitchen/.tendriller/device.sqlite'), 'creator-private-signer');
   return { root, core, chronolog, chronoActualRef: chronoRepo.source };
 }
-async function coreArtifacts(core, sdkPackage = {}) {
+async function coreArtifacts(core, sdkPackage = {}, sdkLayout = 'package') {
   const artifacts = [];
   for (const [kind, name] of [['sdk', '@tendriller/core'], ['runtime', '@tendriller/runtime'], ['engine', '@tendriller/engine'], ['tools', '@tendriller/tools']]) {
     const packageDir = join(core.directory, 'dist', kind), file = `tendriller-${kind}-1.2.3.tgz`;
     await json(join(packageDir, 'package.json'), { name, version: '1.2.3', type: 'module', exports: './client.mjs', ...(kind === 'sdk' ? sdkPackage : {}) });
     await text(join(packageDir, 'client.mjs'), 'export const createClient = () => {};\n');
-    await pack(packageDir, join(core.directory, 'dist', file), kind === 'tools' ? '.' : 'package');
+    await pack(packageDir, join(core.directory, 'dist', file), kind === 'tools' ? '.' : kind === 'sdk' ? sdkLayout : 'package');
     const artifact = { name, version: '1.2.3', file, sha256: await hashFile(join(core.directory, 'dist', file)) };
     if (kind === 'tools') await json(join(core.directory, 'dist/tools-manifest.json'), { source_commit: core.source, version: '1.2.3', artifacts: [artifact] });
     else artifacts.push(artifact);
@@ -113,13 +116,14 @@ async function coreArtifacts(core, sdkPackage = {}) {
 async function chronoArtifact(chronolog, { corrupt = false } = {}) {
   const directory = join(chronolog.directory, 'artifacts/peer-session/package');
   await json(join(directory, 'package.json'), { name: '@chronolog/peer-session', version: `0.0.0-g${CHRONOLOG_SOURCE.slice(0, 8)}`, type: 'module',
-    exports: { '.': './index.mjs', './native': './native.mjs' }, dependencies: {} });
+    exports: { '.': './index.mjs', './native': './native.mjs', './webrtc-native': './webrtc-native.mjs' }, dependencies: { werift: '0.27.0' } });
   await text(join(directory, 'index.mjs'), 'export const defineApplication = value => value;\n');
   await text(join(directory, 'native.mjs'), 'export const openNativeDevice = () => {};\n');
+  await text(join(directory, 'webrtc-native.mjs'), "import { RTCPeerConnection } from 'werift'; export const createNativePeerConnection = () => new RTCPeerConnection();\n");
   const hashes = {};
   for (const name of await files(directory)) if (name !== 'provenance.json') hashes[name] = await hashFile(join(directory, name));
   await json(join(directory, 'provenance.json'), { format: 'chronolog-peer-session-package/v1', source: chronolog.source,
-    sourceTree: chronolog.sourceTree, dirty: false, optionalNativeRtc: false, sqlEngines: [], sha256: hashes });
+    sourceTree: chronolog.sourceTree, dirty: false, nativeRtc: true, sqlEngines: [], sha256: hashes });
   if (corrupt) await text(join(directory, 'native.mjs'), 'export const openNativeDevice = () => "tampered";\n');
   await pack(directory, join(chronolog.directory, `artifacts/peer-session/chronolog-peer-session-${CHRONOLOG_SOURCE.slice(0, 8)}.tgz`));
 }
@@ -131,9 +135,23 @@ async function realRun(executable, args, options = {}) {
 const runtimeInstaller = calls => async (executable, args, options = {}) => {
   if (executable !== 'npm') return realRun(executable, args, options);
   calls.push({ args, cwd: options.cwd });
-  assert.deepEqual(args, ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund']);
-  await json(join(options.cwd, 'node_modules/ipaddr.js/package.json'), { name: 'ipaddr.js', version: '2.5.0' });
-  await text(join(options.cwd, 'node_modules/ipaddr.js/index.js'), 'module.exports = {};\n');
+  assert.deepEqual(args, [args[0], '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--bin-links=false']);
+  assert.ok(['ci', 'install'].includes(args[0]));
+  if (args[0] === 'ci') {
+    // Real npm ci prunes manually unpacked/extraneous packages.
+    await rm(join(options.cwd, 'node_modules'), { recursive: true, force: true });
+    await json(join(options.cwd, 'node_modules/ipaddr.js/package.json'), { name: 'ipaddr.js', version: '2.5.0' });
+    await text(join(options.cwd, 'node_modules/ipaddr.js/index.js'), 'module.exports = {};\n');
+  } else {
+    const metadata = JSON.parse(await readFile(join(options.cwd, 'package.json'), 'utf8'));
+    for (const name of ['@tendriller/core', '@chronolog/peer-session']) {
+      assert.match(metadata.dependencies[name], /^file:\.\.\//u, 'Public packages must be selected by portable local archive paths');
+      await unpackPublicArchive(resolve(options.cwd, metadata.dependencies[name].slice(5)), join(options.cwd, 'node_modules', name));
+    }
+    await json(join(options.cwd, 'node_modules/werift/package.json'), { name: 'werift', version: '0.27.0', type: 'module', exports: './index.mjs' });
+    await text(join(options.cwd, 'node_modules/werift/index.mjs'), 'export class RTCPeerConnection { async close() {} }\n');
+    await json(join(options.cwd, 'package-lock.json'), { lockfileVersion: 3, packages: { '': { dependencies: metadata.dependencies } } });
+  }
   return { stdout: '' };
 };
 
@@ -170,9 +188,9 @@ test('assembly uses exact public archives, locked runtime dependencies and a min
   const f = await fixture(t), calls = [], destination = join(f.root, 'assembled');
   await coreArtifacts(f.core); await chronoArtifact(f.chronolog);
   const result = await assembleRelease({ ...f, destination, env: process.env }, { run: runtimeInstaller(calls) });
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 3);
   assert.deepEqual((await readdir(join(destination, 'bridge-template'))).sort(), ['bridge-session.mjs', 'domain.mjs', 'local.mjs',
-    'node_modules', 'package.json', 'private-records.mjs', 'projection.mjs', 'session.mjs']);
+    'node_modules', 'package-lock.json', 'package.json', 'private-records.mjs', 'projection.mjs', 'session.mjs']);
   assert.equal((await files(destination)).some(name => name.includes('.tendriller') || name.endsWith('.sqlite')), false);
   assert.equal((await files(join(destination, 'bridge-template/node_modules'))).some(name => name.includes('ipaddr.js')), false);
   assert.equal(JSON.parse(await readFile(join(destination, 'bridge-template/package.json'), 'utf8')).scripts, undefined);
@@ -221,6 +239,8 @@ function buildRunner(f, { skipped = 0, hostReportPatch = {} } = {}) {
     if (executable === 'npm' && args[0] === 'ci') {
       if (args.includes('--omit=dev')) await runtimeInstaller([])(executable, args, options);
       handled = true;
+    } else if (executable === 'npm' && args[0] === 'install') {
+      await runtimeInstaller([])(executable, args, options); handled = true;
     } else if (executable === 'npm' && args.join(' ') === 'run build:artifacts') {
       await coreArtifacts({ ...f.core, directory: options.cwd }); handled = true;
     } else if (executable === 'corepack' && args[1] === 'install') handled = true;
@@ -309,4 +329,63 @@ test('assembly permits only the known optional SDK peer satisfied by the exact v
     assert.equal(JSON.parse(await readFile(join(result.nativePackage, 'provenance.json'), 'utf8')).source, CHRONOLOG_SOURCE);
     assert.equal(await hashFile(join(destination, result.archives.chronolog.file)), result.archives.chronolog.sha256);
   });
+});
+
+
+test('portable assembly installs the pinned archive dependency, keeps browser imports inert and exits naturally', { timeout: 120000 }, async t => {
+  const f = await fixture(t), root = fileURLToPath(new URL('../../../', import.meta.url));
+  const integrationSource = join(f.core.directory, 'integrations/chatgpt');
+  // Generate only this synthetic fixture's ordinary runtime lock, never core artifacts.
+  await command('npm', ['install', '--package-lock-only', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: integrationSource });
+  await git(f.core.directory, 'add', '.'); await git(f.core.directory, 'commit', '--quiet', '-m', 'Fixture runtime lock');
+  f.core = await inspectSource(f.core.directory, await git(f.core.directory, 'rev-parse', 'HEAD'));
+  await coreArtifacts(f.core, { peerDependencies: { '@chronolog/peer-session': '*' },
+    peerDependenciesMeta: { '@chronolog/peer-session': { optional: true } } }, '.');
+  const proof = await installedSessionProvenance();
+  f.chronolog = { ...f.chronolog, source: proof.source, sourceTree: proof.sourceTree };
+  const pin = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).devDependencies['@chronolog/peer-session'];
+  assert.ok(pin.startsWith('file:'));
+  const archive = join(f.chronolog.directory, `artifacts/peer-session/chronolog-peer-session-${proof.source.slice(0, 8)}.tgz`);
+  await mkdir(dirname(archive), { recursive: true }); await copyFile(resolve(root, pin.slice(5)), archive);
+  await mkdir(join(f.root, 'logs'));
+  const destination = join(f.root, 'assembled-real');
+  const result = await assembleRelease({ ...f, destination, env: process.env });
+  for (const prefix of ['integrations/chatgpt', 'bridge-template']) {
+    const installed = join(destination, prefix, 'node_modules');
+    const werift = JSON.parse(await readFile(join(installed, 'werift/package.json'), 'utf8'));
+    assert.equal(werift.version, '0.27.0');
+    assert.equal(await hashFile(join(installed, '@chronolog/peer-session/provenance.json')), await hashFile(join(result.nativePackage, 'provenance.json')));
+    for (const file of ['package.json', 'package-lock.json', 'node_modules/.package-lock.json'])
+      assert.equal((await readFile(join(destination, prefix, file), 'utf8')).includes(f.root), false, 'Public dependency paths must remain portable');
+  }
+  const sessionRoot = join(destination, 'bridge-template/node_modules/@chronolog/peer-session');
+  const browser = await build({ entryPoints: [join(sessionRoot, 'browser.mjs'), join(sessionRoot, 'worker.mjs')],
+    bundle: true, format: 'esm', splitting: true, platform: 'browser', outdir: join(f.root, 'unused-memory-output'), write: false, metafile: true });
+  assert.ok(!Object.keys(browser.metafile.inputs).some(name => /werift|transport-webrtc\/src\/native/u.test(name)));
+  assert.ok(Object.values(browser.metafile.outputs).flatMap(value => value.imports).every(value => !value.path.startsWith('node:') && value.path !== 'werift'));
+  const checks = { nativeIntegration: { passed: true, tests: 1, skipped: 0 }, hostAccountIntegration: { passed: true }, runtimeImports: true };
+  const manifest = await sealRelease(destination, { ...f, archives: result.archives, checks });
+  assert.ok(Object.keys(manifest.files).some(name => name.startsWith('bridge-template/node_modules/werift/')));
+  const portable = join(f.root, 'relocated-release'); await rename(destination, portable);
+  // No process.exit in IMPORT_SMOKE: timeout is a failure, never clean shutdown.
+  await command(process.execPath, ['--input-type=module', '--eval', IMPORT_SMOKE, portable], { timeout: 20000 });
+  const { verifyRelease } = await import('../deploy/preflight.mjs');
+  await verifyRelease(join(portable, 'RELEASE.json'));
+  const changed = join(portable, Object.keys(manifest.files).find(name => name.startsWith('bridge-template/node_modules/werift/') && name.endsWith('.js')));
+  await writeFile(changed, '// changed dependency bytes\n');
+  await assert.rejects(verifyRelease(join(portable, 'RELEASE.json')), { code: 'DEPLOYMENT_RELEASE_BYTES_CHANGED' });
+});
+
+
+test('assembly rejects SDK bytes replaced during dependency installation', async t => {
+  const f = await fixture(t), destination = join(f.root, 'substituted');
+  await coreArtifacts(f.core); await chronoArtifact(f.chronolog);
+  const installer = runtimeInstaller([]);
+  await assert.rejects(assembleRelease({ ...f, destination, env: process.env }, { run: async (command, args, options) => {
+    const result = await installer(command, args, options);
+    if (command === 'npm' && args[0] === 'install')
+      await text(join(options.cwd, 'node_modules/@tendriller/core/client.mjs'), 'export const wrongRegistryVersion = true;\n');
+    return result;
+  } }), { code: 'RELEASE_SDK_PACKAGE_CHANGED' });
+  await assert.rejects(lstat(join(destination, 'RELEASE.json')), { code: 'ENOENT' });
 });

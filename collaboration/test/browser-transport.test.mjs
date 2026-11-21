@@ -4,8 +4,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { BROWSER_OWNER_PROTOCOL, createBroadcastOwner, createBroadcastEndpoint } from '../browser-transport.mjs';
 
-async function until(predicate, description = 'condition') {
-  const end = Date.now() + 3000;
+async function until(predicate, description = 'condition', timeoutMs = 3000) {
+  const end = Date.now() + timeoutMs;
   while (!predicate()) { if (Date.now() > end) throw Error(`Timed out: ${description}`); await new Promise(setImmediate); }
 }
 async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequest } = {}) {
@@ -147,11 +147,14 @@ test('synchronous pagehide release is scoped to one route and cannot be replayed
 });
 
 test('a burst of many signal-sized frames queues on the fallback route instead of retiring or stalling it', async t => {
-  const f = await fixture({ timeoutMs: 5000 }); t.after(() => f.close());
-  const client = await f.attach(), piece = 'x'.repeat(15_000);
+  // This is a delivery/ordering check, not a crypto throughput benchmark.
+  // Keep its fixture leases generous under parallel test/crypto load; the
+  // virtual-clock tests below retain the exact negative liveness fences.
+  const f = await fixture({ timeoutMs: 30000 }); t.after(() => f.close());
+  const client = await f.attach({ livenessTimeoutMs: 30000 }), piece = 'x'.repeat(15_000);
   // An application reply of 200 pieces, posted without waiting, as an owner forwards live signals.
   for (let id = 1; id <= 200; id++) client.port.postMessage({ id, value: piece });
-  await until(() => client.frames.filter(frame => frame.id).length === 200, 'all 200 replies');
+  await until(() => client.frames.filter(frame => frame.id).length === 200, 'all 200 replies', 30000);
   assert.deepEqual(client.frames.filter(frame => frame.id).map(frame => frame.id), Array.from({ length: 200 }, (_value, index) => index + 1));
   assert.deepEqual(client.replacements, []); assert.equal(f.bridge.routes, 1);
 });
@@ -278,15 +281,15 @@ test('forged oversized bursts cannot retire either authenticated route direction
     for (const direction of ['client', 'owner']) {
       const sequence = Math.max(...f.traffic.filter(packet => packet.type === 'sealed' && packet.route === client.route &&
         packet.direction === direction).map(packet => packet.sequence)) + 1;
-      for (let i = 0; i < 3; i++) attacker.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'sealed',
+      for (let i = 0; i < 7; i++) attacker.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'sealed',
         ownerInstanceId: f.announcement.ownerInstanceId, route: client.route, direction, sequence,
         ciphertext: new Uint8Array(2 * 1048576) });
     }
-    await until(() => entered === 2 && f.traffic.filter(packet => packet.ciphertext?.byteLength === 2 * 1048576).length === 6,
+    await until(() => entered === 2 && f.traffic.filter(packet => packet.ciphertext?.byteLength === 2 * 1048576).length === 14,
       'both receive queues filled before authentication');
     assert.equal(f.bridge.routes, 1, 'unauthenticated overflow cannot authorize owner-side retirement');
     assert.deepEqual(client.replacements, [], 'unauthenticated overflow cannot replace the client route');
-    release(); await until(() => rejected === 4, 'bounded admitted forgeries rejected');
+    release(); await until(() => rejected === 12, 'bounded admitted forgeries rejected');
     assert.equal((await client.send(2, 'after-forgery')).value, 'after-forgery');
     assert.equal(f.accepted.length, 2);
     assert.equal(f.bridge.routes, 1);

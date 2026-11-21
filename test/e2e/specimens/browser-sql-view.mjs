@@ -6,15 +6,16 @@ const identity = revision => JSON.stringify([revision.applicationId, revision.hi
 
 export function observeSqlFixture(session, { query, onSnapshot, onRecovery = () => {}, onError = () => {}, signal }) {
   const lifetime = new AbortController(), owned = AbortSignal.any([session.signal, signal, lifetime.signal].filter(Boolean));
-  let closed = false, running = false, dirty = false, latest, displayed, snapshot, reads = 0;
+  let closed = false, running = false, dirty = false, latest, displayed, snapshot, reads = 0, recovering = false, readiness = 0, stopStatus = () => {};
   let resolveReady, rejectReady;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   // Readiness owns a bounded initial coherent read, not a delay after Ready.
   const timer = setTimeout(() => fail(new Error('SQL_FIXTURE_VIEW_TIMEOUT')), 20_000);
   const iterator = session.changes({ signal: owned })[Symbol.asyncIterator]();
-  function close(reason = new Error('SQL_FIXTURE_VIEW_CLOSED')) {
+  function close(...reasons) {
+    const reason = reasons.length ? reasons[0] : new Error('SQL_FIXTURE_VIEW_CLOSED');
     if (closed) return;
-    closed = true; clearTimeout(timer); owned.removeEventListener('abort', aborted);
+    closed = true; clearTimeout(timer); stopStatus(); owned.removeEventListener('abort', aborted);
     lifetime.abort(reason); rejectReady(reason);
     void Promise.resolve().then(() => iterator.return?.()).catch(() => {});
   }
@@ -27,9 +28,20 @@ export function observeSqlFixture(session, { query, onSnapshot, onRecovery = () 
     try {
       while (dirty && !closed) {
         dirty = false;
-        const requested = latest;
+        const requested = latest, readyBeforeRead = readiness;
         reads++;
-        const result = await session.query(query, null), received = identity(result.revision);
+        let result;
+        try { result = await session.query(query, null); }
+        catch (error) {
+          if (!snapshot && (error?.code ?? error?.message) === 'PEER_RECOVERING') {
+            recovering = true;
+            if (readiness !== readyBeforeRead) dirty = true;
+            continue;
+          }
+          throw error;
+        }
+        recovering = false;
+        const received = identity(result.revision);
         if (closed) return;
         // A read that already contains the latest invalidation is coherent.
         // Otherwise discard the old snapshot and read again before Ready/render.
@@ -41,18 +53,25 @@ export function observeSqlFixture(session, { query, onSnapshot, onRecovery = () 
     finally { running = false; }
   }
   if (owned.aborted) aborted();
-  else void (async () => {
-    try {
-      for (;;) {
-        const change = await iterator.next();
-        if (closed) return;
-        if (change.done) { close(); return; }
-        const value = change.value, next = identity(value.revision);
-        if (value.kind === 'recovery') onRecovery(value);
-        if (value.kind !== 'recovery' && (next === latest || next === displayed)) continue;
-        latest = next; dirty = true; void pump();
-      }
-    } catch (error) { fail(error); }
-  })();
+  else {
+    stopStatus = session.onStatus?.(status => {
+      if (closed || status.phase !== 'ready') return;
+      readiness++;
+      if (recovering) { dirty = true; void pump(); }
+    }) ?? (() => {});
+    void (async () => {
+      try {
+        for (;;) {
+          const change = await iterator.next();
+          if (closed) return;
+          if (change.done) { close(); return; }
+          const value = change.value, next = identity(value.revision);
+          if (value.kind === 'recovery') onRecovery(value);
+          if (value.kind !== 'recovery' && (next === latest || next === displayed) && !recovering) continue;
+          latest = next; dirty = true; void pump();
+        }
+      } catch (error) { fail(error); }
+    })();
+  }
   return { ready, close, get reads() { return reads; }, get snapshot() { return snapshot; } };
 }

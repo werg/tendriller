@@ -12,7 +12,7 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n');
 const readJson = path => JSON.parse(readFileSync(path, 'utf8'));
 
-function fixture(t, { sessionDirty = false, sqlEngines = [] } = {}) {
+function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, werift = '0.27.0' } = {}) {
   const scratch = resolve(import.meta.dirname, '../../.build');
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, 'composition-test-'));
@@ -36,8 +36,8 @@ function fixture(t, { sessionDirty = false, sqlEngines = [] } = {}) {
     }
     execFileSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-czf', destination, '-C', directory, 'package']);
   };
-  pack('session', { 'package.json': { name: '@chronolog/peer-session', exports: Object.fromEntries(['.', './native', './browser', './worker'].map(key => [key, './index.mjs'])) },
-    'index.mjs': 'export const session = true;', 'provenance.json': { ...chronolog, dirty: sessionDirty, sqlEngines } }, join(root, 'session.tgz'));
+  pack('session', { 'package.json': { name: '@chronolog/peer-session', dependencies: { werift }, exports: Object.fromEntries(['.', './native', './browser', './worker', './webrtc', './webrtc-native', './websocket'].map(key => [key, './index.mjs'])) },
+    'index.mjs': 'export const session = true;', 'provenance.json': { ...chronolog, dirty: sessionDirty, sqlEngines, nativeRtc } }, join(root, 'session.tgz'));
   for (const file of ['plugin.json', 'mcp.json', 'skills/connect-tendriller/SKILL.md', 'review-app.mjs', 'review-domain.mjs', 'review-assistant.mjs']) {
     const target = join(root, 'integrations/chatgpt/plugin', file);
     mkdirSync(dirname(target), { recursive: true });
@@ -248,4 +248,10 @@ test('sealing omits development runtime residue while restored-graph checks reje
   mkdirSync(oldPath,{recursive:true});writeFileSync(join(oldPath,'stale.mjs'),'injected after restore');
   assert.throws(()=>verifyRestoredDeployment(f.root,expectedHash),/differ from the qualified bundle/);
   assert(manifest.artifacts.some(item=>item.role==='deployment'));
+});
+
+
+test('release requires the native factory and normal exact RTC dependency in the default session', t => {
+  assert.throws(fixture(t, { nativeRtc: false }).prepare, /default session must include native RTC/);
+  assert.throws(fixture(t, { werift: '^0.27.0' }).prepare, /normal pinned werift@0.27.0 dependency/);
 });

@@ -210,9 +210,13 @@ or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an existing Chromium executable.
 If the environment cannot start
 a browser, `--native-only` runs setup, durable commands/reopen, bundling and signed
 publication, and explicitly records a **partial** result with browser checks
-omitted. It does not qualify browser behavior. All modes use a synthetic local
-owner session and encrypted WebSocket relay; they do not qualify live OAuth,
-Internet connectivity, native RTC, mobile execution or unaided agent usability.
+omitted. It does not qualify browser behavior. The default browser run requires real native/browser WebRTC traffic with no
+host relay payload, including recovery after the original RTC provider tab closes.
+`--transport relay` deliberately disables browser RTC and requires encrypted
+relay traffic carrying the same verified application command. Both modes use a
+synthetic local owner session. They do not qualify live OAuth, Internet NAT
+traversal, physical mobile execution or unaided agent usability. A native-only
+run does not qualify browser transport.
 
 The workflow also builds the pinned optional SQL-native engine on its Node 24
 runner and runs `test:first-app -- --session-archive /absolute/sql-archive.tgz
