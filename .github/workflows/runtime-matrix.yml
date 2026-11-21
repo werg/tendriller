@@ -45,9 +45,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - uses: denoland/setup-deno@v2
       - run: npm ci && npm run build
-      - name: Exercise pure-ESM probe and archive modules under Bun
+      - name: Exercise pure-ESM probe, archive, serverless and bootstrapper under Bun
         run: |
           bun -e "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') process.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
-      - name: Exercise pure-ESM probe and archive modules under Deno
+          bun scripts/tendriller-bootstrap.mjs --probe-only
+      - name: Exercise pure-ESM probe, archive, serverless and bootstrapper under Deno
         run: |
-          deno eval "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') Deno.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
+          deno eval --allow-read --allow-write --allow-env --allow-sys "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') Deno.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
+          deno run --allow-read --allow-write --allow-env --allow-sys scripts/tendriller-bootstrap.mjs --probe-only
