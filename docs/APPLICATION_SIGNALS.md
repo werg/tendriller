@@ -59,16 +59,47 @@ connecting, the answering peer may not be connected yet; a request sent then is
 only echoed locally. For on-demand answers use the starter's
 `helpers/signal-request.mjs`: it waits until the answering peer is in
 `participation.status.connectedPeers`, re-sends the same request ID until the
-first reply piece arrives, and splits and reassembles replies larger than one
-16 KiB signal. Subscribe to reply pieces with `mode: 'all'`; `'latest'` keeps only
+complete reply arrives, and splits and reassembles bounded replies larger than one
+16 KiB signal. While new pieces arrive, retries wait. Subscribe to reply pieces with `mode: 'all'`; `'latest'` keeps only
 the newest value per stream and suits state snapshots.
+
+The starter helper has explicit limits; it does not support replies of arbitrary
+size or infinite answers:
+
+| Boundary | Limit |
+| --- | --- |
+| Complete encoded JSON signal payload, including envelope and escaping | 16 KiB |
+| One serialized reply | 4 MiB of UTF-8 JSON and at most 512 parts; both limits apply |
+| Outstanding requests per browser helper | 16 |
+| Native reply cache and pending computations | 32 entries |
+| Cached encoded reply payloads | 8 MiB, with space reserved for bounded error replies |
+
+Oversized answers return `REQUEST_REPLY_TOO_LARGE` before sending answer pieces.
+Use the session's content facilities or bounded application queries for larger
+data instead of increasing signal queues. The default caller deadline is 30
+seconds; each send batch has one fixed 30-second lifetime, including backpressure
+retries, rather than a fresh lifetime for every piece. Closing the helper or
+aborting its session cancels connectivity waits, pending requests and send work.
+Observe the promise returned by `serveSignalRequests`: terminal delivery failures
+reject it. When a route cannot deliver even an error, a caller can still reach
+its deadline; retrying does not guarantee delivery.
+
+Cache entries are scoped to authenticated request author and ID. A repeat uses
+the original question/input while that entry is retained, and concurrent repeats
+share one active send. Entries expire after 60 seconds by default and may be
+evicted earlier to keep the cache bounded. Recomputed answers carry a new
+generation; the browser never combines pieces from different computations.
+This is disposable deduplication, not durable operation idempotency. Signal
+topics are visible to authorized application members; an author-scoped cache
+does not create a private reply channel.
 
 Multi-piece messages are paced by the transport. Send each piece after the
 previous `send` resolves. The relay keeps a window of packets in flight and an
 ordered bounded local queue for the rest; the browser owner's fallback route and
-the starter's subscription queues are byte-bounded (8 MiB) so a reply of a few
-hundred KB does not refuse pieces or overflow a subscriber. `SIGNAL_BACKPRESSURE`
-now means a genuinely full queue.
+the starter's subscription queues are byte-bounded (8 MiB). Those bounds do not
+promise room for every reply or concurrent sender. `SIGNAL_BACKPRESSURE` means a
+full queue or sequence budget; the helper retries it only within its fixed send
+lifetime.
 
 A live preview and its durable completion are separate operations. For example, drag previews may be replaced or lost; the final location is submitted as an ordinary application command with an operation ID. Stopping or disconnecting a signal source must not enqueue its expired previews into durable history.
 
