@@ -1,11 +1,23 @@
+import { rtcEndpoint, BROWSER_RTC_PROTOCOL } from './browser-rtc.mjs';
 import { createOwnerLiveness } from './browser-liveness.mjs';
 import { BROWSER_OWNER_PROTOCOL, checkOwnerFrame, ended } from './browser-transport.mjs';
 import { CollaborationError } from './protocol.mjs';
 
+/** Capability-only private bootstrap sideband, independent of owner RPC opening. */
+export function createRootRtcEndpoint(root,{profileId,rootId}) {
+  let closed=false;
+  const rtc=rtcEndpoint(payload=>{if(closed)throw new CollaborationError('ENDPOINT_STALE');root.postMessage({protocol:BROWSER_RTC_PROTOCOL,profileId,rootId,payload});});
+  const receive=({data})=>{if(!closed&&data?.protocol===BROWSER_RTC_PROTOCOL&&data.profileId===profileId&&data.rootId===rootId)rtc.dispatchEvent(new MessageEvent('message',{data:data.payload}));};
+  root.addEventListener('message',receive);
+  rtc.dispose=()=>{if(closed)return;closed=true;root.removeEventListener('message',receive);rtc.dispatchEvent(new Event('close'));};
+  return rtc;
+}
+
 /** Private SharedWorker root lease; observation expiry never releases the owner's Web Lock. */
-export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanceId, livenessTimeoutMs = 15000, requestTimeoutMs = 30000, onReplaced } = {}) {
+export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanceId, livenessTimeoutMs = 15000, requestTimeoutMs = 30000, onReplaced, rtc:providedRtc } = {}) {
   if (!Number.isFinite(livenessTimeoutMs) || livenessTimeoutMs < 100 || livenessTimeoutMs > 120000) throw new CollaborationError('OWNER_CONFIGURATION_INVALID');
   const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs });
+  const rtc = providedRtc ?? createRootRtcEndpoint(root,{profileId,rootId});
   const pending = new Map(); let local, remote, pulseTimer, paused = false, disposed = false, closing;
   const request = (action, timeoutMs = livenessTimeoutMs) => {
     if (disposed) return Promise.reject(new CollaborationError('ENDPOINT_STALE'));
@@ -25,7 +37,8 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
     void close();
   };
   const receive = ({ data }) => {
-    if (disposed || data?.protocol !== BROWSER_OWNER_PROTOCOL) return;
+    if (disposed) return;
+    if (data?.protocol !== BROWSER_OWNER_PROTOCOL) return;
     if (data.type === 'failure' && data.code === 'OWNER_UNREACHABLE') { fail('OWNER_UNREACHABLE'); return; }
     if (data.rootId !== rootId || data.ownerInstanceId !== ownerInstanceId) return;
     if (data.type === 'root.ended') { fail(data.code ?? 'ENDPOINT_STALE'); return; }
@@ -57,14 +70,14 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
     closing = (async () => {
       try { await request('detach', Math.min(1000, livenessTimeoutMs)); } catch { /* A dead worker cannot retain the local facade. */ }
       finally {
-        disposed = true; root.removeEventListener('message', receive);
+        disposed = true; rtc.dispose(); root.removeEventListener('message', receive);
         for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new CollaborationError('ENDPOINT_STALE')); }
         pending.clear(); local?.close(); remote?.close(); root.close?.();
       }
     })(); return closing;
   }
   root.addEventListener('message', receive); void pulse();
-  return { postMessage(frame) {
+  return { rtc, postMessage(frame) {
     if (disposed || closing || local || !frame?.port || typeof frame.port.postMessage !== 'function') throw new CollaborationError('OWNER_HANDSHAKE_INVALID');
     checkOwnerFrame(frame.handshake);
     const wire = new MessageChannel(); local = frame.port; remote = wire.port1;

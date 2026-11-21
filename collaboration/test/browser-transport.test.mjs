@@ -278,15 +278,15 @@ test('forged oversized bursts cannot retire either authenticated route direction
     for (const direction of ['client', 'owner']) {
       const sequence = Math.max(...f.traffic.filter(packet => packet.type === 'sealed' && packet.route === client.route &&
         packet.direction === direction).map(packet => packet.sequence)) + 1;
-      for (let i = 0; i < 3; i++) attacker.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'sealed',
+      for (let i = 0; i < 7; i++) attacker.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'sealed',
         ownerInstanceId: f.announcement.ownerInstanceId, route: client.route, direction, sequence,
         ciphertext: new Uint8Array(2 * 1048576) });
     }
-    await until(() => entered === 2 && f.traffic.filter(packet => packet.ciphertext?.byteLength === 2 * 1048576).length === 6,
+    await until(() => entered === 2 && f.traffic.filter(packet => packet.ciphertext?.byteLength === 2 * 1048576).length === 14,
       'both receive queues filled before authentication');
     assert.equal(f.bridge.routes, 1, 'unauthenticated overflow cannot authorize owner-side retirement');
     assert.deepEqual(client.replacements, [], 'unauthenticated overflow cannot replace the client route');
-    release(); await until(() => rejected === 4, 'bounded admitted forgeries rejected');
+    release(); await until(() => rejected === 12, 'bounded admitted forgeries rejected');
     assert.equal((await client.send(2, 'after-forgery')).value, 'after-forgery');
     assert.equal(f.accepted.length, 2);
     assert.equal(f.bridge.routes, 1);
