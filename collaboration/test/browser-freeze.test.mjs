@@ -44,12 +44,12 @@ class PageClock{
 async function until(predicate,label){const end=Date.now()+3000;while(!predicate()){if(Date.now()>end)throw Error('FIXTURE_WAIT: '+label);await delay(2);}}
 async function bounded(promise,label){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('FIXTURE_WAIT: '+label)),3000);})]);}finally{clearTimeout(timer);}}
 
-async function fixture(t,mode,opening={}){
+async function fixture(t,mode,opening={},locks=new FixtureLocks()){
  const directory=await mkdtemp(join(tmpdir(),'browser-freeze-')),clock=new PageClock(),doc=new EventTarget(),events=new EventTarget();
  doc.visibilityState='visible';doc.hidden=false;
  const keys=['navigator','location','document','window','SharedWorker','Worker','RTCPeerConnection','addEventListener','removeEventListener','dispatchEvent','__freezeClock','__freezeProbe','__freezeWorkerChannel'];
  const globals=new Map(keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
- const rootRequests=new Map(),dedicatedAvailability=[],sharedRoots=[],ports=[],channels=[],replaced=[],gate={silent:false,hold:false,queued:[],holdSuspendAck:false,suspendAcks:[]},probe={started:0,closed:0,active:new Set()};const locks=new FixtureLocks(),ownerLockName='chronolog-owner:retained';let opened=0,service,attachment,pageWorker,openDirectConnection;const siblingAttachments=[];
+ const rootRequests=new Map(),dedicatedAvailability=[],sharedRoots=[],ports=[],channels=[],replaced=[],gate={silent:false,hold:false,queued:[],holdSuspendAck:false,suspendAcks:[]},probe={started:0,closed:0,active:new Set()};const ownerLockName='chronolog-owner:retained';let opened=0,service,attachment,pageWorker,openDirectConnection;const siblingAttachments=[];
  const deliver=send=>{if(gate.silent)return;if(gate.hold)gate.queued.push(send);else send();};
  const NativeChannel=globalThis.BroadcastChannel;
  class WorkerChannel extends NativeChannel{constructor(...args){super(...args);channels.push(this);}postMessage(value){deliver(()=>super.postMessage(value));}}
@@ -351,4 +351,20 @@ test('document witness outlives opening cancellation and detaches without releas
 test('failed SharedWorker attachment releases its document witness without discarding retained owner',async t=>{
  await assert.rejects(fixture(t,'shared',{definitionId:'wrong-definition'}),/CONTRACT_INCOMPATIBLE/);
  const locks=await navigator.locks.query();assert.equal(locks.held.filter(lock=>lock.name!=='chronolog-owner:retained').length,0);assert.equal(locks.held.filter(lock=>lock.name==='chronolog-owner:retained').length,1);
+});
+
+for(const cancel of ['timeout','abort'])test(`SharedWorker opening ${cancel} promptly fences a pending witness and releases a late grant`,async t=>{
+ const locks=new FixtureLocks(),request=locks.request.bind(locks),stop=new AbortController(),reason=Error('CALLER_ABORTED');let grant,requested;
+ const started=new Promise(resolve=>{requested=resolve;});let native;
+ locks.request=(...args)=>{requested();return new Promise(resolve=>{grant=()=>{native=request(...args);resolve(native);};});};
+ const attempt=fixture(t,'shared',{timeoutMs:1000,signal:stop.signal},locks);
+ const rejected=assert.rejects(attempt,error=>cancel==='abort'?error===reason:error.code==='OWNER_UNREACHABLE');await started;
+ if(cancel==='abort')stop.abort(reason);else globalThis.__freezeClock.advance(1000);
+ await bounded(rejected,'pending lock cannot delay opening cancellation');assert.equal(locks.held.size,0);
+ grant();await native.catch(()=>{});await until(()=>locks.held.size===0,'late native grant releases itself');
+});
+test('successful SharedWorker attachment retains its witness after the opening budget expires',async t=>{
+ const f=await fixture(t,'shared',{timeoutMs:1000});await until(()=>f.clock.tasks.size===f.clock.heartbeats.length,'initial observer requests admitted');f.clock.advance(1001);
+ assert.equal(f.rootDocLocks,1);assert.equal(f.attachment.session.signal.aborted,false);
+ assert.deepEqual((await bounded(f.attachment.session.query('state',null),'query after opening budget')).value,['retained identity']);
 });
