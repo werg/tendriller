@@ -164,6 +164,8 @@ export async function acquireAtomicLock(root, {
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       const existing = await readPrivateJson(root, lockName).catch(() => null);
+      if (!existing || typeof existing.lockId !== 'string' || !Number.isSafeInteger(existing.pid) || existing.pid <= 0)
+        throw fail('OWNER_BUSY', 'Preserve the incomplete or unrecognized owner lock; an opening owner may still be publishing it.');
       const endpoint = await readPrivateJson(root, 'endpoint.json').catch(() => null);
       const reachable = probeReachable ? await probeReachable(endpoint) : await probeEndpointReachable(endpoint);
       if (reachable) {
@@ -171,7 +173,7 @@ export async function acquireAtomicLock(root, {
       }
       const sameHost = !existing?.hostId || existing.hostId === hostId;
       const alive = sameHost && existing?.pid ? isProcessAlive(existing.pid) : false;
-      if (alive) {
+      if (alive || !sameHost) {
         const lockAgeMs = typeof existing?.startedAt === 'number' ? Math.max(0, Date.now() - existing.startedAt) : Infinity;
         throw fail('INSTANCE_UNRESPONSIVE', `Lock held by live PID ${existing.pid} whose IPC endpoint is unreachable. Inspect or stop that process; never mint a duplicate device.`, {
           pid: existing.pid,
@@ -183,8 +185,25 @@ export async function acquireAtomicLock(root, {
       if (attempt >= maxStaleRetries) {
         throw fail('OWNER_BUSY', 'Unable to reclaim stale lock after bounded retries.', { pid: existing?.pid ?? null });
       }
-      // Atomic stale-lock reclamation via unlink + retry of O_CREAT|O_EXCL.
-      await unlink(lockPath).catch(() => {});
+      // Serialize reclaimers: two callers must not both unlink a dead lock,
+      // with the delayed one accidentally removing the winner's new live lock.
+      const recoveryPath = join(root, `${lockName}.reclaim`);
+      let recovery;
+      try { recovery = await open(recoveryPath, 'wx', 0o600); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw fail('OWNER_BUSY', 'Another caller is reclaiming this lock. Preserve an abandoned reclaim marker for explicit inspection.');
+        throw error;
+      }
+      try {
+        const current = await readPrivateJson(root, lockName);
+        if (current?.lockId === existing.lockId && current.pid === existing.pid && current.hostId === existing.hostId) {
+          if (isProcessAlive(current.pid)) throw fail('INSTANCE_UNRESPONSIVE', 'The retained owner is still alive; preserve its lock.');
+          await unlink(lockPath);
+        }
+      } finally {
+        await recovery.close();
+        await unlink(recoveryPath).catch(() => {});
+      }
     }
   }
   throw fail('OWNER_BUSY', 'Failed to acquire exclusive project lock.');
