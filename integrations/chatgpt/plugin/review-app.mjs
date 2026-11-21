@@ -3,14 +3,13 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createClient, createPage } from '@tendriller/core';
-import { createPeerIntroductions } from '@tendriller/core/peers';
+import { participateNativeApplication } from '@tendriller/core/collaboration/native-rtc';
 import { createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
 import { connectApplicationAssistant, createAssistantKey, forwardApplicationEvents, proposeApplicationAssistant } from '@tendriller/core/assistant';
 import { bytesDigest, bytesToHex, createApplicationTools, describeApplication, eventExecutionManifest,
   executionManifestArtifacts, participantGrant, signTransitionRequest, signPublicationManifest, verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { definition } from './review-domain.mjs';
 import { watchApplicationSetup } from '@tendriller/core/setup';
 import { superviseReviewAssistant, retainedReviewProposal } from './review-assistant.mjs';
@@ -89,10 +88,7 @@ try {
         session = await openNativeApplication({ device, definition, authority });
         const controlHost = { exchange: (message, options) => host.peers.exchange(message, options) };
         const control = session.connectControlParticipant(controlHost);
-        await session.participate({ control, ...createPeerIntroductions({ peers: host.peers, identity: session.deviceId,
-          openDirectConnection: async () => { throw Error('REVIEW_NATIVE_RTC_UNCONFIGURED'); },
-          openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-        }) });
+        await participateNativeApplication(session, { peers: host.peers, control });
         return createApplicationOwner(session, { host: controlHost });
       } });
     const stop = new AbortController();

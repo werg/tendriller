@@ -1,8 +1,8 @@
 import { verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openBrowserDevice, openBrowserApplication, serveApplicationWorker } from '@chronolog/peer-session/worker';
 import { openWorkerWebRtcConnection } from '@chronolog/peer-session/webrtc';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-import { createPeersClient, createPeerIntroductions } from '@tendriller/core/peers';
+import { createPeersClient } from '@tendriller/core/peers';
+import { participateApplication } from '@tendriller/core/collaboration/participation';
 import { definition } from './domain.mjs';
 
 let opening = false;
@@ -46,11 +46,9 @@ self.addEventListener('message', async ({ data }) => {
     // reader supplies keys over the session's authenticated encrypted peer link.
     session = await openBrowserApplication({ device, definition, authority });
     const control = session.connectControlParticipant({ exchange: (message, options) => peers.exchange(message, options) });
-    await session.participate({ control, ...createPeerIntroductions({
-      peers, identity: session.deviceId,
+    await participateApplication(session, { peers, control,
       openDirectConnection: options => openWorkerWebRtcConnection(self, options),
-      openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-    }) });
+    });
     serveApplicationWorker(session, self, { host: control });
     self.postMessage({ type: 'tutorial-opened', publicKey });
   } catch (error) {

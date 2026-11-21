@@ -36,12 +36,13 @@ application history. Topic filters and projections minimize exported data;
 they do not reduce that native grant. Publisher, administrator, recovery and
 coordinator rights are separate and are not required by this adapter.
 
-`createNativeSessionOpener({host,definition,devicePath,pinnedDescriptor,
-openDirectConnection?})` provides that composition when those application inputs
+`createNativeSessionOpener({host,definition,devicePath,pinnedDescriptor})` provides that composition when those application inputs
 already exist. It imports only public packages, verifies the pinned descriptor,
 resumes the device, attaches the control participant and installs the maintained
-peer introduction adapter. With no native RTC opener, its explicit direct failure
-uses the adapter's existing encrypted WebSocket fallback. It does not create or
+[`participateNativeApplication`](../../collaboration/native-rtc.mjs) helper.
+Its [common transport policy](../../contract/transport-policy.mjs) tries native RTC
+with the default STUN configuration, then uses encrypted WebSocket fallback only
+when the bounded direct attempt fails. No manual RTC installation is required. It does not create or
 enroll a device, mint grants, export a signer, choose recovery or supply new epoch
 keys. Keep an enrolled reader reachable for a fresh reader's key acquisition.
 The optional `loadModules` dependency loader exists for exact public artifact
