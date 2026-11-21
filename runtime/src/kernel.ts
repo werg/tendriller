@@ -1,4 +1,4 @@
-import { validateDocumentContext } from "./document";
+import { validateDocumentContext, resolveDocumentUrl } from "./document";
 import { explicitlyPinned, watchPublicationUpdates } from "./updates";
 // Importing this module mounts nothing and requests no device permissions.
 // One application session owns data. A page owns all application UI.
@@ -93,6 +93,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     publication: { async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, cfg.publication); },
       get pinned() { return updates.pinned; }, get updateAvailable() { return updates.updateAvailable; },
       onUpdate: listener => updates.onUpdate(listener), hold: () => updates.hold(), update: () => updates.update() },
+    documentUrl(reference) { return resolveDocumentUrl(cfg, reference, updates.pinned); },
     assetUrl(path) {
       if (!path || /[?#\\]/.test(path) || path.startsWith("/") || /^[a-z]+:/i.test(path) || path.split("/").some(part => !part || part === "." || part === "..") || decodeURIComponent(path) !== path)
         throw new TypeError("Runtime assets require an unencoded relative path");

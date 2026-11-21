@@ -50,6 +50,7 @@ Safari device-qualification guarantee.
 | `sensors` | Observe tracked use and cancel active or pending acquisitions |
 | `assetUrl(path)` | Resolve an explicit dependency in the pinned runtime |
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
+| `documentUrl(reference)` | Build a document or fragment URL in this page’s current live or explicitly pinned context; performs no navigation |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
 | `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
 
@@ -155,8 +156,8 @@ known to be persistent.
 The address bar keeps the page's own URL; the document's assets resolve through
 its injected `<base>`, which names the immutable publication graph. So:
 
-- a reload, a new tab, a Home Screen launch and a discarded-then-restored tab load
-  the release that is selected **now**;
+- opening or reloading a canonical page URL, including a Home Screen launch,
+  loads the release that is selected **now**; explicit immutable URLs retain their pin;
 - an open tab holds the page's one hibernating publication watch
   (`contract/publication-watch.mjs`, opened by the hosted `tendril.js` entry; the
   bare `startRuntime` kernel opens it only with `watchPublication: true`) and learns
@@ -165,6 +166,28 @@ its injected `<base>`, which names the immutable publication graph. So:
 - pinning is explicit: a document opened at its immutable
   `…/_publications/ID/` URL stays on that release (for a review or a comparison),
   and `publication.pinned` is `true`.
+
+The immutable `<base>` also applies to authored relative links. A plain
+`<a href="other.html">` follows that signed release’s document and therefore opens
+a pinned URL, even when the source page was live. A plain `href="#section"` also
+resolves against the immutable base, rather than necessarily the current document.
+The runtime does not intercept clicks or rewrite authored links.
+
+For navigation that follows the current live/pinned document context, assign the
+URL explicitly:
+
+```js
+otherLink.href = tendril.documentUrl('other.html');
+sectionLink.href = tendril.documentUrl('#section');
+```
+
+The pure builder resolves standard URL references relative to the address-bar
+document, retaining query strings and fragments as normal URL resolution does.
+On a live page it returns a canonical page URL; on an explicitly pinned page it
+stays within that immutable publication. It rejects references that escape that
+context. Use an explicit canonical URL or `publication.update()` to leave a pin.
+Asset references and explicit immutable links remain unchanged. This is an
+authored navigation choice; it does not save drafts or establish a connection.
 
 Every release is still the signed, verified publication the host selected; the
 switch is an ordinary navigation, so the runtime verifies it as on any load.

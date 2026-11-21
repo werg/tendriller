@@ -68,6 +68,8 @@ export interface RuntimeServices {
   readonly identity: Readonly<{ page: string; version: number; publication: string | null; documentPath: string | null; base: string; managementUrl: string }>;
   /** Browser installation state and an explicit native prompt; never registers offline support. */
   readonly installation: RuntimeInstallation;
+  /** Pure URL builder for authored document/fragment links; preserves live or explicit pinned navigation. No fetch or navigation. */
+  documentUrl(reference: string): string;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
   assetUrl(path: string): string;
   /** Resolves only after the exact required publication graph is saved by its service worker. */

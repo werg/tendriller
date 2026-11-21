@@ -93,7 +93,7 @@ describe('public application onboarding', () => {
     const entries = new Map<string, any>(catalog.capabilities.map((entry: any) => [entry.id, entry]));
     expect(entries.size).toBe(catalog.capabilities.length);
     for (const id of ['durable-state', 'sql-transactions', 'reactive-view', 'operation-state',
-      'signals', 'reviewed-evidence', 'camera', 'sensor-observation', 'voice', 'preview',
+      'signals', 'reviewed-evidence', 'camera', 'sensor-observation', 'document-navigation', 'voice', 'preview',
       'credential-protected-inference', 'agent-runtime', 'signed-publication']) {
       const entry = entries.get(id);
       expect(entry, id).toBeTruthy();
@@ -107,6 +107,8 @@ describe('public application onboarding', () => {
       const guide = await req(entry.guide, { anonymous: true });
       expect(guide.status, id).toBe(200); await guide.text();
     }
+    expect(entries.get('document-navigation').api).toContain('tendril.documentUrl');
+    expect(entries.get('document-navigation').imports).toEqual(['@tendriller/runtime/kernel']);
     expect(entries.get('voice').imports).toEqual(['@tendriller/runtime/voice']);
     expect(entries.get('camera').api).toContain('navigator.mediaDevices.getUserMedia');
     expect(entries.get('sensor-observation').api).toContain('tendril.sensors.stopAll');

@@ -3,7 +3,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: ".",
-  testMatch: ["runtime.spec.ts", "updates.spec.ts"],
+  testMatch: ["runtime.spec.ts", "updates.spec.ts", "document-navigation.spec.ts"],
   testIgnore: ["**/tts/**"],
   timeout: 30_000,
   fullyParallel: false,
