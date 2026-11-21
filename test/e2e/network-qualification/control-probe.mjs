@@ -21,19 +21,49 @@ async function tcpEcho(port) {
   } finally { socket.destroy(); }
 }
 
+// server.close() acknowledges listener and connection shutdown only in its
+// callback. Give accepted connections a short drain, then retire every socket.
+export function closeTcpServer(server, sockets, { drainMs = 1000, timeoutMs = 5000 } = {}) {
+  if (![drainMs, timeoutMs].every(Number.isSafeInteger) || drainMs < 0 || timeoutMs <= drainMs || timeoutMs > 60_000) throw new Error('TCP_PROBE_INVALID_SHUTDOWN');
+  return new Promise((resolve, reject) => {
+    let settled = false, drainTimer, deadline, destroyError;
+    const finish = error => {
+      if (settled) return;
+      settled = true; clearTimeout(drainTimer); clearTimeout(deadline);
+      if (error || destroyError) reject(error || destroyError); else resolve();
+    };
+    const destroy = () => {
+      for (const socket of sockets) {
+        try { socket.destroy(); } catch (error) { destroyError ??= error; }
+      }
+    };
+    drainTimer = setTimeout(destroy, drainMs);
+    deadline = setTimeout(() => { destroy(); finish(new Error('TCP_PROBE_CLEANUP_TIMEOUT')); }, timeoutMs);
+    try { server.close(error => { if (error) destroy(); finish(error); }); }
+    catch (error) { destroy(); finish(error); }
+  });
+}
+
 export async function runControlProbe({
   faults = createFaults(), openProbes = openUdpProbes, echo = tcpEcho,
   server = createServer(socket => { socket.on('error', () => {}); socket.on('data', bytes => socket.write(bytes)); }),
+  tcpShutdown,
   saveReport = report => writeFile('/evidence/control-probe.json', JSON.stringify(report, null, 2) + '\n'),
 } = {}) {
   const report = { version: 1, scope: 'packet-controls-only', startedAt: new Date().toISOString(),
     node: process.version, applicationRecoveryQualified: false,
     unsupported: ['physical-mobile-radio', 'carrier-nat', 'symmetric-nat', 'os-sleep', 'model-turn-observation'], checks: [] };
-  const probes = [];
+  const probes = [], sockets = new Set();
+  let started = false;
+  const accepted = socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  };
+  server.on('connection', accepted);
   try {
     const listening = once(server, 'listening');
     server.listen(8790, '127.0.0.1');
-    await listening;
+    await listening; started = true;
     probes.push(...await openProbes());
     for (const probe of probes) assert.equal(await probe.echoes(), true);
     report.checks.push('ipv4-ipv6-udp-baseline');
@@ -69,7 +99,11 @@ export async function runControlProbe({
     for (const probe of probes) {
       try { probe.close(); } catch { report.cleanup = false; }
     }
-    try { server.close(); } catch { report.cleanup = false; }
+    if (started) {
+      try { await closeTcpServer(server, sockets, tcpShutdown); } catch { report.cleanup = false; }
+    }
+    server.off('connection', accepted);
+    if (!report.cleanup) report.success = false;
     report.finishedAt = new Date().toISOString();
     await saveReport(report);
   }
