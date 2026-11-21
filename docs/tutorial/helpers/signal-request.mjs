@@ -1,129 +1,216 @@
-// Request/reply over live signals, for answers that are computed on demand and not
-// retained in the journal (dashboards, search results, previews).
-//
-// - A request waits until the answering participant is actually connected; a
-//   signal sent before a route exists is only echoed locally and would be lost.
-// - The same request ID is re-sent until the whole reply has arrived (live signals
-//   can be dropped or time out on a slow link), and the server answers a repeat
-//   from its short reply cache instead of recomputing. Pieces are idempotent.
-// - Replies of any size are split into signal-sized pieces and reassembled in
-//   order. Each piece is sent after the previous one is accepted; the relay paces
-//   them, and a transiently refused piece (busy route, slow link) is retried, so
-//   applications never handle SIGNAL_BACKPRESSURE or SIGNAL_SEND_TIMEOUT themselves.
-// Subscribers use mode 'all': every piece matters. ('latest' keeps only the newest
-// value per stream and is meant for state snapshots, not for multi-piece replies.)
-
-// JSON escaping inside a signal payload can roughly double a piece; keep each frame under 16 KiB.
-const PIECE_CHARACTERS = 7_000;
+// Bounded, disposable request/reply over authenticated live signals. Replies are
+// JSON, not journal entries. Retries reuse an ID; fragments from different
+// computations never mix. Signal topics are visible to application members, not
+// a private channel to the requesting device.
+const MAX_FRAME = 16_384, MAX_REPLY = 4 * 1024 * 1024, MAX_PARTS = 512;
+const MAX_CACHE = 32, MAX_CACHE_BYTES = 8 * 1024 * 1024, MAX_WAITING = 16;
+const encoder = new TextEncoder();
+const bytes = value => encoder.encode(JSON.stringify(value)).length;
 const TRANSIENT = new Set(['SIGNAL_ROUTE_UNAVAILABLE', 'SIGNAL_BACKPRESSURE', 'SIGNAL_SEND_TIMEOUT']);
-const fail = (code, message) => Object.assign(new Error(message), { code });
-const sleep = (ms, signal) => new Promise((resolve, reject) => {
-  const done = () => { signal?.removeEventListener('abort', abort); resolve(); };
-  const abort = () => { clearTimeout(timer); reject(signal.reason); };
-  const timer = setTimeout(done, ms); signal?.addEventListener('abort', abort, { once: true });
-});
+const fail = (code, message = code) => Object.assign(new Error(message), { code });
+const combine = (...signals) => AbortSignal.any(signals.filter(Boolean));
+function owned(task, signal) {
+  const promise = Promise.resolve(task);
+  return new Promise((resolve, reject) => {
+    const abort = () => { signal.removeEventListener('abort', abort); reject(signal.reason); };
+    if (signal.aborted) { void promise.catch(() => {}); abort(); return; }
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+}
+function deadline(signal, timeoutMs, code) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) throw fail('REQUEST_OPTIONS_INVALID');
+  const stop = new AbortController(), timer = setTimeout(() => stop.abort(fail(code)), timeoutMs);
+  return { signal: combine(signal, stop.signal), close() { clearTimeout(timer); stop.abort(fail('REQUEST_FINISHED')); } };
+}
+function sleep(ms, signal) {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const finish = error => { clearTimeout(timer); signal.removeEventListener('abort', abort); error ? reject(error) : resolve(); };
+    const abort = () => finish(signal.reason);
+    const timer = setTimeout(() => finish(), ms);
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+  });
+}
 
-/** Resolves once `peer` is among the session's connected peers. */
 export function whenConnected(session, peer, { signal } = {}) {
+  signal?.throwIfAborted();
   if (session.participation.status.connectedPeers.includes(peer)) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    let off;
-    const abort = () => { off?.(); reject(signal.reason); };
-    off = session.participation.onStatus(status => {
-      if (status.connectedPeers.includes(peer)) { off?.(); signal?.removeEventListener('abort', abort); resolve(); }
-    });
+    let off, settled = false;
+    const finish = error => {
+      if (settled) return; settled = true; off?.(); signal?.removeEventListener('abort', abort);
+      error ? reject(error) : resolve();
+    };
+    const abort = () => finish(signal.reason);
     signal?.addEventListener('abort', abort, { once: true });
-    if (session.participation.status.connectedPeers.includes(peer)) { off?.(); resolve(); }
+    try {
+      off = session.participation.onStatus(status => { if (status.connectedPeers.includes(peer)) finish(); });
+      if (settled) off(); // onStatus may invoke the callback synchronously.
+      if (signal?.aborted) abort();
+      else if (session.participation.status.connectedPeers.includes(peer)) finish();
+    } catch (error) { finish(error); }
   });
 }
 
-/** Browser side. `peer` is the answering participant's device ID (e.g. configuration.nativeDeviceId). */
-export function createSignalRequests(session, { peer, requestTopic = 'app/request', replyTopic = 'app/reply', retryMs = 3000 }) {
-  const waiting = new Map(), lifetime = new AbortController();
-  void (async () => {
-    for await (const signal of session.signals.subscribe({ topics: [replyTopic], mode: 'all', signal: lifetime.signal })) {
-      if (signal.authorId !== peer) continue;
-      const { id, i, n, z, error, code } = signal.payload ?? {}, entry = waiting.get(id);
-      if (!entry) continue;
-      entry.started = true; entry.progressAt = Date.now();
-      if (error) { entry.done = true; entry.reject(fail(code || 'REQUEST_FAILED', error)); continue; }
-      if (!Number.isSafeInteger(i) || !Number.isSafeInteger(n) || i < 0 || i >= n || typeof z !== 'string') continue;
-      entry.pieces[i] = z; entry.count = entry.pieces.filter(value => value !== undefined).length;
-      if (entry.count === n) {
-        entry.done = true;
-        try { entry.resolve(JSON.parse(entry.pieces.join(''))); } catch { entry.reject(fail('REQUEST_REPLY_INVALID', 'The reply could not be read.')); }
-      }
+/** Each complete payload, including escaped JSON and envelope, fits 16 KiB. */
+function splitReply(id, g, value) {
+  const text = JSON.stringify(value);
+  if (typeof text !== 'string') throw fail('REQUEST_REPLY_INVALID');
+  if (encoder.encode(text).length > MAX_REPLY) throw fail('REQUEST_REPLY_TOO_LARGE');
+  const parts = [];
+  const boundary = end => end < text.length && /[\uD800-\uDBFF]/.test(text[end - 1]) && /[\uDC00-\uDFFF]/.test(text[end]) ? end - 1 : end;
+  for (let start = 0; start < text.length;) {
+    if (parts.length === MAX_PARTS) throw fail('REQUEST_REPLY_TOO_LARGE');
+    let low = start, high = Math.min(text.length, start + MAX_FRAME);
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2), end = boundary(middle);
+      if (bytes({ id, g, i: MAX_PARTS - 1, n: MAX_PARTS, z: text.slice(start, end) }) <= MAX_FRAME) low = middle;
+      else high = middle - 1;
     }
-  })().catch(() => {});
+    const end = boundary(low);
+    if (end <= start) throw fail('REQUEST_REPLY_TOO_LARGE');
+    parts.push({ id, g, i: parts.length, n: 0, z: text.slice(start, end) }); start = end;
+  }
+  for (const part of parts) part.n = parts.length;
+  return parts;
+}
+
+/** Browser/facade side. Close cancels pending sends and connectivity waits too. */
+export function createSignalRequests(session, { peer, requestTopic = 'app/request', replyTopic = 'app/reply', retryMs = 3000 }) {
+  if (!Number.isSafeInteger(retryMs) || retryMs < 1 || retryMs > 60_000) throw fail('REQUEST_OPTIONS_INVALID');
+  const waiting = new Map(), stop = new AbortController(), lifetime = combine(stop.signal, session.signal);
+  void (async () => {
+    for await (const signal of session.signals.subscribe({ topics: [replyTopic], mode: 'all', signal: lifetime })) {
+      if (signal.authorId !== peer) continue;
+      const { id, g, i, n, z, error, code } = signal.payload ?? {}, entry = waiting.get(id);
+      if (!entry || entry.done) continue;
+      try {
+        if (typeof g !== 'string' || !g.length || g.length > 128 || bytes(signal.payload) > MAX_FRAME) throw fail('REQUEST_REPLY_INVALID');
+        if (entry.retired.has(g)) continue;
+        if (g !== entry.g) {
+          if (entry.g) entry.retired.add(entry.g);
+          if (entry.retired.size > 32) throw fail('REQUEST_REPLY_INVALID');
+          entry.g = g; entry.pieces = new Map(); entry.total = 0; entry.n = undefined;
+        }
+        if (typeof error === 'string') throw fail(typeof code === 'string' ? code.slice(0, 128) : 'REQUEST_FAILED', error.slice(0, 2000));
+        if (!Number.isSafeInteger(i) || !Number.isSafeInteger(n) || n < 1 || n > MAX_PARTS || i < 0 || i >= n || typeof z !== 'string' ||
+            (entry.n !== undefined && n !== entry.n)) throw fail('REQUEST_REPLY_INVALID');
+        entry.n = n;
+        if (entry.pieces.has(i)) { if (entry.pieces.get(i) !== z) throw fail('REQUEST_REPLY_INVALID'); continue; }
+        entry.total += encoder.encode(z).length;
+        if (entry.total > MAX_REPLY) throw fail('REQUEST_REPLY_TOO_LARGE');
+        entry.pieces.set(i, z); entry.progressAt = Date.now();
+        if (entry.pieces.size === n) {
+          const text = Array.from({ length: n }, (_, index) => entry.pieces.get(index)).join('');
+          let answer; try { answer = JSON.parse(text); } catch { throw fail('REQUEST_REPLY_INVALID'); }
+          entry.done = true; entry.resolve(answer);
+        }
+      } catch (error) { entry.done = true; entry.reject(error); }
+    }
+    if (!lifetime.aborted) stop.abort(fail('REQUEST_STREAM_CLOSED'));
+  })().catch(error => stop.abort(error));
   return Object.freeze({
     async request(name, input = null, { signal, timeoutMs = 30_000 } = {}) {
-      const id = crypto.randomUUID(), deadline = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...[signal].filter(Boolean)]);
-      const entry = { pieces: [], count: 0, started: false, done: false, progressAt: 0 };
+      const base = combine(lifetime, signal); base.throwIfAborted();
+      if (waiting.size >= MAX_WAITING) throw fail('REQUEST_BUSY');
+      const id = crypto.randomUUID(), payload = { id, q: name, input };
+      if (typeof name !== 'string' || bytes(payload) > MAX_FRAME) throw fail('REQUEST_TOO_LARGE');
+      const scope = deadline(base, timeoutMs, 'REQUEST_TIMEOUT');
+      const entry = { pieces: new Map(), retired: new Set(), done: false, progressAt: 0 };
       const result = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
       waiting.set(id, entry);
-      try {
-        const sending = (async () => {
-          // Ask again (same ID) until the reply is complete; a repeat is answered from the
-          // server's cache. While pieces keep arriving, wait instead of asking again.
-          while (!entry.done) {
-            if (Date.now() - entry.progressAt >= retryMs) {
-              await whenConnected(session, peer, { signal: deadline });
-              try { await session.signals.send(requestTopic, { id, q: name, input }, { ttlMs: 20_000 }); }
-              catch (error) { if (!TRANSIENT.has(error.code)) throw error; }
-            }
-            await sleep(retryMs, deadline);
+      const abort = () => { entry.done = true; entry.reject(scope.signal.reason); };
+      scope.signal.addEventListener('abort', abort, { once: true });
+      if (scope.signal.aborted) abort();
+      const sending = (async () => {
+        while (!entry.done) {
+          scope.signal.throwIfAborted();
+          if (Date.now() - entry.progressAt >= retryMs) {
+            await whenConnected(session, peer, { signal: scope.signal }); scope.signal.throwIfAborted();
+            try { await owned(session.signals.send(requestTopic, payload, { ttlMs: 20_000, signal: scope.signal }), scope.signal); }
+            catch (error) { if (!TRANSIENT.has(error.code)) throw error; }
           }
-        })();
-        sending.catch(error => entry.reject(error));
-        return await Promise.race([result, new Promise((_resolve, reject) => {
-          deadline.addEventListener('abort', () => reject(fail('REQUEST_TIMEOUT', 'The answer did not arrive in time.')), { once: true });
-        })]);
-      } finally { entry.done = true; waiting.delete(id); }
+          if (!entry.done) await sleep(retryMs, scope.signal);
+        }
+      })();
+      void sending.catch(error => { entry.done = true; entry.reject(error); });
+      try { return await result; }
+      finally { entry.done = true; waiting.delete(id); scope.signal.removeEventListener('abort', abort); scope.close(); await sending.catch(() => {}); }
     },
-    close() { lifetime.abort(); },
+    close() { stop.abort(fail('REQUEST_CLOSED')); },
   });
 }
 
-/** Sends pieces in order. A refused or slow piece (busy route, stalled link) is retried
- * for its 30 s lifetime, so one transient failure never drops the rest of a reply.
- * Resolves to the number of retries; rejects only on a non-transient error or expiry. */
+/** Retry refused pieces within one fixed batch lifetime, never once per piece. */
 export async function sendPieces(session, topic, parts, { signal, ttlMs = 30_000 } = {}) {
-  let retries = 0;
-  for (const part of parts) {
-    const until = Date.now() + ttlMs;
-    for (let attempt = 0; ; attempt++) {
-      try { await session.signals.send(topic, part, { ttlMs, ...(signal ? { signal } : {}) }); break; }
-      catch (error) {
-        const wait = 250 * 2 ** Math.min(attempt, 4);
-        if (!TRANSIENT.has(error.code) || Date.now() + wait > until) throw error;
-        retries++; await sleep(wait, signal);
+  const base = combine(session.signal, signal); base.throwIfAborted();
+  const scope = deadline(base, ttlMs, 'SIGNAL_SEND_TIMEOUT'); let retries = 0;
+  try {
+    for (const part of parts) {
+      if (bytes(part) > MAX_FRAME) throw fail('SIGNAL_FRAME_TOO_LARGE');
+      for (let attempt = 0;; attempt++) {
+        scope.signal.throwIfAborted();
+        try { await owned(session.signals.send(topic, part, { ttlMs, signal: scope.signal }), scope.signal); break; }
+        catch (error) {
+          if (!TRANSIENT.has(error.code) || scope.signal.aborted) throw error;
+          retries++; await sleep(250 * 2 ** Math.min(attempt, 4), scope.signal);
+        }
       }
     }
-  }
-  return retries;
+    return retries;
+  } finally { scope.close(); }
 }
 
-/** Native side: answer each request once, re-sending a cached reply for repeats. */
-export function serveSignalRequests(session, { handle, requestTopic = 'app/request', replyTopic = 'app/reply', signal, cacheMs = 60_000 }) {
-  const recent = new Map();
-  const send = parts => sendPieces(session, replyTopic, parts, { signal });
-  return (async () => {
-    for await (const request of session.signals.subscribe({ topics: [requestTopic], mode: 'all', signal })) {
+/** Native side. Cache scope is authenticated author + ID, never ID alone.
+ * 4 MiB / 512-piece answers, 32 entries and 8 MiB cached payloads are hard caps.
+ * Terminal delivery failures reject this service promise instead of disappearing.
+ */
+export async function serveSignalRequests(session, { handle, requestTopic = 'app/request', replyTopic = 'app/reply', signal, cacheMs = 60_000 }) {
+  if (!Number.isSafeInteger(cacheMs) || cacheMs < 0 || cacheMs > 300_000) throw fail('REQUEST_OPTIONS_INVALID');
+  const stop = new AbortController(), lifetime = combine(stop.signal, session.signal, signal), recent = new Map(), jobs = new Set();
+  let cachedBytes = 0, failure;
+  const forget = key => { const entry = recent.get(key); if (entry) cachedBytes -= entry.bytes; recent.delete(key); };
+  const evict = () => { for (const [key, entry] of recent) if (!entry.pending && !entry.active) { forget(key); return true; } return false; };
+  const errorPart = (id, g, error) => [{ id, g, error: String(error.message ?? error).slice(0, 2000), code: String(error.code || 'REQUEST_FAILED').slice(0, 128) }];
+  const dispatch = entry => {
+    if (entry.active) return;
+    const job = (async () => { const parts = await entry.parts; lifetime.throwIfAborted(); await sendPieces(session, replyTopic, parts, { signal: lifetime }); })();
+    entry.active = job; jobs.add(job);
+    void job.catch(error => { if (!lifetime.aborted) { failure = error; stop.abort(error); } }).finally(() => { entry.active = null; jobs.delete(job); });
+  };
+  try {
+    lifetime.throwIfAborted();
+    for await (const request of session.signals.subscribe({ topics: [requestTopic], mode: 'all', signal: lifetime })) {
+      lifetime.throwIfAborted();
       const { id, q, input } = request.payload ?? {};
-      if (typeof id !== 'string' || id.length > 128 || typeof q !== 'string') continue;
-      const now = Date.now();
-      for (const [key, value] of recent) if (value.at < now - cacheMs) recent.delete(key);
-      const cached = recent.get(id);
-      if (cached) { void cached.parts.then(send).catch(() => {}); continue; }
-      const parts = (async () => {
-        try {
-          const text = JSON.stringify(await handle(q, input ?? null, { from: request.authorId }));
-          const n = Math.max(1, Math.ceil(text.length / PIECE_CHARACTERS));
-          return Array.from({ length: n }, (_value, i) => ({ id, i, n, z: text.slice(i * PIECE_CHARACTERS, (i + 1) * PIECE_CHARACTERS) }));
-        } catch (error) { return [{ id, error: String(error.message ?? error).slice(0, 2000), code: error.code || 'error' }]; }
+      if (typeof request.authorId !== 'string' || typeof id !== 'string' || !id.length || id.length > 128 || typeof q !== 'string' || bytes(request.payload) > MAX_FRAME) continue;
+      for (const [key, entry] of recent) if (!entry.pending && !entry.active && entry.until <= Date.now()) forget(key);
+      const key = JSON.stringify([request.authorId, id]), cached = recent.get(key);
+      if (cached) { dispatch(cached); continue; } // Same author/ID retains its ORIGINAL name/input.
+      while (recent.size >= MAX_CACHE && evict()) { /* bounded cache */ }
+      if (recent.size >= MAX_CACHE) continue; // Busy requests can retry; never grow work without bound.
+      const g = crypto.randomUUID(), entry = { bytes: 0, pending: true, active: null, until: Infinity };
+      recent.set(key, entry);
+      entry.parts = (async () => {
+        const scope = deadline(lifetime, 30_000, 'REQUEST_TIMEOUT'); let parts;
+        try { parts = splitReply(id, g, await owned(Promise.resolve().then(() => handle(q, input ?? null, { from: request.authorId, signal: scope.signal })), scope.signal)); }
+        catch (error) { parts = errorPart(id, g, error); }
+        finally { scope.close(); }
+        lifetime.throwIfAborted();
+        let size = parts.reduce((sum, part) => sum + bytes(part), 0);
+        // Reserve one bounded error envelope per entry, including when all data
+        // replies are active and therefore cannot be evicted.
+        const limit = typeof parts[0]?.error === 'string' ? MAX_CACHE_BYTES : MAX_CACHE_BYTES - MAX_CACHE * MAX_FRAME;
+        while (cachedBytes + size > limit && evict()) { /* retain active replies */ }
+        if (cachedBytes + size > limit) { parts = errorPart(id, g, fail('REQUEST_BUSY')); size = parts.reduce((sum, part) => sum + bytes(part), 0); }
+        entry.bytes = size; cachedBytes += size; entry.pending = false; entry.until = Date.now() + cacheMs;
+        return parts;
       })();
-      recent.set(id, { at: now, parts });
-      void parts.then(send).catch(() => {});
+      dispatch(entry);
     }
-  })();
+  } catch (error) { if (!lifetime.aborted) failure = error; }
+  finally { stop.abort(failure ?? fail('REQUEST_CLOSED')); await Promise.allSettled([...jobs]); recent.clear(); }
+  if (failure) throw failure;
 }
