@@ -50,8 +50,9 @@ export async function openBrowserOwner(options){
       const ready=waitFor(worker.port,data=>data.type==='ready'&&data.id===id,options);
       worker.port.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'shared',id,profileId:options.profileId});
       const active=await ready;transport=createSharedRootEndpoint(worker.port,{profileId:options.profileId,rootId:id,
-        ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs});
+        ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
       session=await connectApplicationOwner(transport,handshake);
+      transport.bindRequestSource(session);
     }else{
       if(typeof BroadcastChannel!=='function'||typeof Worker!=='function')throw new CollaborationError('OWNER_CAPABILITY_UNAVAILABLE','The elected owner route needs Worker and BroadcastChannel');
       channel=new BroadcastChannel(ownerChannelName(options.profileId));
@@ -62,8 +63,9 @@ export async function openBrowserOwner(options){
       worker.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'elected',id,profileId:options.profileId});booted=true;
       channel.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'discover'});
       const active=await ready;transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,
-        onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs});
+        onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
       session=await connectApplicationOwner(transport,handshake);
+      transport.bindRequestSource(session);
     }
   }catch(error){await transport?.close();channel?.close();if(shared){
     try{worker?.port?.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'root.detach',profileId:options.profileId,rootId:id,id:crypto.randomUUID()});}catch{}

@@ -1,9 +1,11 @@
+import { createOwnerLiveness } from './browser-liveness.mjs';
 import { BROWSER_OWNER_PROTOCOL, checkOwnerFrame, ended } from './browser-transport.mjs';
 import { CollaborationError } from './protocol.mjs';
 
 /** Private SharedWorker root lease; observation expiry never releases the owner's Web Lock. */
-export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanceId, livenessTimeoutMs = 15000, onReplaced } = {}) {
+export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanceId, livenessTimeoutMs = 15000, requestTimeoutMs = 30000, onReplaced } = {}) {
   if (!Number.isFinite(livenessTimeoutMs) || livenessTimeoutMs < 100 || livenessTimeoutMs > 120000) throw new CollaborationError('OWNER_CONFIGURATION_INVALID');
+  const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs });
   const pending = new Map(); let local, remote, pulseTimer, paused = false, disposed = false, closing;
   const request = (action, timeoutMs = livenessTimeoutMs) => {
     if (disposed) return Promise.reject(new CollaborationError('ENDPOINT_STALE'));
@@ -31,19 +33,27 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
     if (data.type !== 'root.result' && data.type !== 'failure') return;
     clearTimeout(waiter.timer); pending.delete(data.id);
     if (data.type === 'failure') waiter.reject(new CollaborationError(data.code ?? 'OWNER_UNREACHABLE', data.message));
-    else waiter.resolve();
+    else { liveness.authenticated(); waiter.resolve(); }
   };
   const pulse = async () => {
     clearTimeout(pulseTimer); if (disposed || closing || paused) return;
-    try { await request('ping'); }
-    catch { if (!paused) fail('OWNER_UNREACHABLE'); return; }
+    const remaining = liveness.deadline() - performance.now();
+    if (remaining <= 0) { fail('OWNER_UNREACHABLE'); return; }
+    try { await request('ping', Math.min(livenessTimeoutMs, remaining)); }
+    catch {
+      if (disposed || closing || paused) return;
+      const left = liveness.deadline() - performance.now();
+      if (left <= 0) { fail('OWNER_UNREACHABLE'); return; }
+      pulseTimer = setTimeout(pulse, Math.min(left, Math.max(50, Math.min(5000, livenessTimeoutMs / 3))));
+      pulseTimer.unref?.(); return;
+    }
     if (!disposed && !closing && !paused) {
       pulseTimer = setTimeout(pulse, Math.max(50, Math.min(5000, livenessTimeoutMs / 3))); pulseTimer.unref?.();
     }
   };
   function close() {
     if (closing) return closing;
-    clearTimeout(pulseTimer);
+    clearTimeout(pulseTimer); liveness.clear();
     closing = (async () => {
       try { await request('detach', Math.min(1000, livenessTimeoutMs)); } catch { /* A dead worker cannot retain the local facade. */ }
       finally {
@@ -64,11 +74,12 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
     }); local.start();
     remote.addEventListener('message', ({ data }) => {
       if (disposed) return;
-      try { checkOwnerFrame(data); local.postMessage(data); if (data?.ended) void close(); }
+      try { checkOwnerFrame(data); liveness.authenticated(); local.postMessage(data); if (data?.ended) void close(); }
       catch { fail('OWNER_MESSAGE_LIMIT'); }
     }); remote.start();
     root.postMessage({ ...frame, port: wire.port2 }, [wire.port2]);
   }, addEventListener() {}, removeEventListener() {},
+  bindRequestSource: session => liveness.bind(session),
   async suspend() {
     if (disposed || closing) throw new CollaborationError('ENDPOINT_STALE');
     paused = true; clearTimeout(pulseTimer);

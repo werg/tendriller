@@ -37,6 +37,17 @@ in a page's eager import graph.
 
 Run `contract:generate` after executable metadata-schema edits. `contract:check` rejects stale generated files. `check:boundaries` examines source imports and built dependency graphs. `test:consumer` installs only public archives in an independent directory and checks runtime imports and strict declarations.
 
+The collaboration browser owner keeps its existing 15-second silence fence.
+A pending finite facade call can use one fixed grace window ending at its original
+request deadline (30 seconds by default). Classification belongs to Chronolog's
+public `boundedRequest` getter; core does not inspect private RPC methods.
+New or cancelled caller requests cannot renew that window. Only an authenticated
+owner response rearms it. Passive applied/shared/event waits grant no grace.
+An elected route resumes suspension only after a bounded authenticated reply.
+Initial connection readiness retains its own existing opening deadline; the
+finite-request source binds only after that initial facade connection returns.
+This does not preempt a synchronous SQL call or qualify passive-only SQL stalls.
+
 ## Verification
 
 Use `test:contract` for wire filters and SDK semantics; `test:runtime-unit` for inert composition, capability/sensor lifecycle and immutable publication caching; `test:server` for real workerd authorization, controls, signed releases, storage CAS and restart. `test:tools` exercises public-session tooling and extracted artifacts. Browser tests cover actual runtime behavior, owner claim/origin boundaries, signed code serving and explicit speech use.
