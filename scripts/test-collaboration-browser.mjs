@@ -110,22 +110,22 @@ try{
       assert.equal(await two.evaluate(()=>window.viewStore.readDraft().text),'discussion draft');
       assert.equal(reloaded.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
     });
-    if(mode==='shared'){
-      if(qualifyLifecycle)await stage('shared:frozen-document-discard-reclaims-root-capacity',async()=>{
+    if(qualifyLifecycle)await stage(`${mode}:frozen-document-discard-reclaims-${mode==='shared'?'root':'route'}-capacity`,async()=>{
         const before=await two.evaluate(async()=>({deviceId:window.session.deviceId,ownerInstanceId:window.session.endpoint.ownerInstanceId,
           operation:await window.session.operations.inspect('first'),eventCount:(await window.session.query('messages',null)).value.events.length}));
-        // maxPorts is four. Six discarded roots plus two retained siblings must
-        // force fresh admission scans; BC attachment would hide a root leak.
+        // Both root and authenticated-route limits are four in this fixture.
+        // Six discarded followers must force admission GC with the owner alive.
         const wireProof=[];
         for(let index=0;index<6;index++){
-          const wire={droppedRootDetaches:0};
+          const wire={droppedRootDetaches:0,droppedBroadcastReleases:0};
           const orphan=await context.newPage();let cover,cdp,timer;
           try{
-            await orphan.exposeBinding('__orphanWire',(_source,type)=>{if(type==='root.detach.dropped')wire.droppedRootDetaches++;});
+            await orphan.exposeBinding('__orphanWire',(_source,type)=>{if(type==='root.detach.dropped')wire.droppedRootDetaches++;else if(type==='bc.release.dropped')wire.droppedBroadcastReleases++;});
             await orphan.goto(url('discussion.html',`orphan-${index}`)+'&lost-teardown=1');const attached=await orphan.evaluate(()=>window.ready);
-            assert.equal(attached.mode,'shared','BC fallback must not mask exhausted SharedWorker capacity');
-            assert.deepEqual(attached.portEventFault?.events,['close','messageerror']);
-            assert.equal(await two.evaluate(async name=>(await navigator.locks.query()).held.some(lock=>lock.name===name),attached.portEventFault.witnessName),true,'live document witness must exist');
+            assert.equal(attached.mode,mode,'BC fallback must not mask exhausted SharedWorker capacity');
+            if(mode==='shared')assert.deepEqual(attached.portEventFault?.events,['close','messageerror']);
+            const witnessName=mode==='shared'?attached.portEventFault.witnessName:attached.broadcastWitnessName;assert.equal(typeof witnessName,'string');
+            assert.equal(await two.evaluate(async name=>(await navigator.locks.query()).held.some(lock=>lock.name===name),witnessName),true,'live document witness must exist');
             assert.equal(attached.deviceId,before.deviceId);assert.equal(attached.endpoint.ownerInstanceId,before.ownerInstanceId);
             const events=[];let frozen;const observed=new Promise(resolve=>{frozen=resolve;});
             await orphan.exposeBinding('__orphanLifecycle',(_source,type)=>{events.push(type);if(type==='freeze')frozen();});
@@ -135,13 +135,13 @@ try{
             await two.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),attached.endpoint.endpointId,{timeout:5000});
             await cdp.send('Page.setWebLifecycleState',{state:'frozen'});
             try{await Promise.race([observed,new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('ORPHAN_FREEZE_NOT_OBSERVED')),5000);})]);}finally{clearTimeout(timer);}
-            // The fixture drops root.detach at MessagePort.postMessage. Any
+            // The fixture drops root.detach and BC release notifications. Any
             // pagehide work during close cannot notify the Worker of teardown.
             // Deliberately never thaw or call application detach. Browser death
             // releases the witness while this Worker keeps serving the siblings.
             await orphan.close();assert.deepEqual(events,['freeze']);
             await cdp.detach().catch(()=>{});cdp=undefined;
-            await two.waitForFunction(async name=>!(await navigator.locks.query()).held.some(lock=>lock.name===name),attached.portEventFault.witnessName,{timeout:5000});
+            await two.waitForFunction(async name=>!(await navigator.locks.query()).held.some(lock=>lock.name===name),witnessName,{timeout:5000});
             wireProof.push(wire);
           }finally{await orphan.close().catch(()=>{});await cover?.close();await cdp?.detach().catch(()=>{});}
         }
@@ -151,8 +151,9 @@ try{
         const after=await two.evaluate(async()=>({deviceId:window.session.deviceId,ownerInstanceId:window.session.endpoint.ownerInstanceId,
           operation:await window.session.operations.inspect('first'),eventCount:(await window.session.query('messages',null)).value.events.length}));
         assert.deepEqual(after,before);assert.equal(await one.evaluate(()=>window.session.signal.aborted),false);
-        evidence.frozenDiscardWire={pages:wireProof,detachFault:'dropped-before-native-post',nativePortEventsBlocked:['close','messageerror'],missingWitnessesVerified:6,droppedRootDetaches:wireProof.reduce((sum,page)=>sum+page.droppedRootDetaches,0)};
-      });
+        (evidence.frozenDiscardWire??={})[mode]={pages:wireProof,detachFault:'root-detach-and-bc-release-dropped-before-native-post',nativePortEventsBlocked:mode==='shared'?['close','messageerror']:[],missingWitnessesVerified:6,droppedRootDetaches:wireProof.reduce((sum,page)=>sum+page.droppedRootDetaches,0),droppedBroadcastReleases:wireProof.reduce((sum,page)=>sum+page.droppedBroadcastReleases,0)};
+    });
+    if(mode==='shared'){
       await stage('shared:another-worker-version-attaches-to-the-existing-owner',async()=>{
         // A tab on a different publication's Worker URL gets its own SharedWorker,
         // which cannot take the held profile. It must attach to the owner, not fail OWNER_BUSY.
@@ -196,8 +197,8 @@ try{
       });
     }
     evidence.scenarios.push({mode,oneSigner:true,twoDocuments:true,duplicateViewFenced:true,protocolOnlyCold:true,signedLocalSignals:true,
-      concurrentCommands:true,independentDrafts:true,...(mode==='shared'?{otherWorkerVersionAttaches:true}:{}),samePageReattachKeepsOwner:true,suspendResume:true,automaticChromiumFreezeResume:qualifyLifecycle,detachPreservesSibling:true,detachOrCrashReopen:true,
-      asyncIdentityBootstrap:true,participantFocus:true,reloadPreservesDraft:true,...(mode==='shared'?{boundedRootReuse:true,frozenDiscardCapacityReclaimed:qualifyLifecycle,frozenDiscardCount:qualifyLifecycle?6:0,sessionCloseReleasesFence:true}:{})});
+      concurrentCommands:true,independentDrafts:true,...(mode==='shared'?{otherWorkerVersionAttaches:true}:{}),samePageReattachKeepsOwner:true,suspendResume:true,automaticChromiumFreezeResume:qualifyLifecycle,frozenDiscardCapacityReclaimed:qualifyLifecycle,frozenDiscardCount:qualifyLifecycle?6:0,detachPreservesSibling:true,detachOrCrashReopen:true,
+      asyncIdentityBootstrap:true,participantFocus:true,reloadPreservesDraft:true,...(mode==='shared'?{boundedRootReuse:true,sessionCloseReleasesFence:true}:{})});
     if(lifecycleBrowser)await Promise.all(context.pages().map(page=>page.close()));else await context.close();
   }
   evidence.stage='complete';evidence.status='passed';console.log(JSON.stringify(evidence,null,2));

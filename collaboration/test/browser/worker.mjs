@@ -24,7 +24,7 @@ globalThis.addEventListener('connect',event=>{
 const service=serveBrowserOwner({async load(){
   // Exercise first-message delivery while configuration performs real async work.
   await new Promise(resolve=>setTimeout(resolve,30));
-  return{profileId,rootLimits:{maxPorts:4},async createIdentity(){const device=await openBrowserDevice({name:profileId,create:true});try{return device.identity.publicKey;}finally{await device.close();}},
+  return{profileId,rootLimits:{maxPorts:4},ownerOptions:{maxAttachments:4},async createIdentity(){const device=await openBrowserDevice({name:profileId,create:true});try{return device.identity.publicKey;}finally{await device.close();}},
   async openSession(){
   const device=await openBrowserDevice({name:profileId,create:true});let session;
   try{

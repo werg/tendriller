@@ -1,4 +1,5 @@
 import {openBrowserOwner,createBrowserIdentity} from '../../browser.mjs';
+import {rootLifetimeLockName} from '../../root-lifetime.mjs';
 import {createViewStore} from '../../local.mjs';
 import {ownerWorkerName,BROWSER_OWNER_PROTOCOL} from '../../browser-transport.mjs';
 import {verifyParticipantPanel} from './presentation.mjs';
@@ -15,6 +16,12 @@ if(query.has('lost-teardown')){
     }
     return post.call(this,message,...args);
   };
+  const broadcast=BroadcastChannel.prototype.postMessage;
+  BroadcastChannel.prototype.postMessage=function(message,...args){
+    if(message?.protocol===BROWSER_OWNER_PROTOCOL&&message.type==='hello')window.fixtureBroadcastWitness=rootLifetimeLockName(profileId,message.route);
+    if(message?.protocol===BROWSER_OWNER_PROTOCOL&&message.type==='release'){void window.__orphanWire?.('bc.release.dropped');return;}
+    return broadcast.call(this,message,...args);
+  };
 }
 if(globalThis.SharedWorker){
   const Native=globalThis.SharedWorker;
@@ -27,7 +34,7 @@ window.ready=(async()=>{
   const workerUrl=new URL(`./worker.mjs?profile=${profileId}${query.get('variant')?`&variant=${query.get('variant')}`:''}`,import.meta.url);
   if(query.get('identity')==='create'){await createBrowserIdentity({workerUrl,profileId});const retained=new URL(location.href);retained.searchParams.delete('identity');history.replaceState(null,'',retained);}
   window.ownerStage='attachment';
-  const ownerOptions={workerUrl,profileId,
+  const ownerOptions={workerUrl,profileId,...(query.has('lost-teardown')?{timeoutMs:5000}:{}),
     applicationId:'91'.repeat(32),definitionId:'owner-fixture',definitionVersion:'1',mode:query.get('mode')||'shared',
     context:{viewId:sessionStorage.getItem('fixture-view')||query.get('view')||crypto.randomUUID(),documentPath:location.pathname,publicationId:'fixture-publication'}};
   const attachment=await openBrowserOwner(ownerOptions);
@@ -55,5 +62,5 @@ window.ready=(async()=>{
     window.fixtureControl=control;
   };
   window.ownerProfile=profileId;window.ownerStage='ready';
-  return{mode:attachment.mode,portEventFault:window.fixtureRootEvents??null,endpoint:attachment.session.endpoint,deviceId:attachment.session.deviceId,status:attachment.session.status};
+  return{broadcastWitnessName:window.fixtureBroadcastWitness??null,mode:attachment.mode,portEventFault:window.fixtureRootEvents??null,endpoint:attachment.session.endpoint,deviceId:attachment.session.deviceId,status:attachment.session.status};
 })().catch(error=>{window.ownerStage=`failed:${window.ownerStage}`;window.ownerFailure={name:error.name,code:error.code,message:error.message};throw error;});
