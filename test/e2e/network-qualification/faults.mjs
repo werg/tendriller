@@ -8,7 +8,8 @@ const chain = 'TD_NETWORK_LAB';
 // This controller is only for the disposable container's network namespace.
 // No caller-supplied command, interface, address, or shell expression is accepted.
 export function createFaults({ run = execute, isolated = process.env.TENDRILLER_NETWORK_LAB === '1' && existsSync('/.dockerenv') } = {}) {
-  let installed = false;
+  const chains = new Set();
+  const hooks = new Set();
   const shaped = new Set();
   const command = (file, args) => run(file, args, { timeout: 5000, maxBuffer: 16384 });
   const requireIsolation = () => {
@@ -18,44 +19,40 @@ export function createFaults({ run = execute, isolated = process.env.TENDRILLER_
     async blockUdp({ service = false } = {}) {
       requireIsolation();
       if (typeof service !== 'boolean') throw new Error('NETWORK_LAB_INVALID_FAULT');
-      if (installed) throw new Error('NETWORK_LAB_FAULT_ALREADY_ACTIVE');
+      if (chains.size || hooks.size) throw new Error('NETWORK_LAB_FAULT_ALREADY_ACTIVE');
       // Both address families matter: IPv4-only blocking can silently use IPv6 RTC.
-      const completed = [];
       try {
         for (const tool of ['iptables', 'ip6tables']) {
           await command(tool, ['-w', '-N', chain]);
-          completed.push(tool);
+          chains.add(tool);
           await command(tool, ['-w', '-A', chain, '-p', 'udp', '--dport', '53', '-j', 'RETURN']);
           await command(tool, ['-w', '-A', chain, '-p', 'udp', '-j', 'DROP']);
           if (service) await command(tool, ['-w', '-A', chain, '-p', 'tcp', '--dport', '8790', '-j', 'DROP']);
           await command(tool, ['-w', '-I', 'OUTPUT', '1', '-j', chain]);
+          hooks.add(tool);
         }
-        installed = true;
       } catch (error) {
-        const failures = [];
-        for (const tool of completed) {
-          // Hook may not yet exist when installation failed; flush/delete must still run.
-          await command(tool, ['-w', '-D', 'OUTPUT', '-j', chain]).catch(() => {});
-          for (const args of [['-w', '-F', chain], ['-w', '-X', chain]]) {
-            try { await command(tool, args); } catch (failure) { failures.push(failure); }
-          }
-        }
-        if (failures.length) throw new AggregateError([error, ...failures], 'NETWORK_LAB_ROLLBACK_FAILED');
+        try { await this.restoreUdp(); }
+        catch (rollback) { throw new AggregateError([error, rollback], 'NETWORK_LAB_ROLLBACK_FAILED'); }
         throw error;
       }
     },
     blockApplicationNetwork() { return this.blockUdp({ service: true }); },
     async restoreUdp() {
       requireIsolation();
-      if (!installed) return;
       const errors = [];
       for (const tool of ['iptables', 'ip6tables']) {
-        for (const args of [['-w', '-D', 'OUTPUT', '-j', chain], ['-w', '-F', chain], ['-w', '-X', chain]]) {
-          try { await command(tool, args); } catch (error) { errors.push(error); }
+        if (hooks.has(tool)) {
+          try { await command(tool, ['-w', '-D', 'OUTPUT', '-j', chain]); hooks.delete(tool); }
+          catch (error) { errors.push(error); }
+        }
+        if (chains.has(tool)) {
+          try { await command(tool, ['-w', '-F', chain]); } catch (error) { errors.push(error); }
+          try { await command(tool, ['-w', '-X', chain]); chains.delete(tool); }
+          catch (error) { errors.push(error); }
         }
       }
       if (errors.length) throw new AggregateError(errors, 'NETWORK_LAB_RESTORE_FAILED');
-      installed = false;
     },
     async impair() {
       requireIsolation();
