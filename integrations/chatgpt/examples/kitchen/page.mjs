@@ -4,7 +4,7 @@ import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createAssistanceClient } from './client.mjs';
 import { createPendingStorage } from './pending-storage.mjs';
 import { visibleAssistanceStatus } from './projection.mjs';
-import { createLiveView } from './helpers/live-view.mjs';
+import { createLiveView } from '@tendriller/core/collaboration/live-view';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => {
@@ -170,7 +170,8 @@ $('#connect').onclick = async () => {
         $('#recovery').textContent = 'Selected history changed. Inspect uncertain or abandoned commands before explicitly reapplying work.';
       }, onError: report,
     });
-    await refresh();
+    await liveView.ready({ timeoutMs: 30_000 });
+    await inspectOperation();
   } catch (error) {
     report(error); liveView?.close();
     try { await session?.close(); } catch { /* Keep the original error. */ }

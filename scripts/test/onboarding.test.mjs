@@ -94,7 +94,7 @@ test('the downloadable starter contains complete parseable source and no local p
     }
   }
   for (const path of ['session.mjs', 'local.mjs', 'worker.mjs', 'account-setup.mjs', 'host-adoption.mjs',
-    'helpers/cli-lifetime.mjs', 'helpers/live-view.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
+    'helpers/cli-lifetime.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
     'media/panel.mjs', 'media/inference-client.mjs', 'media/inference-peer.mjs', 'media/provider-openai.mjs',
     'sql/setup.mjs', 'sql/session.mjs', 'sql/engine.mjs', 'sql/domain.mjs', 'sql/demo.mjs', 'sql/worker.mjs'])
     assert(TUTORIAL_FILES.includes(path), `The documented starter is missing ${path}`);
@@ -162,4 +162,16 @@ test('events and SQL starter qualification use the current pinned session source
   assert(service.includes('npm run release:artifacts'), 'Events qualification prepares the pinned public session in the graph');
   assert(service.includes('test:first-app -- --first-app-archive'), 'Events qualification must use the exact kit');
   assert(workflow.includes(`chronolog-peer-session-${source.slice(0, 8)}-sql.tgz`));
+});
+
+
+test('live views have one SDK implementation and both authored pages use bounded initial readiness', () => {
+  assert.equal(TUTORIAL_FILES.includes('helpers/live-view.mjs'), false);
+  for (const path of ['docs/tutorial/helpers/live-view.mjs', 'integrations/chatgpt/examples/kitchen/helpers/live-view.mjs'])
+    assert.equal(existsSync(join(root, path)), false, 'Copied live-view implementation: ' + path);
+  for (const path of ['docs/tutorial/page.mjs', 'integrations/chatgpt/examples/kitchen/page.mjs']) {
+    const source = readFileSync(join(root, path), 'utf8');
+    assert.match(source, /import \{ createLiveView \} from '@tendriller\/core\/collaboration\/live-view'/);
+    assert.match(source, /await liveView\.ready\(\{[^}]*timeoutMs: 30_000/);
+  }
 });

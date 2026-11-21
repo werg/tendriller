@@ -230,7 +230,7 @@ describe('public application onboarding', () => {
     expect(head.headers.get('Content-Disposition')).toBe(response.headers.get('Content-Disposition'));
     expect(await head.arrayBuffer()).toHaveProperty('byteLength', 0);
     for (const path of ['/docs/tutorial/index.html', '/docs/tutorial/page.mjs', '/docs/tutorial/worker.mjs', '/docs/tutorial/setup.mjs',
-      '/docs/tutorial/helpers/live-view.mjs', '/docs/tutorial/media/inference-client.mjs',
+      '/docs/tutorial/helpers/browser-profile.mjs', '/docs/tutorial/media/inference-client.mjs',
       '/docs/tutorial/media/provider-openai.mjs', '/docs/tutorial/media/.env',
       '/docs/tutorial/sql/setup.mjs', '/docs/tutorial/sql/worker.mjs', '/docs/tutorial/sql/.tendriller/handle.json']) {
       const source = await req(path, { anonymous: true });

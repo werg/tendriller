@@ -1,17 +1,18 @@
 # Reuse the application helpers
 
-Import these modules from the [first-app source archive](/downloads/tendriller-first-app.tgz)
-beside your authored `page.mjs`:
+Import the shared observer from the SDK. Adapt the other UI components from the
+[first-app source archive](/downloads/tendriller-first-app.tgz) beside your authored `page.mjs`:
 
 ```js
 import { createOwnerConnection, describeConnectionError } from './connection.mjs';
 import { mountConnectionView } from './connect-view.mjs';
-import { createLiveView } from './helpers/live-view.mjs';
+import { createLiveView } from '@tendriller/core/collaboration/live-view';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { createReviewedInput } from './helpers/reviewed-input.mjs';
 ```
 
-They are executable application source, not additional package exports. The
+`createLiveView` is a public SDK composition helper. The other modules are
+executable application source supplied in the first-app archive. The
 starter's `page.mjs` already uses the first two. Its `media/panel.mjs` composes
 reviewed input with camera/file capture, an explicit inference request and a
 declared evidence command. The [capability map](CAPABILITIES.md) points to the
@@ -94,7 +95,7 @@ corresponding existing rendering block instead of installing duplicate observers
 ```js
 import { createOwnerConnection, describeConnectionError } from './connection.mjs';
 import { mountConnectionView } from './connect-view.mjs';
-import { createLiveView } from './helpers/live-view.mjs';
+import { createLiveView } from '@tendriller/core/collaboration/live-view';
 
 export function mountNotes(session, root = document) {
   const list = root.querySelector('#notes');
