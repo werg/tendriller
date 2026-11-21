@@ -35,25 +35,38 @@ jobs:
     if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: chronolog
     env:
-      CHRONOLOG_SHA: 9260f57d3478d84a60b6234450d622009133cb8f
       EMSDK_VERSION: '4.0.20'
       EMSDK_SHA: e4fe26ef59168ff44f4c23c466e497bf60b3411e
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: werg/chronolog-db
-          ref: ${{ env.CHRONOLOG_SHA }}
+          path: core
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Read the canonical public session pin
+        id: session
+        working-directory: core
+        run: node scripts/session-pin.mjs
+      - uses: actions/checkout@v4
+        with:
+          repository: werg/chronolog-db
+          ref: ${{ steps.session.outputs.source }}
+          path: chronolog
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: chronolog/package.json
       - uses: actions/cache@v4
         id: wasm
         with:
           path: ${{ runner.temp }}/chronolog-fixture/wasm
-          key: chronolog-wasm-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CHRONOLOG_SHA }}-${{ env.EMSDK_VERSION }}-${{ env.EMSDK_SHA }}
+          key: chronolog-wasm-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.session.outputs.source }}-${{ env.EMSDK_VERSION }}-${{ env.EMSDK_SHA }}
       - run: pnpm install --frozen-lockfile
       - name: Build exact Chronolog WASM engine
         if: steps.wasm.outputs.cache-hit != 'true'
@@ -66,6 +79,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/chronolog-fixture/wasm"
           cp "$RUNNER_TEMP"/chronolog-build/{manifest.json,sqlite3.mjs,sqlite3.wasm,sqlite3-opfs-async-proxy.js} "$RUNNER_TEMP/chronolog-fixture/wasm/"
       - name: Build exact public Chronolog package
+        env:
+          CHRONOLOG_SHA: ${{ steps.session.outputs.source }}
         run: |
           test "$(git rev-parse HEAD)" = "$CHRONOLOG_SHA"
           node tools/package-peer-session.mjs --sql-native --sql-browser --output "$RUNNER_TEMP/chronolog-fixture/session"
