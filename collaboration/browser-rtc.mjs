@@ -1,3 +1,4 @@
+import { PEER_TRANSPORT_POLICY } from '../contract/transport-policy.mjs';
 import { openWorkerWebRtcConnection, serveWorkerWebRtcConnections } from '@chronolog/peer-session/webrtc';
 
 export const BROWSER_RTC_PROTOCOL = 'tendriller/browser-rtc-provider/v1';
@@ -65,7 +66,7 @@ export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebR
   }
   async function openDirectConnection(options) {
     if (closed || pending >= maxPending) throw error(closed ? 'RTC_BROKER_CLOSED' : 'RTC_PROVIDER_BUSY');
-    const timeoutMs = options.timeoutMs ?? 5000;
+    const timeoutMs = options.timeoutMs ?? PEER_TRANSPORT_POLICY.directTimeoutMs;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000) throw error('RTC_TIMEOUT_INVALID');
     options.signal?.throwIfAborted(); const attempt = new AbortController(), deadline = Date.now() + timeoutMs;
     const timer = setTimeout(() => attempt.abort(error('RTC_PROVIDER_TIMEOUT')), timeoutMs);
