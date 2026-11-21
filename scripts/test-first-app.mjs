@@ -471,6 +471,11 @@ export async function closeLocalTransport() {
         `--ignore-certificate-errors-spki-list=${certificatePin}`] });
     report.browser = await browser.version();
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    report.rtcLifecycle = [];
+    await context.exposeBinding('__firstAppRtcLifecycle', (_source, value) => {
+      if (report.rtcLifecycle.length < 200 && value && ['created','state'].includes(value.type))
+        report.rtcLifecycle.push({ type:value.type, connection:value.connection, ice:value.ice, gathering:value.gathering });
+    });
     await context.addInitScript(({mode}) => {
       const Native = globalThis.RTCPeerConnection;
       window.__firstAppRtcPeers = [];
@@ -478,6 +483,9 @@ export async function closeLocalTransport() {
         constructor(...args) {
           if (mode === 'relay') throw new Error('QUALIFICATION_RTC_UNAVAILABLE');
           super(...args); window.__firstAppRtcPeers.push(this);
+          const report = type => { void window.__firstAppRtcLifecycle({type,connection:this.connectionState,ice:this.iceConnectionState,gathering:this.iceGatheringState}).catch(()=>{}); };
+          report('created');
+          for (const type of ['connectionstatechange','iceconnectionstatechange','icegatheringstatechange']) this.addEventListener(type,()=>report('state'));
         }
       };
     }, {mode:values.transport});
