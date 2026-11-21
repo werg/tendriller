@@ -13,6 +13,8 @@ export function transferIntent(snapshot, { from, to, units }, operationId) {
 }
 
 export function checkIntentSession(pending, session) {
+  if (!pending.id || pending.reference?.operationId !== pending.id || pending.command !== 'transfer' || pending.input?.transferId !== pending.id)
+    throw Error('The retained transfer reference is inconsistent. Preserve the original view store and signed journal for inspection; do not send a replacement.');
   if (pending.reference.applicationId !== session.applicationId || pending.reference.author !== session.deviceId ||
       pending.reference.historyId !== session.historyId)
     throw Error('This retained operation belongs to another device or history. Reopen its original browser profile and history; do not replace the intent.');
