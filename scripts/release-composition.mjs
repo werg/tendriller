@@ -16,7 +16,7 @@ const sha = /^[0-9a-f]{40}$/;
 const roles = ['sdk', 'runtime', 'engine', 'tools'];
 export const REQUIRED_SDK_EXPORTS = ['.', './contract', './onboarding', './setup', './pairing', './application', './signals', './peers',
   './assistant', './collaboration', './collaboration/browser', './collaboration/worker',
-  './collaboration/native', './collaboration/diagnostics', './schema'];
+  './collaboration/native', './collaboration/participation', './collaboration/native-rtc', './collaboration/diagnostics', './schema'];
 
 export function sourceIdentity(root) {
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
