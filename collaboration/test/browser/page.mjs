@@ -1,9 +1,25 @@
 import {openBrowserOwner,createBrowserIdentity} from '../../browser.mjs';
 import {createViewStore} from '../../local.mjs';
-import {ownerWorkerName} from '../../browser-transport.mjs';
+import {ownerWorkerName,BROWSER_OWNER_PROTOCOL} from '../../browser-transport.mjs';
 import {verifyParticipantPanel} from './presentation.mjs';
 window.verifyParticipantPanel=verifyParticipantPanel;
 const query=new URL(location.href).searchParams,profileId=query.get('profile')||'browser-owner-test';
+// Test-only loss of the best-effort detach frame. A frozen document's close
+// can still run pagehide in Chromium; block the wire notification so only the
+// document witness can reclaim its Worker root. Product behavior is unchanged.
+if(query.has('lost-teardown')){
+  const post=MessagePort.prototype.postMessage;
+  function forward(message,...args){
+    if(message?.protocol===BROWSER_OWNER_PROTOCOL&&message.type==='root.detach')void window.__orphanWire?.('root.detach.forwarded');
+    return post.call(this,message,...args);
+  }
+  MessagePort.prototype.postMessage=function(message,...args){
+    if(message?.protocol===BROWSER_OWNER_PROTOCOL&&message.type==='root.detach'){
+      void window.__orphanWire?.('root.detach.dropped');return;
+    }
+    return forward.call(this,message,...args);
+  };
+}
 window.ownerStage='identity';
 window.ready=(async()=>{
   const workerUrl=new URL(`./worker.mjs?profile=${profileId}${query.get('variant')?`&variant=${query.get('variant')}`:''}`,import.meta.url);
@@ -20,6 +36,7 @@ window.ready=(async()=>{
     const instances=new Set();
     for(let index=0;index<count;index++){
       const current=await openBrowserOwner({...ownerOptions,context:{documentPath:location.pathname}});
+      if(ownerOptions.mode==='shared'&&current.mode!=='shared'){await current.detach();throw Error('FIXTURE_SHARED_OWNER_REQUIRED');}
       instances.add(current.session.endpoint.ownerInstanceId);await current.session.authority();await current.detach();
     }
     return [...instances];
@@ -36,5 +53,5 @@ window.ready=(async()=>{
     window.fixtureControl=control;
   };
   window.ownerProfile=profileId;window.ownerStage='ready';
-  return{endpoint:attachment.session.endpoint,deviceId:attachment.session.deviceId,status:attachment.session.status};
+  return{mode:attachment.mode,endpoint:attachment.session.endpoint,deviceId:attachment.session.deviceId,status:attachment.session.status};
 })().catch(error=>{window.ownerStage=`failed:${window.ownerStage}`;window.ownerFailure={name:error.name,code:error.code,message:error.message};throw error;});
