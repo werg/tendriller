@@ -65,6 +65,7 @@ export async function createBrowserNetworkControls(page) {
         const observed = await page.evaluate(() => window.__networkLabLifecycle.map(event => event.type));
         assert.deepEqual(observed, ['freeze', 'resume'], 'The browser did not actually freeze/resume');
         await cover?.close(); cover = undefined; await page.bringToFront();
+        assert.equal(await page.evaluate(() => document.visibilityState), 'visible', 'Resume left the selected tab hidden');
       }
     },
     async background({ signal, pauseMs }) {

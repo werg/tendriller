@@ -77,7 +77,7 @@ try {
         '--env', `NETWORK_LAB_IDLE_MS=${idleMs}`,
         '--env', 'NETWORK_LAB_PROGRESS=/evidence/network-progress.json',
       ] : []),
-      values.image, ...(values['browser-controls'] || application ? ['xvfb-run', '-a'] : []), 'node',
+      values.image, ...(values['browser-controls'] || application ? ['xvfb-run', '-a', '--server-args=-screen 0 1920x1080x24'] : []), 'node',
       ...(application ? ['/workspace/scripts/test-first-app.mjs', '--first-app-archive', `/workspace/dist/${kit}`,
         '--network-lab-profile', values.profile, '--report', '/evidence/first-app.json'] :
         [values['browser-controls'] ? '/lab/browser-probe.mjs' : '/lab/control-probe.mjs'])], { stdio: 'inherit' });
