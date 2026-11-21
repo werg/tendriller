@@ -174,3 +174,19 @@ test('provider network listeners stop on close and hidden documents do not reque
  for(const name of ['visibilitychange','resume'])doc.dispatchEvent(new Event(name));
  network.dispatchEvent(new Event('change'));assert.equal(messages.length,before);
 });
+
+test('restored provider availability wakes selection and coalesces one reconsideration without replacing active links',async()=>{
+ let changes=0,authorized=true;const calls=[];
+ const broker=createBrowserRtcBroker({onNetworkChange:()=>{changes++;},openConnection:async(_endpoint,options)=>{calls.push(options);return{kind:'direct',signal:options.signal,close:async()=>{}};}}),endpoint=rtcEndpoint(()=>{});
+ broker.addRoute(endpoint,{authorize:()=>authorized});
+ const available=value=>endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'availability',available:value}}));
+ available(false);available(true);await Promise.resolve();assert.equal(changes,0,'unregistered routes cannot request reconsideration');
+ register(endpoint);await Promise.resolve();assert.equal(changes,1);
+ const retained=await broker.openDirectConnection({timeoutMs:1000});available(false);available(false);await Promise.resolve();assert.equal(changes,1,'freezing cannot request reconsideration');assert.equal(retained.signal.aborted,false);
+ const pending=broker.openDirectConnection({timeoutMs:1000});assert.equal(calls.length,1,'frozen route is not selected for new work');
+ available(true);available(true);available(false);available(true);await Promise.resolve();assert.equal(changes,2,'restoration bursts request only one reconsideration');
+ const restored=await pending;assert.equal(calls.length,2);assert.equal(retained.signal.aborted,false);
+ available(true);await Promise.resolve();assert.equal(changes,2,'unchanged available status is silent');
+ authorized=false;available(false);available(true);await Promise.resolve();assert.equal(changes,2,'unauthorized hints cannot trigger work');
+ authorized=true;await retained.close();await restored.close();broker.close();available(false);available(true);await Promise.resolve();assert.equal(changes,2);
+});
