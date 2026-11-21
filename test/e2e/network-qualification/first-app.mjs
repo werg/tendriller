@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { createFaults } from './faults.mjs';
 import { createBrowserNetworkControls } from './browser-controls.mjs';
 import { runNetworkScenario } from './scenarios.mjs';
@@ -94,6 +95,13 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       signal.throwIfAborted();
       assert.ok(retained);
       const previous = await peer.request('transport-snapshot');
+      assert.equal(previous.browserLinks, 1);
+      assert.equal(previous.otherLinks, 0);
+      const reopening = performance.now();
+      reopenProof = { beforeRevision: previous.connectionRevision, beforeBrowserLinks: previous.browserLinks,
+        otherLinks: previous.otherLinks, completed: false,
+        scope: 'reload-to-fresh-direct-and-new-document-signal' };
+      try {
       await page.reload();
       await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
       await expect(page.locator('#notes li')).toHaveCount(retained.rows.length, { timeout: 30_000 });
@@ -104,10 +112,14 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       // prove the new document's end-to-end signal route before timing commands.
       const current = await peer.request('transport-wait', { kind: 'direct', afterRevision: previous.connectionRevision }, 60_000);
       assert.ok(current.connectionRevision > previous.connectionRevision);
+      assert.equal(current.browserLinks, 1);
+      assert.equal(current.otherLinks, 0);
       await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 30_000 });
       const rows = await page.evaluate(() => window.appRequests.request('rows', { count: 2, width: 100 }).then(value => value.rows.length));
       assert.equal(rows, 2);
-      reopenProof = { beforeRevision: previous.connectionRevision, afterRevision: current.connectionRevision, signalRows: rows };
+      Object.assign(reopenProof, { afterRevision: current.connectionRevision, afterBrowserLinks: current.browserLinks,
+        signalRows: rows, completed: true, elapsedMs: performance.now() - reopening });
+      } catch (error) { reopenProof.elapsedMs = performance.now() - reopening; throw error; }
       signal.throwIfAborted();
       // Repeat signal and sensor work after reopen; this also proves that the
       // retained application session remains usable, rather than a DOM cache.
@@ -156,6 +168,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       error.networkReport = { version: 1, profile, success: false,
         scope: 'sealed-first-app-browser-network-emulation', timeline: timeline.snapshot() };
     }
+    if (reopenProof) error.networkReport.reopenProof = reopenProof;
     throw error;
   } finally { await adapter.cleanup(); }
 }

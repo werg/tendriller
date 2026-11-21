@@ -243,7 +243,15 @@ test('transport counters and revision come from the same synchronous snapshot tu
   assert.equal(value.connectionRevision, 8);
   assert.equal(value.sentReliableBytes, 12);
   assert.equal(value.kind, 'relay');
+  assert.equal(value.browserLinks, 1);
+  assert.equal(value.otherLinks, 0);
   assert.equal(value.peerId, undefined);
+});
+
+test('unrelated peers and duplicate browser links cannot qualify the single-peer fixture epoch', async () => {
+  const make = links => ({ status: { connectionRevision: 1 }, diagnostics: () => Promise.resolve(links) });
+  await assert.rejects(authenticatedTransportSnapshot(make([{ peerId: 'browser' }, { peerId: 'other' }]), 'browser'), /UNEXPECTED_LINK_SET/);
+  await assert.rejects(authenticatedTransportSnapshot(make([{ peerId: 'browser' }, { peerId: 'browser' }]), 'browser'), /UNEXPECTED_LINK_SET/);
 });
 
 test('old applied/retention labels and reused IDs cannot prove a fresh browser command', () => {

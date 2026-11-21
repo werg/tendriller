@@ -5,8 +5,11 @@ export async function authenticatedTransportSnapshot(participation, peerId) {
   const pending = participation.diagnostics();
   const connectionRevision = participation.status.connectionRevision;
   const links = await pending;
+  const browserLinks = links.filter(link => link.peerId === peerId).length;
+  const otherLinks = links.length - browserLinks;
+  if (otherLinks !== 0 || browserLinks > 1) throw Error('NETWORK_QUALIFICATION_UNEXPECTED_LINK_SET');
   const link = links.find(link => link.peerId === peerId);
-  return { connectionRevision,
+  return { connectionRevision, browserLinks, otherLinks,
     ...(link ? Object.fromEntries(['kind', 'sentReliableBytes', 'receivedReliableBytes', 'sentLiveBytes', 'receivedLiveBytes'].map(key => [key, link[key]])) : { kind: 'unknown' }) };
 }
 
