@@ -54,8 +54,14 @@ function accept(result) {
 }
 
 bridge.onResult(accept);
-const { mode } = await bridge.connect();
-if (mode === 'unavailable') status.textContent = 'Open this card in a compatible chat. You can still ask the chat to check the inbox directly.';
+try {
+  const { mode } = await bridge.connect();
+  if (mode === 'unavailable') status.textContent = 'Open this card in a compatible chat. You can still ask the chat to check the inbox directly.';
+} catch {
+  bridge.close();
+  send.disabled = true;
+  status.textContent = 'This chat did not establish the inbox connection. Ask the chat to check the inbox directly.';
+}
 if (application) send.disabled = !bridge.canMessage;
 send.addEventListener('click', async () => {
   if (submitting || !application || !bridge.canMessage) return;
