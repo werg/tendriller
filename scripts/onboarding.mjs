@@ -17,13 +17,13 @@ export const TUTORIAL_FILES = Object.freeze([
   'session.mjs', 'assistant.mjs', 'local.mjs', 'build.mjs', 'index.html', 'page.mjs', 'worker.mjs',
   'pairing-browser.mjs', 'pairing-worker.mjs', 'pairing-native.mjs', 'connection.mjs', 'connect-view.mjs',
   'helpers/cli-lifetime.mjs', 'helpers/browser-profile.mjs', 'helpers/participant-lifecycle.mjs', 'helpers/submission-state.mjs',
-  'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs', 'helpers/signal-request.mjs',
+  'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs', 'helpers/signal-request.mjs', 'helpers/diagnostics-panel.mjs',
   'media/panel.mjs', 'media/camera.mjs', 'media/voice.mjs', 'media/inference-client.mjs',
   'media/inference-service.mjs', 'media/inference-protocol.mjs',
   'media/inference-peer.mjs', 'media/provider-openai.mjs',
   'sql/.gitignore', 'sql/README.md', 'sql/package.json', 'sql/local.mjs',
   'sql/engine.mjs', 'sql/domain.mjs', 'sql/setup.mjs', 'sql/session.mjs',
-  'sql/demo.mjs', 'sql/worker.mjs',
+  'sql/demo.mjs', 'sql/worker.mjs', 'sql/index.html', 'sql/page.mjs', 'sql/build.mjs',
 ]);
 export const TUTORIAL_DOWNLOAD = '/downloads/tendriller-first-app.tgz';
 

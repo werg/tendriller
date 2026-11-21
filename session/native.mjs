@@ -1,11 +1,11 @@
-import { createServer, createConnection } from 'node:net';
-import { lstat, mkdir, open, readFile, rename, unlink, chmod } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { serialize } from 'node:v8';
 import { MessageChannel } from 'node:worker_threads';
 import { canonicalJson, identifier } from '@chronolog/peer-session';
 import { createNativeFrames as frames } from './native-transport.mjs';
+import { acquireAtomicLock, connectLocalIpc, ensurePrivateDirectory, isWindows, listenLocalIpc, readPrivateJson, writePrivateJsonAtomic } from './ipc.mjs';
 
 const PROTOCOL = 'tendriller.native-owner.v1';
 const KEY = /^td_n_[a-f0-9]{64}$/u;
@@ -25,17 +25,12 @@ export const createNativeAttachmentKey = () => 'td_n_' + randomBytes(32).toStrin
 async function privatePath(path, kind, mode) {
   const stat = await lstat(path);
   if (stat.isSymbolicLink() || (kind === 'directory' ? !stat.isDirectory() : kind === 'socket' ? !stat.isSocket() : !stat.isFile()) ||
-      process.getuid && stat.uid !== process.getuid() || (stat.mode & 0o777) !== mode)
+      (!isWindows() && (process.getuid && stat.uid !== process.getuid() || (stat.mode & 0o777) !== mode)))
     throw failure('SUPERVISOR_PRIVATE_PATH_REQUIRED', `Use an owned ${kind} with mode ${mode.toString(8)}: ${path}`);
   return stat;
 }
 async function directory(path, create = false) {
-  if (process.platform === 'win32') throw failure('SUPERVISOR_UNIX_REQUIRED', 'This supervisor requires authenticated Unix IPC; it does not open a TCP fallback.');
-  const value = resolve(path);
-  if (create) await mkdir(value, { recursive: true, mode: 0o700 });
-  await privatePath(value, 'directory', 0o700);
-  if (Buffer.byteLength(join(value, 'owner.sock')) > 100) throw failure('SUPERVISOR_SOCKET_PATH_TOO_LONG', 'Choose a shorter private supervisor directory.');
-  return value;
+  return ensurePrivateDirectory(path, create);
 }
 async function atomicJSON(root, name, data) {
   const temporary = join(root, `pending-${randomUUID()}.json`), target = join(root, name);
@@ -78,14 +73,15 @@ async function ownerFence(root) {
 
 function checkedPolicy(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw failure('SUPERVISOR_POLICY_INVALID');
-  if (Object.keys(value).some(key => !['capabilities', 'commands', 'queries', 'context', 'contextEvidence', 'identity', 'maxRequests', 'maxStreams', 'maxViews'].includes(key)))
+  if (Object.keys(value).some(key => !['capabilities', 'commands', 'queries', 'context', 'contextEvidence', 'identity', 'maxRequests', 'maxStreams', 'maxViews', 'preserveOperationId'].includes(key)))
     throw failure('SUPERVISOR_POLICY_INVALID');
   if (serialize(value).length > 16384) throw failure('SUPERVISOR_POLICY_LIMIT');
   const capabilities = ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'ownerAdmin'];
   if (value.capabilities !== undefined && (!Array.isArray(value.capabilities) || value.capabilities.some(item => !capabilities.includes(item))) ||
       [value.commands, value.queries].some(items => items !== undefined && (!Array.isArray(items) || items.length > 128 ||
         items.some(item => typeof item !== 'string' || !item.length || item.length > 128))) ||
-      value.contextEvidence !== undefined && !['caller-asserted', 'owner-validated'].includes(value.contextEvidence))
+      value.contextEvidence !== undefined && !['caller-asserted', 'owner-validated'].includes(value.contextEvidence) ||
+      value.preserveOperationId !== undefined && typeof value.preserveOperationId !== 'boolean')
     throw failure('SUPERVISOR_POLICY_INVALID');
   for (const [field, keys] of [['context', ['viewId', 'documentPath', 'publicationId', 'runId']], ['identity', ['principalId', 'agentBindingId', 'deviceProfileId']]]) {
     const fields = value[field];
@@ -106,6 +102,8 @@ function scopedOperationId(applicationId, bindingId, value) {
 }
 function scopedOperations(frame, applicationId, bindingId, signer, policy) {
   if (!frame || typeof frame !== 'object' || !Array.isArray(frame.args)) return frame;
+  if (frame.method === 'resume' && !policy.capabilities?.includes('ownerAdmin')) throw failure('APPLICATION_ATTACHMENT_CAPABILITY_REQUIRED');
+  if (policy.preserveOperationId === true) return frame;
   const operation = value => scopedOperationId(applicationId, bindingId, value);
   const args = [...frame.args];
   if (frame.method === 'command') args[2] = { ...args[2], operationId: operation(args[2]?.operationId) };
@@ -114,34 +112,38 @@ function scopedOperations(frame, applicationId, bindingId, signer, policy) {
     args[3] = { ...args[3], operationId: operation(args[3]?.operationId) };
   } else if (frame.method === 'retry' || frame.method.startsWith('operation.')) {
     if (!args[1]?.author || args[1].author === signer) args[0] = operation(args[0]);
-  } else if (frame.method === 'resume' && !policy.capabilities?.includes('ownerAdmin')) throw failure('APPLICATION_ATTACHMENT_CAPABILITY_REQUIRED');
+  }
   return { ...frame, args };
 }
 
 /** One process owns the signer; independently authenticated clients only attach.
- * openOwner runs AFTER the exclusive profile fence has been acquired. */
+ * openOwner runs AFTER the exclusive profile fence has been acquired.
+ * Supports Unix sockets (Linux/macOS), Windows named pipes, and loopback TCP fallback. */
 export async function createNativeSessionSupervisor({ directory: path, profileId, openOwner, bindings = [], maxClients = 32,
-  maxClientsPerBinding = 4, maxBindings = 32, handshakeTimeoutMs = 3000, signal } = {}) {
+  maxClientsPerBinding = 4, maxBindings = 32, handshakeTimeoutMs = 3000, preferredTransport = 'auto', signal } = {}) {
   signal?.throwIfAborted(); identity(profileId);
   if (typeof openOwner !== 'function') throw failure('SUPERVISOR_OWNER_FACTORY_REQUIRED');
   maxClients = bounded(maxClients, 32, 128); maxBindings = bounded(maxBindings, 32, 128);
   maxClientsPerBinding = bounded(maxClientsPerBinding, 4, 8);
   handshakeTimeoutMs = bounded(handshakeTimeoutMs, 3000, 30000);
-  const root = await directory(path, true), releaseFence = await ownerFence(root), socketPath = join(root, 'owner.sock');
+  const root = await directory(path, true), lock = await acquireAtomicLock(root);
+  let releaseFence;
+  try { releaseFence = await ownerFence(root); }
+  catch (error) { await lock.release(); throw error; }
   const clients = new Set();
-  let owner, server, records = new Map(), stopped = false, closing, changes = Promise.resolve();
-  let createdSocket = false;
+  let closeWhenIdle = false;
+  let owner, listener, records = new Map(), stopped = false, closing, changes = Promise.resolve();
   const terminateClient = client => { client.detach?.(); client.detach = undefined; client.port?.close(); client.socket.destroy(); };
   const close = () => closing ??= (async () => {
     stopped = true; signal?.removeEventListener('abort', abort);
     owner?.session?.signal?.removeEventListener('abort', abort);
     for (const client of clients) terminateClient(client);
     await changes.catch(() => {});
-    if (server) await new Promise(resolve => server.close(() => resolve()));
+    if (listener) await listener.close().catch(() => {});
     try { await owner?.close(); }
     finally {
-      try { if (createdSocket) await unlink(socketPath).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
-      finally { releaseFence(); }
+      try { releaseFence(); }
+      finally { await lock.release(); }
     }
   })();
   const abort = () => { void close().catch(() => {}); };
@@ -189,10 +191,7 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
     const previous = await retainedJSON(root, 'profile.json', 4096);
     if (previous && JSON.stringify(previous) !== JSON.stringify(profile)) throw failure('SUPERVISOR_PROFILE_CHANGED', 'Resume the original signer and immutable definition; enroll another profile explicitly.');
     if (!previous) await atomicJSON(root, 'profile.json', profile);
-    // Only the process holding the kernel-backed fence may remove a stale socket.
-    try { await privatePath(socketPath, 'socket', 0o600); await unlink(socketPath); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-    server = createServer(socket => {
+    const onConnection = socket => {
       if (stopped || clients.size >= maxClients) { socket.destroy(); return; }
       const client = { socket, bindingId: null, revision: null, detach: undefined, port: undefined, snapshot: null, failed: false };
       clients.add(client);
@@ -202,6 +201,7 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
         if (!client.bindingId) {
           if (frame.type !== 'attach' || frame.protocol !== PROTOCOL || typeof frame.token !== 'string' || !KEY.test(frame.token) ||
               serialize(frame).length > 16384) throw failure('SUPERVISOR_AUTHENTICATION_REQUIRED');
+          if (listener && !listener.verifyLoopbackToken(frame.loopbackToken)) throw failure('SUPERVISOR_AUTHENTICATION_REQUIRED');
           const hash = Buffer.from(digest(frame.token), 'hex');
           const binding = [...records.values()].find(row => row.active && timingSafeEqual(Buffer.from(row.hash, 'hex'), hash));
           if (!binding) throw failure('SUPERVISOR_BINDING_REVOKED');
@@ -229,8 +229,6 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
           try { scoped = scopedOperations(frame.value, profile.applicationId, current.id, profile.deviceId, current.policy); }
           catch (error) {
             if (!client.snapshot || !Number.isSafeInteger(frame.value?.id) || frame.value.id < 1) throw error;
-            // A denied operation belongs to one RPC. Keep this authenticated
-            // attachment usable and report the precise, bounded rejection.
             const code = error.code ?? 'SUPERVISOR_PROTOCOL_INVALID';
             transport.send({ type: 'frame', value: { id: frame.value.id,
               error: { name: 'Error', message: code, code }, snapshot: client.snapshot } });
@@ -242,14 +240,18 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
         client.failed = true; clearTimeout(timer); client.detach?.(); client.detach = undefined; client.port?.close();
         return { type: 'error', code: error.code ?? 'SUPERVISOR_PROTOCOL_INVALID' };
       });
-      socket.on('close', () => { clearTimeout(timer); transport.close(); client.detach?.(); client.port?.close(); clients.delete(client); });
-    });
-    server.on('error', () => { if (createdSocket) abort(); });
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, () => { server.removeListener('error', reject); resolve(); }); });
-    createdSocket = true; await chmod(socketPath, 0o600);
+      socket.on('close', () => { clearTimeout(timer); transport.close(); client.detach?.(); client.port?.close(); clients.delete(client); if (closeWhenIdle && clients.size === 0) void close(); });
+    };
+    listener = await listenLocalIpc(root, onConnection, { preferredTransport });
+    listener.server.on('error', () => { abort(); });
     signal?.addEventListener('abort', abort, { once: true }); signal?.throwIfAborted();
     return {
-      profile: Object.freeze(profile), ownerInstanceId: owner.ownerInstanceId, socketPath, close,
+      profile: Object.freeze(profile), ownerInstanceId: owner.ownerInstanceId,
+      socketPath: listener.descriptor.address ?? `127.0.0.1:${listener.descriptor.port}`,
+      endpoint: listener.descriptor,
+      get activeClients() { return clients.size; },
+      markCloseWhenIdle() { closeWhenIdle = true; if (clients.size === 0) return close(); },
+      close,
       endpoints: () => owner.endpoints(),
       bindings: () => [...records.values()].map(({ hash, ...value }) => structuredClone(value)),
       async createBinding({ id = randomUUID(), policy = {} } = {}) {
@@ -274,16 +276,14 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
   } catch (error) { await close(); throw error; }
 }
 
-/** Compose the public connectApplicationOwner facade with a private Unix socket.
+/** Compose the public connectApplicationOwner facade with the cross-platform local IPC endpoint.
  * No signing store is opened and close/detach never shuts down the supervisor. */
 export async function attachNativeSession({ directory: path, token, connect, applicationId, definitionId, definitionVersion,
-  context, timeoutMs = 5000, signal } = {}) {
+  context, preserveOperationId = false, timeoutMs = 5000, signal } = {}) {
   if (!KEY.test(token)) throw failure('SUPERVISOR_CREDENTIAL_INVALID');
   if (typeof connect !== 'function') throw failure('SUPERVISOR_CONNECT_REQUIRED', 'Supply connectApplicationOwner from the public Chronolog browser facade.');
   signal?.throwIfAborted();
-  const root = await directory(path), socketPath = join(root, 'owner.sock');
-  await privatePath(socketPath, 'socket', 0o600);
-  const socket = createConnection(socketPath), lifetime = new AbortController();
+  const { socket, descriptor } = await connectLocalIpc(path), lifetime = new AbortController();
   let port, session, closed = false;
   const end = cause => {
     if (closed) return; closed = true;
@@ -314,7 +314,10 @@ export async function attachNativeSession({ directory: path, token, connect, app
         port.addEventListener('message', event => { try { transport.send({ type: 'frame', value: event.data }); } catch (error) { end(error); } });
         port.addEventListener('close', () => { socket.end(); });
         port.start();
-        transport.send({ type: 'attach', protocol: PROTOCOL, token, ownerProtocol: frame.protocol, handshake: frame.handshake });
+        transport.send({
+          type: 'attach', protocol: PROTOCOL, token, ownerProtocol: frame.protocol, handshake: frame.handshake,
+          ...(descriptor.token ? { loopbackToken: descriptor.token } : {}),
+        });
       },
     };
     session = await connect(endpoint, { applicationId, definitionId, definitionVersion, context, timeoutMs,
@@ -322,17 +325,172 @@ export async function attachNativeSession({ directory: path, token, connect, app
     const bindingId = session.endpoint?.identity?.agentBindingId;
     if (session.applicationId !== applicationId || typeof bindingId !== 'string' || !bindingId)
       throw failure('SUPERVISOR_BINDING_REQUIRED', 'The authenticated attachment must identify its approved operation namespace.');
-    // Resolve before the uncertain command boundary. This readonly convenience
-    // uses owner-authenticated metadata; the supervisor independently checks
-    // every incoming ID and rejects another binding's canonical namespace.
-    Object.defineProperty(session, 'scopeOperationId', { value: Object.freeze(value => scopedOperationId(applicationId, bindingId, value)),
-      writable: false, configurable: false });
+    Object.defineProperty(session, 'scopeOperationId', {
+      value: Object.freeze(value => preserveOperationId ? value : scopedOperationId(applicationId, bindingId, value)),
+      writable: false, configurable: false,
+    });
     const detach = async () => {
       try { await session.detach(); } finally { signal?.removeEventListener('abort', abort); transport.close(); port?.close(); socket.end(); }
     };
     session.signal.addEventListener('abort', () => { signal?.removeEventListener('abort', abort); transport.close(); port?.close(); socket.end(); }, { once: true });
-    return { session, mode: 'attach', detach };
+    return { session, mode: 'attach', transport: descriptor.transport, detach };
   } catch (error) { signal?.removeEventListener('abort', abort); end(error); throw error; }
+}
+
+const TRUSTED_LOCAL_BINDING_FILE = 'local-caller.json';
+const sleep = (ms, signal) => new Promise((resolvePromise, reject) => {
+  const timer = setTimeout(resolvePromise, ms);
+  signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, { once: true });
+});
+
+/**
+ * Automatic connect-or-start (W2):
+ * - `bounded: true`: direct in-process execution under exclusive atomic lockfile with ZERO sockets/pipes.
+ * - Default shared mode: attaches automatically to an active local instance or starts one with
+ *   a trusted-local binding (preserving operationId verbatim), resolving concurrent startup races
+ *   with bounded jitter backoff (50ms -> 500ms, max 5s). Never silently mints a new device identity.
+ */
+export async function connectOrStartNativeSession({
+  directory: path,
+  profileId,
+  openOwner,
+  connect,
+  applicationId,
+  definitionId,
+  definitionVersion,
+  bounded: boundedMode = false,
+  preferredTransport = 'auto',
+  context,
+  timeoutMs = 5000,
+  signal,
+} = {}) {
+  signal?.throwIfAborted();
+  const root = await ensurePrivateDirectory(path, true);
+  if (boundedMode) {
+    const lock = await acquireAtomicLock(root);
+    let owner;
+    try {
+      owner = await openOwner({ signal, profileId });
+      if (!owner?.session) throw failure('SUPERVISOR_OWNER_INVALID');
+      return {
+        session: owner.session,
+        mode: 'bounded',
+        owner,
+        async close() {
+          try { await owner.close(); } finally { await lock.release(); }
+        },
+        async detach() {
+          try { await owner.close(); } finally { await lock.release(); }
+        },
+      };
+    } catch (error) {
+      try { await owner?.close(); } catch {}
+      await lock.release();
+      throw error;
+    }
+  }
+
+  // Ensure a stable private trusted-local binding credential for automatic local attachment.
+  let localBinding = await readPrivateJson(root, TRUSTED_LOCAL_BINDING_FILE);
+  if (!localBinding || !KEY.test(localBinding.token)) {
+    const candidate = {
+      id: 'trusted-local',
+      token: createNativeAttachmentKey(),
+      policy: {
+        capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'ownerAdmin'],
+        preserveOperationId: true,
+      },
+    };
+    try {
+      const fd = await open(join(root, TRUSTED_LOCAL_BINDING_FILE), 'wx', 0o600);
+      try { await fd.writeFile(JSON.stringify(candidate)); await fd.sync(); } finally { await fd.close(); }
+      localBinding = candidate;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      localBinding = await readPrivateJson(root, TRUSTED_LOCAL_BINDING_FILE);
+    }
+  }
+
+  const deadline = Date.now() + Math.max(5000, timeoutMs);
+  let delayMs = 50;
+  for (;;) {
+    signal?.throwIfAborted();
+    // 1. Try attaching to an already-running instance.
+    try {
+      const attached = await attachNativeSession({
+        directory: root,
+        token: localBinding.token,
+        connect,
+        applicationId,
+        definitionId,
+        definitionVersion,
+        context,
+        preserveOperationId: true,
+        timeoutMs: Math.min(timeoutMs, 2500),
+        signal,
+      });
+      return { ...attached, startedSupervisor: false, close: attached.detach };
+    } catch (attachError) {
+      if (!['ENOENT', 'ECONNREFUSED', 'OWNER_UNREACHABLE', 'IPC_PRIVATE_PATH_INVALID'].includes(attachError?.code)) {
+        // Re-check if the live supervisor is unresponsive vs genuine auth/definition mismatch.
+        if (['SUPERVISOR_BINDING_REVOKED', 'SUPERVISOR_AUTHENTICATION_REQUIRED'].includes(attachError?.code)) throw attachError;
+      }
+    }
+
+    // 2. No live instance answered; try starting the shared supervisor atomically.
+    try {
+      const supervisor = await createNativeSessionSupervisor({
+        directory: root,
+        profileId,
+        openOwner,
+        bindings: [localBinding],
+        preferredTransport,
+        signal,
+      });
+      // Attach as a local caller so caller disconnect never kills an instance still serving other callers.
+      try {
+        const attached = await attachNativeSession({
+          directory: root,
+          token: localBinding.token,
+          connect,
+          applicationId,
+          definitionId,
+          definitionVersion,
+          context,
+          preserveOperationId: true,
+          timeoutMs,
+          signal,
+        });
+        return {
+          ...attached,
+          mode: 'shared-owner',
+          startedSupervisor: true,
+          supervisor,
+          async detach() {
+            await attached.detach();
+            await supervisor.markCloseWhenIdle();
+          },
+          close: () => supervisor.close(),
+        };
+      } catch (error) {
+        await supervisor.close();
+        throw error;
+      }
+    } catch (startError) {
+      const concurrentStartup = startError?.code === 'INSTANCE_UNRESPONSIVE'
+        && startError.endpoint == null
+        && typeof startError.lockAgeMs === 'number'
+        && startError.lockAgeMs < 5000;
+      if (!concurrentStartup && startError?.code === 'INSTANCE_UNRESPONSIVE') throw startError;
+      if ((!concurrentStartup && startError?.code !== 'OWNER_BUSY') || Date.now() >= deadline) throw startError;
+      const jitter = Math.floor(Math.random() * 40);
+      await sleep(Math.min(500, delayMs) + jitter, signal);
+      delayMs = Math.min(500, delayMs * 2);
+      // Re-read winning caller's local-caller.json if another concurrent process wrote it first.
+      const refreshed = await readPrivateJson(root, TRUSTED_LOCAL_BINDING_FILE).catch(() => null);
+      if (refreshed && KEY.test(refreshed.token)) localBinding = refreshed;
+    }
+  }
 }
 
 /** Provider effect receipts are durable independently of recoverable application history.

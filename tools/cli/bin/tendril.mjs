@@ -7,19 +7,26 @@ import { jsonInput, runSessionCommand, watchSession, withSession } from '../lib/
 import { onboardingGuide, publicServiceOrigin } from '../lib/guide.mjs';
 import { diagnosticFinding } from '@tendriller/core/diagnostics';
 import { describeReadiness, requireCreationReady, createPage } from '@tendriller/core';
+import { probeCapabilities } from '@tendriller/core/probe';
 import { checkService } from '../lib/service.mjs';
+import { serveStdioMcp } from '../lib/mcp-stdio.mjs';
+import { exportSourceHandoff, exportSqliteCheckpoint, restoreSqliteCheckpoint } from '../lib/handoff.mjs';
 
 const usage = `Usage: tendril <command> [options]
 
 Start with a service domain (no saved handle or session required):
   guide [--server URL]                  Print the application-building workflow; no network access
+  probe [--server URL] [--check-network] [--project DIR]  Inspect local runtime, storage, IPC and network capabilities
   service [--server URL]                Read the public host contract and limits
   readiness --server URL               Check current creation availability before setup
+  handoff source <out.tgz> [--project DIR]  Pack non-secret source files for another sandbox
+  checkpoint export|restore <file> --device <path> [--sql <path>] [--secret-env VAR]
 
 Application session (--session /absolute/application.mjs):
   --mode attach | own | independent [--profile NAME] [--run RUN_ID]
-  self | endpoints | doctor | describe | status | query <name> [json]
+  self | endpoints | doctor | describe | status | query <name> [json] | mcp-stdio
   command <name> <json> --operation ID [--based-on JSON] [--saved | --shared]
+  command-batch <json-array> [--saved]
   operation <id> | retry <id> [--saved]
   reapply <old-id> <name> <json> --operation NEW_ID --based-on JSON
   events [--cursor CURSOR] [--topics JSON] [--limit N] | watch
@@ -47,24 +54,55 @@ creation and owner sign-in do not themselves configure or connect that session.
 Chronolog owns signing, exact retry, durable identity and recovery. No host data
 API or extra delivery queue is installed. A timed out waiter leaves its saved
 operation available under the original identity.`;
-const applicationCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'status', 'query', 'command', 'operation', 'retry', 'reapply',
-  'events', 'watch', 'signal', 'recovery', 'definition', 'publication', 'publication-operation', 'publish']);
+const applicationCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'status', 'query', 'command', 'command-batch', 'operation', 'retry', 'reapply',
+  'events', 'watch', 'signal', 'recovery', 'definition', 'publication', 'publication-operation', 'publish', 'mcp-stdio']);
 const flagsByCommand = {
-  self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'based-on', 'saved', 'shared'], operation: [],
+  self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'based-on', 'saved', 'shared'],
+  'command-batch': ['saved'], 'mcp-stdio': [], operation: [],
   retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: [],
   signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
-  guide: ['server'], readiness: ['server'], new: ['owner', 'server', 'as'], info: ['show-url'], service: ['server'], meta: [], release: [], link: [], token: ['scopes'],
+  guide: ['server'], probe: ['server', 'check-network', 'project'],
+  handoff: ['project'], checkpoint: ['device', 'sql', 'secret-env', 'keep-source'],
+  readiness: ['server'], new: ['owner', 'server', 'as'], info: ['show-url'], service: ['server'], meta: [], release: [], link: [], token: ['scopes'],
   activity: ['after'], remove: ['yes'],
 };
-const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2], operation: [1, 1], retry: [1, 1],
+const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2],
+  'command-batch': [1, 1], 'mcp-stdio': [0, 0], operation: [1, 1], retry: [1, 1],
   reapply: [3, 3], events: [0, 0], watch: [0, 0], signal: [2, 2], recovery: [1, 2], definition: [0, 0], publication: [0, 0],
-  'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], readiness: [0, 0], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
+  'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
+  readiness: [0, 0], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
   link: [1, 2], token: [1, 2], activity: [0, 0], remove: [0, 0] };
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
 async function hostCommand(command, args, flags, signal) {
   if (command === 'guide') return onboardingGuide(flags);
+  if (command === 'probe') {
+    const server = flags.server || process.env.TENDRIL_SERVER;
+    return probeCapabilities({
+      projectPath: flags.project ?? process.cwd(),
+      ...(server ? { serviceOrigin: publicServiceOrigin(server) } : {}),
+      checkNetwork: Boolean(flags['check-network']),
+      signal,
+    });
+  }
+  if (command === 'handoff') {
+    if (args[0] !== 'source') throw invalid('Use: tendril handoff source <output.tgz> [--project DIR]');
+    return exportSourceHandoff(flags.project ?? process.cwd(), args[1]);
+  }
+  if (command === 'checkpoint') {
+    const secretVar = flags['secret-env'] ?? 'TENDRILLER_CHECKPOINT_SECRET';
+    const secret = process.env[secretVar];
+    if (!secret) throw invalid(`Set environment variable ${secretVar} (64-hex key or >=12-char passphrase).`);
+    if (!flags.device) throw invalid('Supply --device <path/to/device.sqlite>');
+    if (args[0] === 'export') {
+      return exportSqliteCheckpoint({ devicePath: flags.device, outputPath: args[1], secret, sqlPath: flags.sql ?? null, retireSource: !flags['keep-source'] });
+    }
+    if (args[0] === 'restore') {
+      return restoreSqliteCheckpoint({ inputPath: args[1], devicePath: flags.device, secret, sqlPath: flags.sql ?? null });
+    }
+    throw invalid('Use: tendril checkpoint export|restore <file> --device <path>');
+  }
   if (command === 'readiness') {
     if (!flags.server && !process.env.TENDRIL_SERVER) throw invalid('readiness requires --server or TENDRIL_SERVER with the selected connector service origin');
     return describeReadiness(publicServiceOrigin(serverBase(process.env, flags)), { signal });
@@ -114,7 +152,7 @@ async function main() {
   if (flags.help || cmd === 'help' || cmd === undefined) { console.log(usage); return; }
   if (!Object.hasOwn(flagsByCommand, cmd)) throw invalid(`Unknown command: ${cmd}`);
   const application = applicationCommands.has(cmd);
-  const allowed = new Set(['pretty', 'timeout', ...(['guide', 'readiness', 'new'].includes(cmd) ? [] : application ? ['session', 'mode', 'profile', 'run'] : ['tendril']), ...flagsByCommand[cmd]]);
+  const allowed = new Set(['pretty', 'timeout', ...(['guide', 'probe', 'handoff', 'checkpoint', 'readiness', 'new'].includes(cmd) ? [] : application ? ['session', 'mode', 'profile', 'run'] : ['tendril']), ...flagsByCommand[cmd]]);
   for (const name of Object.keys(flags)) if (!allowed.has(name)) throw invalid(`${cmd} does not accept --${name}`);
   const [min, max] = arity[cmd];
   if (args.length < min || args.length > max) throw invalid(`Invalid arguments for ${cmd}; see --help`);
@@ -125,7 +163,7 @@ async function main() {
   if (application && flags.mode === 'independent' && !flags.profile) throw invalid('--mode independent requires --profile');
   if (cmd === 'token' && flags.scopes !== undefined && args[0] !== 'create') throw invalid('--scopes applies only to token create');
   if (cmd === 'reapply' && flags['based-on'] === undefined) throw invalid('reapply requires --based-on with the reviewed current revision');
-  const seconds = intFlag(flags.timeout, 'timeout', cmd === 'watch' ? 0 : 30);
+  const seconds = intFlag(flags.timeout, 'timeout', (cmd === 'watch' || cmd === 'mcp-stdio') ? 0 : 30);
   if (seconds < 0 || seconds > 3600) throw invalid('--timeout must be between 0 and 3600 seconds');
   const lifetime = new AbortController();
   const abort = () => lifetime.abort(Object.assign(Error('Invocation interrupted; inspect the original operation before retrying'), { code: 'invocation_interrupted' }));
@@ -139,9 +177,10 @@ async function main() {
     if (application) {
       await withSession(flags.session, async owned => {
         if (cmd === 'watch') await watchSession(owned, emit, { signal: lifetime.signal });
+        else if (cmd === 'mcp-stdio') await serveStdioMcp(owned, { signal: lifetime.signal });
         else completedResult = await runSessionCommand(owned, cmd, args, flags, { signal: lifetime.signal });
       }, { signal: lifetime.signal, mode: flags.mode, profile: flags.profile, runId: flags.run });
-      if (cmd !== 'watch') await emit(completedResult);
+      if (cmd !== 'watch' && cmd !== 'mcp-stdio') await emit(completedResult);
     }
     else await emit(await hostCommand(cmd, args, flags, lifetime.signal));
   } catch (error) {

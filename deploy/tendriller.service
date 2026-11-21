@@ -1,0 +1,22 @@
+[Unit]
+Description=Tendriller Application Participant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tendriller
+WorkingDirectory=/srv/tendriller-app
+ExecStart=/usr/bin/node /srv/tendriller-app/session.mjs
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/srv/tendriller-app/.tendriller
+
+[Install]
+WantedBy=multi-user.target

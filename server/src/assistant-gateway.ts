@@ -61,6 +61,11 @@ const tools = [
   tool('call_application_command', 'Execute a declared application command. Keep operationId and input unchanged on retry.',
     'applications:write', { ...app, command: schemaString, input: {}, operationId: schemaString, basedOn: { type: 'object' }, context },
     ['applicationId', 'command', 'input', 'operationId'], false),
+  tool('call_application_commands_batch', 'Execute an ordered batch of up to 16 idempotent declared commands to minimize write-approval round trips. Each command keeps its own stable operationId.',
+    'applications:write', { ...app, commands: { type: 'array', maxItems: 16, items: { type: 'object', additionalProperties: false,
+      properties: { command: schemaString, input: {}, operationId: schemaString, basedOn: { type: 'object' }, context },
+      required: ['command', 'input', 'operationId'] } }, stopOnError: { type: 'boolean' } },
+    ['applicationId', 'commands'], false),
   tool('inspect_application_operation', 'Inspect the exact original signer, attempt and current outcome of an operation admitted through this agent binding.',
     'applications:read', { ...app, operationId: schemaString }, ['applicationId', 'operationId']),
   tool('wait_application_operation', 'Wait up to the bounded gateway deadline for the original operation. A timeout leaves its saved work intact and inspectable.',
@@ -264,6 +269,23 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       const applicationId = string(args.applicationId, 64, APP_ID);
       const connected = await resolveConnection(env, principal.account, applicationId);
       const { bindingToken: _bindingToken, ...safeArgs } = args;
+      if (selected.name === 'call_application_commands_batch') {
+        const commands = Array.isArray(safeArgs.commands) ? safeArgs.commands : [];
+        if (commands.length > 16) throw new HttpError(400, 'batch_limit_exceeded', 'Batch allows at most 16 commands.');
+        const results = [];
+        for (const item of commands) {
+          try {
+            const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'call_application_command', params: item });
+            results.push({ ok: true, operationId: item.operationId, command: item.command, result: value });
+            if (safeArgs.stopOnError === true && isPlainObject(value) && value.outcome === 'rejected') break;
+          } catch (error) {
+            const expected = error instanceof HttpError;
+            results.push({ ok: false, operationId: item.operationId, command: item.command, error: { code: expected ? error.code : 'assistant_unavailable', message: expected ? error.message : 'Command failed' } });
+            if (safeArgs.stopOnError === true) break;
+          }
+        }
+        return complete(toolResult({ applicationId, results }, modern));
+      }
       const { value, metadata } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: selected.name, params: safeArgs });
       return complete({ ...toolResult(value, modern), ...(metadata ? { _meta: { activity: metadata, origin: config.issuer } } : {}) });
     }
@@ -276,4 +298,114 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
     }
     throw new HttpError(404, 'method_not_found', 'Unknown MCP method', { rpcCode: -32601 });
   } catch (error) { return failure(id, error, method === 'tools/call' && !(error instanceof HttpError && error.extra?.rpcCode === -32602), modern); }
+}
+
+/**
+ * Outbound HTTPS-only Command/Status Polling Gateway (W5) for environments where WebSockets
+ * and WebRTC are blocked. Reuses exact OAuth 2.1 verification and page DO admission.
+ * Routes:
+ *   POST /v1/apps/:appId/commands
+ *   POST /v1/apps/:appId/commands/batch
+ *   GET  /v1/apps/:appId/operations/:opId
+ *   GET|POST /v1/apps/:appId/query
+ *   GET  /v1/apps/:appId/events
+ */
+export async function routeAssistantHttpGateway(req: Request, env: Env, url: URL): Promise<Response> {
+  const config = await assistantOAuth(env);
+  if (!config || config.issuer !== url.origin) throw new HttpError(404, 'not_found');
+  const match = /^\/v1\/apps\/([a-f0-9]{64})\/(commands(?:\/batch)?|operations\/([A-Za-z0-9_.:-]{1,200})|query|events)$/.exec(url.pathname);
+  if (!match) throw new HttpError(404, 'not_found');
+  if (env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: 'assistant-http:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
+    throw new HttpError(429, 'rate_limited');
+  const authorization = req.headers.get('Authorization');
+  const token = authorization ? /^Bearer ([A-Za-z0-9_.-]{1,16384})$/i.exec(authorization)?.[1] : null;
+  if (!token) {
+    return json({ error: 'invalid_token' }, 401, {
+      'WWW-Authenticate': `Bearer resource_metadata="${config.issuer}/.well-known/oauth-protected-resource/mcp"`,
+    });
+  }
+  await ensureOAuthSchema(env);
+  const access = await inspectAccessToken(env, config, token);
+  if (!access) {
+    return json({ error: 'invalid_token' }, 401, {
+      'WWW-Authenticate': `Bearer resource_metadata="${config.issuer}/.well-known/oauth-protected-resource/mcp"`,
+    });
+  }
+  const principal: Principal = {
+    account: access.sub, grant: access.sid, client: access.client_id,
+    scopes: access.scope.split(' ').filter(Boolean), expires: access.exp * 1000,
+  };
+  const proof = req.headers.get('Tendriller-Agent-Binding');
+  if (proof) principal.bindingCredential = string(proof, 120);
+  const applicationId = match[1];
+  const action = match[2];
+  const opIdParam = match[3];
+  const connected = await resolveConnection(env, principal.account, applicationId);
+
+  const readJsonBody = async () => {
+    try {
+      const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await readBody(req, REQUEST_LIMIT, 3000)));
+      if (!isPlainObject(parsed)) throw new HttpError(400, 'invalid_arguments', 'Expected JSON object body.');
+      return parsed;
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(400, 'bad_json', 'Invalid JSON body.');
+    }
+  };
+
+  if (action === 'commands') {
+    if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+    requireScope(principal, 'applications:write');
+    const body = await readJsonBody();
+    const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'call_application_command', params: body });
+    return json(value);
+  }
+  if (action === 'commands/batch') {
+    if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+    requireScope(principal, 'applications:write');
+    const body = await readJsonBody();
+    if (!Array.isArray(body.commands) || body.commands.length > 16) throw new HttpError(400, 'batch_limit_exceeded', 'Supply 0..16 commands.');
+    const results = [];
+    for (const item of body.commands) {
+      try {
+        const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'call_application_command', params: item });
+        results.push({ ok: true, operationId: item?.operationId, command: item?.command, result: value });
+        if (body.stopOnError === true && isPlainObject(value) && value.outcome === 'rejected') break;
+      } catch (error) {
+        const expected = error instanceof HttpError;
+        results.push({ ok: false, operationId: item?.operationId, command: item?.command, error: { code: expected ? error.code : 'assistant_unavailable', message: expected ? error.message : 'Command failed' } });
+        if (body.stopOnError === true) break;
+      }
+    }
+    return json({ applicationId, results });
+  }
+  if (opIdParam !== undefined) {
+    if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed');
+    requireScope(principal, 'applications:read');
+    const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'inspect_application_operation', params: { operationId: opIdParam } });
+    return json(value);
+  }
+  if (action === 'query') {
+    if (req.method !== 'GET' && req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+    requireScope(principal, 'applications:read');
+    const params = req.method === 'POST'
+      ? await readJsonBody()
+      : { query: url.searchParams.get('query') ?? '', input: JSON.parse(url.searchParams.get('input') ?? 'null') };
+    const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'query_application', params });
+    return json(value);
+  }
+  if (action === 'events') {
+    if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed');
+    requireScope(principal, 'applications:read');
+    const since = url.searchParams.get('since');
+    const limit = url.searchParams.get('limit');
+    const params: Record<string, unknown> = {};
+    if (since !== null) {
+      try { params.after = JSON.parse(since); } catch { params.after = since === '0' ? 0 : null; }
+    }
+    if (limit !== null && /^\d+$/.test(limit)) params.limit = Math.min(25, Math.max(1, Number(limit)));
+    const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'read_application_events', params });
+    return json(value);
+  }
+  throw new HttpError(404, 'not_found');
 }

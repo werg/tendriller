@@ -3,9 +3,9 @@
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { RELEASE_DOWNLOAD_LIMITS, createReleaseDownloader, readPublishedManifest } from '../contract/release-verify.mjs';
 
-export const RELEASE_DOWNLOAD_LIMITS = Object.freeze({ metadataBytes: 1024 * 1024,
-  artifactBytes: 64 * 1024 * 1024, totalBytes: 256 * 1024 * 1024, artifacts: 32, redirects: 3, timeoutMs: 300_000 });
+export { RELEASE_DOWNLOAD_LIMITS, readPublishedManifest };
 const hash = value => createHash('sha256').update(value).digest('hex');
 const sha256 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const commit = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -13,74 +13,8 @@ const fail = (code, message) => { throw Object.assign(Error(message), { code });
 const componentRoles = ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter'];
 const requiredRoles = [...componentRoles, 'composition', 'first-app', 'core-provenance', 'tools-provenance', 'plugin'];
 
-function redirectTarget(location, previous, initial) {
-  let target;
-  try { target = new URL(location, previous); } catch { fail('release_redirect_invalid', 'The public release returned an invalid asset redirect.'); }
-  // GitHub documents release-assets.githubusercontent.com for release downloads:
-  // https://docs.github.com/en/actions/reference/runners/larger-runners#communication-requirements-for-larger-runners
-  if (target.protocol !== 'https:' || target.username || target.password || target.port || target.hash ||
-      !['github.com', 'release-assets.githubusercontent.com'].includes(target.hostname) ||
-      target.hostname === 'github.com' && (target.pathname !== initial.pathname || target.search))
-    fail('release_redirect_forbidden', 'The public release redirected outside its permitted HTTPS GitHub asset locations.');
-  return target;
-}
-
-function releaseDownload(base, { fetcher = globalThis.fetch, limits = RELEASE_DOWNLOAD_LIMITS, signal, onVerified } = {}) {
-  const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(limits.timeoutMs)]) : AbortSignal.timeout(limits.timeoutMs);
-  let totalBytes = 0;
-  async function download(file, expectedHash, expectedSize, retain = false) {
-    const initial = new URL(`${base}/${file}`), maximum = retain ? limits.metadataBytes : limits.artifactBytes;
-    let url = initial, response;
-    for (let redirect = 0; ; redirect++) {
-      try {
-        response = await fetcher(url.href, { redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer', signal: lifetime });
-      } catch {
-        fail('release_download_failed', `Could not read the public release asset ${file}; do not deploy an unavailable release.`);
-      }
-      if (![301, 302, 303, 307, 308].includes(response.status)) break;
-      await response.body?.cancel();
-      if (redirect >= limits.redirects) fail('release_redirect_limit', `Too many redirects for public release asset ${file}.`);
-      const location = response.headers.get('location');
-      if (!location) fail('release_redirect_invalid', `Missing redirect location for public release asset ${file}.`);
-      url = redirectTarget(location, url, initial);
-    }
-    if (response.status !== 200) {
-      await response.body?.cancel();
-      fail('release_unavailable', `Public release asset ${file} returned HTTP ${response.status}. Publish the exact qualified release before deploying; do not substitute source or another version.`);
-    }
-    const length = response.headers.get('content-length');
-    if (length !== null && (!/^\d+$/.test(length) || Number(length) > maximum)) {
-      await response.body?.cancel(); fail('release_size_limit', `Public release asset ${file} exceeds its download bound.`);
-    }
-    const digest = createHash('sha256'), chunks = [];
-    let bytes = 0;
-    try {
-      if (response.body) for await (const chunk of response.body) {
-        bytes += chunk.byteLength; totalBytes += chunk.byteLength;
-        if (bytes > maximum || expectedSize !== undefined && bytes > expectedSize || totalBytes > limits.totalBytes)
-          fail('release_size_limit', `Public release asset ${file} exceeds its expected size or download bound.`);
-        digest.update(chunk); if (retain || onVerified) chunks.push(Buffer.from(chunk));
-      }
-    } catch (error) {
-      if (typeof error?.code === 'string' && error.code.startsWith('release_')) throw error;
-      fail('release_download_failed', `Public release asset ${file} could not be read completely.`);
-    }
-    if (expectedSize !== undefined && bytes !== expectedSize || expectedHash !== undefined && digest.digest('hex') !== expectedHash)
-      fail('release_bytes_mismatch', `Public release asset ${file} does not match the prepared artifact bytes.`);
-    const content = retain || onVerified ? Buffer.concat(chunks) : undefined;
-    if (onVerified) await onVerified(file, content);
-    return retain ? content : undefined;
-  }
-  return { download, get downloadedBytes() { return totalBytes; } };
-}
-
-// Bootstrap has no expected checksum yet: constrain its URL, redirects, bytes
-// and lifetime just as strictly as the graph it will identify. The verifier
-// re-fetches and authenticates these exact manifest bytes before any extraction.
-export async function readPublishedManifest(sourceCommit, options) {
-  if (!commit(sourceCommit)) fail('release_expectation_invalid', 'Require the exact source commit before acquiring a public manifest.');
-  const { download } = releaseDownload(`https://github.com/werg/tendriller/releases/download/source-${sourceCommit}`, options);
-  return download('manifest.json', undefined, undefined, true);
+function releaseDownload(base, options = {}) {
+  return createReleaseDownloader(base, options);
 }
 
 export async function verifyPublishedRelease(expected, { fetcher = globalThis.fetch, limits = RELEASE_DOWNLOAD_LIMITS, signal, onVerified } = {}) {
