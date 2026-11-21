@@ -140,7 +140,7 @@ test('canonical event recovery review preserves a healthy provider and its exact
   const originalOpen = f.dependencies.open;
   f.dependencies.open = async options => {
     const owned = await originalOpen(options), originalWatch = owned.watchSetup;
-    // Use the actual public forwardApplicationEvents, not a throwing substitute.
+    // Use the actual public forwardSessionEvents, not a throwing substitute.
     owned.session.changes = async function* () { forwards++; yield { kind: 'recovery' }; };
     owned.session.readView = () => { throw Error('Recovery must be reviewed before reading or advancing'); };
     owned.watchSetup = callbacks => { change = callbacks.onChange; return originalWatch(callbacks); };

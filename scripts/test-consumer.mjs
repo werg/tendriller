@@ -58,7 +58,7 @@ import { onboardingDescriptor, ASSISTANT_GUIDES } from '@tendriller/core/onboard
 assert.equal(onboardingDescriptor('https://example.test').firstApp.release.manifest,
   'https://github.com/werg/tendriller/releases/download/source-${hostProof.source}/manifest.json');
 import { createAssistantKey, createApplicationAgentKey, proposeApplicationAssistant,
-  connectApplicationAssistant, forwardApplicationEvents } from '@tendriller/core/assistant';
+  connectApplicationAssistant, createAssistantEventDelivery } from '@tendriller/core/assistant';
 import { createSignalBinding } from '@tendriller/core/signals';
 import { createParticipantRequest, createParticipantResponse, createPeerIntroductions } from '@tendriller/core/peers';
 import { startRuntime } from '@tendriller/runtime/kernel';
@@ -74,7 +74,7 @@ assert.equal(requireServiceOrigin('https://staging.example/'), 'https://staging.
 assert.equal(onboardingDescriptor('https://staging.example').documentation.mcp, 'https://staging.example' + ASSISTANT_GUIDES.start);
 assert.match(createAssistantKey(), /^td_a_[a-f0-9]{64}$/);
 for (const api of [createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant,
-  forwardApplicationEvents, pack, withSession, startServer]) assert.equal(typeof api, 'function');
+  createAssistantEventDelivery, pack, withSession, startServer]) assert.equal(typeof api, 'function');
 const accounts = new DatabaseSync(':memory:');
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'));
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_grants'").get().name,
@@ -209,7 +209,7 @@ assert.match(createNativeAttachmentKey(), /^td_n_[a-f0-9]{64}$/);
   run(process.execPath, ['collaboration.mjs']);
   writeFileSync(join(directory, 'collaboration.mts'), `
 import type {} from '@tendriller/core/browser';
-import { createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant,
+import { createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant, createAssistantEventDelivery,
   type AssistantParticipant, type AssistantCallerContext } from '@tendriller/core/assistant';
 import { createCollaborationDefinition, createCollaborationClient, type CollaborationSession } from '@tendriller/core/collaboration';
 import { openBrowserOwner, type BrowserOwnerOptions } from '@tendriller/core/browser-owner';
@@ -239,6 +239,12 @@ const browserView = createLiveView(attached.session, {query:'notes'});
 const viewDefinition = defineApplication({id:'views',version:'1',commands:{},queries:{notes:defineQuery({description:'Read notes',input:{type:'null'},read:()=>['typed']})}});
 declare const nativeSession: ApplicationSession<typeof viewDefinition>;
 declare const browserSession: WorkerApplicationSession<typeof viewDefinition>;
+const assistant = connectApplicationAssistant({api:'https://service.example/api/t/aaaaaaaaaaaa',key:'td_a_'+'a'.repeat(64),
+  session:nativeSession,tools:createScopedApplicationTools(nativeSession,{queries:['notes']})});
+const forwarded:Promise<void>=forwardSessionEvents({session:nativeSession,
+  checkpoint:{load:()=>undefined,save:()=>{}},project:event=>({name:'note',payload:{id:event.id}}),
+  deliver:createAssistantEventDelivery({assistant})});
+void forwarded;
 const inspector=createTransportDiagnostics(browserSession.participation);
 const transportReport:TransportDiagnosticReport=await inspector.refresh();
 const oneShot:TransportDiagnosticReport=await readTransportDiagnostics(nativeSession.participation);

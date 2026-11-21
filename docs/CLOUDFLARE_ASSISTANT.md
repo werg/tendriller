@@ -21,10 +21,10 @@ Call `tendril_guide` with `topic: "start"` for the [MCP workflow](MCP_AGENT_GUID
 4. Attach `connectApplicationAssistant` to the running Chronolog session, connect the MCP client to `<PUBLIC_BASE>/mcp`, and verify `list_tendrils`, `describe_application`, a read query, and an applied command.
 
 ```js
-import { createScopedApplicationTools } from '@chronolog/peer-session';
+import { createScopedApplicationTools, forwardSessionEvents } from '@chronolog/peer-session';
 import {
   createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant,
-  forwardApplicationEvents,
+  createAssistantEventDelivery,
 } from '@tendriller/core/assistant';
 
 // Setup once using the private host handle; persist `key` privately.
@@ -41,14 +41,14 @@ console.log(proposal.reviewUrl);
 const assistant = connectApplicationAssistant({
   api: handle.api, key, session,
   tools: createScopedApplicationTools(session, exposed),
-  ...exposed,
   onStatus: status => console.log(status),
 });
 await assistant.waitUntilOnline();
 
 // Optional durable event forwarding (atomic checkpoint with load()/save(cursor)):
-await forwardApplicationEvents({
-  session, assistant, topics: ['note'], checkpoint,
+await forwardSessionEvents({
+  session, topics: ['note'], checkpoint,
+  deliver: createAssistantEventDelivery({ assistant }),
   project: event => ({ name: 'note.added', payload: { noteId: event.id } }),
 });
 ```
@@ -57,7 +57,7 @@ await forwardApplicationEvents({
 
 - **Authorization & routing:** the Worker verifies the adapter key and device against signed Chronolog grants. Reads can route to any eligible approved replica; new writes route to one owner-selected provider. Each WebSocket connection carries a monotonic epoch so replaced sockets cannot act for their successor.
 - **Exact retries:** Tendriller retains the input digest and original signing device per `operationId`. Retries target that same signer and never silently move a saved operation to a different device. Use `inspect_application_operation`, `retry_application_operation`, or bounded `wait_application_operation` for uncertain outcomes; use `reapply_application_operation` with a new ID to deliberately link replacement work.
-- **Event forwarding:** `forwardApplicationEvents` advances the checkpoint only after host acknowledgement, skips owner-declined projections (`onSkipped`), and halts for explicit review after generation recovery.
+- **Event forwarding:** Chronolog's `forwardSessionEvents` owns recovery, cancellation, read views, and checkpoint advancement. Tendriller's `createAssistantEventDelivery` supplies host acknowledgement/retry and owner-declined projection handling (`onSkipped`). The checkpoint advances only after delivery completes.
 - **Double scoping:** both the host gateway and the local participant (`createScopedApplicationTools` + `@tendriller/core/assistant`) enforce the exact allowed command/query set. Stop the adapter via `assistant.close()` or closing its session.
 
 ## Independently acting agents (consumer bindings)
