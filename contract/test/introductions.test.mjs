@@ -351,3 +351,12 @@ test('transport selection reports bounded metadata once, and observers cannot ca
   assert.equal(fallback.relayOpenings.length,1);
   assert.throws(()=>fixture({},undefined,{onTransport:null}),{code:'invalid_introduction'});
 });
+
+
+test('rejecting asynchronous transport diagnostics cannot become an unhandled rejection', async () => {
+  const direct = fixture({}, undefined, { onTransport: async () => { throw Error('asynchronous observer failed'); } });
+  const connection = await direct.transport.open({peer:{identity:remote,route:route(remote)}},options());
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(direct.relayOpenings.length,0);
+  await connection.close();
+});

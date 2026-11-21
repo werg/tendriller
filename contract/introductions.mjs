@@ -25,7 +25,7 @@ export function createPeerIntroductions({ peers, identity, openDirectConnection,
       !['watchDiscovery', 'discover', 'advertise', 'withdraw', 'listenInvitations', 'invite', 'rendezvous', 'relay'].every(key => typeof peers?.[key] === 'function'))
     invalid('Provide the session device identity, host peers client and direct/relay connection openers');
   const selected = (peerId, kind, reason) => {
-    try { onTransport?.(Object.freeze({ peerId, kind, ...(reason ? { reason } : {}) })); }
+    try { void Promise.resolve(onTransport?.(Object.freeze({ peerId, kind, ...(reason ? { reason } : {}) }))).catch(() => {}); }
     catch { /* Diagnostics cannot change connection selection or ownership. */ }
   };
   let activeListener, nextListener = Promise.withResolvers(), activeWatcher, nextWatcher = Promise.withResolvers();
