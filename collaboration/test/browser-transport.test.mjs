@@ -260,3 +260,36 @@ test('virtual elected repeated resume cannot keep a silent owner alive; close fe
   await another.endpoint.close(); await rejected;
 
 });
+
+test('forged oversized bursts cannot retire either authenticated route direction', async t => {
+  const f = await fixture({ timeoutMs: 5000 }); t.after(() => f.close());
+  const client = await f.attach({ livenessTimeoutMs: 10000 });
+  await client.send(1, 'before-forgery');
+  const attacker = new BroadcastChannel(f.channelName); t.after(() => attacker.close());
+  let release, entered = 0, rejected = 0;
+  const gate = new Promise(resolve => { release = resolve; });
+  const decrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+  t.mock.method(crypto.subtle, 'decrypt', async (...args) => {
+    if (args[2]?.byteLength !== 2 * 1048576) return decrypt(...args);
+    entered++;
+    try { await gate; throw Error('FORGED_CIPHERTEXT'); } finally { rejected++; }
+  });
+  try {
+    for (const direction of ['client', 'owner']) {
+      const sequence = Math.max(...f.traffic.filter(packet => packet.type === 'sealed' && packet.route === client.route &&
+        packet.direction === direction).map(packet => packet.sequence)) + 1;
+      for (let i = 0; i < 3; i++) attacker.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'sealed',
+        ownerInstanceId: f.announcement.ownerInstanceId, route: client.route, direction, sequence,
+        ciphertext: new Uint8Array(2 * 1048576) });
+    }
+    await until(() => entered === 2 && f.traffic.filter(packet => packet.ciphertext?.byteLength === 2 * 1048576).length === 6,
+      'both receive queues filled before authentication');
+    assert.equal(f.bridge.routes, 1, 'unauthenticated overflow cannot authorize owner-side retirement');
+    assert.deepEqual(client.replacements, [], 'unauthenticated overflow cannot replace the client route');
+    release(); await until(() => rejected === 4, 'bounded admitted forgeries rejected');
+    assert.equal((await client.send(2, 'after-forgery')).value, 'after-forgery');
+    assert.equal(f.accepted.length, 2);
+    assert.equal(f.bridge.routes, 1);
+    assert.deepEqual(client.replacements, []);
+  } finally { release(); }
+});

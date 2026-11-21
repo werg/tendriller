@@ -124,9 +124,9 @@ function queues(record, channel, ownerInstanceId, route, outgoing) {
   record.receive = (packet, deliver) => {
     const direction = outgoing === 'owner' ? 'client' : 'owner';
     if (!validPacket(packet, direction) || record.closed) return;
-    // Dropping an authentic in-order packet would stall every later one, so an
-    // overflow ends the route explicitly instead of silently losing it.
-    if (record.receiving >= MAX_QUEUED_FRAMES || record.queuedReceive + packet.ciphertext.length > MAX_QUEUED_BYTES) { record.overflow?.(); return; }
+    // This is still unauthenticated public-channel traffic. Bound its queue,
+    // but never let copied route IDs and oversized forged bursts retire a peer.
+    if (record.receiving >= MAX_QUEUED_FRAMES || record.queuedReceive + packet.ciphertext.length > MAX_QUEUED_BYTES) return;
     record.queuedReceive += packet.ciphertext.length; record.receiving++;
     const next = record.incoming.then(async () => {
       if (record.closed || packet.sequence !== record.receiveSequence + 1) return;
@@ -177,7 +177,7 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
       const shared = await material(pair.privateKey, record.publicKey), base = await derive(shared, record.nonce, [...record.context, 'welcome']);
       const challenge = crypto.getRandomValues(new Uint8Array(32)), iv = crypto.getRandomValues(new Uint8Array(12));
       record.key = await derive(shared, challenge, [...record.context, 'session']);
-      queues(record, channel, owner.ownerInstanceId, data.route, 'client'); record.overflow = () => retire(data.route);
+      queues(record, channel, owner.ownerInstanceId, data.route, 'client');
       const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv,
         additionalData: aad(record, 'client', 0, 'welcome') }, base, challenge));
       record.welcome = { protocol: BROWSER_OWNER_PROTOCOL, type: 'welcome', ownerInstanceId: owner.ownerInstanceId, route: data.route, iv, ciphertext };
@@ -268,7 +268,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
       if (closed) return;
       record.key = await derive(record.shared, challenge, [...record.context, 'session']);
       clearTimeout(handshakeTimer);
-      queues(record, channel, ownerInstanceId, record.route, 'owner'); record.overflow = () => replaced('OWNER_MESSAGE_LIMIT');
+      queues(record, channel, ownerInstanceId, record.route, 'owner');
       await record.send({ kind: 'attach', facadeProtocol: record.facadeProtocol, handshake: record.handshake, releaseToken: record.releaseToken });
       liveness.authenticated(); pulse();
     } catch { replaced('OWNER_HANDSHAKE_INVALID'); }
