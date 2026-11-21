@@ -193,7 +193,15 @@ Every release is still the signed, verified publication the host selected; the
 switch is an ordinary navigation, so the runtime verifies it as on any load.
 Device keys and retained operations remain in their existing browser storage. Applications must persist drafts explicitly; runtime inspection does not save them. Closed shadow roots, custom editors, blurred contenteditable content, detached controls and other application work are not covered by the form-default check. Such an app calls
 `const release = tendril.publication.hold()` while that work is unsaved, then
-`release()`. `publication.onUpdate(listener)` lets an app show its own notice;
+`release()`. Update safety is checked on publication changes, input/change,
+focus leaving an editor, form reset, visibility changes, page restoration and hold
+release. There is no periodic safety scan. Programmatic changes that do not emit
+these events must use a hold while unsaved: persist the draft, update native form
+defaults to the saved values when appropriate, then release the hold. Custom
+editors and closed shadow roots require this explicit lifetime. Alternatively,
+`publication.update()` is an explicit decision to switch immediately; it bypasses
+these protections rather than detecting whether programmatic work was saved.
+`publication.onUpdate(listener)` lets an app show its own notice;
 `publication.update()` explicitly switches immediately, overriding draft protection and active holds. An application should offer it only when the person has saved or accepted discarding local work. A pinned document opens its corresponding document in the current release.
 
 Why pages used to stay on their first release, and how that is kept: (1) a reload

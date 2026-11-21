@@ -130,3 +130,39 @@ test('pin detection matches only a valid immutable route relative to this page b
   }, mock.origin);
   expect(result).toEqual([true, true, false, false, false, false, false, false]);
 });
+
+test('idle publication waiting installs no polling and programmatic saves require an explicit event or hold release', async ({ page }) => {
+  const notice = await policy(page, '<textarea id="editor">saved</textarea>');
+  await page.evaluate(() => {
+    const w=window as any;
+    const native=document.querySelector('#editor') as HTMLTextAreaElement;
+    native.value='draft';w.safetyScans=0;
+    const query=document.querySelectorAll.bind(document);
+    document.querySelectorAll=((...args: Parameters<typeof query>)=>{w.safetyScans++;return query(...args);}) as typeof document.querySelectorAll;
+  });
+  await notice(2);
+  const initial=await page.evaluate(()=>(window as any).safetyScans);
+  await page.clock.runFor(60_000);
+  expect(await page.evaluate(()=>(window as any).safetyScans)).toBe(initial);
+  expect(await reloads(page)).toBe(0);
+  await page.evaluate(()=>{const editor=document.querySelector('#editor') as HTMLTextAreaElement;editor.value='saved';});
+  await page.clock.runFor(60_000);expect(await reloads(page)).toBe(0);
+  await page.evaluate(()=>document.querySelector('#editor')!.dispatchEvent(new Event('input',{bubbles:true})));
+  await page.clock.runFor(1);expect(await reloads(page)).toBe(1);
+});
+
+test('native form reset retries a waiting update after defaults are restored', async ({ page }) => {
+  const notice=await policy(page,'<form><textarea id="editor">saved</textarea></form>');
+  await page.evaluate(()=>(document.querySelector('#editor') as HTMLTextAreaElement).value='draft');
+  await notice(2);expect(await reloads(page)).toBe(0);
+  await page.evaluate(()=>(document.querySelector('form') as HTMLFormElement).reset());
+  await page.clock.runFor(1);expect(await reloads(page)).toBe(1);
+});
+
+test('programmatic save under a hold releases only after inspectable defaults match', async ({ page }) => {
+  const notice=await policy(page,'<textarea id="editor">saved</textarea>');
+  await page.evaluate(()=>{const w=window as any;w.release=w.updates.hold();(document.querySelector('#editor') as HTMLTextAreaElement).value='programmatic draft';});
+  await notice(2);await page.clock.runFor(60_000);expect(await reloads(page)).toBe(0);
+  await page.evaluate(()=>{const editor=document.querySelector('#editor') as HTMLTextAreaElement;editor.defaultValue=editor.value;(window as any).release();});
+  expect(await reloads(page)).toBe(1);
+});
