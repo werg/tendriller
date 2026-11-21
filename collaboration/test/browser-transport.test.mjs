@@ -40,15 +40,18 @@ async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequ
   const bridge = await createBroadcastOwner(ownerChannel, owner, { profileId, timeoutMs, maxRoutes, idleTimeoutMs });
   bridge.announce(); await until(() => traffic.some(frame => frame.type === 'ready'), 'owner announcement');
   const announcement = traffic.find(frame => frame.type === 'ready');
-  async function attach(options = {}) {
+  async function attach({ waitReady = true, ...options } = {}) {
     const channel = new BroadcastChannel(channelName), pair = new MessageChannel(), frames = [], replacements = [];
     const endpoint = createBroadcastEndpoint(channel, announcement, { profileId, livenessTimeoutMs: 1000,
       onReplaced: value => replacements.push(value), ...options });
     const record = { channel, endpoint, port: pair.port1, frames, replacements };
     clients.push(record); pair.port1.addEventListener('message', ({ data }) => frames.push(data)); pair.port1.start();
     endpoint.postMessage({ protocol: 'chronolog/peer-session/owner/v2', handshake: { context: { viewId: `private-view-${clients.length}` } }, port: pair.port2 });
-    await until(() => frames.some(frame => frame.ready), 'private facade handshake');
-    record.route = traffic.filter(frame => frame.type === 'hello').at(-1).route;
+    record.waitReady = async () => {
+      await until(() => frames.some(frame => frame.ready), 'private facade handshake');
+      record.route = traffic.filter(frame => frame.type === 'hello').at(-1).route;
+    };
+    if (waitReady) await record.waitReady();
     record.send = async (id, value) => {
       pair.port1.postMessage({ id, value }); await until(() => frames.some(frame => frame.id === id), 'private response');
       return frames.find(frame => frame.id === id);
@@ -363,4 +366,50 @@ test('an elected opening acquires its witness before hello and explicit close re
   await client.endpoint.close();
   assert.equal(f.witnesses.has(name), false);
   await until(() => f.bridge.routes === 0, 'explicit route release');
+});
+
+test('elected capacity admission has one bounded query and a late snapshot cannot reclaim or attach', async t => {
+  const f = await fixture({ maxRoutes: 1, timeoutMs: 100 }); t.after(() => f.close());
+  const alive = await f.attach(); await alive.park();
+  let resolve;
+  const before = f.queries;
+  f.setQuery(() => new Promise(yes => { resolve = yes; }));
+  const first = await f.attach({ waitReady: false });
+  await until(() => f.queries === before + 1, 'pending admission query');
+  const second = await f.attach({ waitReady: false });
+  await until(() => f.traffic.filter(frame => frame.type === 'hello').length >= 3, 'both incoming hellos');
+  assert.equal(f.queries, before + 1); assert.equal(f.bridge.routes, 1); assert.equal(f.attachments, 1);
+  await delay(150); // Cross the configured query/admission deadline, not a readiness guess.
+  resolve({ held: [] }); await new Promise(setImmediate);
+  assert.equal(f.bridge.routes, 1); assert.equal(f.attachments, 1);
+  assert.equal(first.frames.some(frame => frame.ready), false); assert.equal(second.frames.some(frame => frame.ready), false);
+  assert.equal(alive.frames.some(frame => frame.ended), false);
+  assert.equal((await alive.send('after-timeout', 'preserved')).value, 'preserved');
+});
+
+test('owner close fences an authenticated attach whose witness proof is still pending', async t => {
+  const f = await fixture(); t.after(() => f.close());
+  let resolve;
+  f.setQuery(() => new Promise(yes => { resolve = yes; }));
+  const client = await f.attach({ waitReady: false });
+  await until(() => typeof resolve === 'function', 'authenticated attach proof');
+  assert.equal(f.bridge.routes, 1); assert.equal(f.attachments, 0);
+  await f.bridge.close(); resolve({ held: [...f.witnesses.values()] });
+  await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.equal(f.bridge.routes, 0); assert.equal(f.attachments, 0);
+  assert.equal(client.frames.some(frame => frame.ready), false);
+});
+
+test('endpoint close cancels a pending document lock promptly and fences its late native grant before hello', async t => {
+  const f = await fixture(); t.after(() => f.close());
+  const locks = navigator.locks, request = locks.request.bind(locks);
+  let grant;
+  locks.request = (...args) => new Promise((resolve, reject) => { grant = () => request(...args).then(resolve, reject); });
+  const client = await f.attach({ waitReady: false });
+  await until(() => typeof grant === 'function', 'pending document lock');
+  await client.endpoint.close();
+  assert.equal(f.traffic.some(frame => frame.type === 'hello'), false);
+  grant(); await new Promise(setImmediate); await new Promise(setImmediate);
+  assert.equal(f.witnesses.size, 0); assert.equal(f.attachments, 0);
+  assert.equal(f.traffic.some(frame => frame.type === 'hello'), false);
 });

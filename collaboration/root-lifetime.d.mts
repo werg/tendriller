@@ -1,6 +1,6 @@
 /** Unique per-root document witness; workers only query this namespace. */
 export declare function rootLifetimeLockName(profileId:string,rootId:string):string;
-/** Acquire before shared boot. Retain through hide/freeze; release on detach/error. */
+/** Acquire before shared boot or elected hello. Retain through hide/freeze; release on detach/error. */
 export declare function acquireRootLifetime(profileId:string,rootId:string,options?:{
   signal?:AbortSignal;locks?:Pick<LockManager,'request'|'query'>;
 }):Promise<Readonly<{name:string;release():Promise<void>}>>;
