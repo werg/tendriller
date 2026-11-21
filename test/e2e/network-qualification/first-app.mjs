@@ -24,8 +24,7 @@ export function assertHiddenDirectPath(before, after) {
 }
 
 export async function qualifyFirstAppNetwork({ page, context, peer, expect, transportCounters,
-  evidencePng, browserDevice, sha256, profile }) {
-  const faults = createFaults();
+  evidencePng, browserDevice, sha256, profile, faults = createFaults() }) {
   const browser = await createBrowserNetworkControls(page);
   const timeline = activityTimeline();
   let cleaned = false;
@@ -148,6 +147,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
             // Keep the bounded activity ring once per profile, rather than
             // duplicating it in every route-wait/progress counter observation.
             const { requestActivity, ...counters } = await transportCounters();
+            hostTraffic = { observedAt: Date.now(), httpRequests: counters.httpRequests, requestActivity };
             return counters;
           },
           publish: process.env.NETWORK_LAB_PROGRESS ? routeEvidence =>
