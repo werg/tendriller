@@ -141,10 +141,10 @@ export async function acquireAtomicLock(root, {
       } finally {
         await fd.close();
       }
-      let released = false;
+      let released = false, pendingHeartbeat = Promise.resolve();
       const heartbeat = setInterval(() => {
         if (released) return;
-        void writePrivateJsonAtomic(root, lockName, makeRecord()).catch(() => {});
+        pendingHeartbeat = pendingHeartbeat.then(() => released ? undefined : writePrivateJsonAtomic(root, lockName, makeRecord())).catch(() => {});
       }, Math.max(1000, Math.floor(leaseTtlMs / 3)));
       heartbeat.unref?.();
       return Object.freeze({
@@ -154,6 +154,7 @@ export async function acquireAtomicLock(root, {
           if (released) return;
           released = true;
           clearInterval(heartbeat);
+          await pendingHeartbeat;
           const current = await readPrivateJson(root, lockName).catch(() => null);
           if (!current || current.lockId === lockId) {
             await unlink(lockPath).catch(() => {});
@@ -170,8 +171,7 @@ export async function acquireAtomicLock(root, {
       }
       const sameHost = !existing?.hostId || existing.hostId === hostId;
       const alive = sameHost && existing?.pid ? isProcessAlive(existing.pid) : false;
-      const expired = !existing?.heartbeatAt || (Date.now() - existing.heartbeatAt) > (existing.leaseTtlMs ?? leaseTtlMs) * 2;
-      if (alive && !expired) {
+      if (alive) {
         const lockAgeMs = typeof existing?.startedAt === 'number' ? Math.max(0, Date.now() - existing.startedAt) : Infinity;
         throw fail('INSTANCE_UNRESPONSIVE', `Lock held by live PID ${existing.pid} whose IPC endpoint is unreachable. Inspect or stop that process; never mint a duplicate device.`, {
           pid: existing.pid,
