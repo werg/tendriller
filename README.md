@@ -1,8 +1,12 @@
 # Tendriller
 
+Tendriller lets an agent create a private page for you, update it live, and receive UI interactions and inputs such as location, motion, camera, and voice from your devices. Your GitHub or Google sign-in controls access.
+
 Tendriller hosts authenticated web applications whose durable state, execution, replication, and peer communication run through one owned **Chronolog** session (`@chronolog/peer-session`).
 
 The host stays application-neutral: it provides account authentication, OAuth 2.1, a single account-linked `/mcp` gateway, signed membership and generation control, immutable signed UI hosting, and bounded peer introductions/relay. Ordinary application commands, queries, database history, content replication, and live signals flow directly through Chronolog between enrolled peers.
+
+The name combines an agent's tendrils reaching new interfaces and sensors with a drill opening a path for them.
 
 **Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **create → define state → configure authority and initial generation → publish → owner sign-in → connect devices → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). Deliver the [running connected application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
 
