@@ -6,6 +6,7 @@ import { createBrowserNetworkControls } from './browser-controls.mjs';
 import { runNetworkScenario } from './scenarios.mjs';
 import { activityTimeline, counterDelta, assertDirectWork } from './evidence.mjs';
 import { progressWriter } from './idle-progress.mjs';
+import { waitForDirectEvidence } from './wait-direct.mjs';
 
 export function currentOperationApplied(priorOperation, operationId, status) {
   return typeof operationId === 'string' && operationId.length > 0 && operationId !== priorOperation &&
@@ -133,28 +134,23 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     },
     async waitForDirect({ signal }) {
       signal.throwIfAborted();
-      const started = performance.now();
-      const before = await peer.request('transport-snapshot');
-      const hostBefore = await transportCounters();
-      const evidence = { expectedKind: 'direct', before, hostBefore };
+      const evidence = { expectedKind: 'direct' };
       if (routeWaits.length < 16) routeWaits.push(evidence);
       try {
-        evidence.after = await peer.request('transport-wait', { kind: 'direct' }, 60_000);
-        evidence.completed = true;
-      }
-      catch (error) {
-        evidence.after = await peer.request('transport-snapshot'); evidence.completed = false;
+        await waitForDirectEvidence({
+          evidence,
+          snapshot: () => peer.request('transport-snapshot'),
+          wait: () => peer.request('transport-wait', { kind: 'direct' }, 60_000),
+          counters: transportCounters,
+          publish: process.env.NETWORK_LAB_PROGRESS ? routeEvidence =>
+            progressWriter(process.env.NETWORK_LAB_PROGRESS)({
+              state: routeEvidence.completed && !routeEvidence.diagnosticFailed ?
+                'authenticated-direct-ready' : 'authenticated-direct-failed',
+              profile, at: new Date().toISOString(), routeEvidence }) : undefined,
+        });
+      } catch (error) {
         initialRouteEvidence = evidence;
         throw error;
-      } finally {
-        evidence.elapsedMs = performance.now() - started;
-        evidence.hostAfter = await transportCounters();
-        // Opaque counter instance is needed only for equality, never retained.
-        evidence.sameHostEpoch = evidence.hostBefore.instance === evidence.hostAfter.instance;
-        delete evidence.hostBefore.instance; delete evidence.hostAfter.instance;
-        if (process.env.NETWORK_LAB_PROGRESS) await progressWriter(process.env.NETWORK_LAB_PROGRESS)({
-          state: evidence.completed ? 'authenticated-direct-ready' : 'authenticated-direct-failed',
-          profile, at: new Date().toISOString(), routeEvidence: evidence });
       }
       signal.throwIfAborted();
     },
