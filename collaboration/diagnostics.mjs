@@ -11,6 +11,7 @@ const actions = {
   DELEGATION_REVOKED: 'Obtain a new explicitly approved binding; do not reuse or replace the revoked credential automatically.',
   CAPABILITY_UNAVAILABLE: 'Inspect the approved attachment capabilities and request only the missing authority needed for this action.',
   CONTRACT_INCOMPATIBLE: 'Install a matching public package and immutable definition, then reattach the retained profile.',
+  APPLICATION_WORKER_METADATA_INVALID: 'Check for a mixed package/owner composition. Preserve the existing device identity, storage and original signed operation references. Close old app tabs, update native participants and the signed UI to the same qualified public package composition, then reopen the retained profile. Do not reset or clear app data.',
   COORDINATOR_UNAVAILABLE: 'Reconnect the selected coordinator; inspect recovery evidence before approving a new history selection.',
   KEYS_UNAVAILABLE: 'Connect an authorized key donor for the selected history; do not create replacement keys or a new signer.',
   RECOVERY_REVIEW_REQUIRED: 'Inspect the selected generation and excluded operations before an explicit rebind or reapplication.',
