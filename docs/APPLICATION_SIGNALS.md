@@ -68,7 +68,7 @@ size or infinite answers:
 
 | Boundary | Limit |
 | --- | --- |
-| Complete encoded JSON signal payload, including envelope and escaping | 16 KiB |
+| Generated request/reply JSON payload, including helper envelope and escaping | 12 KiB, reserving 4 KiB for the kernel's signed 16 KiB frame |
 | One serialized reply | 4 MiB of UTF-8 JSON and at most 512 parts; both limits apply |
 | Outstanding requests per browser helper | 16 |
 | Native reply cache and pending computations | 32 entries |
@@ -96,7 +96,9 @@ does not create a private reply channel.
 Multi-piece messages are paced by the transport. Send each piece after the
 previous `send` resolves. The relay keeps a window of packets in flight and an
 ordered bounded local queue for the rest; the browser owner's fallback route and
-the starter's subscription queues are byte-bounded (8 MiB). Those bounds do not
+the browser fallback route is bounded to 4 MiB / 1,024 frames, the starter's
+subscription queues to 8 MiB / 1,024 signals, and the relay's pending queue to
+1 MiB / 64 entries. Those separate bounds do not
 promise room for every reply or concurrent sender. `SIGNAL_BACKPRESSURE` means a
 full queue or sequence budget; the helper retries it only within its fixed send
 lifetime.

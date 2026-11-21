@@ -96,7 +96,7 @@ try {
     assert.ok(Number.isSafeInteger(input?.count) && input.count >= 0 && input.count <= 1024);
     assert.ok(Number.isSafeInteger(input?.width) && input.width >= 0 && input.width <= 4096);
     return { rows: Array.from({ length: input.count }, (_value, index) => ({ index, label: 'row "' + index + '"', text: 'x'.repeat(input.width) })) };
-  } }).catch(error => { requestFailure=error; });
+  } }).catch(error => { requestFailure=Object.assign(Error('Signal reply service failed'), {code:error?.code || 'SIGNAL_REQUEST_FAILED'}); });
   console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
   input = createInterface({input:process.stdin});
   for await (const line of input) {
@@ -104,7 +104,8 @@ try {
     try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
-      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus,statusLog,lifecycleLog};
+      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus,statusLog,lifecycleLog,
+        signalRequests:{state:requestFailure?'failed':requestsStopped.signal.aborted?'closed':'running',code:requestFailure?.code ?? null}};
       else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:{phase:session.participation.status.phase,peers:[...session.participation.status.connectedPeers].sort()}};
       else if(request.action==='signal-state') {
         // Periodic state updates, as a dashboard sends them.

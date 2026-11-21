@@ -3,6 +3,9 @@
 // computations never mix. Signal topics are visible to application members, not
 // a private channel to the requesting device.
 const MAX_FRAME = 16_384, MAX_REPLY = 4 * 1024 * 1024, MAX_PARTS = 512;
+// The kernel also limits the signed CBOR frame to 16 KiB. Leave 4 KiB
+// for scope, credentials, stream metadata, timestamps, key and signature.
+const PAYLOAD_BUDGET = 12 * 1024;
 const MAX_CACHE = 32, MAX_CACHE_BYTES = 8 * 1024 * 1024, MAX_WAITING = 16;
 const encoder = new TextEncoder();
 const bytes = value => encoder.encode(JSON.stringify(value)).length;
@@ -54,7 +57,7 @@ export function whenConnected(session, peer, { signal } = {}) {
   });
 }
 
-/** Each complete payload, including escaped JSON and envelope, fits 16 KiB. */
+/** Complete generated payloads leave room for the signed wire envelope. */
 function splitReply(id, g, value) {
   const text = JSON.stringify(value);
   if (typeof text !== 'string') throw fail('REQUEST_REPLY_INVALID');
@@ -66,7 +69,7 @@ function splitReply(id, g, value) {
     let low = start, high = Math.min(text.length, start + MAX_FRAME);
     while (low < high) {
       const middle = Math.ceil((low + high) / 2), end = boundary(middle);
-      if (bytes({ id, g, i: MAX_PARTS - 1, n: MAX_PARTS, z: text.slice(start, end) }) <= MAX_FRAME) low = middle;
+      if (bytes({ id, g, i: MAX_PARTS - 1, n: MAX_PARTS, z: text.slice(start, end) }) <= PAYLOAD_BUDGET) low = middle;
       else high = middle - 1;
     }
     const end = boundary(low);
@@ -116,7 +119,7 @@ export function createSignalRequests(session, { peer, requestTopic = 'app/reques
       const base = combine(lifetime, signal); base.throwIfAborted();
       if (waiting.size >= MAX_WAITING) throw fail('REQUEST_BUSY');
       const id = crypto.randomUUID(), payload = { id, q: name, input };
-      if (typeof name !== 'string' || bytes(payload) > MAX_FRAME) throw fail('REQUEST_TOO_LARGE');
+      if (typeof name !== 'string' || bytes(payload) > PAYLOAD_BUDGET) throw fail('REQUEST_TOO_LARGE');
       const scope = deadline(base, timeoutMs, 'REQUEST_TIMEOUT');
       const entry = { pieces: new Map(), retired: new Set(), done: false, progressAt: 0 };
       const result = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
