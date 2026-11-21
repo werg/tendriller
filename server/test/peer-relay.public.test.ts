@@ -459,9 +459,13 @@ it('reconstructs expired admission from hibernation attachments and reauthorizes
 
 it('retains the live window and outstanding receipts across hibernation', async () => {
   const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'hibernate-live');
+  // Real Worker socket delivery shares the test transport with all parallel suites.
+  // Allow the same 5-second observation budget as the full-window burst test;
+  // production authorization, progress and lifetime deadlines stay unchanged.
+  const delivery = { timeout: 5000 };
   try {
     for (let sequence = 1; sequence <= LIMITS.livePendingPackets; sequence++) p.a.live.socket.send(packet(sequence, LIMITS.packetBytes));
-    await expect.poll(() => p.b.live.messages.length).toBe(1 + LIMITS.livePendingPackets);
+    await expect.poll(() => p.b.live.messages.length, delivery).toBe(1 + LIMITS.livePendingPackets);
     await evictDurableObject(stub(h.id));
     await inDO(h.id, t => {
       const sender = t.ctx.getWebSockets('peer-relay').find(ws => {
@@ -472,11 +476,11 @@ it('retains the live window and outstanding receipts across hibernation', async 
       expect(sender.pending.byteLength).toBe(24 * LIMITS.livePendingPackets);
     });
     for (const message of p.b.live.messages.slice(1)) p.b.live.socket.send(receipt(p.session, message as ArrayBuffer));
-    await expect.poll(() => p.a.live.messages.length).toBe(1 + LIMITS.livePendingPackets);
+    await expect.poll(() => p.a.live.messages.length, delivery).toBe(1 + LIMITS.livePendingPackets);
     expect(p.a.live.messages.slice(1).map(message => JSON.parse(message as string).sequence)).toEqual(
       Array.from({ length: LIMITS.livePendingPackets }, (_, index) => index + 1));
     p.a.live.socket.send(packet(LIMITS.livePendingPackets + 1));
-    await expect.poll(() => p.b.live.messages.length).toBe(2 + LIMITS.livePendingPackets);
+    await expect.poll(() => p.b.live.messages.length, delivery).toBe(2 + LIMITS.livePendingPackets);
   } finally { p.close(); }
 });
 
