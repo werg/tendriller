@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
+import {BROWSER_OWNER_PROTOCOL} from '../browser-transport.mjs';
 import {BROWSER_RTC_PROTOCOL} from '../browser-rtc.mjs';
 import {defineApplication,defineQuery,describeApplication,PEER_GENERATION_CAPABILITIES} from '@chronolog/peer-session';
 
@@ -47,7 +48,7 @@ async function fixture(t,mode){
  doc.visibilityState='visible';doc.hidden=false;
  const keys=['navigator','location','document','window','SharedWorker','Worker','RTCPeerConnection','addEventListener','removeEventListener','dispatchEvent','__freezeClock','__freezeProbe','__freezeWorkerChannel'];
  const globals=new Map(keys.map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
- const sharedRoots=[],ports=[],channels=[],replaced=[],gate={silent:false,hold:false,queued:[]},probe={started:0,closed:0,active:new Set()};let held=0,opened=0,service,attachment,pageWorker,openDirectConnection;const siblingAttachments=[];
+ const rootRequests=new Map(),dedicatedAvailability=[],sharedRoots=[],ports=[],channels=[],replaced=[],gate={silent:false,hold:false,queued:[],holdSuspendAck:false,suspendAcks:[]},probe={started:0,closed:0,active:new Set()};let held=0,opened=0,service,attachment,pageWorker,openDirectConnection;const siblingAttachments=[];
  const deliver=send=>{if(gate.silent)return;if(gate.hold)gate.queued.push(send);else send();};
  const NativeChannel=globalThis.BroadcastChannel;
  class WorkerChannel extends NativeChannel{constructor(...args){super(...args);channels.push(this);}postMessage(value){deliver(()=>super.postMessage(value));}}
@@ -64,7 +65,7 @@ async function fixture(t,mode){
   async query(){return{revision,value:['retained identity']};},async close(){stop.abort(Error('FIXTURE_OWNER_CLOSED'));}};
  class Scope extends EventTarget{postMessage(value){deliver(()=>queueMicrotask(()=>pageWorker?.dispatchEvent(new MessageEvent('message',{data:value}))));}close(){}connect(port){this.dispatchEvent(Object.assign(new Event('connect'),{ports:[port]}));}}
  const scope=new Scope();
- function outgoing(port){const post=port.postMessage.bind(port);port.postMessage=(...args)=>{deliver(()=>post(...args));};}
+ function outgoing(port){const post=port.postMessage.bind(port);port.postMessage=(...args)=>{const frame=args[0];if(gate.holdSuspendAck&&frame?.type==='root.result'&&rootRequests.get(frame.id)==='root.suspend'){gate.suspendAcks.push(()=>post(...args));return;}deliver(()=>post(...args));};}
  const values={__freezeClock:clock,__freezeProbe:probe,__freezeWorkerChannel:WorkerChannel,
   navigator:{locks:{async request(_name,options,run){if(held&&options.ifAvailable)return run(null);held++;try{return await run({});}finally{held--;}}}},
   location:new URL('https://fixture.test/'),document:doc,window:globalThis,RTCPeerConnection:class{},
@@ -72,12 +73,12 @@ async function fixture(t,mode){
   SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();const wire=new MessageChannel();ports.push(wire.port1,wire.port2);this.port=wire.port2;
     // Gate both root replies and the transferred RPC endpoint before the owner
     // consumes its handshake; otherwise a "silent" root could still answer RPC.
-    const root={port:wire.port2};sharedRoots.push(root);wire.port1.addEventListener('message',({data})=>{if(data?.type==='boot')root.id=data.id;if(data?.port)outgoing(data.port);});outgoing(wire.port1);scope.connect(wire.port1);}}:undefined,
+    const root={port:wire.port2};sharedRoots.push(root);wire.port1.addEventListener('message',({data})=>{if(data?.protocol===BROWSER_OWNER_PROTOCOL)rootRequests.set(data.id,data.type);if(data?.type==='boot')root.id=data.id;if(data?.port)outgoing(data.port);});outgoing(wire.port1);scope.connect(wire.port1);}}:undefined,
   Worker:class extends EventTarget{constructor(){super();pageWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}},
  };
  for(const[key,value]of Object.entries(values))Object.defineProperty(globalThis,key,{configurable:true,value});
  t.after(async()=>{
-  gate.silent=false;gate.hold=false;for(const send of gate.queued.splice(0))send();
+  gate.silent=false;gate.hold=false;gate.holdSuspendAck=false;for(const send of [...gate.queued.splice(0),...gate.suspendAcks.splice(0)])send();
   try{
    let done=false;const closing=Promise.allSettled([service?.close(),attachment?.detach(),...siblingAttachments.map(value=>value.detach())]).then(()=>done=true);
    for(let i=0;!done&&i<100;i++){await delay(2);clock.advance(1000);}await bounded(closing,'cleanup');
@@ -86,13 +87,32 @@ async function fixture(t,mode){
  await writeFile(join(directory,'page.mjs'),pageBundle.outputFiles[0].text);await writeFile(join(directory,'worker.mjs'),workerBundle.outputFiles[0].text);
  const page=await import(pathToFileURL(join(directory,'page.mjs')).href),worker=await import(pathToFileURL(join(directory,'worker.mjs')).href);
  service=worker.serveBrowserOwner({scope,profileId:'retained',async openSession(options){openDirectConnection=options.openDirectConnection;opened++;return{session};}});
+ // This listener is installed after the real Worker ingress handler. Its
+ // synchronous RTC dispatch has applied the hint before this observer runs.
+ scope.addEventListener('message',({data})=>{if(data?.protocol===BROWSER_RTC_PROTOCOL&&data.payload?.type==='availability')dedicatedAvailability.push(data.payload.available);});
  attachment=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0,onOwnerReplaced:value=>replaced.push(value)}),'initial attach');
  await until(()=>clock.heartbeats.length>0,'initial heartbeat armed');
+ async function workerBarrier(available){
+  if(mode==='shared'){
+   // Both provider data and private root controls use this same FIFO port.
+   // A matching root result proves the preceding availability/park was applied.
+   const root=sharedRoots[0],id=crypto.randomUUID();
+   await bounded(new Promise((resolve,reject)=>{
+    const receive=({data})=>{if(data?.id!==id)return;root.port.removeEventListener('message',receive);data.type==='root.result'?resolve():reject(Error('FIXTURE_ROOT_BARRIER_FAILED'));};
+    root.port.addEventListener('message',receive);root.port.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'root.ping',profileId:'retained',rootId:root.id,ownerInstanceId:attachment.session.endpoint.ownerInstanceId,id});
+   }),'Worker root control barrier');
+  }else{
+   // An actual facade reply is ordered after RTC messages on the authenticated
+   // BC queue. The separate bootstrap Worker port needs its own observed hint.
+   await bounded(attachment.session.query('state',null),'authenticated BC queue barrier');
+   if(available!==undefined)await until(()=>dedicatedAvailability.at(-1)===available,'bootstrap availability applied');
+  }
+ }
  async function sibling(){
   const previous=globalThis.document,next=new EventTarget();next.hidden=false;next.visibilityState='visible';Object.defineProperty(globalThis,'document',{configurable:true,value:next});
   try{const value=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0}),'sibling attach');siblingAttachments.push(value);return value;}finally{Object.defineProperty(globalThis,'document',{configurable:true,value:previous});}
  }
- return{attachment,clock,doc,events,probe,gate,replaced,session,sibling,registerOriginal(){const root=sharedRoots[0];root.port.postMessage({protocol:BROWSER_RTC_PROTOCOL,profileId:'retained',rootId:root.id,payload:{protocol:BROWSER_RTC_PROTOCOL,type:'register',available:true}});},get signalObservers(){return signalListeners.size;},openDirect:options=>openDirectConnection({timeoutMs:1000,...options}),get opened(){return opened;},get held(){return held;}};
+ return{attachment,clock,doc,events,probe,gate,replaced,session,sibling,workerBarrier,rootRequests,registerOriginal(){const root=sharedRoots[0];root.port.postMessage({protocol:BROWSER_RTC_PROTOCOL,profileId:'retained',rootId:root.id,payload:{protocol:BROWSER_RTC_PROTOCOL,type:'register',available:true}});},get signalObservers(){return signalListeners.size;},openDirect:options=>openDirectConnection({timeoutMs:1000,...options}),get opened(){return opened;},get held(){return held;}};
 }
 
 for(const mode of['shared','elected'])for(const event of['freeze','visibilitychange'])for(const manual of[false,true])test(`${mode} automatic ${event} pauses synchronously and authenticated resume preserves the owner${manual?' with coalesced BFCache calls':''}`,async t=>{
@@ -172,7 +192,7 @@ for(const mode of ['shared','elected'])test(`${mode} observational parking forwa
  await until(()=>f.signalObservers===1,'signal subscription established before hiding');
  const packet=new Uint8Array([1,9,7,4]),before=await bounded(connection.roundTrip(packet),'active RTC packet');
  f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event('visibilitychange'));
- await until(()=>f.clock.tasks.size===0,'parked root and endpoint state acknowledged');
+ await f.workerBarrier();
  const after=await bounded(connection.roundTrip(packet),'hidden provider forwards RTC packet');
  assert.deepEqual(after.packet,packet);assert.equal(after.providerId,before.providerId);assert.equal(connection.signal.aborted,false);
  assert.deepEqual((await bounded(f.attachment.session.query('state',null),'background query')).value,['retained identity']);
@@ -181,10 +201,10 @@ for(const mode of ['shared','elected'])test(`${mode} observational parking forwa
  // Merely hidden providers remain eligible. Only a frozen provider is skipped
  // for new opens; selection must not abort its retained connection.
  const hidden=await f.openDirect();await hidden.close();f.doc.dispatchEvent(new Event('freeze'));
- await until(()=>f.clock.tasks.size===0,'freeze acknowledged');
+ await f.workerBarrier(false);
  let opened=false;const pending=f.openDirect().then(value=>{opened=true;return value;});
  await delay(10);assert.equal(opened,false);assert.equal(connection.signal.aborted,false);
- f.doc.dispatchEvent(new Event('resume'));
+ f.doc.dispatchEvent(new Event('resume'));await f.workerBarrier(true);
  const fresh=await bounded(pending,'resume wakes pending selection');await fresh.close();
  assert.equal(connection.signal.aborted,false);assert.equal(f.clock.heartbeats.length,0,'resume while hidden keeps observation parked');
 });
@@ -192,11 +212,11 @@ test('shared selection uses a visible sibling without aborting the frozen first 
  const f=await fixture(t,'shared'),first=await f.openDirect();t.after(()=>first.close());
  const original=await bounded(first.roundTrip(new Uint8Array([3])),'first provider');await f.sibling();
  f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event('freeze'));
- await until(()=>f.clock.tasks.size===f.clock.heartbeats.length,'first root frozen');
+ await f.workerBarrier(false);
  const second=await f.openDirect();t.after(()=>second.close());
  const reply=await bounded(second.roundTrip(new Uint8Array([5])),'visible provider packet');assert.notEqual(reply.providerId,original.providerId);
  assert.equal(first.signal.aborted,false);f.doc.dispatchEvent(new Event('resume'));
- await until(()=>f.clock.tasks.size===f.clock.heartbeats.length,'hidden resume acknowledged');
+ await f.workerBarrier(true);
  const third=await f.openDirect();const thirdReply=await bounded(third.roundTrip(new Uint8Array([8])),'hidden resumed selection');assert.equal(thirdReply.providerId,original.providerId);await third.close();
  assert.deepEqual((await bounded(first.roundTrip(new Uint8Array([6])),'retained hidden provider packet')).packet,new Uint8Array([6]));
  assert.equal(f.opened,1);
@@ -279,4 +299,24 @@ for(const mode of ['shared','elected'])test(`${mode} explicit resume begun hidde
  const resuming=f.attachment.resume();await until(()=>entered,'hidden fresh binding continuation');assert.equal(f.clock.heartbeats.length,0);
  f.doc.hidden=false;f.doc.visibilityState='visible';f.doc.dispatchEvent(new Event('visibilitychange'));release();await bounded(resuming,'visible completion after hidden binding');
  assert.equal(calls,2);await until(()=>f.clock.heartbeats.length===1,'visible completion rearms observation');assert.equal(f.probe.started,starts+1);assert.equal(f.replaced.length,0);
+});
+
+test('a newer explicit suspend waits for renewed SharedWorker suspension after cancelling a sent resume',async t=>{
+ const f=await fixture(t,'shared');await f.attachment.suspend();const starts=f.probe.started;
+ const before=[...f.rootRequests.values()].filter(type=>type==='root.suspend').length;
+ f.gate.hold=true;const resuming=f.attachment.resume();await until(()=>f.gate.queued.length>0,'sent resume result held');
+ const oldReplies=f.gate.queued.splice(0);f.gate.hold=false;f.gate.holdSuspendAck=true;
+ let suspended=false;const suspending=f.attachment.suspend().then(()=>{suspended=true;});for(const send of oldReplies)send();
+ await bounded(resuming,'superseded resume settles');
+ await until(()=>f.gate.suspendAcks.length>0||suspended,'new suspension reasserted on the Worker wire');
+ assert.equal(suspended,false,'the final suspend cannot succeed before root.suspend acknowledgement');
+ assert.equal([...f.rootRequests.values()].filter(type=>type==='root.suspend').length,before+1);assert.equal(f.probe.started,starts);
+ f.gate.holdSuspendAck=false;for(const send of f.gate.suspendAcks.splice(0))send();await bounded(suspending,'last suspend intent acknowledged');
+ f.registerOriginal();await f.workerBarrier();let opened=false;const pending=f.openDirect().then(value=>{opened=true;return value;});await f.workerBarrier();assert.equal(opened,false,'late registration cannot reactivate the explicitly suspended root');
+ await f.attachment.resume();const connection=await bounded(pending,'later deliberate resume');await connection.close();
+});
+test('an explicit resume superseded before its turn never sends a SharedWorker resume request',async t=>{
+ const f=await fixture(t,'shared');await f.attachment.suspend();const before=[...f.rootRequests.values()].filter(type=>type==='root.resume').length,starts=f.probe.started;
+ await bounded(Promise.all([f.attachment.resume(),f.attachment.suspend()]),'immediately superseded resume');await f.workerBarrier();
+ assert.equal([...f.rootRequests.values()].filter(type=>type==='root.resume').length,before);assert.equal(f.probe.started,starts);
 });

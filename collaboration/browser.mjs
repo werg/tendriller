@@ -115,7 +115,7 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
 function facade({session,transport,channel,worker,route,options,provider:initialProvider,bootstrapRtc}){
   initialProvider?.adopt(session);
   transport.bindRequestSource(session);
-  let detached=false,releasing,suspended=false,residency=Promise.resolve(), explicitSuspended=false, explicitResuming=false;
+  let detached=false,releasing,suspended=false,residency=Promise.resolve(), explicitSuspended=false, explicitResuming=false, resumeSent=false;
   const document=globalThis.document;
   let frozen=false, observationPaused=false, observationResume, observationEpoch=0;
   const away=()=>frozen||document?.visibilityState==='hidden';
@@ -197,18 +197,20 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     if(nextSuspended)pauseObservation();
     const changing=residency.then(async()=>{
       if(detached){if(nextSuspended)return;throw new CollaborationError('ENDPOINT_STALE');}
-      if(suspended===nextSuspended)return nextSuspended?undefined:session;
+      // A sent resume may have activated the Worker before its reply arrives,
+      // even while this facade still records suspended. Reassert the last intent.
+      if(suspended===nextSuspended&&!(nextSuspended&&resumeSent))return nextSuspended?undefined:session;
       if(nextSuspended){
         suspended=true;
-        await provider.close();await session.suspend();await transport?.suspend();
+        await provider.close();await session.suspend();await transport?.suspend();resumeSent=false;
       }else{
         explicitResuming=true;
         try{
           // A hide invalidates explicit resume just as it invalidates automatic
           // observation. Re-prove a rapid visible return before installing once.
-          while(!detached){
+          while(!detached&&!explicitSuspended){
             const epoch=observationEpoch;
-            await transport?.resume();
+            resumeSent=true;await transport?.resume();
             if(explicitSuspended)break;
             if(epoch!==observationEpoch&&!away())continue;
             // A superseded transport proof is not a binding. Background work
@@ -224,7 +226,7 @@ function facade({session,transport,channel,worker,route,options,provider:initial
           }
           if(detached)throw new CollaborationError('ENDPOINT_STALE');
           if(explicitSuspended){pauseObservation(true);return session;}
-          provider=startRtc();suspended=false;
+          provider=startRtc();suspended=false;resumeSent=false;
           if(away())pauseObservation(true);else observationPaused=false;
           return session;
         }finally{explicitResuming=false;}
