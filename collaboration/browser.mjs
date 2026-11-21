@@ -115,7 +115,7 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
 function facade({session,transport,channel,worker,route,options,provider:initialProvider,bootstrapRtc}){
   initialProvider?.adopt(session);
   transport.bindRequestSource(session);
-  let detached=false,releasing;
+  let detached=false,releasing,suspended=false,residency=Promise.resolve();
   const startRtc=()=>registerBrowserRtcProvider(transport.rtc,session);
   let provider=initialProvider ?? startRtc();
   // An attached session holds a retained signing key and signed work: keep it durable.
@@ -148,9 +148,24 @@ function facade({session,transport,channel,worker,route,options,provider:initial
   globalThis.addEventListener?.('pagehide',leaving);
   session.signal.addEventListener('abort',ended,{once:true});
   if(session.signal.aborted)ended();
+  function changeResidency(nextSuspended){
+    const changing=residency.then(async()=>{
+      if(detached){if(nextSuspended)return;throw new CollaborationError('ENDPOINT_STALE');}
+      if(suspended===nextSuspended)return nextSuspended?undefined:session;
+      if(nextSuspended){
+        suspended=true;
+        await provider.close();await session.suspend();await transport?.suspend();
+      }else{
+        await transport?.resume();await session.resumeAttachment();
+        if(detached)throw new CollaborationError('ENDPOINT_STALE');
+        provider=startRtc();suspended=false;return session;
+      }
+    });
+    residency=changing.catch(()=>{});return changing;
+  }
   return Object.freeze({session,mode:route==='shared'?'shared':'elected',storagePersisted,
-    async suspend(){if(!detached){await provider.close();await session.suspend();await transport?.suspend();}},
-    async resume(){if(detached)throw new CollaborationError('ENDPOINT_STALE');await transport?.resume();await session.resumeAttachment();provider=startRtc();return session;},
+    suspend(){return changeResidency(true);},
+    resume(){return changeResidency(false);},
     async detach(){if(detached){await releasing;return;}detached=true;try{await session.detach();}finally{await release();}},
   });
 }

@@ -87,8 +87,10 @@ export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebR
       lifetime.throwIfAborted();
       opening = Promise.resolve().then(() => {
         lifetime.throwIfAborted();
+        const remainingMs = Math.max(1,deadline - Date.now());
         return openConnection(route.endpoint, { ...options,
-          timeoutMs: Math.max(1,deadline - Date.now()), signal: AbortSignal.any([lifetime,route.provider.signal]) });
+          ...(options.gatheringTimeoutMs === undefined ? {} : {gatheringTimeoutMs: Math.min(options.gatheringTimeoutMs, remainingMs)}),
+          timeoutMs: remainingMs, signal: AbortSignal.any([lifetime,route.provider.signal]) });
       }).then(value => {
         candidate = value;
         if (lifetime.aborted) {

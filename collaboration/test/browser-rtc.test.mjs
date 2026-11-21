@@ -43,6 +43,7 @@ test('opaque binary RTC messages have their own finite bound and reject transfer
 // entry, private bootstrap roots and actual owner RPC attachment remain real.
 const compiled=await build({stdin:{contents:"export {openBrowserOwner} from './collaboration/browser.mjs';export {serveBrowserOwner} from './collaboration/worker.mjs';",resolveDir:new URL('../..',import.meta.url).pathname,loader:'js'},bundle:true,format:'esm',platform:'node',write:false,plugins:[{name:'rtc-fixture',setup(build){build.onLoad({filter:/\/peer-session\/webrtc\.mjs$/},()=>({contents:`
  export function serveWorkerWebRtcConnections(endpoint,{signal}={}){
+  globalThis.__rtcFixtureBridgeClosed.started++;
   const receive=({data})=>{if(data?.protocol==='test/rtc'&&data.type==='open')endpoint.postMessage({protocol:'test/rtc',type:'ready',id:data.id});};
   endpoint.addEventListener('message',receive);return{async close(){globalThis.__rtcFixtureBridgeClosed.count++;endpoint.removeEventListener('message',receive);}};
  }
@@ -59,14 +60,23 @@ for(const mode of ['shared','elected'])test(`default ${mode} bootstrap makes the
  class Scope extends EventTarget{postMessage(){}close(){}connect(port){this.dispatchEvent(Object.assign(new Event('connect'),{ports:[port]}));}}
  const scope=new Scope(),stop=new AbortController(),links=[],description=describeApplication(defineApplication({id:'rtc-fixture',version:'1',commands:{},queries:{}}));let shared=0,dedicated=0,localWorker;
  const session={applicationId:'a'.repeat(64),historyId:'retained',storageId:'retained',deviceId:'b'.repeat(64),signal:stop.signal,revision:null,status:{phase:'ready',database:'idle',role:'coordinator',generation:'c'.repeat(64),coordinator:'b'.repeat(64),connectedPeers:0},signals:{delivery:'neighbors'},describe:()=>({...description,capabilities:{...PEER_GENERATION_CAPABILITIES,sql:false}}),onStatus(listener){listener(this.status);return()=>{};},onRecovery:()=>()=>{},async close(){stop.abort(Error('SESSION_CLOSED'));}};
- const setup={__rtcFixtureBridgeClosed:{count:0},navigator:{locks:{request:async(_name,_options,run)=>run({})}},location:{origin:'https://app.test',href:'https://app.test/'},RTCPeerConnection:class{},SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();shared++;const wire=new MessageChannel();this.port=wire.port2;scope.connect(wire.port1);}}:undefined,Worker:class extends EventTarget{constructor(){super();dedicated++;localWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}}};for(const[key,value]of Object.entries(setup))Object.defineProperty(globalThis,key,{configurable:true,value});
+ const setup={__rtcFixtureBridgeClosed:{count:0,started:0},navigator:{locks:{request:async(_name,_options,run)=>run({})}},location:{origin:'https://app.test',href:'https://app.test/'},RTCPeerConnection:class{},SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();shared++;const wire=new MessageChannel();this.port=wire.port2;scope.connect(wire.port1);}}:undefined,Worker:class extends EventTarget{constructor(){super();dedicated++;localWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}}};for(const[key,value]of Object.entries(setup))Object.defineProperty(globalThis,key,{configurable:true,value});
  scope.postMessage=data=>queueMicrotask(()=>localWorker?.dispatchEvent(new MessageEvent('message',{data})));
  const service=core.serveBrowserOwner({scope,profileId:'retained',async openSession({signal,openDirectConnection}){try{links.push(await openDirectConnection({signal,role:'offerer',signaling:{},timeoutMs:500}));}catch{links.push({kind:'relay'});}return{session};}});
  t.after(()=>service.close());let attachment;
  try{attachment=await core.openBrowserOwner({workerUrl:'https://app.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:description.id,definitionVersion:'1',timeoutMs:2000,persistStorage:false,storageKeepAliveMs:0});assert.equal(attachment.mode,mode);assert.equal(shared,mode==='shared'?1:0);assert.equal(dedicated,mode==='elected'?1:0);assert.equal(links[0].kind,'direct','relay at startup must not become a permanent fallback');
  assert.equal(globalThis.__rtcFixtureBridgeClosed.count,0,'successful attachment must preserve its early RTC provider');
+ const initialProviders=globalThis.__rtcFixtureBridgeClosed.started;
+ assert.equal(await attachment.resume(),attachment.session);
+ assert.deepEqual(await Promise.all([attachment.resume(),attachment.resume()]),[attachment.session,attachment.session]);
+ assert.equal(globalThis.__rtcFixtureBridgeClosed.started,initialProviders,'active resume must not register another provider');
+ await attachment.suspend();
+ assert.equal(globalThis.__rtcFixtureBridgeClosed.count,initialProviders);
+ assert.deepEqual(await Promise.all([attachment.resume(),attachment.resume()]),[attachment.session,attachment.session]);
+ assert.equal(globalThis.__rtcFixtureBridgeClosed.started,initialProviders+1,'concurrent resumes after suspension register exactly one provider');
+ await attachment.resume();assert.equal(globalThis.__rtcFixtureBridgeClosed.started,initialProviders+1);
  await attachment.detach();await until(()=>globalThis.__rtcFixtureBridgeClosed.count>0);
- assert.equal(globalThis.__rtcFixtureBridgeClosed.count,mode==='shared'?1:2,'actual attachment shutdown closes every owned provider');}finally{await attachment?.detach();await service.close();}
+ assert.equal(globalThis.__rtcFixtureBridgeClosed.count,initialProviders+1,'actual attachment shutdown closes every owned provider');}finally{await attachment?.detach();await service.close();}
 });
 
 test('authenticated BC attach registers RTC before RPC, carries full opaque packets, and rejects public sideband forgery',async t=>{
@@ -123,4 +133,15 @@ test('provider adoption retains the same bridge while handing opening lifetime t
  const provider=registerBrowserRtcProvider(endpoint,{signal:opening.signal},{createPeerConnection(){},serve(){started++;return{close(){closed++;}};}});
  provider.adopt({signal:session.signal});opening.abort();assert.equal(closed,0);assert.equal(started,1);
  session.abort();assert.equal(closed,1);await provider.close();assert.equal(closed,1);
+});
+
+
+test('broker clamps explicit gathering time to the remaining negotiation budget after provider wait', async t => {
+ let time=1000; t.mock.method(Date,'now',()=>time); const calls=[];
+ const broker=createBrowserRtcBroker({openConnection:async(_endpoint,options)=>{calls.push(options);return{close:async()=>{}};}});
+ t.after(()=>broker.close());const pending=broker.openDirectConnection({timeoutMs:1000,gatheringTimeoutMs:800});
+ time+=700;const endpoint=rtcEndpoint(()=>{});broker.addRoute(endpoint,{authorize:()=>true});register(endpoint);
+ const connection=await pending;assert.equal(calls[0].timeoutMs,300);assert.equal(calls[0].gatheringTimeoutMs,300);await connection.close();
+ const shorter=await broker.openDirectConnection({timeoutMs:1000,gatheringTimeoutMs:200});assert.equal(calls[1].gatheringTimeoutMs,200);await shorter.close();
+ const defaults=await broker.openDirectConnection({timeoutMs:1000});assert.equal(Object.hasOwn(calls[2],'gatheringTimeoutMs'),false);await defaults.close();
 });
