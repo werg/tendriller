@@ -479,6 +479,12 @@ export async function closeLocalTransport() {
         report.rtcLifecycle.push({ type:value.type, connection:value.connection, ice:value.ice, gathering:value.gathering });
     });
     await context.addInitScript(({mode}) => {
+      const callers = () => String(new Error().stack).split('\n').slice(2,10).map(line=>/^\s*at ([A-Za-z0-9_.$<> ]+) \(/.exec(line)?.[1]).filter(Boolean);
+      const abort = AbortController.prototype.abort;
+      AbortController.prototype.abort = function(reason){
+        if(reason?.message==='RTC_PROVIDER_LOST')void window.__firstAppRtcBridge({action:'provider-closed',callers:callers()}).catch(()=>{});
+        return abort.call(this,reason);
+      };
       const observe = (data,direction) => {
         const value = data?.protocol === 'tendriller/browser-rtc-provider/v1' ? data.payload : data;
         if(value?.type!=='chronolog/peer-session/rtc-endpoint/v1'||!['open','ready','send','description','sent','close-signaling','signaling-closed','ended','close'].includes(value.action)) return;
