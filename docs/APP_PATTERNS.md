@@ -146,6 +146,7 @@ numbers to guess which generation wins. Every delivered snapshot is one
 | --- | --- |
 | `createLiveView(session, { query, input, onSnapshot?, onStatus?, onRecovery?, onError?, signal? })` | Captures the query input once and observes the existing session |
 | `view.subscribe(listener)` | Receives coherent snapshots; immediately receives the last snapshot when available; returns an unsubscribe function |
+| `await view.ready({ signal?, timeoutMs? })` | Waits for the first coherent read within a fixed 30-second default deadline; `PEER_RECOVERING` waits for readiness/change events on the same session, while fatal errors reject |
 | `await view.refresh()` | Requests a fresh coherent snapshot; overlapping requests can resolve from the same latest read |
 | `view.snapshot` | Last successful snapshot, or `null` before one arrives |
 | `view.status`, `view.error` | Separate session status and last read/observation error |

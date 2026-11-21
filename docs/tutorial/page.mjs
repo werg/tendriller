@@ -193,7 +193,7 @@ async function connectSession({ signal } = {}) {
     // The draft editor is usable now; the submission state gates every action until reads succeed.
     $('#app-content').hidden = false;
     // The query activates data. Status observation handles later key delivery.
-    await refresh();
+    await liveView.ready({ signal, timeoutMs: 30_000 });
     signal?.throwIfAborted();
     // The runtime binding installs once per page, so only after the app is usable.
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));

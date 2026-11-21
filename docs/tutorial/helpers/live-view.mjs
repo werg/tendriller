@@ -9,7 +9,11 @@ export function createLiveView(session, {
   let closed = false, running = false, dirty = false, requested = 0, snapshot = null;
   let status = null, error = null;
   let statusKey, stopStatus = () => {}, stopRecovery = () => {}, iterator;
-  const waiting = new Set(), listeners = new Set();
+  const waiting = new Set(), initial = new Set(), listeners = new Set();
+  const recovering = failure => (failure?.code ?? failure?.message) === 'PEER_RECOVERING';
+  const settleInitial = (failure, value) => {
+    for (const finish of [...initial]) finish(failure, value);
+  };
   const notify = (listener, value) => {
     if (closed || !listener) return;
     try { listener(value); } catch (error) { if (listener !== onError) notify(onError, error); }
@@ -35,11 +39,13 @@ export function createLiveView(session, {
           // Never order revisions by sequence or merge independently read values.
           if (closed || request !== requested) continue;
           snapshot = Object.freeze({ revision: result.revision, value: result.value }); error = null;
-          settle(null, snapshot); notify(onSnapshot, snapshot);
+          settle(null, snapshot); settleInitial(null, snapshot); notify(onSnapshot, snapshot);
           for (const listener of listeners) notify(listener, snapshot);
         } catch (failure) {
           if (closed || request !== requested) continue;
-          error = failure; settle(failure, undefined, true); notify(onError, failure);
+          error = failure; settle(failure, undefined, true);
+          if (!recovering(failure)) settleInitial(failure);
+          notify(onError, failure);
         }
       }
     } finally { running = false; }
@@ -48,6 +54,27 @@ export function createLiveView(session, {
     if (closed) return Promise.reject(owned.reason ?? Error('Live view is closed.'));
     const task = new Promise((resolve, reject) => waiting.add({ resolve, reject }));
     invalidate(); return task;
+  }
+  // Unlike an explicit refresh, first-read readiness survives ordinary replica
+  // recovery. The same view/session retries only on invalidation events, within
+  // one fixed caller deadline; there is no timer-driven read or reconnect loop.
+  function ready({ signal, timeoutMs = 30_000 } = {}) {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000)
+      return Promise.reject(TypeError('Initial read timeout must be 1..120000 milliseconds.'));
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    if (closed) return Promise.reject(owned.reason ?? Error('Live view is closed.'));
+    if (snapshot !== null) return Promise.resolve(snapshot);
+    if (error && !recovering(error)) return Promise.reject(error);
+    return new Promise((resolve, reject) => {
+      const finish = (failure, value) => {
+        clearTimeout(timer); signal?.removeEventListener('abort', abort); initial.delete(finish);
+        failure ? reject(failure) : resolve(value);
+      };
+      const abort = () => finish(signal.reason);
+      const timer = setTimeout(() => finish(Object.assign(Error('INITIAL_READ_TIMEOUT'), { code: 'INITIAL_READ_TIMEOUT' })), timeoutMs);
+      initial.add(finish); signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+    });
   }
   function subscribe(listener) {
     if (typeof listener !== 'function') throw TypeError('A snapshot listener is required.');
@@ -60,7 +87,7 @@ export function createLiveView(session, {
     if (closed) return;
     closed = true; owned.removeEventListener('abort', close);
     lifetime.abort(Error('Live view is closed.'));
-    stopStatus(); stopRecovery(); listeners.clear(); settle(owned.reason, undefined, true);
+    stopStatus(); stopRecovery(); listeners.clear(); settle(owned.reason, undefined, true); settleInitial(owned.reason);
     // Query has no cancellation parameter. Late results are ignored; closing an
     // observer must not close the shared session or wait for an uncancellable read.
     void Promise.resolve().then(() => iterator?.return?.()).catch(() => {});
@@ -71,9 +98,10 @@ export function createLiveView(session, {
     try {
       stopStatus = session.onStatus(value => {
         const generationChanged = status !== null && status.generation !== value.generation;
+        const becameReady = status?.phase !== 'ready' && value.phase === 'ready';
         status = value; notify(onStatus, value);
         const next = `${value.generation}/${value.database}/${value.phase}`;
-        if (generationChanged || next !== statusKey && value.database === 'ready' && value.phase === 'ready') invalidate();
+        if (generationChanged || becameReady || next !== statusKey && value.database === 'ready' && value.phase === 'ready') invalidate();
         statusKey = next;
         if (value.phase === 'closed' || value.database === 'closed') close();
       });
@@ -90,7 +118,7 @@ export function createLiveView(session, {
               if (change.done) break;
               invalidate();
             }
-          } catch (failure) { if (!closed) { error = failure; notify(onError, failure); } }
+          } catch (failure) { if (!closed) { error = failure; if (!recovering(failure)) settleInitial(failure); notify(onError, failure); } }
         })();
         invalidate();
       }
@@ -98,6 +126,6 @@ export function createLiveView(session, {
   }
   // Subscribers receive only coherent {revision,value} snapshots. Connection
   // status and read/observation errors have separate fields and callbacks.
-  return Object.freeze({ refresh, subscribe, close, get snapshot() { return snapshot; },
+  return Object.freeze({ refresh, ready, subscribe, close, get snapshot() { return snapshot; },
     get status() { return status; }, get error() { return error; } });
 }

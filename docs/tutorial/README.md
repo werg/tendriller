@@ -175,7 +175,10 @@ live view ID receives a fresh ID. Reloading reopens the original signer journal.
 
 The page exposes real connection/data state, local draft preservation, accepted
 versus rejected applied outcomes, operation inspection, exact retry and explicit
-close. It also imports the supplied live-view, operation-state and reviewed-input
+close. Its initial live-view `ready()` wait keeps the same attachment during
+`PEER_RECOVERING` until a coherent read succeeds, with a fixed 30-second deadline
+and event-driven readiness. Fatal read errors and cancellation still fail setup.
+It also imports the supplied live-view, operation-state and reviewed-input
 helpers. Adapt these modules directly rather than rebuilding transport and state
 fetching around another backend. Its localhost preview is clearly labeled
 layout-only. Follow the parent guide's deployed acceptance checks before reporting
