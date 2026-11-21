@@ -30,7 +30,11 @@ tag, not a claim that GitHub administrators cannot alter releases.
 
 ## Bootstrap once with existing owner authorization
 
-Use the existing `gh` login. No new PAT or App is required. Start with a dry run:
+Use the existing `gh` login and owner SSH Git access. No new PAT or App is required.
+The one-time workflow bootstrap pushes an isolated temporary checkout through
+existing SSH authorization (strict known-host checks, no force). This avoids
+requiring an existing `gh` OAuth credential to gain `workflow` scope. The PR and
+dispatch APIs use the existing login. Start with a dry run:
 
 ```sh
 node scripts/companion-release/cli.mjs --check-auth
