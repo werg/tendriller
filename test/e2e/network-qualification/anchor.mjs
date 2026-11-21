@@ -4,6 +4,11 @@ import { basename, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+export async function selectedProductVersion(root) {
+  const manifest = JSON.parse(await readFile(resolve(root, 'dist/manifest.json')));
+  assert.match(manifest.version, /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/);
+  return manifest.version;
+}
 export async function releaseAnchor(root) {
   const bytes = await readFile(resolve(root, 'dist/manifest.json'));
   const manifest = JSON.parse(bytes);

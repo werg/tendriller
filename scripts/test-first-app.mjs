@@ -154,7 +154,11 @@ async function localCertificatePin() {
 try {
   await mkdir(app);
   await mkdir(dirname(reportPath), { recursive: true });
-  const { version } = await jsonFile(join(root, 'package.json'));
+  // Manual network qualification keeps current harness code, while archive
+  // names/version belong to the selected immutable product graph.
+  const version = values['network-lab-profile']
+    ? await (await import('../test/e2e/network-qualification/anchor.mjs')).selectedProductVersion(root)
+    : (await jsonFile(join(root, 'package.json'))).version;
   const proof = await jsonFile(join(root, 'dist/provenance.json'));
   const toolsProof = await jsonFile(join(root, 'dist/tools-manifest.json'));
   const archives = Object.fromEntries(['sdk', 'tools', 'engine', 'runtime'].map(name =>
@@ -1029,6 +1033,10 @@ export async function closeLocalTransport() {
     report.browser_actionability = await page.evaluate(() => ({ visibility: document.visibilityState,
       hasFocus: document.hasFocus(), submitDisabled: document.querySelector('#submit')?.disabled,
       formBusy: document.querySelector('#form')?.getAttribute('aria-busy') })).catch(() => null);
+    report.browser_lifecycle = await page.evaluate(() => ({
+      markerPresent: Array.isArray(window.__networkLabLifecycle),
+      observed: Array.isArray(window.__networkLabLifecycle) ? window.__networkLabLifecycle.map(event => event.type).slice(0, 8) : [],
+    })).catch(() => null);
     // Which browser stores exist (names only): distinguishes a missing store from an emptied one.
     report.opfs_at_failure = await opfsInventory(page);
     report.browser_status_log = await page.evaluate(() => JSON.parse(sessionStorage.getItem('first-app-status-log') || '[]')).catch(() => null);

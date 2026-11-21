@@ -4,7 +4,9 @@ import { createFaults } from './faults.mjs';
 import { activityTimeline, assertDirectWork, assertIdle, counterDelta } from './evidence.mjs';
 import { runNetworkScenario } from './scenarios.mjs';
 import { observeIdleDuration } from './idle-progress.mjs';
-import { releaseAnchor, sha256 } from './anchor.mjs';
+import { releaseAnchor, selectedProductVersion, sha256 } from './anchor.mjs';
+import { currentOperationApplied } from './first-app.mjs';
+import { authenticatedTransportSnapshot } from '../../../scripts/first-app-peer.mjs';
 import { prepareMountTargets } from './mounts.mjs';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -215,4 +217,40 @@ test('fresh harness has nested read-only mount targets without building or repla
   await writeFile(join(root, 'server/public/retained'), 'qualified bytes');
   await prepareMountTargets(root);
   assert.equal(await readFile(join(root, 'server/public/retained'), 'utf8'), 'qualified bytes');
+});
+
+test('manual qualification selects product metadata without replacing the newer harness', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'network-version-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'dist'));
+  await writeFile(join(root, 'package.json'), JSON.stringify({ version: '2.0.0' }));
+  await writeFile(join(root, 'dist/manifest.json'), JSON.stringify({ version: '1.0.0' }));
+  assert.equal(await selectedProductVersion(root), '1.0.0');
+  assert.equal(JSON.parse(await readFile(join(root, 'package.json'))).version, '2.0.0');
+  await writeFile(join(root, 'dist/manifest.json'), JSON.stringify({ version: '../private' }));
+  await assert.rejects(selectedProductVersion(root));
+});
+
+test('transport counters and revision come from the same synchronous snapshot turn', async () => {
+  const participation = { status: { connectionRevision: 8 }, diagnostics() {
+    const links = [{ peerId: 'private-peer', kind: 'relay', sentReliableBytes: 12,
+      receivedReliableBytes: 13, sentLiveBytes: 14, receivedLiveBytes: 15 }];
+    queueMicrotask(() => { participation.status.connectionRevision = 9; });
+    return Promise.resolve(links);
+  } };
+  const value = await authenticatedTransportSnapshot(participation, 'private-peer');
+  assert.equal(participation.status.connectionRevision, 9);
+  assert.equal(value.connectionRevision, 8);
+  assert.equal(value.sentReliableBytes, 12);
+  assert.equal(value.kind, 'relay');
+  assert.equal(value.peerId, undefined);
+});
+
+test('old applied/retention labels and reused IDs cannot prove a fresh browser command', () => {
+  const status = id => `${id}: Applied: accepted. 1 peer retention receipt(s) observed.`;
+  assert.equal(currentOperationApplied('old', 'old', status('old')), false);
+  assert.equal(currentOperationApplied('old', 'new', status('old')), false);
+  assert.equal(currentOperationApplied('old', 'new', 'new: Saved. 1 peer retention receipt(s) observed.'), false);
+  assert.equal(currentOperationApplied('old', 'new', 'new: Applied: accepted. Peer retention has not been observed here.'), false);
+  assert.equal(currentOperationApplied('old', 'new', status('new')), true);
 });
