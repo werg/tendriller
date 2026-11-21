@@ -16,7 +16,8 @@ export function githubApi(path, body) {
     const child = execFile('gh', args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) {
         const status = stderr.match(/HTTP (\d{3})/)?.[1] || 'unknown';
-        return reject(Object.assign(Error(`GitHub ${body ? 'POST' : 'GET'} ${path.split('?')[0]} failed (HTTP ${status}); verify access, permissions and API availability.`), { code: 'github_request_failed' }));
+        return reject(Object.assign(Error(`GitHub ${body ? 'POST' : 'GET'} ${path.split('?')[0]} failed (HTTP ${status}); verify access, permissions and API availability.`),
+          { code: 'github_request_failed', status: status === 'unknown' ? null : Number(status), endpoint: path.split('?')[0] }));
       }
       try { resolve(stdout ? JSON.parse(stdout) : null); }
       catch { reject(Error('GitHub returned invalid JSON')); }

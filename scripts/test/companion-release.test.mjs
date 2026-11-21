@@ -8,6 +8,7 @@ import { digest, json, seal, publishedTuple, qualifyContrib, validateTuple, GATE
 import { planProposal, receiverWorkflow } from '../companion-release/proposal.mjs';
 import { select } from '../companion-release/select.mjs';
 import { capabilities, openProposal, dispatchQualification, pushOwnerBootstrap } from '../companion-release/github.mjs';
+import { waitingReceipt } from '../companion-release/receipt.mjs';
 
 const sha = letter => letter.repeat(40), hash = letter => letter.repeat(64);
 function archive(provenance, pkg) {
@@ -244,6 +245,56 @@ test('every documented graph bootstrap command includes its required automation 
     .filter(command => command.includes('companion-release/cli.mjs --source'));
   assert.equal(commands.length, 2);
   for (const command of commands) assert(command.includes('--automation-source OWNER_APPROVED_AUTOMATION_CORE_FULL_SHA'));
+});
+
+test('known new-source release404 waits only in receiver mode; prior publication, auth and tamper errors stay hard', async () => {
+  const f = fixture(), endpoint = `repos/${REPOS.core}/releases/tags/source-${f.core.source}`;
+  const api = async path => {
+    if (path === endpoint) throw Object.assign(Error('not published'), { code: 'github_request_failed', status: 404, endpoint });
+    return f.api(path);
+  };
+  let absence;
+  await assert.rejects(publishedTuple(f.core.source, { api, fetcher: f.fetcher }), error => {
+    absence = error; return error.code === 'release_prerequisite_not_ready';
+  });
+  const receipt = waitingReceipt(absence, { receiver: true });
+  assert.equal(receipt.state, 'waiting-prerequisite'); assert.equal(receipt.qualified, false);
+  assert.equal(receipt.source, f.core.source); assert.equal(receipt.noProposalOrDispatch, true);
+  assert.equal(waitingReceipt(absence), null, 'Explicit manual request must still fail');
+  assert.equal(waitingReceipt(absence, { receiver: true, previouslyPublishedSource: f.core.source }), null,
+    'Previously verified publication disappearing is not ordinary propagation');
+  for (const status of [401, 403, 500]) {
+    let failure;
+    await assert.rejects(publishedTuple(f.core.source, { api: async path => {
+      if (path === endpoint) throw Object.assign(Error('request failed'), { code: 'github_request_failed', status, endpoint });
+      return f.api(path);
+    }, fetcher: f.fetcher }), error => { failure = error; return true; });
+    assert.equal(waitingReceipt(failure, { receiver: true }), null);
+  }
+  f.bytes.set('session.tgz', Buffer.from('tampered'));
+  await assert.rejects(f.check(), error => {
+    assert.equal(waitingReceipt(error, { receiver: true }), null); return error.code === 'release_bytes_mismatch';
+  });
+});
+
+test('pending exact MAIN gates wait without mutation; completed failure, malformed jobs and missing artifacts do not', async () => {
+  const f = fixture(), tuple = await f.check(), q = addQualification(f, tuple);
+  q.runs[0].status = 'in_progress';
+  await assert.rejects(qualifyContrib(tuple, q.source, { api: f.api }), error => {
+    const receipt = waitingReceipt(error, { receiver: true });
+    assert.equal(receipt.reason, 'contrib-ci.yml-pending'); assert.equal(receipt.stage, 'qualified');
+    return true;
+  });
+  assert(f.calls.every(call => !call.body));
+  q.runs[0].status = 'completed'; q.runs[0].conclusion = 'failure';
+  await assert.rejects(qualifyContrib(tuple, q.source, { api: f.api }), error => {
+    assert.equal(waitingReceipt(error, { receiver: true }), null); return true;
+  });
+  q.runs[0].conclusion = 'success';
+  f.overrides.get(`${q.root}/actions/runs/1/artifacts?per_page=100`).total_count = 0;
+  await assert.rejects(qualifyContrib(tuple, q.source, { api: f.api }), error => {
+    assert.equal(waitingReceipt(error, { receiver: true }), null); return true;
+  });
 });
 
 test('repository token writes only its own tuple; PR generation never merges or force-updates; dispatch is explicit', async () => {

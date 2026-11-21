@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { execFileSync } from 'node:child_process';
@@ -6,12 +6,14 @@ import assert from 'node:assert/strict';
 import { publishedTuple, qualifyContrib, json, REPOS, validateTuple, commit } from './tuple.mjs';
 import { githubApi, capabilities, openProposal, dispatchQualification } from './github.mjs';
 import { planProposal } from './proposal.mjs';
+import { waitingReceipt } from './receipt.mjs';
 
 const { values } = parseArgs({ options: { help: { type: 'boolean' }, source: { type: 'string' },
   'contrib-source': { type: 'string' }, 'manifest-sha256': { type: 'string' },
   output: { type: 'string' }, apply: { type: 'boolean', default: false },
   'auth-kind': { type: 'string' }, 'check-auth': { type: 'boolean' }, receiver: { type: 'string' },
   'automation-source': { type: 'string' } } });
+let evidenceOutput, previouslyPublishedSource;
 try {
   if (values.help) console.log(`Usage: node scripts/companion-release/cli.mjs --source FULL_CORE_SHA
   --automation-source OWNER_APPROVED_CORE_AUTOMATION_SHA --output PRIVATE_OR_TEMP_DIR
@@ -29,6 +31,7 @@ An apply run verifies everything again; it cannot apply a stored proposal file.`
     commit(values['automation-source']);
     const output = resolve(values.output), root = resolve(import.meta.dirname, '../..');
     if (output === root || output.startsWith(root + '/')) throw Error('Generated evidence must be outside the source checkout');
+    evidenceOutput = output;
     let source = values.source, contrib = values['contrib-source'];
     if (values.receiver) {
       assert(['contrib', 'chronolog'].includes(values.receiver));
@@ -38,6 +41,9 @@ An apply run verifies everything again; it cannot apply a stored proposal file.`
       assert.equal(actual, values['automation-source'], 'Checked-out automation source differs from its approved pin');
       assert.equal(execFileSync('git', ['-C', import.meta.dirname, 'status', '--porcelain'], { encoding: 'utf8', timeout: 5000 }).trim(), '',
         'Automation checkout must be clean');
+      const previous = validateTuple(JSON.parse(await readFile(resolve(process.env.GITHUB_WORKSPACE || process.cwd(),
+        'distribution/companion-release.json'), 'utf8')));
+      previouslyPublishedSource = previous.core.source;
       assert(!source && !contrib, 'Receiver selects only trusted default branches, no input overrides');
       if (values.receiver === 'contrib') source = (await githubApi(`repos/${REPOS.core}/commits/master`)).sha;
       else {
@@ -59,5 +65,9 @@ An apply run verifies everything again; it cannot apply a stored proposal file.`
     await writeFile(resolve(output, 'result.json'), json(result)); console.log(json(result));
   }
 } catch (error) {
-  console.error(error.message); process.exitCode = 1;
+  const receipt = waitingReceipt(error, { receiver: Boolean(values.receiver), previouslyPublishedSource });
+  if (receipt && evidenceOutput) {
+    await mkdir(evidenceOutput, { recursive: true, mode: 0o700 });
+    await writeFile(resolve(evidenceOutput, 'result.json'), json(receipt)); console.log(json(receipt));
+  } else { console.error(error.message); process.exitCode = 1; }
 }
