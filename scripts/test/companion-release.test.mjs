@@ -324,6 +324,26 @@ test('a pending earlier gate never masks a completed non-success later gate (rev
   });
 });
 
+test('completed gate evidence is validated before another gate can produce waiting', async t => {
+  for (const issue of ['failed-job', 'missing-artifact', 'malformed-jobs', 'expired-artifact']) await t.test(issue, async () => {
+    const f = fixture(), tuple = await f.check(), q = addQualification(f, tuple);
+    q.runs[0].status = 'in_progress'; q.runs[0].conclusion = null;
+    const jobs = f.overrides.get(`${q.root}/actions/runs/2/jobs?per_page=100`);
+    const artifacts = f.overrides.get(`${q.root}/actions/runs/2/artifacts?per_page=100`);
+    if (issue === 'failed-job') jobs.jobs[0].conclusion = 'failure';
+    if (issue === 'missing-artifact') { artifacts.total_count = 0; artifacts.artifacts = []; }
+    if (issue === 'malformed-jobs') jobs.total_count = 2;
+    if (issue === 'expired-artifact') artifacts.artifacts[0].expired = true;
+    await assert.rejects(qualifyContrib(tuple, q.source, { api: f.api }), error => {
+      assert.match(error.message, /Incomplete\/skipped\/failed|Missing peer-generation.yml artifacts|Expired qualification evidence/);
+      assert.equal(waitingReceipt(error, { receiver: true }), null);
+      return true;
+    });
+    assert(f.calls.every(call => !call.body));
+    assert(!f.calls.some(call => /\/runs\/1\/(jobs|artifacts)/.test(call.path)), 'Do not inspect unfinished gate evidence');
+  });
+});
+
 test('repository token writes only its own tuple; PR generation never merges or force-updates; dispatch is explicit', async () => {
   const f = fixture(), tuple = await f.check(), p = planningApi(f, 'contrib');
   const bootstrap = await planProposal(tuple, { api: p.api, automationSource: sha('8') });

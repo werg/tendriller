@@ -139,10 +139,9 @@ export async function qualifyContrib(tuple, source, { api } = {}) {
     else assert(['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(run.status),
       `Merged Contrib ${workflow} gate has an unknown status`);
   }
-  const pending = required.find(({ run }) => !run || run.status !== 'completed');
-  if (pending) throw prerequisite(source, 'qualified', `contrib-${pending.workflow}-pending`);
   const gates = [];
   for (const { workflow, run } of required) {
+    if (!run || run.status !== 'completed') continue;
     const jobs = await api(`repos/${REPOS.contrib}/actions/runs/${run.id}/jobs?per_page=100`);
     assert(jobs.jobs.length > 0 && jobs.total_count === jobs.jobs.length && jobs.jobs.every(job => job.conclusion === 'success'),
       `Incomplete/skipped/failed ${workflow} jobs`);
@@ -153,6 +152,8 @@ export async function qualifyContrib(tuple, source, { api } = {}) {
       return { id: item.id, name: item.name, sha256: checksum(item.digest?.replace(/^sha256:/, '')) };
     }) });
   }
+  const pending = required.find(({ run }) => !run || run.status !== 'completed');
+  if (pending) throw prerequisite(source, 'qualified', `contrib-${pending.workflow}-pending`);
   const { id, ...body } = tuple;
   return validateTuple(seal({ ...body, stage: 'qualified', contrib: { ...contrib, gates } }));
 }
