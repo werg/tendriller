@@ -19,6 +19,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
   const timeline = activityTimeline();
   let cleaned = false;
   let retained;
+  let reopenProof;
   const adapter = {
     faults, ...browser,
     async setOffline(value, options) {
@@ -92,11 +93,22 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     async reloadAndVerify({ signal }) {
       signal.throwIfAborted();
       assert.ok(retained);
+      const previous = await peer.request('transport-snapshot');
       await page.reload();
       await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
       await expect(page.locator('#notes li')).toHaveCount(retained.rows.length, { timeout: 30_000 });
       assert.equal(await page.locator('#operation-id').inputValue(), retained.operationId);
       assert.deepEqual((await peer.request('query')).value, retained.rows);
+      // Stored notes and the device field can render before peer reattachment.
+      // A cached old direct link is insufficient: wait for its replacement, then
+      // prove the new document's end-to-end signal route before timing commands.
+      const current = await peer.request('transport-wait', { kind: 'direct', afterRevision: previous.connectionRevision }, 60_000);
+      assert.ok(current.connectionRevision > previous.connectionRevision);
+      await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 30_000 });
+      const rows = await page.evaluate(() => window.appRequests.request('rows', { count: 2, width: 100 }).then(value => value.rows.length));
+      assert.equal(rows, 2);
+      reopenProof = { beforeRevision: previous.connectionRevision, afterRevision: current.connectionRevision, signalRows: rows };
+      signal.throwIfAborted();
       // Repeat signal and sensor work after reopen; this also proves that the
       // retained application session remains usable, rather than a DOM cache.
       return adapter.exercise({ signal });
@@ -135,6 +147,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       idleMs: Number(process.env.NETWORK_LAB_IDLE_MS ?? 15_000), timeline,
       onProgress: progressWriter(process.env.NETWORK_LAB_PROGRESS) });
     report.sensorScope = 'Immutable PNG fixture carried by real encrypted content/inference signals; deterministic native inference, no physical camera/provider billing qualification.';
+    report.reopenProof = reopenProof;
     assert.equal(report.success, true, 'Requested network profile is unsupported in this browser');
     return report;
   } catch (error) {
