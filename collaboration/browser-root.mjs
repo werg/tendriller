@@ -116,6 +116,6 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
   relinquish() {
     if (disposed) return;
     try { root.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'root.detach', profileId, ownerInstanceId, rootId, id: crypto.randomUUID() }); }
-    catch { /* The root lease still bounds a lost pagehide message. */ }
+    catch { /* The active lease or parked document-witness sweep reclaims a lost detach. */ }
   }, close };
 }
