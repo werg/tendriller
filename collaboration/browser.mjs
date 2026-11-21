@@ -115,12 +115,12 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
 function facade({session,transport,channel,worker,route,options,provider:initialProvider,bootstrapRtc}){
   initialProvider?.adopt(session);
   transport.bindRequestSource(session);
-  let detached=false,releasing,suspended=false,residency=Promise.resolve(), explicitSuspended=false;
+  let detached=false,releasing,suspended=false,residency=Promise.resolve(), explicitSuspended=false, explicitResuming=false;
   const document=globalThis.document;
   let frozen=false, observationPaused=false, observationResume, observationEpoch=0;
   const away=()=>frozen||document?.visibilityState==='hidden';
   function pauseObservation(force=false){
-    if(detached||observationPaused&&!force&&!observationResume)return;
+    if(detached||observationPaused&&!force&&!observationResume&&!explicitResuming)return;
     observationPaused=true;observationEpoch++;
     // Pause the local fence synchronously, before promises or RTC cleanup. A
     // hidden page retains its RTC provider and can still process allowed inputs.
@@ -202,11 +202,25 @@ function facade({session,transport,channel,worker,route,options,provider:initial
         suspended=true;
         await provider.close();await session.suspend();await transport?.suspend();
       }else{
-        await transport?.resume();await session.resumeAttachment();
-        if(detached)throw new CollaborationError('ENDPOINT_STALE');
-        provider=startRtc();suspended=false;
-        if(away()||explicitSuspended)pauseObservation(true);else observationPaused=false;
-        return session;
+        explicitResuming=true;
+        try{
+          // A hide invalidates explicit resume just as it invalidates automatic
+          // observation. Re-prove a rapid visible return before installing once.
+          while(!detached){
+            const epoch=observationEpoch;
+            await transport?.resume();
+            if(epoch!==observationEpoch){if(away()||explicitSuspended)break;continue;}
+            if(away()||explicitSuspended){pauseObservation(true);break;}
+            await session.resumeAttachment();
+            if(epoch!==observationEpoch){if(away()||explicitSuspended)break;continue;}
+            break;
+          }
+          if(detached)throw new CollaborationError('ENDPOINT_STALE');
+          if(explicitSuspended){pauseObservation(true);return session;}
+          provider=startRtc();suspended=false;
+          if(away())pauseObservation(true);else observationPaused=false;
+          return session;
+        }finally{explicitResuming=false;}
       }
     });
     residency=changing.catch(()=>{});return changing;
