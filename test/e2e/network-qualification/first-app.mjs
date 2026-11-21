@@ -4,13 +4,22 @@ import { performance } from 'node:perf_hooks';
 import { createFaults } from './faults.mjs';
 import { createBrowserNetworkControls } from './browser-controls.mjs';
 import { runNetworkScenario } from './scenarios.mjs';
-import { activityTimeline } from './evidence.mjs';
+import { activityTimeline, counterDelta, assertDirectWork } from './evidence.mjs';
 import { progressWriter } from './idle-progress.mjs';
 
 export function currentOperationApplied(priorOperation, operationId, status) {
   return typeof operationId === 'string' && operationId.length > 0 && operationId !== priorOperation &&
     typeof status === 'string' && status.startsWith(`${operationId}: `) &&
     status.includes('Applied: accepted') && status.includes('peer retention receipt(s) observed');
+}
+
+export function assertHiddenDirectPath(before, after) {
+  assert.equal(before.kind, 'direct');
+  assert.equal(after.kind, 'direct', 'Hidden work lost authenticated direct transport');
+  assert.equal(after.connectionRevision, before.connectionRevision, 'Hidden work replaced the authenticated connection');
+  const delta = counterDelta(before, after);
+  assert.equal(delta.relayBytes, 0, 'Hidden work used relay fallback payload');
+  return delta;
 }
 
 export async function qualifyFirstAppNetwork({ page, context, peer, expect, transportCounters,
@@ -21,8 +30,84 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
   let cleaned = false;
   let retained;
   let reopenProof;
+  let backgroundProof;
+  let hiddenNote;
   const adapter = {
     faults, ...browser,
+    async background(options) {
+      const transportBefore = await adapter.snapshot(options);
+      assert.equal(transportBefore.kind, 'direct');
+      const result = await browser.background({ ...options, onHidden: async ({ signal }) => {
+        const started = performance.now();
+        const before = await browser.diagnostics();
+        backgroundProof = { hiddenBefore: await page.evaluate(() => document.hidden),
+          hiddenAfter: null, nativeApplied: false, publicAppliedReadWhileHidden: false, signalRows: null,
+          navigationsBefore: before.navigations, completed: false,
+          signalBoundMs: 5000, remoteReadBoundMs: 15000,
+          readScope: 'coherent-public-applied-event-view',
+          beforeRevision: transportBefore.connectionRevision };
+        assert.equal(backgroundProof.hiddenBefore, true);
+        const operationId = randomUUID(), text = `Hidden native ${operationId}`;
+        hiddenNote = { operationId, text };
+        const signalWork = page.evaluate(async () => {
+          if (!document.hidden) throw Error('NETWORK_LAB_NOT_HIDDEN');
+          const value = await window.appRequests.request('rows', { count: 2, width: 100 }, { timeoutMs: 5000 });
+          return { rows: value.rows.length, hidden: document.hidden };
+        }).then(value => {
+          backgroundProof.signalRows = value.rows; backgroundProof.signalReturnedWhileHidden = value.hidden;
+          backgroundProof.signalElapsedMs = performance.now() - started;
+          assert.equal(value.rows, 2); assert.equal(value.hidden, true);
+          backgroundProof.signalSucceeded = true;
+        }).catch(error => {
+          backgroundProof.signalSucceeded = false; backgroundProof.signalElapsedMs = performance.now() - started;
+          throw error;
+        });
+        const commandWork = (async () => {
+          await peer.request('command', { text, operationId });
+          backgroundProof.nativeApplied = true; backgroundProof.nativeAppliedMs = performance.now() - started;
+          const reading = performance.now();
+          try { await expect.poll(() => page.evaluate(async ({ text, operationId }) => {
+            if (!document.hidden) throw Error('NETWORK_LAB_NOT_HIDDEN');
+            const application = await window.tendril.application.ready();
+            const view = await application.readView({ view: 'applied' });
+            try {
+              const batch = await view.readEvents({ topics: ['note'], limit: 128 });
+              if (!document.hidden) throw Error('NETWORK_LAB_NOT_HIDDEN');
+              if (batch.hasMore) throw Error('NETWORK_LAB_EVENT_READ_LIMIT');
+              return batch.transactions.some(transaction => transaction.events.some(event =>
+                event.origin?.operationId === operationId && event.topic === 'note' && event.payload?.text === text));
+            } finally { await view.release(); }
+          }, { text, operationId }), { timeout: 15_000 }).toBe(true);
+          } finally { backgroundProof.publicReadElapsedMs = performance.now() - reading; }
+          backgroundProof.publicAppliedReadWhileHidden = true;
+        })();
+        const results = await Promise.allSettled([signalWork, commandWork]);
+        backgroundProof.hiddenAfter = await page.evaluate(() => document.hidden);
+        const after = await browser.diagnostics();
+        const transportAfter = await adapter.snapshot({ signal });
+        backgroundProof.navigationsAfter = after.navigations;
+        backgroundProof.elapsedMs = performance.now() - started;
+        backgroundProof.afterRevision = transportAfter.connectionRevision;
+        backgroundProof.beforeKind = transportBefore.kind; backgroundProof.afterKind = transportAfter.kind;
+        backgroundProof.relayPayloadDelta = transportAfter.relayBytes - transportBefore.relayBytes;
+        backgroundProof.hostMetadataRequestDelta = transportAfter.hostRequests - transportBefore.hostRequests;
+        signal.throwIfAborted();
+        assert.equal(backgroundProof.hiddenAfter, true);
+        assert.equal(after.navigations, before.navigations, 'Hidden application work replaced the document');
+        backgroundProof.transportDelta = assertHiddenDirectPath(transportBefore, transportAfter);
+        const failed = results.find(result => result.status === 'rejected');
+        if (failed) throw failed.reason;
+        assertDirectWork(transportBefore, transportAfter);
+        backgroundProof.completed = true;
+        return backgroundProof;
+      } });
+      if (result.hiddenObserved) {
+        assert.equal(await page.evaluate(() => document.hidden), false);
+        await expect(page.locator('#notes li').filter({ hasText: hiddenNote.text })).toHaveCount(1, { timeout: 15_000 });
+        backgroundProof.foregroundDomVerified = true;
+      }
+      return result;
+    },
     async setOffline(value, options) {
       if (value) await faults.blockApplicationNetwork();
       else await faults.restoreUdp();
@@ -40,6 +125,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       signal.throwIfAborted();
       const [host, link] = await Promise.all([transportCounters(), peer.request('transport-snapshot')]);
       return { instance: `${host.instance}:${link.connectionRevision}`, kind: link.kind,
+        connectionRevision: link.connectionRevision, browserLinks: link.browserLinks, otherLinks: link.otherLinks,
         hostRequests: host.httpRequests, relayBytes: host.relayBinaryBytes,
         ...Object.fromEntries(['sentReliableBytes', 'receivedReliableBytes', 'sentLiveBytes', 'receivedLiveBytes'].map(key => [key, link[key]])) };
     },
@@ -160,6 +246,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       onProgress: progressWriter(process.env.NETWORK_LAB_PROGRESS) });
     report.sensorScope = 'Immutable PNG fixture carried by real encrypted content/inference signals; deterministic native inference, no physical camera/provider billing qualification.';
     report.reopenProof = reopenProof;
+    report.backgroundProof = backgroundProof;
     assert.equal(report.success, true, 'Requested network profile is unsupported in this browser');
     return report;
   } catch (error) {
@@ -169,6 +256,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
         scope: 'sealed-first-app-browser-network-emulation', timeline: timeline.snapshot() };
     }
     if (reopenProof) error.networkReport.reopenProof = reopenProof;
+    if (backgroundProof) error.networkReport.backgroundProof = backgroundProof;
     throw error;
   } finally { await adapter.cleanup(); }
 }

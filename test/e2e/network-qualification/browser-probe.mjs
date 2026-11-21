@@ -71,7 +71,11 @@ try {
   }
   report.checks.push('repeated-freeze-resume-foreground');
   await mark('background');
-  report.backgroundSupported = (await controls.background({ ...options, pauseMs: 100 })).hiddenObserved;
+  let hiddenCallback = false;
+  report.backgroundSupported = (await controls.background({ ...options, pauseMs: 100, onHidden: async () => {
+    assert.equal(await page.evaluate(() => document.hidden), true); hiddenCallback = true;
+  } })).hiddenObserved;
+  assert.equal(hiddenCallback, true);
   await mark('foreground-actionability');
   const cover = await context.newPage(); await cover.bringToFront();
   assert.equal(await page.evaluate(() => document.hidden), true);

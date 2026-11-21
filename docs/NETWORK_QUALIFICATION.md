@@ -114,6 +114,17 @@ browser mechanisms only. Mobile viewport/network emulation does not qualify a
 physical mobile radio handover or operating-system sleep. Hardware/carrier cases
 remain explicitly unsupported until separately exercised.
 
+The background profile performs real work before restoring the foreground: a
+five-second signal request/reply and a native command followed by a fifteen-second
+public applied read. The event-only starter exposes this through the installed
+backend's `readView({view:'applied'}).readEvents()`; its declared notes query is
+the same event projection. Each view is released. The read must contain the exact
+new operation ID and text while the document remains hidden, without navigation.
+The authenticated direct revision must remain unchanged and relay payload must
+grow by zero; eventual success through fallback cannot qualify. Host metadata
+requests are measured separately. The normal DOM check follows foreground
+restoration, so paused hidden painting is not treated as replication failure.
+
 An idle segment starts after connection/recovery work settles. Counter snapshots
 must share one epoch and be monotonic. Its exact host-request and relay-payload
 deltas must both be zero; no overrun is subtracted. A short observed segment does
