@@ -89,6 +89,8 @@ try{
         await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:false});
         cover=await context.newPage();await cover.goto('about:blank');await cover.bringToFront();
         assert.equal(await selected.evaluate(()=>document.hidden),true,'Selected document must really be hidden before freeze');
+        // Endpoint observation state is independent from root RTC authority.
+        await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),before.endpoint.endpointId,{timeout:5000});
         await cdp.send('Page.setWebLifecycleState',{state:'frozen'});
         // Cross the unchanged 15s page fence while the healthy owner still serves
         // a sibling. This is actual Chromium suspension, not a synthetic event.
@@ -116,25 +118,31 @@ try{
         // force fresh admission scans; BC attachment would hide a root leak.
         const wireProof=[];
         for(let index=0;index<6;index++){
-          const wire={droppedRootDetaches:0,forwardedRootDetaches:0};
+          const wire={droppedRootDetaches:0};
           const orphan=await context.newPage();let cover,cdp,timer;
           try{
-            await orphan.exposeBinding('__orphanWire',(_source,type)=>{if(type==='root.detach.dropped')wire.droppedRootDetaches++;else if(type==='root.detach.forwarded')wire.forwardedRootDetaches++;});
+            await orphan.exposeBinding('__orphanWire',(_source,type)=>{if(type==='root.detach.dropped')wire.droppedRootDetaches++;});
             await orphan.goto(url('discussion.html',`orphan-${index}`)+'&lost-teardown=1');const attached=await orphan.evaluate(()=>window.ready);
             assert.equal(attached.mode,'shared','BC fallback must not mask exhausted SharedWorker capacity');
+            assert.deepEqual(attached.portEventFault?.events,['close','messageerror']);
+            assert.equal(await two.evaluate(async name=>(await navigator.locks.query()).held.some(lock=>lock.name===name),attached.portEventFault.witnessName),true,'live document witness must exist');
             assert.equal(attached.deviceId,before.deviceId);assert.equal(attached.endpoint.ownerInstanceId,before.ownerInstanceId);
             const events=[];let frozen;const observed=new Promise(resolve=>{frozen=resolve;});
             await orphan.exposeBinding('__orphanLifecycle',(_source,type)=>{events.push(type);if(type==='freeze')frozen();});
             await orphan.evaluate(()=>{for(const type of ['freeze','resume'])document.addEventListener(type,()=>{void window.__orphanLifecycle(type);});});
             cdp=await context.newCDPSession(orphan);await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:false});
             cover=await context.newPage();await cover.goto('about:blank');await cover.bringToFront();assert.equal(await orphan.evaluate(()=>document.hidden),true);
+            await two.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),attached.endpoint.endpointId,{timeout:5000});
             await cdp.send('Page.setWebLifecycleState',{state:'frozen'});
             try{await Promise.race([observed,new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('ORPHAN_FREEZE_NOT_OBSERVED')),5000);})]);}finally{clearTimeout(timer);}
             // The fixture drops root.detach at MessagePort.postMessage. Any
             // pagehide work during close cannot notify the Worker of teardown.
             // Deliberately never thaw or call application detach. Browser death
             // releases the witness while this Worker keeps serving the siblings.
-            await orphan.close();assert.deepEqual(events,['freeze']);assert.equal(wire.forwardedRootDetaches,0);wireProof.push(wire);
+            await orphan.close();assert.deepEqual(events,['freeze']);
+            await cdp.detach().catch(()=>{});cdp=undefined;
+            await two.waitForFunction(async name=>!(await navigator.locks.query()).held.some(lock=>lock.name===name),attached.portEventFault.witnessName,{timeout:5000});
+            wireProof.push(wire);
           }finally{await orphan.close().catch(()=>{});await cover?.close();await cdp?.detach().catch(()=>{});}
         }
         // One fresh root forces admission GC for the last discarded pair too.
@@ -143,7 +151,7 @@ try{
         const after=await two.evaluate(async()=>({deviceId:window.session.deviceId,ownerInstanceId:window.session.endpoint.ownerInstanceId,
           operation:await window.session.operations.inspect('first'),eventCount:(await window.session.query('messages',null)).value.events.length}));
         assert.deepEqual(after,before);assert.equal(await one.evaluate(()=>window.session.signal.aborted),false);
-        evidence.frozenDiscardWire={pages:wireProof,forwardedRootDetaches:0,droppedRootDetaches:wireProof.reduce((sum,page)=>sum+page.droppedRootDetaches,0)};
+        evidence.frozenDiscardWire={pages:wireProof,detachFault:'dropped-before-native-post',nativePortEventsBlocked:['close','messageerror'],missingWitnessesVerified:6,droppedRootDetaches:wireProof.reduce((sum,page)=>sum+page.droppedRootDetaches,0)};
       });
       await stage('shared:another-worker-version-attaches-to-the-existing-owner',async()=>{
         // A tab on a different publication's Worker URL gets its own SharedWorker,

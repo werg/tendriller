@@ -9,16 +9,18 @@ const query=new URL(location.href).searchParams,profileId=query.get('profile')||
 // document witness can reclaim its Worker root. Product behavior is unchanged.
 if(query.has('lost-teardown')){
   const post=MessagePort.prototype.postMessage;
-  function forward(message,...args){
-    if(message?.protocol===BROWSER_OWNER_PROTOCOL&&message.type==='root.detach')void window.__orphanWire?.('root.detach.forwarded');
-    return post.call(this,message,...args);
-  }
   MessagePort.prototype.postMessage=function(message,...args){
     if(message?.protocol===BROWSER_OWNER_PROTOCOL&&message.type==='root.detach'){
       void window.__orphanWire?.('root.detach.dropped');return;
     }
-    return forward.call(this,message,...args);
+    return post.call(this,message,...args);
   };
+}
+if(globalThis.SharedWorker){
+  const Native=globalThis.SharedWorker;
+  globalThis.SharedWorker=class extends Native{constructor(...args){super(...args);this.port.addEventListener('message',({data})=>{
+    if(data?.protocol==='fixture-owner-test'&&data.type==='native-root-events-blocked')window.fixtureRootEvents=data;
+  });}};
 }
 window.ownerStage='identity';
 window.ready=(async()=>{
@@ -53,5 +55,5 @@ window.ready=(async()=>{
     window.fixtureControl=control;
   };
   window.ownerProfile=profileId;window.ownerStage='ready';
-  return{mode:attachment.mode,endpoint:attachment.session.endpoint,deviceId:attachment.session.deviceId,status:attachment.session.status};
+  return{mode:attachment.mode,portEventFault:window.fixtureRootEvents??null,endpoint:attachment.session.endpoint,deviceId:attachment.session.deviceId,status:attachment.session.status};
 })().catch(error=>{window.ownerStage=`failed:${window.ownerStage}`;window.ownerFailure={name:error.name,code:error.code,message:error.message};throw error;});

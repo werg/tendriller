@@ -3,11 +3,24 @@ import { defineApplication, defineCommand, defineQuery, emit, program, openPeerA
   signControlRevision, createGenerationRegistry, signTransitionRequest, applicationDefinitionDigest,
   eventExecutionManifest, executionManifestArtifacts, bytesToHex } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
+import {BROWSER_OWNER_PROTOCOL} from '../../browser-transport.mjs';
+import {rootLifetimeLockName} from '../../root-lifetime.mjs';
 import { serveBrowserOwner } from '../../worker.mjs';
 const profileId = new URL(import.meta.url).searchParams.get('profile') || 'browser-owner-test';
 const applicationId = '91'.repeat(32), encoder = new TextEncoder(), decoder = new TextDecoder();
 const definition = defineApplication({id:'owner-fixture',version:'1',commands:{say:defineCommand({description:'Retain test message',input:{type:'string',minLength:1,maxLength:128},prepare:text=>program(emit('message',{text}))})},
   queries:{messages:defineQuery({description:'Coherent test messages',input:{type:'null'},read:view=>view.readEvents()})}});
+// Qualification fault: root GC must work even on browsers that never deliver
+// native port close/messageerror notifications. This is fixture-only; the
+// production Worker still registers both independent cleanup paths normally.
+globalThis.addEventListener('connect',event=>{
+  for(const port of event.ports){
+    const listen=port.addEventListener.bind(port);
+    port.addEventListener=(type,...args)=>{if(!['close','messageerror'].includes(type))return listen(type,...args);};
+    listen('message',({data})=>{if(data?.protocol===BROWSER_OWNER_PROTOCOL&&data.type==='boot')port.postMessage({
+      protocol:'fixture-owner-test',type:'native-root-events-blocked',events:['close','messageerror'],witnessName:rootLifetimeLockName(data.profileId,data.id)});});
+  }
+});
 const service=serveBrowserOwner({async load(){
   // Exercise first-message delivery while configuration performs real async work.
   await new Promise(resolve=>setTimeout(resolve,30));
