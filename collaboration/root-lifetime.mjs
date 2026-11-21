@@ -56,3 +56,87 @@ export function rootLifetimeWitness(snapshot, profileId, rootId) {
     typeof lock.clientId === 'string' && lock.clientId.length > 0);
   return found ? { name, clientId: found.clientId } : undefined;
 }
+
+/** One browser-local observer for shared roots and elected routes. Never requests a witness. */
+export function createDocumentLifetimeObserver({ profileId, locks = globalThis.navigator?.locks,
+  sweepMs = 60000, timeoutMs = 30000, signal } = {}) {
+  rootLifetimeLockName(profileId, 'validation');
+  const entries = new Set(), lifetime = new AbortController();
+  let timer, querying, sweeping, closed = false;
+  const abort = () => close();
+  signal?.addEventListener('abort', abort, { once: true });
+  function schedule() {
+    if (closed || ![...entries].some(entry => entry.parked)) { clearTimeout(timer); timer = undefined; return; }
+    if (timer || sweeping) return;
+    timer = setTimeout(() => { timer = undefined; void sweep(); }, sweepMs); timer.unref?.();
+  }
+  function query() {
+    if (querying) return querying;
+    querying = (async () => {
+      let timeout, onAbort;
+      try {
+        lifetime.signal.throwIfAborted();
+        if (typeof locks?.query !== 'function') throw Error('OWNER_CAPABILITY_UNAVAILABLE');
+        const snapshot = await Promise.race([
+          Promise.resolve().then(() => locks.query()),
+          new Promise((_, reject) => { onAbort = () => reject(lifetime.signal.reason); lifetime.signal.addEventListener('abort', onAbort, { once: true }); }),
+          new Promise((_, reject) => { timeout = setTimeout(() => reject(Error('OWNER_LIFETIME_QUERY_TIMEOUT')), timeoutMs); }),
+        ]);
+        rootLifetimeWitness(snapshot, profileId, 'validation');
+        return snapshot;
+      } finally { clearTimeout(timeout); lifetime.signal.removeEventListener('abort', onAbort); }
+    })().finally(() => { querying = undefined; });
+    return querying;
+  }
+  async function freshQuery() {
+    // A snapshot begun before this arrival cannot prove its witness absent.
+    const previous = querying;
+    if (previous) await previous.catch(() => {});
+    return query();
+  }
+  function sweep() {
+    if (sweeping) return sweeping;
+    const candidates = [...entries];
+    sweeping = (async () => {
+      const snapshot = await freshQuery();
+      if (closed) return;
+      for (const entry of candidates) {
+        if (!entries.has(entry)) continue;
+        const live = rootLifetimeWitness(snapshot, profileId, entry.rootId);
+        if (!live || live.clientId !== entry.witness.clientId) {
+          entries.delete(entry);
+          try { entry.retire(); } catch { /* One disposed attachment cannot prevent reclamation of others. */ }
+        }
+      }
+    })().catch(() => { /* Failed, timed out or malformed evidence never establishes document death. */ })
+      .finally(() => { sweeping = undefined; schedule(); });
+    return sweeping;
+  }
+  function close() {
+    if (closed) return;
+    closed = true; clearTimeout(timer); entries.clear(); signal?.removeEventListener('abort', abort);
+    lifetime.abort(Error('OWNER_UNREACHABLE'));
+  }
+  if (signal?.aborted) close();
+  return Object.freeze({
+    get hasParked() { return [...entries].some(entry => entry.parked); },
+    async prove(rootId) {
+      const witness = rootLifetimeWitness(await freshQuery(), profileId, rootId);
+      lifetime.signal.throwIfAborted();
+      if (!witness) throw Error('OWNER_ROOT_LIFETIME_MISSING');
+      return witness;
+    },
+    register(rootId, witness, retire) {
+      lifetime.signal.throwIfAborted();
+      const entry = { rootId, witness, retire, parked: false }; entries.add(entry);
+      return Object.freeze({ setParked(value) { if (entries.has(entry)) entry.parked = value; schedule(); },
+        close() { entries.delete(entry); schedule(); } });
+    },
+    async reapFresh() {
+      const previous = sweeping;
+      if (previous) await previous;
+      if (!closed) await sweep();
+    },
+    close,
+  });
+}

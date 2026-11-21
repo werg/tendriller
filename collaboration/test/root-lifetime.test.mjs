@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { acquireRootLifetime, rootLifetimeLockName, rootLifetimeWitness } from '../root-lifetime.mjs';
+import { acquireRootLifetime, rootLifetimeLockName, rootLifetimeWitness, createDocumentLifetimeObserver } from '../root-lifetime.mjs';
 
 function manager() {
   const held = new Map(), requests = [];
@@ -116,4 +116,61 @@ test('names reject malformed identifiers and acquisition requires query support'
     assert.throws(() => rootLifetimeLockName('profile', value), /OWNER_HANDSHAKE_INVALID/);
   }
   await assert.rejects(acquireRootLifetime('profile', 'root', { locks: { request() {} } }), /OWNER_CAPABILITY_UNAVAILABLE/);
+});
+
+test('one observer coalesces shared/elected sweeps and never reaps a registration newer than its snapshot', async t => {
+  const f = manager(), left = await acquireRootLifetime('profile', 'shared', { locks: f.locks });
+  const right = await acquireRootLifetime('profile', 'elected', { locks: f.locks });
+  t.after(async () => { await left.release(); await right.release(); });
+  let complete, calls = 0;
+  const snapshot = () => ({ held: [...f.held.values()] });
+  const observer = createDocumentLifetimeObserver({ profileId: 'profile', locks: { query() {
+    calls++; const value = snapshot(); return new Promise(resolve => { complete = () => resolve(value); });
+  } } });
+  t.after(() => observer.close());
+  const retired = [];
+  const shared = observer.register('shared', rootLifetimeWitness(snapshot(), 'profile', 'shared'), () => retired.push('shared'));
+  const elected = observer.register('elected', rootLifetimeWitness(snapshot(), 'profile', 'elected'), () => retired.push('elected'));
+  shared.setParked(true); elected.setParked(true);
+  const first = observer.reapFresh(); await new Promise(setImmediate); assert.equal(calls, 1);
+  const second = observer.reapFresh(), third = observer.reapFresh();
+  // This registration was not captured by the first query and must survive it.
+  const newcomer = observer.register('new', { name: rootLifetimeLockName('profile', 'new'), clientId: 'new-document' }, () => retired.push('new'));
+  complete(); await first; await new Promise(setImmediate);
+  assert.deepEqual(retired, []); assert.equal(calls, 2);
+  // Concurrent admissions share one fresh post-arrival scan, not one query each.
+  newcomer.close(); complete(); await Promise.all([second, third]);
+  assert.equal(calls, 2); assert.deepEqual(retired, []);
+  await left.release(); await right.release();
+  const last = observer.reapFresh(); await new Promise(setImmediate); complete(); await last;
+  assert.deepEqual(retired.sort(), ['elected', 'shared']);
+  assert.equal(observer.hasParked, false);
+});
+
+test('document identity replacement and malformed held entries cannot authorize unrelated disposal', async t => {
+  const f = manager(), lock = await acquireRootLifetime('profile', 'root', { locks: f.locks });
+  t.after(() => lock.release());
+  let snapshot = await f.locks.query();
+  const observer = createDocumentLifetimeObserver({ profileId: 'profile', locks: { query: async () => snapshot } });
+  t.after(() => observer.close());
+  let retired = 0;
+  const handle = observer.register('root', rootLifetimeWitness(snapshot, 'profile', 'root'), () => retired++);
+  handle.setParked(true);
+  snapshot = { held: [{ name: 'bad', mode: 'exclusive' }] };
+  await observer.reapFresh(); assert.equal(retired, 0);
+  snapshot = { held: [{ name: lock.name, mode: 'exclusive', clientId: 'different-document' }] };
+  await observer.reapFresh(); assert.equal(retired, 1);
+  await observer.reapFresh(); assert.equal(retired, 1);
+});
+
+test('observer close aborts a pending proof and fences a late empty snapshot', async () => {
+  let resolve;
+  const observer = createDocumentLifetimeObserver({ profileId: 'profile', locks: { query: () => new Promise(yes => { resolve = yes; }) } });
+  let retired = 0;
+  observer.register('root', { name: rootLifetimeLockName('profile', 'root'), clientId: 'document' }, () => retired++).setParked(true);
+  const proof = observer.prove('opening');
+  const rejected = assert.rejects(proof, /OWNER_UNREACHABLE/);
+  await new Promise(setImmediate); observer.close(); await rejected;
+  resolve({ held: [] }); await new Promise(setImmediate);
+  assert.equal(retired, 0); assert.equal(observer.hasParked, false);
 });

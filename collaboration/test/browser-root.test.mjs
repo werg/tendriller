@@ -48,6 +48,7 @@ async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = 
   });
   const oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); let held = incumbent ? 1 : 0, resourceClosed = false, opened = 0;
   Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { query() { queryCalls++; return query(); }, async request(_name, options, run) {
+    if (_name.startsWith('tendriller:root-lifetime:')) return pageLocks(_name).request(_name, options, run);
     if (held && options.ifAvailable) return run(null);
     if (held) return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
     held++; try { return await run({}); } finally { held--; }
