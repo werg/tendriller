@@ -1,7 +1,39 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 
 export async function createBrowserNetworkControls(page) {
   const context = page.context();
+  const initialUrl = page.url();
+  const publication = () => page.evaluate(() => window.tendril?.identity?.publication ?? null).catch(() => null);
+  const initialPublication = await publication();
+  const binding = `__networkLabLifecycle_${randomUUID().replaceAll('-', '')}`;
+  const external = [];
+  let navigations = 0, dropped = 0, observing = true;
+  function record(event, extra = {}) {
+    if (!observing) return;
+    if (external.length === 32) { external.shift(); dropped++; }
+    external.push({ at: new Date().toISOString(), epoch: navigations, event, ...extra });
+  }
+  await page.exposeBinding(binding, (_source, event) => {
+    if (['document', 'freeze', 'resume'].includes(event)) record(event);
+  });
+  const installObserver = key => {
+    const emit = event => { void window[key](event).catch(() => {}); };
+    const freeze = () => emit('freeze'), resume = () => emit('resume');
+    document.addEventListener('freeze', freeze); document.addEventListener('resume', resume);
+    window[`${key}Cleanup`] = () => { document.removeEventListener('freeze', freeze); document.removeEventListener('resume', resume); };
+    emit('document');
+  };
+  await page.addInitScript(installObserver, binding);
+  await page.evaluate(installObserver, binding);
+  const navigated = frame => {
+    if (frame !== page.mainFrame()) return;
+    navigations++;
+    const current = frame.url();
+    record('main-frame-navigation', { sameUrl: current === initialUrl,
+      sameOrigin: (() => { try { return new URL(current).origin === new URL(initialUrl).origin; } catch { return false; } })() });
+  };
+  page.on('framenavigated', navigated);
   const cdp = await context.newCDPSession(page);
   await cdp.send('Network.enable');
   // Playwright normally forces focus/visibility, which can make freeze a no-op.
@@ -12,6 +44,13 @@ export async function createBrowserNetworkControls(page) {
   let cover;
   const normal = { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1, connectionType: 'ethernet' };
   return {
+    async diagnostics() {
+      const currentPublication = await publication();
+      return { navigations, dropped, events: structuredClone(external),
+        sameUrl: page.url() === initialUrl,
+        samePublication: initialPublication === null || currentPublication === null ? null :
+          JSON.stringify(initialPublication) === JSON.stringify(currentPublication) };
+    },
     async networkChange({ signal }) {
       signal.throwIfAborted();
       // CDP produces an actual NetworkInformation change notification in the
@@ -90,6 +129,7 @@ export async function createBrowserNetworkControls(page) {
       } finally { await other.close(); }
     },
     async cleanup() {
+      observing = false; page.off('framenavigated', navigated);
       const errors = [];
       for (const action of [
         () => frozen ? cdp.send('Page.setWebLifecycleState', { state: 'active' }) : undefined,
@@ -97,6 +137,7 @@ export async function createBrowserNetworkControls(page) {
         () => context.setOffline(false),
         () => changed ? cdp.send('Network.emulateNetworkConditions', normal) : undefined,
         () => page.evaluate(() => { window.__networkLabChangeListener?.(); delete window.__networkLabChangeListener; delete window.__networkLabChangeObserved; }),
+        () => page.evaluate(key => window[`${key}Cleanup`]?.(), binding),
         () => cdp.detach(),
       ]) { try { await action(); } catch (error) { errors.push(error); } }
       if (errors.length) throw new AggregateError(errors, 'NETWORK_LAB_BROWSER_CLEANUP_FAILED');
