@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      CHRONOLOG_SHA: 39825079b058e41a660b9c7ecf5aa39207107ae0
+      CHRONOLOG_SHA: 9260f57d3478d84a60b6234450d622009133cb8f
       EMSDK_VERSION: '4.0.20'
       EMSDK_SHA: e4fe26ef59168ff44f4c23c466e497bf60b3411e
     steps:
