@@ -126,13 +126,23 @@ export async function qualifyContrib(tuple, source, { api } = {}) {
   const recorded = validateTuple(JSON.parse(Buffer.from(selected.content, 'base64')));
   assert.equal(recorded.id, tuple.id, 'Contrib qualified a different release tuple');
   const runs = await api(`repos/${REPOS.contrib}/actions/runs?head_sha=${source}&per_page=100`);
-  const gates = [];
-  for (const workflow of GATES) {
+  const required = GATES.map(workflow => {
     const run = runs.workflow_runs.filter(run => run.path === `.github/workflows/${workflow}` && run.head_sha === source &&
       run.event === 'push' && run.head_branch === repo.default_branch).sort((a, b) => b.id - a.id)[0];
-    if (!run || ['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(run.status))
-      throw prerequisite(source, 'qualified', `contrib-${workflow}-pending`);
-    assert(run?.status === 'completed' && run.conclusion === 'success', `Merged Contrib ${workflow} gate is not green`);
+    return { workflow, run };
+  });
+  // All observed conclusions take precedence over propagation/pending states.
+  // An earlier running gate cannot mask a later completed failure.
+  for (const { workflow, run } of required) {
+    if (!run) continue;
+    if (run.status === 'completed') assert.equal(run.conclusion, 'success', `Merged Contrib ${workflow} gate is not green`);
+    else assert(['queued', 'in_progress', 'waiting', 'pending', 'requested'].includes(run.status),
+      `Merged Contrib ${workflow} gate has an unknown status`);
+  }
+  const pending = required.find(({ run }) => !run || run.status !== 'completed');
+  if (pending) throw prerequisite(source, 'qualified', `contrib-${pending.workflow}-pending`);
+  const gates = [];
+  for (const { workflow, run } of required) {
     const jobs = await api(`repos/${REPOS.contrib}/actions/runs/${run.id}/jobs?per_page=100`);
     assert(jobs.jobs.length > 0 && jobs.total_count === jobs.jobs.length && jobs.jobs.every(job => job.conclusion === 'success'),
       `Incomplete/skipped/failed ${workflow} jobs`);
