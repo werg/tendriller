@@ -210,6 +210,7 @@ assert.match(createNativeAttachmentKey(), /^td_n_[a-f0-9]{64}$/);
 `);
   run(process.execPath, ['collaboration.mjs']);
   writeFileSync(join(directory, 'collaboration.mts'), `
+import type {} from '@tendriller/core/browser';
 import { createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant,
   type AssistantParticipant, type AssistantCallerContext } from '@tendriller/core/assistant';
 import { createCollaborationDefinition, createCollaborationClient, type CollaborationSession } from '@tendriller/core/collaboration';
