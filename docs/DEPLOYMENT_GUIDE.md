@@ -1,27 +1,134 @@
-# Deployment & Hosting Decision Guide
+# Deploy a retained application participant
 
-Choose the lightest hosting tier that matches your application's availability requirement. Every tier executes the exact same Chronolog application contract and operation IDs.
+Choose a host that can keep the application process and its private device store.
+The host's page and `/mcp` endpoint do not replace that participant or wake a
+terminated agent conversation. Prepare and publish the app through the selected
+service's [build guide](BUILD_AN_APP.md), then verify a real command and a read
+from its other participant before reporting it available.
 
-| Tier | When to choose it | Installs | State location | Inbound ports | Post-exit availability |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **1. Agent's existing cloud computer** | Persistent cloud VM with durable project disk (e.g., Grok `/workspace`, Muse VM) | Starter + `@tendriller/core` + `@chronolog/peer-session` | Project `.tendriller/` | None (outbound only) | Lives while VM process runs; nondestructive reinstall if `node_modules` is wiped |
-| **2. Bounded local + checkpoint** | Turn-scoped sandboxes (e.g., Instinct, Codex Cloud) with no daemon persistence | Minimal relay-only bundle (`events-relay-only` or `sql-portable-relay-only`) | Project dir or AES-256-GCM checkpoint | None | **Unavailable after exit** until reopened or handed off |
-| **3. Browser participant / coordinator or Remote `/mcp`** | Interactive browser apps or zero-install assistant calls to an existing participant | Static page bundle (0 MB local for `/mcp`) | Browser OPFS / IndexedDB (with `navigator.storage.persist()`) | None | Browser tab unavailable when closed/suspended; `/mcp` follows remote participant |
-| **4. Standalone Node process** *(default external host)* | Simplest always-on remote participant without containers or systemd | Node 22.15+ + project packages | Local `.tendriller/` directory | None (outbound relay/WebRTC) | Runs while process is up; clean `SIGTERM` flush |
-| **5. Container (OCI / Docker)** | Reproducible cloud deployment (`deploy/Dockerfile`) | Non-root `node:22-alpine` image | Mounted volume `/data/.tendriller` | None (outbound) | Managed by orchestrator; flushes cleanly on `SIGTERM` |
-| **6. OS Service** | Dedicated Linux/macOS/Windows machine (`deploy/tendriller.service`, `launchd`, Windows Service) | Node 22.15+ + OS unit | Service-owned private state dir | None (outbound) | Starts on boot; restarts cleanly on crash |
-| **7. Request-Driven / Serverless (`ServerlessHostAdapter`)** | Stateless Worker / Durable Object / KV runtimes (`@tendriller/core/serverless`) | Bundled ESM Worker + transactional storage | Transactional KV / Durable Object storage | Standard HTTPS 443 | Available on demand per HTTPS request; zero idle sockets |
+| Host | Actual lifetime | Durable state |
+| --- | --- | --- |
+| Existing cloud computer or foreground Node process | Until the process or computer stops | Project `.tendriller/` on retained private disk |
+| Turn-scoped sandbox | Only the current execution window; no future wake is implied | Retained private project or an explicitly verified device checkpoint |
+| Browser participant | While the supported browser owns the participant; closing it ends availability | That browser's IndexedDB/OPFS, subject to browser storage policy |
+| Linux systemd or macOS launchd | While the machine and configured service/user session run | Service-user-owned project `.tendriller/` |
+| Windows logon task | While the registered user is logged on and the task runs | That user's private project `.tendriller/` |
+| Container | While its orchestrator runs it | Volume mounted at `/app/.tendriller` |
 
-## Continuity & migration between tiers
+A remote MCP client still needs a running authorized application participant.
+The request adapter in `@tendriller/core/serverless` is an application integration
+primitive; it does not automatically turn an ordinary starter into an on-demand
+Chronolog participant. Do not describe a template as qualifying such a deployment.
 
-- **Before initialization (source only):** `tendril handoff source handoff.tgz` — packs non-secret source files with zero keys or device state.
-- **Move an initialized device:** `tendril checkpoint export state.clcp --device .tendriller/device.sqlite` (encrypts with AES-256-GCM and retires the source store to prevent split-brain), then `tendril checkpoint restore state.clcp --device .tendriller/device.sqlite` on the destination.
-- **Add another active device:** use browser pairing or `npm run enroll -- <publicKey>` so each device keeps its own signing key.
+## Start and stop the same participant
 
-## Templates
+These templates target the current native starter's exported
+`runPeer({ signal }, { onOwned, onClosed })` lifecycle. Copy the maintained
+[`deploy`](../deploy/) files into your authored project as `deploy/`, alongside
+its `session.mjs`, `local.mjs`, helpers and pinned package lock. Install the
+project's exact dependencies and finish its normal setup first. Use **Node 24
+or newer** for this launcher and native starter, even though some portable Core
+modules support Node 22. Do not infer native/SQL compatibility from that lower
+package minimum.
 
-- Non-root container: [deploy/Dockerfile](../deploy/Dockerfile)
-- Linux `systemd` unit: [deploy/tendriller.service](../deploy/tendriller.service)
-- macOS `launchd` plist: [deploy/dev.tendriller.participant.plist](../deploy/dev.tendriller.participant.plist)
-- Windows Service script: [deploy/install-windows-service.ps1](../deploy/install-windows-service.ps1)
-- Serverless request adapter: `@tendriller/core/serverless` (`createServerlessHostAdapter`, `createTransactionalBytesStore`)
+Run from the project directory:
+
+```sh
+node deploy/participant.mjs --session ./session.mjs
+```
+
+The launcher explicitly awaits `runPeer`; importing an arbitrary module alone
+would not start a participant. An application with a different native entry point
+must adapt and test its own launcher. A separate optional assistant process must
+use the application's documented assistant entry point and exclusive owner
+rules; starting a second signer against the same store is not a deployment method.
+
+On POSIX hosts, SIGINT/SIGTERM requests cancellation and awaits the participant's
+owned cleanup. The launcher reports failure if cleanup fails or exceeds ten
+seconds, and bounds output flushing. It does not claim that in-flight operations
+committed: preserve their original IDs, signed attempts and device store, then
+inspect uncertain outcomes after reopening. Machine loss, forced container kill
+and Windows task termination can interrupt cleanup. Resume the same private
+store; never rerun initialization merely because the process stopped.
+
+## Linux and macOS
+
+Edit the absolute Node/project paths in
+[`tendriller.service`](../deploy/tendriller.service) or
+[`dev.tendriller.participant.plist`](../deploy/dev.tendriller.participant.plist).
+Verify the selected Node binary's version. Create the dedicated service user and
+private `.tendriller` directory before installing the unit; systemd's writable
+path must exist and contain the retained setup/store. Do not put credentials in
+unit arguments. The systemd template permits writes only in that state directory;
+applications needing other persistent paths must declare them explicitly.
+
+Use the appropriate administrator or per-user service manager to install and
+start the unit. Verify the actual process and cross-device round trip after
+startup. The systemd unit restarts on failure, and the launchd template restarts
+unsuccessful exits. They do not guarantee availability while the host is asleep
+or offline. Stop the unit before deliberately starting another owner manually.
+
+## Windows
+
+[`install-windows-task.ps1`](../deploy/install-windows-task.ps1) registers a
+**current-user logon task**, not a Windows Service. `node.exe` does not implement
+the Service Control Manager protocol and must not be passed directly to
+`New-Service`. The task stores no account password, uses limited privileges,
+refuses to overwrite an existing task, and disallows overlapping task instances.
+It runs only in that user's logged-on session; it is not an unattended boot
+service. A true SCM service requires a separately installed and qualified service
+wrapper.
+
+```powershell
+.\deploy\install-windows-task.ps1 -AppDirectory 'C:\Apps\My application' -WhatIf
+.\deploy\install-windows-task.ps1 -AppDirectory 'C:\Apps\My application'
+Start-ScheduledTask -TaskName TendrillerParticipant
+Get-ScheduledTaskInfo -TaskName TendrillerParticipant
+```
+
+Run the foreground Node command first to inspect startup errors. Task Scheduler
+history and process status alone do not prove application connectivity. Use the
+application's public query and the paired browser for that check. A scheduler
+stop/logoff may forcibly terminate Node; it is not proof of a graceful flush.
+The task can be removed with `Unregister-ScheduledTask` after stopping it, without
+deleting the project or state.
+
+## Container
+
+The [Dockerfile](../deploy/Dockerfile) uses Node 24 on Debian, a non-root user,
+and the project's locked runtime dependencies. It is a native events-starter
+template. A native SQL engine with install-time build requirements needs its own
+matching prepared runtime/image; `--ignore-scripts` does not compile such an engine
+or establish SQL support. No silent fallback to events is permitted.
+
+Use the matching [Dockerfile.dockerignore](../deploy/Dockerfile.dockerignore)
+when building from the project root. It excludes the standard private store,
+checkpoint files, environment secrets, Git data and local dependencies. Review
+the authored context for any additional private paths before building. Never
+bake signing keys or initialized device state into an image.
+
+```sh
+docker build -f deploy/Dockerfile -t my-tendriller-app .
+docker run --name my-tendriller-app --memory=1g --memory-swap=1g --cpus=1 \
+  --mount type=bind,src=/absolute/private/app-state,dst=/app/.tendriller \
+  --stop-timeout=15 my-tendriller-app
+```
+
+The host state directory must already contain the prepared application's private
+records and be accessible only to the container's service user (the image's
+`node` user, normally UID/GID 1000). Keep it out of the build context. A read-only
+or incorrectly owned mount is a startup error. `local.mjs` locates state beside
+its source module, so mounting `/data/.tendriller` would not retain this starter's
+actual store. No inbound port is required by this template. Resource limits are
+an explicit host budget, not a memory or Internet-connectivity qualification.
+
+## Verify the deployment and retain evidence
+
+Record the exact source/package hashes, actual Node version, executable command,
+process/service identity, private store location and resume command. Prove an
+applied command observed from the other participant and persistence after process
+restart. Report which process must remain running. Unit syntax tests and a mocked
+launcher prove only template wiring and shutdown behavior; actual Linux, macOS,
+Windows, container, OAuth and remote transport deployments require their own
+recorded runs. Never label configured CI or an unexecuted template as a passed
+platform qualification.

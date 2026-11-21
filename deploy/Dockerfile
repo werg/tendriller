@@ -1,18 +1,14 @@
-# Minimal non-root OCI image for a Tendriller participant (W10)
-FROM node:22-alpine
+# Build with the authored starter project as context: docker build -f deploy/Dockerfile .
+FROM node:24-bookworm-slim
 
-RUN addgroup -S tendriller && adduser -S tendriller -G tendriller
 WORKDIR /app
-
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-COPY . .
-
-RUN mkdir -p /data/.tendriller && chown -R tendriller:tendriller /app /data
-USER tendriller
-
+COPY --chown=node:node . .
+RUN mkdir -p /app/.tendriller && chown node:node /app/.tendriller && chmod 700 /app/.tendriller
+USER node
 ENV NODE_ENV=production
-VOLUME ["/data/.tendriller"]
-
+# local.mjs resolves state relative to the project, not the working directory.
+VOLUME ["/app/.tendriller"]
 STOPSIGNAL SIGTERM
-CMD ["node", "session.mjs"]
+CMD ["node", "deploy/participant.mjs", "--session", "/app/session.mjs"]

@@ -1,0 +1,12 @@
+.git
+node_modules
+**/node_modules
+.tendriller
+**/.tendriller
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+*.clcp
+test-results
+.results
