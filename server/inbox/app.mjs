@@ -2,7 +2,7 @@ import { createWidgetBridge } from './bridge.mjs';
 
 const status = document.querySelector('#status');
 const send = document.querySelector('#send');
-const bridge = createWidgetBridge({ window, onClose: disconnect });
+const bridge = createWidgetBridge({ window, onClose() { send.disabled = true; disconnect(); } });
 let application, socket, timer, handledProof, submitting = false;
 
 function disconnect() {

@@ -90,6 +90,7 @@ test('standard resource teardown acknowledges the host and closes the active act
   await expect(frame.getByRole('status')).toHaveText('Watching for activity while this card is open.');
   expect(sockets).toHaveLength(1);
   await page.evaluate(() => (window as any).sendToCard({jsonrpc:'2.0',id:'teardown-1',method:'ui/resource-teardown',params:{}}));
+  await expect(frame.locator('#send')).toBeDisabled();
   await expect.poll(() => closed.length).toBe(1);
   await expect.poll(() => page.evaluate(() => (window as any).messages.some((m: any) => m.id === 'teardown-1' && m.result))).toBeTruthy();
   await result(page);

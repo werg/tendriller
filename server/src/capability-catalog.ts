@@ -3,6 +3,12 @@ import { CONTRACT_VERSION, CORE_RELEASE } from '../../contract/index.mjs';
 // Task vocabulary maps to the real public owner/API, including boundaries that
 // cannot be inferred from a feature name. This is discovery, not a device probe.
 const capabilities = [
+  { id: 'portable-agent-tools', title: 'Local MCP, ordered commands and constrained-network fallback',
+    keywords: ['stdio', 'MCP', 'batch', 'HTTP only', 'sandbox', 'proxy', 'capability probe'],
+    owner: 'Tools over the application-owned Chronolog session or approved host gateway', availability: 'provided',
+    imports: ['@tendriller/core/probe'], api: ['probeCapabilities', 'tendril mcp-stdio', 'tendril command-batch'],
+    guide: '/docs/tools/CLI.md', example: 'tendril --session ./session.mjs --mode attach mcp-stdio',
+    boundary: 'An attached resident participant must remain running. Prefer direct WebRTC with hibernating hosted fallback; HTTP catch-up does not wake conversations. Batches are individual operations, not an atomic transaction, and uncertainty retains original IDs.' },
   { id: 'session-diagnostics', title: 'Explain owner, authority and recovery state without submitting work',
     keywords: ['doctor', 'diagnostics', 'owner', 'keys', 'coordinator', 'recovery', 'next action'],
     owner: 'Optional public diagnostic helper over the owned Chronolog session', availability: 'provided',
