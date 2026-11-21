@@ -12,7 +12,8 @@ export function observeSqlFixture(session, { query, onSnapshot, onRecovery = () 
   // Readiness owns a bounded initial coherent read, not a delay after Ready.
   const timer = setTimeout(() => fail(new Error('SQL_FIXTURE_VIEW_TIMEOUT')), 20_000);
   const iterator = session.changes({ signal: owned })[Symbol.asyncIterator]();
-  function close(reason = new Error('SQL_FIXTURE_VIEW_CLOSED')) {
+  function close(...reasons) {
+    const reason = reasons.length ? reasons[0] : new Error('SQL_FIXTURE_VIEW_CLOSED');
     if (closed) return;
     closed = true; clearTimeout(timer); stopStatus(); owned.removeEventListener('abort', aborted);
     lifetime.abort(reason); rejectReady(reason);

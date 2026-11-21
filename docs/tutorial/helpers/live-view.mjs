@@ -7,12 +7,12 @@ export function createLiveView(session, {
   const capturedInput = structuredClone(input), lifetime = new AbortController();
   const owned = AbortSignal.any([lifetime.signal, ...[session.signal, signal].filter(Boolean)]);
   let closed = false, running = false, dirty = false, requested = 0, snapshot = null;
-  let status = null, error = null;
+  let status = null, error = null, hasError = false;
   let statusKey, stopStatus = () => {}, stopRecovery = () => {}, iterator;
   const waiting = new Set(), initial = new Set(), listeners = new Set();
   const recovering = failure => (failure?.code ?? failure?.message) === 'PEER_RECOVERING';
-  const settleInitial = (failure, value) => {
-    for (const finish of [...initial]) finish(failure, value);
+  const settleInitial = (failed, value) => {
+    for (const finish of [...initial]) finish(failed, value);
   };
   const notify = (listener, value) => {
     if (closed || !listener) return;
@@ -38,21 +38,21 @@ export function createLiveView(session, {
           // A later invalidation may describe another selected generation.
           // Never order revisions by sequence or merge independently read values.
           if (closed || request !== requested) continue;
-          snapshot = Object.freeze({ revision: result.revision, value: result.value }); error = null;
-          settle(null, snapshot); settleInitial(null, snapshot); notify(onSnapshot, snapshot);
+          snapshot = Object.freeze({ revision: result.revision, value: result.value }); error = null; hasError = false;
+          settle(null, snapshot); settleInitial(false, snapshot); notify(onSnapshot, snapshot);
           for (const listener of listeners) notify(listener, snapshot);
         } catch (failure) {
           if (closed || request !== requested) continue;
           const quietRecovery = recovering(failure) && snapshot === null && initial.size > 0 && waiting.size === 0;
-          error = failure; settle(failure, undefined, true);
-          if (!recovering(failure)) settleInitial(failure);
+          error = failure; hasError = true; settle(failure, undefined, true);
+          if (!recovering(failure)) settleInitial(true, failure);
           if (!quietRecovery) notify(onError, failure);
         }
       }
     } finally { running = false; }
   }
   function refresh() {
-    if (closed) return Promise.reject(owned.reason ?? Error('Live view is closed.'));
+    if (closed) return Promise.reject(owned.reason);
     const task = new Promise((resolve, reject) => waiting.add({ resolve, reject }));
     invalidate(); return task;
   }
@@ -63,16 +63,16 @@ export function createLiveView(session, {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000)
       return Promise.reject(TypeError('Initial read timeout must be 1..120000 milliseconds.'));
     if (signal?.aborted) return Promise.reject(signal.reason);
-    if (closed) return Promise.reject(owned.reason ?? Error('Live view is closed.'));
+    if (closed) return Promise.reject(owned.reason);
     if (snapshot !== null) return Promise.resolve(snapshot);
-    if (error && !recovering(error)) return Promise.reject(error);
+    if (hasError && !recovering(error)) return Promise.reject(error);
     return new Promise((resolve, reject) => {
-      const finish = (failure, value) => {
+      const finish = (failed, value) => {
         clearTimeout(timer); signal?.removeEventListener('abort', abort); initial.delete(finish);
-        failure ? reject(failure) : resolve(value);
+        failed ? reject(value) : resolve(value);
       };
-      const abort = () => finish(signal.reason);
-      const timer = setTimeout(() => finish(Object.assign(Error('INITIAL_READ_TIMEOUT'), { code: 'INITIAL_READ_TIMEOUT' })), timeoutMs);
+      const abort = () => finish(true, signal.reason);
+      const timer = setTimeout(() => finish(true, Object.assign(Error('INITIAL_READ_TIMEOUT'), { code: 'INITIAL_READ_TIMEOUT' })), timeoutMs);
       initial.add(finish); signal?.addEventListener('abort', abort, { once: true });
       if (signal?.aborted) abort();
     });
@@ -88,7 +88,7 @@ export function createLiveView(session, {
     if (closed) return;
     closed = true; owned.removeEventListener('abort', close);
     lifetime.abort(Error('Live view is closed.'));
-    stopStatus(); stopRecovery(); listeners.clear(); settle(owned.reason, undefined, true); settleInitial(owned.reason);
+    stopStatus(); stopRecovery(); listeners.clear(); settle(owned.reason, undefined, true); settleInitial(true, owned.reason);
     // Query has no cancellation parameter. Late results are ignored; closing an
     // observer must not close the shared session or wait for an uncancellable read.
     void Promise.resolve().then(() => iterator?.return?.()).catch(() => {});
@@ -119,7 +119,7 @@ export function createLiveView(session, {
               if (change.done) break;
               invalidate();
             }
-          } catch (failure) { if (!closed) { error = failure; if (!recovering(failure)) settleInitial(failure); notify(onError, failure); } }
+          } catch (failure) { if (!closed) { error = failure; hasError = true; if (!recovering(failure)) settleInitial(true, failure); notify(onError, failure); } }
         })();
         invalidate();
       }

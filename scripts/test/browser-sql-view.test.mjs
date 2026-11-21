@@ -102,3 +102,10 @@ test('SQL readiness arriving during a failed initial read is retained as one ret
   assert.equal(f.reads.length, 2); f.complete(1, 0); await f.view.ready;
   assert.deepEqual(f.errors, []); f.view.close(); assert.equal(f.statusListeners, 0);
 });
+
+for (const failure of [null, undefined, 0]) test(`SQL initial readiness rejects the exact ${String(failure)} query failure`, async () => {
+  const f = fixture(); const rejected = assert.rejects(f.view.ready, value => Object.is(value, failure));
+  f.change(0); await setImmediate(); f.reads[0].reject(failure); await rejected; await setImmediate();
+  assert.equal(f.view.snapshot, undefined); assert.deepEqual(f.errors, [failure]);
+  assert.equal(f.returned, 1); assert.equal(f.statusListeners, 0);
+});

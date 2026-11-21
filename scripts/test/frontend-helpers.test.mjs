@@ -285,3 +285,26 @@ test('manual refresh during initial readiness and fatal initial errors still rep
     stop.abort(); await readyEnded; view.close();
   }
 });
+
+for (const failure of [null, undefined, 0]) test(`initial and cached readiness reject the exact ${String(failure)} query failure`, async () => {
+  const f = fixture(); f.session.query = async () => { throw failure; };
+  const errors = [], view = createLiveView(f.session, { query: 'notes', onError: value => errors.push(value) });
+  await assert.rejects(view.ready({ timeoutMs: 100 }), value => Object.is(value, failure));
+  assert.equal(view.snapshot, null); assert.deepEqual(errors, [failure]);
+  await assert.rejects(view.ready({ timeoutMs: 20 }), value => Object.is(value, failure));
+  view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+});
+
+for (const reason of [null, undefined, 0]) test(`readiness cancellation preserves abort(${String(reason)}) for caller and owned signals`, async () => {
+  for (const owned of [false, true]) {
+    const f = fixture(), stop = new AbortController();
+    f.session.query = () => new Promise(() => {});
+    const view = createLiveView(f.session, { query: 'notes', ...(owned ? { signal: stop.signal } : {}) });
+    const ready = view.ready({ timeoutMs: 100, ...(!owned ? { signal: stop.signal } : {}) });
+    const rejected = assert.rejects(ready, value => Object.is(value, stop.signal.reason));
+    stop.abort(reason); await rejected;
+    if (owned) await assert.rejects(view.ready(), value => Object.is(value, stop.signal.reason));
+    else await assert.rejects(view.ready({ signal: stop.signal }), value => Object.is(value, stop.signal.reason));
+    view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+  }
+});
