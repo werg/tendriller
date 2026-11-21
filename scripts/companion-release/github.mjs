@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, lstatSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname, relative } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { REPOS, checksum, commit } from './tuple.mjs';
 
@@ -10,8 +13,11 @@ export function githubApi(path, body) {
   return new Promise((resolve, reject) => {
     const args = ['api', '--hostname', 'github.com', path, '--method', body ? 'POST' : 'GET'];
     if (body) args.push('--input', '-');
-    const child = execFile('gh', args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
-      if (error) return reject(Object.assign(Error('GitHub request failed; verify repository access, token permissions and API availability.'), { code: 'github_request_failed' }));
+    const child = execFile('gh', args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const status = stderr.match(/HTTP (\d{3})/)?.[1] || 'unknown';
+        return reject(Object.assign(Error(`GitHub ${body ? 'POST' : 'GET'} ${path.split('?')[0]} failed (HTTP ${status}); verify access, permissions and API availability.`), { code: 'github_request_failed' }));
+      }
       try { resolve(stdout ? JSON.parse(stdout) : null); }
       catch { reject(Error('GitHub returned invalid JSON')); }
     });
@@ -34,9 +40,44 @@ export async function capabilities(api = githubApi) {
     nextAction: 'Bootstrap target-owned receivers once with existing owner authorization. Their own GITHUB_TOKEN updates tuple data and explicitly dispatches normal qualification; no new cross-repository secret is required. No write permission is inferred from this probe.' };
 }
 
+// Existing owner SSH identity can bootstrap workflow changes even when their gh
+// OAuth token has repo but not workflow scope. No token escalation/new secret.
+// Normal receivers never enter this path: they may change only tuple JSON.
+export function pushOwnerBootstrap(plan, { remote = `git@github.com:${plan.repository}.git` } = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'tendriller-companion-bootstrap-'));
+  const git = args => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd: root, timeout: 30_000, maxBuffer: 1024 * 1024, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10' } });
+  try {
+    git(['init', '--template=', '--quiet']); git(['remote', 'add', 'origin', remote]);
+    git(['fetch', '--quiet', '--depth=1', 'origin', plan.base]); git(['checkout', '--quiet', '--detach', 'FETCH_HEAD']);
+    assert.equal(git(['rev-parse', 'HEAD']).trim(), plan.base);
+    assert.equal(git(['rev-parse', 'HEAD^{tree}']).trim(), plan.baseTree);
+    for (const [path, content] of Object.entries(plan.files)) {
+      assert(!path.startsWith('/') && !path.split('/').includes('..'));
+      const target = join(root, path);
+      for (let candidate = target; relative(root, candidate); candidate = dirname(candidate)) {
+        try { assert.equal(lstatSync(candidate).isSymbolicLink(), false, 'Bootstrap target must not follow symlinks'); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
+      mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, content);
+    }
+    git(['add', '--', ...Object.keys(plan.files)]);
+    git(['-c', 'user.name=Tendriller release proposal', '-c', 'user.email=release-proposal@users.noreply.github.com',
+      'commit', '--quiet', '--no-gpg-sign', '-m', plan.title]);
+    const head = commit(git(['rev-parse', 'HEAD']).trim());
+    git(['push', '--quiet', 'origin', `HEAD:refs/heads/${plan.branch}`]);
+    return head;
+  } catch (error) {
+    if (error.code === 'ERR_ASSERTION') throw error;
+    throw Error('Owner SSH bootstrap failed; existing repository write authorization and known GitHub host identity are required. No credential or unsafe host-key fallback is attempted.');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+
 // Only a generated in-memory plan reaches this adapter; CLI never applies a plan
 // file from disk. Reverification and planning happen again in the applying run.
-export async function openProposal(plan, { api = githubApi, authKind, repository = process.env.GITHUB_REPOSITORY } = {}) {
+export async function openProposal(plan, { api = githubApi, authKind, repository = process.env.GITHUB_REPOSITORY,
+  ownerBootstrap = pushOwnerBootstrap } = {}) {
   assert(['app', 'user', 'repository'].includes(authKind), 'Explicit authentication kind required');
   if (authKind === 'repository') {
     assert.equal(repository, plan.repository, 'Repository token may only propose its own repository');
@@ -69,12 +110,34 @@ export async function openProposal(plan, { api = githubApi, authKind, repository
   const paths = Object.keys(plan.files);
   assert(paths.length >= 1 && paths.length <= 16);
   for (const path of paths) assert(/^(distribution\/(companion-release\.json|select-companion-release\.mjs|release-automation\/(check-published-release\.mjs|companion-release\/(tuple|select|proposal|github|cli)\.mjs))|(?:test|tools)\/companion-workflow-pins\.test\.mjs|tools\/test-companion-workflow-pins\.mjs|\.github\/workflows\/(peer-generation|collaboration|webrtc|companion-release-receiver)\.yml)$/.test(path));
-  const tree = await api(`${root}/git/trees`, { base_tree: plan.baseTree,
-    tree: paths.map(path => ({ path, mode: '100644', type: 'blob', content: plan.files[path] })) });
-  const created = await api(`${root}/git/commits`, { message: plan.title, tree: commit(tree.sha), parents: [plan.base] });
-  await api(`${root}/git/refs`, { ref: `refs/heads/${plan.branch}`, sha: commit(created.sha) });
+  let head;
+  const refs = await api(`${root}/git/matching-refs/heads/${plan.branch}`);
+  assert(refs.length < 100, 'Incomplete branch listing');
+  const branch = refs.filter(ref => ref.ref === `refs/heads/${plan.branch}`);
+  assert(branch.length <= 1);
+  if (branch.length) {
+    head = commit(branch[0].object.sha);
+    const comparison = await api(`${root}/compare/${plan.base}...${head}`);
+    assert.equal(comparison.status, 'ahead'); assert.equal(comparison.total_commits, 1);
+    assert.deepEqual(comparison.files.map(file => file.filename).sort(), paths.sort(), 'Existing orphan branch scope changed');
+    const candidate = await api(`${root}/git/commits/${head}`);
+    assert.deepEqual(candidate.parents.map(parent => parent.sha), [plan.base], 'Existing orphan branch ancestry changed');
+    for (const [path, content] of Object.entries(plan.files)) {
+      const file = await api(`${root}/contents/${path}?ref=${head}`);
+      assert.equal(file.encoding, 'base64');
+      assert.equal(Buffer.from(file.content, 'base64').toString('utf8'), content, 'Existing orphan branch bytes changed');
+    }
+  }
+  else if (authKind === 'user' && paths.some(path => path.startsWith('.github/workflows/'))) head = ownerBootstrap(plan);
+  else {
+    const tree = await api(`${root}/git/trees`, { base_tree: plan.baseTree,
+      tree: paths.map(path => ({ path, mode: '100644', type: 'blob', content: plan.files[path] })) });
+    const created = await api(`${root}/git/commits`, { message: plan.title, tree: commit(tree.sha), parents: [plan.base] });
+    head = commit(created.sha);
+    await api(`${root}/git/refs`, { ref: `refs/heads/${plan.branch}`, sha: head });
+  }
   const pr = await api(`${root}/pulls`, { title: plan.title, body: plan.body, base: plan.baseBranch, head: plan.branch });
-  return { state: 'opened', repository: plan.repository, url: pr.html_url, head: created.sha,
+  return { state: 'opened', repository: plan.repository, url: pr.html_url, head,
     nextAction: 'Normal CI and review are required. Approve workflow execution if GitHub requires it. No merge/deployment is attempted.' };
 }
 

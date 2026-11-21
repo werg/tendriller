@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -7,7 +7,7 @@ import test from 'node:test';
 import { digest, json, seal, publishedTuple, qualifyContrib, validateTuple, GATES, REPOS } from '../companion-release/tuple.mjs';
 import { planProposal } from '../companion-release/proposal.mjs';
 import { select } from '../companion-release/select.mjs';
-import { capabilities, openProposal, dispatchQualification } from '../companion-release/github.mjs';
+import { capabilities, openProposal, dispatchQualification, pushOwnerBootstrap } from '../companion-release/github.mjs';
 
 const sha = letter => letter.repeat(40), hash = letter => letter.repeat(64);
 function archive(provenance, pkg) {
@@ -207,6 +207,7 @@ test('repository token writes only its own tuple; PR generation never merges or 
     calls.push({ path, body });
     if (path.endsWith('/commits/main')) return { sha: plan.base };
     if (path.includes('/pulls?')) return [];
+    if (path.includes('/git/matching-refs/')) return [];
     if (path.endsWith('/git/trees')) return { sha: sha('4') };
     if (path.endsWith('/git/commits')) return { sha: sha('5') };
     if (path.endsWith('/git/refs')) return {};
@@ -234,4 +235,53 @@ test('moved base or changed dispatch head stops before further writes', async ()
   await assert.rejects(openProposal(plan, { api, authKind: 'user' }));
   await assert.rejects(dispatchQualification(plan, sha('1'), { api }));
   assert(calls.every(body => !body));
+});
+
+test('owner bootstrap uses real isolated Git, exact base/tree, no force and rejects symlink writes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tuple-git-test-'));
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    git('init', '--quiet', '--bare', 'remote.git'); git('init', '--quiet', 'source');
+    writeFileSync(join(root, 'source/readme'), 'baseline');
+    symlinkSync('../outside', join(root, 'source/external'));
+    git('-C', 'source', 'add', 'readme', 'external');
+    git('-C', 'source', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--quiet', '--no-gpg-sign', '-m', 'base');
+    const base = git('-C', 'source', 'rev-parse', 'HEAD'), baseTree = git('-C', 'source', 'rev-parse', 'HEAD^{tree}');
+    git('-C', 'source', 'push', '--quiet', join(root, 'remote.git'), 'HEAD:refs/heads/main');
+    const plan = { repository: REPOS.contrib, base, baseTree, branch: 'release/test', title: 'Install receiver',
+      files: { '.github/workflows/receiver.yml': 'name: test\n' } };
+    const head = pushOwnerBootstrap(plan, { remote: join(root, 'remote.git') });
+    assert.equal(git('--git-dir=remote.git', 'rev-parse', 'refs/heads/release/test'), head);
+    assert.equal(git('--git-dir=remote.git', 'show', `${head}:.github/workflows/receiver.yml`), 'name: test');
+    assert.equal(git('--git-dir=remote.git', 'rev-parse', 'refs/heads/main'), base);
+    assert.throws(() => pushOwnerBootstrap({ ...plan, baseTree: sha('f') }, { remote: join(root, 'remote.git') }));
+    assert.throws(() => pushOwnerBootstrap({ ...plan, files: { '../escape': 'bad' } }, { remote: join(root, 'remote.git') }));
+    assert.throws(() => pushOwnerBootstrap({ ...plan, files: { 'external/escape': 'bad' } }, { remote: join(root, 'remote.git') }));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('recover a verified branch after lost PR creation; changed bytes/ancestry/scope fail closed', async t => {
+  const f = fixture(), tuple = await f.check(), p = planningApi(f, 'contrib');
+  const bootstrap = await planProposal(tuple, { api: p.api });
+  const path = 'distribution/companion-release.json';
+  const plan = { ...bootstrap, files: { [path]: json(tuple) } }, head = sha('7');
+  for (const variant of ['valid', 'bytes', 'ancestry', 'scope']) await t.test(variant, async () => {
+    const calls = [];
+    const api = async (endpoint, body) => {
+      calls.push({ endpoint, body });
+      if (endpoint.endsWith('/commits/main')) return { sha: plan.base };
+      if (endpoint.includes('/pulls?')) return [];
+      if (endpoint.includes('/git/matching-refs/')) return [{ ref: `refs/heads/${plan.branch}`, object: { sha: head } }];
+      if (endpoint.includes('/compare/')) return { status: 'ahead', total_commits: 1, files: [{ filename: variant === 'scope' ? 'unexpected' : path }] };
+      if (endpoint.includes('/git/commits/')) return { parents: [{ sha: variant === 'ancestry' ? sha('f') : plan.base }] };
+      if (endpoint.includes('/contents/')) return { encoding: 'base64', content: Buffer.from(variant === 'bytes' ? 'changed' : json(tuple)).toString('base64') };
+      if (endpoint.endsWith('/pulls') && body) return { html_url: 'https://github.com/werg/tendriller-contrib/pull/123' };
+      throw Error(`Unexpected branch recovery request ${endpoint}`);
+    };
+    const operation = openProposal(plan, { api, authKind: 'repository', repository: REPOS.contrib });
+    if (variant === 'valid') {
+      const result = await operation; assert.equal(result.head, head);
+      assert.equal(calls.filter(call => call.body).length, 1, 'Only finish PR creation; never recreate/move the branch');
+    } else { await assert.rejects(operation); assert(calls.every(call => !call.body)); }
+  });
 });
