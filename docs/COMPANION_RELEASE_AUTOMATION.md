@@ -85,7 +85,10 @@ metadata. It deliberately reports proposal write authority as **unverified**;
 those observations do not prove token contents/PR/workflow permissions. Existing
 owner credentials can bootstrap; an already-installed selected-repository App
 may use `--auth-kind app`. App bootstrap needs contents, pull-request and workflow
-write permissions plus actions write for explicit qualification dispatch.
+write permissions. Owner/App bootstrap PRs trigger ordinary PR qualification;
+the CLI does not also duplicate their expensive transport/browser runs. Only
+repository-token proposals require explicit qualification dispatch and actions
+write permission.
 
 ## Scheduled and manual operation without cross-repository credentials
 

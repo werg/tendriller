@@ -168,3 +168,13 @@ export async function dispatchQualification(plan, head, { api = githubApi } = {}
   return { dispatched: workflows, expectedHead: head, runs,
     verification: 'Exact workflow_dispatch heads observed. Each run still must complete successfully; this receiver never treats dispatch as qualification or merges a PR.' };
 }
+
+export async function submitProposal(plan, options = {}) {
+  const result = await openProposal(plan, options);
+  if (options.authKind === 'repository') return { ...result,
+    qualification: await dispatchQualification(plan, result.head, options) };
+  // Owner/App events already trigger ordinary qualification. Dispatching them
+  // again doubles expensive native/browser jobs and can starve the publisher.
+  return { ...result, qualification: { mode: 'ordinary-events', expectedHead: result.head,
+    verification: 'Observe normal exact-head PR qualification; successful submission is not a passing gate.' } };
+}

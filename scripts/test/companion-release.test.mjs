@@ -7,7 +7,7 @@ import test from 'node:test';
 import { digest, json, seal, publishedTuple, qualifyContrib, validateTuple, GATES, REPOS } from '../companion-release/tuple.mjs';
 import { planProposal, receiverWorkflow } from '../companion-release/proposal.mjs';
 import { select } from '../companion-release/select.mjs';
-import { capabilities, openProposal, dispatchQualification, pushOwnerBootstrap } from '../companion-release/github.mjs';
+import { capabilities, openProposal, dispatchQualification, pushOwnerBootstrap, submitProposal } from '../companion-release/github.mjs';
 import { waitingReceipt } from '../companion-release/receipt.mjs';
 
 const sha = letter => letter.repeat(40), hash = letter => letter.repeat(64);
@@ -325,6 +325,13 @@ test('repository token writes only its own tuple; PR generation never merges or 
   assert(calls.filter(call => call.path.endsWith('/dispatches')).every(call => call.body.ref === plan.branch));
   await dispatchQualification(plan, result.head, { api });
   assert.equal(calls.filter(call => call.path.endsWith('/dispatches')).length, 3, 'Do not duplicate existing exact-head CI on a scheduled retry');
+  const before = calls.length;
+  const owner = await submitProposal(plan, { api, authKind: 'user' });
+  assert.equal(owner.qualification.mode, 'ordinary-events');
+  assert(!calls.slice(before).some(call => call.path.includes('/actions/')), 'Owner PR events already trigger qualification; no duplicate heavy workflows');
+  const receiver = await submitProposal(plan, { api, authKind: 'repository', repository: REPOS.contrib });
+  assert.equal(receiver.qualification.expectedHead, result.head);
+  assert.equal(receiver.qualification.runs.length, 3, 'Target token still explicitly verifies all three readonly dispatches');
 });
 
 test('moved base or changed dispatch head stops before further writes', async () => {
