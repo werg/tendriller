@@ -75,11 +75,13 @@ control probe. The lab creates no persistent browser profile.
 
 `.github/workflows/network-controls.yml` runs unit and real control probes on
 changes. `.github/workflows/network-qualification.yml` is the application CI job:
-call it after `artifacts`, passing the exact product `source`, or dispatch it with
-the artifact run ID and exact source. It restores that run's `public-packages`,
+`service.yml` calls it after `artifacts` and requires its success before publication.
+It receives the exact product `source` and artifact job's `manifest_sha256`.
+Alternatively dispatch it with the artifact run ID, exact source and manifest hash.
+It restores that run's `public-packages`,
 binds the manifest source, and runs `--profile suite`; it never builds product
 bytes. Harness checkout source and restored product source are distinct. The
-caller can gate publication on this job once the new graph includes the API.
+graph must include the recovery API before this required gate can succeed.
 Both workflows are unprivileged and receive no deployment credentials.
 
 Application execution is bounded to 25 minutes plus the requested idle interval.

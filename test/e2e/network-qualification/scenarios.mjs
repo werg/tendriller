@@ -50,8 +50,9 @@ export async function runNetworkScenario(adapter, {
   try {
     timeline.record(phase, 'start');
     if (profile === 'relay-upgrade') {
-      // Caller must install the block BEFORE opening either participant. Reject
-      // a direct starting route instead of manufacturing fallback after setup.
+      // The adapter has already observed direct, applied a real packet block,
+      // and waited for authenticated relay fallback. This phase proves relay
+      // application work before restoring packets and promoting back to direct.
       phase = 'blocked';
       const before = await bounded(signal => adapter.snapshot({ signal }));
       assert.equal(before.kind, 'relay', 'Initial authenticated route must be relay');

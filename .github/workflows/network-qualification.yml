@@ -6,6 +6,9 @@ on:
       source:
         type: string
         required: true
+      manifest_sha256:
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       source:
@@ -14,6 +17,10 @@ on:
         required: true
       artifact_run_id:
         description: Successful artifact run containing public-packages for that source
+        type: string
+        required: true
+      manifest_sha256:
+        description: Exact qualified manifest SHA-256 from the artifact job
         type: string
         required: true
 
@@ -29,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Harness source and restored product source are recorded separately.
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -43,8 +50,9 @@ jobs:
       - name: Bind the restored graph to the requested source
         env:
           EXPECTED_SOURCE: ${{ inputs.source }}
+          EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
         run: |
-          node --input-type=module -e 'import assert from "node:assert/strict";import{readFile}from"node:fs/promises";const s=process.env.EXPECTED_SOURCE;assert.match(s,/^[a-f0-9]{40}$/);const m=JSON.parse(await readFile("dist/manifest.json"));assert.equal(m.source_commit,s);'
+          node --input-type=module -e 'import assert from "node:assert/strict";import{readFile}from"node:fs/promises";import{createHash}from"node:crypto";const s=process.env.EXPECTED_SOURCE;assert.match(s,/^[a-f0-9]{40}$/);const b=await readFile("dist/manifest.json");assert.equal(createHash("sha256").update(b).digest("hex"),process.env.EXPECTED_MANIFEST_SHA256);assert.equal(JSON.parse(b).source_commit,s);'
       - run: npm ci --ignore-scripts
       - run: node --test scripts/test/first-app-peer.test.mjs test/e2e/network-qualification/lab.test.mjs
       - run: docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
