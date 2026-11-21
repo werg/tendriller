@@ -5,7 +5,8 @@ import { activityTimeline, assertDirectWork, assertIdle, counterDelta } from './
 import { runNetworkScenario } from './scenarios.mjs';
 import { observeIdleDuration } from './idle-progress.mjs';
 import { releaseAnchor, sha256 } from './anchor.mjs';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { prepareMountTargets } from './mounts.mjs';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -203,4 +204,15 @@ test('release anchor rejects changed bytes and traversal without launching the a
   await assert.rejects(releaseAnchor(root), /bytes changed/);
   manifest.artifacts[0].file = '../private'; await save();
   await assert.rejects(releaseAnchor(root), /within dist/);
+});
+
+test('fresh harness has nested read-only mount targets without building or replacing bytes', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'network-mounts-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await prepareMountTargets(root);
+  assert.deepEqual(await readdir(join(root, 'dist')), []);
+  assert.deepEqual(await readdir(join(root, 'server/public')), []);
+  await writeFile(join(root, 'server/public/retained'), 'qualified bytes');
+  await prepareMountTargets(root);
+  assert.equal(await readFile(join(root, 'server/public/retained'), 'utf8'), 'qualified bytes');
 });
