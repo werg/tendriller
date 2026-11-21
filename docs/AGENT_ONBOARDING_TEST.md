@@ -541,6 +541,16 @@ Missing/malformed timestamps block; comparing completion notification times alon
 cannot establish this order. Older attempts without start timing retain that
 limitation and must not be relabeled as timing-qualified.
 
+Domain discovery also recognizes literal origin variables in a narrow successful
+`set -e` shell prefix of constant assignments and `curl --fail` reads. It never
+executes captured code or interprets general shell control flow. When the same
+command subsequently runs a guide bootstrap, the proof records prefix/continuation
+order; its timestamps still bound the whole command. `firstInstallCommandStartedAt`
+is that enclosing command's start, not an invented HTTP or npm timestamp. Acquisition
+coverage includes recognized install/exec/dlx/npx commands and npm-shaped output;
+silent arbitrary subprocess installers remain outside that coverage. Overlapping
+installations in another command still fail the measured timing check.
+
 The controller returns `status` and explicit `missing`/`mismatches` metrics.
 If the native attachment exposes connected peers but no transport diagnostic,
 leave transport unknown. For the existing public WebSocket relay only, the
