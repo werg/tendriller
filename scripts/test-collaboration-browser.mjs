@@ -89,7 +89,7 @@ try{
         await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:false});
         cover=await context.newPage();await cover.goto('about:blank');await cover.bringToFront();
         assert.equal(await selected.evaluate(()=>document.hidden),true,'Selected document must really be hidden before freeze');
-        await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),before.endpoint.endpointId,{timeout:5000});
+        await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),before.endpoint.endpointId,{timeout:5000,polling:100});
         await cdp.send('Page.setWebLifecycleState',{state:'frozen'});
         // Cross the unchanged 15s page fence while the healthy owner still serves
         // a sibling. This is actual Chromium suspension, not a synthetic event.
@@ -97,7 +97,7 @@ try{
         await new Promise(resolve=>setTimeout(resolve,16000));
         await cdp.send('Page.setWebLifecycleState',{state:'active'});await cover.close();cover=undefined;await selected.bringToFront();
         await selected.waitForFunction(()=>window.freezeEvents.includes('resume'),null,{timeout:5000});
-        await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='active'),before.endpoint.endpointId,{timeout:5000});
+        await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='active'),before.endpoint.endpointId,{timeout:5000,polling:100});
         const after=await selected.evaluate(async()=>({marker:window.freezeMarker,events:window.freezeEvents,endpoint:window.session.endpoint,deviceId:window.session.deviceId,aborted:window.session.signal.aborted,eventsRead:(await window.session.query('messages',null)).value.events.length}));
         assert.equal(after.marker,before.marker);assert.deepEqual(after.events,['freeze','resume']);assert.deepEqual(after.endpoint,before.endpoint);assert.equal(after.deviceId,before.deviceId);assert.equal(after.aborted,false);assert.equal(after.eventsRead,2);
       }finally{await cdp.send('Page.setWebLifecycleState',{state:'active'}).catch(()=>{});await cover?.close();await cdp.detach();}
@@ -129,7 +129,7 @@ try{
             await orphan.evaluate(()=>{for(const type of ['freeze','resume'])document.addEventListener(type,()=>{void window.__orphanLifecycle(type);});});
             cdp=await context.newCDPSession(orphan);await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:false});
             cover=await context.newPage();await cover.goto('about:blank');await cover.bringToFront();assert.equal(await orphan.evaluate(()=>document.hidden),true);
-            await one.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),attached.endpoint.endpointId,{timeout:5000});
+            await one.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),attached.endpoint.endpointId,{timeout:5000,polling:100});
             await cdp.send('Page.setWebLifecycleState',{state:'frozen'});
             try{await Promise.race([observed,new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('ORPHAN_FREEZE_NOT_OBSERVED')),5000);})]);}finally{clearTimeout(timer);}
             // The fixture drops private detach and BC release notifications.
