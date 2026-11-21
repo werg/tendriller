@@ -131,13 +131,13 @@ function observeOperation(id, operation) {
 
 // Attach to this browser's device owner and mount the app. Errors keep their code;
 // createOwnerConnection decides whether to set the browser up, wait or retry.
-async function connectSession() {
+async function connectSession({ signal } = {}) {
   let installed = false;
   try {
     const identity = window.tendril?.identity;
     attachment = await openBrowserOwner({ workerUrl: new URL(configuration.ownerWorkerUrl || './worker.mjs', import.meta.url),
       profileId, applicationId: configuration.applicationId, definitionId: 'shared-notes', definitionVersion: '2',
-      timeoutMs: 30_000, context: { viewId, ...(identity?.documentPath ? { documentPath: identity.documentPath } : {}),
+      signal, timeoutMs: 30_000, context: { viewId, ...(identity?.documentPath ? { documentPath: identity.documentPath } : {}),
         ...(identity?.publication ? { publicationId: identity.publication } : {}) },
       // Another tab or a page update took over this tab's route: reconnect.
       onOwnerReplaced: (() => {
@@ -145,6 +145,7 @@ async function connectSession() {
         return () => { submission.update({ attached: false, coherent: false }); reconnect(); };
       })(),
     });
+    signal?.throwIfAborted();
     session = attachment.session; $('#device-key').value = session.deviceId;
     if (pending?.reference && (pending.reference.author !== session.deviceId || pending.reference.historyId !== session.historyId))
       throw Error('The retained operation belongs to a different signer or history. Reopen its original owner to inspect it.');
@@ -193,6 +194,7 @@ async function connectSession() {
     $('#app-content').hidden = false;
     // The query activates data. Status observation handles later key delivery.
     await refresh();
+    signal?.throwIfAborted();
     // The runtime binding installs once per page, so only after the app is usable.
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
     window.tendril.signals.install(session.signals);
