@@ -117,11 +117,11 @@ function facade({session,transport,channel,worker,route,options,provider:initial
   transport.bindRequestSource(session);
   let detached=false,releasing,suspended=false,residency=Promise.resolve(), explicitSuspended=false;
   const document=globalThis.document;
-  let frozen=false, observationPaused=false, observationResume;
+  let frozen=false, observationPaused=false, observationResume, observationEpoch=0;
   const away=()=>frozen||document?.visibilityState==='hidden';
   function pauseObservation(force=false){
     if(detached||observationPaused&&!force&&!observationResume)return;
-    observationPaused=true;
+    observationPaused=true;observationEpoch++;
     // Pause the local fence synchronously, before promises or RTC cleanup. A
     // hidden page retains its RTC provider and can still process allowed inputs.
     try{if(transport.park)transport.park();else transport.suspend();}catch{}
@@ -131,12 +131,20 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     if(detached||!observationPaused||suspended||explicitSuspended||away())return Promise.resolve(session);
     if(observationResume)return observationResume;
     observationResume=(async()=>{
-      await transport.resume();
-      if(away()||suspended||explicitSuspended){pauseObservation(true);return session;}
-      await session.resumeAttachment();
-      if(detached)throw new CollaborationError('ENDPOINT_STALE');
-      if(away()||suspended||explicitSuspended)pauseObservation(true);
-      else observationPaused=false;
+      // A second freeze invalidates the pending proof even if the document is
+      // visible again by the time it arrives. Retry only while still visible;
+      // each attempt remains bounded by the transport's existing deadline.
+      while(!detached&&observationPaused&&!away()&&!suspended&&!explicitSuspended){
+        const epoch=observationEpoch;
+        await transport.resume();
+        if(epoch!==observationEpoch)continue;
+        if(away()||suspended||explicitSuspended){pauseObservation(true);break;}
+        await session.resumeAttachment();
+        if(detached)throw new CollaborationError('ENDPOINT_STALE');
+        if(epoch!==observationEpoch)continue;
+        if(away()||suspended||explicitSuspended)pauseObservation(true);
+        else observationPaused=false;
+      }
       return session;
     })().finally(()=>{observationResume=undefined;});
     return observationResume;
