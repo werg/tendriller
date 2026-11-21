@@ -74,6 +74,6 @@ send.addEventListener('click', async () => {
     if (delivery?.isError) throw Error('Inbox follow-up rejected');
     status.textContent = 'Inbox request sent to this chat.';
   } catch { status.textContent = 'The chat did not confirm receipt. Check the conversation before trying again.'; }
-  finally { send.disabled = false; submitting = false; }
+  finally { send.disabled = !application || !bridge.canMessage; submitting = false; }
 });
 window.addEventListener('pagehide', () => bridge.close(), { once: true });
