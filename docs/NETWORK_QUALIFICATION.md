@@ -21,7 +21,14 @@ loss selection is stochastic. This covers local host and outgoing reflexive path
 in the default single-bridge Docker namespace; custom multi-interface layouts are
 not qualified. UDP blocking is deterministic. Unsupported IPv6,
 firewall, qdisc or Docker privileges fail the probe rather than produce a pass.
-The container is bounded to two CPUs and 7 GiB; execution is bounded to 90 seconds.
+Local defaults cap the entire container at one CPU and 1 GiB RAM, with no
+additional swap allowance. Heavy qualification normally runs in remote CI, which
+explicitly selects `--cpus 2 --memory-mib 2048`. Resource values are bounded and
+recorded in `run.json`; the runner never silently increases them. A large local
+suite may exceed its small default cap: use remote CI rather than starting
+parallel labs on a shared workstation. Containers use `--rm`, have a
+`com.tendriller.network-lab=true` ownership label, and are removed on normal exit,
+errors, interruption, and deadline. The packet probe is bounded to 90 seconds.
 The image is based on a digest-pinned Playwright image. The selected Node binary
 is mounted read-only; its actual version is recorded.
 

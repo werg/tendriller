@@ -24,8 +24,8 @@ jobs:
       - run: node --test test/e2e/network-qualification/*.test.mjs
       - run: npm ci --ignore-scripts
       - run: docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
-      - run: node test/e2e/network-qualification/run.mjs --output "$RUNNER_TEMP/network-controls"
-      - run: node test/e2e/network-qualification/run.mjs --browser-controls --output "$RUNNER_TEMP/network-browser-controls"
+      - run: node test/e2e/network-qualification/run.mjs --cpus 2 --memory-mib 2048 --output "$RUNNER_TEMP/network-controls"
+      - run: node test/e2e/network-qualification/run.mjs --cpus 2 --memory-mib 2048 --browser-controls --output "$RUNNER_TEMP/network-browser-controls"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

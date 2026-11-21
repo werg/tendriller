@@ -60,10 +60,10 @@ jobs:
           TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
       - run: node --test scripts/test/first-app-peer.test.mjs test/e2e/network-qualification/*.test.mjs
       - run: docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
-      - run: node test/e2e/network-qualification/run.mjs --output "$RUNNER_TEMP/network-controls"
-      - run: node test/e2e/network-qualification/run.mjs --browser-controls --output "$RUNNER_TEMP/network-browser-controls"
+      - run: node test/e2e/network-qualification/run.mjs --cpus 2 --memory-mib 2048 --output "$RUNNER_TEMP/network-controls"
+      - run: node test/e2e/network-qualification/run.mjs --cpus 2 --memory-mib 2048 --browser-controls --output "$RUNNER_TEMP/network-browser-controls"
       - name: Exercise the restored kit under real packet faults and browser lifecycle changes
-        run: node test/e2e/network-qualification/run.mjs --artifact-root "$GITHUB_WORKSPACE" --profile suite --output "$RUNNER_TEMP/network-first-app"
+        run: node test/e2e/network-qualification/run.mjs --cpus 2 --memory-mib 2048 --artifact-root "$GITHUB_WORKSPACE" --profile suite --output "$RUNNER_TEMP/network-first-app"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
