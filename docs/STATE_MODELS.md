@@ -93,7 +93,9 @@ npm install --save-exact "../packages/tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
   "../packages/tendriller-tools-$TENDRILLER_RELEASE.tgz"
 ```
 
-Build the exact SQL package from a fresh Chronolog checkout. Use Node 24, Git,
+Build the exact SQL package from a fresh Chronolog checkout, using the source
+bound by the downloaded kit’s `composition.json`; do not select a second kernel
+revision from a copied guide example. Use Node 24, Git,
 Corepack/pnpm, Python 3, a C/C++ build toolchain and `make`/`tar`. Package
 installation must be allowed to download the pinned upstream source and Node
 headers. **Enable installation scripts for this SQL build.** The events-only
@@ -101,20 +103,22 @@ guide's `--ignore-scripts` deliberately avoids the native compilation that SQL
 needs.
 
 ```sh
+CHRONOLOG_SOURCE=$(node -p "require('../composition.json').chronolog.session.source")
 git clone https://github.com/werg/chronolog-db.git ../../chronolog-sql-source
-git -C ../../chronolog-sql-source checkout --detach d3efeb6d75ac24bb9b44899f27d6940475ab55e9
+git -C ../../chronolog-sql-source checkout --detach "$CHRONOLOG_SOURCE"
 cd ../../chronolog-sql-source
 corepack pnpm install --frozen-lockfile
 node tools/package-peer-session.mjs --sql-native --output artifacts/session-sql
+CHRONOLOG_PREFIX=$(git rev-parse --short=8 HEAD)
 node tools/test-peer-session-sql.mjs \
-  --artifact "$PWD/artifacts/session-sql/chronolog-peer-session-d3efeb6d-sql.tgz"
+  --artifact "$PWD/artifacts/session-sql/chronolog-peer-session-$CHRONOLOG_PREFIX-sql.tgz"
 ```
 
 Return to your starter's `sql/` directory, and install the produced archive by
 its absolute path:
 
 ```sh
-npm install --save-exact /absolute/path/to/chronolog-sql-source/artifacts/session-sql/chronolog-peer-session-d3efeb6d-sql.tgz
+npm install --save-exact /absolute/path/to/chronolog-sql-source/artifacts/session-sql/chronolog-peer-session-*-sql.tgz
 npm run engine
 ```
 
@@ -232,7 +236,7 @@ test "$(git -C ../chronolog-emsdk rev-parse HEAD)" = e4fe26ef59168ff44f4c23c466e
 node tools/build-wasm-engine.mjs --emsdk ../chronolog-emsdk --output artifacts/wasm
 ```
 
-Install `chronolog-peer-session-d3efeb6d-sql-wasm.tgz` into the application in
+Install the generated `chronolog-peer-session-<source-prefix>-sql-wasm.tgz` from this same selected source into the application in
 place of its native-only package. Preserve these four engine files together in
 the authored publication's `engine/` directory:
 
