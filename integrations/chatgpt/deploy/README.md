@@ -8,11 +8,15 @@ Tendriller host OAuth/account integration; no custom account adapter or
 always-true authorization callback is needed. Preparation does not deploy a
 Worker, install a service, link a human account or trigger a ChatGPT turn.
 
-Use Node 24 or newer on the build machine and service host. The pinned public
-session package is the events-only Chronolog build at
-`3ca38259bcd246b7d990506cd63b4a0aa998baeb`. SQL or native RTC variants require their
-own matched build and qualification; the default application uses the maintained
-encrypted relay fallback. Keep the coordinating participant available separately.
+Use Node 24 or newer on the build machine and service host. The Chronolog source
+is derived from the installed public session package's clean provenance; there is
+no separate deployment source pin. Use that exact source checkout for the build.
+The standard SQL-free archive includes native RTC and its normal pinned Werift
+dependency. Release assembly installs the exact local SDK/session archives and
+their declared dependencies, then seals all installed bytes and lockfiles.
+No manual RTC dependency install is required. New assemblies need registry access
+for those declared dependencies; a sealed portable release needs no install.
+Keep the coordinating participant available separately.
 
 ## 1. Build an exact release
 
