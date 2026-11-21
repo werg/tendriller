@@ -109,12 +109,18 @@ export async function createBrowserNetworkControls(page) {
         assert.equal(await page.evaluate(() => document.visibilityState), 'visible', 'Resume left the selected tab hidden');
       }
     },
-    async background({ signal, pauseMs }) {
+    async background({ signal, pauseMs, onHidden }) {
       signal.throwIfAborted();
       const other = await context.newPage();
       try {
         await other.goto('about:blank'); await other.bringToFront();
         const hiddenObserved = await page.evaluate(() => document.visibilityState === 'hidden');
+        let hiddenResult;
+        if (hiddenObserved && onHidden) {
+          hiddenResult = await onHidden({ signal });
+          signal.throwIfAborted();
+          assert.equal(await page.evaluate(() => document.hidden), true, 'Hidden work foregrounded the page');
+        }
         // This is an observation interval, not a claim that headless tabs always
         // implement the browser's foreground/background scheduler policy.
         await new Promise((resolve, reject) => {
@@ -125,7 +131,7 @@ export async function createBrowserNetworkControls(page) {
           if (signal.aborted) cancel();
         });
         await page.bringToFront();
-        return { hiddenObserved };
+        return { hiddenObserved, hiddenResult };
       } finally { await other.close(); }
     },
     async cleanup() {

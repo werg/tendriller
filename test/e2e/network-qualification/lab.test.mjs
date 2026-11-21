@@ -5,7 +5,7 @@ import { activityTimeline, assertDirectWork, assertIdle, counterDelta } from './
 import { runNetworkScenario } from './scenarios.mjs';
 import { observeIdleDuration, progressWriter } from './idle-progress.mjs';
 import { releaseAnchor, selectedProductVersion, sha256 } from './anchor.mjs';
-import { currentOperationApplied } from './first-app.mjs';
+import { currentOperationApplied, assertHiddenDirectPath } from './first-app.mjs';
 import { authenticatedTransportSnapshot, authenticatedRouteMatches } from '../../../scripts/first-app-peer.mjs';
 import { prepareMountTargets } from './mounts.mjs';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
@@ -261,6 +261,14 @@ test('old applied/retention labels and reused IDs cannot prove a fresh browser c
   assert.equal(currentOperationApplied('old', 'new', 'new: Saved. 1 peer retention receipt(s) observed.'), false);
   assert.equal(currentOperationApplied('old', 'new', 'new: Applied: accepted. Peer retention has not been observed here.'), false);
   assert.equal(currentOperationApplied('old', 'new', status('new')), true);
+});
+
+test('hidden work rejects relay recovery, route replacement and payload fallback but records metadata requests', () => {
+  const before = { ...baseline(), kind: 'direct', connectionRevision: 3 };
+  assert.throws(() => assertHiddenDirectPath(before, { ...before, kind: 'relay', connectionRevision: 5, relayBytes: 232408 }), /lost authenticated direct/);
+  assert.throws(() => assertHiddenDirectPath(before, { ...before, connectionRevision: 4 }), /replaced/);
+  assert.throws(() => assertHiddenDirectPath(before, { ...before, relayBytes: 101 }), /relay fallback/);
+  assert.equal(assertHiddenDirectPath(before, { ...before, hostRequests: 12 }).hostRequests, 2);
 });
 
 // Docker runs as root for isolated NET_ADMIN, while Actions uploads as the host
