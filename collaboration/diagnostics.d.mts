@@ -15,6 +15,7 @@ export interface DiagnosticReport {
   readonly scope:Readonly<Record<string,string>>;readonly status:Readonly<Record<string,string|number>>;
   readonly definition:{readonly id?:string;readonly version?:string;readonly commands:readonly string[];readonly queries:readonly string[]}|null;
   readonly participation:{readonly phase?:string;readonly connectedPeers:readonly string[];readonly reviewRequired:boolean;readonly hasError:boolean}|null;
+  readonly transport:import('../contract/transport-diagnostics.mjs').TransportDiagnosticReport;
   readonly capabilities:readonly string[]|null;readonly endpoints?:readonly (DiagnosticEndpoint|null)[];readonly findings:readonly DiagnosticFinding[];
 }
 export declare function diagnosticFinding(error:unknown,options?:{scope?:Record<string,unknown>;state?:Record<string,unknown>;severity?:'info'|'warning'|'error'}):DiagnosticFinding;

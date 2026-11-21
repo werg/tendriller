@@ -53,6 +53,37 @@ reason. It is diagnostic metadata, not evidence that a peer authenticated or a
 command applied. Do not report P2P solely because signaling or a data channel opened.
 Verify actual application transfer and relay byte counters as described below.
 
+### Improving an existing relay
+
+The session's `reconsiderConnections()` accepts an actual network or RTC-provider
+change. It tries a direct-only authenticated replacement while the existing relay
+continues to serve the application. A blocked or cancelled candidate never opens
+another relay and never changes the device identity, signed operation IDs,
+generation or recovery authority. Successful authenticated replacements retire the
+old link with a bounded drain of in-flight requests.
+
+The maintained browser owner requests reconsideration when an authorized RTC
+provider becomes available, the device comes online, its network interface changes
+(where supported), or a visible page resumes. Native participation also responds
+to discovery reconnection. A native host with its own operating-system network
+notifications can call `await participation.reconsiderConnections()` from those
+notifications. Applications must not schedule repeated probes.
+
+Concurrent triggers share one attempt batch. Each peer has a minimum 30-second
+cooldown between event-triggered attempts; expiration only permits a later event
+and schedules no timer. Ordinary directory changes and application commands do
+not trigger upgrades. A healthy direct link is never probed. Failed upgrades leave
+the currently usable relay selected.
+
+`await participation.diagnostics()` reads current authenticated links and local
+counters, without discovery, synchronization, host HTTP or model dispatch. It
+returns direct/relay/unknown routing and bounded fallback reasons with reliable
+and live application framing byte counts. These exclude SDP, encryption and
+WebSocket/UDP overhead and are not a Cloudflare billing estimate. `unknown` means
+a custom transport did not describe its route; it must not be reported as P2P.
+Read diagnostics when displaying the inspector or explicitly refreshing it;
+do not turn the inspector into another polling loop.
+
 The underlying `createPeerIntroductions` API remains the host adapter primitive
 for transport qualification and specialized environments. The maintained native
 and browser entry points above are the application setup path.

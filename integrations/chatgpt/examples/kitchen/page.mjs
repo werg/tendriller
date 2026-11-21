@@ -157,6 +157,7 @@ $('#connect').onclick = async () => {
     if (!window.tendril) throw Error('Open the signed published page to connect this application.');
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
     window.tendril.signals.install(session.signals);
+    window.tendril.transport.install(session.participation);
     client = createAssistanceClient(session, { pendingStorage });
     session.participation.onStatus(status => {
       $('#connection').textContent = `Connection: ${status.phase}${status.error ? ` (${status.error})` : ''}. Keep an authorized native participant running.`;

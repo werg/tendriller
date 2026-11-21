@@ -6,6 +6,7 @@ import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readSessionPin } from '../session-pin.mjs';
 import { ASSISTANT_GUIDES, onboardingDescriptor } from '../../contract/onboarding.mjs';
 import { buildOnboardingAssets, combinedOnboarding, ONBOARDING_DOCS, TUTORIAL_FILES, TUTORIAL_DOWNLOAD } from '../onboarding.mjs';
 
@@ -150,18 +151,23 @@ test('the installable MCP connection requests account setup permission explicitl
 });
 
 test('events and SQL starter qualification use the current pinned session source', () => {
-  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  const archive = join(root, pkg.devDependencies['@chronolog/peer-session'].replace(/^file:/, ''));
-  const provenance = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/provenance.json'], { encoding: 'utf8' }));
-  const source = provenance.source;
+  const { source, sql_archive } = readSessionPin(root);
   assert.match(source, /^[a-f0-9]{40}$/);
+  assert.equal(sql_archive, `chronolog-peer-session-${source.slice(0, 8)}-sql.tgz`);
   const workflow = readFileSync(join(root, '.github/workflows/agent-onboarding.yml'), 'utf8');
-  assert.equal(workflow.split('ref: ' + source).length - 1, 1, 'SQL engine qualification pins the current session source');
+  assert(workflow.indexOf('path: core') < workflow.indexOf('node-version: 24'));
+  assert(workflow.indexOf('node-version: 24') < workflow.indexOf('run: node scripts/session-pin.mjs'));
+  assert(workflow.indexOf('run: node scripts/session-pin.mjs') < workflow.indexOf('repository: werg/chronolog-db'));
+  assert.match(workflow, /id: session\s+working-directory: core\s+run: node scripts\/session-pin\.mjs/);
+  assert(workflow.includes('ref: ${{ steps.session.outputs.source }}'));
+  assert(!/ref: [a-f0-9]{40}/.test(workflow), 'No duplicated Chronolog source literal');
   assert(workflow.includes('name: public-packages'), 'SQL qualification must reuse the release graph');
   const service = readFileSync(join(root, '.github/workflows/service.yml'), 'utf8');
   assert(service.includes('npm run release:artifacts'), 'Events qualification prepares the pinned public session in the graph');
   assert(service.includes('test:first-app -- --first-app-archive'), 'Events qualification must use the exact kit');
-  assert(workflow.includes(`chronolog-peer-session-${source.slice(0, 8)}-sql.tgz`));
+  assert(workflow.includes('SQL_ARCHIVE: ${{ steps.session.outputs.sql_archive }}'));
+  assert(workflow.includes('peer-session/$SQL_ARCHIVE'));
+  assert(!/chronolog-peer-session-[a-f0-9]{8}-sql\.tgz/.test(workflow));
 });
 
 

@@ -52,6 +52,7 @@ Safari device-qualification guarantee.
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
 | `documentUrl(reference)` | Build a document or fragment URL in this page’s current live or explicitly pinned context; performs no navigation |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
+| `transport.install(participation)`, `status()`, `onChange()`, `refresh()` | Bounded local authenticated-link diagnostics; no polling, probes or host queries. See [transport diagnostics](TRANSPORT_DIAGNOSTICS.md) |
 | `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
 
 The hosted `tendril.js` entry opens one receive-only publication metadata WebSocket during construction, including on holding and explicitly pinned pages. The bare `startRuntime()` kernel opens it only when passed `watchPublication: true`; otherwise construction starts no host connection or fetch. A healthy publication watch sends no heartbeat or periodic HTTP request; transport failure can trigger bounded recovery reads and reconnects. This watch does not install an application transport. Construction creates no IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
@@ -193,7 +194,19 @@ Every release is still the signed, verified publication the host selected; the
 switch is an ordinary navigation, so the runtime verifies it as on any load.
 Device keys and retained operations remain in their existing browser storage. Applications must persist drafts explicitly; runtime inspection does not save them. Closed shadow roots, custom editors, blurred contenteditable content, detached controls and other application work are not covered by the form-default check. Such an app calls
 `const release = tendril.publication.hold()` while that work is unsaved, then
-`release()`. `publication.onUpdate(listener)` lets an app show its own notice;
+`release()`. Update safety is checked on publication changes, input/change,
+focus leaving an editor, form reset, visibility changes, page restoration and hold
+release. Form reset is observed at the document level. Native `reset` events from
+forms inside shadow roots are not composed, so they do not reach that listener;
+release an application hold after resetting such a form to trigger the safety
+check. A pending update otherwise waits for another observed trigger. There is
+no periodic safety scan. Programmatic changes that do not emit
+these events must use a hold while unsaved: persist the draft, update native form
+defaults to the saved values when appropriate, then release the hold. Custom
+editors and closed shadow roots require this explicit lifetime. Alternatively,
+`publication.update()` is an explicit decision to switch immediately; it bypasses
+these protections rather than detecting whether programmatic work was saved.
+`publication.onUpdate(listener)` lets an app show its own notice;
 `publication.update()` explicitly switches immediately, overriding draft protection and active holds. An application should offer it only when the person has saved or accepted discarding local work. A pinned document opens its corresponding document in the current release.
 
 Why pages used to stay on their first release, and how that is kept: (1) a reload

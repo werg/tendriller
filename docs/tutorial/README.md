@@ -261,3 +261,11 @@ and operation records resume from that project. A still-unresolved review
 remains blocked rather than silently advancing its cursor.
 `eventsForwarding: true` means enabled, not verified continuity. Do not begin an
 idle qualification that requires forwarding while this review remains blocked.
+
+### Inspect the resident participant
+
+While `npm run peer` keeps the native owner running, `node session.mjs diagnostics`
+(or `node session.mjs status PROFILE`) attaches locally, takes one sanitized
+transport sample and detaches. The standard Page options menu shows the same
+authenticated-link evidence. Counters reset on link replacement and are not
+billing or operation-retention proof. See [transport diagnostics](https://tendriller.dev/docs/TRANSPORT_DIAGNOSTICS.md).

@@ -25,10 +25,14 @@ export declare function createPeerIntroductions<Connection extends { close(): vo
     advertise(value: { readonly identity: string; readonly storageId: string }, options: { readonly signal: AbortSignal }): Promise<void>;
     withdraw(options: { readonly signal: AbortSignal }): Promise<void>;
     invitations(options: { readonly signal: AbortSignal }): AsyncIterable<{
-      readonly peer: { readonly identity: string; readonly route: PeerRoute }; readonly token: PeerInvitation;
+      readonly peer: { readonly identity: string; readonly route: PeerRoute }; readonly token: PeerInvitation; readonly upgrade?:true;
     }>;
   }>;
   transport: Readonly<{
+    /** A failed direct-only upgrade preserves the existing relay. */
+    upgrade(input: { readonly peer: { readonly identity: string; readonly route: unknown }; readonly invitation?: unknown },
+      options: { readonly signal: AbortSignal }): Promise<Connection>;
+    describe(connection:Connection):Readonly<{kind:'direct'|'relay'|'unknown';reason?:'direct_failed'|'direct_timeout'}>;
     open(input: { readonly peer: { readonly identity: string; readonly route: unknown }; readonly invitation?: unknown },
       options: { readonly signal: AbortSignal }): Promise<Connection>;
   }>;

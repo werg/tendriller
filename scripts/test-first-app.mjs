@@ -17,6 +17,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
 import { TUTORIAL_FILES } from './onboarding.mjs';
 import { nativeTestPeerSource, closeTestPeer, memoryAvailableGb, installSoakObserver, installStateSignalObservers } from './first-app-peer.mjs';
+import { readBrowserRtcEvidence, observeRtcTraffic, hasNonTurnTraffic } from './first-app-rtc-evidence.mjs';
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
 import { CONTRACT_VERSION } from '../contract/index.mjs';
@@ -26,6 +27,7 @@ const require = createRequire(import.meta.url);
 const { values } = parseArgs({ options: {
   'session-archive': { type: 'string' }, 'first-app-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
   'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' }, transport: {type:'string', default:'direct'},
+  'network-lab-profile': { type: 'string' },
 } });
 if (!values['session-archive'] && !values['first-app-archive'])
   throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only] [--report FILE] [--keep]; or --session-archive FILE for an explicit source/SQL composition.');
@@ -33,6 +35,8 @@ if (values['session-archive'] && values['first-app-archive']) throw Error('Use t
 if (values['native-only'] && values['sql-native-only']) throw Error('Choose --native-only for events or --sql-native-only for SQL.');
 if (values['first-app-archive'] && values['sql-native-only']) throw Error('The first-app release archive has the SQL-free events profile.');
 if (!['direct','relay'].includes(values.transport)) throw Error('Choose --transport direct or relay for qualification.');
+if (values['network-lab-profile'] && (process.env.TENDRILLER_NETWORK_LAB !== '1' || values.transport !== 'direct' || !values['first-app-archive']))
+  throw Error('Network lab requires its isolated container, real RTC and an immutable first-app kit.');
 const sqlOnly = Boolean(values['sql-native-only']);
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
 const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
@@ -49,7 +53,7 @@ const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql
       : 'Local Chromium and real native/browser RTC, with forced-failure relay qualification; no Internet NAT or physical mobile qualification.',
     'Scripted tutorial execution; not an unassisted fresh-agent usability result.',
     'An ordinary test-host WebSocket forwarding boundary isolates workerd issue #8185; the packed host is unchanged. Direct production TCP closure is not qualified.'], steps: [] };
-let host, peer, browser, page, stage = 'preflight';
+let host, peer, browser, labBrowser, page, stage = 'preflight';
 
 // Every request, including a followed redirect or literal IP, is restricted to
 // loopback hosts. TLS relaxation never enters the tutorial, packages or page.
@@ -102,18 +106,7 @@ async function transportCounters() {
   return response.json();
 }
 async function browserRtcEvidence() {
-  return page.evaluate(async () => {
-    const result = [];
-    for (const peer of window.__firstAppRtcPeers ?? []) {
-      const stats = await peer.getStats();
-      for (const row of stats.values()) if (row.type === 'candidate-pair' && row.state === 'succeeded') {
-        const local = stats.get(row.localCandidateId), remote = stats.get(row.remoteCandidateId);
-        result.push({ local:local?.candidateType, remote:remote?.candidateType,
-          bytesSent:row.bytesSent ?? 0, bytesReceived:row.bytesReceived ?? 0 });
-      }
-    }
-    return result;
-  });
+  return page.evaluate(readBrowserRtcEvidence);
 }
 function checkpoint(name) { stage = name; console.log(`First app: ${name}`); }
 function passed(name) { report.steps.push(name); }
@@ -151,7 +144,11 @@ async function localCertificatePin() {
 try {
   await mkdir(app);
   await mkdir(dirname(reportPath), { recursive: true });
-  const { version } = await jsonFile(join(root, 'package.json'));
+  // Manual network qualification keeps current harness code, while archive
+  // names/version belong to the selected immutable product graph.
+  const version = values['network-lab-profile']
+    ? await (await import('../test/e2e/network-qualification/anchor.mjs')).selectedProductVersion(root)
+    : (await jsonFile(join(root, 'package.json'))).version;
   const proof = await jsonFile(join(root, 'dist/provenance.json'));
   const toolsProof = await jsonFile(join(root, 'dist/tools-manifest.json'));
   const archives = Object.fromEntries(['sdk', 'tools', 'engine', 'runtime'].map(name =>
@@ -466,11 +463,15 @@ export async function closeLocalTransport() {
     // Trust only this loopback fixture certificate across Chromium targets;
     // never disable certificate verification globally or alter the public app.
     const certificatePin = await localCertificatePin();
-    browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+    const browserOptions = { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
       args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1',
-        `--ignore-certificate-errors-spki-list=${certificatePin}`] });
+        `--ignore-certificate-errors-spki-list=${certificatePin}`] };
+    if (values['network-lab-profile']) {
+      const { launchNetworkBrowser } = await import('../test/e2e/network-qualification/browser-launch.mjs');
+      labBrowser = await launchNetworkBrowser(browserOptions); browser = labBrowser.browser;
+    } else browser = await chromium.launch(browserOptions);
     report.browser = await browser.version();
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const context = labBrowser?.context ?? await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     report.connectionErrors = [];
     await context.exposeBinding('__firstAppConnection',(_source,value)=>{if(report.connectionErrors.length<50&&/^(?:APPLICATION_|PEER_|DEVICE_|OWNER_|ENDPOINT_)[A-Z_]{1,90}$/.test(value))report.connectionErrors.push(value);});
     report.rtcLifecycle = [];
@@ -574,6 +575,7 @@ export async function closeLocalTransport() {
     const evidencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
     await writeFile(join(app, 'test-peer.mjs'), nativeTestPeerSource({
       evidenceBase64: evidencePng.toString('base64'), browserDeviceId: browserDevice, transportModule: pathToFileURL(preload).href,
+      networkQualification: Boolean(values['network-lab-profile']),
     }));
     async function startPeer() {
       const child = spawn(process.execPath, ['--import', preload, join(app, 'test-peer.mjs')], { cwd: app, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -673,13 +675,25 @@ export async function closeLocalTransport() {
       ['Native setup and durable reopen', 'Created in the browser']);
     const transportAfter = await transportCounters();
     assert.equal(transportAfter.instance, transportBefore.instance, 'Network counter restart invalidates measurement');
-    const rtc = await browserRtcEvidence();
-    report.transport = { expected:values.transport, before:transportBefore, after:transportAfter, rtc };
+    report.transport = { expected:values.transport, before:transportBefore, after:transportAfter };
     if (values.transport === 'direct') {
       assert.equal(transportAfter.relayUpgrades, 0, 'The shipping default must establish RTC without a hosted relay');
       assert.equal(transportAfter.relayBinaryBytes - transportBefore.relayBinaryBytes, 0, 'Direct application work used host relay bytes');
-      assert.ok(rtc.some(route => route.local !== 'relay' && route.remote !== 'relay' && route.bytesSent > 0 && route.bytesReceived > 0), 'Real RTC application traffic and a non-TURN route are required');
+      // Candidate-pair statistics may lag the just-applied command. Observe
+      // local Chromium stats only; never send another command to manufacture proof.
+      let observation;
+      try { observation = await observeRtcTraffic(browserRtcEvidence); }
+      catch (error) { report.transport.rtcObservation = error.rtcObservation; throw error; }
+      report.transport.rtcObservation = observation;
+      report.transport.rtc = observation.final;
+      const afterStatistics = await transportCounters();
+      report.transport.afterStatistics = afterStatistics;
+      assert.equal(afterStatistics.instance, transportBefore.instance, 'Network counter restart invalidates statistics observation');
+      assert.equal(afterStatistics.relayUpgrades, 0, 'RTC statistics observation must not conceal relay fallback');
+      assert.equal(afterStatistics.relayBinaryBytes - transportBefore.relayBinaryBytes, 0, 'RTC statistics observation used host relay bytes');
+      assert.ok(hasNonTurnTraffic(observation.final), 'Real RTC application traffic and known non-TURN candidate types are required');
     } else {
+      report.transport.rtc = await browserRtcEvidence();
       assert.ok(transportAfter.relayUpgrades > 0, 'A failed RTC capability must open the maintained fallback');
       assert.ok(transportAfter.relayBinaryBytes > transportBefore.relayBinaryBytes, 'Fallback must carry the verified application command');
     }
@@ -776,10 +790,29 @@ export async function closeLocalTransport() {
 
     checkpoint('a backgrounded phone tab resumes');
     await page.setViewportSize({ width: 390, height: 844 });
-    const lifecycle = await context.newCDPSession(page);
-    await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
-    await new Promise(resolve => setTimeout(resolve, frozenMs));
-    await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
+    if (values['network-lab-profile']) {
+      // With real visibility, raw CDP frozen/active can leave an already-selected
+      // tab hidden. Use the observed background/freeze/resume/foreground cycle.
+      const { createBrowserNetworkControls } = await import('../test/e2e/network-qualification/browser-controls.mjs');
+      const lifecycle = await createBrowserNetworkControls(page);
+      const signal = AbortSignal.timeout(frozenMs + 15_000);
+      try {
+        await lifecycle.setFrozen(true, { signal });
+        await new Promise(resolve => setTimeout(resolve, frozenMs));
+        await lifecycle.setFrozen(false, { signal });
+        report.baseline_lifecycle = await lifecycle.diagnostics();
+        assert.equal(report.baseline_lifecycle.navigations, 0, 'Freeze/resume replaced the application document');
+      } catch (error) {
+        report.baseline_lifecycle = await lifecycle.diagnostics();
+        throw error;
+      } finally { await lifecycle.cleanup(); }
+    } else {
+      const lifecycle = await context.newCDPSession(page);
+      await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
+      await new Promise(resolve => setTimeout(resolve, frozenMs));
+      await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
+      await lifecycle.detach();
+    }
     const resumedAt = Date.now();
     await burst(5);
     const resumeLog = await peer.request('participation-log');
@@ -812,6 +845,23 @@ export async function closeLocalTransport() {
 
 
     checkpoint('cancel an applied waiter, reload and retry its original operation');
+    // The network lab deliberately disables focus emulation for real lifecycle
+    // tests. Interactive foreground actions must actually foreground this tab;
+    // a hidden page can have no animation frames for Playwright's stability check.
+    if (values['network-lab-profile']) await page.bringToFront();
+    if (values['network-lab-profile']) {
+      report.before_uncertain_click = await page.evaluate(() => new Promise(resolve => {
+        let finished = false;
+        const finish = raf => { if (finished) return; finished = true; clearTimeout(timer);
+          resolve({ raf, visibility: document.visibilityState, hasFocus: document.hasFocus(),
+            submitDisabled: document.querySelector('#submit')?.disabled,
+            width: innerWidth, height: innerHeight, screenWidth: screen.width, screenHeight: screen.height }); };
+        const timer = setTimeout(() => finish(false), 1000);
+        requestAnimationFrame(() => finish(true));
+      }));
+      assert.equal(report.before_uncertain_click.visibility, 'visible', 'Foreground lab tab remained hidden');
+      assert.equal(report.before_uncertain_click.raf, true, 'Foreground lab tab has no animation frames');
+    }
     await page.evaluate(() => {
       const timeout = AbortSignal.timeout.bind(AbortSignal);
       AbortSignal.timeout = milliseconds => milliseconds === 15_000
@@ -957,6 +1007,22 @@ export async function closeLocalTransport() {
       content_id: evidenceNote.source.reference.id, operation_id: evidenceNote.operationId };
     report.limits.push('Inference provider output is injected in the private native test process; no live provider, credential validity or billing tested.');
     passed('human-edited evidence command retains exact source identity and survives browser reopen');
+    if (values['network-lab-profile']) {
+      checkpoint('qualify real packet faults and application recovery');
+      const { qualifyFirstAppNetwork } = await import('../test/e2e/network-qualification/first-app.mjs');
+      try {
+        const { NETWORK_PROFILES } = await import('../test/e2e/network-qualification/scenarios.mjs');
+        const profiles = values['network-lab-profile'] === 'suite' ? NETWORK_PROFILES : [values['network-lab-profile']];
+        report.network_qualification = { profiles: [], success: false };
+        for (const profile of profiles) report.network_qualification.profiles.push(await qualifyFirstAppNetwork({ page, context, peer, expect, transportCounters,
+          evidencePng, browserDevice, sha256, profile }));
+        report.network_qualification.success = true;
+        report.network_note_count = (await peer.request('query')).value.length;
+      } catch (error) {
+        if (error.networkReport) report.network_qualification?.profiles.push(error.networkReport);
+        throw error;
+      }
+    }
     await closeTestPeer(peer); peer = undefined;
     passed('native supervisor cleanup and natural child exit without forced termination');
     report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = reviewedNotes.length;
@@ -969,8 +1035,15 @@ export async function closeLocalTransport() {
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
   if (page && !page.isClosed()) {
     report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
-      'connection', 'connection-card', 'pairing-status', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
+      'connection', 'connection-card', 'pairing-status', 'data-status', 'peer-status', 'submission-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
     ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
+    report.browser_actionability = await page.evaluate(() => ({ visibility: document.visibilityState,
+      hasFocus: document.hasFocus(), submitDisabled: document.querySelector('#submit')?.disabled,
+      formBusy: document.querySelector('#form')?.getAttribute('aria-busy') })).catch(() => null);
+    report.browser_lifecycle = await page.evaluate(() => ({
+      markerPresent: Array.isArray(window.__networkLabLifecycle),
+      observed: Array.isArray(window.__networkLabLifecycle) ? window.__networkLabLifecycle.map(event => event.type).slice(0, 8) : [],
+    })).catch(() => null);
     // Which browser stores exist (names only): distinguishes a missing store from an emptied one.
     report.opfs_at_failure = await opfsInventory(page);
     report.browser_status_log = await page.evaluate(() => JSON.parse(sessionStorage.getItem('first-app-status-log') || '[]')).catch(() => null);
@@ -995,7 +1068,7 @@ export async function closeLocalTransport() {
   if (peer) await closeTestPeer(peer).catch(error => {
     report.native_cleanup = { status: 'failed', message: error.message };
   });
-  await browser?.close().catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
+  await (labBrowser ? labBrowser.close() : browser?.close())?.catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
   await mkdir(dirname(reportPath), { recursive: true });
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
   if (values.keep) console.log(`Private test directory retained: ${directory}`);

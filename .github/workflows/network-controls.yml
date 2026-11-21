@@ -1,0 +1,36 @@
+name: Isolated network controls
+
+on:
+  pull_request:
+    paths: ['test/e2e/network-qualification/**', '.github/workflows/network-controls.yml']
+  push:
+    paths: ['test/e2e/network-qualification/**', '.github/workflows/network-controls.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packet-controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+      - run: node --test test/e2e/network-qualification/*.test.mjs
+      - run: npm ci --ignore-scripts
+      - run: docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
+      - run: node test/e2e/network-qualification/run.mjs --output "$RUNNER_TEMP/network-controls"
+      - run: node test/e2e/network-qualification/run.mjs --browser-controls --output "$RUNNER_TEMP/network-browser-controls"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: network-controls
+          path: |
+            ${{ runner.temp }}/network-controls
+            ${{ runner.temp }}/network-browser-controls
+          if-no-files-found: error

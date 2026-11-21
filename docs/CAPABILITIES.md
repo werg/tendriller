@@ -22,6 +22,7 @@ the current browser without requesting permissions.
 | Independently revocable agent connections | Scoped host credentials and approved application consumer bindings | [Agent bindings](AGENT_BINDINGS.md) |
 | Direct P2P transfer and automatic fallback | The shared `PEER_TRANSPORT_POLICY` used by native and browser owners; direct application bytes bypass the host | [Canonical peer connection setup and bandwidth checks](PEER_CONNECTIONS.md) |
 | Connecting a browser, first-visit setup, approval and reconnect | `createOwnerConnection` + `mountConnectionView`: opening the page connects; a new browser is approved once on the service origin and returns automatically | `connection.mjs`, `connect-view.mjs`, `page.mjs`; [connection component](APP_PATTERNS.md#connect-the-browser) |
+| Local authenticated transport inspection | `tendril.transport`, `createTransportDiagnostics(participation)` | [Transport diagnostics](TRANSPORT_DIAGNOSTICS.md); Page options → Application connections |
 | State fetching and live UI refresh | `createLiveView(session, {query, input})` over real session queries and changes | `@tendriller/core/collaboration/live-view`; [application patterns](APP_PATTERNS.md) |
 | Operation status, uncertain replies, retry and recovery | The operation journal and `createOperationView` | `helpers/operation-view.mjs`; [application patterns](APP_PATTERNS.md) |
 | Typing, presence, disposable progress | `session.signals.send/subscribe` | [Live signals](APPLICATION_SIGNALS.md) |

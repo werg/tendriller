@@ -1,3 +1,4 @@
+import { mountTransportInspector } from "./transport-view";
 import { encodePublicationPath } from "./paths";
 import type { RuntimeApi } from "../../contract/index.mjs";
 
@@ -83,6 +84,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     element("p", "Save this version’s page files on this device. Your app’s data and connections are managed separately.", "note"), save, savedMessage);
   offline.hidden = !api.identity.publication || !("serviceWorker" in navigator);
   panel.append(offline);
+  const transportInspector = mountTransportInspector(api.transport); panel.append(transportInspector.element);
   const links = element("div", undefined, "links");
   const latest = element("a", "Open latest version"); latest.href = api.identity.base;
   latest.title = "Open the currently selected publication";
@@ -131,7 +133,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   };
   const openPanel = () => {
     suggested = true; suggestion.hidden = true; cancelSuggestion(); panel.hidden = false;
-    options.setAttribute("aria-expanded", "true"); heading.focus();
+    options.setAttribute("aria-expanded", "true"); heading.focus(); transportInspector.open();
   };
   const closePanel = () => {
     panel.hidden = true; options.setAttribute("aria-expanded", "false"); options.focus();
@@ -246,7 +248,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
   renderInstallation(); renderSensors(); attach(); observer.observe(document, { childList: true, subtree: true });
   return () => {
-    disposed = true; offUpdate(); cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
+    disposed = true; transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();
   };

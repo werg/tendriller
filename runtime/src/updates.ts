@@ -109,12 +109,13 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: b
   window.addEventListener("pageshow", attempt);
   let deferred: ReturnType<typeof setTimeout> | undefined;
   const afterEdit = () => {
-    if (closed) return;
+    if (closed || available === null || options.pinned || switching) return;
     clearTimeout(deferred); deferred = setTimeout(attempt, 0);
   };
-  document.addEventListener("focusout", afterEdit);
-  document.addEventListener("change", afterEdit);
-  const interval = setInterval(attempt, 5000);
+  // Only recheck after an event that can change safety. A reset event arrives
+  // before native defaults are restored, hence the single deferred attempt.
+  const editEvents = ["input", "change", "focusout", "reset"];
+  for (const event of editEvents) document.addEventListener(event, afterEdit, true);
   return Object.freeze({
     pinned: options.pinned,
     get updateAvailable() { return available !== null; },
@@ -128,9 +129,9 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: b
     update() { if (closed) return; switching = true; if (options.pinned) location.assign(documentUrl(cfg, new URL(latestUrl())).href); else reload(); },
     close() {
       if (closed) return;
-      closed = true; clearInterval(interval); clearTimeout(deferred); watch?.close();
+      closed = true; clearTimeout(deferred); watch?.close();
       document.removeEventListener("visibilitychange", attempt); window.removeEventListener("pageshow", attempt);
-      document.removeEventListener("focusout", afterEdit); document.removeEventListener("change", afterEdit);
+      for (const event of editEvents) document.removeEventListener(event, afterEdit, true);
       holds.clear(); listeners.clear(); available = null;
     },
   });

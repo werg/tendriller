@@ -1,5 +1,6 @@
 import {defineApplication,describeApplication,PEER_GENERATION_CAPABILITIES} from '@chronolog/peer-session';
 import test from 'node:test';
+import {FixtureLocks} from './fixtures/locks.mjs';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -60,7 +61,7 @@ for(const mode of ['shared','elected'])test(`default ${mode} bootstrap makes the
  class Scope extends EventTarget{postMessage(){}close(){}connect(port){this.dispatchEvent(Object.assign(new Event('connect'),{ports:[port]}));}}
  const scope=new Scope(),stop=new AbortController(),links=[],description=describeApplication(defineApplication({id:'rtc-fixture',version:'1',commands:{},queries:{}}));let shared=0,dedicated=0,localWorker;
  const session={applicationId:'a'.repeat(64),historyId:'retained',storageId:'retained',deviceId:'b'.repeat(64),signal:stop.signal,revision:null,status:{phase:'ready',database:'idle',role:'coordinator',generation:'c'.repeat(64),coordinator:'b'.repeat(64),connectedPeers:0},signals:{delivery:'neighbors'},describe:()=>({...description,capabilities:{...PEER_GENERATION_CAPABILITIES,sql:false}}),onStatus(listener){listener(this.status);return()=>{};},onRecovery:()=>()=>{},async close(){stop.abort(Error('SESSION_CLOSED'));}};
- const setup={__rtcFixtureBridgeClosed:{count:0,started:0},navigator:{locks:{request:async(_name,_options,run)=>run({})}},location:{origin:'https://app.test',href:'https://app.test/'},RTCPeerConnection:class{},SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();shared++;const wire=new MessageChannel();this.port=wire.port2;scope.connect(wire.port1);}}:undefined,Worker:class extends EventTarget{constructor(){super();dedicated++;localWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}}};for(const[key,value]of Object.entries(setup))Object.defineProperty(globalThis,key,{configurable:true,value});
+ const setup={__rtcFixtureBridgeClosed:{count:0,started:0},navigator:{locks:new FixtureLocks()},location:{origin:'https://app.test',href:'https://app.test/'},RTCPeerConnection:class{},SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();shared++;const wire=new MessageChannel();this.port=wire.port2;scope.connect(wire.port1);}}:undefined,Worker:class extends EventTarget{constructor(){super();dedicated++;localWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}}};for(const[key,value]of Object.entries(setup))Object.defineProperty(globalThis,key,{configurable:true,value});
  scope.postMessage=data=>queueMicrotask(()=>localWorker?.dispatchEvent(new MessageEvent('message',{data})));
  const service=core.serveBrowserOwner({scope,profileId:'retained',async openSession({signal,openDirectConnection}){try{links.push(await openDirectConnection({signal,role:'offerer',signaling:{},timeoutMs:500}));}catch{links.push({kind:'relay'});}return{session};}});
  t.after(()=>service.close());let attachment;
@@ -144,4 +145,49 @@ test('broker clamps explicit gathering time to the remaining negotiation budget 
  const connection=await pending;assert.equal(calls[0].timeoutMs,300);assert.equal(calls[0].gatheringTimeoutMs,300);await connection.close();
  const shorter=await broker.openDirectConnection({timeoutMs:1000,gatheringTimeoutMs:200});assert.equal(calls[1].gatheringTimeoutMs,200);await shorter.close();
  const defaults=await broker.openDirectConnection({timeoutMs:1000});assert.equal(Object.hasOwn(calls[2],'gatheringTimeoutMs'),false);await defaults.close();
+});
+
+test('authenticated provider and network changes coalesce into explicit upgrade notifications',async()=>{
+ let changes=0,authorized=true;
+ const broker=createBrowserRtcBroker({onNetworkChange:()=>{changes++;}}),endpoint=rtcEndpoint(()=>{});
+ broker.addRoute(endpoint,{authorize:()=>authorized});
+ const change=()=>endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'network-change'}}));
+ change();await Promise.resolve();assert.equal(changes,0,'unregistered routes cannot trigger work');
+ register(endpoint);change();change();await Promise.resolve();assert.equal(changes,1);
+ register(endpoint);await Promise.resolve();assert.equal(changes,1,'duplicate registration cannot probe');
+ authorized=false;change();await Promise.resolve();assert.equal(changes,1);
+ authorized=true;change();await Promise.resolve();assert.equal(changes,2);
+ broker.close();change();await Promise.resolve();assert.equal(changes,2);
+});
+
+test('provider network listeners stop on close and hidden documents do not request upgrades',async t=>{
+ const originals=new Map(['addEventListener','removeEventListener','document','navigator','RTCPeerConnection'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
+ t.after(()=>{for(const[key,value]of originals)if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];});
+ const events=new EventTarget(),doc=new EventTarget(),network=new EventTarget();doc.visibilityState='visible';
+ for(const[key,value]of Object.entries({addEventListener:events.addEventListener.bind(events),removeEventListener:events.removeEventListener.bind(events),document:doc,navigator:{connection:network},RTCPeerConnection:class{}}))Object.defineProperty(globalThis,key,{configurable:true,value});
+ const messages=[],endpoint=rtcEndpoint(value=>messages.push(value)),provider=registerBrowserRtcProvider(endpoint,{signal:new AbortController().signal},{serve:()=>({close(){}})});
+ assert.equal(messages.length,1);
+ events.dispatchEvent(new Event('online'));network.dispatchEvent(new Event('change'));assert.equal(messages.length,3);
+ doc.visibilityState='hidden';doc.dispatchEvent(new Event('visibilitychange'));events.dispatchEvent(new Event('online'));assert.equal(messages.length,3);
+ doc.visibilityState='visible';doc.dispatchEvent(new Event('visibilitychange'));assert.equal(messages.length,4);
+ await provider.close();const before=messages.length;
+ for(const name of ['online','pageshow'])events.dispatchEvent(new Event(name));
+ for(const name of ['visibilitychange','resume'])doc.dispatchEvent(new Event(name));
+ network.dispatchEvent(new Event('change'));assert.equal(messages.length,before);
+});
+
+test('restored provider availability wakes selection and coalesces one reconsideration without replacing active links',async()=>{
+ let changes=0,authorized=true;const calls=[];
+ const broker=createBrowserRtcBroker({onNetworkChange:()=>{changes++;},openConnection:async(_endpoint,options)=>{calls.push(options);return{kind:'direct',signal:options.signal,close:async()=>{}};}}),endpoint=rtcEndpoint(()=>{});
+ broker.addRoute(endpoint,{authorize:()=>authorized});
+ const available=value=>endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'availability',available:value}}));
+ available(false);available(true);await Promise.resolve();assert.equal(changes,0,'unregistered routes cannot request reconsideration');
+ register(endpoint);await Promise.resolve();assert.equal(changes,1);
+ const retained=await broker.openDirectConnection({timeoutMs:1000});available(false);available(false);await Promise.resolve();assert.equal(changes,1,'freezing cannot request reconsideration');assert.equal(retained.signal.aborted,false);
+ const pending=broker.openDirectConnection({timeoutMs:1000});assert.equal(calls.length,1,'frozen route is not selected for new work');
+ available(true);available(true);available(false);available(true);await Promise.resolve();assert.equal(changes,2,'restoration bursts request only one reconsideration');
+ const restored=await pending;assert.equal(calls.length,2);assert.equal(retained.signal.aborted,false);
+ available(true);await Promise.resolve();assert.equal(changes,2,'unchanged available status is silent');
+ authorized=false;available(false);available(true);await Promise.resolve();assert.equal(changes,2,'unauthorized hints cannot trigger work');
+ authorized=true;await retained.close();await restored.close();broker.close();available(false);available(true);await Promise.resolve();assert.equal(changes,2);
 });

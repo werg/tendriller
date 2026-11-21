@@ -93,6 +93,35 @@ The worker must call `serveBrowserOwner({ load: async ({ signal }) => ... })`
 synchronously and perform asynchronous configuration inside `load`, so its root
 message listeners exist before the first attachment arrives.
 
+Shared roots have a document-owned lifetime witness, an exclusive Web Lock with a
+unique name derived from the profile and root UUID. The page acquires it before
+boot and releases it on detach or attachment failure. Hidden and frozen documents
+keep the lock without page timers or heartbeats. Document destruction releases it
+in the browser, even when the page cannot send a detach message.
+
+The owner queries witnesses with one coalesced worker-local sweep while roots are
+parked (`rootLimits.parkedSweepMs`, default 60000, range 100–120000 milliseconds),
+and a fresh scan before admitting another shared root when parked roots exist or
+capacity is full. At most one incoming port waits for admission, bounded by
+`pendingTimeoutMs`; its boot messages remain queued until listeners are installed.
+A successful query must show the original lock name and client ID. A missing or
+changed witness retires only that attachment and its RTC route. Query errors,
+timeouts and malformed snapshots cannot establish death. They preserve existing
+roots; capacity can remain busy until browser evidence becomes available. No
+scan takes the owner lock, replaces the signer, or generates host/model traffic.
+Healthy hidden/frozen witnesses have no fixed expiry.
+
+Browser caching has a separate limitation: Chrome 158 can evict a BFCache entry
+when another context calls `navigator.locks.query()`, reporting
+`WebLocksContention`, even when it never requests the witness lock. Consequently,
+back navigation may reload the document. Normal bootstrap restores its retained
+profile, session history and operation identities; permanent document/endpoint
+identity in BFCache is not promised. Native-CDP controls verified BFCache restore
+without inspection, eviction after a SharedWorker query, lock retention while
+frozen, and automatic release after document destruction. This browser-managed
+lifetime mechanism prioritizes accurate discarded-root reclamation and healthy
+hidden/frozen retention over back-navigation caching. It uses no Service Worker.
+
 Create a new SQL application with `createCollaborationDefinition` as its immutable
 definition. Use the exact native/WASM engine manifest and normal signed authority
 bootstrap described in [State models](STATE_MODELS.md). The definition's explicit

@@ -34,24 +34,48 @@ const error = code => Object.assign(Error(code), { code });
 const bindingFields = ['ownerInstanceId','endpointId','endpointIncarnation'];
 
 /** Routing only. Chronolog keeps negotiation, framing, session crypto and recovery. */
-export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebRtcConnection, maxPending = 8 } = {}) {
+export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebRtcConnection, maxPending = 8, onNetworkChange } = {}) {
+  if(onNetworkChange !== undefined && typeof onNetworkChange !== 'function')throw error('RTC_CONFIGURATION_INVALID');
   if(typeof openConnection!=='function'||!Number.isSafeInteger(maxPending)||maxPending<1||maxPending>32)throw error('RTC_CONFIGURATION_INVALID');
   const ownLifetime = new AbortController(), routes = new Set(), waiting = new Set(); let closed = false, pending = 0;
   const wake = () => { for (const resume of [...waiting]) resume(); };
+  let notificationPending = false;
+  function notifyNetworkChange() {
+    if (notificationPending || closed) return;
+    notificationPending = true;
+    queueMicrotask(() => {
+      notificationPending = false;
+      if (!closed) try { void Promise.resolve(onNetworkChange?.()).catch(() => {}); } catch { /* Diagnostics/recovery cannot own provider lifetime. */ }
+    });
+  }
   function removeProvider(route) {
     route.provider?.abort(error('RTC_PROVIDER_LOST')); route.provider = undefined;
     for (const attempt of route.attempts) attempt.abort(error('RTC_PROVIDER_LOST'));
     route.attempts.clear(); wake();
   }
-  function addRoute(endpoint, { authorize } = {}) {
-    if (closed || typeof authorize !== 'function') throw error('RTC_BROKER_CLOSED');
-    const route = { endpoint, authorize, attempts: new Set(), provider: undefined };
+  function addRoute(endpoint, { authorize, available = () => true } = {}) {
+    if (closed || typeof authorize !== 'function' || typeof available !== 'function') throw error('RTC_BROKER_CLOSED');
+    const route = { endpoint, authorize, available, attempts: new Set(), provider: undefined, providerAvailable: true };
     const receive = ({ data }) => {
       if (data?.protocol !== BROWSER_RTC_PROTOCOL) return;
       if (data.type === 'unregister') { removeProvider(route); return; }
-      if (data.type !== 'register' || !authorize(data.binding)) return;
-      if (!route.provider) route.provider = new AbortController();
-      route.binding = data.binding; wake();
+      if (!authorize(data.binding)) return;
+      if (data.type === 'availability') {
+        if(typeof data.available !== 'boolean')return;
+        const restored=!route.providerAvailable&&data.available;
+        route.providerAvailable=data.available;wake();
+        if(restored&&route.provider)notifyNetworkChange();
+        return;
+      }
+      if (data.type === 'network-change') {
+        if (route.provider) notifyNetworkChange();
+        return;
+      }
+      if (data.type !== 'register') return;
+      const added = !route.provider;
+      if (added) route.provider = new AbortController();
+      route.binding = data.binding; route.providerAvailable=data.available!==false; wake();
+      if (added) notifyNetworkChange();
     };
     const close = () => { removeProvider(route); routes.delete(route); endpoint.removeEventListener('message', receive); endpoint.removeEventListener('close', close); };
     endpoint.addEventListener('message', receive); endpoint.addEventListener('close', close); routes.add(route);
@@ -61,6 +85,8 @@ export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebR
     for (const route of routes) {
       if (!route.provider || route.attempts.size >= 8) continue;
       if (!route.authorize(route.binding)) { removeProvider(route); continue; }
+      // Residency affects new selection, never the authority of retained links.
+      if (!route.providerAvailable || !route.available()) continue;
       route.attempts.add(attempt); return route;
     }
   }
@@ -126,7 +152,7 @@ export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebR
     wake(); signal?.removeEventListener('abort', close);
   }
   signal?.addEventListener('abort', close, { once:true }); if (signal?.aborted) close();
-  return { addRoute, openDirectConnection, close };
+  return { addRoute, openDirectConnection, availabilityChanged: wake, close };
 }
 
 /** The private bootstrap channel or authenticated broadcast attachment scopes this
@@ -137,13 +163,32 @@ export function registerBrowserRtcProvider(endpoint, session, { serve = serveWor
   const bridge = serve(endpoint,{signal:lifetime.signal,...(createPeerConnection ? {createPeerConnection} : {})});
   const ended = () => {try{void Promise.resolve(close()).catch(()=>{});}catch{}};
   const leaving = event => {if(!event.persisted)ended();};
+  const binding = () => session.endpoint ? {binding:Object.fromEntries(bindingFields.map(key=>[key,session.endpoint[key]]))} : {};
+  const document=globalThis.document;let frozen=false;
+  const available=()=>!frozen;
+  const availability=()=>{if(closed)return;try{endpoint.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'availability',available:available(),...binding()});}catch{}};
+  const freeze=()=>{frozen=true;availability();},resume=()=>{frozen=false;availability();};
+  document?.addEventListener?.('freeze',freeze);document?.addEventListener?.('resume',resume);
+  const networkChanged = () => {
+    if (closed || !available() || document?.visibilityState === 'hidden') return;
+    try { endpoint.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'network-change',...binding()}); } catch { /* The owning attachment handles disconnection. */ }
+  };
+  const network = globalThis.navigator?.connection;
+  for (const name of ['online','pageshow']) globalThis.addEventListener?.(name,networkChanged);
+  for (const name of ['visibilitychange','resume']) document?.addEventListener?.(name,networkChanged);
+  network?.addEventListener?.('change',networkChanged);
   globalThis.addEventListener?.('pagehide',leaving);
   endpoint.addEventListener('close',ended); ownerSignal.addEventListener('abort',ended,{once:true});
-  try{endpoint.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'register',...(session.endpoint ? {binding:Object.fromEntries(bindingFields.map(key=>[key,session.endpoint[key]]))} : {})});}catch(error){void Promise.resolve(close()).catch(()=>{});throw error;}
+  try{endpoint.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'register',available:available(),...(session.endpoint ? {binding:Object.fromEntries(bindingFields.map(key=>[key,session.endpoint[key]]))} : {})});}catch(error){void Promise.resolve(close()).catch(()=>{});throw error;}
   function close() {
     if (closed) return; closed = true;
     try { endpoint.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'unregister'}); } catch { /* Route already closed. */ }
-    lifetime.abort(error('RTC_PROVIDER_LOST'));globalThis.removeEventListener?.('pagehide',leaving);endpoint.removeEventListener('close',ended); ownerSignal.removeEventListener('abort',ended);
+    lifetime.abort(error('RTC_PROVIDER_LOST'));
+    document?.removeEventListener?.('freeze',freeze);document?.removeEventListener?.('resume',resume);
+    for (const name of ['online','pageshow']) globalThis.removeEventListener?.(name,networkChanged);
+    for (const name of ['visibilitychange','resume']) document?.removeEventListener?.(name,networkChanged);
+    network?.removeEventListener?.('change',networkChanged);
+    globalThis.removeEventListener?.('pagehide',leaving);endpoint.removeEventListener('close',ended); ownerSignal.removeEventListener('abort',ended);
     return bridge.close();
   }
   function adopt(session) {

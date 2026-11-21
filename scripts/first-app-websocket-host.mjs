@@ -18,15 +18,61 @@
  * Install as the first Miniflare Worker with PACKED_HOST bound to the unchanged
  * packed Worker. Bindings such as ACCOUNTS remain on that named packed Worker.
  */
+// Only fixed labels and receipt metadata leave this test boundary. The URL is
+// parsed transiently; no path, query, headers, body, or caller identifiers survive.
+export function createFirstAppRequestActivity() {
+  const items = [];
+  let sequence = 0;
+  const methods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
+  function category(path) {
+    if (path.endsWith('/peers/discovery/watch')) return 'discovery-watch';
+    if (path.endsWith('/peers/rendezvous')) return 'rendezvous';
+    if (path.endsWith('/peers/invitations')) return 'invitations';
+    if (path.endsWith('/peers/relay')) return 'relay';
+    if (path.endsWith('/setup/watch')) return 'setup-watch';
+    if (path.endsWith('/publication-ready')) return 'publication-watch';
+    // Directory read/advertise/withdraw and invitation sends are facets of
+    // this same POST endpoint. Path-only evidence cannot distinguish actions.
+    if (path.endsWith('/peers/participant')) return 'peer-participant';
+    if (path.endsWith('/peers/bootstrap')) return 'peer-bootstrap';
+    if (path.endsWith('/peers/pairing')) return 'peer-pairing';
+    if (path.endsWith('/self')) return 'access-probe';
+    if (path.endsWith('/application')) return 'application-control';
+    if (path.endsWith('/_tendril/sw.js')) return 'service-worker';
+    if (path.endsWith('/favicon.ico')) return 'favicon';
+    if (path.includes('/_tendril/runtime/')) return 'runtime-asset';
+    if (path.includes('/_publications/')) return 'publication-asset';
+    if (/\.(mjs|js|css|wasm|png|svg|ico)$/.test(path)) return 'asset';
+    if (/^\/s\/[^/]+\/?$/.test(path)) return 'page';
+    if (path.startsWith('/api/')) return 'api-control';
+    return 'other';
+  }
+  return {
+    record(request) {
+      const item = { sequence: ++sequence, receivedAt: Date.now(),
+        method: methods.has(request.method) ? request.method : 'OTHER',
+        category: category(new URL(request.url).pathname) };
+      if (items.length === 256) items.shift();
+      items.push(item);
+    },
+    snapshot() {
+      return { items: items.map(item => ({ ...item })), dropped: sequence - items.length,
+        scope: 'host-request-receipt; no HTTP body bytes or response completion timing' };
+    },
+  };
+}
+
 export const FIRST_APP_WEBSOCKET_PROXY_WORKER = `
+const requests = (${createFirstAppRequestActivity.toString()})();
 const traffic = { instance: null, httpRequests: 0, relayUpgrades: 0,
   relayBinaryFrames: 0, relayBinaryBytes: 0 };
 export default {
   async fetch(request, env) {
     traffic.instance ??= crypto.randomUUID();
     if (new URL(request.url).pathname === '/__first_app_transport')
-      return Response.json(traffic, { headers: { 'Cache-Control': 'no-store' } });
+      return Response.json({ ...traffic, requestActivity: requests.snapshot() }, { headers: { 'Cache-Control': 'no-store' } });
     traffic.httpRequests++;
+    requests.record(request);
     const relay = new URL(request.url).pathname.endsWith('/peers/relay');
     const response = await env.PACKED_HOST.fetch(request);
     if (!response.webSocket) return response;
