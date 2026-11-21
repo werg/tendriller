@@ -153,7 +153,7 @@ function planningApi(f, mode, existing = {}) {
   Object.assign(workflows, existing);
   const calls = [], api = async (path, body) => {
     calls.push({ path, body });
-    if (path === `repos/${REPOS.core}/commits/${sha('8')}`) return { sha: sha('8') };
+    if ([sha('8'), sha('9')].some(source => path === `repos/${REPOS.core}/commits/${source}`)) return { sha: path.split('/').at(-1) };
     if (path === root) return { default_branch: 'main' };
     if (path === `${root}/commits/main`) return { sha: base, commit: { tree: { sha: tree } } };
     if (path === `${root}/git/trees/${tree}?recursive=1`) return { truncated: false, tree: Object.keys(workflows).map(path => ({ path })) };
@@ -227,6 +227,23 @@ test('receiver checkout revision is explicit and immutable; mode and repository 
       env: { ...process.env, GITHUB_REPOSITORY: REPOS.kernel }, stdio: ['ignore', 'pipe', 'pipe'],
     }), error => /Receiver mode must match its own repository/.test(error.stderr.toString()));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('same tuple with an approved implementation upgrade gets a distinct repeatable branch', async () => {
+  const f = fixture(), tuple = await f.check(), p = planningApi(f, 'contrib');
+  const first = await planProposal(tuple, { api: p.api, automationSource: sha('8') });
+  const again = await planProposal(tuple, { api: p.api, automationSource: sha('8') });
+  const upgraded = await planProposal(tuple, { api: p.api, automationSource: sha('9') });
+  assert.equal(first.branch, again.branch); assert.notEqual(first.branch, upgraded.branch);
+  assert.equal(first.tupleId, upgraded.tupleId);
+});
+
+test('every documented graph bootstrap command includes its required automation source', () => {
+  const guide = readFileSync(new URL('../../docs/COMPANION_RELEASE_AUTOMATION.md', import.meta.url), 'utf8');
+  const commands = [...guide.matchAll(/```sh\n([\s\S]*?)```/g)].map(match => match[1])
+    .filter(command => command.includes('companion-release/cli.mjs --source'));
+  assert.equal(commands.length, 2);
+  for (const command of commands) assert(command.includes('--automation-source OWNER_APPROVED_AUTOMATION_CORE_FULL_SHA'));
 });
 
 test('repository token writes only its own tuple; PR generation never merges or force-updates; dispatch is explicit', async () => {

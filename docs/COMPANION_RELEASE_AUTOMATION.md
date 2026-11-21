@@ -62,9 +62,23 @@ to change **only** tuple data. Future implementation upgrades use another review
 owner-authorized bootstrap PR.
 
 After Contrib MAIN push qualification is green, run the same core selection with
-`--contrib-source MERGED_CONTRIB_FULL_SHA` and a separate output directory. Its
+the required independent automation source and a separate output directory:
+
+```sh
+node scripts/companion-release/cli.mjs --source CORE_FULL_SHA \
+  --automation-source OWNER_APPROVED_AUTOMATION_CORE_FULL_SHA \
+  --manifest-sha256 PUBLISHER_MANIFEST_SHA256 \
+  --contrib-source MERGED_CONTRIB_FULL_SHA --output /tmp/chronolog-proposal
+```
+
+Add `--apply --auth-kind user` after reviewing that dry run. Its
 bootstrap PR installs the Chronolog receiver. The publisher, core consumer source,
 kernel archive source and independent CI checkout retain separate identities.
+
+Proposal branches bind both the tuple and automation source. An approved
+implementation upgrade can open a separate PR for the same public product tuple;
+repeated runs with the same implementation remain idempotent. No existing branch
+is force-updated or silently repaired.
 
 The read-only auth probe reports readable repositories and any repository push
 metadata. It deliberately reports proposal write authority as **unverified**;
