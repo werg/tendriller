@@ -46,20 +46,26 @@ export async function openBrowserOwner(options){
   {nextAction:'Use mode: auto or elected with requiresDedicatedWorker: true; retain the existing profile.'});
   const shared=mode!=='elected'&&!options.requiresDedicatedWorker&&typeof SharedWorker==='function';
   if(mode==='shared'&&!shared)throw new CollaborationError('OWNER_CAPABILITY_UNAVAILABLE','SharedWorker is unavailable');
-  const timeoutMs=options.timeoutMs??30000,deadline=Date.now()+timeoutMs;
+  const timeoutMs=options.timeoutMs??30000;
+  if(!Number.isFinite(timeoutMs)||timeoutMs<=0)throw new CollaborationError('OWNER_CONFIGURATION_INVALID','Opening timeout must be finite and positive');
+  const deadline=performance.now()+timeoutMs;
   const handshake={applicationId:options.applicationId,definitionId:options.definitionId,
     definitionVersion:options.definitionVersion,context:options.context??{},signal:options.signal,timeoutMs:options.timeoutMs};
   if(!shared)return elected(url,options,handshake);
   for(let attempt=0;;attempt++){
-    try{return await sharedRoute(url,options,handshake);}
+    try{
+      const remaining=deadline-performance.now();
+      if(remaining<=0)throw new CollaborationError('OWNER_BUSY');
+      return await sharedRoute(url,options,handshake,remaining);
+    }
     catch(error){
       if(error?.code!=='OWNER_BUSY')throw error;
-      const remaining=deadline-Date.now();
+      const remaining=deadline-performance.now();
       if(remaining<=0||typeof BroadcastChannel!=='function')throw Object.assign(new CollaborationError('OWNER_BUSY',
         'Another owner keeps this browser profile. Close other tabs of this page, then reopen it.'),{nextAction:'Close other tabs of this page and reload.'});
       const existing=await attachExisting(options,handshake,Math.min(remaining,1500));
       if(existing)return existing;
-      await sleep(Math.min(2000,250*2**attempt,Math.max(0,deadline-Date.now())),options.signal);
+      await sleep(Math.min(2000,250*2**attempt,Math.max(0,deadline-performance.now())),options.signal);
     }
   }
 }
@@ -243,32 +249,39 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     async detach(){if(detached){await releasing;return;}detached=true;try{await session.detach();}finally{await release();}},
   });
 }
-async function sharedRoute(url,options,handshake){
+async function sharedRoute(url,options,handshake,budgetMs){
   const id=crypto.randomUUID(),opening=new AbortController();let worker,transport,provider,rtc,releaseRootLock;
-  const cancelRoot=()=>opening.abort(options.signal.reason);
-  if(options.signal?.aborted)cancelRoot();else options.signal?.addEventListener('abort',cancelRoot,{once:true});
+  const signal=opening.signal;
+  const cancelOpening=()=>opening.abort(options.signal.reason);
+  if(options.signal?.aborted)cancelOpening();else options.signal?.addEventListener('abort',cancelOpening,{once:true});
+  const deadline=performance.now()+budgetMs;
+  const timeout=new CollaborationError('OWNER_UNREACHABLE','The owner did not answer; preserve the original operation reference');
+  const timer=setTimeout(()=>opening.abort(timeout),Math.ceil(budgetMs));
+  const checkOpening=()=>{if(performance.now()>=deadline)opening.abort(timeout);signal.throwIfAborted();};
   try{
     // This document owns the witness, independently of the protocol owner lock.
-    // Forward opening cancellation only until the attachment takes ownership.
-    ({release:releaseRootLock}=await acquireRootLifetime(options.profileId,id,{signal:opening.signal}));
+    // The opening budget starts before native lock-manager work. Clearing its
+    // timer and forwarding listener preserves the witness after attachment;
+    // options.signal cancels opening, not an already connected session.
+    ({release:releaseRootLock}=await acquireRootLifetime(options.profileId,id,{signal}));checkOpening();
     worker=new SharedWorker(url,{type:'module',name:ownerWorkerName(options.profileId)});worker.port.start();
     worker.addEventListener('error',event=>worker.port.dispatchEvent(new MessageEvent('message',{data:{
       protocol:BROWSER_OWNER_PROTOCOL,type:'failure',code:'OWNER_UNREACHABLE',message:event.message||'Shared owner module failed to load',id}})));
-    const ready=waitFor(worker.port,data=>data.type==='ready'&&data.id===id,options);
+    const ready=waitFor(worker.port,data=>data.type==='ready'&&data.id===id,{...options,signal});
     worker.port.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'shared',id,profileId:options.profileId});
-    rtc=createRootRtcEndpoint(worker.port,{profileId:options.profileId,rootId:id});provider=registerBrowserRtcProvider(rtc,{signal:options.signal??new AbortController().signal});
-    const active=await ready;transport=createSharedRootEndpoint(worker.port,{profileId:options.profileId,rootId:id,
+    rtc=createRootRtcEndpoint(worker.port,{profileId:options.profileId,rootId:id});provider=registerBrowserRtcProvider(rtc,{signal});
+    const active=await ready;checkOpening();transport=createSharedRootEndpoint(worker.port,{profileId:options.profileId,rootId:id,
       ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000,rtc});
-    const session=await connectApplicationOwner(transport,handshake);
+    const session=await connectApplicationOwner(transport,{...handshake,signal});checkOpening();
     return facade({session,transport,provider,worker,route:'shared',options,releaseRootLock});
   }catch(error){
     try{
     await provider?.close();rtc?.dispose();await transport?.close();
     try{worker?.port?.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'root.detach',profileId:options.profileId,rootId:id,id:crypto.randomUUID()});}catch{}
     worker?.port?.close();
-    }finally{await releaseRootLock?.();}
+    }finally{if(signal.aborted)void releaseRootLock?.().catch(()=>{});else await releaseRootLock?.();}
     throw error;
-  }finally{options.signal?.removeEventListener('abort',cancelRoot);}
+  }finally{clearTimeout(timer);options.signal?.removeEventListener('abort',cancelOpening);}
 }
 /** Attach to an owner that already announces this profile; never starts one. */
 async function attachExisting(options,handshake,waitMs){

@@ -348,6 +348,11 @@ test('document witness outlives opening cancellation and detaches without releas
  opening.abort(Error('OPENING_ATTEMPT_FINISHED'));await f.workerBarrier();assert.equal(f.rootDocLocks,1);assert.equal(f.attachment.session.signal.aborted,false);
  await f.attachment.detach();await until(()=>f.rootDocLocks===0,'document witness released on detach');assert.equal(f.heldOwner,1);
 });
+test('a successful shared attachment retires its opening deadline without dropping its witness',async t=>{
+ const f=await fixture(t,'shared',{timeoutMs:100});await f.workerBarrier();await f.attachment.session.query('state',null);f.clock.advance(101);await f.workerBarrier();
+ assert.equal(f.rootDocLocks,1);assert.equal(f.heldOwner,1);assert.equal(f.attachment.session.signal.aborted,false);
+ assert.deepEqual((await f.attachment.session.query('state',null)).value,['retained identity']);
+});
 test('failed SharedWorker attachment releases its document witness without discarding retained owner',async t=>{
  await assert.rejects(fixture(t,'shared',{definitionId:'wrong-definition'}),/CONTRACT_INCOMPATIBLE/);
  const locks=await navigator.locks.query();assert.equal(locks.held.filter(lock=>lock.name!=='chronolog-owner:retained').length,0);assert.equal(locks.held.filter(lock=>lock.name==='chronolog-owner:retained').length,1);
