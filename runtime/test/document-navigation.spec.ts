@@ -36,13 +36,23 @@ async function fixture(page: Page) {
   return { requests, select(version: number) { selected = version; } };
 }
 
+// A URL can commit before the destination's DOMContentLoaded fixture runs.
+// Wait for the new document and its runtime, rather than reading the old/empty realm.
+async function followDocument(page: Page, selector: string, url: string) {
+  await Promise.all([
+    page.waitForURL(url, { waitUntil: 'load' }),
+    page.locator(selector).click(),
+  ]);
+  await page.waitForFunction(() => Boolean(window.tendril?.publication));
+}
+
 test('plain relative document and fragment links intentionally resolve inside the signed graph', async ({ page }) => {
   await fixture(page); await page.goto(base);
   expect(await page.evaluate(() => window.tendril.publication.pinned)).toBe(false);
-  await page.locator('#plain').click();
+  await followDocument(page, '#plain', base + '_publications/1/other.html');
   expect(page.url()).toBe(base + '_publications/1/other.html');
   expect(await page.evaluate(() => window.tendril.publication.pinned)).toBe(true);
-  await page.goto(base); await page.locator('#plain-fragment').click();
+  await page.goto(base); await followDocument(page, '#plain-fragment', base + '_publications/1/#section');
   expect(page.url()).toBe(base + '_publications/1/#section');
   expect(await page.evaluate(() => window.tendril.publication.pinned)).toBe(true);
 });
@@ -54,7 +64,7 @@ test('documentUrl opts into latest document navigation while current assets stay
   expect(await page.locator('#live').getAttribute('href')).toBe(base + 'other.html');
   f.select(2);
   expect(await page.evaluate(() => (window as any).assetVersion)).toBe(1);
-  await page.locator('#live').click(); expect(page.url()).toBe(base + 'other.html');
+  await followDocument(page, '#live', base + 'other.html'); expect(page.url()).toBe(base + 'other.html');
   expect(await page.evaluate(() => ({ version: window.tendril.version, pinned: window.tendril.publication.pinned, asset: (window as any).assetVersion })))
     .toEqual({ version: 2, pinned: false, asset: 2 });
   expect(f.requests).toContain('/page/_publications/1/asset.js'); expect(f.requests).toContain('/page/_publications/2/asset.js');
@@ -63,7 +73,7 @@ test('documentUrl opts into latest document navigation while current assets stay
 test('documentUrl fragments remain in the current live document, without a reload', async ({ page }) => {
   const f = await fixture(page); await page.goto(base + 'notes/index.html?review=1');
   await page.evaluate(() => (window as any).marker = 'same document'); const before = f.requests.length;
-  await page.locator('#fragment').click();
+  await followDocument(page, '#fragment', base + 'notes/index.html?review=1#section');
   expect(page.url()).toBe(base + 'notes/index.html?review=1#section'); expect(f.requests).toHaveLength(before);
   expect(await page.evaluate(() => (window as any).marker)).toBe('same document');
   expect(await page.evaluate(() => window.tendril.documentUrl('other.html?mode=review#detail'))).toBe(base + 'notes/other.html?mode=review#detail');
@@ -71,7 +81,7 @@ test('documentUrl fragments remain in the current live document, without a reloa
 
 test('documentUrl preserves explicit pins and rejects references escaping the selected context', async ({ page }) => {
   const f = await fixture(page); f.select(2); await page.goto(base + '_publications/1/notes/index.html');
-  await page.locator('#live').click(); expect(page.url()).toBe(base + '_publications/1/notes/other.html');
+  await followDocument(page, '#live', base + '_publications/1/notes/other.html'); expect(page.url()).toBe(base + '_publications/1/notes/other.html');
   expect(await page.evaluate(() => ({ version: window.tendril.version, pinned: window.tendril.publication.pinned }))).toEqual({ version: 1, pinned: true });
   expect(await page.evaluate(() => ['/page/other.html', 'https://elsewhere.test/', 'javascript:alert(1)', 'https://user:password@navigation.test/page/'].map(reference => {
     try { window.tendril.documentUrl(reference); return false; } catch { return true; }
