@@ -176,7 +176,10 @@ export function prepareRelease({ root, version, contract }) {
   if (sessionArchive.package.name !== '@chronolog/peer-session' || sessionProof.profile !== 'peer-generation-v1' ||
       !Array.isArray(sessionProof.sqlEngines) || sessionProof.sqlEngines.length !== 0)
     fail('The first-app composition requires the pinned SQL-free public session package.');
-  packageExports(sessionArchive, ['.', './native', './browser', './worker'], 'Chronolog session');
+  packageExports(sessionArchive, ['.', './native', './browser', './worker', './webrtc', './webrtc-native', './websocket'], 'Chronolog session');
+  if (sessionProof.nativeRtc !== true || sessionArchive.package.dependencies?.werift !== '0.27.0' ||
+      sessionArchive.package.peerDependencies?.werift !== undefined || sessionArchive.package.peerDependenciesMeta?.werift !== undefined)
+    fail('The default session must include native RTC with the normal pinned werift@0.27.0 dependency.');
   const sessionFile = `chronolog-peer-session-${session.source}.tgz`;
   copyFileSync(sessionPath, join(dist, sessionFile));
   components.push(component(dist, 'session', sessionFile));

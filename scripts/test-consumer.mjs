@@ -184,7 +184,8 @@ export default {
   const packageJson = JSON.parse(readFileSync(join(root, 'package.json')));
   const sessionSource = packageJson.devDependencies['@chronolog/peer-session'];
   assert.ok(sessionSource.startsWith('file:'), 'Pin the qualified public Chronolog archive.');
-  run('npm', ['install', '--ignore-scripts', '--offline', '--no-audit', '--no-fund',
+  // The native RTC dependency is pinned by the session archive and installed by npm.
+  run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
     '--cache', join(directory, 'npm-cache'), resolve(root, sessionSource.slice(5))]);
   writeFileSync(join(directory, 'collaboration.mjs'), `
 import assert from 'node:assert/strict';
