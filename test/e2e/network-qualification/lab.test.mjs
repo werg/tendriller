@@ -8,7 +8,7 @@ import { releaseAnchor, selectedProductVersion, sha256 } from './anchor.mjs';
 import { currentOperationApplied, assertHiddenDirectPath } from './first-app.mjs';
 import { authenticatedTransportSnapshot, authenticatedRouteMatches } from '../../../scripts/first-app-peer.mjs';
 import { prepareMountTargets } from './mounts.mjs';
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -290,4 +290,25 @@ test('reopen cannot qualify a cached direct route or a new non-direct route', ()
   assert.equal(authenticatedRouteMatches({ kind: 'relay', connectionRevision: 8 }, 'direct', 6), false);
   assert.equal(authenticatedRouteMatches({ kind: 'unknown', connectionRevision: 7 }, 'direct', 6), false);
   assert.equal(authenticatedRouteMatches({ kind: 'direct', connectionRevision: 8 }, 'direct', 6), true);
+});
+
+
+test('release anchor rejects symlink artifacts even when external bytes match the manifest', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'network-anchor-symlink-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'dist'));
+  const content = Buffer.from('matching external package bytes');
+  await writeFile(join(root, 'external.tgz'), content);
+  await symlink('../external.tgz', join(root, 'dist/fixture.tgz'));
+  const manifest = { source_commit: 'a'.repeat(40), runtime: 'b'.repeat(64), composition: { id: 'c'.repeat(64) },
+    artifacts: [{ file: 'fixture.tgz', sha256: sha256(content), size: content.length }] };
+  await writeFile(join(root, 'dist/manifest.json'), JSON.stringify(manifest));
+  await assert.rejects(releaseAnchor(root), /regular file/);
+  await rm(join(root, 'dist/fixture.tgz'));
+  await writeFile(join(root, 'dist/fixture.tgz'), content);
+  assert.equal((await releaseAnchor(root)).source, manifest.source_commit);
+  await rm(join(root, 'dist/manifest.json'));
+  await writeFile(join(root, 'external-manifest.json'), JSON.stringify(manifest));
+  await symlink('../external-manifest.json', join(root, 'dist/manifest.json'));
+  await assert.rejects(releaseAnchor(root), /regular file/);
 });
