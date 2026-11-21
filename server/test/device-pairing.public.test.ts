@@ -495,8 +495,9 @@ it('returns the owner to the requesting page after one approval, and only to tha
   const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1], digest = /name="digest" value="([^"]+)"/.exec(html)![1];
   const action = /<form method="post" action="([^"]+)"/.exec(html)![1].replaceAll('&amp;', '&');
   expect(action, html.slice(0, 0)).toBe(back);
-  for (const wrong of ['https://evil.example/', h.api, `${c.challenge.serviceOrigin}/dashboard`])
+  for (const wrong of ['https://evil.example/', h.api, `${c.challenge.serviceOrigin}/dashboard`, `blob:${c.challenge.pageOrigin}/not-a-page`, `${c.challenge.pageOrigin.replace('https://', 'https://user@')}/`])
     expect((await req(`${c.reviewUrl}?return_to=${encodeURIComponent(wrong)}`, { headers: { Cookie: cookie } })).status).toBe(400);
+  expect((await req(`${back}&return_to=${encodeURIComponent(page)}`, { headers: { Cookie: cookie } })).status).toBe(400);
   expect((await req(`${c.reviewUrl}?other=1`, { headers: { Cookie: cookie } })).status).toBe(400);
   const approved = await req(action, { method: 'POST', redirect: 'manual', headers: { Cookie: cookie, Origin: new URL(c.reviewUrl).origin,
     'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, digest, action: 'approve' }).toString() });
@@ -513,6 +514,12 @@ it('reports the exact staged proposal as committed when its native administrator
   await peerApiJson(h, 'control/select', prepared);
   const result = await jsonResponse(await browser(h, undefined, c.pairingId));
   expect(result.state).toBe('committed');
+  for (let retry = 0; retry < 2; retry++) {
+    expect((await jsonResponse(await commit(h, c, prepared))).state).toBe('committed');
+    expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('committed');
+  }
+  const retained = await inDO(h.id, t => JSON.parse(t.db.one<{ data: string }>('SELECT data FROM device_pairings WHERE id=?', c.pairingId)!.data));
+  expect(retained.state).toBe('pending'); expect(retained.reviewedDigest).toBeUndefined();
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)?.writer).toBe(true);
 });
 

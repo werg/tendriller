@@ -11,8 +11,8 @@ class Socket extends EventTarget {
 }
 function fixture(options = {}) {
   const sockets = { reliable: new Socket(), live: new Socket() }, relay = createPeerRelay(sockets, { peerId, remotePeerId, ...options });
-  const pair = () => {
-    for (const lane of ['reliable', 'live']) sockets[lane].receive({ t: 'ready', version: 1, session, lane, peerId, remotePeerId });
+  const pair = (liveWindow = PEER_RELAY_LIMITS.livePendingPackets) => {
+    for (const lane of ['reliable', 'live']) sockets[lane].receive({ t: 'ready', version: 1, session, lane, peerId, remotePeerId, liveWindow });
   };
   return { sockets, relay, pair };
 }
@@ -39,8 +39,8 @@ test('relay readiness pairs both lanes, strips transport controls and accounts f
   assert.equal(sockets.reliable.closed, 1); assert.equal(sockets.live.closed, 1);
 });
 
-test('live pressure stays on its own lane: an old host keeps one packet in flight and the rest wait in order', async () => {
-  const { relay, sockets, pair } = fixture(); pair(); await relay.ready;
+test('live pressure stays on its own lane: an explicit one-packet grant queues the rest in order', async () => {
+  const { relay, sockets, pair } = fixture(); pair(1); await relay.ready;
   try {
     relay.live.send(new Uint8Array(16_448));
     assert.equal(relay.live.bufferedAmount, 0, 'queued live packets do not refuse the next piece');
@@ -121,5 +121,26 @@ test('host client opens secure reciprocal lane URLs and preserves credentials in
       assert.equal(call.url.includes('private-agent-token'), false);
     }
     assert.throws(() => client.relay('join:two', peerId, { remotePeerId: peerId }), { code: 'invalid_relay' });
+  } finally { relay.close(); }
+});
+
+
+test('readiness requires an explicit bounded window and tiny packets cannot exhaust queue metadata', async () => {
+  for (const liveWindow of [undefined, 0, 1.5, PEER_RELAY_LIMITS.livePendingPackets + 1]) {
+    const { relay, sockets } = fixture();
+    sockets.live.receive({ t: 'ready', version: 1, session, lane: 'live', peerId, remotePeerId,
+      ...(liveWindow === undefined ? {} : { liveWindow }) });
+    await assert.rejects(relay.ready, { code: 'invalid_relay' });
+    assert.equal(sockets.reliable.closed, 1); assert.equal(sockets.live.closed, 1);
+  }
+  const { relay, sockets, pair } = fixture(); pair(); await relay.ready;
+  try {
+    for (let i = 0; i < PEER_RELAY_LIMITS.livePendingPackets + PEER_RELAY_LIMITS.liveQueuePackets; i++) relay.live.send(new Uint8Array([i]));
+    assert.equal(relay.live.stats.queuedPackets, PEER_RELAY_LIMITS.liveQueuePackets);
+    assert.equal(relay.live.bufferedAmount, PEER_RELAY_LIMITS.liveBufferedBytes);
+    assert.throws(() => relay.live.send(new Uint8Array([0])), { code: 'invalid_relay' });
+    for (let sequence = 1; sequence <= PEER_RELAY_LIMITS.livePendingPackets + PEER_RELAY_LIMITS.liveQueuePackets; sequence++)
+      sockets.live.receive({ t: 'credit', session, sequence });
+    assert.equal(relay.live.stats.queuedPackets, 0); assert.equal(relay.live.stats.pendingPackets, 0);
   } finally { relay.close(); }
 });

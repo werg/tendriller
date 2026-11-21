@@ -284,8 +284,10 @@ async function commit(t: Tendril, req: Request, principal: Principal, input: Rec
     if (!record.preparedDigest) throw new HttpError(409, 'pairing_proposal_required', 'Prepare the exact signed proposal and obtain its owner review before committing.');
     if (record.preparedDigest !== preparedDigest) throw new HttpError(409, 'pairing_transition_conflict');
     const value = await status(t, record, authority, true);
-    if (value.generation && value.state !== 'reconciliation_required') {
+    if (value.generation && value.state !== 'reconciliation_required' && record.reviewedDigest) {
       await fresh(t, principal);
+      // Direct native selection is derived from verified authority, not an owner review.
+      // Keep the original pending record valid; never invent review fields.
       record.state = 'committed'; record.generation = value.generation;
       t.transaction(() => { account(t, principal); save(t, record); });
     }
@@ -401,7 +403,7 @@ export async function routeDevicePairingReview(req: Request, env: Env, url: URL)
   // Object accepts it only on that request's exact page origin.
   const returnTo = url.searchParams.get('return_to');
   if (returnTo !== null) {
-    if ([...url.searchParams.keys()].some(key => key !== 'return_to') || returnTo.length > 2048) throw new HttpError(400, 'invalid_pairing_review');
+    if ([...url.searchParams.keys()].length !== 1 || returnTo.length > 2048) throw new HttpError(400, 'invalid_pairing_review');
     headers.set('x-review-return', returnTo);
   } else if (url.search) throw new HttpError(400, 'invalid_pairing_review');
   return env.TENDRIL.get(env.TENDRIL.idFromName(match[1])).fetch(new Request('https://tendril.internal/pairing-review', {
@@ -466,7 +468,7 @@ function returnTarget(req: Request, c: DevicePairingChallenge): URL | null {
   if (raw === null) return null;
   let target: URL;
   try { target = new URL(raw); } catch { throw new HttpError(400, 'invalid_pairing_review', 'The return address must be this page.'); }
-  if (target.origin !== c.pageOrigin || target.username || target.password || target.href.length > 2048)
+  if (target.protocol !== new URL(c.pageOrigin).protocol || target.origin !== c.pageOrigin || target.username || target.password || target.href.length > 2048)
     throw new HttpError(400, 'invalid_pairing_review', 'The return address must be the page that requested this device.');
   return target;
 }
