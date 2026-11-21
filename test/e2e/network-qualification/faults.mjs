@@ -15,8 +15,9 @@ export function createFaults({ run = execute, isolated = process.env.TENDRILLER_
     if (!isolated) throw new Error('NETWORK_LAB_CONTAINER_REQUIRED');
   };
   return {
-    async blockUdp() {
+    async blockUdp({ service = false } = {}) {
       requireIsolation();
+      if (typeof service !== 'boolean') throw new Error('NETWORK_LAB_INVALID_FAULT');
       if (installed) throw new Error('NETWORK_LAB_FAULT_ALREADY_ACTIVE');
       // Both address families matter: IPv4-only blocking can silently use IPv6 RTC.
       const completed = [];
@@ -26,6 +27,7 @@ export function createFaults({ run = execute, isolated = process.env.TENDRILLER_
           completed.push(tool);
           await command(tool, ['-w', '-A', chain, '-p', 'udp', '--dport', '53', '-j', 'RETURN']);
           await command(tool, ['-w', '-A', chain, '-p', 'udp', '-j', 'DROP']);
+          if (service) await command(tool, ['-w', '-A', chain, '-p', 'tcp', '--dport', '8790', '-j', 'DROP']);
           await command(tool, ['-w', '-I', 'OUTPUT', '1', '-j', chain]);
         }
         installed = true;
@@ -42,6 +44,7 @@ export function createFaults({ run = execute, isolated = process.env.TENDRILLER_
         throw error;
       }
     },
+    blockApplicationNetwork() { return this.blockUdp({ service: true }); },
     async restoreUdp() {
       requireIsolation();
       if (!installed) return;

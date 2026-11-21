@@ -9,6 +9,7 @@ CI worker if local Docker policy prohibits that capability.
 node --test test/e2e/network-qualification/lab.test.mjs
 docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
 node test/e2e/network-qualification/run.mjs --output /absolute/new-evidence-directory --node-binary /absolute/node24
+node test/e2e/network-qualification/run.mjs --browser-controls --output /absolute/new-browser-evidence-directory --node-binary /absolute/node24
 ```
 
 The packet-control probe exercises real IPv4 **and** IPv6 UDP echo before,
@@ -38,6 +39,54 @@ authenticated direct traffic. The application controller, rather than the test,
 owns `reconsiderConnections()` and its per-peer cooldown. Qualification must
 retain commands, camera/signal work, saved operation identity and reload checks.
 The old79 graph predates this recovery API; it cannot qualify that transition.
+
+With a clean restored graph containing the recovery API, run the complete suite
+once against the same retained test application:
+
+```sh
+node test/e2e/network-qualification/run.mjs --artifact-root /absolute/qualified-root --profile suite --output /absolute/new-application-evidence-directory --node-binary /absolute/node24
+```
+
+Available individual profiles are `relay-upgrade`, `offline`, `impaired`,
+`freeze`, `background`, and `idle`. The complete ordinary first-app qualification
+runs first with all existing assertions, then the selected faults run before
+native shutdown. The round trip starts on authenticated direct transport, blocks
+real UDP, exposes the loss with a disposable real signal request, requires a
+relay carrying real application work, restores UDP and observes a browser
+NetworkInformation change before requiring authenticated direct traffic. No test
+calls `reconsiderConnections()` or fabricates an RTC failure. Native transport
+waits subscribe to `onStatus`/`connectionRevision`; they do not poll an idle host.
+The offline case additionally partitions application TCP port 8790, waits for an
+actual authenticated-link loss, restores packets and requires a direct session.
+DevTools control remains accessible so restoration does not depend on a healthy
+application connection. The control probe verifies this TCP partition separately.
+
+Every supported profile requires native and browser commands, remote applied
+reads, exact retained operation IDs, real signal request/reply and encrypted PNG
+sensor evidence, then reload and further application work. The PNG and native
+inference result are deterministic fixtures, not physical camera/model-provider
+qualification. Direct work and reopen must add zero host relay payload. A profile
+that cannot actually background/freeze the browser fails qualification.
+The lab uses an owned headed Chromium under Xvfb. It attaches to its ephemeral
+default context with `connectOverCDP({noDefaults:true})`, because ordinary
+Playwright focus emulation can suppress visibility and freeze transitions. Actual
+freeze/resume event handlers and paused timer counts are checked by the browser
+control probe. The lab creates no persistent browser profile.
+
+`.github/workflows/network-controls.yml` runs unit and real control probes on
+changes. `.github/workflows/network-qualification.yml` is the application CI job:
+call it after `artifacts`, passing the exact product `source`, or dispatch it with
+the artifact run ID and exact source. It restores that run's `public-packages`,
+binds the manifest source, and runs `--profile suite`; it never builds product
+bytes. Harness checkout source and restored product source are distinct. The
+caller can gate publication on this job once the new graph includes the API.
+Both workflows are unprivileged and receive no deployment credentials.
+
+Application execution is bounded to 25 minutes plus the requested idle interval.
+`--idle-ms` selects an exact requested observation duration (default 15000,
+minimum 1000, maximum 48 hours) for each profile. Reports retain actual elapsed
+time and all overruns. Do not run a long suite on the existing 48-hour observer;
+use a new output directory and the independent lab container.
 
 Browser offline/online, CDP freeze/resume and background-page cases qualify those
 browser mechanisms only. Mobile viewport/network emulation does not qualify a
