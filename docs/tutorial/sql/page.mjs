@@ -27,7 +27,7 @@ function retain(intent) {
   submission.update({ pending, selected: intent.id, observed: null });
 }
 function showState(state) {
-  const id = $('#op-id').value;
+  const id = $('#op-id').value.trim();
   $('#result').textContent = JSON.stringify({ reviewed: pending, summary: describeOperationLifecycle(id, state), state }, null, 2);
   submission.update({ observed: state });
   if (state?.status === 'applied' && pending?.id === state.operationId) {
@@ -79,7 +79,7 @@ async function boot() {
   attachment = await openBrowserOwner(options); session = attachment.session;
   if (session.endpoint.context.viewId !== viewId) { viewId = session.endpoint.context.viewId; sessionStorage.setItem(viewKey, viewId); loadStore(); }
   if (pending) checkIntentSession(pending, session);
-  $('#device-key').value = session.deviceId;
+  $('#device-key').value = session.deviceId; $('#create-device').disabled = true;
   $('#close').disabled = false;
   diagnostics.update({ leaderStatus: attachment.mode, storageBackend: 'opfs-sql-wasm' });
   liveView = createLiveView(session, { query: 'inventory', input: null,
@@ -126,8 +126,9 @@ $('#transfer-form').addEventListener('submit', event => {
 });
 $('#retry-op').addEventListener('click', () => { void action('retry', async () => { showState(await retryIntent(session, pending)); await liveView.refresh(); }); });
 $('#inspect-op').addEventListener('click', () => {
-  void action('inspect', async () => { if (pending) checkIntentSession(pending, session); showState(await session.operations.get($('#op-id').value)); });
+  void action('inspect', async () => { if (pending) checkIntentSession(pending, session); showState(await session.operations.get($('#op-id').value.trim())); });
 });
+$('#op-id').addEventListener('input', () => submission.update({ selected: $('#op-id').value.trim(), observed: null }));
 $('#refresh').addEventListener('click', () => { void liveView?.refresh().catch(report); });
 $('#create-device').addEventListener('click', () => {
   $('#create-device').disabled = true;
@@ -158,4 +159,5 @@ void boot().catch(async error => {
   submission.update({ attached: false, coherent: false }); liveView?.close();
   try { await attachment?.detach(); } catch (cleanup) { report(Error(`${error.message}; detach failed: ${cleanup.message}. Reload with this same browser profile.`)); }
   attachment = session = undefined;
+  $('#create-device').disabled = !options; $('#close').disabled = true;
 });

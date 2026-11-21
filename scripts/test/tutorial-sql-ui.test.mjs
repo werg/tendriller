@@ -50,6 +50,8 @@ test('saved retry uses signed journal; applied rejection resolves; exclusions ne
     const excluded = session({ status }); await assert.rejects(retryIntent(excluded, retained()), /Recovery excluded/);
     assert.deepEqual(excluded.calls, [['get', 'op']]);
   }
+  const corrupt = retained(); corrupt.reference = { ...corrupt.reference, operationId: 'different' };
+  await assert.rejects(retryIntent(session(), corrupt), /inconsistent/);
   for (const field of ['applicationId', 'historyId', 'deviceId']) {
     const wrong = session(); wrong[field] = 'different';
     assert.throws(() => checkIntentSession(retained(), wrong), /another device or history/);
@@ -98,4 +100,80 @@ test('lifecycle notifications contain async flush and error-reporter rejections,
   await new Promise(resolve => setImmediate(resolve)); assert.equal(failures, 3);
   unregister(); window.dispatchEvent(new Event('pagehide'));
   await new Promise(resolve => setImmediate(resolve)); assert.equal(failures, 3);
+});
+
+test('page wiring retains before command, renders bins, locks edited input and retries after reload', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const { createSubmissionState } = await import('../../docs/tutorial/helpers/submission-state.mjs');
+  const source = (await readFile(new URL('../../docs/tutorial/sql/page.mjs', import.meta.url), 'utf8'))
+    .replace(/^import .*;\n/gm, '').replaceAll('import.meta.url', JSON.stringify('https://page.example/page.mjs'));
+  const journal = new Map(), contexts = new Map();
+  const calls = [];
+  let failCommand = true;
+  const flush = () => new Promise(resolve => setImmediate(resolve));
+  async function page() {
+    class Element {
+      value = ''; disabled = false; textContent = ''; children = []; listeners = new Map();
+      addEventListener(type, listener) { this.listeners.set(type, listener); }
+      fire(type) { this.listeners.get(type)?.({ preventDefault() {} }); }
+      replaceChildren(...nodes) { this.children = nodes; }
+      appendChild(node) { this.children.push(node); }
+    }
+    const elements = new Map();
+    const $ = selector => { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); };
+    $('#from-loc').value = 'source'; $('#to-loc').value = 'destination'; $('#qty').value = '2';
+    let emitParticipation;
+    const result = { operationId: 'op', status: 'applied', outcome: 'accepted' };
+    const session = { applicationId: 'app', deviceId: 'device', historyId: 'history', endpoint: { context: { viewId: 'view' } },
+      participation: { onStatus(fn) { emitParticipation = fn; } },
+      command: async (command, input, options) => {
+        assert.equal(contexts.size, 1, 'Intent must be retained before sending');
+        calls.push({ command, input: structuredClone(input), options: structuredClone(options) });
+        if (failCommand) throw Error('uncertain reply');
+        return { applied: async () => result };
+      },
+      operations: { get: async () => journal.get('op') ?? null, wait: async () => result },
+      retry: async id => { calls.push({ retry: id }); },
+    };
+    const document = { querySelector: $, createElement: () => new Element() };
+    const window = { addEventListener() {}, tendril: { application: { install() {} } } };
+    const live = { snapshot: snapshot(), subscribe(fn) { this.listener = fn; },
+      async ready() { this.onStatus({ phase: 'ready', database: 'ready', generation: 'g1' }); emitParticipation({ phase: 'following' }); this.listener(this.snapshot); },
+      async refresh() { return this.snapshot; }, close() {} };
+    runInNewContext(source, { document, window, location: { origin: 'https://page.example', pathname: '/' },
+      fetch: async () => ({ ok: true, json: async () => ({ applicationId: 'app', page_url: 'https://page.example/' }) }),
+      sessionStorage: { getItem: () => 'view', setItem() {} }, localStorage: {},
+      crypto: { randomUUID: () => 'op' }, URL, AbortSignal, structuredClone, setTimeout,
+      mountDiagnosticsPanel: () => ({ update() {}, snapshot: () => ({}) }), createSubmissionState,
+      transferIntent, checkIntentSession, retryIntent,
+      describeOperationLifecycle: (id, state) => ({ lifecycle: state?.status ?? 'unknown' }),
+      createApplicationBackend: () => ({}), openBrowserOwner: async () => ({ session, mode: 'elected', detach: async () => {} }),
+      createBrowserIdentity: async () => 'device',
+      createLiveView: (_session, opts) => { live.onStatus = opts.onStatus; return live; },
+      createViewStore: () => ({ pending: () => [...contexts.values()],
+        retainOperation: (reference, context) => contexts.set(reference.operationId, { reference, context: structuredClone(context) }),
+        removeOperation: reference => contexts.delete(reference.operationId) }),
+    });
+    await flush(); await flush();
+    return $;
+  }
+  let $ = await page();
+  assert.equal($('#submit-transfer').disabled, false);
+  assert.equal($('#stock-rows').children[0].children[0].textContent, 'source');
+  assert.equal($('#stock-rows').children[0].children[1].textContent, '10');
+  $('#transfer-form').fire('submit'); await flush();
+  assert.equal(calls[0].command, 'transfer');
+  assert.equal(calls[0].input.expectedSource, 10);
+  assert.equal($('#submit-transfer').disabled, true);
+  assert.equal($('#from-loc').disabled, true);
+  assert.match($('#result').textContent, /uncertain reply/);
+  $ = await page(); // New document, same retained view context.
+  assert.equal($('#submit-transfer').disabled, true);
+  assert.equal($('#qty').value, 2);
+  $('#qty').value = '9'; // Even a programmatic edit cannot alter retained retry input.
+  failCommand = false;
+  $('#retry-op').fire('click'); await flush(); await flush();
+  assert.deepEqual(calls[1], calls[0]);
+  assert.equal(contexts.size, 0);
+  assert.equal($('#submit-transfer').disabled, false);
 });
