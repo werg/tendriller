@@ -820,6 +820,10 @@ export async function closeLocalTransport() {
 
 
     checkpoint('cancel an applied waiter, reload and retry its original operation');
+    // The network lab deliberately disables focus emulation for real lifecycle
+    // tests. Interactive foreground actions must actually foreground this tab;
+    // a hidden page can have no animation frames for Playwright's stability check.
+    if (values['network-lab-profile']) await page.bringToFront();
     await page.evaluate(() => {
       const timeout = AbortSignal.timeout.bind(AbortSignal);
       AbortSignal.timeout = milliseconds => milliseconds === 15_000
@@ -993,8 +997,11 @@ export async function closeLocalTransport() {
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
   if (page && !page.isClosed()) {
     report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
-      'connection', 'connection-card', 'pairing-status', 'data-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
+      'connection', 'connection-card', 'pairing-status', 'data-status', 'peer-status', 'submission-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
     ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
+    report.browser_actionability = await page.evaluate(() => ({ visibility: document.visibilityState,
+      hasFocus: document.hasFocus(), submitDisabled: document.querySelector('#submit')?.disabled,
+      formBusy: document.querySelector('#form')?.getAttribute('aria-busy') })).catch(() => null);
     // Which browser stores exist (names only): distinguishes a missing store from an emptied one.
     report.opfs_at_failure = await opfsInventory(page);
     report.browser_status_log = await page.evaluate(() => JSON.parse(sessionStorage.getItem('first-app-status-log') || '[]')).catch(() => null);

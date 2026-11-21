@@ -9,7 +9,7 @@ let requests = 0;
 const server = createServer((_request, response) => {
   requests++;
   response.setHeader('Cache-Control', 'no-store');
-  response.end('<!doctype html><title>Network control probe</title><script>window.ticks=0;setInterval(()=>ticks++,50);document.addEventListener("freeze",()=>window.frozenTicks=ticks);document.addEventListener("resume",()=>window.resumedTicks=ticks)</script>');
+  response.end('<!doctype html><title>Network control probe</title><button id="action">Save</button><script>window.ticks=0;window.actions=0;action.onclick=()=>actions++;setInterval(()=>ticks++,50);document.addEventListener("freeze",()=>window.frozenTicks=ticks);document.addEventListener("resume",()=>window.resumedTicks=ticks)</script>');
 });
 server.listen(0, '127.0.0.1'); await once(server, 'listening');
 const origin = `http://127.0.0.1:${server.address().port}`;
@@ -59,6 +59,16 @@ try {
   report.checks.push('page-timers-freeze-resume');
   await mark('background');
   report.backgroundSupported = (await controls.background({ ...options, pauseMs: 100 })).hiddenObserved;
+  await mark('foreground-actionability');
+  const cover = await context.newPage(); await cover.bringToFront();
+  assert.equal(await page.evaluate(() => document.hidden), true);
+  await assert.rejects(page.locator('#action').click({ timeout: 500 }), /Timeout/);
+  assert.equal(await page.evaluate(() => window.actions), 0);
+  await page.bringToFront();
+  await page.locator('#action').click({ timeout: 5000 });
+  assert.equal(await page.evaluate(() => window.actions), 1);
+  await cover.close();
+  report.checks.push('hidden-tab-actionability-requires-foreground');
   // No timer activity or JS query during the closed HTTP idle segment.
   const initial = requests;
   await mark('idle');
