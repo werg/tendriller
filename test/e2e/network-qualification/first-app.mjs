@@ -34,6 +34,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
   let hiddenNote;
   let initialRouteEvidence;
   let hostTraffic;
+  let setupReadiness;
   const routeWaits = [];
   const adapter = {
     faults, ...browser,
@@ -243,6 +244,10 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       signal.throwIfAborted();
       await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 30_000 });
       await peer.request('query');
+      // Direct application recovery does not imply the independent setup-watch
+      // backoff and its initial pairing read have completed. Await real callbacks.
+      setupReadiness = await peer.request('setup-ready', {}, 60_000);
+      assert.equal(setupReadiness.after.ready, true);
     },
     async cleanup() {
       if (cleaned) return;
@@ -277,6 +282,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     report.backgroundProof = backgroundProof;
     report.routeWaits = routeWaits;
     report.hostTraffic = hostTraffic;
+    report.setupReadiness = setupReadiness;
     assert.equal(report.success, true, 'Requested network profile is unsupported in this browser');
     return report;
   } catch (error) {
@@ -290,6 +296,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     if (initialRouteEvidence) error.networkReport.routeEvidence = initialRouteEvidence;
     error.networkReport.routeWaits = routeWaits;
     error.networkReport.hostTraffic = hostTraffic;
+    error.networkReport.setupReadiness = setupReadiness;
     throw error;
   } finally { await adapter.cleanup(); }
 }

@@ -1,5 +1,6 @@
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { observeSetupReadiness } from './first-app-setup-readiness.mjs';
 
 export async function authenticatedTransportSnapshot(participation, peerId) {
   const pending = participation.diagnostics();
@@ -71,6 +72,7 @@ import {servePeerInference} from './media/inference-service.mjs';
 import {serveSignalRequests, sendPieces} from './helpers/signal-request.mjs';
 ${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transportModule)};` : 'const closeLocalTransport = async () => {};'}
 const owned = await openSession(), {session,supervisor} = owned;
+const setupReadiness = (${observeSetupReadiness.toString()})(owned);
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
 const lifecycleLog = [];
 let pairings, pairingStatus = null, inference, input, closing, inferenceCalls = 0, inferenceSource = null, requestTask, requestFailure;
@@ -89,7 +91,7 @@ const close = () => closing ??= (async () => {
   if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed: ' + errors.map(error => error.message).join('; '));
 })();
 try {
-  pairings = superviseParticipant({owned,watch:owned.watchSetup,
+  pairings = superviseParticipant({owned:{...owned,processPairings:options=>setupReadiness.processPairings(options)},watch:callbacks=>setupReadiness.watch(callbacks),
     report:(value) => { if(value.pairing) pairingStatus={state:value.pairing.state,code:value.pairing.code ?? null};
       if (lifecycleLog.length < 200) lifecycleLog.push({at:Date.now(),...(value.pairing ? {pairing:value.pairing.state,pairingId:value.pairing.pairingId ?? null} : {state:value.state ?? null,setup:value.setup ?? null})}); }});
   inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: ${networkQualification ? 20 : 2},
@@ -143,7 +145,12 @@ try {
           });
         }
       }` : ''}
-      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus,statusLog,lifecycleLog,
+      else if(request.action==='setup-ready') {
+        const before=setupReadiness.snapshot(),started=performance.now();
+        const after=await setupReadiness.wait({signal:session.signal});
+        result={before,after,elapsedMs:performance.now()-started};
+      }
+      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus,setupReadiness:setupReadiness.snapshot(),statusLog,lifecycleLog,
         signalRequests:{state:requestFailure?'failed':requestsStopped.signal.aborted?'closed':'running',code:requestFailure?.code ?? null}};
       else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:{phase:session.participation.status.phase,peers:[...session.participation.status.connectedPeers].sort()}};
       else if(request.action==='signal-state') {
