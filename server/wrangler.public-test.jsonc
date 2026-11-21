@@ -5,7 +5,7 @@
   "compatibility_date": "2026-11-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": [
-    "/*", "!/_tendril/runtime/8509ad401bb07ef4289af00c29a875247b2c2b4ac784f60ca29d61aa34b544a8/*",
+    "/*", "!/_tendril/runtime/e5d702f0a3eb912850780190511e34180cdb6433870992886f7a1db1c85cb0ec/*",
     "!/_tendril/brand/icon-64.png", "!/_tendril/brand/icon-180.png",
     "!/_tendril/brand/logo.png", "!/_tendril/brand/logo.webp",
     "!/_tendril/brand/favicon.ico", "!/favicon.ico"
