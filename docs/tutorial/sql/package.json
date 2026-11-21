@@ -2,7 +2,7 @@
   "name": "tendriller-shared-inventory",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.15.0" },
+  "engines": { "node": ">=24" },
   "scripts": {
     "engine": "node engine.mjs",
     "create": "node setup.mjs create",

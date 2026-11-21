@@ -23,8 +23,9 @@ The native path requires a Chronolog archive built with `--sql-native` and the
 patched native engine. The default events archive cannot run this directory.
 `worker.mjs` supplies the owning browser composition of the same domain. Browser
 SQL additionally needs `--sql-browser`, the exact separately built WASM assets,
-an enrolled browser and a supported OPFS SQL VFS. This directory does not ship
-a separate browser UI or claim that installing an events archive qualifies SQL.
+an enrolled browser and a supported OPFS SQL VFS. `index.html` and `page.mjs`
+provide the inventory UI; installing an events archive does not qualify SQL.
+The native tutorial requires Node 24 or newer.
 
 Run this directory within the downloaded starter kit: its standalone peer uses
 the shipped `../helpers/cli-lifetime.mjs`. Ctrl-C awaits the SQL session and
@@ -48,3 +49,66 @@ With the resident SQL peer running, `node session.mjs diagnostics` (or
 detaches. It opens no SQL engine or signing store. Counters are per current link,
 reset on replacement, and do not measure billing or applied/retained operations.
 See [transport diagnostics](https://tendriller.dev/docs/TRANSPORT_DIAGNOSTICS.md).
+
+
+Build and publish the SQL page from this directory after same-origin readiness
+and package acquisition described in the state-model guide:
+
+```sh
+npm run create -- https://YOUR_SERVICE VERIFIED_OWNER_EMAIL "Shared inventory"
+npm run init
+npm run demo
+# Install the matching combined --sql-native --sql-browser session archive in
+# the parent starter, together with its public SDK/tools and esbuild dependency.
+# Copy manifest.json, sqlite3.mjs, sqlite3.wasm and sqlite3-opfs-async-proxy.js
+# from that exact build into this directory's engine/ (not into page/).
+npm run build
+npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --operation inventory-release-1
+npm run peer
+```
+
+The owner signs in at the ready page URL. Build/publish before claim; the host
+handle alone is not a connected application. Publish only `page/`. The build
+requires initialized matching public configuration, verifies WASM bytes and the
+installed SQL package's supported manifest, copies all four engine files, and
+removes stale/partial output on any failure. It never falls back to a static
+preview. Runtime still verifies the signed authority and execution-manifest
+binding before opening SQL. Keep `.tendriller/`, keys, stores and signed attempts
+outside published assets. On an uncertain publication reply, preserve the exact
+output and operation ID and inspect/retry the original publication.
+
+A new browser deliberately chooses **Create or resume browser device**. It shows
+its own stored public key without exporting its signing identity. Verify that
+key; stop the native peer before running `npm run enroll -- PUBLIC_KEY` in this
+same SQL project, then restart `npm run peer` and reload the page in the same
+browser profile. This is explicit native administrator enrollment, not the
+Shared Notes owner-review pairing workflow. Lost enrollment replies reuse the
+saved signed request. Keep the native coordinator running for writes and epoch
+key delivery. Signing in alone does not enroll a device.
+
+The table renders `inventory.stock` as `{ id, units }`. Transfer captures the
+displayed revision and both reviewed balances and sends `transfer` with
+`transferId`, `from`, `to`, `units`, `expectedSource`, `expectedDestination`.
+Guards execute atomically; changed balances reject the whole operation. The UI
+retains the exact intent before its first RPC. Until an applied accepted or
+rejected outcome is observed, new transfers are blocked; inspect or retry the
+original operation, including after reload. Retry uses the session's saved
+attempt when present, otherwise resends the original input and revision. It
+never silently re-reviews changed balances. Recovery exclusions require explicit
+review of the original history and current balances; this UI does not reapply
+automatically or discard unresolved intent. Applied does not prove peer retention.
+
+**Detach this view** releases only this attachment, preserving device storage,
+history and pending intent. Other browser views and the native peer have their
+own lifetimes. Reload resumes the same profile. Do not erase browser site data
+or `.tendriller/` to repair setup. The diagnostics JSON is unencrypted health
+information, not an encrypted checkpoint, backup or migration export. Lifecycle
+callbacks cannot guarantee storage flush on eviction; the page saves intent
+before commands rather than relying on shutdown.
+
+Qualification must use the exact published graph: demonstrate a transfer, its
+applied read on another participant, persistence after reload and verified signed
+publication. Pure Node UI/build tests cover reviewed guards, uncertain retry and
+failed-output cleanup; they do not qualify browser SQL, OPFS, enrollment or
+transport. Existing remote browser SQL regressions cover their own SQL fixture,
+not automatically this inventory UI. Run full browser qualification remotely.

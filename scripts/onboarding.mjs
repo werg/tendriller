@@ -23,7 +23,7 @@ export const TUTORIAL_FILES = Object.freeze([
   'media/inference-peer.mjs', 'media/provider-openai.mjs',
   'sql/.gitignore', 'sql/README.md', 'sql/package.json', 'sql/local.mjs',
   'sql/engine.mjs', 'sql/domain.mjs', 'sql/setup.mjs', 'sql/session.mjs',
-  'sql/demo.mjs', 'sql/worker.mjs', 'sql/index.html', 'sql/page.mjs', 'sql/build.mjs',
+  'sql/demo.mjs', 'sql/worker.mjs', 'sql/index.html', 'sql/page.mjs', 'sql/build.mjs', 'sql/ui-state.mjs',
 ]);
 export const TUTORIAL_DOWNLOAD = '/downloads/tendriller-first-app.tgz';
 
