@@ -6,7 +6,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createBrowserRtcBroker, rtcEndpoint, BROWSER_RTC_PROTOCOL, checkRtcMessage, MAX_RTC_MESSAGE_BYTES } from '../browser-rtc.mjs';
+import { createBrowserRtcBroker, rtcEndpoint, BROWSER_RTC_PROTOCOL, checkRtcMessage, MAX_RTC_MESSAGE_BYTES, registerBrowserRtcProvider } from '../browser-rtc.mjs';
 const register = endpoint => endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'register'}}));
 const until = async predicate => { const end=Date.now()+2000;while(!predicate()){if(Date.now()>end)throw Error('TEST_DEADLINE');await new Promise(setImmediate);} };
 
@@ -44,7 +44,7 @@ test('opaque binary RTC messages have their own finite bound and reject transfer
 const compiled=await build({stdin:{contents:"export {openBrowserOwner} from './collaboration/browser.mjs';export {serveBrowserOwner} from './collaboration/worker.mjs';",resolveDir:new URL('../..',import.meta.url).pathname,loader:'js'},bundle:true,format:'esm',platform:'node',write:false,plugins:[{name:'rtc-fixture',setup(build){build.onLoad({filter:/\/peer-session\/webrtc\.mjs$/},()=>({contents:`
  export function serveWorkerWebRtcConnections(endpoint,{signal}={}){
   const receive=({data})=>{if(data?.protocol==='test/rtc'&&data.type==='open')endpoint.postMessage({protocol:'test/rtc',type:'ready',id:data.id});};
-  endpoint.addEventListener('message',receive);return{async close(){endpoint.removeEventListener('message',receive);}};
+  endpoint.addEventListener('message',receive);return{async close(){globalThis.__rtcFixtureBridgeClosed.count++;endpoint.removeEventListener('message',receive);}};
  }
  export function openWorkerWebRtcConnection(endpoint,options){return new Promise((resolve,reject)=>{
   const id=crypto.randomUUID(),abort=()=>{endpoint.removeEventListener('message',receive);reject(options.signal.reason);};
@@ -55,15 +55,19 @@ const compiled=await build({stdin:{contents:"export {openBrowserOwner} from './c
 
 for(const mode of ['shared','elected'])test(`default ${mode} bootstrap makes the FIRST link direct even when openSession awaits that link before RPC readiness`,async t=>{
  const directory=await mkdtemp(join(tmpdir(),'core-rtc-'));t.after(()=>rm(directory,{recursive:true,force:true}));const file=join(directory,'core.mjs');await writeFile(file,compiled.outputFiles[0].text);const core=await import(pathToFileURL(file).href);
- const globals=new Map(['navigator','location','SharedWorker','Worker','RTCPeerConnection'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));t.after(()=>{for(const[key,value]of globals)if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];});
+ const globals=new Map(['navigator','location','SharedWorker','Worker','RTCPeerConnection','__rtcFixtureBridgeClosed'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));t.after(()=>{for(const[key,value]of globals)if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];});
  class Scope extends EventTarget{postMessage(){}close(){}connect(port){this.dispatchEvent(Object.assign(new Event('connect'),{ports:[port]}));}}
  const scope=new Scope(),stop=new AbortController(),links=[],description=describeApplication(defineApplication({id:'rtc-fixture',version:'1',commands:{},queries:{}}));let shared=0,dedicated=0,localWorker;
  const session={applicationId:'a'.repeat(64),historyId:'retained',storageId:'retained',deviceId:'b'.repeat(64),signal:stop.signal,revision:null,status:{phase:'ready',database:'idle',role:'coordinator',generation:'c'.repeat(64),coordinator:'b'.repeat(64),connectedPeers:0},signals:{delivery:'neighbors'},describe:()=>({...description,capabilities:{...PEER_GENERATION_CAPABILITIES,sql:false}}),onStatus(listener){listener(this.status);return()=>{};},onRecovery:()=>()=>{},async close(){stop.abort(Error('SESSION_CLOSED'));}};
- const setup={navigator:{locks:{request:async(_name,_options,run)=>run({})}},location:{origin:'https://app.test',href:'https://app.test/'},RTCPeerConnection:class{},SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();shared++;const wire=new MessageChannel();this.port=wire.port2;scope.connect(wire.port1);}}:undefined,Worker:class extends EventTarget{constructor(){super();dedicated++;localWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}}};for(const[key,value]of Object.entries(setup))Object.defineProperty(globalThis,key,{configurable:true,value});
+ const setup={__rtcFixtureBridgeClosed:{count:0},navigator:{locks:{request:async(_name,_options,run)=>run({})}},location:{origin:'https://app.test',href:'https://app.test/'},RTCPeerConnection:class{},SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();shared++;const wire=new MessageChannel();this.port=wire.port2;scope.connect(wire.port1);}}:undefined,Worker:class extends EventTarget{constructor(){super();dedicated++;localWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}}};for(const[key,value]of Object.entries(setup))Object.defineProperty(globalThis,key,{configurable:true,value});
  scope.postMessage=data=>queueMicrotask(()=>localWorker?.dispatchEvent(new MessageEvent('message',{data})));
- const service=core.serveBrowserOwner({scope,profileId:'retained',async openSession({signal,openDirectConnection}){try{links.push(await openDirectConnection({signal,role:'offerer',signaling:{},timeoutMs:500}));}catch{links.push({kind:'relay'});}return{session};}});
+ const opening=new AbortController();const service=core.serveBrowserOwner({scope,profileId:'retained',async openSession({signal,openDirectConnection}){try{links.push(await openDirectConnection({signal,role:'offerer',signaling:{},timeoutMs:500}));}catch{links.push({kind:'relay'});}return{session};}});
  t.after(()=>service.close());let attachment;
- try{attachment=await core.openBrowserOwner({workerUrl:'https://app.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:description.id,definitionVersion:'1',timeoutMs:2000,persistStorage:false,storageKeepAliveMs:0});assert.equal(attachment.mode,mode);assert.equal(shared,mode==='shared'?1:0);assert.equal(dedicated,mode==='elected'?1:0);assert.equal(links[0].kind,'direct','relay at startup must not become a permanent fallback');}finally{await attachment?.detach();await service.close();}
+ try{attachment=await core.openBrowserOwner({workerUrl:'https://app.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:description.id,definitionVersion:'1',signal:opening.signal,timeoutMs:2000,persistStorage:false,storageKeepAliveMs:0});assert.equal(attachment.mode,mode);assert.equal(shared,mode==='shared'?1:0);assert.equal(dedicated,mode==='elected'?1:0);assert.equal(links[0].kind,'direct','relay at startup must not become a permanent fallback');
+ opening.abort(Error('OPENING_FINISHED'));await new Promise(setImmediate);
+ assert.equal(globalThis.__rtcFixtureBridgeClosed.count,0,'opening cancellation after attachment must not close its RTC provider');
+ await attachment.detach();await until(()=>globalThis.__rtcFixtureBridgeClosed.count>0);
+ assert.equal(globalThis.__rtcFixtureBridgeClosed.count,mode==='shared'?1:2,'actual attachment shutdown closes every owned provider');}finally{await attachment?.detach();await service.close();}
 });
 
 test('authenticated BC attach registers RTC before RPC, carries full opaque packets, and rejects public sideband forgery',async t=>{
@@ -109,4 +113,12 @@ test('opaque RTC validation rejects huge sparse lengths before codec allocation'
  assert.throws(()=>checkRtcMessage({items:new Array(1000000)}),/RTC_MESSAGE_LIMIT/);
  assert.throws(()=>checkRtcMessage({items:new Array(65536)}),/RTC_MESSAGE_LIMIT/);
  checkRtcMessage({items:new Array(12)});
+});
+
+
+test('provider adoption retains the same bridge while handing opening lifetime to the real session',async()=>{
+ const opening=new AbortController(),session=new AbortController(),endpoint=rtcEndpoint(()=>{});let closed=0,started=0;
+ const provider=registerBrowserRtcProvider(endpoint,{signal:opening.signal},{createPeerConnection(){},serve(){started++;return{close(){closed++;}};}});
+ provider.adopt({signal:session.signal});opening.abort();assert.equal(closed,0);assert.equal(started,1);
+ session.abort();assert.equal(closed,1);await provider.close();assert.equal(closed,1);
 });

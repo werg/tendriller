@@ -129,20 +129,29 @@ export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebR
 /** The private bootstrap channel or authenticated broadcast attachment scopes this
  * capability-only provider before application RPC becomes ready. */
 export function registerBrowserRtcProvider(endpoint, session, { serve = serveWorkerWebRtcConnections, createPeerConnection } = {}) {
-  if (!endpoint || (!createPeerConnection && typeof globalThis.RTCPeerConnection !== 'function')) return { close() {} };
-  const lifetime = new AbortController(); let closed = false;
+  if (!endpoint || (!createPeerConnection && typeof globalThis.RTCPeerConnection !== 'function')) return { close() {}, adopt() {} };
+  const lifetime = new AbortController(); let closed = false, ownerSignal = session.signal;
   const bridge = serve(endpoint,{signal:lifetime.signal,...(createPeerConnection ? {createPeerConnection} : {})});
   const ended = () => {try{void Promise.resolve(close()).catch(()=>{});}catch{}};
   const leaving = event => {if(!event.persisted)ended();};
   globalThis.addEventListener?.('pagehide',leaving);
-  endpoint.addEventListener('close',ended); session.signal.addEventListener('abort',ended,{once:true});
+  endpoint.addEventListener('close',ended); ownerSignal.addEventListener('abort',ended,{once:true});
   try{endpoint.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'register',...(session.endpoint ? {binding:Object.fromEntries(bindingFields.map(key=>[key,session.endpoint[key]]))} : {})});}catch(error){void Promise.resolve(close()).catch(()=>{});throw error;}
   function close() {
     if (closed) return; closed = true;
     try { endpoint.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'unregister'}); } catch { /* Route already closed. */ }
-    lifetime.abort(error('RTC_PROVIDER_LOST'));globalThis.removeEventListener?.('pagehide',leaving);endpoint.removeEventListener('close',ended); session.signal.removeEventListener('abort',ended);
+    lifetime.abort(error('RTC_PROVIDER_LOST'));globalThis.removeEventListener?.('pagehide',leaving);endpoint.removeEventListener('close',ended); ownerSignal.removeEventListener('abort',ended);
     return bridge.close();
   }
-  if(session.signal.aborted)ended();
-  return {close};
+  function adopt(session) {
+    // Opening cancellation no longer owns this live attachment. Keep the same
+    // bridge and its active negotiations while transferring shutdown ownership.
+    if (closed) throw error('RTC_PROVIDER_LOST');
+    ownerSignal.removeEventListener('abort',ended);
+    ownerSignal = session.signal;
+    ownerSignal.addEventListener('abort',ended,{once:true});
+    if (ownerSignal.aborted) ended();
+  }
+  if(ownerSignal.aborted)ended();
+  return {close,adopt};
 }

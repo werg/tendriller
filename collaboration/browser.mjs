@@ -113,6 +113,7 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
     globalThis.removeEventListener?.('pagehide',pagehide);globalThis.removeEventListener?.('pageshow',visibility);};
 }
 function facade({session,transport,channel,worker,route,options,provider:initialProvider,bootstrapRtc}){
+  initialProvider?.adopt(session);
   transport.bindRequestSource(session);
   let detached=false,releasing;
   const startRtc=()=>registerBrowserRtcProvider(transport.rtc,session);
@@ -200,7 +201,7 @@ async function elected(url,options,handshake){
       onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
     provider=registerBrowserRtcProvider(transport.rtc,{signal:options.signal??new AbortController().signal});
     const session=await connectApplicationOwner(transport,handshake);
-    const providers={async close(){await Promise.all([provider.close(),bootstrapProvider.close()]);}};
+    const providers={adopt(session){provider.adopt(session);bootstrapProvider.adopt(session);},async close(){await Promise.all([provider.close(),bootstrapProvider.close()]);}};
     return facade({session,transport,provider:providers,bootstrapRtc,channel,worker,route:'elected',options});
   }catch(error){await provider?.close();await bootstrapProvider?.close();bootstrapRtc?.dispose();await transport?.close();channel.close();
     if(booted)await retireCandidate(worker,options.profileId,Math.min(options.timeoutMs??30000,3000));else worker?.terminate();throw error;}
