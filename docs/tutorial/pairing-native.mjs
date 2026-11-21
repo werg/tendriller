@@ -26,7 +26,7 @@ export function assertPairingContext(status, { applicationId, serviceOrigin, pag
 
 /** One retained-request reconciliation pass. The notification-driven supervisor
  * serializes calls; the signed-control selector remains the host. */
-export async function advancePairing({ session, pairing, retain = savePrivate, restore = readPrivate, onStatus = () => {}, signal }) {
+export async function advancePairing({ session, pairing, retain = savePrivate, restore = readPrivate, onStatus = () => {}, allowBrowserCoordinator = false, signal }) {
   signal?.throwIfAborted();
   const persist = async (name, value) => {
     await retain(name, value);
@@ -103,7 +103,7 @@ export async function advancePairing({ session, pairing, retain = savePrivate, r
   if (!prepared) {
     const before = verified.control.payload;
     const control = { epoch: before.epoch, keyDigest: before.keyDigest, grants: [...before.grants,
-      { publicKey: c.publicKey, reader: true, writer: c.rights.writer, coordinator: false, recovery: false,
+      { publicKey: c.publicKey, reader: true, writer: c.rights.writer, coordinator: Boolean(allowBrowserCoordinator), recovery: Boolean(allowBrowserCoordinator),
         administrator: false, publisher: false, dataRole: 'member' }], recoveryFloor: before.recoveryFloor,
       accounts: [{ publicKey: c.publicKey, accountId: c.accountId }] };
     const request = await pairing.signTransition({ applicationId: c.applicationId, profile: pairing.descriptor.payload.profile,

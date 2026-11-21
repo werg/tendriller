@@ -1,0 +1,53 @@
+name: Multi-runtime compatibility matrix
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'contract/**'
+      - 'session/**'
+      - 'tools/**'
+      - 'docs/tutorial/**'
+      - '.github/workflows/runtime-matrix.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  node-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: ['22.15.0', '22', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build:artifacts
+      - run: npm run test:contract
+      - run: npm run test:runtime-unit
+      - run: npm run test:tools
+
+  bun-deno-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+      - uses: denoland/setup-deno@v2
+      - run: npm ci && npm run build
+      - name: Exercise pure-ESM probe and archive modules under Bun
+        run: |
+          bun -e "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') process.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
+      - name: Exercise pure-ESM probe and archive modules under Deno
+        run: |
+          deno eval "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') Deno.exit(1); console.log(JSON.stringify(await probeCapabilities()));"

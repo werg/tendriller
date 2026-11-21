@@ -6,6 +6,7 @@ export interface NativeAttachmentPolicy {
   context?: { viewId?: string; documentPath?: string; publicationId?: string; runId?: string };
   contextEvidence?: 'caller-asserted' | 'owner-validated';
   maxRequests?: number; maxStreams?: number; maxViews?: number;
+  preserveOperationId?: boolean;
 }
 export interface NativeEndpoint {
   addEventListener(type: 'message', listener: (event: MessageEvent) => void): void;
@@ -25,6 +26,8 @@ export interface NativeSessionSupervisor {
   readonly profile: { version: 1; profileId: string; applicationId: string; deviceId: string; definitionId: string; definitionVersion: string };
   readonly ownerInstanceId: string;
   readonly socketPath: string;
+  readonly endpoint?: { readonly version: 1; readonly transport: 'unix-socket' | 'windows-named-pipe' | 'loopback-tcp'; readonly address?: string; readonly host?: '127.0.0.1'; readonly port?: number };
+  readonly activeClients: number;
   close(): Promise<void>;
   endpoints(): readonly unknown[];
   bindings(): NativeBinding[];
@@ -37,7 +40,8 @@ export function createNativeSessionSupervisor(options: {
   directory: string; profileId: string;
   openOwner(options: { signal?: AbortSignal; profileId: string }): NativeSessionOwner | Promise<NativeSessionOwner>;
   bindings?: readonly { id: string; token: string; policy?: NativeAttachmentPolicy }[];
-  maxClients?: number; maxClientsPerBinding?: number; maxBindings?: number; handshakeTimeoutMs?: number; signal?: AbortSignal;
+  maxClients?: number; maxClientsPerBinding?: number; maxBindings?: number; handshakeTimeoutMs?: number;
+  preferredTransport?: 'auto' | 'loopback-tcp'; signal?: AbortSignal;
 }): Promise<NativeSessionSupervisor>;
 export interface NativeAttachedSession { readonly signal: AbortSignal; detach(): Promise<void> }
 /** Stable authenticated binding namespace; the supervisor separately enforces it. */
@@ -47,8 +51,17 @@ export function attachNativeSession<Session extends NativeAttachedSession>(optio
   connect(endpoint: NativeEndpoint, options: { applicationId: string; definitionId: string; definitionVersion: string;
     context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal }): Promise<Session>;
   applicationId: string; definitionId: string; definitionVersion: string;
+  context?: NativeAttachmentPolicy['context']; preserveOperationId?: boolean; timeoutMs?: number; signal?: AbortSignal;
+}): Promise<{ session: Session&NativeOperationScope; mode: 'attach'; transport: string; detach(): Promise<void> }>;
+export function connectOrStartNativeSession<Session extends NativeAttachedSession>(options: {
+  directory: string; profileId: string;
+  openOwner(options: { signal?: AbortSignal; profileId: string }): NativeSessionOwner | Promise<NativeSessionOwner>;
+  connect(endpoint: NativeEndpoint, options: { applicationId: string; definitionId: string; definitionVersion: string;
+    context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal }): Promise<Session>;
+  applicationId: string; definitionId: string; definitionVersion: string;
+  bounded?: boolean; preferredTransport?: 'auto' | 'loopback-tcp';
   context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal;
-}): Promise<{ session: Session&NativeOperationScope; mode: 'attach'; detach(): Promise<void> }>;
+}): Promise<{ session: Session; mode: 'attach' | 'shared-owner' | 'bounded'; startedSupervisor?: boolean; supervisor?: NativeSessionSupervisor; detach(): Promise<void>; close(): Promise<void> }>;
 
 export interface NativeEffectRecord {
   effectId: string; payload: string; fence: unknown;

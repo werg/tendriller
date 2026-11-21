@@ -9,6 +9,7 @@ import { mountReviewedMedia } from './media/panel.mjs';
 import { createBrowserPairing } from './pairing-browser.mjs';
 import { createOwnerConnection, reloadOnOwnerReplaced } from './connection.mjs';
 import { mountConnectionView } from './connect-view.mjs';
+import { mountDiagnosticsPanel, registerLifecycleFlush } from './helpers/diagnostics-panel.mjs';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => response.json());
@@ -26,6 +27,8 @@ function retainedPending() {
   const retained = references.find(item => item.reference.operationId === selected) ?? references[0];
   return retained ? { ...retained.context, id: retained.reference.operationId, reference: retained.reference } : null;
 }
+const diagnostics = mountDiagnosticsPanel($('#app-content') ?? document.body, { appName: 'Shared notes' });
+registerLifecycleFlush(() => { /* Persist local draft/pending operation state before tab suspension. */ });
 let attachment, session, liveView, operationView, observedOperation, media;
 const submission = createSubmissionState(renderSubmission);
 function renderSubmission(state) {
@@ -162,7 +165,7 @@ async function connectSession({ signal } = {}) {
     }
     if (!window.tendril) throw Error('Open the published Tendriller page to install its runtime binding.');
     liveView = createLiveView(session, { query: 'notes', input: null,
-      onStatus(status) { submission.application(status); $('#data-status').textContent = `Data: ${status.database}; application: ${status.phase}`; },
+      onStatus(status) { submission.application(status); $('#data-status').textContent = `Data: ${status.database}; application: ${status.phase}`; diagnostics.update({ coordinatorStatus: status }); },
       onRecovery(notice) {
         submission.update({ coherent: false });
         $('#recovery').hidden = false;
@@ -231,6 +234,7 @@ $('#form').addEventListener('submit', async event => {
     observeOperation(operationId, operation);
     $('#result').textContent = `Saved locally as ${operationId}. Waiting for applied execution…`;
     const result = await operation.applied({ signal: AbortSignal.timeout(15_000) });
+    if (result.outcome === 'accepted') diagnostics.update({ lastAppliedOperationId: operationId });
     $('#result').textContent = `Applied: ${result.outcome}. Operation ${operationId}. Retained coverage is separate; explicit recovery can exclude applied work.`;
     acceptedOrRejected(result);
     await refresh();

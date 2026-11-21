@@ -15,9 +15,10 @@ test('local drafts and references are independent even when two views inspect th
   assert.equal(a.pending().length,0);assert.equal(b.pending().length,1);
   assert.throws(()=>b.retainOperation(ref,{input:'edited'}),{code:'OPERATION_REFERENCE_CONFLICT'});
   assert.equal(b.inspectOperation(ref).context.input,'original');
-  b.retainOperation({...ref,attemptId:'first-attempt',generation:'first-generation'},{input:'original'});
-  assert.equal(b.inspectOperation(ref).reference.attemptId,'first-attempt');
-  assert.throws(()=>b.retainOperation({...ref,attemptId:'replacement'},{input:'original'}),{code:'OPERATION_REFERENCE_CONFLICT'});
+  const firstAttempt='b'.repeat(64),firstGeneration='c'.repeat(64),replacementAttempt='d'.repeat(64);
+  b.retainOperation({...ref,attemptId:firstAttempt,generation:firstGeneration},{input:'original'});
+  assert.equal(b.inspectOperation(ref).reference.attemptId,firstAttempt);
+  assert.throws(()=>b.retainOperation({...ref,attemptId:replacementAttempt},{input:'original'}),{code:'OPERATION_REFERENCE_CONFLICT'});
 });
 test('local storage encodes every identity segment without allowing sibling removals',()=>{
   const shared=storage(),scope={storage:shared,applicationId:'app',profileId:'profile'};

@@ -107,6 +107,23 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       throw error;
     }
   }
+  if (command === 'command-batch') {
+    const items = jsonInput(args[0], 'command batch JSON array');
+    if (!Array.isArray(items) || items.length > 64) throw Error('Supply a JSON array of 0..64 command objects.');
+    const results = [];
+    for (const item of items) {
+      const opId = required(item?.operationId, 'operationId on every batched command');
+      const handle = await session.command(required(item?.command, 'command name'), item?.input ?? null, {
+        operationId: opId, ...(item?.basedOn === undefined ? {} : { basedOn: item.basedOn }),
+      });
+      if (options.saved) results.push({ operationId: opId, command: item.command, lifecycle: 'recorded', state: await handle.get() });
+      else {
+        const applied = await handle.applied({ signal });
+        results.push({ operationId: opId, command: item.command, lifecycle: applied.outcome === 'rejected' ? 'rejected' : 'applied', applied });
+      }
+    }
+    return { results };
+  }
   if (command === 'retry') {
     const operationId = required(args[0], 'the original operation identity');
     await session.retry(operationId);

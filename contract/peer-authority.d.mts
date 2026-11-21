@@ -5,9 +5,15 @@
  * One owner serializes mutations. Each put atomically replaces one key and resolves only
  * after durable persistence. get and put must not expose mutable internal byte buffers.
  */
+export interface BytesStoreEntry {
+	readonly key: string;
+	readonly value: Uint8Array;
+}
 export interface BytesStore {
 	get(key: string): Promise<Uint8Array | null>;
 	put(key: string, bytes: Uint8Array): Promise<void>;
+	/** Optional deterministic snapshot enumeration for atomic encrypted device checkpoints. */
+	entries?(): Promise<readonly BytesStoreEntry[]>;
 }
 export declare const PEER_GENERATION_PROFILE: "peer-generation-v1";
 export declare const PEER_GENERATION_POLICY: "eligible-members-v1";

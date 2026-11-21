@@ -15,8 +15,42 @@ const fail = message => { throw Error(message); };
 const sha = /^[0-9a-f]{40}$/;
 const roles = ['sdk', 'runtime', 'engine', 'tools'];
 export const REQUIRED_SDK_EXPORTS = ['.', './contract', './onboarding', './setup', './pairing', './application', './signals', './peers',
-  './assistant', './browser-owner', './worker-owner', './native-owner', './participation', './native-rtc',
+  './assistant', './archive', './release-verify', './probe', './serverless',
+  './browser-owner', './worker-owner', './native-owner', './ipc', './outbox', './participation', './native-rtc',
   './transport-diagnostics', './diagnostics', './collaboration', './schema'];
+
+export const COMPOSITION_V2_PROFILES = Object.freeze({
+  'events-relay-only': Object.freeze({ sql: false, nativeRtc: false, wasmSql: false, nativeSql: false }),
+  'events-full': Object.freeze({ sql: false, nativeRtc: true, wasmSql: false, nativeSql: false }),
+  'sql-portable-relay-only': Object.freeze({ sql: true, nativeRtc: false, wasmSql: true, nativeSql: false }),
+  'sql-full': Object.freeze({ sql: true, nativeRtc: true, wasmSql: true, nativeSql: true }),
+});
+
+/**
+ * Construct a versioned v2 multi-profile composition manifest binding all four explicit
+ * profiles (`events-relay-only`, `events-full`, `sql-portable-relay-only`, `sql-full`) cleanly.
+ */
+export function buildCompositionV2({ version, contract, runtime, core, chronolog, profiles }) {
+  if (!profiles || typeof profiles !== 'object') fail('Composition v2 requires a profiles map.');
+  const normalized = {};
+  for (const [name, spec] of Object.entries(profiles)) {
+    if (!Object.hasOwn(COMPOSITION_V2_PROFILES, name)) fail(`Unknown composition v2 profile: ${name}`);
+    const rules = COMPOSITION_V2_PROFILES[name];
+    if (Boolean(spec.sql) !== rules.sql || Boolean(spec.nativeRtc) !== rules.nativeRtc) {
+      fail(`Profile ${name} capabilities do not match its declared v2 contract.`);
+    }
+    normalized[name] = {
+      profile: name,
+      sql: rules.sql,
+      nativeRtc: rules.nativeRtc,
+      wasmSql: Boolean(spec.wasmSql),
+      nativeSql: Boolean(spec.nativeSql),
+      components: spec.components ?? [],
+    };
+  }
+  const body = { format: 'tendriller-release-composition-v2', version, contract, runtime, core, chronolog, profiles: normalized };
+  return { ...body, id: digest(JSON.stringify(body)) };
+}
 
 export function sourceIdentity(root) {
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();

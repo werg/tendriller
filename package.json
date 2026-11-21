@@ -42,8 +42,8 @@
     "test:idle:metrics": "node scripts/idle-soak/metrics.mjs"
   },
   "devDependencies": {
-    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-9eee773a.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-9eee773a.tgz",
+    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-29023b09.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-29023b09.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",
