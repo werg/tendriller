@@ -1,4 +1,49 @@
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
+
+/** Optional Linux diagnostic: unavailable is not zero and cannot fail a run. */
+export function memoryAvailableGb(read = readFileSync) {
+  try {
+    const value = /^MemAvailable:\s+(\d+)\s+kB\s*$/m.exec(read('/proc/meminfo', 'utf8'));
+    const kb = value ? Number(value[1]) : NaN;
+    return Number.isSafeInteger(kb) && kb >= 0 ? Math.round(kb / 1048576 * 10) / 10 : null;
+  } catch { return null; }
+}
+
+/** Serialized by Playwright; intentionally contains no module-local references. */
+export async function installSoakObserver() {
+  await window.tendril.signals.ready();
+  window.soak?.stop?.abort();
+  const state = window.soak = { pieces: 0, complete: 0, replies: new Map(), stop: new AbortController() };
+  void (async () => {
+    for await (const signal of window.tendril.signals.subscribe({ topics: ['soak'], mode: 'all', signal: state.stop.signal })) {
+      const { id, g, i, n } = signal.payload ?? {};
+      if (!(typeof id === 'string' || Number.isSafeInteger(id)) || !Number.isSafeInteger(n) || n < 1 || n > 512 ||
+          !Number.isSafeInteger(i) || i < 0 || i >= n) continue;
+      const key = JSON.stringify([id, g ?? null]);
+      let reply = state.replies.get(key);
+      if (!reply) {
+        if (state.replies.size >= 128) {
+          const old = [...state.replies].find(([, value]) => value.complete);
+          if (!old) throw Error('SOAK_REPLY_LIMIT');
+          state.replies.delete(old[0]);
+        }
+        state.replies.set(key, reply = { n, indexes: new Set(), complete: false });
+      }
+      if (reply.n !== n || reply.indexes.has(i)) continue;
+      reply.indexes.add(i); state.pieces++;
+      if (reply.indexes.size === n && !reply.complete) { reply.complete = true; state.complete++; }
+    }
+  })().catch(error => { if (!state.stop.signal.aborted) state.error = error.code || error.message; });
+}
+
+export async function installStateSignalObservers() {
+  await window.tendril.signals.ready();
+  window.stateModes = { all: 0, latest: 0 }; window.stateModeErrors = [];
+  for (const mode of ['all', 'latest']) void (async () => {
+    for await (const signal of window.tendril.signals.subscribe({ topics: ['state'], mode })) { void signal; window.stateModes[mode]++; }
+  })().catch(error => window.stateModeErrors.push(error.code || error.name));
+}
 
 /** The test participant owns the complete bootstrap, including its supervisor. */
 export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transportModule }) {
@@ -12,9 +57,13 @@ ${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transpor
 const owned = await openSession(), {session,supervisor} = owned;
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
 const lifecycleLog = [];
-let pairings, pairingStatus = null, inference, input, closing, inferenceCalls = 0, inferenceSource = null;
+let pairings, pairingStatus = null, inference, input, closing, inferenceCalls = 0, inferenceSource = null, requestTask, requestFailure;
+const requestsStopped = new AbortController();
 const close = () => closing ??= (async () => {
   const errors = [];
+  requestsStopped.abort();
+  await requestTask;
+  if(requestFailure) errors.push(requestFailure);
   try { await pairings?.close(); } catch (error) { errors.push(error); }
   try { await inference?.close(); } catch (error) { errors.push(error); }
   try { await owned.close(); } catch (error) { errors.push(error); }
@@ -42,11 +91,12 @@ try {
     if (statusLog.length < 500 && (!last || last.phase !== status.phase || last.generation !== status.generation || last.database !== status.database))
       statusLog.push({at:Date.now(),phase:status.phase,generation:status.generation,database:status.database}); });
   session.participation.onStatus(status => { if (participationLog.length < 5000) participationLog.push({at:Date.now(),phase:status.phase,peers:[...status.connectedPeers].sort(),error:status.error}); });
-  const requestsStopped = new AbortController();
-  void serveSignalRequests(session, { signal: requestsStopped.signal, handle: async (q, input) => {
+  requestTask = serveSignalRequests(session, { signal: requestsStopped.signal, handle: async (q, input) => {
     if (q !== 'rows') throw Object.assign(Error('Unknown request'), { code: 'unknown' });
+    assert.ok(Number.isSafeInteger(input?.count) && input.count >= 0 && input.count <= 1024);
+    assert.ok(Number.isSafeInteger(input?.width) && input.width >= 0 && input.width <= 4096);
     return { rows: Array.from({ length: input.count }, (_value, index) => ({ index, label: 'row "' + index + '"', text: 'x'.repeat(input.width) })) };
-  } }).catch(() => {});
+  } }).catch(error => { requestFailure=error; });
   console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
   input = createInterface({input:process.stdin});
   for await (const line of input) {
@@ -62,19 +112,19 @@ try {
         result={sent:request.count};
       }
       else if(request.action==='signal-burst') {
-        // A reply larger than one signal, sent piece by piece as an app would: each send awaited, none retried.
+        // A reply larger than one signal, using the starter's bounded retrying sender.
         const failures=[], started=Date.now(), pieceMs=[];
+        const generation=crypto.randomUUID();
         // Event-loop lag beside the sends tells a stalled process from a stalled transport.
         let lagMax=0, tick=Date.now(); const lag=setInterval(()=>{ const now=Date.now(); lagMax=Math.max(lagMax, now-tick-50); tick=now; },50);
         // Sent as an app sends a reply (the starter's retrying piece sender); retries are reported.
         let retries=0;
-        for(let index=0;index<request.pieces;index++){
+        try { for(let index=0;index<request.pieces;index++){
           const pieceStarted=Date.now();
-          try{retries+=await sendPieces(session,request.topic,[{id:request.id,i:index,n:request.pieces,z:'x'.repeat(request.bytes)}]);}
+          try{retries+=await sendPieces(session,request.topic,[{id:request.id,g:generation,i:index,n:request.pieces,z:'x'.repeat(request.bytes)}],{signal:requestsStopped.signal});}
           catch(error){failures.push(error.code||error.message);}
           pieceMs.push(Date.now()-pieceStarted);
-        }
-        clearInterval(lag);
+        } } finally { clearInterval(lag); }
         result={sent:request.pieces-failures.length,failures,retries,ms:Date.now()-started,pieceMs,eventLoopLagMaxMs:lagMax,participation:session.participation.status.phase};
       }
       else if(request.action==='ordering-pause') result={pause:await session.orderingPause()};

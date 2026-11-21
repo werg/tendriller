@@ -5,7 +5,6 @@ import { execFile, spawn } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -17,7 +16,7 @@ import { chromium, expect } from '@playwright/test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
 import { TUTORIAL_FILES } from './onboarding.mjs';
-import { nativeTestPeerSource, closeTestPeer } from './first-app-peer.mjs';
+import { nativeTestPeerSource, closeTestPeer, memoryAvailableGb, installSoakObserver, installStateSignalObservers } from './first-app-peer.mjs';
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
 import { CONTRACT_VERSION } from '../contract/index.mjs';
@@ -645,13 +644,7 @@ export async function closeLocalTransport() {
       });
     }).catch(() => {});
     await recordStatus();
-    await page.evaluate(() => {
-      window.soak = { pieces: 0, replies: new Map() };
-      void (async () => { for await (const signal of window.tendril.signals.subscribe({ topics: ['soak'], mode: 'all' })) {
-        window.soak.pieces++; const { id, n } = signal.payload; window.soak.replies.set(id, (window.soak.replies.get(id) ?? 0) + 1);
-        if (window.soak.replies.get(id) === n) window.soak.complete = (window.soak.complete ?? 0) + 1;
-      } })();
-    });
+    await page.evaluate(installSoakObserver);
     await new Promise(resolve => setTimeout(resolve, 1000));
     await peer.request('participation-log');
     const burst = async (pieces, bytes = 15_000) => {
@@ -661,7 +654,10 @@ export async function closeLocalTransport() {
       report.slowest_burst = !report.slowest_burst || sent.ms > report.slowest_burst.ms ? { ms: sent.ms, pieceMs: sent.pieceMs, eventLoopLagMaxMs: sent.eventLoopLagMaxMs } : report.slowest_burst;
       if (sent.retries) (report.burst_retries ??= []).push({ at: new Date().toISOString(), retries: sent.retries, pieceMs: sent.pieceMs, eventLoopLagMaxMs: sent.eventLoopLagMaxMs });
       assert.deepEqual(sent.failures, [], `Every piece of a ${pieces}-piece reply must be accepted (${JSON.stringify(sent.failures.slice(0, 3))}).`);
-      await expect.poll(() => page.evaluate(() => window.soak.complete ?? 0), { timeout: 30_000 }).toBe(before + 1);
+      await expect.poll(() => page.evaluate(() => {
+        if (window.soak.error) throw Error(window.soak.error);
+        return window.soak.complete;
+      }), { timeout: 30_000 }).toBe(before + 1);
       return sent.ms;
     };
     report.multi_piece_reply = { pieces: 40, bytes: 40 * 15_000, ms: await burst(40) };
@@ -674,8 +670,8 @@ export async function closeLocalTransport() {
       if (Date.now() - lastInventory >= 60_000) {
         lastInventory = Date.now();
         // Host memory beside each sample: browser storage eviction depends on it.
-        const memAvailableGb = Number(/MemAvailable:\s+(\d+)/.exec(readFileSync('/proc/meminfo', 'utf8'))?.[1] ?? 0) / 1048576;
-        report.opfs_timeline.push({ atS: Math.round((Date.now() - soakStarted) / 1000), memAvailableGb: Math.round(memAvailableGb * 10) / 10,
+        const memAvailableGb = memoryAvailableGb();
+        report.opfs_timeline.push({ atS: Math.round((Date.now() - soakStarted) / 1000), memAvailableGb,
           ...(process.env.FIRST_APP_OPFS_TIMELINE === '1' ? { opfs: await opfsInventory(page) } : {}) });
       }
       await burst(5); // like a dashboard answer every ten seconds
@@ -709,14 +705,12 @@ export async function closeLocalTransport() {
     const answer = await page.evaluate(() => window.appRequests.request('rows', { count: 300, width: 900 }).then(value => ({ rows: value.rows.length, last: value.rows.at(-1).label })));
     assert.deepEqual(answer, { rows: 300, last: 'row "299"' });
     report.first_request_after_connect = { ms: Date.now() - requested, bytes: 300 * 900 };
-    await page.evaluate(() => {
-      window.stateModes = { all: 0, latest: 0 };
-      for (const mode of ['all', 'latest']) void (async () => { for await (const signal of window.tendril.signals.subscribe({ topics: ['state'], mode })) { void signal; window.stateModes[mode]++; } })();
-    });
+    await page.evaluate(installStateSignalObservers);
     await new Promise(resolve => setTimeout(resolve, 500));
     await peer.request('signal-state', { count: 5, intervalMs: 500 });
     await expect.poll(() => page.evaluate(() => window.stateModes.all), { timeout: 10_000 }).toBe(5);
     report.periodic_updates = await page.evaluate(() => window.stateModes);
+    assert.deepEqual(await page.evaluate(() => window.stateModeErrors), []);
     assert.ok(report.periodic_updates.latest >= 1, `A 'latest' subscription must observe periodic updates: ${JSON.stringify(report.periodic_updates)}`);
     passed('the first request after connect is answered (300 rows, ~270 KB) and periodic updates reach all and latest subscribers');
 
@@ -869,7 +863,7 @@ export async function closeLocalTransport() {
     passed('human-edited evidence command retains exact source identity and survives browser reopen');
     await closeTestPeer(peer); peer = undefined;
     passed('native supervisor cleanup and natural child exit without forced termination');
-    report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = 5;
+    report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = reviewedNotes.length;
     console.log('First-app native/browser integration passed. Synthetic local claim and relay limits are recorded in the report.');
   }
   }
