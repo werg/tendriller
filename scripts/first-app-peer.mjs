@@ -46,7 +46,7 @@ export async function installStateSignalObservers() {
 }
 
 /** The test participant owns the complete bootstrap, including its supervisor. */
-export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transportModule }) {
+export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transportModule, networkQualification = false }) {
   return `import assert from 'node:assert/strict';
 import {createInterface} from 'node:readline';
 import {openSession} from './session.mjs';
@@ -76,7 +76,7 @@ try {
   pairings = superviseParticipant({owned,watch:owned.watchSetup,
     report:(value) => { if(value.pairing) pairingStatus={state:value.pairing.state,code:value.pairing.code ?? null};
       if (lifecycleLog.length < 200) lifecycleLog.push({at:Date.now(),...(value.pairing ? {pairing:value.pairing.state,pairingId:value.pairing.pairingId ?? null} : {state:value.state ?? null,setup:value.setup ?? null})}); }});
-  inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: 2,
+  inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: ${networkQualification ? 20 : 2},
     async infer({bytes, mediaType, source, signal}) {
       signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
       inferenceCalls++; inferenceSource = source;
@@ -104,6 +104,33 @@ try {
     try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
+      ${networkQualification ? `else if(request.action==='transport-snapshot' || request.action==='transport-wait') {
+        const snapshot=async()=>{
+          const links=await session.participation.diagnostics();
+          const link=links.find(link=>link.peerId===${JSON.stringify(browserDeviceId)});
+          return {connectionRevision:session.participation.status.connectionRevision,
+            ...(link?Object.fromEntries(['kind','sentReliableBytes','receivedReliableBytes','sentLiveBytes','receivedLiveBytes'].map(key=>[key,link[key]])):{kind:'unknown'})};
+        };
+        if(request.action==='transport-snapshot') result=await snapshot();
+        else {
+          assert.ok(['direct','relay','unknown'].includes(request.kind));
+          result=await new Promise((resolve,reject)=>{
+            let stopped=false,checking=false,again=false,revision=-1;
+            let remove=()=>{};
+            const finish=(error,value)=>{if(stopped)return;stopped=true;clearTimeout(timer);remove();error?reject(error):resolve(value);};
+            const check=async()=>{
+              if(stopped)return;
+              if(checking){again=true;return;}
+              checking=true;
+              try{const value=await snapshot();if(value.kind===request.kind)finish(null,value);}
+              catch(error){finish(error);}
+              finally{checking=false;if(again){again=false;void check();}}
+            };
+            const timer=setTimeout(()=>finish(Error('NETWORK_QUALIFICATION_ROUTE_TIMEOUT')),55000);
+            remove=session.participation.onStatus(status=>{if(status.connectionRevision!==revision){revision=status.connectionRevision;void check();}});
+          });
+        }
+      }` : ''}
       else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus,statusLog,lifecycleLog,
         signalRequests:{state:requestFailure?'failed':requestsStopped.signal.aborted?'closed':'running',code:requestFailure?.code ?? null}};
       else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:{phase:session.participation.status.phase,peers:[...session.participation.status.connectedPeers].sort()}};

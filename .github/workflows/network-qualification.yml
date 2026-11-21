@@ -1,0 +1,63 @@
+name: Immutable first-app network qualification
+
+on:
+  workflow_call:
+    inputs:
+      source:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact source SHA of the qualified graph
+        type: string
+        required: true
+      artifact_run_id:
+        description: Successful artifact run containing public-packages for that source
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  network-first-app:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Harness source and restored product source are recorded separately.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-packages
+          path: dist
+          run-id: ${{ inputs.artifact_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Bind the restored graph to the requested source
+        env:
+          EXPECTED_SOURCE: ${{ inputs.source }}
+        run: |
+          node --input-type=module -e 'import assert from "node:assert/strict";import{readFile}from"node:fs/promises";const s=process.env.EXPECTED_SOURCE;assert.match(s,/^[a-f0-9]{40}$/);const m=JSON.parse(await readFile("dist/manifest.json"));assert.equal(m.source_commit,s);'
+      - run: npm ci --ignore-scripts
+      - run: node --test scripts/test/first-app-peer.test.mjs test/e2e/network-qualification/lab.test.mjs
+      - run: docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
+      - run: node test/e2e/network-qualification/run.mjs --output "$RUNNER_TEMP/network-controls"
+      - run: node test/e2e/network-qualification/run.mjs --browser-controls --output "$RUNNER_TEMP/network-browser-controls"
+      - name: Exercise the restored kit under real packet faults and browser lifecycle changes
+        run: node test/e2e/network-qualification/run.mjs --artifact-root "$GITHUB_WORKSPACE" --profile suite --output "$RUNNER_TEMP/network-first-app"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: immutable-network-qualification
+          path: |
+            ${{ runner.temp }}/network-controls
+            ${{ runner.temp }}/network-browser-controls
+            ${{ runner.temp }}/network-first-app
+          if-no-files-found: error

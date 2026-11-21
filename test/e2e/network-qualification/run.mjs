@@ -1,18 +1,34 @@
 import { spawn } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { NETWORK_PROFILES } from './scenarios.mjs';
 
 const { values } = parseArgs({ options: {
   output: { type: 'string' }, image: { type: 'string', default: 'tendriller-network-lab:playwright-1.65' },
   'node-binary': { type: 'string', default: process.execPath },
+  'browser-controls': { type: 'boolean', default: false },
+  'artifact-root': { type: 'string' }, profile: { type: 'string' },
+  'idle-ms': { type: 'string', default: '15000' },
 } });
 if (!values.output) throw new Error('Usage: node test/e2e/network-qualification/run.mjs --output NEW_DIRECTORY [--node-binary NODE24]');
+const application = Boolean(values['artifact-root']);
+if (application && (!(values.profile === 'suite' || NETWORK_PROFILES.includes(values.profile)) || values['browser-controls'])) throw new Error('Choose one application --profile, without --browser-controls');
+if (!application && values.profile) throw new Error('An application profile requires --artifact-root');
+const idleMs = Number(values['idle-ms']);
+if (!Number.isSafeInteger(idleMs) || idleMs < 1000 || idleMs > 48 * 60 * 60 * 1000) throw new Error('Invalid bounded idle interval');
+let kit;
+if (application) {
+  const manifest = JSON.parse(await readFile(resolve(values['artifact-root'], 'dist/manifest.json'), 'utf8'));
+  kit = manifest.first_app?.file;
+  if (typeof kit !== 'string' || basename(kit) !== kit || !/^tendriller-first-app-[a-zA-Z0-9.-]+\.tgz$/.test(kit)) throw new Error('Invalid immutable first-app record');
+}
 const output = resolve(values.output);
 await mkdir(output, { recursive: false, mode: 0o700 });
 const source = fileURLToPath(new URL('.', import.meta.url));
+const workspace = resolve(source, '../../..');
 const name = `tendriller-network-lab-${randomUUID()}`;
 let stopped = false;
 let child;
@@ -36,12 +52,21 @@ try {
   // No host networking, no published ports and no host filesystem state except
   // this new output directory and the read-only fixture/Node binary.
   await new Promise((accept, reject) => {
-    child = spawn('docker', ['run', '--rm', '--name', name, '--cap-add', 'NET_ADMIN', '--cpus=2', '--memory=7g',
+    child = spawn('docker', ['run', '--rm', '--init', '--name', name, '--cap-add', 'NET_ADMIN', '--cpus=2', '--memory=7g',
       '--mount', `type=bind,source=${source},target=/lab,readonly`,
       '--mount', `type=bind,source=${resolve(values['node-binary'])},target=/usr/local/bin/node,readonly`,
       '--mount', `type=bind,source=${output},target=/evidence`,
-      values.image, 'node', '/lab/control-probe.mjs'], { stdio: 'inherit' });
-    const timer = setTimeout(() => { void stop('SIGTERM'); reject(new Error('NETWORK_LAB_RUN_TIMEOUT')); }, 90_000);
+      ...(values['browser-controls'] ? ['--mount', `type=bind,source=${resolve(workspace, 'node_modules')},target=/node_modules,readonly`] : []),
+      ...(application ? [
+        '--mount', `type=bind,source=${workspace},target=/workspace,readonly`,
+        '--mount', `type=bind,source=${resolve(values['artifact-root'], 'dist')},target=/workspace/dist,readonly`,
+        '--env', `NETWORK_LAB_IDLE_MS=${idleMs}`,
+      ] : []),
+      values.image, ...(values['browser-controls'] || application ? ['xvfb-run', '-a'] : []), 'node',
+      ...(application ? ['/workspace/scripts/test-first-app.mjs', '--first-app-archive', `/workspace/dist/${kit}`,
+        '--network-lab-profile', values.profile, '--report', '/evidence/first-app.json'] :
+        [values['browser-controls'] ? '/lab/browser-probe.mjs' : '/lab/control-probe.mjs'])], { stdio: 'inherit' });
+    const timer = setTimeout(() => { void stop('SIGTERM'); reject(new Error('NETWORK_LAB_RUN_TIMEOUT')); }, application ? 25 * 60_000 + idleMs : 90_000);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); code === 0 && !stopped ? accept() : reject(new Error('NETWORK_LAB_PROBE_FAILED')); });
   });

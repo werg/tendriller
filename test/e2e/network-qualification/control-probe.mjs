@@ -54,7 +54,7 @@ async function tcpEcho(port) {
 }
 
 const server = createServer(socket => { socket.on('error', () => {}); socket.on('data', bytes => socket.write(bytes)); });
-server.listen(0, '127.0.0.1');
+server.listen(8790, '127.0.0.1');
 await once(server, 'listening');
 const probes = [];
 try {
@@ -68,6 +68,13 @@ try {
   await faults.restoreUdp();
   for (const probe of probes) assert.equal(await probe.echoes(), true, 'UDP did not recover');
   report.checks.push('ipv4-ipv6-udp-restored');
+  await faults.blockApplicationNetwork();
+  await assert.rejects(tcpEcho(server.address().port), 'Application TCP path bypassed the partition');
+  for (const probe of probes) assert.equal(await probe.echoes(), false);
+  await faults.restoreUdp();
+  await tcpEcho(server.address().port);
+  for (const probe of probes) assert.equal(await probe.echoes(), true);
+  report.checks.push('application-tcp-and-udp-partition-restored');
   await faults.impair();
   const impairedTcpMs = await tcpEcho(server.address().port);
   assert.ok(impairedTcpMs >= 100, 'The real loopback qdisc did not delay the TCP exchange');

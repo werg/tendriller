@@ -26,6 +26,7 @@ const require = createRequire(import.meta.url);
 const { values } = parseArgs({ options: {
   'session-archive': { type: 'string' }, 'first-app-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
   'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' }, transport: {type:'string', default:'direct'},
+  'network-lab-profile': { type: 'string' },
 } });
 if (!values['session-archive'] && !values['first-app-archive'])
   throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only] [--report FILE] [--keep]; or --session-archive FILE for an explicit source/SQL composition.');
@@ -33,6 +34,8 @@ if (values['session-archive'] && values['first-app-archive']) throw Error('Use t
 if (values['native-only'] && values['sql-native-only']) throw Error('Choose --native-only for events or --sql-native-only for SQL.');
 if (values['first-app-archive'] && values['sql-native-only']) throw Error('The first-app release archive has the SQL-free events profile.');
 if (!['direct','relay'].includes(values.transport)) throw Error('Choose --transport direct or relay for qualification.');
+if (values['network-lab-profile'] && (process.env.TENDRILLER_NETWORK_LAB !== '1' || values.transport !== 'direct' || !values['first-app-archive']))
+  throw Error('Network lab requires its isolated container, real RTC and an immutable first-app kit.');
 const sqlOnly = Boolean(values['sql-native-only']);
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
 const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
@@ -49,7 +52,7 @@ const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql
       : 'Local Chromium and real native/browser RTC, with forced-failure relay qualification; no Internet NAT or physical mobile qualification.',
     'Scripted tutorial execution; not an unassisted fresh-agent usability result.',
     'An ordinary test-host WebSocket forwarding boundary isolates workerd issue #8185; the packed host is unchanged. Direct production TCP closure is not qualified.'], steps: [] };
-let host, peer, browser, page, stage = 'preflight';
+let host, peer, browser, labBrowser, page, stage = 'preflight';
 
 // Every request, including a followed redirect or literal IP, is restricted to
 // loopback hosts. TLS relaxation never enters the tutorial, packages or page.
@@ -466,11 +469,15 @@ export async function closeLocalTransport() {
     // Trust only this loopback fixture certificate across Chromium targets;
     // never disable certificate verification globally or alter the public app.
     const certificatePin = await localCertificatePin();
-    browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+    const browserOptions = { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
       args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1',
-        `--ignore-certificate-errors-spki-list=${certificatePin}`] });
+        `--ignore-certificate-errors-spki-list=${certificatePin}`] };
+    if (values['network-lab-profile']) {
+      const { launchNetworkBrowser } = await import('../test/e2e/network-qualification/browser-launch.mjs');
+      labBrowser = await launchNetworkBrowser(browserOptions); browser = labBrowser.browser;
+    } else browser = await chromium.launch(browserOptions);
     report.browser = await browser.version();
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const context = labBrowser?.context ?? await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     report.connectionErrors = [];
     await context.exposeBinding('__firstAppConnection',(_source,value)=>{if(report.connectionErrors.length<50&&/^(?:APPLICATION_|PEER_|DEVICE_|OWNER_|ENDPOINT_)[A-Z_]{1,90}$/.test(value))report.connectionErrors.push(value);});
     report.rtcLifecycle = [];
@@ -574,6 +581,7 @@ export async function closeLocalTransport() {
     const evidencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
     await writeFile(join(app, 'test-peer.mjs'), nativeTestPeerSource({
       evidenceBase64: evidencePng.toString('base64'), browserDeviceId: browserDevice, transportModule: pathToFileURL(preload).href,
+      networkQualification: Boolean(values['network-lab-profile']),
     }));
     async function startPeer() {
       const child = spawn(process.execPath, ['--import', preload, join(app, 'test-peer.mjs')], { cwd: app, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -957,6 +965,22 @@ export async function closeLocalTransport() {
       content_id: evidenceNote.source.reference.id, operation_id: evidenceNote.operationId };
     report.limits.push('Inference provider output is injected in the private native test process; no live provider, credential validity or billing tested.');
     passed('human-edited evidence command retains exact source identity and survives browser reopen');
+    if (values['network-lab-profile']) {
+      checkpoint('qualify real packet faults and application recovery');
+      const { qualifyFirstAppNetwork } = await import('../test/e2e/network-qualification/first-app.mjs');
+      try {
+        const { NETWORK_PROFILES } = await import('../test/e2e/network-qualification/scenarios.mjs');
+        const profiles = values['network-lab-profile'] === 'suite' ? NETWORK_PROFILES : [values['network-lab-profile']];
+        report.network_qualification = { profiles: [], success: false };
+        for (const profile of profiles) report.network_qualification.profiles.push(await qualifyFirstAppNetwork({ page, context, peer, expect, transportCounters,
+          evidencePng, browserDevice, sha256, profile }));
+        report.network_qualification.success = true;
+        report.network_note_count = (await peer.request('query')).value.length;
+      } catch (error) {
+        if (error.networkReport) report.network_qualification?.profiles.push(error.networkReport);
+        throw error;
+      }
+    }
     await closeTestPeer(peer); peer = undefined;
     passed('native supervisor cleanup and natural child exit without forced termination');
     report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = reviewedNotes.length;
@@ -995,7 +1019,7 @@ export async function closeLocalTransport() {
   if (peer) await closeTestPeer(peer).catch(error => {
     report.native_cleanup = { status: 'failed', message: error.message };
   });
-  await browser?.close().catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
+  await (labBrowser ? labBrowser.close() : browser?.close())?.catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
   await mkdir(dirname(reportPath), { recursive: true });
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
   if (values.keep) console.log(`Private test directory retained: ${directory}`);

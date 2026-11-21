@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 const phases = new Set(['startup', 'blocked', 'restored', 'offline', 'impaired', 'frozen', 'idle', 'cleanup']);
-const events = new Set(['start', 'end', 'fault-on', 'fault-off', 'command', 'direct', 'relay', 'stop-request', 'failure']);
+const events = new Set(['start', 'end', 'fault-on', 'fault-off', 'command', 'signal-verified', 'sensor-verified', 'reload-verified', 'network-event', 'disconnected', 'direct', 'relay', 'stop-request', 'failure']);
 const counters = ['hostRequests', 'relayBytes', 'sentReliableBytes', 'receivedReliableBytes', 'sentLiveBytes', 'receivedLiveBytes'];
 
 export function activityTimeline({ now = () => new Date().toISOString(), limit = 256 } = {}) {
