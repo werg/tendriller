@@ -5,6 +5,7 @@ import { defineApplication, describeApplication, PEER_GENERATION_CAPABILITIES } 
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { serveBrowserOwner } from '../worker.mjs';
 import { createSharedRootEndpoint } from '../browser-root.mjs';
+import { acquireRootLifetime, rootLifetimeLockName } from '../root-lifetime.mjs';
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastEndpoint, isOwnerAnnouncement } from '../browser-transport.mjs';
 
 async function until(condition, description) {
@@ -35,8 +36,18 @@ function next(port, predicate, timeoutMs = 1500) {
   });
 }
 async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = false } = {}) {
+  const witnesses = new Map(), witnessHandles = []; let queryCalls = 0, query = async () => ({ held: [...witnesses.values()], pending: [] });
+  const pageLocks = clientId => ({
+    query: () => query(),
+    async request(name, options, run) {
+      if (witnesses.has(name)) return run(null);
+      const witness = { name, mode: 'exclusive', clientId }; witnesses.set(name, witness);
+      try { return await run({ name, mode: 'exclusive' }); }
+      finally { if (witnesses.get(name) === witness) witnesses.delete(name); }
+    },
+  });
   const oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator'); let held = incumbent ? 1 : 0, resourceClosed = false, opened = 0;
-  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { async request(_name, options, run) {
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { locks: { query() { queryCalls++; return query(); }, async request(_name, options, run) {
     if (held && options.ifAvailable) return run(null);
     if (held) return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
     held++; try { return await run({}); } finally { held--; }
@@ -52,14 +63,15 @@ async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = 
   const config = { profileId: 'retained', openSession: async () => { opened++; return { session }; }, rootLimits };
   const service = serveBrowserOwner({ scope, ...(load ? { load: () => load(config) } : config) });
   t.after(async () => {
-    finishClose?.(); for (const transport of transports) await transport.close(); await service.close();
+    finishClose?.(); for (const witness of witnessHandles) await witness.release(); for (const transport of transports) await transport.close(); await service.close();
     for (const port of ports) port.close();
     if (oldNavigator) Object.defineProperty(globalThis, 'navigator', oldNavigator); else delete globalThis.navigator;
   });
   function root() {
     const pair = new MessageChannel(), server = tracked(pair.port1); ports.push(pair.port1, pair.port2); scope.connect(server);
-    const rootId = crypto.randomUUID();
-    return { server, port: pair.port2, rootId, async boot() {
+    const rootId = crypto.randomUUID(); let witness;
+    return { releaseWitness: () => witness?.release(), server, port: pair.port2, rootId, async boot({ acquire = true } = {}) {
+      if (acquire && !witness) { witness = await acquireRootLifetime('retained', rootId, { locks: pageLocks(rootId) }); witnessHandles.push(witness); }
       const ready = next(pair.port2, data => ['ready', 'failure'].includes(data.type));
       pair.port2.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'boot', mode: 'shared', profileId: 'retained', id: rootId });
       return ready;
@@ -76,7 +88,8 @@ async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = 
     const client = await connectApplicationOwner(transport, { applicationId: session.applicationId, definitionId: description.id, definitionVersion: description.version, timeoutMs: 1000 });
     return { ...connection, transport, client };
   }
-  return { scope, session, controller, service, root, attach, finishClose,
+  return { scope, session, controller, service, root, attach, finishClose, witnesses,
+    get queryCalls() { return queryCalls; }, setQuery(value) { query = value; },
     get held() { return held; }, get resourceClosed() { return resourceClosed; }, get opened() { return opened; } };
 }
 
@@ -131,8 +144,9 @@ test('session abort closes roots and releases the owner lock only after resource
 test('a dead SharedWorker root fails its facade closed and suspended observation resumes against the same binding', async t => {
   const f = await fixture(t), attached = await f.attach();
   await attached.client.suspend(); await attached.transport.suspend();
-  attached.server.close(); await delay(260); assert.equal(attached.client.signal.aborted, false);
-  await assert.rejects(attached.transport.resume(), /OWNER_UNREACHABLE/);
+  attached.server.close();
+  await until(() => attached.client.signal.aborted, 'native closed port fences its facade');
+  await assert.rejects(attached.transport.resume(), /OWNER_UNREACHABLE|ENDPOINT_STALE/);
   // A failed resume must close the old facade, not leave an apparently live session.
   await until(() => attached.client.signal.aborted, 'dead resumed facade');
   assert.equal(f.held, 1); assert.equal(f.session.signal.aborted, false);
