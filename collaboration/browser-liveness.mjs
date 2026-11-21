@@ -16,7 +16,7 @@ export function createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs, now =
       const request = source?.(), time = now();
       const finite = request && Number.isFinite(request.startedAt) && Number.isFinite(request.deadline) &&
         request.startedAt <= time && request.deadline > time && request.deadline > request.startedAt &&
-        request.deadline - request.startedAt <= requestTimeoutMs;
+        request.deadline <= request.startedAt + requestTimeoutMs;
       if (!spent && finite && request.startedAt < lastReceived + livenessTimeoutMs) {
         spent = true; grace = request.deadline;
       }

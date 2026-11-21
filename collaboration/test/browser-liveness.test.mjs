@@ -25,6 +25,16 @@ test('silent hung request stays bounded at its original30s deadline', () => {
   f.at(30000); assert.ok(f.state.deadline() <= 30000);
 });
 
+test('fractional monotonic timestamps preserve the facade deadline across a precision boundary', () => {
+  const f = fixture(), startedAt = 101072.004, deadline = startedAt + 30000;
+  assert.ok(deadline - startedAt > 30000, 'Subtraction rounds this valid budget upward');
+  f.at(startedAt); f.state.authenticated();
+  f.request({ startedAt, deadline });
+  assert.equal(f.state.deadline(), deadline);
+  f.at(startedAt + 17000);
+  assert.equal(f.state.deadline(), deadline);
+});
+
 test('no request or indefinitely passive observation retains the15s silence fence', () => {
   const f = fixture(); f.request(null); f.at(15000);
   assert.equal(f.state.deadline(), 15000);
