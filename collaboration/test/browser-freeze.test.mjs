@@ -228,3 +228,21 @@ test('observational park cannot clear an explicitly suspended SharedWorker RTC r
  f.registerOriginal();let opened=false;const pending=f.openDirect().then(value=>{opened=true;return value;});await delay(10);assert.equal(opened,false);
  await f.attachment.resume();const connection=await bounded(pending,'explicit resume restores route authority');await connection.close();
 });
+
+for(const mode of ['shared','elected'])for(const visibleAgain of [false,true])test(`${mode} hide during explicit resume parks synchronously${visibleAgain?' and a rapid visible return requires new proof':''}`,async t=>{
+ const f=await fixture(t,mode);await f.attachment.suspend();const starts=f.probe.started;
+ let release,entered=false,calls=0;const held=new Promise(resolve=>{release=resolve;}),resumeAttachment=f.attachment.session.resumeAttachment.bind(f.attachment.session);
+ // Run the actual endpoint RPC, then delay its continuation. This isolates the
+ // facade's await boundary after transport proof without changing owner policy.
+ f.attachment.session.resumeAttachment=async()=>{calls++;const value=await resumeAttachment();if(calls===1){entered=true;await held;}return value;};
+ const resuming=f.attachment.resume();await until(()=>entered,'explicit resume awaiting endpoint continuation');assert(f.clock.heartbeats.length>0);
+ f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event('visibilitychange'));
+ assert.equal(f.clock.heartbeats.length,0,'hide must synchronously park an explicit resume');
+ if(visibleAgain){f.doc.hidden=false;f.doc.visibilityState='visible';f.doc.dispatchEvent(new Event('visibilitychange'));}
+ f.clock.elapse(30_001);release();await bounded(resuming,'explicit resume settles after hide');
+ assert.equal(f.probe.started,starts+1,'one explicit resume recreates its provider only once');
+ if(visibleAgain){assert.equal(calls,2,'the old continuation cannot replace fresh visible proof');await until(()=>f.clock.heartbeats.length===1,'one fresh heartbeat');}
+ else{assert.equal(f.clock.heartbeats.length,0);f.doc.hidden=false;f.doc.visibilityState='visible';f.doc.dispatchEvent(new Event('visibilitychange'));await until(()=>f.clock.heartbeats.length===1,'later visible proof');}
+ f.clock.runDue();assert.equal(f.replaced.length,0);assert.equal(f.attachment.session.signal.aborted,false);assert.equal(f.opened,1);
+ assert.deepEqual((await bounded(f.attachment.session.query('state',null),'query after explicit resume race')).value,['retained identity']);
+});
