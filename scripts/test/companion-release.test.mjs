@@ -166,6 +166,8 @@ test('end-to-end dry run migrates both actual workflow shapes, runs generated gu
     const p = planningApi(f, mode), plan = await planProposal(tuple, { api: p.api });
     assert(p.calls.every(call => !call.body));
     assert(plan.files['.github/workflows/companion-release-receiver.yml'].includes('--auth-kind repository'));
+    if (mode === 'contrib') for (const name of ['peer-generation', 'collaboration'])
+      assert(plan.files[`.github/workflows/${name}.yml`].includes("github.event_name == 'workflow_dispatch' && 'explicit' || 'ordinary'"));
     const root = mkdtempSync(join(tmpdir(), 'tuple-dry-run-'));
     try {
       for (const [name, value] of Object.entries(plan.files)) {
