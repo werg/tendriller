@@ -47,6 +47,15 @@ transition request before sending it, then verify the selected authority before
 opening the session. `configureApplication` alone does not satisfy this step;
 the tutorial's initialization command performs both stages.
 
+## Inspect capabilities and choose a host
+
+`tendril probe --server YOUR_ORIGIN --project ./app --check-network` reports
+measured capabilities separately from unknowns. It does not create a page,
+request a browser permission, or establish future process availability. Prefer
+WebRTC when available; select the encrypted relay for restricted environments.
+See [deployment guidance](../DEPLOYMENT_GUIDE.md) for the process, storage and
+lifetime required by each hosting route.
+
 ## Choose attachment or ownership
 
 `--session /absolute/application.mjs` names the application's public bootstrap.
@@ -66,8 +75,7 @@ An unavailable owner never causes it to open a second signer.
 session must expose a local `detach()` method. `openSession` returns
 `{session, control?, close?}`; the optional `close()` also releases the owner's
 profile fence. The CLI calls the appropriate cleanup exactly once, including an
-interrupted invocation. A legacy bootstrap exporting only `openSession` retains
-its explicit owned behavior. `--run RUN_ID` supplies caller-asserted run context;
+interrupted invocation. A bootstrap exporting only `openSession` uses explicit ownership. `--run RUN_ID` supplies caller-asserted run context;
 it is not authorization to impersonate a participant.
 
 For the tutorial's default `main` profile:
@@ -335,3 +343,35 @@ state. The default capacity is 10,000 effect identities with 128 KiB records;
 a full journal refuses new effects instead of evicting duplicate protection.
 `close()` releases the SQLite connection. Network work belongs outside
 `transact()`; an asynchronous transaction callback is rejected.
+
+
+## Local MCP and ordered command batches
+
+A local MCP client can launch the installed tools executable with arguments
+`["--session", "/absolute/app/session.mjs", "--mode", "attach", "mcp-stdio"]`.
+Start the app's resident participant first. This newline-delimited stdio server
+exposes `app_discover`, `state_query`, `command_submit`,
+`command_submit_batch`, and `operation_inspect`. It attaches to the same local
+signer; closing the MCP client detaches that caller. Tool calls have a fixed
+30-second deadline and support cancellation. Saved work survives a waiter
+cancelling or timing out. This supplies local tools; it does not imply that the
+client supports background conversation wake.
+
+`command-batch '<JSON array>'` accepts up to 64 ordered entries with `command`,
+`input`, `operationId`, and optional `basedOn`; `--saved` returns the observed
+recorded/applied state without waiting for application. The local MCP batch
+accepts up to 32 entries. These are ordered individual commands, not one atomic
+transaction. Declare one domain command when all changes must commit together.
+Malformed envelopes fail before the first submission. Results preserve the
+original operation IDs and report incomplete batches with `nextIndex`.
+Inspect uncertain operations rather than assigning replacement IDs.
+
+## Share source without device state
+
+`tendril handoff source handoff.tgz --project ./app` exports code, documentation,
+static assets and package/TypeScript manifests. It excludes hidden files,
+environment files, runtime/configuration JSON, device/checkpoint bytes and
+state directories, and rejects recognized credentials embedded in source.
+Review authored source before sharing: arbitrary embedded credentials cannot be
+identified reliably by a file filter. The recipient configures its own private
+setup and device; the source archive transfers no authority.

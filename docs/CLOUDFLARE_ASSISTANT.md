@@ -82,3 +82,27 @@ Each binding gets isolated `operationId` namespaces, subscriptions, cursors, and
 - Account discovery (`list_tendrils`) queries D1 without waking page Durable Objects; calls wake only the target page.
 - Inbound participant and inbox sockets use Durable Object hibernation (zero idle polling or keepalives).
 - Per-page bounds: 256 retained inbox events (plus records with pending deliveries), 8 subscriptions, 256 queued deliveries, 4 mounted live inboxes, 32 consumer bindings, 4,096 operation mappings, 8 concurrent RPCs (at most 2 RPCs and 4 subscriptions per binding). Delivery alarms lease up to 4 due jobs per pass. Disconnecting removes the page's inbox and subscriptions.
+
+
+## HTTPS fallback when persistent transports are blocked
+
+An already authorized OAuth client may use the same service origin's
+`/v1/apps/APPLICATION_ID` gateway: `POST /commands`, `POST /commands/batch`,
+`GET /operations/OPERATION_ID`, `GET` or `POST /query`, and `GET /events`.
+Use its bearer token and, for an independently approved agent, the
+`Tendriller-Agent-Binding` header. Command/query JSON has the same fields as the
+corresponding MCP tool; batches contain `commands` and optional `stopOnError`.
+The same account, OAuth scopes, reviewed capabilities and original signer
+admission apply. Store credentials privately.
+
+The HTTP and MCP batch tools accept up to 16 ordered individual commands and
+return per-command outcomes, `complete`, and `nextIndex`. They are not an atomic
+transaction. The complete HTTP request has a 25-second budget; remaining entries
+are not submitted after cancellation or that deadline. Keep all original IDs
+and inspect uncertain results before resuming at `nextIndex`.
+
+For event catch-up, retain the returned compound cursor and JSON-encode it in
+`since`; `limit` is 1..25. This endpoint returns immediately and supplies no
+background wake. Prefer native supported push and hibernating WebSockets for
+ongoing connections; use this fallback during an active turn when those routes
+are unavailable. Continuous status polling creates unnecessary requests.
