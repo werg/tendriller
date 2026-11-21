@@ -85,3 +85,28 @@ test('authenticated BC attach registers RTC before RPC, carries full opaque pack
  outsider.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'register'});await new Promise(setImmediate);await new Promise(setImmediate);assert.equal(received.length,4);assert.equal(order.filter(x=>x==='rtc').length,1);
  let closed=false;ownerRtc.addEventListener('close',()=>closed=true);await transport.close();await until(()=>closed);assert.equal(bridge.routes,0);
 });
+
+test('provider admission reserves the last slot atomically and sends the next concurrent open to another page',async t=>{
+ const calls=[],broker=createBrowserRtcBroker({openConnection:async endpoint=>{calls.push(endpoint);return {close:async()=>{}};}});
+ t.after(()=>broker.close());const a=rtcEndpoint(()=>{}),b=rtcEndpoint(()=>{});
+ for(const endpoint of[a,b]){broker.addRoute(endpoint,{authorize:()=>true});register(endpoint);}
+ const connections=[];for(let i=0;i<7;i++)connections.push(await broker.openDirectConnection({timeoutMs:1000}));
+ connections.push(...await Promise.all([broker.openDirectConnection({timeoutMs:1000}),broker.openDirectConnection({timeoutMs:1000})]));
+ assert.equal(calls.filter(endpoint=>endpoint===a).length,8);assert.equal(calls.filter(endpoint=>endpoint===b).length,1);
+ await Promise.all(connections.map(connection=>connection.close()));
+});
+
+for(const loss of ['provider','deadline'])test(`a noncooperative opener cannot delay ${loss} cancellation or retain its late candidate`,async t=>{
+ let resolve,closed=0,started=false;const broker=createBrowserRtcBroker({openConnection:()=>{started=true;return new Promise(done=>resolve=done);}});
+ t.after(()=>broker.close());const endpoint=rtcEndpoint(()=>{}),remove=broker.addRoute(endpoint,{authorize:()=>true});register(endpoint);
+ const pending=broker.openDirectConnection({timeoutMs:loss==='deadline'?20:1000});await until(()=>started);
+ if(loss==='provider')remove();
+ await assert.rejects(pending,{code:loss==='provider'?'RTC_PROVIDER_LOST':'RTC_PROVIDER_TIMEOUT'});
+ resolve({close:async()=>{closed++;}});await until(()=>closed===1);await new Promise(setImmediate);assert.equal(closed,1);
+});
+
+test('opaque RTC validation rejects huge sparse lengths before codec allocation',()=>{
+ assert.throws(()=>checkRtcMessage({items:new Array(1000000)}),/RTC_MESSAGE_LIMIT/);
+ assert.throws(()=>checkRtcMessage({items:new Array(65536)}),/RTC_MESSAGE_LIMIT/);
+ checkRtcMessage({items:new Array(12)});
+});

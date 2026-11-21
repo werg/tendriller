@@ -14,6 +14,10 @@ export function checkRtcMessage(value) {
     else if (item === null || item === undefined || ['boolean','number'].includes(typeof item)) bytes += 16;
     else if (typeof item === 'object') {
       if (seen.has(item) || (!Array.isArray(item) && ![Object.prototype,null].includes(Object.getPrototypeOf(item)))) throw Error('RTC_MESSAGE_INVALID');
+      if (Array.isArray(item)) {
+        if (item.length > 65536 - nodes) throw Error('RTC_MESSAGE_LIMIT');
+        nodes += item.length - Object.keys(item).filter(key => /^(0|[1-9][0-9]*)$/.test(key) && Number(key) < item.length).length;
+      }
       seen.add(item); for (const [key,child] of Object.entries(item)) { bytes += key.length * 3; visit(child, depth + 1); } seen.delete(item);
     } else throw Error('RTC_MESSAGE_INVALID');
     if (bytes > MAX_RTC_MESSAGE_BYTES) throw Error('RTC_MESSAGE_LIMIT');
@@ -52,11 +56,11 @@ export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebR
     endpoint.addEventListener('message', receive); endpoint.addEventListener('close', close); routes.add(route);
     return close;
   }
-  function selected() {
+  function selected(attempt) {
     for (const route of routes) {
       if (!route.provider || route.attempts.size >= 8) continue;
       if (!route.authorize(route.binding)) { removeProvider(route); continue; }
-      return route;
+      route.attempts.add(attempt); return route;
     }
   }
   async function openDirectConnection(options) {
@@ -65,24 +69,53 @@ export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebR
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000) throw error('RTC_TIMEOUT_INVALID');
     options.signal?.throwIfAborted(); const attempt = new AbortController(), deadline = Date.now() + timeoutMs;
     const timer = setTimeout(() => attempt.abort(error('RTC_PROVIDER_TIMEOUT')), timeoutMs);
-    const lifetime = AbortSignal.any([attempt.signal,ownLifetime.signal,...[signal,options.signal].filter(Boolean)]); let route, retained = false;
+    const lifetime = AbortSignal.any([attempt.signal,ownLifetime.signal,...[signal,options.signal].filter(Boolean)]); let route, retained = false, opening, candidate, retired = false, charged = true;
+    const releasePending = () => { if (charged) { charged = false; pending--; } };
+    const retireCandidate = () => {
+      if (!candidate || retired) return;
+      retired = true;
+      void Promise.resolve().then(() => candidate.close()).catch(() => {});
+    };
     pending++;
     try {
       route = await new Promise((resolve,reject) => {
         const abort = () => { waiting.delete(ready); reject(lifetime.reason); };
-        const ready = () => { if (lifetime.aborted) { abort(); return; } const value = selected(); if (value) { waiting.delete(ready); lifetime.removeEventListener('abort',abort); resolve(value); } };
+        const ready = () => { if (lifetime.aborted) { abort(); return; } const value = selected(attempt); if (value) { waiting.delete(ready); lifetime.removeEventListener('abort',abort); resolve(value); } };
         waiting.add(ready); lifetime.addEventListener('abort',abort,{once:true}); ready();
       });
-      lifetime.throwIfAborted(); route.attempts.add(attempt);
-      const connection = await openConnection(route.endpoint, { ...options,
-        timeoutMs: Math.max(1,deadline - Date.now()), signal: AbortSignal.any([lifetime,route.provider.signal]) });
+      lifetime.throwIfAborted();
+      opening = Promise.resolve().then(() => {
+        lifetime.throwIfAborted();
+        return openConnection(route.endpoint, { ...options,
+          timeoutMs: Math.max(1,deadline - Date.now()), signal: AbortSignal.any([lifetime,route.provider.signal]) });
+      }).then(value => {
+        candidate = value;
+        if (lifetime.aborted) {
+          retireCandidate();
+          throw lifetime.reason;
+        }
+        return candidate;
+      }).finally(releasePending);
+      const connection = await new Promise((resolve, reject) => {
+        const abort = () => reject(lifetime.reason);
+        lifetime.addEventListener('abort', abort, {once:true});
+        opening.then(resolve,reject).finally(() => lifetime.removeEventListener('abort',abort));
+        if (lifetime.aborted) abort();
+      });
       lifetime.throwIfAborted(); clearTimeout(timer); retained = true;
+      const released = () => { route.attempts.delete(attempt); wake(); };
+      connection.signal?.addEventListener('abort',released,{once:true});
+      if (connection.signal?.aborted) released();
       let closing;
       const close = (...args) => closing ??= Promise.resolve().then(() => connection.close(...args)).finally(() => {
-        route.attempts.delete(attempt); wake(); attempt.abort(error('RTC_CONNECTION_CLOSED'));
+        connection.signal?.removeEventListener('abort',released); released(); attempt.abort(error('RTC_CONNECTION_CLOSED'));
       });
       return new Proxy(connection,{ get(target,key) { if (key === 'close') return close; const value = Reflect.get(target,key,target); return typeof value === 'function' ? value.bind(target) : value; } });
-    } finally { pending--; clearTimeout(timer); if (!retained) route?.attempts.delete(attempt); }
+    } finally {
+      if (!opening) releasePending();
+      clearTimeout(timer);
+      if (!retained) { retireCandidate(); route?.attempts.delete(attempt); attempt.abort(error('RTC_CONNECTION_CLOSED')); wake(); }
+    }
   }
   function close() {
     if (closed) return; closed = true; ownLifetime.abort(error('RTC_BROKER_CLOSED'));
