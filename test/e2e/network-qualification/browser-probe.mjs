@@ -31,7 +31,8 @@ try {
   const page = await context.newPage(); await mark('navigation'); await page.goto(origin);
   await page.setViewportSize({ width: 390, height: 844 });
   controls = await createBrowserNetworkControls(page);
-  const options = { signal: AbortSignal.timeout(10_000) };
+  // This control regression includes the same 30-second freeze as first-app.
+  const options = { signal: AbortSignal.timeout(60_000) };
   await mark('network-change');
   assert.equal((await controls.networkChange(options)).observed, true);
   report.checks.push('browser-network-information-change');
@@ -48,7 +49,8 @@ try {
   await mark('freeze-hold');
   // Runtime evaluation can itself stall while a headed page is frozen. Capture
   // the timer count in actual lifecycle event handlers, without waking the page.
-  await new Promise(resolve => setTimeout(resolve, 250));
+  report.freezeMs = 30_000;
+  await new Promise(resolve => setTimeout(resolve, report.freezeMs));
   await mark('freeze-resume');
   await controls.setFrozen(false, options);
   await mark('freeze-read');
@@ -58,6 +60,16 @@ try {
   assert.equal(frozen.after, frozen.before);
   await page.waitForFunction(previous => window.ticks > previous, frozen.after, { timeout: 5000 });
   report.checks.push('page-timers-freeze-resume');
+  // Repeat the same real lifecycle cycle. An already-true first predicate must
+  // not be the only way a resume observation can pass in a hidden document.
+  for (let index = 0; index < 2; index++) {
+    const again = { signal: AbortSignal.timeout(10_000) };
+    await controls.setFrozen(true, again);
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await controls.setFrozen(false, again);
+    assert.equal(await page.evaluate(() => document.visibilityState), 'visible');
+  }
+  report.checks.push('repeated-freeze-resume-foreground');
   await mark('background');
   report.backgroundSupported = (await controls.background({ ...options, pauseMs: 100 })).hiddenObserved;
   await mark('foreground-actionability');

@@ -1,6 +1,15 @@
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 
+export async function authenticatedTransportSnapshot(participation, peerId) {
+  const pending = participation.diagnostics();
+  const connectionRevision = participation.status.connectionRevision;
+  const links = await pending;
+  const link = links.find(link => link.peerId === peerId);
+  return { connectionRevision,
+    ...(link ? Object.fromEntries(['kind', 'sentReliableBytes', 'receivedReliableBytes', 'sentLiveBytes', 'receivedLiveBytes'].map(key => [key, link[key]])) : { kind: 'unknown' }) };
+}
+
 /** Optional Linux diagnostic: unavailable is not zero and cannot fail a run. */
 export function memoryAvailableGb(read = readFileSync) {
   try {
@@ -105,12 +114,7 @@ try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
       ${networkQualification ? `else if(request.action==='transport-snapshot' || request.action==='transport-wait') {
-        const snapshot=async()=>{
-          const links=await session.participation.diagnostics();
-          const link=links.find(link=>link.peerId===${JSON.stringify(browserDeviceId)});
-          return {connectionRevision:session.participation.status.connectionRevision,
-            ...(link?Object.fromEntries(['kind','sentReliableBytes','receivedReliableBytes','sentLiveBytes','receivedLiveBytes'].map(key=>[key,link[key]])):{kind:'unknown'})};
-        };
+        const snapshot=()=>(${authenticatedTransportSnapshot.toString()})(session.participation,${JSON.stringify(browserDeviceId)});
         if(request.action==='transport-snapshot') result=await snapshot();
         else {
           assert.ok(['direct','relay','unknown'].includes(request.kind));

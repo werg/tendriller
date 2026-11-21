@@ -6,6 +6,12 @@ import { runNetworkScenario } from './scenarios.mjs';
 import { activityTimeline } from './evidence.mjs';
 import { progressWriter } from './idle-progress.mjs';
 
+export function currentOperationApplied(priorOperation, operationId, status) {
+  return typeof operationId === 'string' && operationId.length > 0 && operationId !== priorOperation &&
+    typeof status === 'string' && status.startsWith(`${operationId}: `) &&
+    status.includes('Applied: accepted') && status.includes('peer retention receipt(s) observed');
+}
+
 export async function qualifyFirstAppNetwork({ page, context, peer, expect, transportCounters,
   evidencePng, browserDevice, sha256, profile }) {
   const faults = createFaults();
@@ -50,11 +56,19 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       await expect(page.locator('#notes li').filter({ hasText: nativeText })).toHaveCount(1, { timeout: 15_000 });
       await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 30_000 });
       const text = `Network browser ${randomUUID()}`;
+      const priorOperation = await page.locator('#operation-id').inputValue();
       await page.locator('#note').fill(text);
       await page.locator('#submit').click();
-      await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
-      await expect(page.locator('#operation-status')).toContainText('peer retention receipt(s) observed', { timeout: 30_000 });
+      await expect.poll(() => page.locator('#operation-id').inputValue(), { timeout: 30_000 }).not.toBe(priorOperation);
       const operationId = await page.locator('#operation-id').inputValue();
+      assert.ok(operationId);
+      await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
+      await expect.poll(async () => {
+        const status = await page.locator('#operation-status').textContent();
+        return currentOperationApplied(priorOperation, operationId, status);
+      }, { timeout: 30_000 }).toBe(true);
+      await expect.poll(async () => (await peer.request('query')).value.some(row =>
+        row.operationId === operationId && row.text === text && row.author === browserDevice), { timeout: 15_000 }).toBe(true);
       const rows = (await peer.request('query')).value;
       assert.equal(rows.length, before.length + 2);
       assert.ok(rows.some(row => row.operationId === nativeOperation && row.text === nativeText));

@@ -61,10 +61,12 @@ export async function createBrowserNetworkControls(page) {
       frozen = value;
       signal.throwIfAborted();
       if (!value) {
-        await page.waitForFunction(() => window.__networkLabLifecycle?.some(event => event.type === 'resume'), null, { timeout: 5000 });
+        // A hidden page may have no rAF even after active. Restore the real tab
+        // before observing queued resume work; this is not an application probe.
+        await cover?.close(); cover = undefined; await page.bringToFront();
+        await page.waitForFunction(() => window.__networkLabLifecycle?.some(event => event.type === 'resume'), null, { timeout: 5000, polling: 50 });
         const observed = await page.evaluate(() => window.__networkLabLifecycle.map(event => event.type));
         assert.deepEqual(observed, ['freeze', 'resume'], 'The browser did not actually freeze/resume');
-        await cover?.close(); cover = undefined; await page.bringToFront();
         assert.equal(await page.evaluate(() => document.visibilityState), 'visible', 'Resume left the selected tab hidden');
       }
     },
