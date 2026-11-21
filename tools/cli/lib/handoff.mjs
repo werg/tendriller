@@ -2,10 +2,12 @@
 // Uses pure-JS tar.gz and Web Crypto AES-256-GCM; zero GNU tar subprocesses and zero Chronolog runtime dependency.
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, extname, join, relative, resolve } from 'node:path';
 import { packTarGz } from '@tendriller/core/archive';
 
-const EXCLUDED_DIRS = new Set(['.tendriller', '.git', 'node_modules', 'dist', '.results', 'page']);
+const EXCLUDED_DIRS = new Set(['.tendriller', '.git', 'node_modules', 'dist', '.results', 'page', 'state', 'data', '.state', '.data']);
+const SOURCE_EXTENSIONS = new Set(['.mjs', '.cjs', '.js', '.ts', '.tsx', '.jsx', '.html', '.css', '.md', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2']);
+const SOURCE_JSON = /^(?:package(?:-lock)?|tsconfig(?:\.[A-Za-z0-9_-]+)?)\.json$/u;
 const EXCLUDED_FILES = new Set(['.env', '.env.local', 'provider-secrets.json', 'provider-local.mjs']);
 const SECRET_PATTERNS = [
   /td_a_[a-f0-9]{64}/u,
@@ -32,10 +34,11 @@ function walkSourceFiles(root, current = root, out = []) {
   for (const entry of readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {
-      if (EXCLUDED_DIRS.has(entry.name)) continue;
+      if (entry.name.startsWith('.') || EXCLUDED_DIRS.has(entry.name)) continue;
       walkSourceFiles(root, join(current, entry.name), out);
     } else if (entry.isFile()) {
-      if (EXCLUDED_FILES.has(entry.name) || entry.name.endsWith('.sqlite') || entry.name.endsWith('.sqlite-wal') || entry.name.endsWith('.sqlite-shm')) continue;
+      if (entry.name.startsWith('.') || EXCLUDED_FILES.has(entry.name) ||
+          (!SOURCE_EXTENSIONS.has(extname(entry.name).toLowerCase()) && !SOURCE_JSON.test(entry.name))) continue;
       const full = join(current, entry.name);
       const rel = relative(root, full).replaceAll('\\', '/');
       out.push({ path: rel, full });
@@ -51,9 +54,14 @@ function walkSourceFiles(root, current = root, out = []) {
 export function exportSourceHandoff(projectDir, outputPath, { nextCommand = 'npm install && npm run init' } = {}) {
   const root = resolve(projectDir);
   if (!existsSync(root) || !statSync(root).isDirectory()) throw fail('handoff_source_missing', `Project directory not found: ${root}`);
-  const files = walkSourceFiles(root);
+  const destination = resolve(outputPath);
+  const files = walkSourceFiles(root).filter(file => resolve(file.full) !== destination);
   const entries = [];
+  let totalBytes = 0;
   for (const file of files) {
+    const size = statSync(file.full).size;
+    if (size > 16 * 1024 * 1024 || (totalBytes += size) > 64 * 1024 * 1024)
+      throw fail('handoff_size_limit', 'Source handoff exceeds the 16 MiB file or 64 MiB total bound.');
     const bytes = readFileSync(file.full);
     const text = bytes.toString('utf8');
     for (const pattern of SECRET_PATTERNS) {
@@ -69,12 +77,12 @@ export function exportSourceHandoff(projectDir, outputPath, { nextCommand = 'npm
     fileCount: entries.length,
     nextCommand,
     containsPrivateState: false,
+    inclusionPolicy: 'Code, documentation, static assets and package/TypeScript manifests only. Review authored source for embedded credentials before sharing.',
   };
   entries.push({ path: 'handoff-manifest.json', bytes: encoder.encode(JSON.stringify(manifest, null, 2) + '\n') });
   const archive = packTarGz(entries);
-  const destination = resolve(outputPath);
   mkdirSync(dirname(destination), { recursive: true });
-  writeFileSync(destination, archive);
+  writeFileSync(destination, archive, { mode: 0o600 });
   return { output: destination, sha256: sha256Hex(archive), size: archive.byteLength, manifest };
 }
 
