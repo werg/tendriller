@@ -205,7 +205,15 @@ test('host activity keeps bounded receipt metadata, fixed labels and no private 
     ['/agent/private/peers/relay', 'relay'],
     ['/agent/private/setup/watch', 'setup-watch'],
     ['/s/private/publication-ready', 'publication-watch'],
-    ['/agent/private/peers/participant', 'peer-control'],
+    ['/agent/private/peers/participant', 'peer-participant'],
+    ['/agent/private/peers/bootstrap', 'peer-bootstrap'],
+    ['/s/private/peers/pairing', 'peer-pairing'],
+    ['/api/t/private/self', 'access-probe'],
+    ['/s/private/application', 'application-control'],
+    ['/s/private/_tendril/sw.js', 'service-worker'],
+    ['/favicon.ico', 'favicon'],
+    ['/s/private/_tendril/brand/favicon.ico', 'favicon'],
+    ['/s/private/_tendril/runtime/private/module.mjs', 'runtime-asset'],
     ['/s/private/_publications/7/worker.mjs', 'publication-asset'],
     ['/secret-file.wasm', 'asset'], ['/s/private', 'page'],
     ['/api/private', 'api-control'], ['/secret-unrecognized', 'other'],
@@ -228,7 +236,21 @@ test('host activity keeps bounded receipt metadata, fixed labels and no private 
   for (let n = 0; n < 300; n++) activity.record(new Request('https://private-origin.invalid/secret'));
   const bounded = activity.snapshot();
   assert.equal(bounded.items.length, 256);
-  assert.equal(bounded.dropped, 57);
-  assert.equal(bounded.items[0].sequence, 58);
-  assert.equal(bounded.items.at(-1).sequence, 313);
+  assert.equal(bounded.dropped, paths.length + 301 - 256);
+  assert.equal(bounded.items[0].sequence, paths.length + 301 - 255);
+  assert.equal(bounded.items.at(-1).sequence, paths.length + 301);
+});
+
+
+test('participant discovery and invitation operations remain opaque to path-only receipt classification', () => {
+  const activity = createFirstAppRequestActivity();
+  for (const method of ['GET', 'PUT', 'POST', 'DELETE']) activity.record({
+    method, url: 'https://private.invalid/api/t/private/peers/participant',
+    get body() { assert.fail('must never inspect a participant body to classify its action'); },
+    get headers() { assert.fail('must never inspect auth headers'); },
+  });
+  assert.deepEqual(activity.snapshot().items.map(x => [x.method, x.category]),
+    ['GET', 'PUT', 'POST', 'DELETE'].map(method => [method, 'peer-participant']));
+  activity.record(new Request('https://private.invalid/api/t/private/peers/invitation'));
+  assert.equal(activity.snapshot().items.at(-1).category, 'api-control', 'Do not invent a singular invitation route absent from the current contract');
 });

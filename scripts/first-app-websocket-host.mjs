@@ -31,7 +31,16 @@ export function createFirstAppRequestActivity() {
     if (path.endsWith('/peers/relay')) return 'relay';
     if (path.endsWith('/setup/watch')) return 'setup-watch';
     if (path.endsWith('/publication-ready')) return 'publication-watch';
-    if (/\/peers\/(bootstrap|participant|pairing)$/.test(path)) return 'peer-control';
+    // Directory read/advertise/withdraw and invitation sends are facets of
+    // this same POST endpoint. Path-only evidence cannot distinguish actions.
+    if (path.endsWith('/peers/participant')) return 'peer-participant';
+    if (path.endsWith('/peers/bootstrap')) return 'peer-bootstrap';
+    if (path.endsWith('/peers/pairing')) return 'peer-pairing';
+    if (path.endsWith('/self')) return 'access-probe';
+    if (path.endsWith('/application')) return 'application-control';
+    if (path.endsWith('/_tendril/sw.js')) return 'service-worker';
+    if (path.endsWith('/favicon.ico')) return 'favicon';
+    if (path.includes('/_tendril/runtime/')) return 'runtime-asset';
     if (path.includes('/_publications/')) return 'publication-asset';
     if (/\.(mjs|js|css|wasm|png|svg|ico)$/.test(path)) return 'asset';
     if (/^\/s\/[^/]+\/?$/.test(path)) return 'page';
