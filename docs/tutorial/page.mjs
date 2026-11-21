@@ -199,7 +199,8 @@ async function connectSession() {
     installed = true;
   } catch (error) {
     if (!installed) {
-      liveView?.close(); operationView?.close(); media?.close();
+      liveView?.close(); operationView?.close(); media?.close(); window.appRequests?.close();
+      operationView = undefined; observedOperation = undefined;
       try { await attachment?.detach(); } catch { /* Preserve the setup failure. */ }
       session = attachment = liveView = undefined;
       submission.update({ attached: false, coherent: false }); $('#close').disabled = true; $('#app-content').hidden = true;
@@ -340,6 +341,8 @@ $('#reapply').addEventListener('click', async () => {
 $('#refresh').addEventListener('click', () => { void refresh().catch(report); });
 
 async function close() {
+  connection.close();
+  window.appRequests?.close();
   submission.update({ attached: false, connected: false, coherent: false });
   liveView?.close(); operationView?.close(); media?.close();
   try { await attachment?.detach(); }

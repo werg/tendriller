@@ -60,7 +60,7 @@ const capabilities = [
   { id: 'browser-connection', title: 'Connecting a browser: setup, one-tap approval and automatic connect',
     keywords: ['login', 'connect', 'pairing', 'enroll', 'device', 'access', 'onboarding', 'mobile', 'sign in'],
     owner: 'Starter connection component over the browser owner and reviewed pairing', availability: 'provided-with-example',
-    imports: ['./connection.mjs', './connect-view.mjs', './pairing-browser.mjs'], api: ['createOwnerConnection', 'mountConnectionView', 'describeConnectionError', 'openBrowserOwner'],
+    imports: ['@tendriller/core/collaboration/browser', './connection.mjs', './connect-view.mjs', './pairing-browser.mjs'], api: ['createOwnerConnection', 'mountConnectionView', 'describeConnectionError', 'openBrowserOwner'],
     guide: '/docs/APP_PATTERNS.md', example: 'connection.mjs; connect-view.mjs; page.mjs',
     boundary: 'Opening the page connects; a new browser is approved once on the service origin and returns by itself. Ship this component, never separate request/connect buttons or raw error codes.' },
   { id: 'operation-state', title: 'Operation progress, exact retry and reviewed recovery',

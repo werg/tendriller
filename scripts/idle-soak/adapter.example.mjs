@@ -13,7 +13,6 @@ async function coherentRead(page, config) {
   if (!new RegExp('^' + config.expectedNoteCount + ' retained notes? in this selected history$').test(text)) throw Error('COHERENT_SYNTHETIC_READ_MISMATCH');
 }
 export async function ready({ page, config }) {
-  await page.locator('#connect:enabled').click({ timeout: 15000 });
   await coherentRead(page, config);
 }
 export async function settle({ page, config }) { if (page) await coherentRead(page, config); }
@@ -22,8 +21,8 @@ export async function reconnect({ page, config, signal }) {
   await page.locator('#close:enabled').click({ timeout: 10000 });
   // The runtime binding is installed once per document. Follow its explicit
   // close/reload contract while retaining this browser's original device.
-  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-  await page.locator('#connect:enabled').click({ timeout: 10000 });
+  await page.getByRole('button', { name: 'Reconnect', exact: true }).click({ timeout: 10000 });
+  await page.waitForLoadState('domcontentloaded');
   await coherentRead(page, config);
   return true;
 }

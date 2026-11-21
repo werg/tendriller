@@ -38,6 +38,7 @@ export function describeConnectionError(error, { appName = 'this app' } = {}) {
 }
 
 const sleep = (ms, signal) => new Promise(resolve => {
+  if (signal?.aborted) { resolve(); return; }
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
   const timer = setTimeout(done, ms); signal?.addEventListener('abort', done, { once: true });
 });
@@ -55,19 +56,33 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
   const reviewedKey = id => `tendriller:reviewed:${configuration.applicationId}:${id}`;
   const lifetime = new AbortController();
   let state = { phase: 'connecting', title: 'Connecting…', detail: '' }, running, wake = () => {};
-  const set = value => { state = Object.freeze(value); try { onState(state); } catch { /* A view cannot stop the flow. */ } };
-  const reviewUrl = status => `${status.reviewUrl}?return_to=${encodeURIComponent(here())}`;
+  const set = value => { if (lifetime.signal.aborted) return; state = Object.freeze(value); try { onState(state); } catch { /* A view cannot stop the flow. */ } };
+  const reviewUrl = status => {
+    const target = new URL(here());
+    // Preserve the complete return address when possible; the review endpoint has
+    // a fixed URL bound. Even an unusually long document path can return home.
+    if (target.href.length > 2048) { target.search = ''; target.hash = ''; }
+    if (target.href.length > 2048) target.pathname = '/';
+    const url = new URL(status.reviewUrl); url.searchParams.set('return_to', target.href); return url.href;
+  };
+  let renewRequested = false, started = false;
+  const visibility = () => { if (document.visibilityState === 'visible') nudge(); };
+  const deadline = () => AbortSignal.any([lifetime.signal, AbortSignal.timeout(35_000)]);
   const nudge = () => wake();
 
   async function enroll() {
     // The new device key is this browser's only signer: keep its storage out of best-effort eviction.
     void requestPersistentStorage();
     const retained = pairing.read();
-    let status = retained?.pairingId ? await pairing.refresh() : await pairing.request();
-    if (status.state === 'challenge') status = await pairing.request();
-    if (['expired', 'stale'].includes(status.state)) status = await pairing.request({ newReview: true });
+    let status = retained?.pairingId ? await pairing.refresh({ signal: deadline() }) : await pairing.request({ signal: deadline() });
+    lifetime.signal.throwIfAborted();
+    if (status.state === 'challenge') status = await pairing.request({ signal: deadline() });
+    if (['expired', 'stale'].includes(status.state) || renewRequested && status.state === 'denied')
+      status = await pairing.request({ newReview: true, signal: deadline() });
+    renewRequested = false;
+    lifetime.signal.throwIfAborted();
     if (status.state === 'committed') return 'connect';
-    if (status.state === 'denied') { set({ phase: 'failed', ...describeConnectionError({ code: 'denied' }, { appName }), action: { label: 'Ask again', run: () => restart(() => pairing.request({ newReview: true })) } }); return 'stop'; }
+    if (status.state === 'denied') { set({ phase: 'failed', ...describeConnectionError({ code: 'denied' }, { appName }), action: { label: 'Ask again', run: () => (renewRequested = true, restart()) } }); return 'stop'; }
     if (['revoked', 'reconciliation_required'].includes(status.state)) throw Object.assign(Error(status.nextAction), { code: status.state });
     if (status.state === 'pending' && !storage.getItem(reviewedKey(status.pairingId)) && status.preparedDigest) {
       // One trip to the service origin; it returns here by itself after Approve.
@@ -94,15 +109,18 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
       try {
         set({ ...state, phase: state.phase === 'connected' ? 'connecting' : state.phase,
           ...(['failed', 'connected'].includes(state.phase) ? { title: 'Connecting…', detail: '', action: undefined } : {}) });
-        await connect();
+        await connect({ signal: lifetime.signal });
+        lifetime.signal.throwIfAborted();
         set({ phase: 'connected', title: 'Connected', detail: '' });
         return;
       } catch (error) {
+        if (lifetime.signal.aborted) return;
         const described = describeConnectionError(error, { appName });
         if (described.enroll) {
           let next;
           try { next = await enroll(); }
           catch (failure) {
+            if (lifetime.signal.aborted) return;
             const copy = describeConnectionError(failure, { appName });
             set({ phase: copy.retry ? 'connecting' : 'failed', ...copy, ...(copy.action === 'reload' ? { action: { label: 'Reload', run: () => location.reload() } } : {}) });
             if (!copy.retry) return;
@@ -124,10 +142,10 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
       }
     }
   }
-  function restart(before) {
-    if (running) return running;
-    running = (async () => { try { await before?.(); } catch (error) { set({ phase: 'failed', ...describeConnectionError(error, { appName }) }); return; } await run(); })()
-      .finally(() => { running = undefined; });
+  function restart() {
+    if (lifetime.signal.aborted) return Promise.resolve();
+    if (running) { nudge(); return running; }
+    running = run().finally(() => { running = undefined; });
     return running;
   }
   function start() {
@@ -135,12 +153,14 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
       set({ phase: 'preview', title: 'Layout preview', detail: 'Open the published page to connect to the app.' }); return Promise.resolve();
     }
     // Returning from the review tab or app switcher checks at once.
-    addEventListener('focus', nudge); addEventListener('pageshow', nudge);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') nudge(); });
+    if (!started) {
+      started = true; addEventListener('focus', nudge); addEventListener('pageshow', nudge);
+      document.addEventListener('visibilitychange', visibility);
+    }
     return restart();
   }
   return Object.freeze({ start, get state() { return state; }, retry: () => restart(),
-    close() { lifetime.abort(); removeEventListener('focus', nudge); removeEventListener('pageshow', nudge); } });
+    close() { lifetime.abort(); removeEventListener('focus', nudge); removeEventListener('pageshow', nudge); document.removeEventListener('visibilitychange', visibility); } });
 }
 
 /** When another tab or a page update replaced this tab's owner route, reconnect by
