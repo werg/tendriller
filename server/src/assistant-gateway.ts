@@ -143,7 +143,8 @@ async function submitCommandBatch(env: Env, pageId: string, req: Request, applic
   // Each admitted operation keeps its existing fixed deadline. Bound the entire
   // request too; an interrupted batch never starts its remaining commands.
   const signal = AbortSignal.any([req.signal, AbortSignal.timeout(25_000)]);
-  const bounded = new Request(req, { signal });
+  // The gateway has already consumed req.body; only its URL and lifetime are needed.
+  const bounded = new Request(req.url, { signal });
   for (const item of commands) {
     if (signal.aborted) break;
     try {
