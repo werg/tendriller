@@ -36,7 +36,8 @@ export function buildCompositionV2({ version, contract, runtime, core, chronolog
   for (const [name, spec] of Object.entries(profiles)) {
     if (!Object.hasOwn(COMPOSITION_V2_PROFILES, name)) fail(`Unknown composition v2 profile: ${name}`);
     const rules = COMPOSITION_V2_PROFILES[name];
-    if (Boolean(spec.sql) !== rules.sql || Boolean(spec.nativeRtc) !== rules.nativeRtc) {
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec) ||
+        ['sql', 'nativeRtc', 'wasmSql', 'nativeSql'].some(key => Boolean(spec[key]) !== rules[key])) {
       fail(`Profile ${name} capabilities do not match its declared v2 contract.`);
     }
     normalized[name] = {
@@ -45,7 +46,12 @@ export function buildCompositionV2({ version, contract, runtime, core, chronolog
       nativeRtc: rules.nativeRtc,
       wasmSql: Boolean(spec.wasmSql),
       nativeSql: Boolean(spec.nativeSql),
-      components: spec.components ?? [],
+      components: (spec.components ?? []).map(component => {
+        if (!component || typeof component !== 'object' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(component.file) ||
+            !/^[a-f0-9]{64}$/.test(component.sha256) || !Number.isSafeInteger(component.size) || component.size < 1)
+          fail(`Profile ${name} must bind exact component file names, SHA-256 values and sizes.`);
+        return { ...component };
+      }),
     };
   }
   const body = { format: 'tendriller-release-composition-v2', version, contract, runtime, core, chronolog, profiles: normalized };

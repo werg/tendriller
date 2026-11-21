@@ -1,5 +1,13 @@
 # Tendriller & Chronolog-DB: Complete Agent Ergonomics, Simplification & Cross-Platform Portability Specification
 
+> Design specification. This document includes target work and is not a support
+> matrix or evidence that every workstream is complete. Use
+> [Build an app](BUILD_AN_APP.md), [deployment guidance](DEPLOYMENT_GUIDE.md),
+> and the exact published release manifest for current supported paths. A profile
+> name or capability probe does not qualify a SQL engine, browser persistence,
+> future agent wake, or participant availability after its process exits.
+
+
 **Repositories:** `werg/tendriller`, `werg/chronolog-db`, `werg/tendriller-contrib`  
 **Specification Date:** 21 November 2026  
 **Architecture Alignment:** Built as one piece around **`chronolog-db` (`@chronolog/peer-session`) as the central pipe**, keeping Tendriller's Worker host application-neutral (zero `node:*` imports) and basic `@tendriller/runtime` / `@tendriller/tools` decoupled from `@chronolog/*`.
