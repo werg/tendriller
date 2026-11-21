@@ -9,6 +9,7 @@ import { planProposal, receiverWorkflow } from '../companion-release/proposal.mj
 import { select } from '../companion-release/select.mjs';
 import { capabilities, openProposal, dispatchQualification, pushOwnerBootstrap, submitProposal } from '../companion-release/github.mjs';
 import { waitingReceipt } from '../companion-release/receipt.mjs';
+import { bindRunName } from '../companion-release/qualification.mjs';
 
 const sha = letter => letter.repeat(40), hash = letter => letter.repeat(64);
 function archive(provenance, pkg) {
@@ -184,7 +185,11 @@ test('end-to-end dry run migrates both actual workflow shapes, runs generated gu
     assert.equal(receiver.split('persist-credentials: false').length, 3);
     assert(!Object.keys(plan.files).some(path => path.includes('release-automation/')), 'Keep the implementation only in core');
     if (mode === 'contrib') for (const name of ['peer-generation', 'collaboration'])
-      assert(plan.files[`.github/workflows/${name}.yml`].includes("github.event_name == 'workflow_dispatch' && 'explicit' || 'ordinary'"));
+      {
+        assert(plan.files[`.github/workflows/${name}.yml`].includes("github.event_name == 'workflow_dispatch' && 'explicit' || 'ordinary'"));
+        assert(plan.files[`.github/workflows/${name}.yml`].includes('run-name: "Companion core=${{ inputs.tendriller_ref'));
+      }
+    else assert(plan.files['.github/workflows/webrtc.yml'].includes('run-name: "Companion core=${{ inputs.host_ref'));
     const root = mkdtempSync(join(tmpdir(), 'tuple-dry-run-'));
     try {
       for (const [name, value] of Object.entries(plan.files)) {
@@ -313,7 +318,8 @@ test('repository token writes only its own tuple; PR generation never merges or 
     if (path.endsWith('/pulls')) return { html_url: 'https://github.com/werg/tendriller-contrib/pull/123' };
     if (path.endsWith(`/commits/${plan.branch}`)) return { sha: sha('5') };
     if (path.includes('/runs?')) return { workflow_runs: dispatchedWorkflows.has(path.split('/workflows/')[1].split('/')[0]) ?
-      [{ id: 111, head_sha: sha('5'), head_branch: plan.branch, event: 'workflow_dispatch', status: 'queued', conclusion: null }] : [] };
+      [{ id: 111, head_sha: sha('5'), head_branch: plan.branch, event: 'workflow_dispatch', status: 'queued', conclusion: null,
+        display_title: `Companion core=${tuple.core.source} kernel=${tuple.kernel.source}` }] : [] };
     if (path.endsWith('/dispatches')) { dispatchedWorkflows.add(path.split('/workflows/')[1].split('/')[0]); return null; }
     throw Error(`Unexpected write path ${path}`);
   };
@@ -332,6 +338,41 @@ test('repository token writes only its own tuple; PR generation never merges or 
   const receiver = await submitProposal(plan, { api, authKind: 'repository', repository: REPOS.contrib });
   assert.equal(receiver.qualification.expectedHead, result.head);
   assert.equal(receiver.qualification.runs.length, 3, 'Target token still explicitly verifies all three readonly dispatches');
+});
+
+test('dispatch reuse binds effective companion refs, not only head/branch/event (review4652327130)', async t => {
+  for (const mode of ['contrib', 'chronolog']) await t.test(mode, async () => {
+    const head = sha('d'), core = sha('a'), kernel = sha('b'), contrib = sha('c');
+    const plan = { mode, repository: mode === 'contrib' ? REPOS.contrib : REPOS.kernel,
+      branch: 'release/ref-bound-proof', companions: { core, kernel, contrib } };
+    const expectedTitle = mode === 'contrib' ? `Companion core=${core} kernel=${kernel}` : `Companion core=${core} contrib=${contrib}`;
+    const expectedInputs = mode === 'contrib' ? { tendriller_ref: core, chronolog_ref: kernel } : { host_ref: core, contrib_ref: contrib };
+    const wrongTitle = mode === 'contrib' ? `Companion core=${core} kernel=${sha('f')}` : `Companion core=${core} contrib=${sha('f')}`;
+    const sent = new Set(), calls = [];
+    const api = async (path, body) => {
+      calls.push({ path, body });
+      if (path.includes('/commits/')) return { sha: head };
+      const workflow = path.split('/workflows/')[1]?.split('/')[0];
+      const bound = mode === 'contrib' ? workflow !== 'ci.yml' : workflow === 'webrtc.yml';
+      if (path.endsWith('/dispatches')) {
+        assert(bound); assert.deepEqual(body, { ref: plan.branch, inputs: expectedInputs }); sent.add(workflow); return null;
+      }
+      assert(path.includes('/runs?'));
+      const run = { id: 10, head_sha: head, head_branch: plan.branch, event: 'workflow_dispatch', status: 'completed', conclusion: 'success' };
+      return { workflow_runs: bound ? [
+        { ...run, id: 99, display_title: wrongTitle },
+        { ...run, id: 98, display_title: 'Companion core=tuple kernel=tuple' },
+        ...(sent.has(workflow) ? [{ ...run, id: 100, display_title: expectedTitle, status: 'queued', conclusion: null }] : []),
+      ] : [run] };
+    };
+    const result = await dispatchQualification(plan, head, { api });
+    assert.equal(calls.filter(call => call.body).length, mode === 'contrib' ? 2 : 1);
+    const boundRuns = result.runs.filter(run => Object.keys(run.inputs).length);
+    assert(boundRuns.every(run => run.run === 100 && run.conclusion === null && run.displayTitle === expectedTitle));
+    await dispatchQualification(plan, head, { api });
+    assert.equal(calls.filter(call => call.body).length, mode === 'contrib' ? 2 : 1, 'Reuse only the now-known matching input run');
+  });
+  assert.throws(() => bindRunName('name: Q\nrun-name: hardcoded-title\n', 'contrib'));
 });
 
 test('moved base or changed dispatch head stops before further writes', async () => {

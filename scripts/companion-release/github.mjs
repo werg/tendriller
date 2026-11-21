@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { REPOS, checksum, commit } from './tuple.mjs';
+import { qualificationSpec } from './qualification.mjs';
 
 // Use gh's credential provider. Tokens are never argv, URLs, reports or errors.
 export function githubApi(path, body) {
@@ -149,21 +150,24 @@ export async function dispatchQualification(plan, head, { api = githubApi } = {}
   assert.equal((await api(`${root}/commits/${plan.branch}`)).sha, head, 'Proposal head changed before dispatch');
   const runs = [];
   for (const workflow of workflows) {
+    const spec = qualificationSpec(plan.mode, workflow, plan.companions);
     const endpoint = `${root}/actions/workflows/${workflow}`;
     const find = async () => {
       const result = await api(`${endpoint}/runs?head_sha=${head}&event=workflow_dispatch&per_page=100`);
       return result.workflow_runs.filter(run => run.head_sha === head && run.head_branch === plan.branch &&
-        run.event === 'workflow_dispatch').sort((a, b) => b.id - a.id)[0];
+        run.event === 'workflow_dispatch' && (spec.title === undefined || run.display_title === spec.title))
+        .sort((a, b) => b.id - a.id)[0];
     };
     let run = await find();
     if (!run) {
-      await api(`${endpoint}/dispatches`, { ref: plan.branch });
+      await api(`${endpoint}/dispatches`, { ref: plan.branch, ...(Object.keys(spec.inputs).length ? { inputs: spec.inputs } : {}) });
       for (let attempt = 0; attempt < 10 && !run; attempt++) {
         run = await find(); if (!run) await setTimeout(1000);
       }
     }
     assert(run, `Dispatched ${workflow} but no exact-head run observed; inspect Actions before retrying`);
-    runs.push({ workflow, run: run.id, head: run.head_sha, status: run.status, conclusion: run.conclusion });
+    runs.push({ workflow, run: run.id, head: run.head_sha, inputs: spec.inputs,
+      ...(spec.title ? { displayTitle: run.display_title } : {}), status: run.status, conclusion: run.conclusion });
   }
   return { dispatched: workflows, expectedHead: head, runs,
     verification: 'Exact workflow_dispatch heads observed. Each run still must complete successfully; this receiver never treats dispatch as qualification or merges a PR.' };

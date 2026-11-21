@@ -126,8 +126,13 @@ This setting permits PR creation; the receiver never approves reviews. Do not
 relax branch protections or required checks. GitHub's current token semantics
 can leave token-created PR runs awaiting approval. The receiver therefore
 explicitly dispatches each existing readonly qualification workflow at its own
-generated branch, observes the exact head SHA, and retains run IDs. Existing
-queued/completed exact-head runs are reused. Failed CI stays failed; use the
+generated branch, observes the exact head SHA, and retains run IDs. Dispatches
+with companion overrides always pass the tuple's full refs explicitly. Their
+immutable workflow `run-name` binds those actual inputs; the receiver also matches
+the API `display_title` before reusing a queued/completed run. A manual run with
+other refs or missing/unknown input metadata cannot stand in for the selected
+tuple. Workflows without companion inputs need only the head/branch/event match.
+Failed CI stays failed; use the
 normal rerun/review process. An accepted dispatch is never counted as a pass.
 
 Dispatch the installed receiver with existing owner authorization:
