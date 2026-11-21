@@ -18,7 +18,7 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
   if (!Number.isFinite(livenessTimeoutMs) || livenessTimeoutMs < 100 || livenessTimeoutMs > 120000) throw new CollaborationError('OWNER_CONFIGURATION_INVALID');
   const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs });
   const rtc = providedRtc ?? createRootRtcEndpoint(root,{profileId,rootId});
-  const pending = new Map(); let local, remote, pulseTimer, paused = false, disposed = false, closing;
+  const pending = new Map(); let local, remote, pulseTimer, paused = false, pauseEpoch = 0, disposed = false, closing;
   const request = (action, timeoutMs = livenessTimeoutMs) => {
     if (disposed) return Promise.reject(new CollaborationError('ENDPOINT_STALE'));
     if (pending.size >= 4) return Promise.reject(new CollaborationError('OWNER_BUSY'));
@@ -93,14 +93,23 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
     root.postMessage({ ...frame, port: wire.port2 }, [wire.port2]);
   }, addEventListener() {}, removeEventListener() {},
   bindRequestSource: session => liveness.bind(session),
+  park() {
+    if (disposed || closing) throw new CollaborationError('ENDPOINT_STALE');
+    paused = true; pauseEpoch++; clearTimeout(pulseTimer);
+    // A freeze event cannot await an acknowledgement. The private root port
+    // scopes this one-way pause; only a fresh resume reply rearms liveness.
+    root.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'root.suspend', profileId, ownerInstanceId, rootId, id: crypto.randomUUID() });
+  },
   async suspend() {
     if (disposed || closing) throw new CollaborationError('ENDPOINT_STALE');
-    paused = true; clearTimeout(pulseTimer);
-    try { await request('suspend'); } catch (error) { paused = false; fail('OWNER_UNREACHABLE'); throw error; }
+    paused = true; pauseEpoch++; clearTimeout(pulseTimer);
+    // Missing a suspension acknowledgement cannot prove an owner is dead.
+    await request('suspend');
   },
   async resume() {
     if (disposed || closing) throw new CollaborationError('ENDPOINT_STALE');
-    try { await request('resume'); paused = false; void pulse(); }
+    const epoch = pauseEpoch;
+    try { await request('resume'); if(epoch !== pauseEpoch)return; paused = false; void pulse(); }
     catch (error) { paused = false; fail('OWNER_UNREACHABLE'); throw error; }
   },
   relinquish() {
