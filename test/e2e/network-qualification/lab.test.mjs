@@ -41,6 +41,16 @@ test('cleanup attempts traffic shaping even when firewall restoration fails', as
   assert.ok(calls.some(call => call[0] === 'ip6tables' && call.includes('-X')));
 });
 
+test('second qdisc failure rolls back the first without leaving a partially impaired profile', async () => {
+  const calls = [];
+  const faults = createFaults({ isolated: true, run: async (tool, args) => {
+    calls.push([tool, ...args]);
+    if (tool === 'tc' && args.includes('add') && args.includes('eth0')) throw new Error('qdisc unsupported');
+  } });
+  await assert.rejects(faults.impair(), /qdisc unsupported/);
+  assert.ok(calls.some(call => call[0] === 'tc' && call.includes('del') && call.includes('lo')));
+});
+
 test('timeline is bounded, timestamps receipt phase, discards secret labels and rejects invalid counters', () => {
   const timeline = activityTimeline({ limit: 2, now: () => '2026-11-21T01:02:03.004Z' });
   timeline.record('startup', 'start');

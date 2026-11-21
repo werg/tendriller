@@ -9,7 +9,7 @@ const chain = 'TD_NETWORK_LAB';
 // No caller-supplied command, interface, address, or shell expression is accepted.
 export function createFaults({ run = execute, isolated = process.env.TENDRILLER_NETWORK_LAB === '1' && existsSync('/.dockerenv') } = {}) {
   let installed = false;
-  let shaped = false;
+  const shaped = new Set();
   const command = (file, args) => run(file, args, { timeout: 5000, maxBuffer: 16384 });
   const requireIsolation = () => {
     if (!isolated) throw new Error('NETWORK_LAB_CONTAINER_REQUIRED');
@@ -59,17 +59,30 @@ export function createFaults({ run = execute, isolated = process.env.TENDRILLER_
     },
     async impair() {
       requireIsolation();
-      if (shaped) throw new Error('NETWORK_LAB_FAULT_ALREADY_ACTIVE');
+      if (shaped.size) throw new Error('NETWORK_LAB_FAULT_ALREADY_ACTIVE');
       // Noble's iproute2 has no netem seed option. Loss is stochastic, not a
       // claim of identical packet selection on repeated runs.
-      await command('tc', ['qdisc', 'add', 'dev', 'lo', 'root', 'netem', 'delay', '60ms', 'loss', 'random', '1%']);
-      shaped = true;
+      try {
+        // Local host candidates use lo, whereas a selected server-reflexive
+        // route can leave through the container's bridge interface.
+        for (const device of ['lo', 'eth0']) {
+          await command('tc', ['qdisc', 'add', 'dev', device, 'root', 'netem', 'delay', '60ms', 'loss', 'random', '1%']);
+          shaped.add(device);
+        }
+      } catch (error) {
+        try { await this.restoreImpairment(); }
+        catch (rollback) { throw new AggregateError([error, rollback], 'NETWORK_LAB_ROLLBACK_FAILED'); }
+        throw error;
+      }
     },
     async restoreImpairment() {
       requireIsolation();
-      if (!shaped) return;
-      await command('tc', ['qdisc', 'del', 'dev', 'lo', 'root']);
-      shaped = false;
+      const failures = [];
+      for (const device of [...shaped]) {
+        try { await command('tc', ['qdisc', 'del', 'dev', device, 'root']); shaped.delete(device); }
+        catch (error) { failures.push(error); }
+      }
+      if (failures.length) throw new AggregateError(failures, 'NETWORK_LAB_RESTORE_FAILED');
     },
     async close() {
       const results = await Promise.allSettled([this.restoreUdp(), this.restoreImpairment()]);

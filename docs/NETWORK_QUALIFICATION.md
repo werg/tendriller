@@ -14,10 +14,12 @@ node test/e2e/network-qualification/run.mjs --browser-controls --output /absolut
 
 The packet-control probe exercises real IPv4 **and** IPv6 UDP echo before,
 during, and after an OUTPUT firewall block. DNS remains permitted, and real TCP
-echo must continue during the block. A real loopback `tc netem` qdisc then applies
+echo must continue during the block. Real `tc netem` qdiscs on `lo` and `eth0` apply
 60 ms delay and 1% random loss. The probe requires an observed delayed TCP
 exchange and removes its own rules. Noble's iproute2 has no netem seed option;
-loss selection is stochastic. UDP blocking is deterministic. Unsupported IPv6,
+loss selection is stochastic. This covers local host and outgoing reflexive paths
+in the default single-bridge Docker namespace; custom multi-interface layouts are
+not qualified. UDP blocking is deterministic. Unsupported IPv6,
 firewall, qdisc or Docker privileges fail the probe rather than produce a pass.
 The container is bounded to two CPUs and 7 GiB; execution is bounded to 90 seconds.
 The image is based on a digest-pinned Playwright image. The selected Node binary
@@ -84,7 +86,8 @@ bytes. Harness checkout source and restored product source are distinct. The
 graph must include the recovery API before this required gate can succeed.
 Both workflows are unprivileged and receive no deployment credentials.
 
-Application execution is bounded to 25 minutes plus the requested idle interval.
+Application execution is bounded to 25 minutes plus the requested idle interval
+for each selected profile (six intervals for `suite`).
 `--idle-ms` selects an exact requested observation duration (default 15000,
 minimum 1000, maximum 48 hours) for each profile. Reports retain actual elapsed
 time and all overruns. Do not run a long suite on the existing 48-hour observer;

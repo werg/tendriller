@@ -80,7 +80,7 @@ try {
   assert.ok(impairedTcpMs >= 100, 'The real loopback qdisc did not delay the TCP exchange');
   await faults.restoreImpairment();
   report.checks.push('loss-latency-rule-tcp-working');
-  report.impairment = { interface: 'loopback', delayMs: 60, lossPercent: 1, seed: null, lossSelection: 'stochastic' };
+  report.impairment = { interfaces: ['lo', 'eth0'], delayMs: 60, lossPercent: 1, seed: null, lossSelection: 'stochastic' };
   report.timing = { blockedTcpMs, impairedTcpMs };
   report.success = true;
 } catch {

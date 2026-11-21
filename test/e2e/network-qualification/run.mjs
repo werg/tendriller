@@ -66,7 +66,8 @@ try {
       ...(application ? ['/workspace/scripts/test-first-app.mjs', '--first-app-archive', `/workspace/dist/${kit}`,
         '--network-lab-profile', values.profile, '--report', '/evidence/first-app.json'] :
         [values['browser-controls'] ? '/lab/browser-probe.mjs' : '/lab/control-probe.mjs'])], { stdio: 'inherit' });
-    const timer = setTimeout(() => { void stop('SIGTERM'); reject(new Error('NETWORK_LAB_RUN_TIMEOUT')); }, application ? 25 * 60_000 + idleMs : 90_000);
+    const idleSegments = values.profile === 'suite' ? NETWORK_PROFILES.length : 1;
+    const timer = setTimeout(() => { void stop('SIGTERM'); reject(new Error('NETWORK_LAB_RUN_TIMEOUT')); }, application ? 25 * 60_000 + idleSegments * idleMs : 90_000);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); code === 0 && !stopped ? accept() : reject(new Error('NETWORK_LAB_PROBE_FAILED')); });
   });
