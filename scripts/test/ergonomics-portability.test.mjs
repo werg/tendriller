@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
@@ -157,7 +157,7 @@ test('cross-platform IPC naming, atomic lock stale recovery, and INSTANCE_UNRESP
   const stateDir = join(dir, 'stale');
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   writeFileSync(join(stateDir, 'owner.lock'), JSON.stringify({
-    version: 1, lockId: 'dead', pid: 999999999, hostId: 'other-dead-host', startedAt: 1, heartbeatAt: 1, leaseTtlMs: 1000,
+    version: 1, lockId: 'dead', pid: 999999999, hostId: hostname(), startedAt: 1, heartbeatAt: 1, leaseTtlMs: 1000,
   }), { mode: 0o600 });
   const reclaimed = await acquireAtomicLock(stateDir, { probeReachable: async () => false });
   // While we hold the lock in this live process with unreachable IPC, a second acquire MUST fail with INSTANCE_UNRESPONSIVE.

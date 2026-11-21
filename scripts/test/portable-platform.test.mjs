@@ -61,3 +61,15 @@ test('failed IPC descriptor publication closes the listening socket',async t=>{
   for(let turn=0;turn<16 && servers()>before;turn++)await new Promise(resolve=>setImmediate(resolve));
   assert.equal(servers(),before);
 });
+
+test('HTTP service discovery is never mistaken for a WebSocket relay endpoint',async()=>{
+  const {probeTransports}=await import('../../contract/transport-probe.mjs');
+  const original=globalThis.WebSocket;let sockets=0;
+  globalThis.WebSocket=class{constructor(){sockets++;throw Error('must not probe HTTP-only route');}};
+  try {
+    const report=await probeTransports({serviceOrigin:'https://service.test',fetcher:async()=>new Response('{}')});
+    assert.equal(report.https443.reachable,true);
+    assert.equal(report.wssRelay443,'unknown');assert.equal(report.wssRelayProbe,'requires-authenticated-relay-target');
+    assert.equal(sockets,0);
+  }finally{globalThis.WebSocket=original;}
+});
