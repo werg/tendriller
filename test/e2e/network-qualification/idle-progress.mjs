@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises';
-import { writeFile, rename } from 'node:fs/promises';
+import { writeFile, rename, chmod } from 'node:fs/promises';
 
 // Progress is local observer liveness, never an application/network probe.
 export async function observeIdleDuration(durationMs, { signal, onProgress, intervalMs = 60_000 } = {}) {
@@ -27,8 +27,11 @@ export async function observeIdleDuration(durationMs, { signal, onProgress, inte
 export function progressWriter(path) {
   return async value => {
     if (!path) return;
+    // This bounded, redacted report is CI evidence. Its enclosing output
+    // directory stays private; the host uploader must read container-owned bytes.
     const temporary = `${path}.tmp-${process.pid}`;
-    await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+    await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o644 });
+    await chmod(temporary, 0o644);
     await rename(temporary, path);
   };
 }
