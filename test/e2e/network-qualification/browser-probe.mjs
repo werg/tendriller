@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { writeFile } from 'node:fs/promises';
 import { createBrowserNetworkControls } from './browser-controls.mjs';
 import { launchNetworkBrowser } from './browser-launch.mjs';
+import { expect } from '@playwright/test';
 
 let requests = 0;
 const server = createServer((_request, response) => {
@@ -92,15 +93,35 @@ try {
   await new Promise(resolve => setTimeout(resolve, 1000));
   assert.equal(requests, initial);
   report.checks.push('closed-one-second-http-idle');
+  await mark('reload');
   const beforeReload = await controls.diagnostics();
   assert.equal(beforeReload.navigations, 0);
   await page.reload();
+  await expect.poll(async () => (await controls.diagnostics()).events.some(event =>
+    event.event === 'document' && event.epoch === 1), { timeout: 5000 }).toBe(true);
   const afterReload = await controls.diagnostics();
   assert.equal(afterReload.navigations, 1);
   assert.equal(afterReload.sameUrl, true);
   assert.ok(afterReload.events.some(event => event.event === 'main-frame-navigation' && event.epoch === 1));
+  assert.ok(afterReload.events.some(event => event.event === 'document' && event.epoch === 1));
+  await mark('iframe-isolation');
+  await page.evaluate(() => Promise.all(Array.from({ length: 40 }, () => new Promise(resolve => {
+    const frame = document.createElement('iframe'); frame.srcdoc = '<!doctype html><title>child</title>';
+    frame.onload = resolve; document.body.append(frame);
+  }))));
+  assert.deepEqual(await controls.diagnostics(), afterReload);
+  report.checks.push('iframe-events-cannot-evict-main-document-evidence');
   report.documentObserver = afterReload;
   report.checks.push('document-epoch-survives-real-reload');
+  await mark('observer-disposal');
+  await controls.cleanup(); controls = undefined;
+  for (let index = 0; index < 3; index++) {
+    const next = await createBrowserNetworkControls(page);
+    await next.cleanup();
+  }
+  await page.reload();
+  assert.deepEqual(await page.evaluate(() => Object.keys(window).filter(key => key.startsWith('__networkLabLifecycle_'))), []);
+  report.checks.push('profile-observers-disposed-before-next-document');
   report.modelTurns = null;
   report.success = true;
 } catch {

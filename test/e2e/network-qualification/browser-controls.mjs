@@ -14,18 +14,15 @@ export async function createBrowserNetworkControls(page) {
     if (external.length === 32) { external.shift(); dropped++; }
     external.push({ at: new Date().toISOString(), epoch: navigations, event, ...extra });
   }
-  await page.exposeBinding(binding, (_source, event) => {
-    if (['document', 'freeze', 'resume'].includes(event)) record(event);
-  });
+  let bindingRegistration, scriptRegistration, cdp;
   const installObserver = key => {
+    if (window !== window.top) return;
     const emit = event => { void window[key](event).catch(() => {}); };
     const freeze = () => emit('freeze'), resume = () => emit('resume');
     document.addEventListener('freeze', freeze); document.addEventListener('resume', resume);
     window[`${key}Cleanup`] = () => { document.removeEventListener('freeze', freeze); document.removeEventListener('resume', resume); };
     emit('document');
   };
-  await page.addInitScript(installObserver, binding);
-  await page.evaluate(installObserver, binding);
   const navigated = frame => {
     if (frame !== page.mainFrame()) return;
     navigations++;
@@ -33,11 +30,30 @@ export async function createBrowserNetworkControls(page) {
     record('main-frame-navigation', { sameUrl: current === initialUrl,
       sameOrigin: (() => { try { return new URL(current).origin === new URL(initialUrl).origin; } catch { return false; } })() });
   };
-  page.on('framenavigated', navigated);
-  const cdp = await context.newCDPSession(page);
-  await cdp.send('Network.enable');
-  // Playwright normally forces focus/visibility, which can make freeze a no-op.
-  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+  const removeDocumentListeners = () => page.evaluate(key => {
+    window[`${key}Cleanup`]?.(); delete window[`${key}Cleanup`];
+  }, binding);
+  try {
+    bindingRegistration = await page.exposeBinding(binding, (source, event) => {
+      if (source.frame === page.mainFrame() && ['document', 'freeze', 'resume'].includes(event)) record(event);
+    });
+    scriptRegistration = await page.addInitScript(installObserver, binding);
+    await page.evaluate(installObserver, binding);
+    page.on('framenavigated', navigated);
+    cdp = await context.newCDPSession(page);
+    await cdp.send('Network.enable');
+    // Playwright normally forces focus/visibility, which can make freeze a no-op.
+    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+  } catch (error) {
+    observing = false; page.off('framenavigated', navigated);
+    const failures = [];
+    for (const undo of [() => scriptRegistration?.dispose(), removeDocumentListeners,
+      () => bindingRegistration?.dispose(), () => cdp?.detach()]) {
+      try { await undo(); } catch (failure) { failures.push(failure); }
+    }
+    if (failures.length) throw new AggregateError([error, ...failures], 'NETWORK_LAB_OBSERVER_SETUP_CLEANUP_FAILED');
+    throw error;
+  }
   let frozen = false;
   let changed = false;
   let alternate = false;
@@ -143,7 +159,9 @@ export async function createBrowserNetworkControls(page) {
         () => context.setOffline(false),
         () => changed ? cdp.send('Network.emulateNetworkConditions', normal) : undefined,
         () => page.evaluate(() => { window.__networkLabChangeListener?.(); delete window.__networkLabChangeListener; delete window.__networkLabChangeObserved; }),
-        () => page.evaluate(key => window[`${key}Cleanup`]?.(), binding),
+        removeDocumentListeners,
+        () => scriptRegistration.dispose(),
+        () => bindingRegistration.dispose(),
         () => cdp.detach(),
       ]) { try { await action(); } catch (error) { errors.push(error); } }
       if (errors.length) throw new AggregateError(errors, 'NETWORK_LAB_BROWSER_CLEANUP_FAILED');

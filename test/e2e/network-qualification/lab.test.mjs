@@ -8,6 +8,7 @@ import { releaseAnchor, selectedProductVersion, sha256 } from './anchor.mjs';
 import { currentOperationApplied, assertHiddenDirectPath } from './first-app.mjs';
 import { authenticatedTransportSnapshot, authenticatedRouteMatches } from '../../../scripts/first-app-peer.mjs';
 import { prepareMountTargets } from './mounts.mjs';
+import { createBrowserNetworkControls } from './browser-controls.mjs';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -276,6 +277,51 @@ test('hidden work rejects relay recovery, route replacement and payload fallback
   assert.throws(() => assertHiddenDirectPath(before, { ...before, connectionRevision: 4 }), /replaced/);
   assert.throws(() => assertHiddenDirectPath(before, { ...before, relayBytes: 101 }), /relay fallback/);
   assert.equal(assertHiddenDirectPath(before, { ...before, hostRequests: 12 }).hostRequests, 2);
+});
+
+function observerPage({ failNetwork = false } = {}) {
+  const main = {}, child = {}, bindings = new Map(), listeners = new Map();
+  const active = { bindings: 0, scripts: 0, sessions: 0 };
+  const page = {
+    url: () => 'https://example.invalid/', mainFrame: () => main,
+    evaluate: async () => null,
+    exposeBinding: async (name, callback) => {
+      bindings.set(name, callback); active.bindings++;
+      return { dispose: async () => { bindings.delete(name); active.bindings--; } };
+    },
+    addInitScript: async () => { active.scripts++; return { dispose: async () => { active.scripts--; } }; },
+    on: (name, callback) => listeners.set(name, callback), off: name => listeners.delete(name),
+    context: () => ({ setOffline: async () => {}, newCDPSession: async () => {
+      active.sessions++; return { send: async method => { if (failNetwork && method === 'Network.enable') throw Error('setup failure'); }, detach: async () => { active.sessions--; } };
+    } }),
+  };
+  return { page, main, child, bindings, listeners, active };
+}
+
+test('child frame lifecycle callbacks cannot evict main-frame observations', async () => {
+  const f = observerPage(), controls = await createBrowserNetworkControls(f.page);
+  const callback = [...f.bindings.values()][0];
+  for (let index = 0; index < 64; index++) callback({ frame: f.child }, 'document');
+  callback({ frame: f.main }, 'document');
+  const observed = await controls.diagnostics();
+  assert.equal(observed.dropped, 0);
+  assert.deepEqual(observed.events.map(event => event.event), ['document']);
+  await controls.cleanup();
+});
+
+test('profile observer registrations and failed setup all dispose without accumulation', async () => {
+  const f = observerPage();
+  for (let index = 0; index < 6; index++) {
+    const controls = await createBrowserNetworkControls(f.page);
+    assert.deepEqual(f.active, { bindings: 1, scripts: 1, sessions: 1 });
+    await controls.cleanup();
+    assert.deepEqual(f.active, { bindings: 0, scripts: 0, sessions: 0 });
+    assert.equal(f.listeners.size, 0);
+  }
+  const failed = observerPage({ failNetwork: true });
+  await assert.rejects(createBrowserNetworkControls(failed.page), /setup failure/);
+  assert.deepEqual(failed.active, { bindings: 0, scripts: 0, sessions: 0 });
+  assert.equal(failed.listeners.size, 0);
 });
 
 // Docker runs as root for isolated NET_ADMIN, while Actions uploads as the host
