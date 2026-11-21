@@ -25,7 +25,7 @@ test('copied standalone bootstrap rejects unsafe archives and never infers initi
   };
   writeFileSync(archive,packTarGz([{path:'README.md',bytes:'kit'}]));
   const good=run();assert.equal(good.code,0);assert.equal(good.report.readiness,'project_prepared');assert.equal(good.report.profileConfigured,false);
-  assert.equal(good.report.profile,'sql-full');assert.equal(good.report.retainedExistingIdentity,true);
+  assert.equal(good.report.requestedProfile,'sql-full');assert.equal(good.report.profile,null);assert.equal(good.report.retainedExistingIdentity,true);
   const outside=join(root,'outside');mkdirSync(outside);writeFileSync(join(outside,'file'),'original');
   symlinkSync(outside,join(project,'nested'),'dir');
   writeFileSync(archive,packTarGz([{path:'nested/file',bytes:'bad'}]));

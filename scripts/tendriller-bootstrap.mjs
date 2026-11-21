@@ -304,7 +304,7 @@ async function run() {
     options: {
       origin: { type: "string" },
       release: { type: "string" },
-      profile: { type: "string", default: "events-relay-only" },
+      profile: { type: "string", default: "events-full" },
       project: { type: "string", default: process.cwd() },
       "archive-file": { type: "string" },
       "expected-sha256": { type: "string" },
@@ -340,7 +340,7 @@ async function run() {
     tmpWritable: existsSync(tmpdir())
   };
   if (values["probe-only"]) {
-    process.stdout.write(JSON.stringify({ ok: true, readiness: "probe_complete", profile: values.profile, probe }) + "\n");
+    process.stdout.write(JSON.stringify({ ok: true, readiness: "probe_complete", requestedProfile: values.profile, profile: null, profileConfigured: false, probe }) + "\n");
     return;
   }
   if (!values["archive-file"] && (!values.origin || !values.release)) {
@@ -411,7 +411,8 @@ async function run() {
     ok: true,
     readiness: readinessState,
     readinessStates: ["project_prepared"],
-    profile: values.profile,
+    requestedProfile: values.profile,
+    profile: null,
     profileConfigured: false,
     nextAction: "Install the verified kit packages and configure the requested profile before starting and verifying the participant.",
     serviceOrigin,
