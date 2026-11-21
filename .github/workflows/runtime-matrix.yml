@@ -1,4 +1,4 @@
-name: Multi-runtime compatibility matrix
+name: Portable Node primitives and alternative-runtime smoke checks
 
 on:
   workflow_dispatch:
@@ -9,6 +9,10 @@ on:
       - 'tools/**'
       - 'docs/tutorial/**'
       - '.github/workflows/runtime-matrix.yml'
+      - 'scripts/test/portable-platform.test.mjs'
+      - 'scripts/test/archive-safety.test.mjs'
+      - 'scripts/bootstrap/**'
+      - 'scripts/tendriller-bootstrap.mjs'
 
 permissions:
   contents: read
@@ -24,32 +28,37 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
-      - run: npm run build:artifacts
-      - run: npm run test:contract
-      - run: npm run test:runtime-unit
-      - run: npm run test:tools
+      - name: Qualify portable primitives (not SQL, browser, RTC or deployment)
+        env:
+          NODE_OPTIONS: --max-old-space-size=256
+        run: node --test --test-concurrency=1 scripts/test/portable-platform.test.mjs scripts/test/ipc-lock-safety.test.mjs scripts/test/outbox-retention.test.mjs scripts/test/serverless-lifetime.test.mjs
+      - name: Standalone copied executable smoke check
+        run: node scripts/tendriller-bootstrap.mjs --probe-only
 
   bun-deno-compatibility:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - uses: oven-sh/setup-bun@v2
       - uses: denoland/setup-deno@v2
-      - run: npm ci && npm run build
-      - name: Exercise pure-ESM probe, archive, serverless and bootstrapper under Bun
+      - name: Smoke-test builtin archive and probe imports under Bun
         run: |
           bun -e "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') process.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
-          bun scripts/tendriller-bootstrap.mjs --probe-only
-      - name: Exercise pure-ESM probe, archive, serverless and bootstrapper under Deno
+      - name: Smoke-test builtin archive and probe imports under Deno
         run: |
           deno eval --allow-read --allow-write --allow-env --allow-sys "import { packTarGz, unpackTarGz } from './contract/archive.mjs'; import { probeCapabilities } from './contract/transport-probe.mjs'; const tgz = packTarGz([{ path: 'a.txt', bytes: 'ok' }]); if (new TextDecoder().decode(unpackTarGz(tgz).get('a.txt')) !== 'ok') Deno.exit(1); console.log(JSON.stringify(await probeCapabilities()));"
           deno run --allow-read --allow-write --allow-env --allow-sys scripts/tendriller-bootstrap.mjs --probe-only

@@ -223,7 +223,9 @@ export async function probeCapabilities({
     reason: 'Use standalone Node process, container, OS service, or ServerlessHostAdapter for post-exit availability.',
   });
 
-  const sqlRecommendedEngine = wasmSupported ? 'wasm-portable' : 'unavailable';
+  // The WebAssembly global proves no SQL module can load or execute. Engine
+  // qualification belongs to an actual matching public engine session.
+  const sqlRecommendedEngine = wasmSupported ? 'unknown' : 'unavailable';
 
   return Object.freeze({
     schemaVersion: 1,
@@ -243,6 +245,7 @@ export async function probeCapabilities({
       wasm: wasmSupported,
       nativeAddonSupport: runtimeName === 'node' || runtimeName === 'bun',
       sqlDefaultEngine: sqlRecommendedEngine,
+      sqlEngineValidated: false,
       totalMemoryMb: totalMemMb,
       freeMemoryMb: freeMemMb,
       fitsConstrainedSandboxBudget: totalMemMb >= 512,
