@@ -263,3 +263,18 @@ operation references separate from Chronolog's one durable operation journal.
 Use the [first-app acceptance steps](BUILD_AN_APP.md#7-verify-completion-including-reopening)
 before claiming a working integration, then qualify deployment/network/engine
 boundaries relevant to the real task.
+
+### Network changes and local diagnostics
+
+Keep the supplied browser owner: its authenticated RTC provider forwards actual
+network/visible-resume events to the one participation controller. A usable relay
+stays available while a direct-only replacement authenticates. Do not add a
+transport retry interval or allocate another participant. Native hosts can forward
+OS network notifications with `participation.reconsiderConnections()`; discovery
+reconnection already supplies that event automatically. Events are coalesced and
+rate-limited locally, with no idle probes.
+
+Use `await participation.diagnostics()` (or `session.participation.diagnostics()`
+on a browser facade) to inspect authenticated routing and application framing
+bytes without contacting the host. See [peer connections](PEER_CONNECTIONS.md)
+for counter scope, cooldown and replacement behavior.
