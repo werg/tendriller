@@ -43,16 +43,48 @@ test('pre-abort never requests a lock', async () => {
   assert.equal(f.requests.length, 0); assert.equal(f.held.size, 0);
 });
 
-test('abort before native grant releases a late granted witness without exposing it', async () => {
-  const f = manager(), stop = new AbortController();
-  let grant, requested;
+test('abort rejects before a delayed native grant and the late grant releases without exposing a handle', async () => {
+  const f = manager(), stop = new AbortController(), reason = Error('cancelled');
+  let grant, requested, finished, rejection;
   const started = new Promise(resolve => { requested = resolve; });
   const ready = new Promise(resolve => { grant = resolve; });
-  const locks = { query: f.locks.query, async request(...args) { requested(); await ready; return f.locks.request(...args); } };
+  const nativeFinished = new Promise(resolve => { finished = resolve; });
+  const locks = { query: f.locks.query, async request(...args) {
+    requested(); await ready;
+    try { return await f.locks.request(...args); } finally { finished(); }
+  } };
   const opening = acquireRootLifetime('profile', 'root', { signal: stop.signal, locks });
-  const rejected = assert.rejects(opening, /cancelled/);
-  await started; stop.abort(Error('cancelled')); grant(); await rejected;
-  assert.equal(f.held.size, 0);
+  const settled = opening.then(() => { rejection = 'unexpected handle'; }, error => { rejection = error; });
+  await started; stop.abort(reason);
+  try {
+    // One event-loop turn drains rejection microtasks without granting the lock.
+    await new Promise(setImmediate);
+    assert.equal(rejection, reason, 'cancellation must not wait for native grant');
+    assert.equal(f.requests.length, 0); assert.equal(f.held.size, 0);
+  } finally {
+    grant(); await settled; await nativeFinished;
+  }
+  await new Promise(setImmediate); // Node's test runner also detects any unhandled late rejection.
+  assert.equal(f.held.size, 0); assert.equal(f.requests.length, 1);
+  assert.equal(rejection, reason);
+});
+
+test('normal explicit release still waits for the native request to finish', async () => {
+  let complete, callbackDone;
+  const held = new Set(), completion = new Promise(resolve => { complete = resolve; });
+  const callbackFinished = new Promise(resolve => { callbackDone = resolve; });
+  const locks = { query() {}, async request(name, _options, run) {
+    held.add(name);
+    try { await run({ name }); callbackDone(); await completion; }
+    finally { held.delete(name); }
+  } };
+  const witness = await acquireRootLifetime('profile', 'root', { locks });
+  let released = false;
+  const releasing = witness.release().then(() => { released = true; });
+  await callbackFinished;
+  assert.equal(released, false); assert.equal(held.has(witness.name), true);
+  complete(); await releasing;
+  assert.equal(released, true); assert.equal(held.size, 0);
 });
 
 test('a duplicate root lock cannot borrow another document lifetime', async () => {

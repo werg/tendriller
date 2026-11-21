@@ -42,7 +42,8 @@ export async function acquireRootLifetime(profileId, rootId, { signal, locks = g
     signal?.throwIfAborted();
     return Object.freeze({ name, release });
   } catch (error) {
-    await release().catch(() => {});
+    // Cancellation must not await a native grant; its callback fences late grants.
+    void release().catch(() => {});
     throw error;
   }
 }
