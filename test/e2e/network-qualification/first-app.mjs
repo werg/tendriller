@@ -4,6 +4,7 @@ import { createFaults } from './faults.mjs';
 import { createBrowserNetworkControls } from './browser-controls.mjs';
 import { runNetworkScenario } from './scenarios.mjs';
 import { activityTimeline } from './evidence.mjs';
+import { progressWriter } from './idle-progress.mjs';
 
 export async function qualifyFirstAppNetwork({ page, context, peer, expect, transportCounters,
   evidencePng, browserDevice, sha256, profile }) {
@@ -116,7 +117,8 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       timeline.record('blocked', 'relay');
     }
     const report = await runNetworkScenario(adapter, { profile, phaseMs: 60_000,
-      idleMs: Number(process.env.NETWORK_LAB_IDLE_MS ?? 15_000), timeline });
+      idleMs: Number(process.env.NETWORK_LAB_IDLE_MS ?? 15_000), timeline,
+      onProgress: progressWriter(process.env.NETWORK_LAB_PROGRESS) });
     report.sensorScope = 'Immutable PNG fixture carried by real encrypted content/inference signals; deterministic native inference, no physical camera/provider billing qualification.';
     assert.equal(report.success, true, 'Requested network profile is unsupported in this browser');
     return report;

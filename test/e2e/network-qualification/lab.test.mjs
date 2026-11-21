@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { createFaults } from './faults.mjs';
 import { activityTimeline, assertDirectWork, assertIdle, counterDelta } from './evidence.mjs';
 import { runNetworkScenario } from './scenarios.mjs';
+import { observeIdleDuration } from './idle-progress.mjs';
+import { releaseAnchor, sha256 } from './anchor.mjs';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const baseline = () => ({ instance: 'private-epoch', hostRequests: 10, relayBytes: 100,
   sentReliableBytes: 20, receivedReliableBytes: 20, sentLiveBytes: 30, receivedLiveBytes: 30 });
@@ -155,4 +160,47 @@ test('abort during suspension cleans up without claiming a closed idle segment',
     });
   } finally { clearTimeout(timer); }
   assert.deepEqual(calls, ['frozen', 'cleanup']);
+});
+
+test('local idle progress reports fixed start/end without requesting app counters', async () => {
+  const values = [];
+  const result = await observeIdleDuration(65, { intervalMs: 10, onProgress: async value => values.push(value) });
+  assert.ok(values.length >= 2);
+  assert.ok(values.every(value => value.counterCoverage === 'start-only-until-segment-close' && value.modelTurns === null));
+  assert.ok(values.every(value => value.idleStartedAt === result.idleStartedAt && value.idlePlannedEndAt === result.idlePlannedEndAt));
+  assert.equal(Date.parse(result.idlePlannedEndAt) - Date.parse(result.idleStartedAt), 65);
+});
+
+test('nonzero closed idle segment retains exact counts and elapsed time in failure evidence', async () => {
+  const { adapter } = fakeApplication();
+  const snapshot = adapter.snapshot;
+  let calls = 0;
+  adapter.snapshot = async options => {
+    const value = await snapshot(options);
+    if (++calls === 5) value.hostRequests++;
+    return value;
+  };
+  await assert.rejects(runNetworkScenario(adapter, { profile: 'idle', idleMs: 1000 }), error => {
+    assert.equal(error.networkReport.idle.before.hostRequests, 10);
+    assert.equal(error.networkReport.idle.after.hostRequests, 11);
+    assert.equal(error.networkReport.idle.delta.hostRequests, 1);
+    assert.ok(error.networkReport.idle.observedMs >= 1000);
+    return true;
+  });
+});
+
+test('release anchor rejects changed bytes and traversal without launching the application', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'network-anchor-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'dist'));
+  const bytes = Buffer.from('fixture-package');
+  const manifest = { source_commit: 'a'.repeat(40), runtime: 'b'.repeat(64), composition: { id: 'c'.repeat(64) },
+    first_app: { file: 'fixture.tgz' }, artifacts: [{ file: 'fixture.tgz', sha256: sha256(bytes), size: bytes.length }] };
+  const save = () => writeFile(join(root, 'dist/manifest.json'), JSON.stringify(manifest));
+  await writeFile(join(root, 'dist/fixture.tgz'), bytes); await save();
+  assert.equal((await releaseAnchor(root)).source, manifest.source_commit);
+  await writeFile(join(root, 'dist/fixture.tgz'), Buffer.alloc(bytes.length));
+  await assert.rejects(releaseAnchor(root), /bytes changed/);
+  manifest.artifacts[0].file = '../private'; await save();
+  await assert.rejects(releaseAnchor(root), /within dist/);
 });
