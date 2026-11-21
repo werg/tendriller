@@ -174,3 +174,19 @@ test('observer close aborts a pending proof and fences a late empty snapshot', a
   resolve({ held: [] }); await new Promise(setImmediate);
   assert.equal(retired, 0); assert.equal(observer.hasParked, false);
 });
+
+test('a timed-out browser query remains the sole native query until settlement; old evidence is discarded', async t => {
+  let resolve, calls = 0, retired = 0;
+  const observer = createDocumentLifetimeObserver({ profileId: 'profile', timeoutMs: 100,
+    locks: { query() { calls++; return new Promise(yes => { resolve = yes; }); } } });
+  t.after(() => observer.close());
+  observer.register('root', { name: rootLifetimeLockName('profile', 'root'), clientId: 'document' }, () => retired++);
+  await observer.reapFresh(); // Native query times out without a browser cancellation API.
+  await Promise.all([observer.reapFresh(), observer.reapFresh(), observer.reapFresh()]);
+  assert.equal(calls, 1); assert.equal(retired, 0);
+  resolve({ held: [] }); await new Promise(setImmediate);
+  assert.equal(retired, 0);
+  const fresh = observer.reapFresh(); await new Promise(setImmediate); assert.equal(calls, 2);
+  resolve({ held: [] }); await fresh;
+  assert.equal(retired, 1);
+});

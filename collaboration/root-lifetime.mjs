@@ -62,7 +62,7 @@ export function createDocumentLifetimeObserver({ profileId, locks = globalThis.n
   sweepMs = 60000, timeoutMs = 30000, signal } = {}) {
   rootLifetimeLockName(profileId, 'validation');
   const entries = new Set(), lifetime = new AbortController();
-  let timer, querying, sweeping, closed = false;
+  let timer, querying, nativeQuery, sweeping, closed = false;
   const abort = () => close();
   signal?.addEventListener('abort', abort, { once: true });
   function schedule() {
@@ -77,8 +77,13 @@ export function createDocumentLifetimeObserver({ profileId, locks = globalThis.n
       try {
         lifetime.signal.throwIfAborted();
         if (typeof locks?.query !== 'function') throw Error('OWNER_CAPABILITY_UNAVAILABLE');
+        // The browser API has no cancellation. After a timeout, do not pile up
+        // native queries; ignore its eventual old result and retry on a later scan.
+        if (nativeQuery) throw Error('OWNER_LIFETIME_QUERY_PENDING');
+        const pending = nativeQuery = Promise.resolve().then(() => locks.query());
+        void pending.finally(() => { if (nativeQuery === pending) nativeQuery = undefined; }).catch(() => {});
         const snapshot = await Promise.race([
-          Promise.resolve().then(() => locks.query()),
+          pending,
           new Promise((_, reject) => { onAbort = () => reject(lifetime.signal.reason); lifetime.signal.addEventListener('abort', onAbort, { once: true }); }),
           new Promise((_, reject) => { timeout = setTimeout(() => reject(Error('OWNER_LIFETIME_QUERY_TIMEOUT')), timeoutMs); }),
         ]);
