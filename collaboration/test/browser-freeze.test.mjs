@@ -246,3 +246,37 @@ for(const mode of ['shared','elected'])for(const visibleAgain of [false,true])te
  f.clock.runDue();assert.equal(f.replaced.length,0);assert.equal(f.attachment.session.signal.aborted,false);assert.equal(f.opened,1);
  assert.deepEqual((await bounded(f.attachment.session.query('state',null),'query after explicit resume race')).value,['retained identity']);
 });
+
+for(const mode of ['shared','elected'])for(const silent of [false,true])test(`${mode} hidden explicit resume requires fresh binding from a ${silent?'silent':'healthy'} owner`,async t=>{
+ const f=await fixture(t,mode);await f.attachment.suspend();await until(()=>f.clock.tasks.size===0,'explicit suspension acknowledged');
+ const starts=f.probe.started;let calls=0,replies=0,outcome;
+ const resumeAttachment=f.attachment.session.resumeAttachment.bind(f.attachment.session);
+ f.attachment.session.resumeAttachment=async()=>{calls++;const result=await resumeAttachment();replies++;return result;};
+ f.gate.hold=true;const resuming=f.attachment.resume();void resuming.then(()=>{outcome='completed';},()=>{outcome='failed';});
+ await until(()=>f.gate.queued.length>0,'transport resume proof held');
+ f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event('visibilitychange'));assert.equal(f.clock.heartbeats.length,0);
+ if(silent){
+  f.gate.silent=true;f.gate.hold=false;f.gate.queued.splice(0);await delay(10);
+  assert.notEqual(outcome,'completed');assert.equal(f.probe.active.size,0);
+  // The shared transport's superseded request retains its existing 15s bound;
+  // cancellation of the BC probe may settle sooner. Neither is owner evidence.
+  f.clock.advance(15000);await until(()=>calls>0||outcome!==undefined,'fresh endpoint request after transport cancellation');
+  assert.equal(calls,1,'a cancelled transport proof must still require a new binding RPC');assert.equal(replies,0);assert.notEqual(outcome,'completed');assert.equal(f.probe.started,starts);
+  f.clock.advance(30000);await until(()=>outcome!==undefined,'silent owner fails within the existing RPC deadline');assert.equal(outcome,'failed');assert.equal(f.probe.started,starts);
+ }else{
+  await delay(10);assert.notEqual(outcome,'completed','withheld owner replies cannot complete manual resume');
+  f.gate.hold=false;for(const send of f.gate.queued.splice(0))send();await bounded(resuming,'healthy hidden owner proves binding');
+  assert.equal(calls,1);assert.equal(replies,1);assert.equal(f.probe.started,starts+1);assert.equal(f.clock.heartbeats.length,0,'fresh binding while hidden must leave health parked');
+  assert.deepEqual((await bounded(f.attachment.session.query('state',null),'healthy hidden query')).value,['retained identity']);
+ }
+});
+
+for(const mode of ['shared','elected'])test(`${mode} explicit resume begun hidden obtains new transport proof if it becomes visible during binding`,async t=>{
+ const f=await fixture(t,mode);await f.attachment.suspend();const starts=f.probe.started;
+ f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event('visibilitychange'));
+ let release,entered=false,calls=0;const held=new Promise(resolve=>{release=resolve;}),resumeAttachment=f.attachment.session.resumeAttachment.bind(f.attachment.session);
+ f.attachment.session.resumeAttachment=async()=>{calls++;const result=await resumeAttachment();if(calls===1){entered=true;await held;}return result;};
+ const resuming=f.attachment.resume();await until(()=>entered,'hidden fresh binding continuation');assert.equal(f.clock.heartbeats.length,0);
+ f.doc.hidden=false;f.doc.visibilityState='visible';f.doc.dispatchEvent(new Event('visibilitychange'));release();await bounded(resuming,'visible completion after hidden binding');
+ assert.equal(calls,2);await until(()=>f.clock.heartbeats.length===1,'visible completion rearms observation');assert.equal(f.probe.started,starts+1);assert.equal(f.replaced.length,0);
+});
