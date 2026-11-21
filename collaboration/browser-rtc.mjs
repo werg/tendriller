@@ -62,7 +62,10 @@ export function createBrowserRtcBroker({ signal, openConnection = openWorkerWebR
       if (!authorize(data.binding)) return;
       if (data.type === 'availability') {
         if(typeof data.available !== 'boolean')return;
-        route.providerAvailable=data.available;wake();return;
+        const restored=!route.providerAvailable&&data.available;
+        route.providerAvailable=data.available;wake();
+        if(restored&&route.provider)notifyNetworkChange();
+        return;
       }
       if (data.type === 'network-change') {
         if (route.provider) notifyNetworkChange();
