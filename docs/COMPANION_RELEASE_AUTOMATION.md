@@ -39,6 +39,7 @@ dispatch APIs use the existing login. Start with a dry run:
 ```sh
 node scripts/companion-release/cli.mjs --check-auth
 node scripts/companion-release/cli.mjs --source CORE_FULL_SHA \
+  --automation-source OWNER_APPROVED_AUTOMATION_CORE_FULL_SHA \
   --manifest-sha256 PUBLISHER_MANIFEST_SHA256 --output /tmp/companion-proposal
 ```
 
@@ -46,8 +47,16 @@ Inspect `tuple.json` and `proposal.json`. Re-run the same command with
 `--apply --auth-kind user` to open the Contrib bootstrap PR. Application always
 reverifies the public graph; a stored plan cannot be submitted as an input.
 Review and merge only after normal gates pass. Bootstrap adds the tuple selector,
-target-owned receiver workflow and a builtin-only copy of this maintained
-planner. These files are installed by an ordinary reviewed PR. Workflow/code
+guard and target-owned receiver workflow. The implementation remains only in
+core. Each receiver sparse-checks out `scripts/companion-release/` and
+`scripts/check-published-release.mjs` from `werg/tendriller` at the explicitly
+owner-approved immutable automation source, with credentials unpersisted.
+It uses only Node builtins and needs no npm install. Its CLI verifies its actual
+clean checkout SHA and target repository/mode before any graph lookup or write.
+The automation source pin is independent of the evolving product tuple; upgrades
+require a reviewed receiver bootstrap PR. These files are installed by an
+ordinary reviewed PR after the central automation implementation is merged.
+Workflow/code
 changes require owner or existing App authorization; a receiver token is allowed
 to change **only** tuple data. Future implementation upgrades use another reviewed
 owner-authorized bootstrap PR.
