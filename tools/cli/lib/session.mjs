@@ -3,7 +3,7 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { pack } from './pack.mjs';
-import { diagnoseApplicationSession } from '@tendriller/core/collaboration/diagnostics';
+import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
 
 function invocationFailure(error, signal) {
   if (!signal?.aborted || signal.reason === error) return error;

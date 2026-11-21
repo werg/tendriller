@@ -1,6 +1,0 @@
-*.local.mjs
-.private/
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
-.env

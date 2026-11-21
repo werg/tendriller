@@ -1,45 +1,45 @@
 # Architecture
 
-One Chronolog application session owns each local application's execution and exchange. The same public session contract serves native agents and browser Workers. Tendriller composes that session with authenticated page hosting and a light protocol participant.
+Tendriller is built as one piece around **Chronolog (`chronolog-db`) as the central pipe**. Every application runs over one owned Chronolog session (`@chronolog/peer-session`) that supplies signing identity, durable storage, command execution, coherent queries, reactive views, live signals, content transfer, replication, and recovery across native agents and browser Workers.
 
-## Responsibilities
+Different participants connect to that same pipe through transports matched to their role and trust boundary — including explicitly limited transports for special cases.
 
-| Owner | Responsibility |
-| --- | --- |
-| Chronolog session | Signing device identity, byte store, operation journal, materialization, queries, events, signals, owned participation, replication and recovery |
-| Coordinating peer | Orders the currently selected generation; no permanent process or host privilege is implied |
-| Tendriller participant | Signed controls, membership changes, immutable public definition and signed page-code release chain |
-| Tendriller page host | Account access, isolation, immutable file serving, bounded discovery/introductions and lifecycle quotas |
-| Browser runtime | Install one application backend and live signal port, track local sensors, compose optional voice and explicit offline code caching |
-| Authored page | UI, domain commands, authorization policy, drafts, presentation and user decisions |
-| Tools and contrib | Public consumers, preview, application examples and independent qualification |
+## Chronolog as the central pipe
 
-The server uses the common participant envelope and a closed action policy. Its different transport and rights describe its role. There is no separate hosted application implementation, default JSON state executor or application-profile switch.
+| Pipe / transport | Package | Role and boundary |
+| --- | --- | --- |
+| Full peer session | `@chronolog/peer-session` (`/native`, `/worker`, `/browser`) | Durable execution, local byte store, operation journal, queries, events, signals, chunked content, direct WebRTC and relayed ciphertext replication, and recovery. |
+| Reactive views & draft store | `@chronolog/peer-session` (`createLiveView`, `createViewStore`, `operationReference`) | Coherent UI refresh over session queries/changes plus per-view local drafts and retained operation references. |
+| Durable topic outbox | `@chronolog/peer-session` (`forwardSessionEvents`) | Cursor-based event pump with atomic checkpoints and automatic halt on generation recovery. |
+| Scoped tool pipe | `@chronolog/peer-session` (`createApplicationTools`, `createScopedApplicationTools`, `serveApplicationToolLines`) | Capability-scoped, generation-pinned limited tool surface for local agents and remote MCP assistants. |
+| Local owner attachment | `@chronolog/peer-session` (`createApplicationOwner`, `connectApplicationOwner`, `acquireApplicationOwnerLock`) | Multi-tab browser and multi-CLI native attachment to one retained signing profile without duplicating device keys. |
+| Filtered control & publication transport | `@chronolog/peer-generation/participant` (`ApplicationControlParticipant`) | Limited host transport permitting only signed generation control, membership revisions, immutable public definitions, and signed UI release chains. Rejects database history, commands, generic chunks, and live signals before dispatch. |
 
-## Identities
+## Ownership and reasoned exceptions
 
-A page has a host page ID, a URL capability and account access. It also records one independent 32-byte application ID. Chronolog's pinned descriptor binds that application to its history, schema/definition and execution manifest. The session owns the signing device identity and validates signed updates. A page login or agent bearer token does not itself grant database rights.
+| Component | Owner | Why it is structured this way |
+| --- | --- | --- |
+| Application state, history, replication, signals | Chronolog session (peers) | Keeps all application logic, signing keys, and epoch keys on enrolled devices. No separate hosted app backend or JSON state executor. |
+| Application-neutral host (`server/`) | Tendriller Cloudflare Worker + Durable Objects | **Reasoned exception:** browsers need authenticated HTTPS page origins, OAuth 2.1, immutable signed asset hosting, bounded WebRTC introductions/relay, and a single account-linked `/mcp` gateway. The Worker runs zero `node:*` imports (pure Web Crypto), holds no epoch keys, executes no app code, and participates in Chronolog solely through the filtered control/publication transport and hibernating assistant sockets. |
+| Browser runtime & standalone tools (`runtime/`, `tools/`) | `@tendriller/runtime`, `@tendriller/tools` | **Reasoned exception:** intentionally zero `@chronolog/*` runtime dependency. Keeps page boot (`tendril.js`), Home Screen install, offline immutable asset caching, sensor tracking, optional voice, and standalone CLI/preview decoupled and tiny; apps install their Chronolog session adapter explicitly via `tendril.installApplicationBackend(...)`. |
+| Owner lifecycle & host glue (`session/`) | `@tendriller/core/{browser-owner,worker-owner,native-owner,participation,native-rtc,diagnostics,transport-diagnostics}` | Thin browser (SharedWorker / WebLock Worker + page WebRTC broker) and Node (Unix-IPC supervisor + SQLite effect journal) wrappers that bind Tendriller host introductions to `@chronolog/peer-session`. |
+| Multi-participant coordination (`collaboration/`) | `@tendriller/core/collaboration` | Optional domain schema and client for addressed tasks, exclusive claims, and fan-in over an ordinary Chronolog session. |
 
-The server stores host metadata, signed control records and retained code assets. It has no application command, event, record-log, stream, device outbox or database-history tables. Account audit entries describe host lifecycle and publication activity only.
+## Identities and isolation
 
-## Application contract
+- **Page identity vs. application identity:** each hosted page has an isolated origin and host page ID plus one independent 32-byte lowercase hex `application.id`. Chronolog's pinned descriptor binds `application.id` to its history, definition/schema, and execution manifest.
+- **Independent rights:** host login (account cookies / OAuth), device signing grants (Chronolog authority), and code publication rights are separate checks. A page login or bearer token never grants database rights.
+- **Host storage:** D1 holds accounts, OAuth grants, setup allocations, and assistant connection indexes (`server/migrations/0001_accounts.sql`); each page Durable Object (schema revision 11) holds signed controls, pairing ledgers, publication heads, and assistant delivery state; R2 holds immutable signed assets. There are no application command, event-history, or database tables on the host.
 
-`ApplicationSelection` is `{id}`. `createApplicationBackend({id,session,...})` adapts the public Chronolog session to the browser binding. The backend always supplies operations, applied read views, changes, status and explicit recovery. SQL and a declared event-publication command are optional capabilities of the same session.
+## Code publications
 
-The application binding installs once. Missing installation is an explicit error. Neither installation nor a page's `ready()` callback claims synchronization. `saved`, `applied` and `shared` describe distinct evidence. Recovery can abandon selected-generation history; reapplication is deliberate and preserves the original attempt as evidence.
-
-## Code and publication
-
-Code is a signed Chronolog publication with a predecessor, revision and operation identity. The host verifies authority and the full file graph, writes verified content, then commits the immutable version and signed head together. Lost replies can be retried exactly. Stale heads conflict. Old signed releases retain their bytes.
-
-A publication pins its browser runtime graph. Open tabs retain their exact code graph, including through explicit offline caching. Current code changes only through a new authorized signed release. Application recovery never rewinds that release chain.
+UI code is a signed Chronolog publication with predecessor, revision, and operation identity. The host verifies authority and the full file graph, writes verified immutable bytes to R2, and commits the version and signed head atomically. Exact retries are idempotent; stale heads conflict; application history recovery never rewinds the code release chain.
 
 ## Build boundaries
 
-`@tendriller/core` exports the host SDK, application/signals contracts and participant transport. `@tendriller/runtime` exports kernel, optional voice, manifest and exact assets. `@tendriller/engine` exports the Worker, Durable Object classes, account schema and test fixture. `@tendriller/tools` exports preview, packing and public-session helpers with two executables.
+- `@tendriller/core` — host SDK, filtered participant client, application/signal/assistant contracts, session owner helpers, and optional collaboration client.
+- `@tendriller/runtime` — browser kernel, optional voice module, manifest, and exact assets (`runtime/types/` supplies kernel and voice declarations).
+- `@tendriller/engine` — bundled Cloudflare Worker (`dist/engine/worker.mjs`), `Tendril` and `Admission` Durable Objects, unified `0001_accounts.sql` schema, and public Vitest fixture (`@tendriller/engine/testing`).
+- `@tendriller/tools` — self-contained `tendril` and `tendril-preview` executables consuming only built public artifacts.
 
-The Worker embeds Chronolog's portable control and participant graph. The
-same-origin MCP endpoint checks account and per-page permissions, then uses a
-hibernatable inbound socket to reach the existing application participant.
-Each page Durable Object retains its subscriptions and wake state. Application
-code executes on the enrolled peer. See [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). The kernel imports no domain UI, voice engine or Node tools. Tools consume the built public artifacts; core does not fetch contrib. Provenance records exact source commits, clean/dirty state and archive hashes.
+`scripts/check-boundaries.mjs` enforces that the Worker imports zero `node:*` modules, the kernel imports no voice/Node/domain modules, and tools consume only public artifacts. `dist/provenance.json` records exact source commits and archive SHA-256 hashes.

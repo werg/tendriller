@@ -1,236 +1,84 @@
 # Connect any Tendriller application to an assistant
 
-Tendriller exposes application tools at the service's `/mcp` endpoint. Each page
-owns its approved connection, event inbox, subscriptions and delivery jobs in
-its existing Durable Object. Application code and state stay with the enrolled
-Chronolog participants. The same endpoint serves multiple owners and application
-definitions, including applications that use SQL.
+Tendriller exposes one account-linked `/mcp` endpoint on the service origin. Each page Durable Object owns its approved assistant connection, event inbox, webhook subscriptions, and delivery queue. Application code and durable state stay on the enrolled Chronolog participants — the host executes no application code.
 
 ## Start from an agent conversation
 
-Call `tendril_guide` with `topic: "start"` for the maintained
-[MCP workflow](MCP_AGENT_GUIDE.md), or `topic: "connect"` to read this document
-inside MCP. For a new app, follow `topic: "build"` before enrolling its assistant
-adapter. An empty list means no assistant-connected apps, not a missing plugin.
-All returned links use the connected service origin. The normal route is this
-Cloudflare endpoint and the app's existing participant; the separately deployed
-Node integration is an optional harness for explicit external deployments.
+Call `tendril_guide` with `topic: "start"` for the [MCP workflow](MCP_AGENT_GUIDE.md), `topic: "build"` to create a new app, or `topic: "connect"` to read this guide inside MCP. An empty `list_tendrils` means no assistant-connected apps exist for the linked account, not a missing plugin. All links use the connected `serviceOrigin`.
 
 ## Prepare the service once
 
-Apply account migrations `0002_integration_oauth.sql` and
-`0003_assistant_connections.sql`. Configure the exact service origin plus
-`/mcp` as the OAuth resource. Register each intended client with its actual
-callback and authentication method, and install `OAUTH_SIGNING_JWK`.
-For ChatGPT's Client ID Metadata Document flow, use the exact metadata URL
-shown in the plugin setup as the client `id`, set `metadataDocument: true` and
-`tokenEndpointAuthMethod: "none"`, and pin its exact redirect URI. Tendriller
-checks the public document when displaying the OAuth consent form.
-For Tendriller's public service, the registered client is
-`https://chatgpt.com/oauth/client.json` and the redirect is
-`https://chatgpt.com/connector_platform_oauth_redirect`. Use a separate resource
-and separate keys for each deployment. End users can follow the
-[ChatGPT setup walkthrough](CHATGPT_INTEGRATION.md#agent-walkthrough) without
-setting Worker secrets.
-The normal tool scopes are `tendrils:list`, `applications:read`,
-`applications:write` and `events:subscribe`. Use `bridges: []` for this route.
-See [OAuth setup](INTEGRATION_OAUTH.md).
-
-Set `ASSISTANT_STORE_KEY` to 32 random bytes encoded as base64. It encrypts
-webhook signing secrets and provides a separate derived signing key for live
-inbox tickets. Keep the key available across deployments. Set
-`ASSISTANT_CALLBACK_ORIGINS` to a whitespace-separated list of exact HTTPS
-origins operated by approved callback providers. HTTPS redirects are blocked.
-A deployment with no allowed callback origins can still offer tools and the
-live inbox. These are service-wide settings.
+1. Initialize the unified account schema (`server/migrations/0001_accounts.sql`, `@tendriller/engine/accounts-schema`).
+2. Configure `OAUTH_CONFIG_JSON` with `resource: "<PUBLIC_BASE>/mcp"`, your registered clients (for ChatGPT's public Client ID Metadata Document flow: `id: "https://chatgpt.com/oauth/client.json"`, `metadataDocument: true`, `tokenEndpointAuthMethod: "none"`, exact redirect `https://chatgpt.com/connector_platform_oauth_redirect`), and `OAUTH_SIGNING_JWK`. Typical scopes: `tendrils:list`, `tendrils:create`, `applications:read`, `applications:write`, `events:subscribe`. See [OAuth setup](INTEGRATION_OAUTH.md).
+3. Set `ASSISTANT_STORE_KEY` (32 random bytes base64) to encrypt webhook signing secrets and sign short-lived live inbox tickets. Keep it stable across deployments.
+4. Optionally set `ASSISTANT_CALLBACK_ORIGINS` (whitespace-separated exact HTTPS origins allowed for event callbacks; redirects are blocked). Without it, tools and the live inbox still work.
 
 ## Enroll an application
 
-1. Follow [Build an app](BUILD_AN_APP.md) through signed definition, selected generation, published UI and a working
-   application participant. These can be prepared before owner claim. Keep that
-   participant available according to [Agent delivery](AGENT_DELIVERY.md).
-2. Use the public helper below from the participant's private setup process.
-   Save the adapter key in that participant's private store and reuse it on
-   restart. To enroll standby participants, generate a distinct key for
-   each and include up to two additional keys in `backupKeys` when proposing.
-   Give each already enrolled Chronolog device only its own adapter key. The proposal's commands and queries must exist in the signed native
-   definition. Describe what each exported event will contain so the owner can
-   review the outbound data.
-3. Give the owner the already-published page and returned `reviewUrl` together.
-   An unclaimed proposal is prepared privately; owner sign-in makes it reviewable
-   without another agent action. They sign in and choose the exact
-   queries, commands and events to expose. Editing permissions preserves access
-   and subscriptions for unchanged capabilities. Removing an event or changing
-   its declared projection removes that event's retained data and subscriptions.
-   Credential additions and replacements require owner review.
-4. Attach the adapter to the application's existing Chronolog session.
-   Connect the intended client to the service `/mcp` and authorize it. Call
-   `list_tendrils`, `describe_application` and one approved query. Test a real
-   input and applied writeback before handing the connection to the owner.
+1. Build and publish the app through [Build an app](BUILD_AN_APP.md) so its signed definition, initial generation, and native Chronolog participant exist (this can happen before owner claim).
+2. Generate and privately store an adapter key (`createAssistantKey()`), plus up to two distinct `backupKeys` for standby enrolled devices if needed. Propose the exact queries, commands, and event projections declared by the signed definition.
+3. Give the owner the published page URL and `proposal.reviewUrl`. Once claimed, the owner reviews and approves exact capabilities at `/connections`. Editing capabilities keeps unchanged grants/subscriptions; removing an event or changing its projection clears its retained inbox/subscriptions.
+4. Attach `connectApplicationAssistant` to the running Chronolog session, connect the MCP client to `<PUBLIC_BASE>/mcp`, and verify `list_tendrils`, `describe_application`, a read query, and an applied command.
 
 ```js
-import { createApplicationTools } from '@chronolog/peer-session';
+import { createScopedApplicationTools } from '@chronolog/peer-session';
 import {
   createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant,
   forwardApplicationEvents,
 } from '@tendriller/core/assistant';
 
-// Run setup once with the existing private host handle. Retain key privately.
+// Setup once using the private host handle; persist `key` privately.
 const key = await loadAssistantKey() ?? createAssistantKey();
 await saveAssistantKey(key);
 const exposed = { queries: ['notes'], commands: ['addNote'] };
 const proposal = await proposeApplicationAssistant({
   api: handle.api, token: handle.token, key, label: 'Shared notes', ...exposed,
-  events: [{ name: 'note.added', description: 'A note was retained. The event includes its ID only.' }],
+  events: [{ name: 'note.added', description: 'A note was retained (ID only).' }],
 });
 console.log(proposal.reviewUrl);
 
-// Start this part after the owner approves access, inside the running app peer.
+// Inside the running application peer after owner approval:
 const assistant = connectApplicationAssistant({
-  api: handle.api, key, session, tools: createApplicationTools(session), ...exposed,
+  api: handle.api, key, session,
+  tools: createScopedApplicationTools(session, exposed),
+  ...exposed,
   onStatus: status => console.log(status),
 });
 await assistant.waitUntilOnline();
 
-// Optional. Use an atomic private checkpoint file or equivalent durable store.
+// Optional durable event forwarding (atomic checkpoint with load()/save(cursor)):
 await forwardApplicationEvents({
   session, assistant, topics: ['note'], checkpoint,
   project: event => ({ name: 'note.added', payload: { noteId: event.id } }),
 });
 ```
 
-The sample assumes your existing `handle`, open `session` and private key/file
-helpers. The checkpoint implements `load()` and `save(cursor)`. A missing
-checkpoint begins at the first selected event. To send only future activity,
-initialize it at the current selected tail using the same topic filter. The
-helper advances the checkpoint after the host acknowledges all events in a
-batch. A recovered history requires explicit review of what to resume.
-The Worker checks the approved adapter credential and its enrolled device
-against signed Chronolog grants. Reads can use an eligible approved replica.
-New writes use one explicitly selected provider. The owner can select a different
-enrolled provider on the connection review page; connecting another socket does
-not change that selection. Each connection has a monotonically increasing epoch,
-so frames from a replaced socket cannot act as its successor. Chronolog still needs
-an available coordination path for writes. For an attempted write, Tendriller
-retains its input digest and original signing device with the operation ID.
-Retries use that device. If it is unavailable, the response retains its original
-operation reference and reports uncertainty. Restore that provider and use
-`inspect_application_operation`, `retry_application_operation` or the bounded
-`wait_application_operation`. These calls never move a saved operation to a
-different signer. `reapply_application_operation` is a deliberate new operation,
-requires a new ID and links to the reviewed original. A new ID without that
-explicit link starts independent work.
-The retained command index is bounded per page and survives connection edits.
-An OAuth revocation blocks each dispatch whose fresh authorization check occurs
-after revocation. Keep the original operation identity for a command already
-sent, since it can still apply.
+### Execution and retry semantics
 
-If a projection is declined by the owner, the helper advances past that
-projection and continues forwarding other events. Use `onSkipped` to report
-which event was declined. Use a separate checkpoint and deliberately choose
-where to begin on each forwarding device.
+- **Authorization & routing:** the Worker verifies the adapter key and device against signed Chronolog grants. Reads can route to any eligible approved replica; new writes route to one owner-selected provider. Each WebSocket connection carries a monotonic epoch so replaced sockets cannot act for their successor.
+- **Exact retries:** Tendriller retains the input digest and original signing device per `operationId`. Retries target that same signer and never silently move a saved operation to a different device. Use `inspect_application_operation`, `retry_application_operation`, or bounded `wait_application_operation` for uncertain outcomes; use `reapply_application_operation` with a new ID to deliberately link replacement work.
+- **Event forwarding:** `forwardApplicationEvents` advances the checkpoint only after host acknowledgement, skips owner-declined projections (`onSkipped`), and halts for explicit review after generation recovery.
+- **Double scoping:** both the host gateway and the local participant (`createScopedApplicationTools` + `@tendriller/core/assistant`) enforce the exact allowed command/query set. Stop the adapter via `assistant.close()` or closing its session.
 
-Stop the adapter using `assistant.close()` or by closing its parent session.
-The SDK scopes remote commands and queries again before calling the native tool.
+## Independently acting agents (consumer bindings)
 
-## Several independently acting agents
+OAuth authenticates the account and client, not separate chats inside the same client (unbound calls appear as **Tool caller via the OAuth client**). To isolate independent agents:
 
-OAuth identifies the account and registered client. It does not independently
-authenticate two chats or model runs within the same client. Unbound requests are
-therefore labeled **Tool caller via the OAuth client**. Their operation namespace
-includes that client; they are never presented as a verified individual agent.
+1. Generate and retain `createApplicationAgentKey()` (UUID + 32-byte secret).
+2. Call `register_application_agent` with `applicationId`, `bindingToken`, `label`, requested capabilities, and route (`on-demand`, `event-subscriber`, `mounted-inbox`, or `native-loop`).
+3. Have the owner approve the exact binding at the returned URL (capped by the app connection and OAuth grant).
+4. Send the proof via `Tendriller-Agent-Binding`, MCP `_meta['tendriller/agentBinding']`, or `bindingToken` (never in app data, code, or events).
 
-Use a separate approved binding for each independently acting agent:
+Each binding gets isolated `operationId` namespaces, subscriptions, cursors, and delivery receipts, and can be rotated (`rotate_application_agent`) or individually revoked (`revoke_application_agent`). Cryptographic execution provenance remains the Chronolog signing device; attested caller binding is passed separately from caller-asserted metadata. See [Agent bindings](AGENT_BINDINGS.md).
 
-1. Generate `createApplicationAgentKey()` from `@tendriller/core/assistant` and
-   retain the private proof before the first uncertain request. It consists of a
-   UUID and 32 random bytes; the UUID alone grants no authority.
-2. Call `register_application_agent` with `applicationId`, `bindingToken`, a
-   readable `label`, the requested command/query/event names and the actual
-   route (`on-demand`, `event-subscriber`, `mounted-inbox` or `native-loop`).
-3. The owner reviews and approves that exact binding at the returned URL. Each
-   binding's approved capabilities are capped by the application connection and
-   the currently authenticated OAuth grant.
-4. Include the proof in the `Tendriller-Agent-Binding` request header, the MCP
-   request's `_meta['tendriller/agentBinding']`, or the tool's `bindingToken` field.
-   The proof must never appear in application input, code assets or event exports.
+## Events, catch-up, and live inbox
 
-Each binding has independent operation IDs, subscriptions, retained delivery
-receipts and cursor scope. Two bindings may use the same short `operationId`.
-An ID identifies the same command, input, captured revision and source context;
-changed content conflicts. Token refresh and connection reconnect preserve the
-namespace. `rotate_application_agent` accepts a replacement proof created with
-`createApplicationAgentKey(existingBindingId)` and preserves the binding ID.
-`revoke_application_agent` or the owner's **Revoke this agent** action stops only
-that binding. It does not revoke other agents or enrolled signing profiles.
+- **MCP Events (`application.event`):** subscribe with `application_id` and an approved `event` name. Callbacks are challenge-verified, signed with HMAC-SHA256 (Web Crypto), fenced by selected generation and live OAuth grant, and retried via the page Durable Object alarm with backoff. Inspect pending/terminal receipts via `get_application_delivery`.
+- **Turn-based catch-up (`read_application_events`):** retain the full opaque `next` cursor (app, binding, export version, generation, filter, sequence). Boundary changes return `resetRequired` and a reset cursor.
+- **Live inbox (`open_application_inbox`):** mounts an MCP Apps card over a hibernating WebSocket using a short-lived ticket; clicking **Check inbox in this chat** prompts a follow-up turn. See [ChatGPT integration](CHATGPT_INTEGRATION.md).
 
-Command responses contain the actual signer, native operation ID, generation and
-attempt ID when available. The response distinguishes saved, applied, rejected,
-needs-review and uncertain states. The native tool receives the gateway's
-authenticated caller binding separately from optional endpoint/run/document
-labels, which remain explicitly **caller-asserted**. The admission index retains
-this delegated context; cryptographic execution provenance remains the actual
-Chronolog signer. An application needing the logical actor in its signed domain
-records must explicitly compose that attested context into its command policy.
+## Resource bounds and cost
 
-Host-level credentials are also independently scoped. See
-[Agent bindings](AGENT_BINDINGS.md) for additive enrollment, rotation and the
-separate, replacing recovery action.
-
-## MCP Events and other clients
-
-For native background delivery, subscribe to `application.event` using the
-`application_id` and exact `event` name returned by `describe_application`.
-This stable MCP catalog works for newly connected apps without adding tools
-or event types to the plugin. The provider verifies its callback by challenge.
-A fresh subscription starts with future emissions. Each queued delivery uses a
-stable event ID and exact body across retries, and is fenced by the selected
-Chronolog generation and current account grant. Temporary configuration,
-callback allowlist or encryption key outages defer jobs without consuming
-provider attempts. They resume on a later page alarm before subscription
-expiry. Use `get_application_delivery` to inspect pending work and recent
-terminal receipts, including expiry, rejected callbacks and exhausted retries.
-An accepted receipt establishes delivery to the provider. Confirm the resulting signed writeback in application history.
-
-A tool-capable chat without background subscriptions can call
-`read_application_events` on the next turn. Retain the complete returned `next`
-cursor: application, agent binding, export version, selected generation, filter
-and sequence. A binding, filter, export, generation or retention change returns
-`resetRequired`, the reason and a reset cursor. Inspect affected work before
-explicitly continuing from that boundary. Numeric sequence values alone are not
-resumable cursors. Each observer advances independently, including empty filtered
-batches. A cursor establishes observation progress, never task ownership.
-`truncated` tracks the visible inbox window even when an old event must remain
-stored for a pending webhook.
-Compatible MCP Apps hosts can mount `open_application_inbox` to show new activity
-over an inbound WebSocket. The card sends a follow-up to the same chat when the
-person chooses **Check inbox in this chat**. The mounted card's ticket is
-short-lived. Background processing is available through a supported subscribed
-chat or a separately published agent with its own trigger. See the
-[ChatGPT routes](CHATGPT_INTEGRATION.md).
-
-## Cost and verification
-
-- Account discovery reads an indexed account table without waking page objects.
-  A call routes to the one requested page. The host runs no app code.
-- Inbound application and live inbox sockets use the Durable Object Hibernation
-  API. There is no keepalive request, outbound bridge socket, polling loop or
-  scheduled assistant job during idle periods.
-- Each explicitly forwarded event writes one inbox record and queues jobs only
-  for matching active subscriptions. Delivery shares the page's existing alarm.
-  It leases up to four due jobs in one pass, performs bounded callbacks outside
-  the page's assistant work queue, and backs off on transient errors.
-- The inbox holds the newest 256 accepted events per page plus records needed
-  for outstanding delivery. There are eight subscriptions, at most 256 queued
-  deliveries and four mounted live inboxes per page. A consumer binding may have
-  four subscriptions and two active RPCs within the page's eight-call ceiling.
-  There are at most 32 retained consumer bindings and 4,096 operation mappings.
-  When the queue is full,
-  the emitter receives an explicit error and can retry its exact source event.
-  Disconnecting the application removes its event inbox and subscriptions.
-- Verify a real client subscription, a user-initiated inbox follow-up, retry
-  after eviction and an applied native writeback. For deployment billing, compare
-  the same test page with and without the integration over a fixed idle window.
-  Record Durable Object requests, duration, alarm invocations and SQL rows.
-
-See [Cloudflare Durable Object pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).
+- Account discovery (`list_tendrils`) queries D1 without waking page Durable Objects; calls wake only the target page.
+- Inbound participant and inbox sockets use Durable Object hibernation (zero idle polling or keepalives).
+- Per-page bounds: 256 retained inbox events (plus records with pending deliveries), 8 subscriptions, 256 queued deliveries, 4 mounted live inboxes, 32 consumer bindings, 4,096 operation mappings, 8 concurrent RPCs (at most 2 RPCs and 4 subscriptions per binding). Delivery alarms lease up to 4 due jobs per pass. Disconnecting removes the page's inbox and subscriptions.

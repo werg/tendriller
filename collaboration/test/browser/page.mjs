@@ -1,6 +1,6 @@
-import {openBrowserOwner,createBrowserIdentity} from '../../browser.mjs';
+import {openBrowserOwner,createBrowserIdentity} from '../../../session/browser.mjs';
 import {createViewStore} from '../../local.mjs';
-import {ownerWorkerName,BROWSER_OWNER_PROTOCOL} from '../../browser-transport.mjs';
+import {ownerWorkerName,BROWSER_OWNER_PROTOCOL} from '../../../session/browser-transport.mjs';
 import {verifyParticipantPanel} from './presentation.mjs';
 window.verifyParticipantPanel=verifyParticipantPanel;
 const query=new URL(location.href).searchParams,profileId=query.get('profile')||'browser-owner-test';

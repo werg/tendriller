@@ -1,54 +1,48 @@
 # Tendriller
 
-**Build an app:** follow [the complete first-app guide](docs/BUILD_AN_APP.md) for
-**create → define state → configure authority and initial generation → publish → owner sign-in → connect devices → verify**. It includes page
-claim, initial authority/generation setup, a persistent native session, browser
-enrollment and verification. Agents starting from a domain should read
-[`/agent.md`](https://tendriller.dev/agent.md) or
-[`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json).
-Deliver the [live page and connected participant](docs/AGENT_DELIVERY.md), starting
-provisioning early. The [capability map](docs/CAPABILITIES.md) leads directly to
-existing state, view, operation, camera, voice, reviewed-input and preview APIs.
+Tendriller hosts authenticated web applications whose durable state, execution, replication, and peer communication run through one owned **Chronolog** session (`@chronolog/peer-session`).
 
-Tendriller hosts authenticated pages and participates in Chronolog through a filtered control transport. Each application uses one owned Chronolog session for commands, queries, applied views, operation state, live signals, replication and recovery. The host handles account access, signed membership and generation control, signed page-code publications, discovery and bounded connection introductions.
+The host stays application-neutral: it provides account authentication, OAuth 2.1, a single account-linked `/mcp` gateway, signed membership and generation control, immutable signed UI hosting, and bounded peer introductions/relay. Ordinary application commands, queries, database history, content replication, and live signals flow directly through Chronolog between enrolled peers.
 
-A page has one stable application identity, `{id}`, independent of its URL and the devices that join it. Native agents and browser Workers use the same application contract. The host's role and transport decide which protocol updates it receives; ordinary application commands, database history, content replication and live UI signals stay between peers.
-
-Author HTML, JavaScript and assets for the task. The page owns its layout, application policy and ordinary web dependencies. A small runtime utility provides Home Screen setup, explicit offline code saving, a management link and a stop action for tracked sensors. The headless kernel mounts no interface; voice is an explicit optional module.
+**Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **create → define state → configure authority and initial generation → publish → owner sign-in → connect devices → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). Deliver the [running connected application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
 
 ## Keep a page on your phone
 
-Open **Page options** on a published page to add it to your Home Screen. Supporting browsers provide a native install button; iPhone and iPad users get **Share → Add to Home Screen** instructions. A quiet, dismissible mobile suggestion helps make setup discoverable after interaction. Each page has its own stable launch URL, which opens the selected release while existing tabs keep their pinned publication.
+Open **Page options** on any published page to add it to your Home Screen (native install prompt on supporting browsers; **Share → Add to Home Screen** on iOS/iPadOS). **Save for offline use** caches that release's immutable page files; application state and device enrollment remain owned by the Chronolog session. See [Browser API](docs/BROWSER_API.md#home-screen-setup).
 
-**Save for offline use** separately retains that version's page files. Application data, device enrollment and live connections remain the application's responsibility; an installed iOS app may need sign-in or connection again. See the [Home Screen setup and browser API](docs/BROWSER_API.md#home-screen-setup) for platform details and authored controls.
+## Documentation
 
-## Start here
+### Building and connecting apps
+- [Build an app](docs/BUILD_AN_APP.md) — complete first-app walkthrough and checkpoints
+- [Capabilities](docs/CAPABILITIES.md) — task map to existing Chronolog, session, UI, sensor, media, and preview APIs
+- [Application patterns](docs/APP_PATTERNS.md) — reactive views (`createLiveView`), operation status, and reviewed input
+- [Reviewed media and AI](docs/AI_INPUT.md) — camera, voice, credential-owning native inference, and explicit review
+- [Events or SQL](docs/STATE_MODELS.md) — choosing events vs. guarded SQL transactions
+- [Session bootstrap](docs/SESSION_BOOTSTRAP.md) — native/browser identity, authority setup, enrollment, and safe resume
+- [Agent delivery](docs/AGENT_DELIVERY.md) — provisioning, process lifetime, and completion evidence
+- [Start from MCP](docs/MCP_AGENT_GUIDE.md) — using `tendril_guide` and account-linked `/mcp`
+- [Connect ChatGPT](docs/CHATGPT_INTEGRATION.md) — plugin install, workspace sharing, and per-app consent
+- [Cloudflare assistant](docs/CLOUDFLARE_ASSISTANT.md) — hosting and enrolling apps on `/mcp`
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — failing stages, safe retries, and next actions
 
-- [Build an app](docs/BUILD_AN_APP.md): the recommended first working application, with complete tutorial files and checkpoints.
-- [Capabilities and reusable source](docs/CAPABILITIES.md): task keywords, exact imports, current helpers and their boundaries.
-- [Application patterns](docs/APP_PATTERNS.md): reactive coherent views, operation observation and explicitly reviewed input.
-- [Reviewed media and AI](docs/AI_INPUT.md): actual camera/file and voice controls, a credential-owning native inference participant, and a reviewed command.
-- [Events or SQL](docs/STATE_MODELS.md): concrete starters and the exact optional engine requirements for guarded transactions.
-- [Live delivery](docs/AGENT_DELIVERY.md): provisioning, process lifetime, conversation-handoff boundaries and evidence of completion.
-- [Session bootstrap](docs/SESSION_BOOTSTRAP.md): create and resume native identity, configure authority, enroll a browser and open the same application.
-- [Start from MCP](docs/MCP_AGENT_GUIDE.md): use `tendril_guide` for new-app creation, empty lists and existing-app connection guidance.
-- [Connect ChatGPT](docs/CHATGPT_INTEGRATION.md): install Tendriller, share it in a workspace, and approve access to individual apps.
-- [Troubleshooting](docs/TROUBLESHOOTING.md): exact failing stages, safe retries and the next concrete action.
-- [Agent guide](agent.md): create and claim a page, connect its session and publish signed code.
-- [Application contract](docs/APPLICATION_BACKENDS.md): commands, applied operations, coherent reads and explicit recovery.
-- [Browser API](docs/BROWSER_API.md): session bindings, Home Screen setup, signals, host access, sensors and offline code.
-- [Participant protocol](docs/PROTOCOL.md): role filters, authorization and signed publication atomicity.
-- [Membership](docs/MEMBERSHIP.md): account access, independent device rights and control changes.
-- [Peer connections](docs/PEER_CONNECTIONS.md): discovery, invitations and bounded SDP rendezvous.
-- [Architecture](docs/ARCHITECTURE.md): ownership and public artifact boundaries.
-- [CLI and preview](docs/tools/CLI.md): explicit public-session tools and authored-file preview.
-- [Cookbooks](https://github.com/werg/tendriller-contrib): reasoning, application examples and independent qualification.
-- [Three-repository qualification](docs/RELEASE_COMPOSITION.md): choose exact core, Chronolog and cookbook commits, run the public gates, and stage the host.
-- [Agent onboarding acceptance](docs/AGENT_ONBOARDING_TEST.md): evaluate the journey starting with only a domain.
+### Reference and operations
+- [Agent guide](agent.md) — concise agent workflow and contract reference
+- [Architecture](docs/ARCHITECTURE.md) — Chronolog central-pipe design, limited transports, and package boundaries
+- [Application contract](docs/APPLICATION_BACKENDS.md) — commands, applied operations, coherent reads, and recovery
+- [Browser API](docs/BROWSER_API.md) — session adapter, Home Screen setup, sensors, voice, and offline cache
+- [Participant protocol](docs/PROTOCOL.md) — filtered control transport, authorization, and signed publications
+- [Membership](docs/MEMBERSHIP.md) — account access, device grants, and control changes
+- [Peer connections](docs/PEER_CONNECTIONS.md) — discovery, invitations, direct WebRTC, and relay fallback
+- [CLI and preview](docs/tools/CLI.md) — public session CLI and authored-file preview
+- [Development](docs/DEVELOPMENT.md) — building, testing, and artifact provenance
+- [Operations](docs/OPERATIONS.md) — fresh provisioning, storage baseline, readiness, and staging checks
+- [Three-repository qualification](docs/RELEASE_COMPOSITION.md) — composing core, Chronolog, and cookbooks
+- [Agent onboarding acceptance](docs/AGENT_ONBOARDING_TEST.md) — cold-start domain evaluation
+- [Cookbooks](https://github.com/werg/tendriller-contrib) — larger examples and independent qualification
 
 ## Build and verify
 
-Use Node 22.15 or newer:
+Requires Node 22.15+ (Node 24 for the native tutorial):
 
 ```sh
 npm ci
@@ -57,18 +51,18 @@ npx playwright install --with-deps chromium
 npm run test:browser
 ```
 
-`npm run build` emits the SDK, runtime and engine archives. `npm run build:tools` builds the separate tools archive against those public artifacts. `npm run check:release` runs the core, tools and browser gates. Each artifact records its exact source and hashes; independent consumers use clean checkpoints.
-
-`npm run dev` runs the local host. [Development](docs/DEVELOPMENT.md) describes verification; [operations](docs/OPERATIONS.md) describes fresh deployment provisioning. Deployments require separate authorization.
+`npm run build` produces `@tendriller/core`, `@tendriller/runtime`, and `@tendriller/engine`. `npm run build:tools` packages `@tendriller/tools` against those artifacts. `npm run check:release` runs core, tools, and browser gates. `npm run dev` starts a local host. Production deployment is a separate authorized action.
 
 | Directory | Responsibility |
 | --- | --- |
-| `contract/` | Host SDK, participant transport, application binding, signals and browser declarations |
-| `server/` | Accounts, filtered control participant, signed code storage, introductions and lifecycle |
-| `runtime/` | Browser composition, immutable code cache, sensor tracking and optional voice |
-| `preview-support/` | Public kernel and voice declarations |
-| `tools/` | Session CLI, authored-file packing and explicit browser preview |
-| `scripts/` | Builds, artifact checks, release publication and service operations |
-| `docs/` | Current protocol, design, testing and operations |
+| `contract/` | Host SDK, filtered participant transport, application/signal contracts, OAuth/assistant clients, browser declarations |
+| `session/` | Browser owner (SharedWorker / WebLock Worker + page RTC broker), Node supervisor + SQLite effect journal, host participation, diagnostics |
+| `collaboration/` | Optional multi-participant task-coordination schema and client (`@tendriller/core/collaboration`) |
+| `server/` | Application-neutral Cloudflare Worker host: accounts, OAuth 2.1, `/mcp` gateway, inbox UI, filtered control participant, signed code storage, introductions/relay |
+| `runtime/` | Zero-Chronolog browser composition, immutable offline code cache, sensor tracking, optional voice, and kernel/voice declarations |
+| `tools/` | Standalone CLI (`tendril`, `tendril-preview`), authored-file packing, and explicit preview |
+| `plugin/` | OpenAI ChatGPT plugin manifest, build script, setup skill, and review guide |
+| `scripts/` | Builds, boundary checks, release composition, qualification, and provisioning |
+| `docs/` | Guides, protocol reference, operations, and downloadable first-app starter |
 
-This is one pre-release target. Development storage is recreated from its fresh schema. There are no compatibility readers, alternate application stacks or data migrations. Existing notices and source attribution remain; this refactor grants no new license.
+Pre-release target: storage is initialized cleanly from its fresh baseline schema with no legacy readers or migration layers.

@@ -35,10 +35,6 @@ copyFileSync(join(peerControl, 'provenance.json'), join(engine, 'peer-generation
 writeFileSync(join(engine, 'index.d.mts'), readFileSync(join(root, 'contract/engine.d.mts'), 'utf8'));
 mkdirSync(join(engine, 'migrations'), { recursive: true });
 copyFileSync(join(root, 'server/migrations/0001_accounts.sql'), join(engine, 'migrations/0001_accounts.sql'));
-copyFileSync(join(root, 'server/migrations/0002_integration_oauth.sql'), join(engine, 'migrations/0002_integration_oauth.sql'));
-copyFileSync(join(root, 'server/migrations/0003_assistant_connections.sql'), join(engine, 'migrations/0003_assistant_connections.sql'));
-copyFileSync(join(root, 'server/migrations/0004_account_setup.sql'), join(engine, 'migrations/0004_account_setup.sql'));
-copyFileSync(join(root, 'server/migrations/0005_account_setup_recovery.sql'), join(engine, 'migrations/0005_account_setup_recovery.sql'));
 // Independent workerd consumers must create the same host traffic bindings.
 const testRateLimits = JSON.parse(readFileSync(join(root, 'server/wrangler.public-test.jsonc'), 'utf8')).ratelimits;
 if (!Array.isArray(testRateLimits) || !['PAGE_RATE', 'ACCOUNT_RATE'].every(name => testRateLimits.some(limit => limit.name === name)))
@@ -51,10 +47,6 @@ writeFileSync(join(engine, 'package.json'), JSON.stringify({
   name: '@tendriller/engine', version: CORE_RELEASE, type: 'module',
   description: 'Tendriller page host and filtered Chronolog participant',
   exports: { '.': { types: './index.d.mts', import: './worker.mjs' }, './accounts-schema': './migrations/0001_accounts.sql',
-    './assistant-connections-schema': './migrations/0003_assistant_connections.sql',
-    './account-setup-schema': './migrations/0004_account_setup.sql',
-    './account-setup-recovery-schema': './migrations/0005_account_setup_recovery.sql',
-    './integration-oauth-schema': './migrations/0002_integration_oauth.sql',
     './testing': { types: './testing.d.mts', import: './testing.mjs' }, './testing-ratelimits': './testing-ratelimits.json', './provenance': './provenance.json',
     './peer-generation-provenance': './peer-generation-provenance.json' },
   files: ['worker.mjs', 'index.d.mts', 'migrations', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'provenance.json', 'peer-generation-provenance.json'], peerDependencies: { '@tendriller/core': CORE_RELEASE },
@@ -62,7 +54,6 @@ writeFileSync(join(engine, 'package.json'), JSON.stringify({
   tendriller: { contract: CONTRACT_VERSION },
 }, null, 2) + '\n');
 const files = ['worker.mjs', 'index.d.mts', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'migrations/0001_accounts.sql',
-  'migrations/0002_integration_oauth.sql', 'migrations/0003_assistant_connections.sql', 'migrations/0004_account_setup.sql', 'migrations/0005_account_setup_recovery.sql',
   'package.json', 'peer-generation-provenance.json'];
 writeFileSync(join(engine, 'provenance.json'), JSON.stringify({ ...identity, storageSchemaRevision,
   files: Object.fromEntries(files.map(name => [name, sha256(join(engine, name))])) }, null, 2) + '\n');

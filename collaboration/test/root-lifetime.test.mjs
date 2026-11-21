@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { acquireRootLifetime, rootLifetimeLockName, rootLifetimeWitness, createDocumentLifetimeObserver } from '../root-lifetime.mjs';
+import { acquireRootLifetime, rootLifetimeLockName, rootLifetimeWitness, createDocumentLifetimeObserver } from '../../session/root-lifetime.mjs';
 
 function manager() {
   const held = new Map(), requests = [];

@@ -6,9 +6,9 @@ import type { PublicationManifest, PublicationAsset } from "../../contract/index
 
 const sw = self as unknown as ServiceWorkerGlobalScope;
 const SCOPE = sw.registration.scope;
-const META_CACHE = "tendril-v2-metadata";
+const META_CACHE = "tendril-metadata";
 const META_KEY = SCOPE + "_tendril/publications";
-const PREFIX = "tendril-v2-publication:" + encodeURIComponent(SCOPE) + ":";
+const PREFIX = "tendril-publication:" + encodeURIComponent(SCOPE) + ":";
 const NETWORK_TIMEOUT_MS = 6000;
 interface Registry {
   latest?: string;

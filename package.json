@@ -19,8 +19,6 @@
     "test:contract": "node --test contract/test/*.test.mjs",
     "test:collaboration": "node scripts/test-collaboration.mjs",
     "test:onboarding": "node --test scripts/test/onboarding.test.mjs",
-    "test:chatgpt": "node --test integrations/chatgpt/test/*.test.mjs",
-    "test:chatgpt:host": "node scripts/test-chatgpt-host.mjs",
     "test:first-app": "node scripts/test-first-app.mjs",
     "test:browser": "npm run build:artifacts && node scripts/test-browser.mjs",
     "check": "npm run contract:check && npm run typecheck && npm run build && npm run build:tools && npm run check:boundaries && npm --ignore-scripts run test:ci && npm run test:contract && npm run test:collaboration && npm run test:runtime-unit && npm run test:server && npm run test:consumer && npm run test:tools",
@@ -44,8 +42,8 @@
     "test:idle:metrics": "node scripts/idle-soak/metrics.mjs"
   },
   "devDependencies": {
-    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-d625546c.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-21a5a456.tgz",
+    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-9eee773a.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-9eee773a.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",

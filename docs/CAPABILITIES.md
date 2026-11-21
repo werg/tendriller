@@ -14,16 +14,16 @@ the current browser without requesting permissions.
 | --- | --- | --- |
 | Shared notes, checklists, retained facts, ordinary CRUD | One Chronolog definition with declared commands and `session.query` | `domain.mjs`, `setup.mjs`, `session.mjs`, `worker.mjs` in the [starter](/downloads/tendriller-first-app.tgz); [state choice](STATE_MODELS.md) |
 | Atomic stock deduction, multiple related rows, relational guards | The optional SQL capability and a signed schema/engine manifest | `sql/` in the starter; [events versus SQL](STATE_MODELS.md) |
-| Several tabs or documents using one signing profile | `openBrowserOwner` / `serveBrowserOwner` with bounded attachments | `@tendriller/core/collaboration/browser` and `/worker`; [multi-participant composition](MULTIPARTICIPANT.md) |
+| Several tabs or documents using one signing profile | `openBrowserOwner` / `serveBrowserOwner` with bounded attachments | `@tendriller/core/browser-owner` and `/worker-owner`; [multi-participant composition](MULTIPARTICIPANT.md) |
 | Addressed work, exclusive claims, fan-out and guarded synthesis | `createCollaborationDefinition` and `createCollaborationClient` | `@tendriller/core/collaboration`; [immutable schema and recovery](MULTIPARTICIPANT.md) |
 | Current tasks and paged conversation or result history | `client.tasks`, `client.results`, `client.thread`; `client.capture` for one stable reading revision | `@tendriller/core/collaboration`; [bounded reads](MULTIPARTICIPANT.md#bounded-reads) |
-| Native clients sharing a retained signer | `createNativeSessionSupervisor` and `attachNativeSession` | `@tendriller/core/collaboration/native`; [CLI attachment modes](tools/CLI.md) |
-| Explain owner, keys, coordinator and recovery state | `diagnoseApplicationSession` / CLI `doctor`; bounded findings and next actions | `@tendriller/core/collaboration/diagnostics`; [diagnostic output](tools/CLI.md) |
+| Native clients sharing a retained signer | `createNativeSessionSupervisor` and `attachNativeSession` | `@tendriller/core/native-owner`; [CLI attachment modes](tools/CLI.md) |
+| Explain owner, keys, coordinator and recovery state | `diagnoseApplicationSession` / CLI `doctor`; bounded findings and next actions | `@tendriller/core/diagnostics`; [diagnostic output](tools/CLI.md) |
 | Independently revocable agent connections | Scoped host credentials and approved application consumer bindings | [Agent bindings](AGENT_BINDINGS.md) |
 | Direct P2P transfer and automatic fallback | The shared `PEER_TRANSPORT_POLICY` used by native and browser owners; direct application bytes bypass the host | [Canonical peer connection setup and bandwidth checks](PEER_CONNECTIONS.md) |
 | Connecting a browser, first-visit setup, approval and reconnect | `createOwnerConnection` + `mountConnectionView`: opening the page connects; a new browser is approved once on the service origin and returns automatically | `connection.mjs`, `connect-view.mjs`, `page.mjs`; [connection component](APP_PATTERNS.md#connect-the-browser) |
 | Local authenticated transport inspection | `tendril.transport`, `createTransportDiagnostics(participation)` | [Transport diagnostics](TRANSPORT_DIAGNOSTICS.md); Page options → Application connections |
-| State fetching and live UI refresh | `createLiveView(session, {query, input})` over real session queries and changes | `@tendriller/core/collaboration/live-view`; [application patterns](APP_PATTERNS.md) |
+| State fetching and live UI refresh | `createLiveView(session, {query, input})` over real session queries and changes | `@chronolog/peer-session/browser` (or `@chronolog/peer-session`); [application patterns](APP_PATTERNS.md) |
 | Operation status, uncertain replies, retry and recovery | The operation journal and `createOperationView` | `helpers/operation-view.mjs`; [application patterns](APP_PATTERNS.md) |
 | Typing, presence, disposable progress | `session.signals.send/subscribe` | [Live signals](APPLICATION_SIGNALS.md) |
 | Photo/file → analysis → editable suggestions → explicit commit | `createReviewedInput`, immutable session content and a declared command | `helpers/reviewed-input.mjs`, `media/`; [reviewed AI input](AI_INPUT.md) |
@@ -44,12 +44,11 @@ another database, a synchronization protocol or a hidden server dependency.
 ## Use the correct package and layer
 
 ```js
-import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery, createLiveView, createViewStore } from '@chronolog/peer-session';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
-import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
-import { createCollaborationClient, createViewStore } from '@tendriller/core/collaboration';
+import { openBrowserOwner } from '@tendriller/core/browser-owner';
+import { createCollaborationClient } from '@tendriller/core/collaboration';
 import { createVoice } from '@tendriller/runtime/voice';
-import { createLiveView } from '@tendriller/core/collaboration/live-view';
 ```
 
 On a published page, optional voice can instead use the exact pinned runtime:

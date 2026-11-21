@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { requestPersistentStorage } from '../browser.mjs';
+import { requestPersistentStorage } from '../../session/browser.mjs';
 
 // A browser device holds its only signing key and unsent signed work in origin
 // storage. Best-effort storage can be evicted under pressure (observed as

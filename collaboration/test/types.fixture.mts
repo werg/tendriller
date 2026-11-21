@@ -2,8 +2,8 @@ import type { ApplicationSession } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createCollaborationClient, createViewStore, createEffectDispatcher, mountParticipantPanel, captureCollaborationReader, type ParticipantEntry } from '../index.mjs';
-import { createSqliteEffectJournal, attachNativeSession } from '../native.mjs';
-import { serveBrowserOwner } from '../worker.mjs';
+import { createSqliteEffectJournal, attachNativeSession } from '../../session/native.mjs';
+import { serveBrowserOwner } from '../../session/worker.mjs';
 declare const native: ApplicationSession;
 declare const attached: WorkerApplicationSession;
 const nativeAttachment=await attachNativeSession({directory:'private-owner',token:'credential',connect:connectApplicationOwner,

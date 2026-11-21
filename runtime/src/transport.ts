@@ -1,4 +1,4 @@
-import { createTransportDiagnostics } from '../../collaboration/transport-diagnostics.mjs';
+import { createTransportDiagnostics } from '../../session/transport-diagnostics.mjs';
 import type { RuntimeTransport, TransportDiagnostics, TransportDiagnosticSource, TransportDiagnosticReport } from '../../contract/transport-diagnostics.mjs';
 
 /** One page registers its participant, without granting the runtime data access. */

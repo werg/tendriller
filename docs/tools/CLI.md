@@ -96,7 +96,7 @@ operation or includes command inputs, credentials and full definition schemas.
 
 Applications can use the same pure public helper:
 `diagnoseApplicationSession(session)` from
-`@tendriller/core/collaboration/diagnostics`. `diagnosticFinding(error, {scope})`
+`@tendriller/core/diagnostics`. `diagnosticFinding(error, {scope})`
 maps an existing exact error to the same bounded report without including its
 arbitrary message or payload. CLI errors include this diagnostic alongside the
 original error. A ready observation is not a remote delivery, model turn or
@@ -111,7 +111,7 @@ returns `OWNER_BUSY` before opening its signing store.
 
 ## Compose a native supervisor
 
-The maintained Node-only export is `@tendriller/core/collaboration/native`. It
+The maintained Node-only export is `@tendriller/core/native-owner`. It
 accepts the public Chronolog owner and facade factories without bundling another
 copy of Chronolog into the tools. The following outline composes already
 provisioned deployment values; the first-app bootstrap supplies a complete
@@ -121,7 +121,7 @@ example:
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createNativeSessionSupervisor, attachNativeSession }
-  from '@tendriller/core/collaboration/native';
+  from '@tendriller/core/native-owner';
 import { directory, profileId, applicationId, definition, openRetainedSession,
   readPrivateAttachmentKey } from './deployment.mjs';
 
@@ -309,7 +309,7 @@ provider idempotency key from application, provider and effect identity.
 
 ```js
 import { createEffectDispatcher } from '@tendriller/core/collaboration';
-import { createSqliteEffectJournal } from '@tendriller/core/collaboration/native';
+import { createSqliteEffectJournal } from '@tendriller/core/native-owner';
 
 const journal = await createSqliteEffectJournal({
   path: '/private/my-agent/effects.sqlite',

@@ -101,7 +101,7 @@ export async function onlineAssistantAdapters(t: Tendril): Promise<{ hash: strin
   });
 }
 
-export async function callAssistantAdapter(t: Tendril, ws: WebSocket, input: object, signal: AbortSignal, consumerId = 'bridge'): Promise<unknown> {
+export async function callAssistantAdapter(t: Tendril, ws: WebSocket, input: object, signal: AbortSignal, consumerId = 'oauth_client'): Promise<unknown> {
   const attached = attachment(ws);
   if (!attached || !(await freshAdapters(t)).includes(attached.adapterHash) || ws.readyState !== WebSocket.READY_STATE_OPEN ||
       attached.connectionEpoch !== t.db.get('assistant_adapter_epoch:' + attached.adapterHash, 0)) throw offline();

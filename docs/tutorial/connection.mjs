@@ -16,7 +16,7 @@ const TRANSIENT = new Set(['OWNER_BUSY', 'OWNER_UNREACHABLE', 'ENDPOINT_STALE', 
 const codeOf = error => String(error?.code || error?.name || 'ERROR');
 
 /** User-facing copy for connection and pairing errors. Developer details stay in `technical`. */
-import { requestPersistentStorage } from '@tendriller/core/collaboration/browser';
+import { requestPersistentStorage } from '@tendriller/core/browser-owner';
 
 export function describeConnectionError(error, { appName = 'this app' } = {}) {
   const code = codeOf(error), technical = `${code}${error?.message && error.message !== code ? `: ${error.message}` : ''}`;

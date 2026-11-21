@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { serveBrowserOwner } from '../worker.mjs';
-import { BROWSER_OWNER_PROTOCOL } from '../browser-transport.mjs';
+import { serveBrowserOwner } from '../../session/worker.mjs';
+import { BROWSER_OWNER_PROTOCOL } from '../../session/browser-transport.mjs';
 
 class Scope extends EventTarget {
   constructor(){super();this.reply=new Promise(resolve=>{this.respond=resolve;});}

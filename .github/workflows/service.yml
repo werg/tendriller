@@ -190,12 +190,6 @@ jobs:
     with:
       manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
 
-  chatgpt-integration:
-    needs: [artifacts]
-    uses: ./.github/workflows/chatgpt-integration.yml
-    with:
-      manifest_sha256: ${{ needs.artifacts.outputs.manifest_sha256 }}
-
   network-qualification:
     needs: [artifacts]
     uses: ./.github/workflows/network-qualification.yml
@@ -205,7 +199,7 @@ jobs:
 
   publish:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
-    needs: [check, browser, native-owner, sql-starter, chatgpt-integration, network-qualification, artifacts]
+    needs: [check, browser, native-owner, sql-starter, network-qualification, artifacts]
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml

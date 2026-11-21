@@ -331,7 +331,7 @@ test('broken unpaired publication gets an explicit update and retains browser pa
     const fixture = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'publication-notice-fixture.mjs', contents: `
       import { browserProfileId } from './docs/tutorial/helpers/browser-profile.mjs';
       import { createBrowserPairing } from './docs/tutorial/pairing-browser.mjs';
-      import { createViewStore } from './collaboration/local.mjs';
+      import { createViewStore } from '@chronolog/peer-session/browser';
       const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
       const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view';
       const viewId=sessionStorage.getItem(viewKey)||crypto.randomUUID();sessionStorage.setItem(viewKey,viewId);

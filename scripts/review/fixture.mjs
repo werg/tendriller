@@ -4,9 +4,9 @@ import { resolve, dirname } from 'node:path';
 
 /** Enumerated public consumer sources only; never copy private device stores or generated application data. */
 export const REVIEW_FIXTURE_FILES = [
-  ['review-app.mjs', 'integrations/chatgpt/plugin/review-app.mjs'],
-  ['review-domain.mjs', 'integrations/chatgpt/plugin/review-domain.mjs'],
-  ['review-assistant.mjs', 'integrations/chatgpt/plugin/review-assistant.mjs'],
+  ['review-app.mjs', 'plugin/review-app.mjs'],
+  ['review-domain.mjs', 'plugin/review-domain.mjs'],
+  ['review-assistant.mjs', 'plugin/review-assistant.mjs'],
   ['support/participant-lifecycle.mjs', 'docs/tutorial/helpers/participant-lifecycle.mjs'],
 ];
 export function installReviewFixtureSources(root, project) {

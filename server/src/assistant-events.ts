@@ -1,4 +1,4 @@
-import { callbackUrl, deliveryDisposition, signedHeaders, verifyCallback, webhookKey } from '../../integrations/chatgpt/webhook-data.mjs';
+import { callbackUrl, deliveryDisposition, signedHeaders, verifyCallback, webhookKey } from './assistant-webhook';
 import { notifyAssistantActivity } from './assistant-activity';
 import { freshAdapters, connection, type Connection } from './assistant-admission';
 import { APP_ID, EVENT_LIMIT, MCP_APPLICATION_EVENT, assistantOAuth, fields, requireScope, string, type Principal } from './assistant-shared';
@@ -10,7 +10,7 @@ import { HttpError, readBody } from './http';
 import { sha256Hex } from './ids';
 import { withSelectedAssistantGeneration } from './peer-generations';
 import type { Tendril } from './tendril';
-import { callerContext, consumerCurrent, initializeAssistantBindings, providerBindingId, requireConsumerOperation, type Consumer } from './assistant-bindings';
+import { callerContext, consumerCurrent, providerBindingId, requireConsumerOperation, type Consumer } from './assistant-bindings';
 
 const RETENTION = 256, JOB_LIMIT = 256, MAX_WATCHERS = 8, CALLBACK_DEADLINE = 4000;
 const DEFER_MS = 15 * 60_000, LEASE_MS = 15_000, MAX_ATTEMPTS = 8;
@@ -72,7 +72,6 @@ async function unseal(t: Tendril, id: string, sealed: string) {
 
 export async function ingestAssistantEvent(t: Tendril, adapterHash: string, deviceId: string, body: Record<string, unknown>) {
   fields(body, ['type', 'id', 'name', 'sourceEventId', 'generation', 'payload', 'context'], ['type', 'id', 'name', 'sourceEventId', 'generation', 'payload']);
-  initializeAssistantBindings(t);
   const name = string(body.name, 80), sourceId = string(body.sourceEventId, 256);
   const generation = string(body.generation, 64, APP_ID), payload = JSON.stringify(body.payload);
   const context = callerContext(body.context);
@@ -218,7 +217,7 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
       } });
   } catch (error) {
     throw new HttpError(400, 'callback_verification_failed', 'Callback verification failed',
-      { rpcCode: -32015, reason: (error as { data?: { reason?: string } }).data?.reason ?? 'challenge_failed' });
+      { rpcCode: -32015, reason: (error as HttpError)?.extra?.reason ?? 'challenge_failed' });
   }
   await requireWritesOpen(t.env);
   if (!oauth || !(await activeGrant(t.env, oauth, principal.grant, principal.account))?.scope.split(' ').includes('events:subscribe') ||
@@ -244,7 +243,7 @@ export async function changeAssistantSubscription(t: Tendril, approved: Connecti
 }
 
 export function nextAssistantDelivery(t: Tendril): number | null {
-  if (!t.db.get('assistant_tables', false) || !connection(t) || t.db.get('disabled', false)) return null;
+  if (!connection(t) || t.db.get('disabled', false)) return null;
   return t.db.one<{ due: number }>('SELECT due FROM assistant_jobs ORDER BY due LIMIT 1')?.due ?? null;
 }
 
@@ -293,7 +292,6 @@ export function assistantDeliveryStatus(t: Tendril, principal: Principal) {
 }
 
 export async function runAssistantDelivery(t: Tendril) {
-  initializeAssistantBindings(t);
   const approved = connection(t), at = nextAssistantDelivery(t), now = t.now();
   if (!approved || at === null || at > now) return;
   // Reserve a short durable lease and release all serialization before I/O.
@@ -330,7 +328,7 @@ export async function runAssistantDelivery(t: Tendril) {
   })();
   const grants = new Map<string, Promise<OAuthGrant | null>>();
   await Promise.all(jobs.map(async job => {
-    if (job.binding_id && !job.binding_id.startsWith('bridge_') && !t.db.one("SELECT 1 FROM assistant_consumers WHERE id=? AND status='active'", job.binding_id)) {
+    if (job.binding_id && !job.binding_id.startsWith('oauth_client_') && !t.db.one("SELECT 1 FROM assistant_consumers WHERE id=? AND status='active'", job.binding_id)) {
       finish(job, 'revoked'); return;
     }
     if (job.expires_at <= t.now()) { finish(job, 'expired'); return; }
@@ -366,7 +364,7 @@ export async function runAssistantDelivery(t: Tendril) {
       const body = JSON.stringify({ eventId, ...toMessage(t, job, approved.applicationId), cursor: null });
       const { pending } = await withSelectedAssistantGeneration(t, async generation => {
         if (!current(job)) return { pending: null };
-        if (job.binding_id && !job.binding_id.startsWith('bridge_') && !t.db.one("SELECT 1 FROM assistant_consumers WHERE id=? AND status='active'", job.binding_id)) {
+        if (job.binding_id && !job.binding_id.startsWith('oauth_client_') && !t.db.one("SELECT 1 FROM assistant_consumers WHERE id=? AND status='active'", job.binding_id)) {
           finish(job, 'revoked'); return { pending: null };
         }
         if (generation !== job.generation) { finish(job, 'superseded'); return { pending: null }; }
@@ -380,7 +378,7 @@ export async function runAssistantDelivery(t: Tendril) {
         t.db.run('UPDATE assistant_jobs SET attempts=?,block_reason=NULL WHERE event_seq=? AND watcher_id=? AND lease=?',
           attempts, job.event_seq, job.watcher_id, lease);
         return { pending: fetch(url, { method: 'POST', body, redirect: 'manual', signal: AbortSignal.timeout(CALLBACK_DEADLINE),
-          headers: signedHeaders({ id: eventId, subscriptionId: job.watcher_id, body, secrets, now: t.now() }) }) };
+          headers: await signedHeaders({ id: eventId, subscriptionId: job.watcher_id, body, secrets, now: t.now() }) }) };
       });
       if (!pending) return;
       const res = await pending;

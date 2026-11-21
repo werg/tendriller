@@ -6,7 +6,7 @@ Import the shared observer from the SDK. Adapt the other UI components from the
 ```js
 import { createOwnerConnection, describeConnectionError } from './connection.mjs';
 import { mountConnectionView } from './connect-view.mjs';
-import { createLiveView } from '@tendriller/core/collaboration/live-view';
+import { createLiveView } from '@chronolog/peer-session/browser';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { createReviewedInput } from './helpers/reviewed-input.mjs';
 ```
@@ -95,7 +95,7 @@ corresponding existing rendering block instead of installing duplicate observers
 ```js
 import { createOwnerConnection, describeConnectionError } from './connection.mjs';
 import { mountConnectionView } from './connect-view.mjs';
-import { createLiveView } from '@tendriller/core/collaboration/live-view';
+import { createLiveView } from '@chronolog/peer-session/browser';
 
 export function mountNotes(session, root = document) {
   const list = root.querySelector('#notes');

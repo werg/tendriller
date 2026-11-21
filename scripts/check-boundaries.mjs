@@ -30,12 +30,12 @@ const engine = JSON.parse(readFileSync(join(root, 'dist/engine/inputs.json')));
 for (const input of engine) assert.ok((controlArtifacts.has(input) || !application.test(input)) && !tooling.test(input), `Worker includes application/tool dependency ${input}`);
 const workerSource = readFileSync(join(root, 'dist/engine/worker.mjs'), 'utf8');
 for (const match of workerSource.matchAll(/(?:from\s*|import\s*\()\s*["'](node:[^"']+)/g))
-  assert.ok(['node:crypto', 'node:net'].includes(match[1]), `Unexpected native Worker dependency ${match[1]}`);
+  assert.fail(`Unexpected native Worker dependency ${match[1]}`);
 for (const artifact of controlArtifacts) assert.ok(engine.includes(artifact), `The deployed engine must include its public control artifact: ${artifact}`);
 const toolGraph = join(root, 'dist/tools-inputs.json');
 if (existsSync(toolGraph)) for (const input of JSON.parse(readFileSync(toolGraph))) {
   const path = input.replaceAll('\\', '/');
-  assert.ok(!/^(?:server\/src|runtime\/src|contract|preview-support)\//.test(path) && !application.test(path),
+  assert.ok(!/^(?:server\/src|runtime\/src|runtime\/types|contract)\//.test(path) && !application.test(path),
     `Tools must consume public artifacts, not private source: ${input}`);
 }
 const kernelPath = join(root, 'dist/runtime/inputs.json');

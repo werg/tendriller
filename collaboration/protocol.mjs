@@ -1,4 +1,7 @@
 /** Optional collaboration contracts. Routing is never a grant or a privacy boundary. */
+import { SessionError, canonicalJson, identifier, operationReference, signerId } from '@chronolog/peer-session';
+export { canonicalJson, identifier, operationReference, signerId };
+
 export const COLLABORATION_PROTOCOL = 'tendriller.collaboration.v1';
 export const COLLABORATION_LIMITS = Object.freeze({ slots: 32, activeClaimsPerSigner: 8,
   payloadBytes: 8192, resultsPerSlot: 64, requests: 4096, observers: 64 });
@@ -14,45 +17,11 @@ const actions = {
   RECOVERY_REVIEW_REQUIRED: 'Inspect the original operation and deliberately rebind or reapply.',
   EFFECT_OUTCOME_UNKNOWN: 'Reconcile the original effect identity before dispatching again.',
 };
-export class CollaborationError extends Error {
+export class CollaborationError extends SessionError {
   constructor(code, message = code, scope = {}) {
-    super(message); this.name = 'CollaborationError'; this.code = code; this.scope = scope;
-    this.retrySafe = ['OWNER_BUSY', 'RECIPIENT_UNAVAILABLE'].includes(code);
-    this.nextAction = actions[code] ?? 'Inspect the supplied scope and correct the request.';
+    super(code, message, scope, actions);
+    this.name = 'CollaborationError';
   }
-}
-export function identifier(value, name = 'identity') {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}$/u.test(value))
-    throw new CollaborationError('INVALID_IDENTITY', `Invalid ${name}`);
-  return value;
-}
-export function signerId(value) {
-  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/u.test(value))
-    throw new CollaborationError('INVALID_SIGNER', 'A verified signing public key is required');
-  return value;
-}
-export function canonicalJson(value, maxBytes = COLLABORATION_LIMITS.payloadBytes) {
-  let nodes = 0;
-  function visit(item, depth) {
-    if (++nodes > 4096 || depth > 24) throw new CollaborationError('PAYLOAD_TOO_COMPLEX');
-    if (item === null || typeof item === 'boolean' || typeof item === 'string') return JSON.stringify(item);
-    if (typeof item === 'number' && Number.isFinite(item)) return JSON.stringify(item);
-    if (Array.isArray(item)) {
-      if (Object.keys(item).length !== item.length) throw new CollaborationError('INVALID_PAYLOAD');
-      return `[${item.map(child => visit(child, depth + 1)).join(',')}]`;
-    }
-    if (!item || typeof item !== 'object' || ![Object.prototype, null].includes(Object.getPrototypeOf(item)))
-      throw new CollaborationError('INVALID_PAYLOAD');
-    if (Reflect.ownKeys(item).length !== Object.keys(item).length) throw new CollaborationError('INVALID_PAYLOAD');
-    return `{${Object.keys(item).sort().map(key => {
-      const descriptor = Object.getOwnPropertyDescriptor(item, key);
-      if (!descriptor || !('value' in descriptor)) throw new CollaborationError('INVALID_PAYLOAD');
-      return `${JSON.stringify(key)}:${visit(descriptor.value, depth + 1)}`;
-    }).join(',')}}`;
-  }
-  const encoded = visit(value, 0);
-  if (new TextEncoder().encode(encoded).length > maxBytes) throw new CollaborationError('PAYLOAD_TOO_LARGE');
-  return encoded;
 }
 export function endpointReference(value) {
   if (!value || typeof value !== 'object') throw new CollaborationError('ENDPOINT_STALE');
@@ -87,25 +56,6 @@ export function resolveRecipient(target, entries, { capability } = {}) {
   const signers = [...new Set(candidates.map(entry => signerId(entry.deviceId)))];
   if (signers.length !== 1) throw new CollaborationError(signers.length ? 'RECIPIENT_AMBIGUOUS' : 'RECIPIENT_UNAVAILABLE');
   return candidates.find(entry => entry.deviceId === signers[0]);
-}
-export function operationReference(session, operationId, state) {
-  // These public session getters come from the owner's verified descriptor,
-  // including through its attachment metadata. Input/state labels cannot choose
-  // the history, and a pre-descriptor partial reference is never safe to retry.
-  const applicationId = session.applicationId ?? session.id, historyId = session.historyId;
-  if (typeof applicationId !== 'string' || !applicationId || typeof historyId !== 'string' || !historyId)
-    throw new CollaborationError('OPERATION_SCOPE_MISMATCH', 'An attached application and verified history are required');
-  const author = signerId(state?.author ?? session.deviceId);
-  // A native attachment namespaces its own local IDs before submission; full
-  // canonical IDs are idempotent. An inspected foreign author keeps its actual
-  // signed ID instead of being mapped into this attachment's namespace.
-  const scopedId = author === session.deviceId && typeof session.scopeOperationId === 'function'
-    ? session.scopeOperationId(operationId) : operationId;
-  if (state?.operationId !== undefined && state.operationId !== scopedId)
-    throw new CollaborationError('OPERATION_REFERENCE_CONFLICT', 'The saved state belongs to a different operation');
-  return Object.freeze({ applicationId, historyId, author,
-    operationId: identifier(scopedId, 'operation'), ...(state?.attemptId ? { attemptId: state.attemptId } : {}),
-    ...(state?.generation ? { generation: state.generation } : {}) });
 }
 /** Owner hook: replace every caller-supplied source, never merge authority claims. */
 export function prepareCollaborationCommand(endpoint, name, input, deviceId) {

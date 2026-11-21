@@ -48,7 +48,7 @@ export async function requireSetupSchema(env: Env): Promise<void> {
     if (fences.results.length !== fenceNames.length || fenceNames.some((name, index) => fences.results[index]?.name !== name)) throw new Error('allocation shape');
     const guards = await env.ACCOUNTS.prepare("SELECT COUNT(*) AS n FROM sqlite_master WHERE type='trigger' AND name IN ('account_setup_capacity','account_setup_charge')").first<{ n: number }>();
     if (guards?.n !== 2) throw new Error('guards');
-  } catch { throw new HttpError(503, 'setup_storage_unavailable', 'Apply required account migrations 0004_account_setup.sql and 0005_account_setup_recovery.sql to compatible storage before account-bound setup.'); }
+  } catch { throw new HttpError(503, 'setup_storage_unavailable', 'Apply account baseline 0001_accounts.sql to compatible storage before account-bound setup.'); }
 }
 
 export async function requireSetupPrincipal(env: Env, principal: Principal): Promise<void> {

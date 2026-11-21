@@ -119,9 +119,6 @@ route("PATCH", /^$/, async (t, req) => {
     if (b.lifetime !== "ad_hoc" && b.lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
     await changeLifetime(t, b.lifetime);
   }
-  if (b.pairing !== undefined) {
-    throw new HttpError(400, "bad_request", "Device pairing is unavailable");
-  }
   if (b.short_name !== undefined) t.db.set("short_name", b.short_name === null ? null : validName(b.short_name).slice(0, 30));
   for (const k of ["theme_color", "background_color"] as const) {
     if (b[k] === undefined) continue;

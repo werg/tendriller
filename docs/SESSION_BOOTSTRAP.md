@@ -150,7 +150,7 @@ step. A new account or device is not authorized merely because it can load HTML.
 ## Compose the browser facade
 
 The Worker calls `serveBrowserOwner` from
-`@tendriller/core/collaboration/worker`. The owner acquires an exclusive Web Lock
+`@tendriller/core/worker-owner`. The owner acquires an exclusive Web Lock
 **before** its `openSession` callback opens the retained device, verifies signed
 authority and opens `openBrowserApplication`. The callback returns its session
 and control participant. Browser identity creation is a separate explicit action.
@@ -162,7 +162,7 @@ before awaiting network work, preserving the first attachment or identity reques
 Do not await a top-level configuration fetch before installing the owner service.
 
 The page calls `openBrowserOwner` from
-`@tendriller/core/collaboration/browser`, supplying the worker URL, retained
+`@tendriller/core/browser-owner`, supplying the worker URL, retained
 profile, immutable application/definition identity and its view/document context.
 Events applications use SharedWorker when available, with a fenced dedicated
 Worker fallback. SQL/WASM applications pass `requiresDedicatedWorker: true` to

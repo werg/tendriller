@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { participateApplication, PEER_TRANSPORT_POLICY } from '../participation.mjs';
+import { participateApplication, PEER_TRANSPORT_POLICY } from '../../session/participation.mjs';
 const a='ab'.repeat(32),b='cd'.repeat(32);
 function fixture(openDirectConnection) {
   const calls=[],events=[];

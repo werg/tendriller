@@ -75,7 +75,7 @@ synchronous OPFS storage requires a dedicated Worker in the qualified Chromium
 build. Declare that requirement explicitly:
 
 ```js
-import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
+import { openBrowserOwner } from '@tendriller/core/browser-owner';
 
 const attachment = await openBrowserOwner({
   workerUrl, profileId, applicationId,

@@ -6,7 +6,7 @@ import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createCollaborationDefinition } from '../domain.mjs';
 import { captureCollaborationReader } from '../paging.mjs';
-import { checkOwnerFrame } from '../browser-transport.mjs';
+import { checkOwnerFrame } from '../../session/browser-transport.mjs';
 
 const A='a'.repeat(64),B='b'.repeat(64),C='c'.repeat(64),G='1'.repeat(64),G2='2'.repeat(64),APP='7'.repeat(64),HISTORY='verified-domain-history';
 function harness() {

@@ -14,7 +14,7 @@ selector into an application or replace the direct opener with a throwing stub.
 Native owners use:
 
 ```js
-import { participateNativeApplication } from '@tendriller/core/collaboration/native-rtc';
+import { participateNativeApplication } from '@tendriller/core/native-rtc';
 const participation = participateNativeApplication(session, {
   peers: host.peers,
   control,

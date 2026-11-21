@@ -12,15 +12,12 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   // observer, so additions to the page contract cannot disappear into a stub.
   const transport = await build({ entryPoints: ['runtime/src/transport.ts'], bundle: true, write: false, format: 'iife', globalName: 'FixtureTransport',
     plugins: [{name: 'public-transport', setup(build) {
-      build.onResolve({filter: /collaboration\/transport-diagnostics\.mjs$/}, () => ({path: new URL('../../../dist/sdk/collaboration/transport-diagnostics.mjs', import.meta.url).pathname}));
+      build.onResolve({filter: /session\/transport-diagnostics\.mjs$/}, () => ({path: new URL('../../../dist/sdk/session/transport-diagnostics.mjs', import.meta.url).pathname}));
     }}],
   });
   const bundle = await build({ entryPoints: ['docs/tutorial/page.mjs'], bundle: true, write: false, format: 'esm',
     plugins: [{ name: 'session-fixture', setup(build) {
-      build.onResolve({ filter: /^(?:@tendriller\/core\/collaboration\/browser|@chronolog\/peer-session\/tendriller|\.\/pairing-browser\.mjs)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
-      build.onResolve({ filter: /^@tendriller\/core\/collaboration$/ }, () => ({ path: new URL('../../../collaboration/index.mjs', import.meta.url).pathname }));
-      // Exercise the public SDK artifact, including its startup-ready lifecycle.
-      build.onResolve({ filter: /^@tendriller\/core\/collaboration\/live-view$/ }, () => ({ path: new URL('../../../dist/sdk/collaboration/live-view.mjs', import.meta.url).pathname }));
+      build.onResolve({ filter: /^(?:@tendriller\/core\/browser-owner|@chronolog\/peer-session\/tendriller|\.\/pairing-browser\.mjs)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `
         export const createApplicationBackend = () => ({});
         export const requestPersistentStorage = async () => null;

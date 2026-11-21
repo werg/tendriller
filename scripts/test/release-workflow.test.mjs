@@ -11,7 +11,7 @@ const service = workflow('service'), graph = jobs(service);
 const needs = job => graph[job].match(/^    needs: \[([^\]]+)\]/m)[1].split(',').map(value => value.trim());
 
 test('trusted publication joins every qualification, and staging/production depend on publication', () => {
-  assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'native-owner', 'sql-starter', 'chatgpt-integration', 'network-qualification', 'artifacts'].sort());
+  assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'native-owner', 'sql-starter', 'network-qualification', 'artifacts'].sort());
   for (const job of ['publish', 'staging', 'production']) {
     assert.match(graph[job], /github\.ref == 'refs\/heads\/master'/);
     assert.match(graph[job], /github\.event_name == 'push'/);
@@ -61,7 +61,7 @@ test('live qualification reuses the promoted run or immutable public graph', () 
 });
 
 test('every checkout in the release qualification graph disables persisted credentials', () => {
-  for (const name of ['service', 'release', 'agent-onboarding', 'staging-acceptance', 'plugin-qualification', 'chatgpt-integration', 'network-qualification']) {
+  for (const name of ['service', 'release', 'agent-onboarding', 'staging-acceptance', 'plugin-qualification', 'network-qualification']) {
     const checkouts = workflow(name).split('- uses: actions/checkout@v4').slice(1);
     assert(checkouts.length > 0, name);
     for (const checkout of checkouts)
@@ -98,17 +98,5 @@ test('native owner qualification installs tools dependencies after restoring pub
   const qualify = job.indexOf('run: npm run test:collaboration:native');
   assert(restore >= 0 && install > restore && qualify > install,
     'The source CLI imports @tendriller/core from tools/node_modules, installed from the restored SDK');
-});
-
-test('ChatGPT native and packed-host qualification joins the public graph before publication', () => {
-  assert(needs('chatgpt-integration').includes('artifacts'));
-  assert(needs('publish').includes('chatgpt-integration'));
-  const qualification = workflow('chatgpt-integration');
-  assert.match(qualification, /workflow_call:/);
-  assert.doesNotMatch(qualification, /^  (push|pull_request|workflow_dispatch):/m);
-  assert.match(qualification, /name: public-packages/);
-  assert.match(qualification, /node scripts\/deployment-bundle.mjs/);
-  assert.match(qualification, /node scripts\/qualify-chatgpt-graph.mjs/);
-  assert.doesNotMatch(qualification, /build-release.mjs|build:artifacts|package-peer-session|chronolog-db/);
   assert.match(graph.artifacts, /dist\/tendriller-chatgpt-plugin.zip/);
 });

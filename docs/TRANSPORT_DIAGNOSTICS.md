@@ -23,7 +23,7 @@ tendril.transport.install(session.participation);
 
 This creates no signer, session or transport. Registering the same source again
 is harmless; replacing it with a different source in the same page is rejected.
-The tutorial and kitchen example already register their participants.
+The first-app tutorial already registers its participants.
 
 ```js
 const off = tendril.transport.onChange(report => renderConnectionSummary(report));
@@ -72,7 +72,7 @@ For another native or browser consumer, use the same public SDK helper:
 
 ```js
 import { createTransportDiagnostics, readTransportDiagnostics }
-  from '@tendriller/core/collaboration/transport-diagnostics';
+  from '@tendriller/core/transport-diagnostics';
 
 const report = await readTransportDiagnostics(session.participation, { signal });
 const inspector = createTransportDiagnostics(session.participation, { signal });

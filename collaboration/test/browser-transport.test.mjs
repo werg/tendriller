@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
-import { rootLifetimeLockName } from '../root-lifetime.mjs';
-import { BROWSER_OWNER_PROTOCOL, createBroadcastOwner, createBroadcastEndpoint } from '../browser-transport.mjs';
+import { rootLifetimeLockName } from '../../session/root-lifetime.mjs';
+import { BROWSER_OWNER_PROTOCOL, createBroadcastOwner, createBroadcastEndpoint } from '../../session/browser-transport.mjs';
 
 async function until(predicate, description = 'condition', timeoutMs = 3000) {
   const end = Date.now() + timeoutMs;

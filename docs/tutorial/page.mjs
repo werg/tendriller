@@ -1,9 +1,8 @@
 import { browserProfileId } from './helpers/browser-profile.mjs';
-import { openBrowserOwner } from '@tendriller/core/collaboration/browser';
-import { createViewStore, operationReference } from '@tendriller/core/collaboration';
+import { openBrowserOwner } from '@tendriller/core/browser-owner';
+import { createLiveView, createViewStore, operationReference } from '@chronolog/peer-session/browser';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
 import { createSubmissionState } from './helpers/submission-state.mjs';
-import { createLiveView } from '@tendriller/core/collaboration/live-view';
 import { createSignalRequests } from './helpers/signal-request.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
 import { mountReviewedMedia } from './media/panel.mjs';

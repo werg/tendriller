@@ -77,10 +77,8 @@ for (const api of [createApplicationAgentKey, proposeApplicationAssistant, conne
   forwardApplicationEvents, pack, withSession, startServer]) assert.equal(typeof api, 'function');
 const accounts = new DatabaseSync(':memory:');
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'));
-accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/integration-oauth-schema')), 'utf8'));
-assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_management_sessions'").get().name,
-  'integration_oauth_management_sessions');
-accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/assistant-connections-schema')), 'utf8'));
+assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_grants'").get().name,
+  'integration_oauth_grants');
 assert.equal(accounts.prepare("SELECT COUNT(*) AS count FROM assistant_connections").get().count, 0);
 accounts.close();
 assert.equal(CONTRACT_VERSION, 3); assert.equal(typeof startRuntime, 'function'); assert.equal(typeof createVoice, 'function');
@@ -190,20 +188,20 @@ export default {
   writeFileSync(join(directory, 'collaboration.mjs'), `
 import assert from 'node:assert/strict';
 import { createCollaborationDefinition, createCollaborationClient } from '@tendriller/core/collaboration';
-import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/collaboration/browser';
-import { serveBrowserOwner } from '@tendriller/core/collaboration/worker';
-import { createNativeAttachmentKey, createNativeSessionSupervisor, attachNativeSession } from '@tendriller/core/collaboration/native';
-import { diagnoseApplicationSession } from '@tendriller/core/collaboration/diagnostics';
-import { createLiveView } from '@tendriller/core/collaboration/live-view';
-import { createTransportDiagnostics, readTransportDiagnostics } from '@tendriller/core/collaboration/transport-diagnostics';
+import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/browser-owner';
+import { serveBrowserOwner } from '@tendriller/core/worker-owner';
+import { createNativeAttachmentKey, createNativeSessionSupervisor, attachNativeSession } from '@tendriller/core/native-owner';
+import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
+import { createTransportDiagnostics, readTransportDiagnostics } from '@tendriller/core/transport-diagnostics';
 import { createSetupIntent, setupRequest, completeSetupIntent, inspectTendrilSetup } from '@tendriller/core/setup';
 import { createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge } from '@tendriller/core/pairing';
-import { openPeerApplication, createApplicationOwner } from '@chronolog/peer-session';
+import { openPeerApplication, createApplicationOwner, createLiveView, forwardSessionEvents, createScopedApplicationTools, createViewStore, operationReference } from '@chronolog/peer-session';
 import { openNativeDevice } from '@chronolog/peer-session/native';
-import { connectApplicationOwner } from '@chronolog/peer-session/browser';
+import { connectApplicationOwner, createLiveView as createBrowserLiveView } from '@chronolog/peer-session/browser';
 for (const api of [createCollaborationDefinition, createCollaborationClient, openBrowserOwner,
   createBrowserIdentity, serveBrowserOwner, createNativeSessionSupervisor, attachNativeSession,
-  diagnoseApplicationSession, createLiveView, createTransportDiagnostics, readTransportDiagnostics, openPeerApplication, createApplicationOwner,
+  diagnoseApplicationSession, createLiveView, createBrowserLiveView, forwardSessionEvents, createScopedApplicationTools,
+  createViewStore, operationReference, createTransportDiagnostics, readTransportDiagnostics, openPeerApplication, createApplicationOwner,
   openNativeDevice, connectApplicationOwner, createSetupIntent, setupRequest, completeSetupIntent,
   inspectTendrilSetup, createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge]) assert.equal(typeof api, 'function');
 assert.match(createNativeAttachmentKey(), /^td_n_[a-f0-9]{64}$/);
@@ -214,13 +212,12 @@ import type {} from '@tendriller/core/browser';
 import { createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant,
   type AssistantParticipant, type AssistantCallerContext } from '@tendriller/core/assistant';
 import { createCollaborationDefinition, createCollaborationClient, type CollaborationSession } from '@tendriller/core/collaboration';
-import { openBrowserOwner, type BrowserOwnerOptions } from '@tendriller/core/collaboration/browser';
-import { serveBrowserOwner, type BrowserOwnerConfiguration } from '@tendriller/core/collaboration/worker';
-import { createNativeSessionSupervisor, attachNativeSession, type NativeSessionOwner } from '@tendriller/core/collaboration/native';
-import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/core/collaboration/diagnostics';
-import { createTransportDiagnostics, readTransportDiagnostics, type TransportDiagnosticReport } from '@tendriller/core/collaboration/transport-diagnostics';
-import { createLiveView, type LiveView, type LiveViewSession } from '@tendriller/core/collaboration/live-view';
-import { defineApplication, defineQuery, type ApplicationSession } from '@chronolog/peer-session';
+import { openBrowserOwner, type BrowserOwnerOptions } from '@tendriller/core/browser-owner';
+import { serveBrowserOwner, type BrowserOwnerConfiguration } from '@tendriller/core/worker-owner';
+import { createNativeSessionSupervisor, attachNativeSession, type NativeSessionOwner } from '@tendriller/core/native-owner';
+import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/core/diagnostics';
+import { createTransportDiagnostics, readTransportDiagnostics, type TransportDiagnosticReport } from '@tendriller/core/transport-diagnostics';
+import { defineApplication, defineQuery, createLiveView, createScopedApplicationTools, forwardSessionEvents, type LiveView, type LiveViewSession, type ApplicationSession } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 import { createSetupIntent, completeSetupIntent, type SetupIntent, type SetupResult } from '@tendriller/core/setup';
 import { createDevicePairingClient, signDevicePairingChallenge, type DevicePairingChallenge } from '@tendriller/core/pairing';

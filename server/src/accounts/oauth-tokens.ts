@@ -3,7 +3,7 @@ import { testAccountEnabled } from './test-access';
 import { safeEqual, sha256Hex } from '../ids';
 import { activeGrant, cleanup, postOnly, registeredGrant, revokeGrant, type OAuthGrant } from './oauth-data';
 import { requestedScopes } from './oauth-authorization';
-import { bridgeIdentity, checkVerifier, form, oauthJson, randomToken, reject, signAccessToken, text, type OAuthClient, type OAuthConfig } from './oauth-support';
+import { checkVerifier, form, oauthJson, randomToken, reject, signAccessToken, text, type OAuthClient, type OAuthConfig } from './oauth-support';
 
 async function clientIdentity(req: Request, params: URLSearchParams, config: OAuthConfig): Promise<OAuthClient> {
   const authorization = req.headers.get('Authorization');
@@ -125,13 +125,6 @@ export async function inspectAccessToken(env: Env, config: OAuthConfig, token: s
   return { active: true, token_type: 'Bearer', sub: access.account_id, iss: config.issuer, aud: config.resource,
     scope: access.scope, client_id: access.client_id, iat: Math.floor(access.created_at / 1000), exp: Math.floor(access.expires_at / 1000),
     jti: access.jti, sid: access.grant_id };
-}
-
-export async function introspect(req: Request, env: Env, config: OAuthConfig): Promise<Response> {
-  const wrongMethod = postOnly(req); if (wrongMethod) return wrongMethod;
-  await bridgeIdentity(req, config, env);
-  const params = await form(req);
-  return oauthJson(await inspectAccessToken(env, config, text(params.get('token'), 'access token', 16384)) ?? { active: false });
 }
 
 export async function revoke(req: Request, env: Env, config: OAuthConfig): Promise<Response> {

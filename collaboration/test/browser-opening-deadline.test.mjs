@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import { openBrowserOwner } from '../browser.mjs';
+import { openBrowserOwner } from '../../session/browser.mjs';
 
 function fixture(t) {
   const names = ['navigator', 'location', 'SharedWorker', 'performance', 'setTimeout', 'clearTimeout'];

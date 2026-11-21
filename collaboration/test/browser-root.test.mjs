@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { defineApplication, describeApplication, PEER_GENERATION_CAPABILITIES } from '@chronolog/peer-session';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
-import { serveBrowserOwner } from '../worker.mjs';
-import { createSharedRootEndpoint } from '../browser-root.mjs';
-import { acquireRootLifetime, rootLifetimeLockName } from '../root-lifetime.mjs';
-import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastEndpoint, isOwnerAnnouncement } from '../browser-transport.mjs';
+import { serveBrowserOwner } from '../../session/worker.mjs';
+import { createSharedRootEndpoint } from '../../session/browser-root.mjs';
+import { acquireRootLifetime, rootLifetimeLockName } from '../../session/root-lifetime.mjs';
+import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastEndpoint, isOwnerAnnouncement } from '../../session/browser-transport.mjs';
 
 async function until(condition, description) {
   const end = performance.now() + 2500;

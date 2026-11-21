@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOwnerLiveness } from '../browser-liveness.mjs';
+import { createOwnerLiveness } from '../../session/browser-liveness.mjs';
 
 function fixture() {
   let time = 0, request = null;

@@ -178,7 +178,7 @@ versus rejected applied outcomes, operation inspection, exact retry and explicit
 close. Its initial live-view `ready()` wait keeps the same attachment during
 `PEER_RECOVERING` until a coherent read succeeds, with a fixed 30-second deadline
 and event-driven readiness. Fatal read errors and cancellation still fail setup.
-It imports `createLiveView` from `@tendriller/core/collaboration/live-view` and
+It imports `createLiveView` from `@chronolog/peer-session/browser` and
 the supplied operation-state and reviewed-input helpers. Adapt these modules directly rather than rebuilding transport and state
 fetching around another backend. Its localhost preview is clearly labeled
 layout-only. Follow the parent guide's deployed acceptance checks before reporting

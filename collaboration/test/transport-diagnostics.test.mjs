@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {setImmediate as tick} from 'node:timers/promises';
-import {createTransportDiagnostics,TRANSPORT_DIAGNOSTIC_LIMIT} from '../transport-diagnostics.mjs';
+import {createTransportDiagnostics,TRANSPORT_DIAGNOSTIC_LIMIT} from '../../session/transport-diagnostics.mjs';
 const id='a'.repeat(64),other='b'.repeat(64);
 const row=(overrides={})=>({peerId:id,kind:'direct',sentBytes:12,receivedBytes:9,sentReliableBytes:10,receivedReliableBytes:8,sentLiveBytes:2,receivedLiveBytes:1,sentRequests:1,receivedRequests:0,...overrides});
 function fixture(read=async()=>[row()]){

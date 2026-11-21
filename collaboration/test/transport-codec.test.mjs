@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { serialize, deserialize } from 'node:v8';
-import { createNativeFrames } from '../native-transport.mjs';
+import { createNativeFrames } from '../../session/native-transport.mjs';
 
 class Socket extends EventEmitter {
   destroyed=false;writableLength=0;writes=[];ended=false;

@@ -11,7 +11,7 @@ import { servicePage } from './accounts/ui';
 import { requireWritesOpen } from './service-state';
 import { publicBase } from './urls';
 import { APP_NAME, assistantOAuth, fields, string, type EventDefinition, type Operation } from './assistant-shared';
-import { initializeAssistantBindings, selectedProvider, selectProvider, type ConsumerRow } from './assistant-bindings';
+import { selectedProvider, selectProvider, type ConsumerRow } from './assistant-bindings';
 import { revokeAssistantConsumer } from './assistant-events';
 
 export type Proposal = {
@@ -101,8 +101,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
   const csrf = await sha256Hex(JSON.stringify([browser.sessionHash, item.id, current?.version, t.tid, 'application-mcp-consent']));
   if (req.method === 'GET') {
     const selection = current?.id === item.id ? current : null;
-    const consumers = t.db.get('assistant_binding_tables_v1', false)
-      ? t.db.all<ConsumerRow>('SELECT * FROM assistant_consumers ORDER BY created_at') : [];
+    const consumers = t.db.all<ConsumerRow>('SELECT * FROM assistant_consumers ORDER BY created_at');
     const consumerForms = consumers.map(agent => `<li><strong>${escapeHtml(agent.label)}</strong> · ${escapeHtml(agent.status)} · ${escapeHtml(agent.route)}
       <p>OAuth client: ${escapeHtml(agent.client_id)}. Queries: ${escapeHtml(JSON.parse(agent.queries).join(', ') || 'none')}.
       Commands: ${escapeHtml(JSON.parse(agent.commands).join(', ') || 'none')}. Events: ${escapeHtml(JSON.parse(agent.events).join(', ') || 'none')}.</p>
@@ -140,7 +139,6 @@ export async function reviewAssistant(t: Tendril, req: Request) {
       throw new HttpError(409, 'proposal_changed');
     if (form.get('action') === 'approve-agent' || form.get('action') === 'revoke-agent') {
       if (!current) throw new HttpError(409, 'application_not_connected');
-      initializeAssistantBindings(t);
       const agent = t.db.one<ConsumerRow>('SELECT * FROM assistant_consumers WHERE id=?', form.get('binding') ?? '');
       if (!agent || String(agent.revision) !== form.get('revision')) throw new HttpError(409, 'agent_binding_changed');
       if (form.get('action') === 'approve-agent') {
@@ -174,8 +172,6 @@ export async function reviewAssistant(t: Tendril, req: Request) {
       if (!approved.queries.length && !approved.commands.length && !approved.events.length) throw new HttpError(400, 'no_permissions_selected');
       if (current?.id === item.id && JSON.stringify([current.queries, current.commands, current.events]) ===
         JSON.stringify([approved.queries, approved.commands, approved.events])) return redirect(returnTo);
-      initializeAssistantTables(t);
-      initializeAssistantBindings(t);
       try {
         await t.env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1,label=? WHERE page_id=? AND owner_account=?')
           .bind(approved.label, t.tid, browser.id).run();
@@ -221,37 +217,11 @@ function closeAssistantConnections(t: Tendril, keep: string[], keepInbox = false
 }
 
 function resetAssistantConnection(t: Tendril) {
-  if (t.db.get('assistant_binding_tables_v1', false)) {
-    for (const row of t.db.all<{ id: string }>("SELECT id FROM assistant_consumers WHERE status<>'revoked'")) revokeAssistantConsumer(t, row.id);
-  }
-  if (t.db.get('assistant_tables', false)) {
-    t.db.run('DELETE FROM assistant_jobs');
-    t.db.run('DELETE FROM assistant_watchers');
-    t.db.run('DELETE FROM assistant_events');
-    t.db.run('DELETE FROM assistant_receipts');
-  }
-}
-
-function initializeAssistantTables(t: Tendril) {
-  if (t.db.get('assistant_tables', false)) return;
-  t.transaction(() => {
-    t.db.run(`CREATE TABLE IF NOT EXISTS assistant_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL,
-      generation TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(generation,source_id,name));
-      CREATE TABLE IF NOT EXISTS assistant_watchers(id TEXT PRIMARY KEY, grant_id TEXT NOT NULL, client_id TEXT NOT NULL, name TEXT NOT NULL,
-      url TEXT NOT NULL, secret TEXT NOT NULL, previous_secret TEXT, rotate_until INTEGER,
-      verified_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS assistant_jobs(event_seq INTEGER NOT NULL, watcher_id TEXT NOT NULL,
-      due INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, lease TEXT, block_reason TEXT, PRIMARY KEY(event_seq,watcher_id));
-      CREATE TABLE IF NOT EXISTS assistant_receipts(seq INTEGER PRIMARY KEY AUTOINCREMENT, client_id TEXT NOT NULL,
-      name TEXT NOT NULL, source_id TEXT NOT NULL, generation TEXT NOT NULL, watcher_id TEXT NOT NULL,
-      outcome TEXT NOT NULL, attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL);
-      CREATE INDEX IF NOT EXISTS assistant_receipts_client ON assistant_receipts(client_id,seq DESC);
-      CREATE TABLE IF NOT EXISTS assistant_commands(operation_id TEXT PRIMARY KEY, input_hash TEXT NOT NULL,
-      device_id TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS assistant_devices(adapter_hash TEXT PRIMARY KEY, device_id TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS assistant_jobs_due ON assistant_jobs(due);`);
-    t.db.set('assistant_tables', true);
-  });
+  for (const row of t.db.all<{ id: string }>("SELECT id FROM assistant_consumers WHERE status<>'revoked'")) revokeAssistantConsumer(t, row.id);
+  t.db.run('DELETE FROM assistant_jobs');
+  t.db.run('DELETE FROM assistant_watchers');
+  t.db.run('DELETE FROM assistant_events');
+  t.db.run('DELETE FROM assistant_receipts');
 }
 
 export function activeAdapters(t: Tendril): readonly string[] {

@@ -295,30 +295,14 @@ describe('onboarding after page creation', () => {
     expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configured: false });
   });
 
-  it('makes the same onboarding descriptor discoverable through authenticated MCP without configuring an application', async () => {
+  it('does not expose a legacy per-page MCP route on the tendril API', async () => {
     const h = await create({ claim: false });
-    const rpc = (method: string, params: unknown = {}) => apiJson(h, 'POST', 'mcp', { jsonrpc: '2.0', id: 1, method, params });
-    const initial = (await rpc('initialize')).result;
-    expect(initial.instructions).toContain('tendril_guide');
-    expect(initial.instructions).toContain(BASE + guidePath);
-    const tools = (await rpc('tools/list')).result.tools;
-    expect(tools.find((tool: { name: string }) => tool.name === 'tendril_guide')).toMatchObject({
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    const response = await req(h.api + '/mcp', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${h.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
     });
-    const answer = (await rpc('tools/call', { name: 'tendril_guide', arguments: {} })).result;
-    expect(answer.isError).not.toBe(true);
-    expectDescriptor(answer.structuredContent);
-    expect(JSON.parse(answer.content[0].text)).toEqual(answer.structuredContent);
-    const publicDescriptor = await (await req(descriptorPath, { anonymous: true })).json();
-    expect(answer.structuredContent).toEqual(publicDescriptor);
-    expect(JSON.stringify(answer)).not.toContain(h.token);
-    expect((await rpc('tools/call', { name: 'tendril_guide', arguments: { owner: 'someone@example.com' } })).error.code).toBe(-32602);
-    expect(await apiJson(h, 'GET', '')).toMatchObject({ owner_account_id: null, configured: false, application: h.application });
-    const anonymous = await req(h.api + '/mcp', { anonymous: true, method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'tendril_guide' } }),
-    });
-    expect(anonymous.status).toBe(401);
-    await anonymous.text();
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: 'not_found' } });
   });
 });

@@ -39,9 +39,9 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
   pack('session', { 'package.json': { name: '@chronolog/peer-session', dependencies: { werift }, exports: Object.fromEntries(['.', './native', './browser', './worker', './webrtc', './webrtc-native', './websocket'].map(key => [key, './index.mjs'])) },
     'index.mjs': 'export const session = true;', 'provenance.json': { ...chronolog, dirty: sessionDirty, sqlEngines, nativeRtc } }, join(root, 'session.tgz'));
   for (const file of ['plugin.json', 'mcp.json', 'skills/connect-tendriller/SKILL.md', 'review-app.mjs', 'review-domain.mjs', 'review-assistant.mjs']) {
-    const target = join(root, 'integrations/chatgpt/plugin', file);
+    const target = join(root, 'plugin', file);
     mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(resolve(import.meta.dirname, '../../integrations/chatgpt/plugin', file), target);
+    copyFileSync(resolve(import.meta.dirname, '../../plugin', file), target);
   }
   mkdirSync(join(root, 'docs/assets'), { recursive: true });
   copyFileSync(resolve(import.meta.dirname, '../../docs/assets/tendriller-icon-180.png'), join(root, 'docs/assets/tendriller-icon-180.png'));
@@ -215,7 +215,7 @@ test('source-qualified graph carries the current plugin guidance and detects ZIP
   assert.equal(plugin.url, `https://github.com/werg/tendriller/releases/download/source-${f.identity.source}/${plugin.file}`);
   const skill = 'skills/connect-tendriller/SKILL.md';
   assert.deepEqual(execFileSync('unzip', ['-p', join(f.root, 'dist', plugin.file), skill]),
-    readFileSync(join(f.root, 'integrations/chatgpt/plugin', skill)));
+    readFileSync(join(f.root, 'plugin', skill)));
   assert.deepEqual(execFileSync('unzip', ['-Z1', join(f.root, 'dist', plugin.file)], { encoding: 'utf8' }).trim().split('\n'),
     ['review/review-app.mjs', 'review/review-domain.mjs', 'review/review-assistant.mjs', 'review/support/participant-lifecycle.mjs', 'plugin.json', 'mcp.json', 'assets/icon.png', skill]);
   assert.deepEqual(execFileSync('unzip', ['-p', join(f.root,'dist',plugin.file), 'review/support/participant-lifecycle.mjs']), readFileSync(join(f.root,'docs/tutorial/helpers/participant-lifecycle.mjs')));
@@ -225,9 +225,9 @@ test('source-qualified graph carries the current plugin guidance and detects ZIP
 
 
 test('plugin ZIP identity is independent of checkout file permissions', async t => {
-  const { buildPlugin } = await import('../../integrations/chatgpt/plugin/build.mjs');
+  const { buildPlugin } = await import('../../plugin/build.mjs');
   const f=fixture(t), first=join(f.root,'dist/plugin-first.zip'), second=join(f.root,'dist/plugin-second.zip');
-  const skill=join(f.root,'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md');
+  const skill=join(f.root,'plugin/skills/connect-tendriller/SKILL.md');
   chmodSync(skill,0o664);buildPlugin(f.root,first);chmodSync(skill,0o644);buildPlugin(f.root,second);
   assert.deepEqual(readFileSync(first),readFileSync(second));
 });

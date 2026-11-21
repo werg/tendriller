@@ -18,26 +18,6 @@ export type Consumer = {
   verification: 'approved-binding' | 'oauth-client'; queries: string[]; commands: string[]; events: string[];
 };
 
-/** Additive integration metadata; it never stores canonical application state. */
-export function initializeAssistantBindings(t: Tendril): void {
-  if (t.db.get('assistant_binding_tables_v1', false)) return;
-  t.transaction(() => {
-    t.db.run(`CREATE TABLE IF NOT EXISTS assistant_consumers(
-      id TEXT PRIMARY KEY,client_id TEXT NOT NULL,label TEXT NOT NULL,credential_hash TEXT NOT NULL,
-      revision INTEGER NOT NULL,status TEXT NOT NULL,queries TEXT NOT NULL,commands TEXT NOT NULL,
-      events TEXT NOT NULL,route TEXT NOT NULL,created_at INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS assistant_watcher_bindings(watcher_id TEXT PRIMARY KEY,binding_id TEXT NOT NULL);
-      CREATE INDEX IF NOT EXISTS assistant_watcher_scope ON assistant_watcher_bindings(binding_id);
-      CREATE TABLE IF NOT EXISTS assistant_operation_context(operation_id TEXT PRIMARY KEY,binding_id TEXT NOT NULL,
-      client_operation_id TEXT NOT NULL,provider_binding_id TEXT NOT NULL,source_generation TEXT NOT NULL,
-      command TEXT NOT NULL,context TEXT NOT NULL,reference TEXT,created_at INTEGER NOT NULL,
-      UNIQUE(binding_id,client_operation_id));
-      CREATE TABLE IF NOT EXISTS assistant_export_source(event_seq INTEGER PRIMARY KEY,device_id TEXT NOT NULL,
-      provider_binding_id TEXT NOT NULL,export_version TEXT NOT NULL,context TEXT NOT NULL);`);
-    t.db.set('assistant_binding_tables_v1', true);
-  });
-}
-
 const publicConsumer = (row: ConsumerRow): Consumer => ({
   id: row.id, revision: row.revision, clientId: row.client_id, label: row.label, route: row.route,
   verification: 'approved-binding', queries: JSON.parse(row.queries), commands: JSON.parse(row.commands), events: JSON.parse(row.events),
@@ -49,9 +29,8 @@ export function consumerCurrent(t: Tendril, consumer: Pick<Consumer, 'id' | 'rev
 }
 
 export async function resolveConsumer(t: Tendril, approved: Connection, principal: Principal): Promise<Consumer> {
-  initializeAssistantBindings(t);
   if (!principal.bindingCredential) return {
-    id: 'bridge_' + await sha256Hex(JSON.stringify([approved.applicationId, principal.account, principal.client])),
+    id: 'oauth_client_' + await sha256Hex(JSON.stringify([approved.applicationId, principal.account, principal.client])),
     revision: 1, clientId: principal.client, label: 'Tool caller via ' + principal.client, route: 'on-demand', verification: 'oauth-client',
     queries: approved.queries.map(value => value.name), commands: approved.commands.map(value => value.name), events: approved.events.map(value => value.name),
   };
@@ -70,7 +49,6 @@ export async function resolveConsumer(t: Tendril, approved: Connection, principa
 
 /** The caller retains its proof before admission, so retries never mint a new identity. */
 export async function registerConsumer(t: Tendril, approved: Connection, principal: Principal, input: Record<string, unknown>) {
-  initializeAssistantBindings(t);
   const token = principal.bindingCredential, match = token && CONSUMER_KEY.exec(token);
   if (!match) throw new HttpError(400, 'agent_binding_proof_required', 'Generate and retain a td_c_<uuid>.<64 hex> binding token before registration.');
   const label = string(input.label, 100), route = input.route ?? 'on-demand';

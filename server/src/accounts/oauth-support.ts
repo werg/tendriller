@@ -74,10 +74,9 @@ export interface OAuthClient {
   id: string; name: string; redirectUris: string[]; scopes: string[];
   tokenEndpointAuthMethod: 'none' | 'client_secret_basic'; clientSecretSha256?: string; allowRefresh: boolean; metadataDocument?: boolean;
 }
-export interface OAuthBridge { id: string; name: string; secretSha256: string; applicationIds: string[]; managementRedirectUris: string[] }
 type SigningJwk = JsonWebKey & { kid: string; alg: 'RS256' | 'ES256' };
 export interface OAuthConfig {
-  issuer: string; resource: string; clients: OAuthClient[]; bridges: OAuthBridge[];
+  issuer: string; resource: string; clients: OAuthClient[];
   accessTokenTtlSeconds: number; grantTtlSeconds: number;
   privateKey: CryptoKey; publicKeys: SigningJwk[]; kid: string; algorithm: 'RS256' | 'ES256';
 }
@@ -100,7 +99,7 @@ export async function oauthConfig(env: Env): Promise<OAuthConfig | null> {
     const task = (async () => {
       if (configuration.length > 65536 || signing.length > 16384 || previous.length > 65536) throw Error('Configuration too large');
       const input = object(JSON.parse(configuration));
-      members(input, ['resource', 'clients', 'bridges', 'accessTokenTtlSeconds', 'grantTtlSeconds']);
+      members(input, ['resource', 'clients', 'accessTokenTtlSeconds', 'grantTtlSeconds']);
       const issuer = publicBase(env), origin = new URL(issuer);
       if (origin.protocol !== 'https:' || origin.origin !== issuer) throw Error('PUBLIC_BASE must be an exact HTTPS origin');
       const resource = exactHttps(input.resource);
@@ -131,15 +130,6 @@ export async function oauthConfig(env: Env): Promise<OAuthConfig | null> {
       });
       if (!clients.length) throw Error('At least one explicit OAuth client is required');
       unique(clients.map(client => client.id));
-      const bridges = list(input.bridges ?? [], 8).map(raw => {
-        const bridge = object(raw); members(bridge, ['id', 'name', 'secretSha256', 'applicationIds', 'managementRedirectUris']);
-        const id = text(bridge.id, 'bridge ID', 128), name = String(bridge.name ?? id), secretSha256 = text(bridge.secretSha256, 'bridge secret hash', 64);
-        if (!/^[a-f0-9]{64}$/u.test(secretSha256) || !name.length || name.length > 160 || /[\u0000-\u001f\u007f]/u.test(name)) throw Error('Invalid bridge configuration');
-        const applicationIds = unique(list(bridge.applicationIds ?? [], 128).map(value => text(value, 'application ID', 64)));
-        if (applicationIds.some(id => !/^[a-f0-9]{64}$/u.test(id))) throw Error('Invalid application identity');
-        return { id, name, secretSha256, applicationIds, managementRedirectUris: unique(list(bridge.managementRedirectUris ?? [], 8).map(exactHttps)) };
-      });
-      unique(bridges.map(bridge => bridge.id)); unique(bridges.map(bridge => bridge.secretSha256));
       const accessTokenTtlSeconds = input.accessTokenTtlSeconds ?? 300, grantTtlSeconds = input.grantTtlSeconds ?? 604800;
       if (!Number.isSafeInteger(accessTokenTtlSeconds) || Number(accessTokenTtlSeconds) < 60 || Number(accessTokenTtlSeconds) > 600 ||
           !Number.isSafeInteger(grantTtlSeconds) || Number(grantTtlSeconds) < 600 || Number(grantTtlSeconds) > 2592000) throw Error('Invalid token lifetime');
@@ -159,7 +149,7 @@ export async function oauthConfig(env: Env): Promise<OAuthConfig | null> {
       const probe = new TextEncoder().encode('tendriller-oauth-configuration-v1');
       const proof = await crypto.subtle.sign(signingAlgorithm, privateKey, probe);
       if (!await crypto.subtle.verify(signingAlgorithm, imported[0], proof, probe)) throw Error('Signing key does not match the published JWKS');
-      return { issuer, resource, clients, bridges, accessTokenTtlSeconds: Number(accessTokenTtlSeconds), grantTtlSeconds: Number(grantTtlSeconds),
+      return { issuer, resource, clients, accessTokenTtlSeconds: Number(accessTokenTtlSeconds), grantTtlSeconds: Number(grantTtlSeconds),
         privateKey, publicKeys, kid: active.kid, algorithm: active.alg };
     })();
     cached = { configuration, signing, previous, task }; caches.set(env, cached);
@@ -170,7 +160,7 @@ export async function oauthConfig(env: Env): Promise<OAuthConfig | null> {
 export function metadata(config: OAuthConfig) {
   const url = (path: string) => config.issuer + path;
   return { issuer: config.issuer, authorization_endpoint: url('/oauth/authorize'), token_endpoint: url('/oauth/token'),
-    jwks_uri: url('/oauth/jwks'), revocation_endpoint: url('/oauth/revoke'), introspection_endpoint: url('/oauth/introspect'),
+    jwks_uri: url('/oauth/jwks'), revocation_endpoint: url('/oauth/revoke'),
     response_types_supported: ['code'], response_modes_supported: ['query'],
     grant_types_supported: ['authorization_code', ...(config.clients.some(client => client.allowRefresh) ? ['refresh_token'] : [])],
     code_challenge_methods_supported: ['S256'], token_endpoint_auth_methods_supported: [...new Set(config.clients.map(client => client.tokenEndpointAuthMethod))],
@@ -193,20 +183,6 @@ export async function form(req: Request): Promise<URLSearchParams> {
   try { decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await readBody(req, 32768, 10000)); }
   catch (error) { if (error instanceof HttpError) throw error; return reject('invalid_request', 'Invalid UTF-8 form'); }
   return checkedParameters(new URLSearchParams(decoded));
-}
-export async function bridgeIdentity(req: Request, config: OAuthConfig, env?: Env): Promise<OAuthBridge> {
-  const denied = async (): Promise<never> => {
-    if (env?.FAILED_AUTH_RATE && !(await env.FAILED_AUTH_RATE.limit({ key: 'integration-oauth:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
-      return reject('temporarily_unavailable', 'Too many failed integration requests', 429);
-    return reject('invalid_client', 'Invalid integration service credential', 401);
-  };
-  const token = /^Bearer ([A-Za-z0-9_-]{43,256})$/u.exec(req.headers.get('Authorization') ?? '')?.[1];
-  if (!token) return denied();
-  const hash = await sha256Hex(token!), bridge = config.bridges.find(value => safeEqual(value.secretSha256, hash));
-  if (!bridge) return denied();
-  if (env?.ACCOUNT_RATE && !(await env.ACCOUNT_RATE.limit({ key: 'integration-oauth:' + bridge.id })).success)
-    return reject('temporarily_unavailable', 'Integration request rate limit reached', 429);
-  return bridge!;
 }
 export async function signAccessToken(config: OAuthConfig, claims: Record<string, unknown>): Promise<string> {
   const encode = (value: unknown) => base64url(new TextEncoder().encode(JSON.stringify(value)));

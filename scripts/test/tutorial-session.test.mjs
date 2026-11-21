@@ -84,7 +84,7 @@ export const project = async () => ({ handle: await readPrivate('handle.json'), 
     const bootstrapUrl = pathToFileURL(join(directory, 'session.mjs')).href;
     const supervisorUrl = pathToFileURL(join(directory, 'supervisor.mjs')).href;
     await writeFile(join(directory, 'supervisor.mjs'), `
-export { attachNativeSession, createNativeAttachmentKey } from ${JSON.stringify(pathToFileURL(join(root, 'dist/sdk/collaboration/native.mjs')).href)};
+export { attachNativeSession, createNativeAttachmentKey } from ${JSON.stringify(pathToFileURL(join(root, 'dist/sdk/session/native.mjs')).href)};
 export async function createNativeSessionSupervisor({ openOwner, ...options }) {
   const owner = await openOwner(options);
   return { owner, ownerInstanceId: owner.ownerInstanceId, close: () => owner.close() };
@@ -94,7 +94,7 @@ export async function createNativeSessionSupervisor({ openOwner, ...options }) {
     // boundary. Its openOwner callback still constructs the real public owner;
     // existing supervisor tests cover authenticated Unix bindings and ownership.
     const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
-      if (context.parentURL === bootstrapUrl && specifier === '@tendriller/core/collaboration/native') {
+      if (context.parentURL === bootstrapUrl && specifier === '@tendriller/core/native-owner') {
         return { url: supervisorUrl, shortCircuit: true };
       }
       return nextResolve(specifier, context);

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '../native.mjs';
+import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '../../session/native.mjs';
 import { createCollaborationClient } from '../client.mjs';
 import { operationReference } from '../protocol.mjs';
 import { createViewStore } from '../local.mjs';
@@ -127,7 +127,7 @@ test('native collaboration full references survive a lost response, reconnect an
   assert.equal(f.opened(),1);
 });
 
-const nativeModule = new URL('../native.mjs', import.meta.url).href;
+const nativeModule = new URL('../../session/native.mjs', import.meta.url).href;
 function child(t, source, data) {
   const process = spawn(globalThis.process.execPath, ['--input-type=module', '-e', source], {
     env: { ...globalThis.process.env, TENDRILLER_NATIVE_TEST: JSON.stringify(data) }, stdio: ['ignore', 'pipe', 'pipe'],

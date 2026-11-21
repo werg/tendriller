@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { keepStorageInUse } from '../browser.mjs';
+import { keepStorageInUse } from '../../session/browser.mjs';
 
 // Chromium's in-memory OPFS (private windows, automation contexts) drops record files
 // nothing has touched for ~10 minutes; listing the directory resets that. The keep-alive

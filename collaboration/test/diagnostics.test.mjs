@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { diagnoseApplicationSession, diagnosticFinding } from '../diagnostics.mjs';
+import { diagnoseApplicationSession, diagnosticFinding } from '../../session/diagnostics.mjs';
 
 const session = status => ({ applicationId:'application',historyId:'history',deviceId:'signer',
   status:{phase:'ready',database:'idle',role:'coordinator',generation:'selected',coordinator:'signer',connectedPeers:0,...status},

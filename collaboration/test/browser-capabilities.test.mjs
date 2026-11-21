@@ -1,8 +1,8 @@
 import test from 'node:test';
 import {FixtureLocks} from './fixtures/locks.mjs';
 import assert from 'node:assert/strict';
-import { openBrowserOwner } from '../browser.mjs';
-import { BROWSER_OWNER_PROTOCOL } from '../browser-transport.mjs';
+import { openBrowserOwner } from '../../session/browser.mjs';
+import { BROWSER_OWNER_PROTOCOL } from '../../session/browser-transport.mjs';
 
 test('SQL storage selects the maintained dedicated route before a Worker or store can open', async t => {
   const saved=new Map(['navigator','location','SharedWorker','Worker','BroadcastChannel'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));

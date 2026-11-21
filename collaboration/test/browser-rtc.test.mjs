@@ -7,7 +7,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createBrowserRtcBroker, rtcEndpoint, BROWSER_RTC_PROTOCOL, checkRtcMessage, MAX_RTC_MESSAGE_BYTES, registerBrowserRtcProvider } from '../browser-rtc.mjs';
+import { createBrowserRtcBroker, rtcEndpoint, BROWSER_RTC_PROTOCOL, checkRtcMessage, MAX_RTC_MESSAGE_BYTES, registerBrowserRtcProvider } from '../../session/browser-rtc.mjs';
 const register = endpoint => endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'register'}}));
 const until = async (predicate,timeoutMs=2000) => { const end=Date.now()+timeoutMs;while(!predicate()){if(Date.now()>end)throw Error('TEST_DEADLINE');await new Promise(setImmediate);} };
 
@@ -42,7 +42,7 @@ test('opaque binary RTC messages have their own finite bound and reject transfer
 
 // Only substitute the public Chronolog RTC mechanics. The core default browser
 // entry, private bootstrap roots and actual owner RPC attachment remain real.
-const compiled=await build({stdin:{contents:"export {openBrowserOwner} from './collaboration/browser.mjs';export {serveBrowserOwner} from './collaboration/worker.mjs';",resolveDir:new URL('../..',import.meta.url).pathname,loader:'js'},bundle:true,format:'esm',platform:'node',write:false,plugins:[{name:'rtc-fixture',setup(build){build.onLoad({filter:/\/peer-session\/webrtc\.mjs$/},()=>({contents:`
+const compiled=await build({stdin:{contents:"export {openBrowserOwner} from './session/browser.mjs';export {serveBrowserOwner} from './session/worker.mjs';",resolveDir:new URL('../..',import.meta.url).pathname,loader:'js'},bundle:true,format:'esm',platform:'node',write:false,plugins:[{name:'rtc-fixture',setup(build){build.onLoad({filter:/\/peer-session\/webrtc\.mjs$/},()=>({contents:`
  export function serveWorkerWebRtcConnections(endpoint,{signal}={}){
   globalThis.__rtcFixtureBridgeClosed.started++;
   const receive=({data})=>{if(data?.protocol==='test/rtc'&&data.type==='open')endpoint.postMessage({protocol:'test/rtc',type:'ready',id:data.id});};
@@ -84,7 +84,7 @@ test('authenticated BC attach registers RTC before RPC, carries full opaque pack
  const navigatorDescriptor=Object.getOwnPropertyDescriptor(globalThis,'navigator');
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{locks:new FixtureLocks()}});
  t.after(()=>{if(navigatorDescriptor)Object.defineProperty(globalThis,'navigator',navigatorDescriptor);else delete globalThis.navigator;});
- const {createBroadcastOwner,createBroadcastEndpoint,checkOwnerFrame,BROWSER_OWNER_PROTOCOL}=await import('../browser-transport.mjs');
+ const {createBroadcastOwner,createBroadcastEndpoint,checkOwnerFrame,BROWSER_OWNER_PROTOCOL}=await import('../../session/browser-transport.mjs');
  const name='rtc:'+crypto.randomUUID(),server=new BroadcastChannel(name),client=new BroadcastChannel(name),outsider=new BroadcastChannel(name),profileId='profile',order=[],received=[],rpc=[],ports=[];let ownerRtc;
  const owner={ownerInstanceId:crypto.randomUUID(),attach(endpoint){const receive=({data})=>{order.push('rpc');ports.push(data.port);data.port.onmessage=({data})=>rpc.push(data);data.port.start();data.port.postMessage({ready:true});};endpoint.addEventListener('message',receive);return()=>endpoint.removeEventListener('message',receive);}};
  // Exercise authenticated delivery and packet bounds independently of CPU

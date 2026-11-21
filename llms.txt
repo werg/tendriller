@@ -1,54 +1,56 @@
 # Tendriller
 
-> Build a session-connected application from a user's request. Tendriller hosts authenticated UI and signed controls; one owned Chronolog session supplies durable commands, queries, events and peer exchange.
+> Build a session-connected web application from a user's request. Tendriller hosts authenticated UI, signed controls, and account-linked `/mcp`; one owned Chronolog session supplies durable commands, queries, events, live signals, and peer replication.
 
 ## Start here, in order
 
-- [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md): recommended complete first application; create → define state → configure authority and first generation → publish → owner sign-in → connect devices → verify.
-- [Capability map](https://tendriller.dev/docs/CAPABILITIES.md): task keywords to existing APIs, exact runtime imports and current executable modules; state, reactive views, operations, camera, voice, inference and preview.
-- [Deliver the running app](https://tendriller.dev/docs/AGENT_DELIVERY.md): provision early, surface the real owner claim, start the participant, and hand over the live page with receipt, process lifetime and resume evidence.
-- [Download the first app](https://tendriller.dev/downloads/tendriller-first-app.tgz): complete native setup/session, browser Worker, UI and build files; follow the build guide for compatible public packages.
-- [Reusable application patterns](https://tendriller.dev/docs/APP_PATTERNS.md): importable live-view, operation-state and reviewed-input controllers over the real session.
-- [Reviewed media and inference](https://tendriller.dev/docs/AI_INPUT.md): camera/file or voice candidate, protected native provider request, editable review and explicit declared command.
-- [Events or SQL](https://tendriller.dev/docs/STATE_MODELS.md): choose a concrete starter; identify signed definitions and exact optional engine artifacts before implementation.
-- [Preview early](https://tendriller.dev/docs/tools/PREVIEW.md): static authored-file preview versus an explicitly composed real-session preview; no substitute persistence.
-- [Session bootstrap](https://tendriller.dev/docs/SESSION_BOOTSTRAP.md): what every setup file does, persistent identity, explicit enrollment and safe resume.
-- [Multi-participant composition](https://tendriller.dev/docs/MULTIPARTICIPANT.md): one profile owner with many views/tools, addressed work, immutable SQL claims, frozen fan-in, independent drafts and recovery.
-- [Agent bindings](https://tendriller.dev/docs/AGENT_BINDINGS.md): scoped additive host credentials, approved consumers, explicit provider selection, targeted revocation and honest delivery evidence.
-- [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries and reference snippets after setup.
-- [MCP agent start](https://tendriller.dev/docs/MCP_AGENT_GUIDE.md): direct guide-tool instructions for new apps, empty lists, existing-app connections and runtime prerequisites.
-- [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md#agent-walkthrough): step-by-step plugin setup, workspace sharing, account linking, app approvals, and event delivery.
-- [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): identify the incomplete stage and the exact next action.
+- [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md): complete first application; create → define state → configure authority and first generation → publish → owner sign-in → connect devices → verify.
+- [Capability map](https://tendriller.dev/docs/CAPABILITIES.md): task keywords mapped to Chronolog, session, UI, camera, voice, inference, and preview APIs.
+- [Deliver the running app](https://tendriller.dev/docs/AGENT_DELIVERY.md): provision early, publish before claim, start the participant, and verify live state plus process/resume details.
+- [Download the first app](https://tendriller.dev/downloads/tendriller-first-app.tgz): starter source files; follow the build guide for the verified `firstApp.release` package kit.
+- [Reusable application patterns](https://tendriller.dev/docs/APP_PATTERNS.md): `createLiveView`, operation tracking, connection UX, and reviewed input over the real session.
+- [Reviewed media and inference](https://tendriller.dev/docs/AI_INPUT.md): camera/file or voice capture, credential-owning native inference, editable review, and explicit command commit.
+- [Events or SQL](https://tendriller.dev/docs/STATE_MODELS.md): events vs. guarded SQL transactions and required engine artifacts.
+- [Preview early](https://tendriller.dev/docs/tools/PREVIEW.md): static authored-file preview vs. explicitly composed real-session preview.
+- [Session bootstrap](https://tendriller.dev/docs/SESSION_BOOTSTRAP.md): persistent device identity, initial generation setup, browser pairing, and safe resume.
+- [Multi-participant composition](https://tendriller.dev/docs/MULTIPARTICIPANT.md): shared profile owners, addressed work, exclusive claims, independent drafts, and recovery.
+- [Agent bindings](https://tendriller.dev/docs/AGENT_BINDINGS.md): scoped host credentials, approved consumer bindings, and targeted revocation.
+- [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries, and reference snippets.
+- [MCP agent start](https://tendriller.dev/docs/MCP_AGENT_GUIDE.md): `tendril_guide`, account-bound setup (`prepare_tendril_setup`), and connecting existing apps.
+- [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md#agent-walkthrough): plugin install, workspace sharing, account linking, per-app consent, and event delivery.
+- [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): failing stages, safe retries, and exact next actions.
 
-Do not treat page creation or runtime installation as application completion. Verify a browser command in a native read, a native command in the browser, persistence after reload, and the signed publication receipt. Keep the native agent process running for the example's applied writes and live agent behavior. Host login, device grants and publisher rights are separate. Preserve private identity, keys and exact operation IDs; never publish them with the UI. Evaluate Chronolog's native persistence before selecting another backend.
+Page creation or package installation alone is not completion. Verify a browser command in a native read, a native command in the browser, persistence after reload, and the signed publication receipt. Keep private identity, keys, and exact operation IDs outside published UI.
 
 ## Discovery and access
 
-- [Machine-readable onboarding](https://tendriller.dev/.well-known/tendriller.json): same-origin entry points, lifecycle, human authorization steps and responsibilities.
-- [Searchable capability manifest](https://tendriller.dev/.well-known/tendriller-capabilities.json): task vocabulary, APIs, imports, owner, example files and limits; not a device-permission probe.
-- [Full onboarding text](https://tendriller.dev/llms-full.txt): generated combined guide for clients that prefer one fetch.
-- [Service descriptor](https://tendriller.dev/api/service): current host contract, release and effective limits; HTTP Link headers point to onboarding.
+- [Machine-readable onboarding](https://tendriller.dev/.well-known/tendriller.json): same-origin entry points, lifecycle, and `firstApp.release` kit.
+- [Capability manifest](https://tendriller.dev/.well-known/tendriller-capabilities.json): searchable task vocabulary, imports, owners, and limits.
+- [Full onboarding text](https://tendriller.dev/llms-full.txt): generated single-fetch combined onboarding guide.
+- [Service descriptor](https://tendriller.dev/api/service): host contract, release, and effective limits.
+- [Service readiness](https://tendriller.dev/api/readiness): anonymous pre-installation creation and write availability check.
 - [Contract schema](https://tendriller.dev/contract/v3.json): executable host metadata schema.
-- [Repository agent entry](https://tendriller.dev/AGENTS.md): app-building and repository contribution instructions.
+- [Repository agent entry](https://tendriller.dev/AGENTS.md): app-building and repository contribution rules.
 
-## Reference, when needed
+## Reference
 
-- [Application contract](https://tendriller.dev/docs/APPLICATION_BACKENDS.md): commands, saved/applied operations, coherent reads and explicit recovery.
-- [Browser API](https://tendriller.dev/docs/BROWSER_API.md): install the session adapter, sensors, Home Screen setup and offline code.
-- [Membership](https://tendriller.dev/docs/MEMBERSHIP.md): independent account, device and publisher rights.
-- [Peer connections](https://tendriller.dev/docs/PEER_CONNECTIONS.md): session-owned discovery, invitations, direct RTC and relay fallback.
-- [Protocol](https://tendriller.dev/docs/PROTOCOL.md): participant filters, authorization and release atomicity.
-- [Live signals](https://tendriller.dev/docs/APPLICATION_SIGNALS.md): ephemeral delivery, expiration and cancellation.
-- [Voice](https://tendriller.dev/docs/HANDS_FREE.md): optional input/output; it does not connect an agent by itself.
-- [MCP scope](https://tendriller.dev/docs/MCP.md): host administration versus the separate application integration; application execution stays in an enrolled session.
+- [Architecture](https://tendriller.dev/docs/ARCHITECTURE.md): Chronolog central pipe, limited transports, and package boundaries.
+- [Application contract](https://tendriller.dev/docs/APPLICATION_BACKENDS.md): commands, saved/applied operations, coherent reads, and explicit recovery.
+- [Browser API](https://tendriller.dev/docs/BROWSER_API.md): session adapter, sensors, Home Screen setup, and offline code.
+- [Membership](https://tendriller.dev/docs/MEMBERSHIP.md): independent account, device, and publisher rights.
+- [Peer connections](https://tendriller.dev/docs/PEER_CONNECTIONS.md): discovery, invitations, direct WebRTC, and relay fallback.
+- [Protocol](https://tendriller.dev/docs/PROTOCOL.md): filtered control transport, authorization, and release atomicity.
+- [Cloudflare assistant](https://tendriller.dev/docs/CLOUDFLARE_ASSISTANT.md): hosted `/mcp` gateway, hibernating participant sockets, and event delivery.
+- [Live signals](https://tendriller.dev/docs/APPLICATION_SIGNALS.md): ephemeral delivery, expiration, and cancellation.
+- [Voice](https://tendriller.dev/docs/HANDS_FREE.md): optional browser speech input/output.
 
-## Tools, examples and verification
+## Tools, examples, and verification
 
-- [CLI](https://tendriller.dev/docs/tools/CLI.md): start with `tendril guide --server URL` or `tendril service --server URL`, then use the supplied session bootstrap.
-- [Preview](https://tendriller.dev/docs/tools/PREVIEW.md): authored-file preview and its explicit session requirements.
-- [Releases](https://github.com/werg/tendriller/releases): SDK/runtime/tools archives and hashes; the build guide covers Chronolog's separate session archive.
-- [Chronolog](https://github.com/werg/chronolog-db): public native/browser session source and package builder.
-- [Cookbooks](https://github.com/werg/tendriller-contrib): application decisions, larger examples and independent qualification after the first app works.
-- [Cold-start acceptance](https://tendriller.dev/docs/AGENT_ONBOARDING_TEST.md): evaluate an unfamiliar agent starting with only the domain.
+- [CLI](https://tendriller.dev/docs/tools/CLI.md): `tendril guide --server URL`, `tendril service --server URL`, and session inspection.
+- [Preview](https://tendriller.dev/docs/tools/PREVIEW.md): static and live authored-file preview.
+- [Releases](https://github.com/werg/tendriller/releases): SDK, runtime, tools, and first-app kit archives.
+- [Chronolog](https://github.com/werg/chronolog-db): native/browser session implementation and package builder.
+- [Cookbooks](https://github.com/werg/tendriller-contrib): application patterns, larger examples, and independent qualification.
+- [Cold-start acceptance](https://tendriller.dev/docs/AGENT_ONBOARDING_TEST.md): domain-only agent evaluation.
 
-Use the requested service origin throughout. Current software is pre-release; record exact compatible artifacts. Application identity is `{id}`; signing identity is `session.deviceId`. The host retains signed controls and code, not ordinary database history or a resident application process.
+Use the requested service origin throughout. Application identity is `{id}`; device signing identity is `session.deviceId`.

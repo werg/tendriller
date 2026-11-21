@@ -18,7 +18,7 @@ export async function recordReview({ project, accessPath, output, composition, v
   const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   // The SDK and verifier use the same installed public archives as the native fixture.
   const { core: { createClient }, session: { verifyAuthorityBundle, verifyPublicationManifest } } = await importReviewPackages(project);
-  const definition = JSON.parse(readFileSync(new URL('../../integrations/chatgpt/plugin/plugin.json', import.meta.url)));
+  const definition = JSON.parse(readFileSync(new URL('../../plugin/plugin.json', import.meta.url)));
   const cases = definition.extensions['com.openai'].review.test_cases;
   assert.equal(cases.positive.length, 6, 'Update the qualification when packaged cases change');
   assert.equal(cases.negative.length, 3, 'Update the qualification when packaged cases change');

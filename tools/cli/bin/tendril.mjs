@@ -5,7 +5,7 @@ import { resolveConfig, saveConfig, removeConfig, serverBase } from '../lib/conf
 import { request, client } from '../lib/api.mjs';
 import { jsonInput, runSessionCommand, watchSession, withSession } from '../lib/session.mjs';
 import { onboardingGuide, publicServiceOrigin } from '../lib/guide.mjs';
-import { diagnosticFinding } from '@tendriller/core/collaboration/diagnostics';
+import { diagnosticFinding } from '@tendriller/core/diagnostics';
 import { describeReadiness, requireCreationReady, createPage } from '@tendriller/core';
 import { checkService } from '../lib/service.mjs';
 

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 const result = await build({ entryPoints: ['docs/tutorial/connection.mjs'], bundle: true, write: false, platform: 'node', format: 'esm', plugins: [{ name: 'public-storage', setup(b) {
-  b.onResolve({filter: /^@tendriller\/core\/collaboration\/browser$/}, () => ({path:'storage',namespace:'fixture'}));
+  b.onResolve({filter: /^@tendriller\/core\/browser-owner$/}, () => ({path:'storage',namespace:'fixture'}));
   b.onLoad({filter: /.*/,namespace:'fixture'}, () => ({contents:'export const requestPersistentStorage=async()=>false;'}));
 }}] });
 const {createOwnerConnection} = await import('data:text/javascript;base64,'+Buffer.from(result.outputFiles[0].text).toString('base64'));

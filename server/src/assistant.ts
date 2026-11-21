@@ -116,17 +116,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
   await checkGrant(scope); check();
   const clientOperationId = isCommand || journalKind ? string(params.operationId, 200, /^[A-Za-z0-9_.:-]+$/u) : null;
   let existing = clientOperationId ? t.db.one<OperationContext>(operationQuery, consumer.id, clientOperationId) : null;
-  // Before agent bindings were introduced, the operation namespace belonged to
-  // the OAuth account, and assistant_commands held the immutable signer/digest
-  // without a companion context row. Only the original implicit OAuth consumer
-  // may claim those IDs; an independently enrolled agent cannot adopt them.
-  const legacyId = clientOperationId && consumer.verification === 'oauth-client'
-    ? 'assistant_' + await sha256Hex(JSON.stringify([applicationId, principal.account, clientOperationId])) : null;
-  const legacyAdmission = !existing && legacyId ? t.db.one<{ operation_id: string; input_hash: string; device_id: string }>(
-    'SELECT operation_id,input_hash,device_id FROM assistant_commands WHERE operation_id=?', legacyId) : null;
   if (journalKind && !existing) {
-    if (legacyAdmission) throw new HttpError(409, 'legacy_operation_requires_original_command',
-      'First recover this pre-upgrade admission with the original command and identical inputs; a journal-only request cannot validate its legacy digest.');
     throw new HttpError(404, 'operation_not_admitted', 'No admitted operation belongs to this binding and operation ID.');
   }
   const kind = isReapply ? 'reapply' : journalKind ?? (isCommand ? 'command' : 'query');
@@ -144,18 +134,11 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
     string(params.originalOperationId, 200, /^[A-Za-z0-9_.:-]+$/u)) : null;
   if (isReapply && !original) throw new HttpError(404, 'original_operation_not_admitted');
   if (original?.client_operation_id === clientOperationId) throw new HttpError(409, 'reapply_requires_new_operation_id');
-  const operationId = existing?.operation_id ?? legacyAdmission?.operation_id ??
-    (clientOperationId && 'assistant_v2_' + await sha256Hex(JSON.stringify([applicationId, consumer.id, clientOperationId])));
-  const legacy = typeof operationId === 'string' && /^assistant_[a-f0-9]{64}$/u.test(operationId);
+  const operationId = existing?.operation_id ??
+    (clientOperationId && 'assistant_' + await sha256Hex(JSON.stringify([applicationId, consumer.id, clientOperationId])));
   const context = callerContext(params.context);
-  // Legacy digests intentionally exclude the new binding, reapply and context
-  // fields. Never upgrade their digest in place or reinterpret an old attempt.
-  const inputHash = isCommand ? await sha256Hex(legacy
-    ? canonical([name, params.input, params.basedOn ?? null])
-    : canonical([name, params.input, params.basedOn ?? null, original?.operation_id ?? null, context])) : null;
-  if (legacy && (isReapply || Object.keys(context).length > 0)) throw new HttpError(409, 'operation_id_conflict',
-    'A pre-upgrade operation must be recovered with its exact original arguments and no new caller context.');
-  if ((existing || legacyAdmission) && isCommand && (existing?.input_hash ?? legacyAdmission?.input_hash) !== inputHash)
+  const inputHash = isCommand ? await sha256Hex(canonical([name, params.input, params.basedOn ?? null, original?.operation_id ?? null, context])) : null;
+  if (existing && isCommand && existing.input_hash !== inputHash)
     throw new HttpError(409, 'operation_id_conflict', 'This operation ID already identifies different signed work.');
   const deadline = AbortSignal.any([req.signal, AbortSignal.timeout(7000)]), excluded = new Set<string>();
   let selectedGeneration = '', selectedDevice = '', providerBinding = '', value: unknown, uncertain: string | null = null;
@@ -179,23 +162,6 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
       existing = clientOperationId ? t.db.one<OperationContext>(operationQuery, consumer.id, clientOperationId) : null;
       if (existing && existing.operation_id !== operationId) throw new HttpError(409, 'operation_id_conflict');
       if (existing && isCommand && existing.input_hash !== inputHash) throw new HttpError(409, 'operation_id_conflict');
-      if (legacy && !existing) {
-        const saved = t.db.one<{ input_hash: string; device_id: string }>(
-          'SELECT input_hash,device_id FROM assistant_commands WHERE operation_id=?', operationId);
-        if (!saved || saved.input_hash !== inputHash) throw new HttpError(409, 'operation_id_conflict');
-        const claimed = t.db.one<{ binding_id: string }>(
-          'SELECT binding_id FROM assistant_operation_context WHERE operation_id=?', operationId);
-        if (claimed && claimed.binding_id !== consumer.id) throw new HttpError(409, 'operation_id_conflict');
-        const oldSigner = candidates.find(candidate => candidate.deviceId === saved.device_id);
-        // The original admission did not retain generation or provider
-        // provenance. Preserve that uncertainty; do not backfill a guessed
-        // generation, change the original signer, or create a second command.
-        t.db.run(`INSERT INTO assistant_operation_context(operation_id,binding_id,client_operation_id,provider_binding_id,source_generation,command,context,created_at)
-          VALUES(?,?,?,?,?,?,?,?)`, operationId, consumer.id, clientOperationId,
-          oldSigner?.bindingId ?? 'unverified-preupgrade', 'unverified-preupgrade', name,
-          JSON.stringify({ evidence: 'pre-upgrade-admission', generationEvidence: 'not-retained' }), t.now());
-        existing = t.db.one<OperationContext>(operationQuery, consumer.id, clientOperationId!);
-      }
       const provider = selectedProvider(t);
       const adapter = existing ? candidates.find(candidate => candidate.deviceId === existing!.device_id)
         : writes ? candidates.find(candidate => candidate.hash === provider?.adapterHash) : candidates[0];
@@ -227,12 +193,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
         existing = t.db.one<OperationContext>(operationQuery, consumer.id, clientOperationId!);
       }
       return { generation, adapter, pending: callAssistantAdapter(t, adapter.socket, {
-        applicationId, generation,
-        // Never dispatch a new command for a legacy admission: inspect the
-        // retained native ID on its original signer instead. If it is absent
-        // after a generation reset, require explicit reviewed reapplication.
-        kind: legacy && method === 'call_application_command' ? 'operation' : kind,
-        name, input: params.input,
+        applicationId, generation, kind, name, input: params.input,
         providerBindingId: adapter.bindingId, connectionEpoch: adapter.connectionEpoch,
         caller: { account: principal.account, agentBindingId: consumer.id, bindingRevision: consumer.revision,
           verification: consumer.verification, context: existing ? JSON.parse(existing.context) : { evidence: 'caller-asserted', ...context } },
@@ -274,8 +235,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
     const outcome = needsReview ? 'needs-review' : uncertain ? 'uncertain' : state?.status === 'applied'
       ? state.outcome === 'rejected' ? 'rejected' : 'applied' : state?.status === 'saved' ? 'saved' : 'not-found';
     return json({ value: { operationId: clientOperationId, operationReference: reference(), outcome,
-      operation: value ?? null, ...(legacy && !state && !uncertain ? { code: 'legacy_operation_not_found',
-        nextAction: 'This pre-upgrade admission is not visible in the original signer history. Do not execute it under a new ID without explicit review.' } : {}),
+      operation: value ?? null,
       ...(uncertain ? { code: 'operation_uncertain', reason: uncertain,
         nextAction: 'Inspect this original operation; retry only with the same ID and inputs. Reapplication requires a new ID and explicit review.' } : {}) } });
   });

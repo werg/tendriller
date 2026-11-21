@@ -217,5 +217,5 @@ watched.retryable = true;
 void [fatal,alsoFatal,neutral,transient];
 `);
   await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../../node_modules/typescript/bin/tsc',import.meta.url)),
-    '--strict','--noEmit','--skipLibCheck','--target','ES2022','--module','NodeNext',file]);
+    '--strict','--noEmit','--skipLibCheck','--target','ES2022','--module','NodeNext',file],{cwd:directory});
 });

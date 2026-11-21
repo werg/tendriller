@@ -3,9 +3,9 @@ import { defineApplication, defineCommand, defineQuery, emit, program, openPeerA
   signControlRevision, createGenerationRegistry, signTransitionRequest, applicationDefinitionDigest,
   eventExecutionManifest, executionManifestArtifacts, bytesToHex } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
-import { serveBrowserOwner } from '../../worker.mjs';
-import { BROWSER_OWNER_PROTOCOL, ownerChannelName } from '../../browser-transport.mjs';
-import { rootLifetimeLockName } from '../../root-lifetime.mjs';
+import { serveBrowserOwner } from '../../../session/worker.mjs';
+import { BROWSER_OWNER_PROTOCOL, ownerChannelName } from '../../../session/browser-transport.mjs';
+import { rootLifetimeLockName } from '../../../session/root-lifetime.mjs';
 const profileId = new URL(import.meta.url).searchParams.get('profile') || 'browser-owner-test';
 // Test-only fault injection: neither port death nor an unloaded document's
 // best-effort teardown may stand in for the document witness in this fixture.

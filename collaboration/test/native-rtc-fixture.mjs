@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { participateNativeApplication } from '../native-rtc.mjs';
+import { participateNativeApplication } from '../../session/native-rtc.mjs';
 function inbox() {
   const values = [], waiters = []; let closed = false;
   return { push(value) { const waiter = waiters.shift(); if (waiter) waiter({ value, done: false }); else values.push(value); },

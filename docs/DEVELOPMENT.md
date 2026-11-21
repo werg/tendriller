@@ -9,8 +9,6 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run build:artifacts` | Build all four public archives |
 | `npm run dev` | Build assets and run the local account/page host |
 | `npm run test:onboarding` | After a build: validate the discovery documentation graph, generated combined guide and safe tutorial archive |
-| `npm run test:chatgpt` | On Node 24: optional integration, deployment, callback and native-session checks; set the pinned public session package for zero-skip native coverage |
-| `npm run test:chatgpt:host` | After a build on Node 24: actual packed OAuth host and Node account/browser integration, using isolated synthetic browser accounts |
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
@@ -156,7 +154,7 @@ gates still apply. No local check performs publication or deployment.
 
 Fresh deployments initialize `0001_accounts.sql` and new Durable Object namespaces. `node scripts/storage-schema.mjs` reports the current baseline. Existing mismatched storage is rejected without mutation. See [operations](OPERATIONS.md).
 
-For a candidate spanning core, Chronolog, and cookbooks, use the [three-repository qualification guide](RELEASE_COMPOSITION.md). The [branch inventory](BRANCH_INVENTORY.md) records older unmerged branch heads for review.
+For a candidate spanning core, Chronolog, and cookbooks, use the [three-repository qualification guide](RELEASE_COMPOSITION.md).
 
 ## Onboarding as a public surface
 
@@ -256,10 +254,8 @@ editing generated `agent.md` or `llms.txt` alone. Run the MCP-only cold-start
 scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavior;
 link and consistency checks do not prove that an unfamiliar agent can finish.
 
-The [account-bound setup and reviewed device pairing protocol](ONBOARDING_PROTOCOL_FOLLOWUPS.md)
-documents the implemented candidate interfaces and their acceptance gates.
-Account setup retains one client credential and allocation across retries.
-Pairing uses the browser's own key proof, a native proposal prepared before owner
+Account-bound setup retains one client credential and allocation across retries.
+Reviewed device pairing uses the browser's own key proof, a native proposal prepared before owner
 review, and a durable ordering pause until the exact signed outcome is resolved.
 The native participant uses hibernating setup notifications without idle polling;
 individual reviews expire after ten minutes. Its lifetime is independent of the
@@ -291,7 +287,7 @@ master deployments, and runs weekly on both environments.
 Private account records live in each environment's `TENDRILLER_REVIEW_ACCESS_JSON`
 secret; the same account is renewed automatically. Reports, screenshots and video
 use an explicit artifact allowlist; private fixture credentials stay outside it.
-See [review preparation](../integrations/chatgpt/plugin/REVIEW.md) for static
+See [review preparation](../plugin/REVIEW.md) for static
 reviewer login, credential renewal/revocation and persistent sample operation.
 
 The live MCP qualifier accepts `--artifact-root /absolute/clean/deployed-checkout`

@@ -22,39 +22,29 @@ test('the fresh account baseline enforces reservations and account limits atomic
   assert.equal(db.prepare('SELECT reserved FROM service_state').get().reserved, 0);
 });
 
-test('the explicit setup recovery upgrade preserves both installed journal revisions without charging twice', t => {
-  const migration = name => readFileSync(new URL(`../../server/migrations/${name}`, import.meta.url), 'utf8');
-  for (const revision of [1, 2]) {
-    const db = new DatabaseSync(':memory:'); t.after(() => db.close());
-    db.exec(migration('0001_accounts.sql'));
-    db.exec(migration('0002_integration_oauth.sql'));
-    db.exec(migration('0004_account_setup.sql'));
-    // The original revision has the same detailed journal columns, no independent
-    // allocation table, and the IP-only charge trigger. No live database is altered.
-    db.exec('DROP TRIGGER account_setup_capacity; DROP TRIGGER account_setup_charge;');
-    if (revision === 1) db.exec('DROP TABLE account_setup_allocations; UPDATE account_setup_schema SET revision=1;');
-    db.exec("CREATE TRIGGER account_setup_capacity BEFORE INSERT ON account_setups BEGIN SELECT 1; END;");
-    db.exec("CREATE TRIGGER account_setup_charge AFTER INSERT ON account_setups BEGIN SELECT 1; END;");
-    db.exec("INSERT INTO accounts(id,created_at,email) VALUES('owner',1,'owner@example.test')");
-    db.exec(`INSERT INTO account_setups VALUES('https://service.example','owner','client','operation','digest','commitment',
-      'grant','owner@example.test','aaaaaaaaaaaa','application','{}','198.18.0.1','2026-11-20','ready',1,1,1,86400001,1,NULL)`);
-    db.exec("INSERT INTO creation_ip VALUES('198.18.0.1','2026-11-20',1)");
-    if (revision === 2) {
-      // A retained witness must survive even when its detailed journal disagrees.
-      db.exec(`INSERT INTO account_setup_allocations SELECT service_origin,account_id,client_id,operation_id,'original-digest',
-        credential_commitment,grant_id,intended_email,page_id,application_id,creator_ip,creation_day,created_at,expires_at FROM account_setups`);
-    }
-    db.exec(migration('0005_account_setup_recovery.sql'));
-    assert.equal(db.prepare('SELECT revision FROM account_setup_schema').get().revision, 3);
-    assert.deepEqual({ ...db.prepare('SELECT page_id,request_digest FROM account_setup_allocations').get() },
-      { page_id:'aaaaaaaaaaaa', request_digest:revision === 1 ? 'digest' : 'original-digest' });
-    assert.equal(db.prepare('SELECT count FROM creation_ip').get().count, 1);
-    const old = db.prepare('SELECT * FROM account_setups').get();
-    db.exec('DELETE FROM account_setups');
-    const values = Object.values(old), placeholders = values.map(() => '?').join(',');
-    assert.throws(() => db.prepare(`INSERT INTO account_setups VALUES(${placeholders})`).run(...values), /setup_journal_missing/);
-    values[3] = 'different-operation';
-    assert.throws(() => db.prepare(`INSERT INTO account_setups VALUES(${placeholders})`).run(...values), /setup_allocation_conflict/);
-    assert.equal(db.prepare('SELECT count FROM creation_ip').get().count, 1);
+test('the unified account schema enforces setup allocations, OAuth and assistant tables without double charging', t => {
+  const db = new DatabaseSync(':memory:'); t.after(() => db.close());
+  db.exec(readFileSync(new URL('../../server/migrations/0001_accounts.sql', import.meta.url), 'utf8'));
+  assert.equal(db.prepare('SELECT revision FROM account_setup_schema').get().revision, 3);
+  for (const table of ['integration_oauth_access', 'integration_oauth_codes', 'integration_oauth_refresh',
+    'integration_oauth_grants', 'integration_oauth_intents', 'assistant_connections', 'account_setups', 'account_setup_allocations']) {
+    assert.equal(db.prepare('SELECT name FROM sqlite_master WHERE type=? AND name=?').get('table', table)?.name, table);
   }
+  db.exec("UPDATE service_state SET mode='open' WHERE id=1");
+  db.exec("INSERT INTO accounts(id,created_at,email) VALUES('owner',1,'owner@example.test')");
+  db.exec("INSERT INTO identities(provider,subject,account_id,login,email,created_at) VALUES('github','sub-1','owner','owner','owner@example.test',1)");
+  db.exec("INSERT INTO identity_emails(provider,subject,email) VALUES('github','sub-1','owner@example.test')");
+  db.exec("INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at) VALUES('grant','owner','client','https://service.example/mcp','tendrils:create',1,86400001)");
+  db.exec(`INSERT INTO account_setups VALUES('https://service.example','owner','client','operation','digest','commitment',
+    'grant','owner@example.test','aaaaaaaaaaaa','application','{}','198.18.0.1','2026-11-20','ready',1,1,1,86400001,1,NULL)`);
+  assert.deepEqual({ ...db.prepare('SELECT page_id,request_digest FROM account_setup_allocations').get() },
+    { page_id: 'aaaaaaaaaaaa', request_digest: 'digest' });
+  assert.equal(db.prepare('SELECT count FROM creation_ip').get().count, 1);
+  const old = db.prepare('SELECT * FROM account_setups').get();
+  db.exec('DELETE FROM account_setups');
+  const values = Object.values(old), placeholders = values.map(() => '?').join(',');
+  assert.throws(() => db.prepare(`INSERT INTO account_setups VALUES(${placeholders})`).run(...values), /setup_journal_missing/);
+  values[3] = 'different-operation';
+  assert.throws(() => db.prepare(`INSERT INTO account_setups VALUES(${placeholders})`).run(...values), /setup_allocation_conflict/);
+  assert.equal(db.prepare('SELECT count FROM creation_ip').get().count, 1);
 });

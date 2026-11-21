@@ -130,7 +130,7 @@ workspace plugin do not create a directory listing.
    owner can submit, or can assign Apps Management Write in
    [Organization roles](https://platform.openai.com/settings/organization/people/roles).
 2. From the repository root, run
-   `node integrations/chatgpt/plugin/build.mjs` with Node 22.15 or newer and
+   `node plugin/build.mjs` with Node 22.15 or newer and
    `zip` installed. Upload `dist/tendriller-chatgpt-plugin.zip` at
    [OpenAI Platform Plugins](https://platform.openai.com/plugins) through
    **Upload new or existing plugin**. Select the verified **Developer identity**
@@ -145,8 +145,8 @@ workspace plugin do not create a directory listing.
    tool scan and resolve any required findings in **Metadata & Skills** or
    **MCPs**. [Domain verification and scanning](https://developers.openai.com/plugins/deploy/submission#connect-and-scan-your-mcp-server)
 4. The maintainer prepares a dedicated synthetic **Review checklist**, keeps its
-   participant running, and runs the [automated native-client qualification and
-   recording](../integrations/chatgpt/plugin/REVIEW.md). This uses the real Codex
+   participant running, and runs the automated native-client qualification and
+   recording (see `plugin/REVIEW.md` in the repository). This uses the real Codex
    MCP host and all packaged tool-level cases; it does not claim ChatGPT web or
    model-behavior verification. The publisher does not need to record or run
    these checks. In **Metadata & Skills → Review information → Review details**,

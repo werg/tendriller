@@ -31,12 +31,12 @@ test('MCP, published onboarding and installable skill retain one current discove
     assert(links(readFileSync(join(root, path), 'utf8')).some(target => target.includes('MCP_AGENT_GUIDE.md')),
       `${path} lost its MCP onboarding pointer`);
   }
-  const skill = readFileSync(join(root, 'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md'), 'utf8');
+  const skill = readFileSync(join(root, 'plugin/skills/connect-tendriller/SKILL.md'), 'utf8');
   assert(skill.includes('tendril_guide') && skill.includes('serviceOrigin'));
   for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery'])
     assert(skill.includes(`topic: "${topic}"`), `Packaged skill lost the ${topic} guide route`);
   for (const path of ['AGENTS.md', 'agent.md', 'docs/MCP_AGENT_GUIDE.md',
-    'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md']) {
+    'plugin/skills/connect-tendriller/SKILL.md']) {
     const content = readFileSync(join(root, path), 'utf8');
     assert(content.includes('/api/readiness'), `${path} lost the pre-installation readiness check`);
     assert(content.includes('firstApp.release'), `${path} lost the immutable first-app composition route`);
@@ -44,7 +44,7 @@ test('MCP, published onboarding and installable skill retain one current discove
   for (const fallback of ['setup.startHere', 'setup.buildGuide', 'setup.discoveryUrl'])
     assert(skill.includes(fallback), `Packaged skill lost the stale-tool fallback ${fallback}`);
   for (const path of ['AGENTS.md', 'agent.md', 'docs/BUILD_AN_APP.md', 'docs/MCP_AGENT_GUIDE.md',
-    'integrations/chatgpt/plugin/skills/connect-tendriller/SKILL.md']) {
+    'plugin/skills/connect-tendriller/SKILL.md']) {
     const content = readFileSync(join(root, path), 'utf8');
     for (const step of ['prepare_tendril_setup', 'inspect_tendril_setup', 'setup:finish'])
       assert(content.includes(step), `${path} lost the retained account-setup route ${step}`);
@@ -144,7 +144,7 @@ test('building a starter excludes nested private state, provider secrets, genera
 // Tool discovery is scope-filtered: a packaged connection must actually request
 // the permission used by the documented account-bound setup path.
 test('the installable MCP connection requests account setup permission explicitly', () => {
-  const manifest = JSON.parse(readFileSync(join(root, 'integrations/chatgpt/plugin/mcp.json'), 'utf8'));
+  const manifest = JSON.parse(readFileSync(join(root, 'plugin/mcp.json'), 'utf8'));
   const auth = manifest.mcpServers.tendriller.extensions['com.openai'].auth;
   assert(auth.baseScopes.includes('tendrils:create'));
   assert.equal(new Set(auth.baseScopes).size, auth.baseScopes.length);
@@ -171,13 +171,10 @@ test('events and SQL starter qualification use the current pinned session source
 });
 
 
-test('live views have one SDK implementation and both authored pages use bounded initial readiness', () => {
+test('live views have one SDK implementation and the starter page uses bounded initial readiness', () => {
   assert.equal(TUTORIAL_FILES.includes('helpers/live-view.mjs'), false);
-  for (const path of ['docs/tutorial/helpers/live-view.mjs', 'integrations/chatgpt/examples/kitchen/helpers/live-view.mjs'])
-    assert.equal(existsSync(join(root, path)), false, 'Copied live-view implementation: ' + path);
-  for (const path of ['docs/tutorial/page.mjs', 'integrations/chatgpt/examples/kitchen/page.mjs']) {
-    const source = readFileSync(join(root, path), 'utf8');
-    assert.match(source, /import \{ createLiveView \} from '@tendriller\/core\/collaboration\/live-view'/);
-    assert.match(source, /await liveView\.ready\(\{[^}]*timeoutMs: 30_000/);
-  }
+  assert.equal(existsSync(join(root, 'docs/tutorial/helpers/live-view.mjs')), false, 'Copied live-view implementation');
+  const source = readFileSync(join(root, 'docs/tutorial/page.mjs'), 'utf8');
+  assert.match(source, /import \{ createLiveView, createViewStore, operationReference \} from '@chronolog\/peer-session\/browser'/);
+  assert.match(source, /await liveView\.ready\(\{[^}]*timeoutMs: 30_000/);
 });

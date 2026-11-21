@@ -3,10 +3,10 @@ import { verifyAuthorityBundle, signTransitionRequest } from '@chronolog/peer-se
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
-import { readTransportDiagnostics } from '@tendriller/core/collaboration/transport-diagnostics';
-import { participateNativeApplication } from '@tendriller/core/collaboration/native-rtc';
+import { readTransportDiagnostics } from '@tendriller/core/transport-diagnostics';
+import { participateNativeApplication } from '@tendriller/core/native-rtc';
 import { createDevicePairingClient } from '@tendriller/core/pairing';
-import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/collaboration/native';
+import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '@tendriller/core/native-owner';
 import { definition } from './domain.mjs';
 import { devicePath, privateDirectory, project, readPrivate, readHostHandle, savePrivate } from './local.mjs';
 import { watchApplicationSetup } from '@tendriller/core/setup';

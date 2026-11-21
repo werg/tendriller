@@ -1,7 +1,7 @@
 // SQLite storage for the Tendril Durable Object (PROTOCOL section 3).
 
 /** Persistent host storage identity, independent of runtime and application releases. */
-export const STORAGE_SCHEMA_REVISION = 10;
+export const STORAGE_SCHEMA_REVISION = 11;
 
 export class StorageSchemaError extends Error {
   readonly code = 'storage_schema_mismatch';
@@ -38,6 +38,31 @@ CREATE INDEX IF NOT EXISTS visitor_signals_time ON visitor_signals (kind, first_
 CREATE TABLE IF NOT EXISTS release_events (at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS activity (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL,
   summary TEXT NOT NULL, by TEXT, source TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS assistant_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, source_id TEXT NOT NULL,
+  generation TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(generation, source_id, name));
+CREATE TABLE IF NOT EXISTS assistant_watchers (id TEXT PRIMARY KEY, grant_id TEXT NOT NULL, client_id TEXT NOT NULL, name TEXT NOT NULL,
+  url TEXT NOT NULL, secret TEXT NOT NULL, previous_secret TEXT, rotate_until INTEGER,
+  verified_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS assistant_jobs (event_seq INTEGER NOT NULL, watcher_id TEXT NOT NULL,
+  due INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, lease TEXT, block_reason TEXT, PRIMARY KEY(event_seq, watcher_id));
+CREATE INDEX IF NOT EXISTS assistant_jobs_due ON assistant_jobs (due);
+CREATE TABLE IF NOT EXISTS assistant_receipts (seq INTEGER PRIMARY KEY AUTOINCREMENT, client_id TEXT NOT NULL,
+  name TEXT NOT NULL, source_id TEXT NOT NULL, generation TEXT NOT NULL, watcher_id TEXT NOT NULL,
+  outcome TEXT NOT NULL, attempts INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS assistant_receipts_client ON assistant_receipts (client_id, seq DESC);
+CREATE TABLE IF NOT EXISTS assistant_commands (operation_id TEXT PRIMARY KEY, input_hash TEXT NOT NULL, device_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS assistant_devices (adapter_hash TEXT PRIMARY KEY, device_id TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS assistant_consumers (id TEXT PRIMARY KEY, client_id TEXT NOT NULL, label TEXT NOT NULL,
+  credential_hash TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL, queries TEXT NOT NULL,
+  commands TEXT NOT NULL, events TEXT NOT NULL, route TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS assistant_watcher_bindings (watcher_id TEXT PRIMARY KEY, binding_id TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS assistant_watcher_scope ON assistant_watcher_bindings (binding_id);
+CREATE TABLE IF NOT EXISTS assistant_operation_context (operation_id TEXT PRIMARY KEY, binding_id TEXT NOT NULL,
+  client_operation_id TEXT NOT NULL, provider_binding_id TEXT NOT NULL, source_generation TEXT NOT NULL,
+  command TEXT NOT NULL, context TEXT NOT NULL, reference TEXT, created_at INTEGER NOT NULL,
+  UNIQUE(binding_id, client_operation_id));
+CREATE TABLE IF NOT EXISTS assistant_export_source (event_seq INTEGER PRIMARY KEY, device_id TEXT NOT NULL,
+  provider_binding_id TEXT NOT NULL, export_version TEXT NOT NULL, context TEXT NOT NULL);
 `;
 
 type Bindable = string | number | null | ArrayBuffer;

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSharedRootEndpoint } from '../browser-root.mjs';
-import { BROWSER_OWNER_PROTOCOL } from '../browser-transport.mjs';
+import { createSharedRootEndpoint } from '../../session/browser-root.mjs';
+import { BROWSER_OWNER_PROTOCOL } from '../../session/browser-transport.mjs';
 
 async function until(condition) {
   const end = Date.now() + 3000;

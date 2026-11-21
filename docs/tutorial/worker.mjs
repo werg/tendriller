@@ -2,8 +2,8 @@ import { browserProfileId } from './helpers/browser-profile.mjs';
 import { verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openBrowserDevice, openBrowserApplication } from '@chronolog/peer-session/worker';
 import { createPeersClient } from '@tendriller/core/peers';
-import { serveBrowserOwner } from '@tendriller/core/collaboration/worker';
-import { participateApplication } from '@tendriller/core/collaboration/participation';
+import { serveBrowserOwner } from '@tendriller/core/worker-owner';
+import { participateApplication } from '@tendriller/core/participation';
 import { definition } from './domain.mjs';
 
 serveBrowserOwner({ async load({ signal }) {

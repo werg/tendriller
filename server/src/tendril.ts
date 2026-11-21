@@ -10,7 +10,6 @@ import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expir
 import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
 import { applicationSelection } from '../../contract/application.mjs';
 import { selectedApplication } from './application';
-import { integrationPageAccess } from './accounts/integration-access';
 import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 import runtimeRelease from './runtime-release.json';
 import { DurableObject } from 'cloudflare:workers';
@@ -26,7 +25,6 @@ import { requireHostApproval, requireHostApprovalPolicy, type HostApproval } fro
 import { reviewDevicePairing } from './device-pairing';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
-import { handleMcp } from './mcp';
 import { Db } from './db';
 import { DeadlineAlarm } from './alarm';
 import { admitPageTraffic } from './traffic-budget';
@@ -188,7 +186,6 @@ export class Tendril extends DurableObject<Env> {
       if (kind === 'pairing-review') return await reviewDevicePairing(this, req);
       if (kind === 'assistant-adapter') return await upgradeAssistantAdapter(this, req);
       if (kind === 'assistant-activity') return await upgradeAssistantActivity(this, req);
-      if (kind === 'account' && url.pathname === '/account/integration-access' && req.method === 'GET') return integrationPageAccess(this, req);
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
           name: this.db.get("name", "Tendril"), page_url: this.mainPageUrl(),
@@ -211,8 +208,6 @@ export class Tendril extends DurableObject<Env> {
       }
       if (kind === "agent") {
         if (req.method !== "GET" && req.method !== "HEAD") await requireWritesOpen(this.env);
-        const rest = decodeURIComponent(req.headers.get("x-tendril-rest") ?? "");
-        if (rest === "mcp" || rest.startsWith("mcp/")) return await handleMcp(this, req, rest);
         return await handleAgent(this, req, url);
       }
       if (kind === "page") {

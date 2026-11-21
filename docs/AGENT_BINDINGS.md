@@ -63,7 +63,7 @@ Adding or rotating tokens cannot multiply these limits. Revoking a binding still
 withdraws only its own advertisements and sockets; sibling routes remain usable.
 
 For several processes using one retained native signer, the optional
-`@tendriller/core/collaboration/native` supervisor provides separate authenticated
+`@tendriller/core/native-owner` supervisor provides separate authenticated
 attachment credentials and narrower command/query policies. See
 [the CLI guide](tools/CLI.md) for explicit attachment, ownership, independent
 profiles, credential rotation and retained provider effect receipts.

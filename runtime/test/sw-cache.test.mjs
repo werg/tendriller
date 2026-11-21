@@ -10,7 +10,7 @@ const built = await build({ entryPoints: [new URL("../src/sw.ts", import.meta.ur
 const scope = "https://page.example/t/page/s/key/";
 const absolute = path => new URL(path, scope).href;
 const sha = value => createHash("sha256").update(value).digest("hex");
-const cacheName = id => `tendril-v2-publication:${encodeURIComponent(scope)}:${id}`;
+const cacheName = id => `tendril-publication:${encodeURIComponent(scope)}:${id}`;
 const json = value => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
 function release(id, runtimeId = id, lazyResources = {}) {
   const hash = sha(`runtime-${runtimeId}`), base = absolute(`_publications/${id}/`), runtimeBase = absolute(`_tendril/runtime/${hash}/`);
@@ -89,7 +89,7 @@ test("publication readiness waits for the complete graph and final metadata comm
   const proceed = [Promise.withResolvers(), Promise.withResolvers()];
   let completeWrites = 0;
   const sw = await worker(net, new Map(), new Map(), { async beforePut(name, url, response) {
-    if (name !== "tendril-v2-metadata" || !(await response.json()).complete.includes(a.publication.id)) return;
+    if (name !== "tendril-metadata" || !(await response.json()).complete.includes(a.publication.id)) return;
     const stage = completeWrites++;
     reached[stage].resolve();
     await proceed[stage].promise;
@@ -264,7 +264,7 @@ test("a late network publication cannot rebind or evict a tab already given its 
   const sw = await worker(net, new Map(), new Map(), {
     timers: { setTimeout(callback) { deadline = callback; return 1; }, clearTimeout() {} },
     async beforePut(name, url, response) {
-      if (delayed && name === "tendril-v2-metadata" && (await response.json()).clients.a === "1") boundOffline.resolve();
+      if (delayed && name === "tendril-metadata" && (await response.json()).clients.a === "1") boundOffline.resolve();
     },
   });
   await sw.install(); await sw.announce("a", a.publication);

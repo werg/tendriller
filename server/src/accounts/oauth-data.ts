@@ -6,15 +6,15 @@ import { testAccountEnabled } from './test-access';
 import { object, oauthJson, randomToken, reject, type OAuthConfig } from './oauth-support';
 
 const schemaChecks = new WeakMap<Env, { until: number; task: Promise<void> }>();
-/** The optional migration must be present before advertising an operational issuer. */
+/** Required baseline OAuth tables must exist before advertising an operational issuer. */
 export async function ensureOAuthSchema(env: Env): Promise<void> {
   let cached = schemaChecks.get(env);
   if (!cached || cached.until <= Date.now()) {
     const task = (async () => {
       const result = await env.ACCOUNTS.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name IN (
         'integration_oauth_intents','integration_oauth_grants','integration_oauth_codes','integration_oauth_refresh',
-        'integration_oauth_access','integration_oauth_handoffs','integration_oauth_management_sessions')`).first<{ n: number }>();
-      if (result?.n !== 7) reject('temporarily_unavailable', 'Apply optional account migration 0002_integration_oauth.sql before enabling integration OAuth', 503);
+        'integration_oauth_access')`).first<{ n: number }>();
+      if (result?.n !== 5) reject('temporarily_unavailable', 'Apply account baseline 0001_accounts.sql before enabling integration OAuth', 503);
     })();
     cached = { until: Date.now() + 5000, task }; schemaChecks.set(env, cached);
   }
@@ -45,8 +45,6 @@ export async function cleanup(env: Env): Promise<void> {
   const now = Date.now();
   await env.ACCOUNTS.batch([
     env.ACCOUNTS.prepare('DELETE FROM integration_oauth_intents WHERE expires_at<=?').bind(now),
-    env.ACCOUNTS.prepare('DELETE FROM integration_oauth_handoffs WHERE expires_at<=?').bind(now),
-    env.ACCOUNTS.prepare('DELETE FROM integration_oauth_management_sessions WHERE expires_at<=?').bind(now),
     env.ACCOUNTS.prepare('DELETE FROM integration_oauth_access WHERE expires_at<=?').bind(now),
     env.ACCOUNTS.prepare('DELETE FROM integration_oauth_grants WHERE expires_at<=? OR revoked_at<?').bind(now, now - 600000),
   ]);
@@ -70,7 +68,7 @@ export function authorizationRedirect(config: OAuthConfig, uri: string, state: s
   for (const [key, value] of Object.entries({ ...values, state, iss: config.issuer })) destination.searchParams.set(key, value);
   return redirect(destination.href);
 }
-export async function intent(env: Env, browser: BrowserIdentity, kind: 'authorize' | 'handoff' | 'revoke', payload: unknown): Promise<string> {
+export async function intent(env: Env, browser: BrowserIdentity, kind: 'authorize' | 'revoke', payload: unknown): Promise<string> {
   await cleanup(env);
   const token = randomToken(), now = Date.now();
   const result = await env.ACCOUNTS.prepare(`INSERT INTO integration_oauth_intents(hash,kind,account_id,session_hash,payload,created_at,expires_at)

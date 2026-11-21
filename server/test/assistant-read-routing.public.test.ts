@@ -53,7 +53,6 @@ async function fixture(count = 1) {
     const hashes = Array.from({ length: Math.max(1, count) }, (_, i) => String(i + 1).repeat(64));
     t.db.set('assistant_adapters', { agent, hashes });
     // Exact post-approval boundary; no application bytes or native execution are needed.
-    t.db.run('CREATE TABLE assistant_commands(operation_id TEXT PRIMARY KEY,input_hash TEXT NOT NULL,device_id TEXT NOT NULL)');
     if (hashes.length) selectProvider(t, hashes[0]);
     for (const [i, hash] of hashes.slice(0, count).entries()) {
       t.db.set('assistant_adapter_epoch:' + hash, 1);

@@ -7,8 +7,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {BROWSER_OWNER_PROTOCOL} from '../browser-transport.mjs';
-import {BROWSER_RTC_PROTOCOL} from '../browser-rtc.mjs';
+import {BROWSER_OWNER_PROTOCOL} from '../../session/browser-transport.mjs';
+import {BROWSER_RTC_PROTOCOL} from '../../session/browser-rtc.mjs';
 import {defineApplication,defineQuery,describeApplication,PEER_GENERATION_CAPABILITIES} from '@chronolog/peer-session';
 
 // Real public owner composition and Chronolog attachment RPC. Only RTC mechanics
@@ -29,8 +29,8 @@ const rtc={name:'freeze-rtc',setup(build){build.onLoad({filter:/\/peer-session\/
 const root=new URL('../..',import.meta.url).pathname;
 // Freeze only the page clock. The Worker remains alive on its independent real
 // clock, as it does when a browser document stops scheduling callbacks.
-const pageBundle=await build({stdin:{contents:"export{openBrowserOwner}from'./collaboration/browser.mjs';",resolveDir:root},bundle:true,write:false,format:'esm',platform:'node',plugins:[rtc],banner:{js:`const __clock=globalThis.__freezeClock;const performance={now:()=>__clock.now};const setTimeout=__clock.setTimeout.bind(__clock);const clearTimeout=__clock.clearTimeout.bind(__clock);`}});
-const workerBundle=await build({stdin:{contents:"export{serveBrowserOwner}from'./collaboration/worker.mjs';",resolveDir:root},bundle:true,write:false,format:'esm',platform:'node',plugins:[rtc],banner:{js:'const BroadcastChannel=globalThis.__freezeWorkerChannel;'}});
+const pageBundle=await build({stdin:{contents:"export{openBrowserOwner}from'./session/browser.mjs';",resolveDir:root},bundle:true,write:false,format:'esm',platform:'node',plugins:[rtc],banner:{js:`const __clock=globalThis.__freezeClock;const performance={now:()=>__clock.now};const setTimeout=__clock.setTimeout.bind(__clock);const clearTimeout=__clock.clearTimeout.bind(__clock);`}});
+const workerBundle=await build({stdin:{contents:"export{serveBrowserOwner}from'./session/worker.mjs';",resolveDir:root},bundle:true,write:false,format:'esm',platform:'node',plugins:[rtc],banner:{js:'const BroadcastChannel=globalThis.__freezeWorkerChannel;'}});
 
 class PageClock{
  now=0;tasks=new Map();errors=[];

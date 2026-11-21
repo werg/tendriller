@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createSqliteEffectJournal } from '../native.mjs';
+import { createSqliteEffectJournal } from '../../session/native.mjs';
 import { createEffectDispatcher } from '../local.mjs';
 
 async function fixture(t) {
@@ -63,7 +63,7 @@ test('concurrent processes or dispatchers share admission, preserve terminal rec
 
 test('abrupt process loss retains dispatching intent and reopens only for receipt reconciliation', { timeout: 15_000 }, async t => {
   const options = await fixture(t);
-  const source = `import {createSqliteEffectJournal} from ${JSON.stringify(new URL('../native.mjs', import.meta.url).href)};
+  const source = `import {createSqliteEffectJournal} from ${JSON.stringify(new URL('../../session/native.mjs', import.meta.url).href)};
 import {createEffectDispatcher} from ${JSON.stringify(new URL('../local.mjs', import.meta.url).href)};
 const {options,command}=JSON.parse(process.env.TENDRILLER_EFFECT_TEST);
 const journal=await createSqliteEffectJournal(options);

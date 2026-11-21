@@ -46,8 +46,8 @@ function fixture(t) {
   for (const dir of ['bin', 'dist', 'publisher', 'remote/assets']) mkdirSync(join(root, dir), { recursive: true });
   for (const file of ['publish-release.mjs', 'release-composition.mjs', 'onboarding.mjs', 'runtime-manifest.mjs', 'archive-metadata.mjs'])
     copyFileSync(new URL('../' + file, import.meta.url), join(root, 'publisher', file));
-  mkdirSync(join(root, 'integrations/chatgpt/plugin'), { recursive: true });
-  copyFileSync(new URL('../../integrations/chatgpt/plugin/build.mjs', import.meta.url), join(root, 'integrations/chatgpt/plugin/build.mjs'));
+  mkdirSync(join(root, 'plugin'), { recursive: true });
+  copyFileSync(new URL('../../plugin/build.mjs', import.meta.url), join(root, 'plugin/build.mjs'));
   mkdirSync(join(root, 'scripts/review'), { recursive: true });
   copyFileSync(new URL('../review/fixture.mjs', import.meta.url), join(root, 'scripts/review/fixture.mjs'));
   writeFileSync(join(root, 'bin/gh'), fakeGh); chmodSync(join(root, 'bin/gh'), 0o755);

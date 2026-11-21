@@ -19,21 +19,18 @@ import { createPeerIdentity } from '@chronolog/peer-session';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 import { advance, create, inDO, runAlarm, stub, apiJson } from './helpers';
 
-const ISSUER = 'https://tendriller.dev', RESOURCE = 'https://integration.example/mcp';
+const ISSUER = 'https://tendriller.dev', RESOURCE = ISSUER + '/mcp';
 const REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect';
-const MANAGEMENT = 'https://integration.example/connections/callback', BRIDGE_SECRET = 'test-bridge-' + 'b'.repeat(52);
 let privateJwk: JsonWebKey, publicJwk: JsonWebKey;
-let bridgeHash: string;
 beforeAll(async () => {
   const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
   privateJwk = await crypto.subtle.exportKey('jwk', pair.privateKey) as JsonWebKey;
   publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey) as JsonWebKey;
-  bridgeHash = await sha256Hex(BRIDGE_SECRET);
 });
 function configured(overrides: Partial<Env> = {}): Env {
   return { ...env, OAUTH_CONFIG_JSON: JSON.stringify({ resource: RESOURCE, clients: [
     { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read', 'events:subscribe'], allowRefresh: true },
-  ], bridges: [{ id: 'node-bridge', name: 'Tendriller connection settings', secretSha256: bridgeHash, applicationIds: [], managementRedirectUris: [MANAGEMENT] }] }),
+  ] }),
   OAUTH_SIGNING_JWK: JSON.stringify({ ...privateJwk, kid: 'signing-1', alg: 'ES256' }), ...overrides };
 }
 function request(path: string, settings: Env = configured(), init: RequestInit = {}) {
@@ -236,18 +233,17 @@ it('prepares assistant permissions before claim and activates their review only 
   } finally { await inDO(h.id, t => { Object.assign(t.env, restore); }); }
 });
 
-it('enabled OAuth names its missing additive migration while the ordinary host still works with OAuth disabled', async () => {
+it('enabled OAuth names its missing account schema while the ordinary host still works with OAuth disabled', async () => {
   const settings = configured();
-  await env.ACCOUNTS.prepare('ALTER TABLE integration_oauth_management_sessions RENAME TO temporarily_absent_management_sessions').run();
+  await env.ACCOUNTS.prepare('ALTER TABLE integration_oauth_access RENAME TO temporarily_absent_oauth_access').run();
   try {
     const metadata = await request('/.well-known/oauth-authorization-server', settings);
-    expect(metadata.status).toBe(503); expect((await metadata.json() as { error_description: string }).error_description).toContain('0002_integration_oauth.sql');
-    expect((await jsonPost('/oauth/bridge-status', {}, settings)).status).toBe(503);
+    expect(metadata.status).toBe(503); expect((await metadata.json() as { error_description: string }).error_description).toContain('0001_accounts.sql');
     const disabled = { ...settings, OAUTH_CONFIG_JSON: undefined };
     expect((await request('/.well-known/oauth-authorization-server', disabled)).status).toBe(404);
     expect((await request('/api/service', disabled)).status).toBe(200);
   } finally {
-    await env.ACCOUNTS.prepare('ALTER TABLE temporarily_absent_management_sessions RENAME TO integration_oauth_management_sessions').run();
+    await env.ACCOUNTS.prepare('ALTER TABLE temporarily_absent_oauth_access RENAME TO integration_oauth_access').run();
   }
 });
 
@@ -296,146 +292,15 @@ async function hostFixture(applicationId?: string) {
   const raw = 'browser-' + crypto.randomUUID(), now = Date.now();
   await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
     .bind(await sha256Hex(raw), subject, now, now + 3600000).run();
-  const settings = configured(), value = JSON.parse(settings.OAUTH_CONFIG_JSON!);
-  value.bridges[0].applicationIds = [page.application.id]; settings.OAUTH_CONFIG_JSON = JSON.stringify(value);
+  const settings = configured();
   return { page, subject, settings, raw, cookie: '__Host-tendriller=' + raw };
 }
-function jsonPost(path: string, input: unknown, settings: Env, secret = BRIDGE_SECRET) {
+function jsonPost(path: string, input: unknown, settings: Env, secret: string) {
   return request(path, settings, { method: 'POST', headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
 }
 function formPost(path: string, input: Record<string, string>, settings: Env, cookie: string, origin = ISSUER) {
   return request(path, settings, { method: 'POST', headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(input) });
 }
-async function handoff(fixture: Awaited<ReturnType<typeof hostFixture>>, decision = 'allow') {
-  const verifier = 'v'.repeat(43), state = 'browser-state-' + crypto.randomUUID();
-  const params = new URLSearchParams({ client_id: 'node-bridge', redirect_uri: MANAGEMENT, state,
-    code_challenge_method: 'S256', code_challenge: await challengeFor(verifier) });
-  const response = await request('/oauth/management/login?' + params, fixture.settings, { headers: { Cookie: fixture.cookie } });
-  expect(response.status).toBe(200); expect(response.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
-  const token = /name="intent" value="([^"]+)"/u.exec(await response.text())![1];
-  const approved = await formPost('/oauth/management/login', { intent: token, decision }, fixture.settings, fixture.cookie);
-  expect(approved.status).toBe(303);
-  const location = new URL(approved.headers.get('Location')!);
-  expect(location.origin + location.pathname).toBe(MANAGEMENT); expect(location.searchParams.get('state')).toBe(state);
-  expect(location.searchParams.get('iss')).toBe(ISSUER);
-  return { location, verifier, token };
-}
-
-it('service account lookup requires its own credential and derives owner/access from the current page policy', async () => {
-  const f = await hostFixture(), input = { issuer: ISSUER, subject: f.subject, applicationId: f.page.application.id, pageId: f.page.id };
-  expect((await jsonPost('/oauth/account-access', input, f.settings, 'x'.repeat(64))).status).toBe(401);
-  expect((await request('/account/integration-access', f.settings, { headers: { 'x-account-id': f.subject, 'x-application-id': f.page.application.id } })).status).toBe(404);
-  const response = await jsonPost('/oauth/account-access', input, f.settings), result = await response.json() as Record<string, unknown>;
-  expect(result).toMatchObject({ active: true, access: true, owner: true, oauthAuthorized: false, scopes: [] });
-  expect(JSON.stringify(result)).not.toContain(f.page.token); expect(JSON.stringify(result)).not.toContain(f.page.page_url);
-  expect(await (await jsonPost('/oauth/account-access', { ...input, applicationId: 'f'.repeat(64) }, f.settings)).json()).toMatchObject({ access: false, owner: false });
-  expect(await (await jsonPost('/oauth/account-access', { ...input, issuer: 'https://other.example' }, f.settings)).json()).toMatchObject({ active: false, access: false });
-  const accountOnly = await (await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject }, f.settings)).json() as { account: { email: string } };
-  expect(accountOnly.account.email).toContain('@example.com');
-  await env.ACCOUNTS.prepare('DELETE FROM identity_emails WHERE subject=?').bind(f.subject).run();
-  expect(await (await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject }, f.settings)).json()).not.toHaveProperty('account.email');
-  await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), f.subject).run();
-  expect(await (await jsonPost('/oauth/account-access', input, f.settings)).json()).toMatchObject({ active: false, access: false, owner: false });
-});
-
-it('guest access and grant authorization are current, exact and independent of another active grant', async () => {
-  const f = await hostFixture(), guest = crypto.randomUUID();
-  await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at) VALUES(?,?)').bind(guest, Date.now()).run();
-  const link = await inDO(f.page.id, async t => {
-    const link = await t.createLink('guest', 'OAuth test', null);
-    t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)', guest, link.id, t.now());
-    return link.id;
-  });
-  const input = { issuer: ISSUER, subject: guest, applicationId: f.page.application.id, pageId: f.page.id };
-  expect(await (await jsonPost('/oauth/account-access', input, f.settings)).json()).toMatchObject({ active: true, access: true, owner: false });
-  await inDO(f.page.id, t => t.db.run('DELETE FROM links WHERE id=?', link));
-  expect(await (await jsonPost('/oauth/account-access', input, f.settings)).json()).toMatchObject({ active: true, access: false, owner: false });
-  const now = Date.now(), granted = 'grant-' + crypto.randomUUID(), revoked = 'grant-' + crypto.randomUUID();
-  for (const [id, revokedAt] of [[granted, null], [revoked, now]] as const)
-    await env.ACCOUNTS.prepare(`INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at,revoked_at)
-      VALUES(?,?,'chatgpt',?,'events:subscribe',?,?,?)`).bind(id, f.subject, RESOURCE, now, now + 600000, revokedAt).run();
-  const ownerInput = { ...input, subject: f.subject };
-  expect(await (await jsonPost('/oauth/account-access', { ...ownerInput, grantId: granted }, f.settings)).json()).toMatchObject({ oauthAuthorized: true, scopes: ['events:subscribe'] });
-  expect(await (await jsonPost('/oauth/account-access', { ...ownerInput, grantId: revoked }, f.settings)).json()).toMatchObject({ oauthAuthorized: false, scopes: [] });
-  expect(await (await jsonPost('/oauth/account-access', { ...input, grantId: granted }, f.settings)).json()).toMatchObject({ oauthAuthorized: false });
-});
-
-it('management handoff requires existing browser login, explicit approval, PKCE and one-time exchange', async () => {
-  const f = await hostFixture(), verifier = 'v'.repeat(43), params = new URLSearchParams({ client_id: 'node-bridge', redirect_uri: MANAGEMENT,
-    state: 'test-state', code_challenge_method: 'S256', code_challenge: await challengeFor(verifier) });
-  const signIn = await request('/oauth/management/login?' + params, f.settings);
-  expect(signIn.status).toBe(303); expect(signIn.headers.get('Location')).toMatch(/^\/auth\?return_to=/u);
-  const { location } = await handoff(f), code = location.searchParams.get('code')!;
-  const input = { code, redirect_uri: MANAGEMENT, code_verifier: verifier };
-  expect((await jsonPost('/oauth/management/exchange', { ...input, code_verifier: 'x'.repeat(43) }, f.settings)).status).toBe(400);
-  expect((await jsonPost('/oauth/management/exchange', input, f.settings, 'x'.repeat(64))).status).toBe(401);
-  const exchanged = await jsonPost('/oauth/management/exchange', input, f.settings);
-  expect(exchanged.status).toBe(200);
-  const value = await exchanged.json() as { id: string; issuer: string; expiresAt: number; managementSessionId: string };
-  expect(value).toMatchObject({ id: f.subject, issuer: ISSUER }); expect(value.expiresAt).toBeGreaterThan(Date.now());
-  expect(value.expiresAt).toBeLessThanOrEqual(Date.now() + 900000);
-  expect(value.managementSessionId).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-  expect(await (await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject, managementSessionId: value.managementSessionId }, f.settings)).json()).toMatchObject({ active: true });
-  expect(JSON.stringify(value)).not.toContain(f.raw);
-  expect((await jsonPost('/oauth/management/exchange', input, f.settings)).status).toBe(400);
-  expect((await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM integration_oauth_grants WHERE account_id=?').bind(f.subject).first<{ n: number }>())!.n).toBe(0);
-});
-
-it('management tickets stay bound to the exact bridge, account, resource, callback and original host session', async () => {
-  const f = await hostFixture(), { location, verifier } = await handoff(f), now = Date.now();
-  await env.ACCOUNTS.prepare('UPDATE sessions SET expires_at=? WHERE hash=?').bind(now + 90000, await sha256Hex(f.raw)).run();
-  const exchanged = await jsonPost('/oauth/management/exchange', { code: location.searchParams.get('code'), redirect_uri: MANAGEMENT, code_verifier: verifier }, f.settings);
-  expect(exchanged.status).toBe(200);
-  const result = await exchanged.json() as { managementSessionId: string; expiresAt: number };
-  expect(result.expiresAt).toBe(now + 90000);
-  const input = { issuer: ISSUER, subject: f.subject, managementSessionId: result.managementSessionId, applicationId: f.page.application.id, pageId: f.page.id };
-  const lookup = async (value = input, settings = f.settings, secret = BRIDGE_SECRET) =>
-    (await jsonPost('/oauth/account-access', value, settings, secret)).json();
-  const denied = { active: false, access: false, owner: false, oauthAuthorized: false, scopes: [], applicationId: f.page.application.id, pageId: f.page.id };
-  expect(await lookup()).toMatchObject({ active: true, access: true, owner: true });
-  expect(await lookup({ ...input, managementSessionId: 'unknown' })).toEqual(denied);
-  const other = await hostFixture();
-  expect(await lookup({ ...input, subject: other.subject })).toEqual(denied);
-  const bridgeSecret = 'second-' + 'c'.repeat(48), config = JSON.parse(f.settings.OAUTH_CONFIG_JSON!);
-  config.bridges.push({ ...config.bridges[0], id: 'second-bridge', secretSha256: await sha256Hex(bridgeSecret) });
-  expect(await lookup(input, { ...f.settings, OAUTH_CONFIG_JSON: JSON.stringify(config) }, bridgeSecret)).toEqual(denied);
-  config.bridges.pop(); config.resource = 'https://changed.example/mcp';
-  expect(await lookup(input, { ...f.settings, OAUTH_CONFIG_JSON: JSON.stringify(config) })).toEqual(denied);
-  config.resource = RESOURCE; config.bridges[0].managementRedirectUris = [];
-  expect(await lookup(input, { ...f.settings, OAUTH_CONFIG_JSON: JSON.stringify(config) })).toEqual(denied);
-  const ticketHash = await sha256Hex(result.managementSessionId);
-  expect(await env.ACCOUNTS.prepare('SELECT hash FROM integration_oauth_management_sessions WHERE hash=?').bind(ticketHash).first()).toEqual({ hash: ticketHash });
-  await env.ACCOUNTS.prepare('UPDATE integration_oauth_management_sessions SET expires_at=? WHERE hash=?').bind(now - 1, ticketHash).run();
-  expect(await lookup()).toEqual(denied);
-  await env.ACCOUNTS.prepare('UPDATE integration_oauth_management_sessions SET expires_at=? WHERE hash=?').bind(now + 90000, ticketHash).run();
-  await env.ACCOUNTS.prepare('UPDATE sessions SET expires_at=? WHERE hash=?').bind(now - 1, await sha256Hex(f.raw)).run();
-  expect(await lookup()).toEqual(denied);
-  await env.ACCOUNTS.prepare('UPDATE sessions SET expires_at=? WHERE hash=?').bind(now + 90000, await sha256Hex(f.raw)).run();
-  expect((await formPost('/auth/logout', {}, f.settings, f.cookie)).status).toBe(302);
-  expect(await lookup()).toEqual(denied);
-  expect(await env.ACCOUNTS.prepare('SELECT hash FROM integration_oauth_management_sessions WHERE hash=?').bind(ticketHash).first()).toBeNull();
-  // Account-only service authorization is separate; a management caller must always supply its ticket.
-  const { managementSessionId: ignored, ...accountOnly } = input;
-  expect(await (await jsonPost('/oauth/account-access', accountOnly, f.settings)).json()).toMatchObject({ active: true, access: true, owner: true });
-});
-
-it('handoff denial, changed session, hostile origin and logout cannot produce a management identity', async () => {
-  const f = await hostFixture();
-  const denied = await handoff(f, 'deny'); expect(denied.location.searchParams.get('error')).toBe('access_denied');
-  expect(denied.location.searchParams.has('code')).toBe(false);
-  const verifier = 'v'.repeat(43), params = new URLSearchParams({ client_id: 'node-bridge', redirect_uri: MANAGEMENT,
-    state: 'test-state', code_challenge_method: 'S256', code_challenge: await challengeFor(verifier) });
-  const response = await request('/oauth/management/login?' + params, f.settings, { headers: { Cookie: f.cookie } });
-  const token = /name="intent" value="([^"]+)"/u.exec(await response.text())![1];
-  expect((await formPost('/oauth/management/login', { intent: token, decision: 'allow' }, f.settings, f.cookie, 'https://attacker.example')).status).toBe(403);
-  const other = 'other-' + crypto.randomUUID();
-  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)').bind(await sha256Hex(other), f.subject, Date.now(), Date.now() + 60000).run();
-  expect((await formPost('/oauth/management/login', { intent: token, decision: 'allow' }, f.settings, '__Host-tendriller=' + other)).status).toBe(403);
-  const { location } = await handoff(f);
-  await env.ACCOUNTS.prepare('DELETE FROM sessions WHERE hash=?').bind(await sha256Hex(f.raw)).run();
-  expect((await jsonPost('/oauth/management/exchange', { code: location.searchParams.get('code'), redirect_uri: MANAGEMENT, code_verifier: verifier }, f.settings)).status).toBe(400);
-});
-
 function serviceForm(path: string, input: Record<string, string>, settings: Env, authorization?: string) {
   return request(path, settings, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(authorization ? { Authorization: authorization } : {}) },
     body: new URLSearchParams(input) });
@@ -463,9 +328,9 @@ async function tokens(f: Awaited<ReturnType<typeof hostFixture>>) {
   const result = await response.json() as { access_token: string; refresh_token: string; expires_in: number; scope: string };
   return { ...result, approved, grantId: decodePart(result.access_token.split('.')[1]).sid as string };
 }
-async function introspection(token: string, settings: Env) {
-  const response = await serviceForm('/oauth/introspect', { token }, settings, 'Bearer ' + BRIDGE_SECRET);
-  expect(response.status).toBe(200); return response.json() as Promise<Record<string, unknown>>;
+async function accessActive(token: string, settings: Env) {
+  const response = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, settings, token);
+  return response.status === 200;
 }
 
 it('authorization code flow uses the actual browser account, exact audience and real asymmetric JWT', async () => {
@@ -477,9 +342,7 @@ it('authorization code flow uses the actual browser account, exact audience and 
   const key = await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
   const bytes = Uint8Array.from(atob(signature.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0));
   expect(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, bytes, new TextEncoder().encode(header + '.' + payload))).toBe(true);
-  expect(await introspection(issued.access_token, f.settings)).toMatchObject({ active: true, sub: f.subject, sid: issued.grantId, aud: RESOURCE });
-  const lookup = await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject, applicationId: f.page.application.id, pageId: f.page.id, grantId: issued.grantId }, f.settings);
-  expect(await lookup.json()).toMatchObject({ access: true, owner: true, oauthAuthorized: true, scopes: ['applications:read', 'events:subscribe'] });
+  expect(await accessActive(issued.access_token, f.settings)).toBe(true);
   const rows = await env.ACCOUNTS.prepare('SELECT hash FROM integration_oauth_access WHERE grant_id=?').bind(issued.grantId).all();
   expect(JSON.stringify(rows.results)).not.toContain(issued.access_token);
   expect(rows.results[0]).toMatchObject({ hash: await sha256Hex(issued.access_token) });
@@ -512,11 +375,11 @@ it('code redemption binds PKCE, redirect and resource; reusing an exchanged code
     expect((await serviceForm('/oauth/token', { ...input, ...change }, f.settings)).status).toBe(400);
   const valid = await serviceForm('/oauth/token', input, f.settings); expect(valid.status).toBe(200);
   const issued = await valid.json() as { access_token: string };
-  expect((await introspection(issued.access_token, f.settings)).active).toBe(true);
+  expect(await accessActive(issued.access_token, f.settings)).toBe(true);
   expect((await serviceForm('/oauth/token', { ...input, code_verifier: 'wrong'.repeat(12) }, f.settings)).status).toBe(400);
-  expect((await introspection(issued.access_token, f.settings)).active).toBe(true);
+  expect(await accessActive(issued.access_token, f.settings)).toBe(true);
   expect((await serviceForm('/oauth/token', input, f.settings)).status).toBe(400);
-  expect(await introspection(issued.access_token, f.settings)).toEqual({ active: false });
+  expect(await accessActive(issued.access_token, f.settings)).toBe(false);
 });
 
 it('refresh rotates one-use tokens, permits narrower scopes and revokes the entire grant on replay', async () => {
@@ -526,10 +389,10 @@ it('refresh rotates one-use tokens, permits narrower scopes and revokes the enti
   const refreshed = await serviceForm('/oauth/token', { ...input, scope: 'applications:read' }, f.settings); expect(refreshed.status).toBe(200);
   const renewed = await refreshed.json() as { access_token: string; refresh_token: string; scope: string };
   expect(renewed.refresh_token).not.toBe(issued.refresh_token); expect(renewed.access_token).not.toBe(issued.access_token);
-  expect(renewed.scope).toBe('applications:read'); expect((await introspection(renewed.access_token, f.settings)).active).toBe(true);
+  expect(renewed.scope).toBe('applications:read'); expect(await accessActive(renewed.access_token, f.settings)).toBe(true);
   expect((await serviceForm('/oauth/token', input, f.settings)).status).toBe(400);
-  expect(await introspection(issued.access_token, f.settings)).toEqual({ active: false });
-  expect(await introspection(renewed.access_token, f.settings)).toEqual({ active: false });
+  expect(await accessActive(issued.access_token, f.settings)).toBe(false);
+  expect(await accessActive(renewed.access_token, f.settings)).toBe(false);
   expect((await serviceForm('/oauth/token', { ...input, refresh_token: renewed.refresh_token }, f.settings)).status).toBe(400);
 });
 
@@ -540,9 +403,9 @@ it('concurrent refresh claims cannot create two usable replacements', async () =
   expect(results.some(response => response.status === 400)).toBe(true);
   for (const response of results) if (response.status === 200) {
     const value = await response.json() as { access_token: string };
-    expect(await introspection(value.access_token, f.settings)).toEqual({ active: false });
+    expect(await accessActive(value.access_token, f.settings)).toBe(false);
   }
-  expect(await introspection(issued.access_token, f.settings)).toEqual({ active: false });
+  expect(await accessActive(issued.access_token, f.settings)).toBe(false);
 });
 
 it('token revocation is idempotent and exact; another active grant does not restore it', async () => {
@@ -550,12 +413,10 @@ it('token revocation is idempotent and exact; another active grant does not rest
   const input = { client_id: 'chatgpt', token: first.refresh_token, token_type_hint: 'refresh_token' };
   expect((await serviceForm('/oauth/revoke', input, f.settings)).status).toBe(200);
   expect((await serviceForm('/oauth/revoke', input, f.settings)).status).toBe(200);
-  expect(await introspection(first.access_token, f.settings)).toEqual({ active: false });
-  expect((await introspection(second.access_token, f.settings)).active).toBe(true);
-  expect(await (await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject, grantId: first.grantId }, f.settings)).json()).toMatchObject({ oauthAuthorized: false });
-  expect(await (await jsonPost('/oauth/account-access', { issuer: ISSUER, subject: f.subject, grantId: second.grantId }, f.settings)).json()).toMatchObject({ oauthAuthorized: true });
+  expect(await accessActive(first.access_token, f.settings)).toBe(false);
+  expect(await accessActive(second.access_token, f.settings)).toBe(true);
   await env.ACCOUNTS.prepare('UPDATE accounts SET deleting_at=? WHERE id=?').bind(Date.now(), f.subject).run();
-  expect(await introspection(second.access_token, f.settings)).toEqual({ active: false });
+  expect(await accessActive(second.access_token, f.settings)).toBe(false);
   expect((await serviceForm('/oauth/token', { grant_type: 'refresh_token', client_id: 'chatgpt', resource: RESOURCE, refresh_token: second.refresh_token }, f.settings)).status).toBe(400);
 });
 
@@ -578,11 +439,11 @@ it('browser grant management revokes only the authenticated account and requires
   expect(html).toContain(issued.grantId); expect(html).not.toContain(foreign.grantId);
   expect((await formPost('/oauth/connections', { intent: token, grant_id: issued.grantId }, f.settings, f.cookie, 'https://attacker.example')).status).toBe(403);
   expect((await formPost('/oauth/connections', { intent: token, grant_id: foreign.grantId }, f.settings, f.cookie)).status).toBe(303);
-  expect((await introspection(foreign.access_token, other.settings)).active).toBe(true);
+  expect(await accessActive(foreign.access_token, other.settings)).toBe(true);
   const again = await request('/oauth/connections', f.settings, { headers: { Cookie: f.cookie } });
   const next = /name="intent" value="([^"]+)"/u.exec(await again.text())![1];
   expect((await formPost('/oauth/connections', { intent: next, grant_id: issued.grantId }, f.settings, f.cookie)).status).toBe(303);
-  expect(await introspection(issued.access_token, f.settings)).toEqual({ active: false });
+  expect(await accessActive(issued.access_token, f.settings)).toBe(false);
   expect((await formPost('/oauth/connections', { intent: next, grant_id: issued.grantId }, f.settings, f.cookie)).status).toBe(403);
 });
 
@@ -597,16 +458,6 @@ it('RS256 signing and retained public keys support configured key rotation witho
   expect(await crypto.subtle.verify('RSASSA-PKCS1-v1_5', pair.publicKey, bytes, new TextEncoder().encode(header + '.' + payload))).toBe(true);
   const jwks = await (await request('/oauth/jwks', settings)).json() as { keys: { kid: string; d?: string }[] };
   expect(jwks.keys.map(key => key.kid)).toEqual(['rsa-2', 'signing-1']); expect(jwks.keys.every(key => key.d === undefined)).toBe(true);
-});
-
-it('authenticated bridge preflight returns only its exact deployment settings without a user identity', async () => {
-  const f = await hostFixture();
-  expect((await jsonPost('/oauth/bridge-status', {}, f.settings, 'x'.repeat(64))).status).toBe(401);
-  expect((await jsonPost('/oauth/bridge-status', { subject: f.subject }, f.settings)).status).toBe(400);
-  const response = await jsonPost('/oauth/bridge-status', {}, f.settings);
-  expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ bridgeId: 'node-bridge', resource: RESOURCE, applicationIds: [f.page.application.id],
-    managementRedirectUris: [MANAGEMENT], authorizationServerReady: true });
 });
 
 const notes = defineApplication({
@@ -1083,55 +934,6 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     expect(afterLoss.bindingId).toBe(beforeLoss.bindingId);
     expect(afterLoss.selectionEpoch).toBe(beforeLoss.selectionEpoch);
     expect(afterLoss.connectionEpoch).toBeGreaterThan(beforeLoss.connectionEpoch);
-
-    // Simulate a command admitted under the pre-binding gateway, whose
-    // assistant_commands row has no assistant_operation_context counterpart.
-    // Its original signed operation already exists, but the provider's reply
-    // was lost before the caller could distinguish saved from applied.
-    const legacyClientId = 'pre-upgrade-reply-lost', legacyInput = 8;
-    const legacyNativeId = 'assistant_' + await sha256Hex(JSON.stringify([second.id, b.subject, legacyClientId]));
-    const legacyDigest = await sha256Hex(JSON.stringify(['count', legacyInput, null]));
-    const originalLegacy = await (await second.session.command('count', legacyInput, { operationId: legacyNativeId })).applied();
-    await inDO(b.page.id, t => {
-      t.db.run('INSERT INTO assistant_commands(operation_id,input_hash,device_id) VALUES(?,?,?)',
-        legacyNativeId, legacyDigest, second.session.deviceId);
-      expect(t.db.one('SELECT 1 FROM assistant_operation_context WHERE operation_id=?', legacyNativeId)).toBeNull();
-    });
-    const legacyRequest = { applicationId: second.id, command: 'count', input: legacyInput, operationId: legacyClientId };
-    expect((await second.tool('inspect_application_operation', { applicationId: second.id,
-      operationId: legacyClientId })).result.structuredContent.code).toBe('legacy_operation_requires_original_command');
-    expect((await second.tool('call_application_command', { ...legacyRequest, input: 9 }))
-      .result.structuredContent.code).toBe('operation_id_conflict');
-    expect((await second.tool('call_application_command', { ...legacyRequest, context: { runId: 'forged-later' } }))
-      .result.structuredContent.code).toBe('operation_id_conflict');
-    const recoveredLegacy = (await second.tool('call_application_command', legacyRequest)).result.structuredContent;
-    expect(recoveredLegacy.operationReference).toMatchObject({ operationId: legacyNativeId, deviceId: second.session.deviceId,
-      generation: second.session.status.generation, sourceContext: { evidence: 'pre-upgrade-admission', generationEvidence: 'not-retained' } });
-    expect(recoveredLegacy.operation.state.attemptId).toBe(originalLegacy.attemptId);
-    expect(recoveredLegacy.outcome).toBe('applied');
-    expect((await second.tool('inspect_application_operation', { applicationId: second.id,
-      operationId: legacyClientId })).result.structuredContent.operationReference.operationId).toBe(legacyNativeId);
-    expect((await second.tool('call_application_command', legacyRequest)).result.structuredContent.operationReference.operationId)
-      .toBe(legacyNativeId);
-    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null }))
-      .result.structuredContent.value.filter((item: { value: number }) => item.value === legacyInput)).toHaveLength(1);
-    await inDO(b.page.id, t => {
-      expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands WHERE operation_id=?', legacyNativeId)).toEqual({ n: 1 });
-      expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_operation_context WHERE operation_id=?', legacyNativeId)).toEqual({ n: 1 });
-    });
-
-    // A legacy gateway admission without a native attempt cannot be silently
-    // treated as a new v2 operation (even if the signer is still online).
-    const missingClient = 'pre-upgrade-not-yet-saved';
-    const missingId = 'assistant_' + await sha256Hex(JSON.stringify([second.id, b.subject, missingClient]));
-    await inDO(b.page.id, t => t.db.run('INSERT INTO assistant_commands(operation_id,input_hash,device_id) VALUES(?,?,?)',
-      missingId, legacyDigest, second.session.deviceId));
-    const absent = (await second.tool('call_application_command', {
-      ...legacyRequest, operationId: missingClient })).result.structuredContent;
-    expect(absent).toMatchObject({ outcome: 'not-found', code: 'legacy_operation_not_found',
-      operationReference: { operationId: missingId, deviceId: second.session.deviceId } });
-    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null }))
-      .result.structuredContent.value.filter((item: { value: number }) => item.value === legacyInput)).toHaveLength(1);
   } finally {
     outbound.mockRestore();
     mounted?.close();

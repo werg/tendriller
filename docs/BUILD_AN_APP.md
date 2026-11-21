@@ -484,7 +484,7 @@ The implementation is deliberately ordinary:
 | `build.mjs` | Bundle the public browser graph for one signed publication |
 
 The page calls `openBrowserOwner` from
-`@tendriller/core/collaboration/browser`, then installs
+`@tendriller/core/browser-owner`, then installs
 `createApplicationBackend({ id: session.applicationId, session })` into
 `tendril.application` and `session.signals`. A SharedWorker owns the signer,
 device storage and session when supported. The fallback elects one dedicated

@@ -1,4 +1,4 @@
-import { buildPlugin } from '../integrations/chatgpt/plugin/build.mjs';
+import { buildPlugin } from '../plugin/build.mjs';
 import { ARCHIVE_METADATA } from './archive-metadata.mjs';
 // Bind exact public packages and first-app inputs before release publication.
 import { execFileSync } from 'node:child_process';
@@ -15,8 +15,8 @@ const fail = message => { throw Error(message); };
 const sha = /^[0-9a-f]{40}$/;
 const roles = ['sdk', 'runtime', 'engine', 'tools'];
 export const REQUIRED_SDK_EXPORTS = ['.', './contract', './onboarding', './setup', './pairing', './application', './signals', './peers',
-  './assistant', './collaboration', './collaboration/browser', './collaboration/worker',
-  './collaboration/native', './collaboration/participation', './collaboration/native-rtc', './collaboration/live-view', './collaboration/transport-diagnostics', './collaboration/diagnostics', './schema'];
+  './assistant', './browser-owner', './worker-owner', './native-owner', './participation', './native-rtc',
+  './transport-diagnostics', './diagnostics', './collaboration', './schema'];
 
 export function sourceIdentity(root) {
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
