@@ -472,11 +472,23 @@ export async function closeLocalTransport() {
     report.browser = await browser.version();
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     report.rtcLifecycle = [];
+    report.rtcBridge = [];
+    await context.exposeBinding('__firstAppRtcBridge', (_source,value) => { if(report.rtcBridge.length<200) report.rtcBridge.push(value); });
     await context.exposeBinding('__firstAppRtcLifecycle', (_source, value) => {
       if (report.rtcLifecycle.length < 200 && value && ['created','state'].includes(value.type))
         report.rtcLifecycle.push({ type:value.type, connection:value.connection, ice:value.ice, gathering:value.gathering });
     });
     await context.addInitScript(({mode}) => {
+      const observe = (data,direction) => {
+        const value = data?.protocol === 'tendriller/browser-rtc-provider/v1' ? data.payload : data;
+        if(value?.type!=='chronolog/peer-session/rtc-endpoint/v1'||!['open','ready','send','description','sent','close-signaling','signaling-closed','ended','close'].includes(value.action)) return;
+        const error = typeof value.error==='string'&&/^(?:WEBRTC_|APPLICATION_|RTC_)[A-Z_]{1,100}$/.test(value.error) ? value.error : undefined;
+        void window.__firstAppRtcBridge({direction,action:value.action,...(error?{error}:{})}).catch(()=>{});
+      };
+      const post = MessagePort.prototype.postMessage;
+      MessagePort.prototype.postMessage = function(value,...rest){ observe(value,'page');return post.call(this,value,...rest); };
+      if(globalThis.SharedWorker){const Original=globalThis.SharedWorker;globalThis.SharedWorker=class extends Original{constructor(...args){super(...args);this.port.addEventListener('message',event=>observe(event.data,'worker'));}};}
+      if(globalThis.Worker){const Original=globalThis.Worker;globalThis.Worker=class extends Original{constructor(...args){super(...args);this.addEventListener('message',event=>observe(event.data,'worker'));}postMessage(value,...rest){observe(value,'page');return super.postMessage(value,...rest);}};}
       const Native = globalThis.RTCPeerConnection;
       window.__firstAppRtcPeers = [];
       globalThis.RTCPeerConnection = class extends Native {
