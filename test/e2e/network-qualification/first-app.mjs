@@ -42,6 +42,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     },
     async exercise({ signal }) {
       signal.throwIfAborted();
+      await page.bringToFront();
       const before = (await peer.request('query')).value;
       const nativeOperation = randomUUID();
       const nativeText = `Network native ${nativeOperation}`;
