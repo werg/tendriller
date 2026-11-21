@@ -94,6 +94,17 @@ physical connection starts; canonical participation instead owns bounded
 connection failures and backoff during asymmetric startup. This fixture check
 does not replace qualification of that controller or rebuild deployed bytes.
 
+### Pre-release relay protocol cutover
+
+The live relay window is an explicit part of readiness on both lanes. Deploy the
+host and consume the matching qualified SDK graph; older relay consumers are
+not supported. Republish existing apps with the current runtime and SDK and
+upgrade their native participants. Close old app tabs before reopening after
+this cutover, so an earlier running SharedWorker cannot retain the old transport.
+Keep each device's storage, identity, signed attempts and application history.
+Attaching across publications shares a compatible owner; it does not upgrade
+code already executing inside that owner. This needs no storage migration.
+
 ## Public Worker fixture
 
 `@tendriller/engine/testing` initializes fresh synthetic accounts and pages inside the Cloudflare Vitest pool. `createTestPage({application:{id}})` exposes authenticated `api`, `ownerApi`, `exchange`, `ownerExchange`, `asset(path)`, participant access, invitation/rendezvous sockets, clock advance and actual Durable Object restart.
