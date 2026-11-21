@@ -1,1 +1,5 @@
-export declare const PEER_TRANSPORT_POLICY: Readonly<{directTimeoutMs:5000;configuration:Readonly<{iceServers:readonly Readonly<{urls:'stun:stun.cloudflare.com:3478'}>[]>}>;
+/** Frozen shipping defaults; STUN discovers addresses and carries no application data. */
+export declare const PEER_TRANSPORT_POLICY: Readonly<{
+  directTimeoutMs: 5000;
+  configuration: Readonly<RTCConfiguration>;
+}>;

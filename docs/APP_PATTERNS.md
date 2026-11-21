@@ -71,8 +71,10 @@ User-facing copy for the codes an app can meet (developer causes are in
 | network and timeouts | "The connection is slow. Retrying…" |
 
 Large live answers: a reply of several signals (each at most 16 KiB) can be sent
-piece by piece, awaiting each `send`; the relay paces the pieces. Reassemble by
-reply ID and piece index on the page.
+with the maintained `helpers/signal-request.mjs`, which reserves signed-frame overhead,
+bounds replies and retries backpressure. The shared P2P-first transport carries
+them directly where possible; the hosted relay is fallback only. Reassembly binds
+the request recipient and computation generation, not just a bare request ID.
 
 ### Views that fit the data
 

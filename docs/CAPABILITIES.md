@@ -20,6 +20,7 @@ the current browser without requesting permissions.
 | Native clients sharing a retained signer | `createNativeSessionSupervisor` and `attachNativeSession` | `@tendriller/core/collaboration/native`; [CLI attachment modes](tools/CLI.md) |
 | Explain owner, keys, coordinator and recovery state | `diagnoseApplicationSession` / CLI `doctor`; bounded findings and next actions | `@tendriller/core/collaboration/diagnostics`; [diagnostic output](tools/CLI.md) |
 | Independently revocable agent connections | Scoped host credentials and approved application consumer bindings | [Agent bindings](AGENT_BINDINGS.md) |
+| Direct P2P transfer and automatic fallback | The shared `PEER_TRANSPORT_POLICY` used by native and browser owners; direct application bytes bypass the host | [Canonical peer connection setup and bandwidth checks](PEER_CONNECTIONS.md) |
 | Connecting a browser, first-visit setup, approval and reconnect | `createOwnerConnection` + `mountConnectionView`: opening the page connects; a new browser is approved once on the service origin and returns automatically | `connection.mjs`, `connect-view.mjs`, `page.mjs`; [connection component](APP_PATTERNS.md#connect-the-browser) |
 | State fetching and live UI refresh | `createLiveView(session, {query, input})` over real session queries and changes | `helpers/live-view.mjs`; [application patterns](APP_PATTERNS.md) |
 | Operation status, uncertain replies, retry and recovery | The operation journal and `createOperationView` | `helpers/operation-view.mjs`; [application patterns](APP_PATTERNS.md) |

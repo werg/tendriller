@@ -2,31 +2,60 @@
 
 Chronolog owns authenticated connections, reconnect grace, coordinator selection, freshness checks and recovery. Tendriller supplies bounded discovery, direct connection introductions and an opaque WebSocket relay through one adapter. Applications install one participation controller.
 
-## Connect the host adapter
+## One shipping transport path
+
+Use the maintained starter and its public participation helpers. Direct WebRTC is
+part of normal setup, not an optional optimization to add later. Both native and
+browser participants use `participateApplication` and the shared
+`PEER_TRANSPORT_POLICY`. That policy owns the RTC attempt budget, STUN configuration
+and automatic encrypted WebSocket fallback. Do not copy another direct/relay
+selector into an application or replace the direct opener with a throwing stub.
+
+Native owners use:
 
 ```js
-import { createPeerIntroductions } from '@tendriller/core/peers';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-
-const control = session.connectControlParticipant({
-  exchange: (message, options) => host.peers.exchange(message, options),
-});
-const participation = await session.participate({
+import { participateNativeApplication } from '@tendriller/core/collaboration/native-rtc';
+const participation = participateNativeApplication(session, {
+  peers: host.peers,
   control,
-  ...createPeerIntroductions({
-    peers: host.peers,
-    identity: session.deviceId,
-    openDirectConnection,
-    openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-  }),
+  onTransport: ({ peerId, kind }) => showTransport(peerId, kind),
 });
 ```
 
-`openDirectConnection` is the environment's raw RTC opener. Native applications pass `openWebRtcConnection` from `@chronolog/peer-session/webrtc`, optionally wrapping it to supply their native `createPeerConnection` factory. Browser applications use `openWorkerWebRtcConnection` with the owned Worker endpoint; the page's `serveWorkerWebRtcConnections` bridge performs browser RTC mechanics while authentication and application state stay in the Worker. The WebSocket opener runs directly in the session's native process or Worker.
+The standard session package installs its native RTC dependency automatically.
+There is no separate native-RTC archive or manual capability-install step.
+Browser applications keep the supplied `serveBrowserOwner` / `openBrowserOwner`
+composition. Its page-side bridge supplies RTC mechanics for the single shared
+or elected owner; identity, authentication, history and execution stay in that
+owner. Both browser engines and events/SQL starters consume this same path.
+Closing an RTC-serving page retires its transport; the existing session controller
+handles reconnection with another attached page or the fallback. It does not
+create a second identity, journal or application retry loop.
 
-One open attempt tries direct RTC for up to `directTimeoutMs` (default five seconds), then opens the relay with the same invitation channel and expected signing identities. It closes the direct attempt before falling back; a platform opener that ignores cancellation remains charged to the session's bounded physical-opening budget until it settles. An owner cancellation never starts a relay. Chronolog authenticates the expected signing identity and encrypts the same reliable and live peer channels above either transport. No TURN service is required for this fallback.
+### What uses server bandwidth
 
-The adapter creates no identity, heartbeat, election, recovery policy or reconnect loop. It translates host directory entries and invitations into connection hints and retires SDP signaling after the direct attempt. The session remains the only owner of retries and recovery. Cancellation closes pending introductions, listeners and late connections.
+Direct application commands, queries, content, replication and signals travel
+between participants. The host supplies login, signed authority, discovery and
+bounded SDP introductions; it does not carry direct application payloads.
+The default STUN endpoint discovers usable addresses and does not relay data.
+Cloudflare documents that [its public STUN service is free and unlimited](https://developers.cloudflare.com/realtime/turn/faq/).
+The shipping policy does not configure a paid TURN service.
+
+If UDP, NAT, browser capabilities or network policy prevent a direct connection,
+the same attempt closes its RTC/signaling resources and uses the hosted encrypted
+WebSocket relay automatically. This fallback carries application bytes and costs
+host bandwidth. An owner cancellation never starts a relay. Recovery and retry
+remain owned by Chronolog's one participation controller; a platform opener which
+ignores cancellation retains its physical-opening slot until it settles.
+
+`onTransport` reports a raw `direct` or `relay` selection, with a bounded fallback
+reason. It is diagnostic metadata, not evidence that a peer authenticated or a
+command applied. Do not report P2P solely because signaling or a data channel opened.
+Verify actual application transfer and relay byte counters as described below.
+
+The underlying `createPeerIntroductions` API remains the host adapter primitive
+for transport qualification and specialized environments. The maintained native
+and browser entry points above are the application setup path.
 
 ## Observe and approve recovery
 
@@ -71,9 +100,9 @@ enter the small WebSocket attachment.
 
 `relay(channel,peerId,{remotePeerId,signal})` opens separate reliable and disposable WebSocket lanes. It returns `{reliable,live,ready,signal,close}`. Attach `frameWebSocketPeerConnection` synchronously, then await its readiness: the facade strips relay admission and receipt controls and forwards binary packets without an application payload queue. The four sockets must match one reciprocal peer pair and session. Disconnect, malformed traffic or cancellation closes the entire pair.
 
-The relay bounds packet size, outstanding bytes/packets, admission per principal and host, and packet rate. Unpredictable recipient receipts release transport credit only after the recipient receives a packet. Reliable traffic has bounded control reserve; live traffic has a separate window negotiated with `liveWindow` (eight packets on current hosts, one on older hosts) and a bounded ordered local queue (1 MiB), so a multi-piece signal is paced by receipts instead of refused piece by piece; it is never retried, and expired signals are still dropped by Chronolog. WebSocket uses TCP, so dispatched live packets can still wait for TCP retransmission; signal expiry remains enforced by Chronolog.
+The relay bounds packet size, outstanding bytes/packets, admission per principal and host, and packet rate. Unpredictable recipient receipts release transport credit only after the recipient receives a packet. Reliable traffic has bounded control reserve; live traffic has a separate window negotiated with `liveWindow` (bounded by the public `PEER_RELAY_LIMITS`) and a bounded ordered local queue (1 MiB), so a multi-piece signal is paced by receipts instead of refused piece by piece; it is never retried, and expired signals are still dropped by Chronolog. WebSocket uses TCP, so dispatched live packets can still wait for TCP retransmission; signal expiry remains enforced by Chronolog.
 
-Local credentials are checked on every packet. Full host/account policy has a 30-second admission lifetime. Idle sockets do not renew it or schedule authorization alarms: the next packet or receipt starts one shared policy check before any further forwarding. Its lease starts before the query, and every asynchronous boundary rechecks local credentials, the owner, socket membership and transport deadlines. Other traffic waits in arrival order in a transient queue bounded to 132 events and 1,213,440 bytes per session. A five-second timeout, revocation, disconnect or overflow closes the session and discards queued traffic; a late policy result cannot reopen it. The underlying D1 query cannot be cancelled but its late result is ignored.
+Local credentials are checked on every packet. Full host/account policy has a 30-second admission lifetime. Idle sockets do not renew it or schedule authorization alarms: the next packet or receipt starts one shared policy check before any further forwarding. Its lease starts before the query, and every asynchronous boundary rechecks local credentials, the owner, socket membership and transport deadlines. Other traffic waits in arrival order in a transient queue whose byte/event budgets are derived from both peers’ public reliable and live windows. A five-second timeout, revocation, disconnect or overflow closes the session and discards queued traffic; a late policy result cannot reopen it. The underlying D1 query cannot be cancelled but its late result is ignored.
 
 Pairing and stalled receipt deadlines are 30 seconds and a paired connection lasts at most one hour. These alarms remain even when account authorization is dormant. These are transport lifetimes; the session owns subsequent reconnects. The host does not decrypt, execute or durably store relayed application payloads, and the relay receives no application reader grant. WebSocket attachments contain only bounded transport metadata; an idle relay has no pending application promise or server timer.
 
@@ -81,4 +110,4 @@ The adapter supports invitation routes and already-open rendezvous channels. Raw
 
 ## Qualification
 
-The public `@tendriller/engine/testing` fixture supplies authenticated sockets through real workerd upgrades, including `relaySocket(channel,peerId,remotePeerId,lane)`. `hostTraffic` records HTTP requests/body bytes and separate SDP, invitation and relay upgrades/frame bytes. Snapshot it around ordinary application work to distinguish control requests from relayed ciphertext. Direct traffic continues when the host disappears; relayed traffic needs the relay and incurs host bandwidth. Independent native/browser scenarios must report their selected transport and source revisions. Local Workerd/socket tests do not establish real Internet reachability or operating cost.
+The public `@tendriller/engine/testing` fixture supplies authenticated sockets through real workerd upgrades, including `relaySocket(channel,peerId,remotePeerId,lane)`. `hostTraffic` records HTTP requests/body bytes and separate SDP, invitation and relay upgrades/frame bytes. Snapshot it around ordinary application work to distinguish control requests from relayed ciphertext. Direct traffic continues when the host disappears; relayed traffic needs the relay and incurs host bandwidth. Release qualification must exercise the default native/browser starter over real RTC, transfer a command/read, content and live signals, and measure no relay application payload after connection. Also force RTC failure to verify automatic fallback, cancellation, page-provider loss and shared/elected owner recovery. Independent native/browser scenarios must report their actual selected transport, relay payload byte deltas and source revisions. Local Workerd/socket tests do not establish real Internet reachability or operating cost.

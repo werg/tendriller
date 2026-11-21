@@ -193,23 +193,18 @@ const control = session.connectControlParticipant({
 });
 ```
 
-Install the session's one participation controller with the host introduction adapter:
+Use the starter's native or browser owner participation helper. Both use the
+shared `participateApplication` policy: working direct WebRTC first, bounded
+hosted WebSocket fallback when direct connectivity is unavailable. Native RTC is
+included in the standard installed session; the browser owner automatically
+registers its page-side RTC provider. Do not copy transport-selection code or ship
+an `openDirectConnection` stub that always throws. Follow the one maintained
+[peer participation guide](docs/PEER_CONNECTIONS.md) and report actual direct/relay
+selection plus measured relay application-byte usage during verification.
 
-```js
-import { createPeerIntroductions } from '@tendriller/core/peers';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-const participation = await session.participate({
-  control,
-  ...createPeerIntroductions({
-    peers: host.peers,
-    identity: session.deviceId,
-    openDirectConnection, // The native or owned Worker raw RTC opener.
-    openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-  }),
-});
-```
-
-The session owns discovery, connection retries, authentication, reconnect grace, candidate policy and recovery. Each host-adapter attempt tries direct RTC, then the opaque WebSocket relay after direct failure or its five-second budget. Both use the same authenticated encrypted peer channels and application session. Use the controller's status to show connection progress and any exact recovery proposal requiring approval. Do not add application-level election or retry loops. See [peer participation](docs/PEER_CONNECTIONS.md) for the environment openers and lifecycle.
+Chronolog owns authentication, reconnect grace, recovery and retries. Present
+connection status and exact recovery proposals; do not add another application
+connection/retry/election loop.
 
 Ordinary commands, queries, signals and replication require no host control call. Direct traffic bypasses the host; relay traffic consumes host bandwidth and requires the relay to remain available. Coarse availability-lease renewal is separate lifecycle traffic, independent of application edits.
 

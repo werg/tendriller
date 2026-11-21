@@ -628,12 +628,13 @@ committed epoch keys through the authenticated encrypted peer channel.
 `awaiting-keys` while the native donor is absent is honest progress, not a reason
 to embed a key in JavaScript or replace the browser identity.
 
-The default native archive has no native RTC implementation, so this minimal
-composition uses the host adapter's WebSocket fallback. The browser includes
-the maintained RTC bridge and fallback; both transports use the same encrypted
-session. Relay traffic uses host bandwidth and depends on the relay. Later,
-install the matching native RTC capability and opener to qualify direct
-connections; see [Peer connections](PEER_CONNECTIONS.md).
+Both supplied owners use the [canonical P2P-first participation path](PEER_CONNECTIONS.md).
+The standard session installation includes native RTC; the browser owner provides
+the page-side RTC bridge automatically. Direct traffic saves host bandwidth.
+When the network or browser cannot establish RTC, the same session uses the
+bounded encrypted WebSocket fallback. Keep these helpers when adapting the app;
+do not postpone direct connectivity or replace it with an always-failing opener.
+Record actual transport selection and relay payload bytes in the delivery proof.
 
 ## 7. Verify completion, including reopening
 
