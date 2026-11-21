@@ -6,7 +6,7 @@ processes. `NET_ADMIN` is granted only to that container. Run it on a disposable
 CI worker if local Docker policy prohibits that capability.
 
 ```sh
-node --test test/e2e/network-qualification/lab.test.mjs
+node --test test/e2e/network-qualification/*.test.mjs
 docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
 node test/e2e/network-qualification/run.mjs --output /absolute/new-evidence-directory --node-binary /absolute/node24
 node test/e2e/network-qualification/run.mjs --browser-controls --output /absolute/new-browser-evidence-directory --node-binary /absolute/node24

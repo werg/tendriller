@@ -21,7 +21,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.2'
-      - run: node --test test/e2e/network-qualification/lab.test.mjs
+      - run: node --test test/e2e/network-qualification/*.test.mjs
       - run: npm ci --ignore-scripts
       - run: docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
       - run: node test/e2e/network-qualification/run.mjs --output "$RUNNER_TEMP/network-controls"

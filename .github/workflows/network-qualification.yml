@@ -58,7 +58,7 @@ jobs:
         run: node scripts/deployment-bundle.mjs
         env:
           TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
-      - run: node --test scripts/test/first-app-peer.test.mjs test/e2e/network-qualification/lab.test.mjs
+      - run: node --test scripts/test/first-app-peer.test.mjs test/e2e/network-qualification/*.test.mjs
       - run: docker build -t tendriller-network-lab:playwright-1.65 test/e2e/network-qualification
       - run: node test/e2e/network-qualification/run.mjs --output "$RUNNER_TEMP/network-controls"
       - run: node test/e2e/network-qualification/run.mjs --browser-controls --output "$RUNNER_TEMP/network-browser-controls"
