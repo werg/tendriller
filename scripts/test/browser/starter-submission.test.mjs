@@ -25,10 +25,11 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
         export async function openBrowserOwner({context}) {
           window.ownerAttachments = (window.ownerAttachments ?? 0) + 1;
           const statuses = [], recoveries = [], participation = [];
-          const status = {phase:'ready',database:'ready',generation:'g'};
+          const gen = 'd'.repeat(64);
+          const status = {phase:'ready',database:'ready',generation:gen};
           const participationStatus = {phase:'following',connectedPeers:[],connectionRevision:0};
           window.transportReads = 0;
-          const revision = {generation:'g'};
+          const revision = {generation:gen};
           let resolveRead, fail = false, hold = true, lose = true, beforeSave = false;
           const saved = JSON.parse(localStorage.getItem('fixture-saved') || '{}');
           const calls = [];
@@ -42,7 +43,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
             async command(name,input,options) {
               calls.push({name,input,options});
               if(beforeSave) throw Error('Intent retained but no saved acknowledgment');
-              saved[options.operationId] = {operationId:options.operationId,status:lose?'saved':'applied',outcome:lose?undefined:'accepted',attemptId:'a'.repeat(64),generation:'g',author:'b'.repeat(64),historyId:'history'};
+              saved[options.operationId] = {operationId:options.operationId,status:lose?'saved':'applied',outcome:lose?undefined:'accepted',attemptId:'a'.repeat(64),generation:gen,author:'b'.repeat(64),historyId:'history'};
               localStorage.setItem('fixture-saved',JSON.stringify(saved));
               if(lose) throw Error('Reply lost');
               return {operationId:options.operationId, applied: async () => saved[options.operationId], shared:async()=>[]};
