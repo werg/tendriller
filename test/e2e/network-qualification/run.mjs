@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { NETWORK_PROFILES } from './scenarios.mjs';
 import { releaseAnchor, sha256 } from './anchor.mjs';
+import { prepareMountTargets } from './mounts.mjs';
 
 const { values } = parseArgs({ options: {
   output: { type: 'string' }, image: { type: 'string', default: 'tendriller-network-lab:playwright-1.65' },
@@ -31,6 +32,9 @@ const output = resolve(values.output);
 await mkdir(output, { recursive: false, mode: 0o700 });
 const source = fileURLToPath(new URL('.', import.meta.url));
 const workspace = resolve(source, '../../..');
+if (application) {
+  await prepareMountTargets(workspace);
+}
 const name = `tendriller-network-lab-${randomUUID()}`;
 await writeFile(resolve(output, 'run.json'), JSON.stringify({ version: 1, startedAt: new Date().toISOString(),
   observerPid: process.pid, container: name, profile: values.profile ?? null, idleMs, anchor: anchor ?? null,
@@ -68,6 +72,8 @@ try {
       ...(application ? [
         '--mount', `type=bind,source=${workspace},target=/workspace,readonly`,
         '--mount', `type=bind,source=${resolve(values['artifact-root'], 'dist')},target=/workspace/dist,readonly`,
+        '--mount', `type=bind,source=${resolve(values['artifact-root'], 'server/public')},target=/workspace/server/public,readonly`,
+        '--mount', `type=bind,source=${resolve(values['artifact-root'], 'server/wrangler.jsonc')},target=/workspace/server/wrangler.jsonc,readonly`,
         '--env', `NETWORK_LAB_IDLE_MS=${idleMs}`,
         '--env', 'NETWORK_LAB_PROGRESS=/evidence/network-progress.json',
       ] : []),
