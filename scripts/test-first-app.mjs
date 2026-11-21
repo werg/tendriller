@@ -17,6 +17,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
 import { TUTORIAL_FILES } from './onboarding.mjs';
 import { nativeTestPeerSource, closeTestPeer, memoryAvailableGb, installSoakObserver, installStateSignalObservers } from './first-app-peer.mjs';
+import { readBrowserRtcEvidence, observeRtcTraffic, hasNonTurnTraffic } from './first-app-rtc-evidence.mjs';
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
 import { CONTRACT_VERSION } from '../contract/index.mjs';
@@ -105,18 +106,7 @@ async function transportCounters() {
   return response.json();
 }
 async function browserRtcEvidence() {
-  return page.evaluate(async () => {
-    const result = [];
-    for (const peer of window.__firstAppRtcPeers ?? []) {
-      const stats = await peer.getStats();
-      for (const row of stats.values()) if (row.type === 'candidate-pair' && row.state === 'succeeded') {
-        const local = stats.get(row.localCandidateId), remote = stats.get(row.remoteCandidateId);
-        result.push({ local:local?.candidateType, remote:remote?.candidateType,
-          bytesSent:row.bytesSent ?? 0, bytesReceived:row.bytesReceived ?? 0 });
-      }
-    }
-    return result;
-  });
+  return page.evaluate(readBrowserRtcEvidence);
 }
 function checkpoint(name) { stage = name; console.log(`First app: ${name}`); }
 function passed(name) { report.steps.push(name); }
@@ -685,13 +675,25 @@ export async function closeLocalTransport() {
       ['Native setup and durable reopen', 'Created in the browser']);
     const transportAfter = await transportCounters();
     assert.equal(transportAfter.instance, transportBefore.instance, 'Network counter restart invalidates measurement');
-    const rtc = await browserRtcEvidence();
-    report.transport = { expected:values.transport, before:transportBefore, after:transportAfter, rtc };
+    report.transport = { expected:values.transport, before:transportBefore, after:transportAfter };
     if (values.transport === 'direct') {
       assert.equal(transportAfter.relayUpgrades, 0, 'The shipping default must establish RTC without a hosted relay');
       assert.equal(transportAfter.relayBinaryBytes - transportBefore.relayBinaryBytes, 0, 'Direct application work used host relay bytes');
-      assert.ok(rtc.some(route => route.local !== 'relay' && route.remote !== 'relay' && route.bytesSent > 0 && route.bytesReceived > 0), 'Real RTC application traffic and a non-TURN route are required');
+      // Candidate-pair statistics may lag the just-applied command. Observe
+      // local Chromium stats only; never send another command to manufacture proof.
+      let observation;
+      try { observation = await observeRtcTraffic(browserRtcEvidence); }
+      catch (error) { report.transport.rtcObservation = error.rtcObservation; throw error; }
+      report.transport.rtcObservation = observation;
+      report.transport.rtc = observation.final;
+      const afterStatistics = await transportCounters();
+      report.transport.afterStatistics = afterStatistics;
+      assert.equal(afterStatistics.instance, transportBefore.instance, 'Network counter restart invalidates statistics observation');
+      assert.equal(afterStatistics.relayUpgrades, 0, 'RTC statistics observation must not conceal relay fallback');
+      assert.equal(afterStatistics.relayBinaryBytes - transportBefore.relayBinaryBytes, 0, 'RTC statistics observation used host relay bytes');
+      assert.ok(hasNonTurnTraffic(observation.final), 'Real RTC application traffic and known non-TURN candidate types are required');
     } else {
+      report.transport.rtc = await browserRtcEvidence();
       assert.ok(transportAfter.relayUpgrades > 0, 'A failed RTC capability must open the maintained fallback');
       assert.ok(transportAfter.relayBinaryBytes > transportBefore.relayBinaryBytes, 'Fallback must carry the verified application command');
     }
