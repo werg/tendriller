@@ -17,6 +17,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
         export const requestPersistentStorage = async () => null;
         export const createBrowserPairing = () => ({read: () => null});
         export async function openBrowserOwner({context}) {
+          window.ownerAttachments = (window.ownerAttachments ?? 0) + 1;
           const statuses = [], recoveries = [], participation = [];
           const status = {phase:'ready',database:'ready',generation:'g'};
           const revision = {generation:'g'};
@@ -151,5 +152,14 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   assert.deepEqual(await page.evaluate(() => fixture.calls.at(-1)), {retry:replacementId});
   await page.locator('#close').click(); assert.equal(await enabled('#submit'), false);
   assert.equal(await enabled('#note'), true);
+  // Close while the next initial read is still pending. Releasing that read must
+  // not install a backend or start another owner attachment behind the closed UI.
+  await page.reload(); await page.locator('#close:enabled').waitFor();
+  await page.locator('#close').click(); await page.evaluate(() => fixture.release());
+  await page.waitForFunction(() => document.querySelector('#connection').textContent === 'Connection closed');
+  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 1600)));
+  assert.equal(await page.evaluate(() => window.ownerAttachments), 1);
+  assert.equal(await enabled('#close'), false);
+  assert.equal(await page.locator('#app-content').isHidden(), true);
   assert.deepEqual(errors, []);
 });
