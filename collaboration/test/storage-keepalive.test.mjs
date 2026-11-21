@@ -27,8 +27,9 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test('ticks only while visible, touches once on hide and on resume, and opens only record directories', async () => {
   const env = environment();
+  let stop;
   try {
-    const ticks = [], stop = keepStorageInUse({ intervalMs: 20, storagePersisted: false, onTick: tick => ticks.push(tick) });
+    const ticks = []; stop = keepStorageInUse({ intervalMs: 20, storagePersisted: false, onTick: tick => ticks.push(tick) });
     await wait(70);
     const visible = env.listed.length;
     assert.ok(visible >= 2, 'periodic ticks while visible');
@@ -45,18 +46,50 @@ test('ticks only while visible, touches once on hide and on resume, and opens on
     assert.ok(env.listed.length > hidden + 1, 'ticks resume while visible');
     stop(); const stopped = env.listed.length; await wait(60);
     assert.equal(env.listed.length, stopped, 'stops with the attachment');
-  } finally { env.restore(); }
+  } finally { stop?.(); env.restore(); }
 });
 
 test('does nothing when storage is persisted or the interval is 0', async () => {
   const env = environment();
+  let stopPersisted, stopDisabled;
   try {
-    const stopPersisted = keepStorageInUse({ intervalMs: 10, storagePersisted: Promise.resolve(true) });
-    const stopDisabled = keepStorageInUse({ intervalMs: 0, storagePersisted: false });
+    stopPersisted = keepStorageInUse({ intervalMs: 10, storagePersisted: Promise.resolve(true) });
+    stopDisabled = keepStorageInUse({ intervalMs: 0, storagePersisted: false });
     await wait(50);
     env.document.visibilityState = 'hidden'; env.fire('doc', 'visibilitychange');
     await wait(10);
     assert.equal(env.listed.length, 0);
     stopPersisted(); stopDisabled();
-  } finally { env.restore(); }
+  } finally { stopPersisted?.(); stopDisabled?.(); env.restore(); }
+});
+
+test('visible nonpersistent attachment touches records before the first long interval', { timeout: 3000 }, async () => {
+  const env = environment(); let stop, deadline;
+  try {
+    let touched;
+    const firstTouch = new Promise(resolve => { touched = resolve; });
+    stop = keepStorageInUse({ intervalMs: 60000, storagePersisted: false, onTick: touched });
+    await Promise.race([firstTouch, new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(Error('INITIAL_STORAGE_TOUCH_TIMEOUT')), 1000);
+    })]);
+    assert.deepEqual(env.listed, ['chronolog-app']);
+  } finally { clearTimeout(deadline); stop?.(); env.restore(); }
+});
+
+test('hidden startup and a stopped pending persistence check do not touch records', async () => {
+  const env = environment(); let stopHidden, stopPending;
+  try {
+    env.document.visibilityState = 'hidden';
+    stopHidden = keepStorageInUse({ intervalMs: 60000, storagePersisted: false });
+    let resolvePersisted;
+    const persisted = new Promise(resolve => { resolvePersisted = resolve; });
+    env.document.visibilityState = 'visible';
+    stopPending = keepStorageInUse({ intervalMs: 60000, storagePersisted: persisted });
+    stopPending(); resolvePersisted(false);
+    // The hidden attachment's deferred persistence continuation still sees the
+    // actual document visibility when it starts, so keep it hidden until settled.
+    env.document.visibilityState = 'hidden';
+    await new Promise(setImmediate);
+    assert.deepEqual(env.listed, []);
+  } finally { stopHidden?.(); stopPending?.(); env.restore(); }
 });

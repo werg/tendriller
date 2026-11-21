@@ -104,6 +104,7 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
     if(persisted===true||stopped)return;
     doc.addEventListener('visibilitychange',visibility);doc.addEventListener('freeze',pagehide);doc.addEventListener('resume',visibility);
     globalThis.addEventListener?.('pagehide',pagehide);globalThis.addEventListener?.('pageshow',visibility);
+    if(doc.visibilityState==='visible')tick();
     schedule();
   }).catch(()=>{});
   return ()=>{stopped=true;clearInterval(timer);doc.removeEventListener('visibilitychange',visibility);
