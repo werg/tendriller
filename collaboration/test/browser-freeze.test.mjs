@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {FixtureLocks} from './fixtures/locks.mjs';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';
@@ -43,31 +44,7 @@ class PageClock{
 async function until(predicate,label){const end=Date.now()+3000;while(!predicate()){if(Date.now()>end)throw Error('FIXTURE_WAIT: '+label);await delay(2);}}
 async function bounded(promise,label){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('FIXTURE_WAIT: '+label)),3000);})]);}finally{clearTimeout(timer);}}
 
-// Model browser lock names independently: the document witness and protocol
-// owner are separate locks, and query() must not request or contend for either.
-class FixtureLocks{
- held=new Map();pending=new Map();
- query(){return Promise.resolve({held:[...this.held.values()].map(({name,mode,clientId})=>({name,mode,clientId})),pending:[...this.pending.values()].flat().map(({name,mode,clientId})=>({name,mode,clientId}))});}
- request(name,options,run){
-  if(typeof options==='function'){run=options;options={};}
-  options.signal?.throwIfAborted();assert.equal(options.mode??'exclusive','exclusive');
-  if(this.held.has(name)&&options.ifAvailable)return Promise.resolve().then(()=>run(null));
-  return new Promise((resolve,reject)=>{
-   const job={name,mode:'exclusive',clientId:name==='chronolog-owner:retained'?'fixture-worker':`fixture-document:${name}`,run,resolve,reject,signal:options.signal};
-   job.abort=()=>{const queue=this.pending.get(name)??[],index=queue.indexOf(job);if(index<0)return;queue.splice(index,1);if(!queue.length)this.pending.delete(name);job.signal.removeEventListener('abort',job.abort);reject(job.signal.reason);};
-   if(this.held.has(name)){const queue=this.pending.get(name)??[];queue.push(job);this.pending.set(name,queue);job.signal?.addEventListener('abort',job.abort,{once:true});}
-   else this.grant(job);
-  });
- }
- grant(job){
-  job.signal?.removeEventListener('abort',job.abort);this.held.set(job.name,job);
-  void Promise.resolve().then(()=>job.run({name:job.name,mode:job.mode})).then(job.resolve,job.reject).finally(()=>{
-   this.held.delete(job.name);const queue=this.pending.get(job.name);if(!queue?.length)return;const next=queue.shift();if(!queue.length)this.pending.delete(job.name);this.grant(next);
-  });
- }
-}
-
-async function fixture(t,mode){
+async function fixture(t,mode,opening={}){
  const directory=await mkdtemp(join(tmpdir(),'browser-freeze-')),clock=new PageClock(),doc=new EventTarget(),events=new EventTarget();
  doc.visibilityState='visible';doc.hidden=false;
  const keys=['navigator','location','document','window','SharedWorker','Worker','RTCPeerConnection','addEventListener','removeEventListener','dispatchEvent','__freezeClock','__freezeProbe','__freezeWorkerChannel'];
@@ -114,7 +91,7 @@ async function fixture(t,mode){
  // This listener is installed after the real Worker ingress handler. Its
  // synchronous RTC dispatch has applied the hint before this observer runs.
  scope.addEventListener('message',({data})=>{if(data?.protocol===BROWSER_RTC_PROTOCOL&&data.payload?.type==='availability')dedicatedAvailability.push(data.payload.available);});
- attachment=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0,onOwnerReplaced:value=>replaced.push(value)}),'initial attach');
+ attachment=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0,onOwnerReplaced:value=>replaced.push(value),...opening}),'initial attach');
  await until(()=>clock.heartbeats.length>0,'initial heartbeat armed');
  async function workerBarrier(available){
   if(mode==='shared'){
@@ -360,4 +337,18 @@ test('fixture Web Locks queue same-name contenders and remove aborted pending re
  const stop=new AbortController(),reason=Error('FIXTURE_CANCELLED');const cancelled=locks.request('same',{signal:stop.signal},()=>assert.fail('aborted waiter must not run'));const rejected=assert.rejects(cancelled,error=>error===reason);
  assert.equal((await locks.query()).pending.length,1);stop.abort(reason);await rejected;assert.equal((await locks.query()).pending.length,0);
  let entered=false;const next=locks.request('same',{},()=>{entered=true;});assert.equal(entered,false);assert.equal((await locks.query()).pending.length,1);release();await first;await next;assert.equal(entered,true);
+});
+
+test('fixture Web Locks reject signal plus ifAvailable just like Chromium',async()=>{
+ const locks=new FixtureLocks();await assert.rejects(locks.request('document',{ifAvailable:true,signal:new AbortController().signal},()=>assert.fail('invalid request must not run')),error=>error.name==='NotSupportedError');
+ assert.deepEqual(await locks.query(),{held:[],pending:[]});
+});
+test('document witness outlives opening cancellation and detaches without releasing the owner',async t=>{
+ const opening=new AbortController(),f=await fixture(t,'shared',{signal:opening.signal});assert.equal(f.rootDocLocks,1);assert.equal(f.heldOwner,1);
+ opening.abort(Error('OPENING_ATTEMPT_FINISHED'));await f.workerBarrier();assert.equal(f.rootDocLocks,1);assert.equal(f.attachment.session.signal.aborted,false);
+ await f.attachment.detach();await until(()=>f.rootDocLocks===0,'document witness released on detach');assert.equal(f.heldOwner,1);
+});
+test('failed SharedWorker attachment releases its document witness without discarding retained owner',async t=>{
+ await assert.rejects(fixture(t,'shared',{definitionId:'wrong-definition'}),/CONTRACT_INCOMPATIBLE/);
+ const locks=await navigator.locks.query();assert.equal(locks.held.filter(lock=>lock.name!=='chronolog-owner:retained').length,0);assert.equal(locks.held.filter(lock=>lock.name==='chronolog-owner:retained').length,1);
 });

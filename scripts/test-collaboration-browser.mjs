@@ -2,9 +2,11 @@
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
 import {chromium} from '@playwright/test';
+import {launchNetworkBrowser} from '../test/e2e/network-qualification/browser-launch.mjs';
 import {createServer} from 'node:http';
 import {mkdir,readFile,writeFile} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
+const qualifyLifecycle=process.env.TENDRILLER_BROWSER_LIFECYCLE==='1';
 const root=resolve(import.meta.dirname,'..'),out=join(root,'.results/collaboration-browser-assets');
 await mkdir(out,{recursive:true});
 await build({absWorkingDir:root,entryPoints:{page:'collaboration/test/browser/page.mjs',worker:'collaboration/test/browser/worker.mjs'},
@@ -15,7 +17,7 @@ const server=createServer(async(req,res)=>{const path=new URL(req.url,'http://lo
   try{res.writeHead(200,{'content-type':'text/javascript'});res.end(await readFile(join(out,path.slice(1))));}catch{res.writeHead(404);res.end();}
 });
 await new Promise(done=>server.listen(0,'127.0.0.1',done));const base=`http://127.0.0.1:${server.address().port}`;
-let browser;const evidence={status:'failed',stage:'launch',scenarios:[],completedStages:[],diagnostics:[],scope:'Actual Chromium; local origin, events backend; no mobile/provider/Internet claim'};
+let browser,lifecycleBrowser;const evidence={status:'failed',stage:'launch',scenarios:[],completedStages:[],diagnostics:[],scope:'Actual Chromium; local origin, events backend; no mobile/provider/Internet claim'};
 async function stage(name,run){
   evidence.stage=name;console.log(`Browser qualification: ${name}`);let timer;
   try{const result=await Promise.race([run(),new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error(`Browser stage timed out: ${name}`)),25000);})]);
@@ -28,10 +30,12 @@ function observe(page,label){
 }
 const deadline=setTimeout(()=>{evidence.failure=`Browser qualification exceeded its 120 second deadline at ${evidence.stage}`;void browser?.close();},120000);
 try{
-  browser=await chromium.launch({headless:true,...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?{executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}:{})});
+  const launchOptions=process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?{executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}:{};
+  if(qualifyLifecycle){lifecycleBrowser=await launchNetworkBrowser(launchOptions);browser=lifecycleBrowser.browser;}
+  else browser=await chromium.launch({headless:true,...launchOptions});
   evidence.browser=browser.version();
   for(const mode of ['shared','elected']){
-    const context=await browser.newContext(),profile=`qualification-${mode}`,one=await context.newPage(),two=await context.newPage();
+    const context=lifecycleBrowser?.context??await browser.newContext(),profile=`qualification-${mode}`,one=await context.newPage(),two=await context.newPage();
     observe(one,`${mode}:one`);observe(two,`${mode}:two`);
     const url=(path,view='copied-view')=>`${base}/${path}?profile=${profile}&mode=${mode}&view=${view}`;
     const a=await stage(`${mode}:identity-and-first-attachment`,async()=>{await one.goto(url('board.html')+'&identity=create');return one.evaluate(()=>window.ready);});
@@ -72,6 +76,30 @@ try{
       const before=await one.evaluate(()=>window.session.endpoint.endpointIncarnation);
       await one.evaluate(()=>window.attachment.suspend());await one.evaluate(()=>window.attachment.resume());
       assert.equal(await one.evaluate(()=>window.session.endpoint.endpointIncarnation),before);
+    });
+    if(qualifyLifecycle)await stage(`${mode}:automatic-freeze-retains-document-and-owner`,async()=>{
+      // A DedicatedWorker freezes with its owning page. Freeze the follower
+      // in elected mode so this case measures a genuinely live owner.
+      const selected=mode==='elected'?two:one,sibling=mode==='elected'?one:two;
+      const before=await selected.evaluate(()=>{window.freezeMarker=crypto.randomUUID();window.freezeEvents=[];
+        for(const type of ['freeze','resume'])document.addEventListener(type,()=>window.freezeEvents.push(type));
+        return{marker:window.freezeMarker,endpoint:window.session.endpoint,deviceId:window.session.deviceId};});
+      const cdp=await context.newCDPSession(selected);let cover;
+      try{
+        await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:false});
+        cover=await context.newPage();await cover.goto('about:blank');await cover.bringToFront();
+        assert.equal(await selected.evaluate(()=>document.hidden),true,'Selected document must really be hidden before freeze');
+        await cdp.send('Page.setWebLifecycleState',{state:'frozen'});
+        // Cross the unchanged 15s page fence while the healthy owner still serves
+        // a sibling. This is actual Chromium suspension, not a synthetic event.
+        await sibling.evaluate(()=>window.session.query('messages',null));
+        await new Promise(resolve=>setTimeout(resolve,16000));
+        await cdp.send('Page.setWebLifecycleState',{state:'active'});await cover.close();cover=undefined;await selected.bringToFront();
+        await selected.waitForFunction(()=>window.freezeEvents.includes('resume'),null,{timeout:5000});
+        await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='active'),before.endpoint.endpointId,{timeout:5000});
+        const after=await selected.evaluate(async()=>({marker:window.freezeMarker,events:window.freezeEvents,endpoint:window.session.endpoint,deviceId:window.session.deviceId,aborted:window.session.signal.aborted,eventsRead:(await window.session.query('messages',null)).value.events.length}));
+        assert.equal(after.marker,before.marker);assert.deepEqual(after.events,['freeze','resume']);assert.deepEqual(after.endpoint,before.endpoint);assert.equal(after.deviceId,before.deviceId);assert.equal(after.aborted,false);assert.equal(after.eventsRead,2);
+      }finally{await cdp.send('Page.setWebLifecycleState',{state:'active'}).catch(()=>{});await cover?.close();await cdp.detach();}
     });
     await stage(`${mode}:follower-reload-retains-view`,async()=>{
       await two.reload();const reloaded=await two.evaluate(()=>window.ready);
@@ -124,10 +152,10 @@ try{
       });
     }
     evidence.scenarios.push({mode,oneSigner:true,twoDocuments:true,duplicateViewFenced:true,protocolOnlyCold:true,signedLocalSignals:true,
-      concurrentCommands:true,independentDrafts:true,...(mode==='shared'?{otherWorkerVersionAttaches:true}:{}),samePageReattachKeepsOwner:true,suspendResume:true,detachPreservesSibling:true,detachOrCrashReopen:true,
+      concurrentCommands:true,independentDrafts:true,...(mode==='shared'?{otherWorkerVersionAttaches:true}:{}),samePageReattachKeepsOwner:true,suspendResume:true,automaticChromiumFreezeResume:qualifyLifecycle,detachPreservesSibling:true,detachOrCrashReopen:true,
       asyncIdentityBootstrap:true,participantFocus:true,reloadPreservesDraft:true,...(mode==='shared'?{boundedRootReuse:true,sessionCloseReleasesFence:true}:{})});
-    await context.close();
+    if(lifecycleBrowser)await Promise.all(context.pages().map(page=>page.close()));else await context.close();
   }
   evidence.stage='complete';evidence.status='passed';console.log(JSON.stringify(evidence,null,2));
 }catch(error){evidence.failure??=error.stack??String(error);console.error(JSON.stringify(evidence,null,2));throw error;
-}finally{clearTimeout(deadline);await browser?.close();await new Promise(done=>server.close(done));await writeFile(join(root,'.results/collaboration-browser.json'),JSON.stringify(evidence,null,2)+'\n');}
+}finally{clearTimeout(deadline);if(lifecycleBrowser)await lifecycleBrowser.close();else await browser?.close();await new Promise(done=>server.close(done));await writeFile(join(root,'.results/collaboration-browser.json'),JSON.stringify(evidence,null,2)+'\n');}

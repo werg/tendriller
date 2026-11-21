@@ -1,3 +1,4 @@
+import { acquireRootLifetime } from './root-lifetime.mjs';
 import { registerBrowserRtcProvider } from './browser-rtc.mjs';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, ownerWorkerName, createBroadcastEndpoint, isOwnerAnnouncement } from './browser-transport.mjs';
@@ -112,7 +113,7 @@ export function keepStorageInUse({intervalMs=240_000,storagePersisted=requestPer
     doc.removeEventListener('freeze',pagehide);doc.removeEventListener('resume',visibility);
     globalThis.removeEventListener?.('pagehide',pagehide);globalThis.removeEventListener?.('pageshow',visibility);};
 }
-function facade({session,transport,channel,worker,route,options,provider:initialProvider,bootstrapRtc}){
+function facade({session,transport,channel,worker,route,options,provider:initialProvider,bootstrapRtc,releaseRootLock}){
   initialProvider?.adopt(session);
   transport.bindRequestSource(session);
   let detached=false,releasing,suspended=false,residency=Promise.resolve(), explicitSuspended=false, explicitResuming=false, resumeSent=false;
@@ -170,6 +171,7 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     session.signal.removeEventListener('abort',ended);globalThis.removeEventListener?.('pagehide',leaving);
     releasing=(async()=>{
       const failures=[];
+      try{
       try{await provider.close();}catch(error){failures.push(error);}
       bootstrapRtc?.dispose();
       try{await transport?.close();}catch(error){failures.push(error);}finally{channel?.close();}
@@ -179,6 +181,7 @@ function facade({session,transport,channel,worker,route,options,provider:initial
         // an owner still serving authenticated siblings.
         else if(worker)await retireCandidate(worker,options.profileId,Math.min(options.timeoutMs??30000,3000));
       }catch(error){failures.push(error);}
+      }finally{try{await releaseRootLock?.();}catch(error){failures.push(error);}}
       if(failures.length)throw new AggregateError(failures,'OWNER_DETACH_FAILED');
     })();return releasing;
   }
@@ -241,8 +244,13 @@ function facade({session,transport,channel,worker,route,options,provider:initial
   });
 }
 async function sharedRoute(url,options,handshake){
-  const id=crypto.randomUUID();let worker,transport,provider,rtc;
+  const id=crypto.randomUUID(),opening=new AbortController();let worker,transport,provider,rtc,releaseRootLock;
+  const cancelRoot=()=>opening.abort(options.signal.reason);
+  if(options.signal?.aborted)cancelRoot();else options.signal?.addEventListener('abort',cancelRoot,{once:true});
   try{
+    // This document owns the witness, independently of the protocol owner lock.
+    // Forward opening cancellation only until the attachment takes ownership.
+    ({release:releaseRootLock}=await acquireRootLifetime(options.profileId,id,{signal:opening.signal}));
     worker=new SharedWorker(url,{type:'module',name:ownerWorkerName(options.profileId)});worker.port.start();
     worker.addEventListener('error',event=>worker.port.dispatchEvent(new MessageEvent('message',{data:{
       protocol:BROWSER_OWNER_PROTOCOL,type:'failure',code:'OWNER_UNREACHABLE',message:event.message||'Shared owner module failed to load',id}})));
@@ -252,12 +260,15 @@ async function sharedRoute(url,options,handshake){
     const active=await ready;transport=createSharedRootEndpoint(worker.port,{profileId:options.profileId,rootId:id,
       ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000,rtc});
     const session=await connectApplicationOwner(transport,handshake);
-    return facade({session,transport,provider,worker,route:'shared',options});
+    return facade({session,transport,provider,worker,route:'shared',options,releaseRootLock});
   }catch(error){
+    try{
     await provider?.close();rtc?.dispose();await transport?.close();
     try{worker?.port?.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'root.detach',profileId:options.profileId,rootId:id,id:crypto.randomUUID()});}catch{}
-    worker?.port?.close();throw error;
-  }
+    worker?.port?.close();
+    }finally{await releaseRootLock?.();}
+    throw error;
+  }finally{options.signal?.removeEventListener('abort',cancelRoot);}
 }
 /** Attach to an owner that already announces this profile; never starts one. */
 async function attachExisting(options,handshake,waitMs){
