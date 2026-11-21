@@ -152,9 +152,15 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
         // Opaque counter instance is needed only for equality, never retained.
         evidence.sameHostEpoch = evidence.hostBefore.instance === evidence.hostAfter.instance;
         delete evidence.hostBefore.instance; delete evidence.hostAfter.instance;
-        if (process.env.NETWORK_LAB_PROGRESS) await progressWriter(process.env.NETWORK_LAB_PROGRESS)({
-          state: evidence.completed ? 'authenticated-direct-ready' : 'authenticated-direct-failed',
-          profile, at: new Date().toISOString(), routeEvidence: evidence });
+        if (process.env.NETWORK_LAB_PROGRESS) try {
+          await progressWriter(process.env.NETWORK_LAB_PROGRESS)({
+            state: evidence.completed ? 'authenticated-direct-ready' : 'authenticated-direct-failed',
+            profile, at: new Date().toISOString(), routeEvidence: evidence });
+        } catch (error) {
+          evidence.progressFailed = true;
+          // Observation failure must not replace the original route failure.
+          if (evidence.completed) { initialRouteEvidence = evidence; throw error; }
+        }
       }
       signal.throwIfAborted();
     },
