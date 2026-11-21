@@ -103,7 +103,8 @@ test('standalone zero-dependency bootstrapper probes, extracts nondestructively,
     bootstrap, '--archive-file', kitPath, '--expected-sha256', sha256(bytes), '--project', projectDir, '--profile', 'events-relay-only',
   ], { encoding: 'utf8' }));
   assert.equal(okOut.ok, true);
-  assert.equal(okOut.readiness, 'app_initialized');
+  assert.equal(okOut.readiness, 'project_prepared');
+  assert.equal(okOut.profileConfigured, false);
   assert.equal(readFileSync(join(projectDir, '.tendriller/handle.json'), 'utf8'), '{"keep":true}');
 
   // Tampered hash exits with semantic code 3 (INTEGRITY_FAILURE).
