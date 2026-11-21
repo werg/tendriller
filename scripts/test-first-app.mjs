@@ -471,6 +471,8 @@ export async function closeLocalTransport() {
         `--ignore-certificate-errors-spki-list=${certificatePin}`] });
     report.browser = await browser.version();
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    report.connectionErrors = [];
+    await context.exposeBinding('__firstAppConnection',(_source,value)=>{if(report.connectionErrors.length<50&&/^(?:APPLICATION_|PEER_|DEVICE_|OWNER_|ENDPOINT_)[A-Z_]{1,90}$/.test(value))report.connectionErrors.push(value);});
     report.rtcLifecycle = [];
     report.rtcBridge = [];
     await context.exposeBinding('__firstAppRtcBridge', (_source,value) => { if(report.rtcBridge.length<200) report.rtcBridge.push(value); });
@@ -480,6 +482,7 @@ export async function closeLocalTransport() {
     });
     await context.addInitScript(({mode}) => {
       const callers = () => String(new Error().stack).split('\n').slice(2,10).map(line=>/^\s*at ([A-Za-z0-9_.$<> ]+) \(/.exec(line)?.[1]).filter(Boolean);
+      addEventListener('DOMContentLoaded',()=>{let last;new MutationObserver(()=>{const value=document.querySelector('#connection-card code')?.textContent;if(value&&value!==last){last=value;const code=/\b(?:APPLICATION_|PEER_|DEVICE_|OWNER_|ENDPOINT_)[A-Z_]{1,90}\b/.exec(value.slice(0,400))?.[0];if(code)void window.__firstAppConnection(code).catch(()=>{});}}).observe(document.documentElement,{subtree:true,childList:true,characterData:true});},{once:true});
       const abort = AbortController.prototype.abort;
       AbortController.prototype.abort = function(reason){
         if(reason?.message==='RTC_PROVIDER_LOST')void window.__firstAppRtcBridge({action:'provider-closed',callers:callers()}).catch(()=>{});
