@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { digest, json, seal, publishedTuple, qualifyContrib, validateTuple, GATES, REPOS } from '../companion-release/tuple.mjs';
-import { planProposal } from '../companion-release/proposal.mjs';
+import { planProposal, receiverWorkflow } from '../companion-release/proposal.mjs';
 import { select } from '../companion-release/select.mjs';
 import { capabilities, openProposal, dispatchQualification, pushOwnerBootstrap } from '../companion-release/github.mjs';
 
@@ -145,6 +145,7 @@ function planningApi(f, mode, existing = {}) {
   Object.assign(workflows, existing);
   const calls = [], api = async (path, body) => {
     calls.push({ path, body });
+    if (path === `repos/${REPOS.core}/commits/${sha('8')}`) return { sha: sha('8') };
     if (path === root) return { default_branch: 'main' };
     if (path === `${root}/commits/main`) return { sha: base, commit: { tree: { sha: tree } } };
     if (path === `${root}/git/trees/${tree}?recursive=1`) return { truncated: false, tree: Object.keys(workflows).map(path => ({ path })) };
@@ -163,9 +164,16 @@ test('end-to-end dry run migrates both actual workflow shapes, runs generated gu
   const f = fixture(), published = await f.check(), q = addQualification(f, published);
   const qualified = await qualifyContrib(published, q.source, { api: f.api });
   for (const [mode, tuple] of [['contrib', published], ['chronolog', qualified]]) await t.test(mode, async () => {
-    const p = planningApi(f, mode), plan = await planProposal(tuple, { api: p.api });
+    const p = planningApi(f, mode), plan = await planProposal(tuple, { api: p.api, automationSource: sha('8') });
     assert(p.calls.every(call => !call.body));
-    assert(plan.files['.github/workflows/companion-release-receiver.yml'].includes('--auth-kind repository'));
+    const receiver = plan.files['.github/workflows/companion-release-receiver.yml'];
+    assert(receiver.includes('--auth-kind repository'));
+    assert(receiver.includes('repository: werg/tendriller'));
+    assert(receiver.includes(`ref: '${sha('8')}'`));
+    assert(receiver.includes('sparse-checkout-cone-mode: false'));
+    assert(receiver.includes('/scripts/companion-release/'));
+    assert.equal(receiver.split('persist-credentials: false').length, 3);
+    assert(!Object.keys(plan.files).some(path => path.includes('release-automation/')), 'Keep the implementation only in core');
     if (mode === 'contrib') for (const name of ['peer-generation', 'collaboration'])
       assert(plan.files[`.github/workflows/${name}.yml`].includes("github.event_name == 'workflow_dispatch' && 'explicit' || 'ordinary'"));
     const root = mkdtempSync(join(tmpdir(), 'tuple-dry-run-'));
@@ -179,28 +187,43 @@ test('end-to-end dry run migrates both actual workflow shapes, runs generated gu
       assert(output.includes(`HOST_REF=${tuple.core.source}`));
       const guardResult = execFileSync(process.execPath, ['--test', '--test-reporter=tap', mode === 'contrib' ? 'test/companion-workflow-pins.test.mjs' : 'tools/test-companion-workflow-pins.mjs'], { cwd: root, env, encoding: 'utf8' });
       assert.match(guardResult, /# pass [12]/);
-      execFileSync(process.execPath, ['distribution/release-automation/companion-release/cli.mjs', '--help'], { cwd: root, env });
+
     } finally { rmSync(root, { recursive: true, force: true }); }
     // Once bootstrapped, only tuple data changes. No workflow-write permission
     // or recurring executable update is needed by the repository token.
     const same = planningApi(f, mode, plan.files);
-    const unchanged = await planProposal(tuple, { api: same.api });
+    const unchanged = await planProposal(tuple, { api: same.api, automationSource: sha('8') });
     assert.deepEqual(unchanged.files, {});
     const updated = seal({ ...Object.fromEntries(Object.entries(tuple).filter(([key]) => key !== 'id')),
       release: { ...tuple.release, manifestSha256: hash('9') } });
-    const next = await planProposal(updated, { api: same.api });
+    const next = await planProposal(updated, { api: same.api, automationSource: sha('8') });
     assert.deepEqual(Object.keys(next.files), ['distribution/companion-release.json']);
   });
 });
 
 test('unknown workflow shape stops a proposal rather than silently changing qualification', async () => {
   const f = fixture(), tuple = await f.check(), p = planningApi(f, 'contrib', { '.github/workflows/peer-generation.yml': 'custom workflow' });
-  await assert.rejects(planProposal(tuple, { api: p.api }));
+  await assert.rejects(planProposal(tuple, { api: p.api, automationSource: sha('8') }));
+});
+
+test('receiver checkout revision is explicit and immutable; mode and repository stay allowlisted', () => {
+  assert.throws(() => receiverWorkflow('contrib', 'master'));
+  assert.throws(() => receiverWorkflow('other', sha('8')));
+  const workflow = receiverWorkflow('contrib', sha('8'));
+  assert.match(workflow, /node \.release-planner\/scripts\/companion-release\/cli.mjs/);
+  assert.doesNotMatch(workflow, /npm |pull_request_target|secrets\.|create-github-app-token/);
+  const root = mkdtempSync(join(tmpdir(), 'tuple-receiver-test-'));
+  try {
+    assert.throws(() => execFileSync(process.execPath, [new URL('../companion-release/cli.mjs', import.meta.url).pathname,
+      '--receiver', 'contrib', '--automation-source', sha('8'), '--output', join(root, 'output')], {
+      env: { ...process.env, GITHUB_REPOSITORY: REPOS.kernel }, stdio: ['ignore', 'pipe', 'pipe'],
+    }), error => /Receiver mode must match its own repository/.test(error.stderr.toString()));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test('repository token writes only its own tuple; PR generation never merges or force-updates; dispatch is explicit', async () => {
   const f = fixture(), tuple = await f.check(), p = planningApi(f, 'contrib');
-  const bootstrap = await planProposal(tuple, { api: p.api });
+  const bootstrap = await planProposal(tuple, { api: p.api, automationSource: sha('8') });
   await assert.rejects(openProposal(bootstrap, { api: p.api, authKind: 'repository', repository: REPOS.contrib }));
   const plan = { ...bootstrap, files: { 'distribution/companion-release.json': json(tuple) } }, calls = [], dispatchedWorkflows = new Set();
   const api = async (path, body) => {
@@ -230,7 +253,7 @@ test('repository token writes only its own tuple; PR generation never merges or 
 
 test('moved base or changed dispatch head stops before further writes', async () => {
   const f = fixture(), tuple = await f.check(), p = planningApi(f, 'contrib');
-  const plan = await planProposal(tuple, { api: p.api }), calls = [];
+  const plan = await planProposal(tuple, { api: p.api, automationSource: sha('8') }), calls = [];
   const api = async (path, body) => { calls.push(body); return { sha: sha('f') }; };
   await assert.rejects(openProposal(plan, { api, authKind: 'user' }));
   await assert.rejects(dispatchQualification(plan, sha('1'), { api }));
@@ -262,7 +285,7 @@ test('owner bootstrap uses real isolated Git, exact base/tree, no force and reje
 
 test('recover a verified branch after lost PR creation; changed bytes/ancestry/scope fail closed', async t => {
   const f = fixture(), tuple = await f.check(), p = planningApi(f, 'contrib');
-  const bootstrap = await planProposal(tuple, { api: p.api });
+  const bootstrap = await planProposal(tuple, { api: p.api, automationSource: sha('8') });
   const path = 'distribution/companion-release.json';
   const plan = { ...bootstrap, files: { [path]: json(tuple) } }, head = sha('7');
   for (const variant of ['valid', 'bytes', 'ancestry', 'scope']) await t.test(variant, async () => {

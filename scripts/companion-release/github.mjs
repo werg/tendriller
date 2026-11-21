@@ -108,8 +108,8 @@ export async function openProposal(plan, { api = githubApi, authKind, repository
     return { state: 'existing', repository: plan.repository, url: pr.html_url, head: pr.head.sha };
   }
   const paths = Object.keys(plan.files);
-  assert(paths.length >= 1 && paths.length <= 16);
-  for (const path of paths) assert(/^(distribution\/(companion-release\.json|select-companion-release\.mjs|release-automation\/(check-published-release\.mjs|companion-release\/(tuple|select|proposal|github|cli)\.mjs))|(?:test|tools)\/companion-workflow-pins\.test\.mjs|tools\/test-companion-workflow-pins\.mjs|\.github\/workflows\/(peer-generation|collaboration|webrtc|companion-release-receiver)\.yml)$/.test(path));
+  assert(paths.length >= 1 && paths.length <= 6);
+  for (const path of paths) assert(/^(distribution\/(companion-release\.json|select-companion-release\.mjs)|(?:test|tools)\/companion-workflow-pins\.test\.mjs|tools\/test-companion-workflow-pins\.mjs|\.github\/workflows\/(peer-generation|collaboration|webrtc|companion-release-receiver)\.yml)$/.test(path));
   let head;
   const refs = await api(`${root}/git/matching-refs/heads/${plan.branch}`);
   assert(refs.length < 100, 'Incomplete branch listing');

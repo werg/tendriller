@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { REPOS, json, validateTuple } from './tuple.mjs';
+import { REPOS, json, validateTuple, commit } from './tuple.mjs';
 
 const selector = readFileSync(new URL('./select.mjs', import.meta.url), 'utf8');
 const tuplePath = 'distribution/companion-release.json', selectorPath = 'distribution/select-companion-release.mjs';
-export function receiverWorkflow(mode) {
-  return `name: Propose qualified companion release\n\non:\n  schedule:\n    - cron: '23 * * * *'\n  workflow_dispatch:\n\npermissions:\n  contents: write\n  pull-requests: write\n  actions: write\n\nconcurrency:\n  group: companion-release-receiver\n  cancel-in-progress: false\n\njobs:\n  propose:\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 24\n      - name: Verify public graph and propose this repository's tuple update\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: node distribution/release-automation/companion-release/cli.mjs --receiver ${mode} --output "$RUNNER_TEMP/companion-release" --apply --auth-kind repository\n      - uses: actions/upload-artifact@v4\n        if: always()\n        with:\n          name: companion-release-proposal\n          path: \${{ runner.temp }}/companion-release/*.json\n`;
+export function receiverWorkflow(mode, automationSource) {
+  assert(['contrib', 'chronolog'].includes(mode)); commit(automationSource);
+  return `name: Propose qualified companion release\n\non:\n  schedule:\n    - cron: '23 * * * *'\n  workflow_dispatch:\n\npermissions:\n  contents: write\n  pull-requests: write\n  actions: write\n\nconcurrency:\n  group: companion-release-receiver\n  cancel-in-progress: false\n\njobs:\n  propose:\n    runs-on: ubuntu-latest\n    timeout-minutes: 15\n    env:\n      AUTOMATION_SOURCE: '${automationSource}'\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          persist-credentials: false\n      - uses: actions/checkout@v4\n        with:\n          repository: werg/tendriller\n          ref: '${automationSource}'\n          path: .release-planner\n          sparse-checkout-cone-mode: false\n          sparse-checkout: |\n            /scripts/companion-release/\n            /scripts/check-published-release.mjs\n          persist-credentials: false\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 24\n      - name: Verify public graph and propose this repository's tuple update\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: node .release-planner/scripts/companion-release/cli.mjs --receiver ${mode} --automation-source "$AUTOMATION_SOURCE" --output "$RUNNER_TEMP/companion-release" --apply --auth-kind repository\n      - uses: actions/upload-artifact@v4\n        if: always()\n        with:\n          name: companion-release-proposal\n          path: \${{ runner.temp }}/companion-release/*.json\n`;
 }
 const step = mode => `      - name: Select verified companion tuple\n        env:\n          TENDRILLER_REF: \${{ inputs.${mode === 'contrib' ? 'tendriller_ref' : 'host_ref'} }}\n${mode === 'contrib' ? '          CHRONOLOG_REF_INPUT: ${{ inputs.chronolog_ref }}' : '          CONTRIB_REF_INPUT: ${{ inputs.contrib_ref }}'}\n        run: node ${selectorPath} ${mode} >> "$GITHUB_ENV"\n`;
 
@@ -46,8 +47,11 @@ function migrateChronolog(text) {
 
 const guard = mode => `// Pins have one source: the content-addressed tuple, not this test.\nimport assert from 'node:assert/strict';\nimport { readFileSync } from 'node:fs';\nimport test from 'node:test';\nimport { select } from '../distribution/select-companion-release.mjs';\nconst tuple = JSON.parse(readFileSync(new URL('../distribution/companion-release.json', import.meta.url)));\n${(mode === 'contrib' ? ['peer-generation', 'collaboration'] : ['webrtc']).map(name => `test('${name} consumes the canonical tuple and retains exact checkout checks', () => {\n  const selected = select(tuple, '${mode}');\n  const text = readFileSync(new URL('../.github/workflows/${name}.yml', import.meta.url), 'utf8');\n  assert.ok(Object.values(selected).every(value => /^[a-f0-9]{40}$/.test(value)));\n  assert.ok(text.includes('node distribution/select-companion-release.mjs ${mode}'));\n  assert.doesNotMatch(text, /inputs\\.\\w+_ref \\|\\| '[a-f0-9]{40}'/);\n  ${mode === 'contrib' ? "assert.ok(text.includes('distribution/download-core-release.mjs'));\n  assert.equal(text.split(\"- 'distribution/companion-release.json'\").length - 1, 2);" : "assert.ok(text.includes('node tools/package-peer-session.mjs'));\n  assert.ok(text.includes('Build independent host test artifacts (not for deployment)'));"}\n  for (const key of ${mode === 'contrib' ? "['CHRONOLOG_REF']" : "['HOST_REF', 'CONTRIB_REF']"}) {\n    assert.ok(text.includes('ref: \\u0024{{ env.' + key + ' }}'));\n    assert.ok(text.includes('= \\"\\u0024' + key + '\\"'));\n  }\n});`).join('\n')}\n`;
 
-export async function planProposal(tuple, { api }) {
+export async function planProposal(tuple, { api, automationSource }) {
   validateTuple(tuple);
+  commit(automationSource);
+  assert.equal((await api(`repos/${REPOS.core}/commits/${automationSource}`)).sha, automationSource,
+    'Automation implementation must be an existing exact core commit');
   const mode = tuple.stage === 'published' ? 'contrib' : 'chronolog';
   const repository = REPOS[mode === 'contrib' ? 'contrib' : 'kernel'];
   const repo = await api(`repos/${repository}`);
@@ -59,10 +63,7 @@ export async function planProposal(tuple, { api }) {
     return Buffer.from(file.content, 'base64').toString('utf8');
   };
   const files = { [tuplePath]: json(tuple), [selectorPath]: selector,
-    '.github/workflows/companion-release-receiver.yml': receiverWorkflow(mode) };
-  for (const name of ['tuple', 'select', 'proposal', 'github', 'cli']) files[`distribution/release-automation/companion-release/${name}.mjs`] =
-    readFileSync(new URL(`./${name}.mjs`, import.meta.url), 'utf8');
-  files['distribution/release-automation/check-published-release.mjs'] = readFileSync(new URL('../check-published-release.mjs', import.meta.url), 'utf8');
+    '.github/workflows/companion-release-receiver.yml': receiverWorkflow(mode, automationSource) };
   const names = mode === 'contrib' ? ['peer-generation', 'collaboration'] : ['webrtc'];
   for (const name of names) {
     const path = `.github/workflows/${name}.yml`;
