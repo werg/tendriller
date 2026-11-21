@@ -74,12 +74,16 @@ jobs:
       - name: Qualify automatic relay fallback when RTC is unavailable
         run: npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz" --transport relay --report .results/first-app-relay.json
       - name: Qualify shared and elected application owners in Chromium
-        run: npm run test:collaboration:browser
+        env:
+          TENDRILLER_BROWSER_LIFECYCLE: '1'
+        run: xvfb-run -a npm run test:collaboration:browser
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: first-app-qualification
-          path: .results/first-app*
+          path: |
+            .results/first-app*
+            .results/collaboration-browser.json
           include-hidden-files: true
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
