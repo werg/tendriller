@@ -10,6 +10,10 @@ export async function authenticatedTransportSnapshot(participation, peerId) {
     ...(link ? Object.fromEntries(['kind', 'sentReliableBytes', 'receivedReliableBytes', 'sentLiveBytes', 'receivedLiveBytes'].map(key => [key, link[key]])) : { kind: 'unknown' }) };
 }
 
+export function authenticatedRouteMatches(value, kind, afterRevision) {
+  return value.kind === kind && (afterRevision === undefined || value.connectionRevision > afterRevision);
+}
+
 /** Optional Linux diagnostic: unavailable is not zero and cannot fail a run. */
 export function memoryAvailableGb(read = readFileSync) {
   try {
@@ -118,6 +122,7 @@ try {
         if(request.action==='transport-snapshot') result=await snapshot();
         else {
           assert.ok(['direct','relay','unknown'].includes(request.kind));
+          assert.ok(request.afterRevision===undefined || Number.isSafeInteger(request.afterRevision) && request.afterRevision>=0);
           result=await new Promise((resolve,reject)=>{
             let stopped=false,checking=false,again=false,revision=-1;
             let remove=()=>{};
@@ -126,7 +131,7 @@ try {
               if(stopped)return;
               if(checking){again=true;return;}
               checking=true;
-              try{const value=await snapshot();if(value.kind===request.kind)finish(null,value);}
+              try{const value=await snapshot();if((${authenticatedRouteMatches.toString()})(value,request.kind,request.afterRevision))finish(null,value);}
               catch(error){finish(error);}
               finally{checking=false;if(again){again=false;void check();}}
             };

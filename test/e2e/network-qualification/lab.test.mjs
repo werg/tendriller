@@ -6,7 +6,7 @@ import { runNetworkScenario } from './scenarios.mjs';
 import { observeIdleDuration } from './idle-progress.mjs';
 import { releaseAnchor, selectedProductVersion, sha256 } from './anchor.mjs';
 import { currentOperationApplied } from './first-app.mjs';
-import { authenticatedTransportSnapshot } from '../../../scripts/first-app-peer.mjs';
+import { authenticatedTransportSnapshot, authenticatedRouteMatches } from '../../../scripts/first-app-peer.mjs';
 import { prepareMountTargets } from './mounts.mjs';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -253,4 +253,11 @@ test('old applied/retention labels and reused IDs cannot prove a fresh browser c
   assert.equal(currentOperationApplied('old', 'new', 'new: Saved. 1 peer retention receipt(s) observed.'), false);
   assert.equal(currentOperationApplied('old', 'new', 'new: Applied: accepted. Peer retention has not been observed here.'), false);
   assert.equal(currentOperationApplied('old', 'new', status('new')), true);
+});
+
+test('reopen cannot qualify a cached direct route or a new non-direct route', () => {
+  assert.equal(authenticatedRouteMatches({ kind: 'direct', connectionRevision: 6 }, 'direct', 6), false);
+  assert.equal(authenticatedRouteMatches({ kind: 'relay', connectionRevision: 8 }, 'direct', 6), false);
+  assert.equal(authenticatedRouteMatches({ kind: 'unknown', connectionRevision: 7 }, 'direct', 6), false);
+  assert.equal(authenticatedRouteMatches({ kind: 'direct', connectionRevision: 8 }, 'direct', 6), true);
 });
