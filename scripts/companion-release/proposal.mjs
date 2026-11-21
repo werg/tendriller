@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { REPOS, json, validateTuple, commit } from './tuple.mjs';
+import { bindRunName } from './qualification.mjs';
 
 const selector = readFileSync(new URL('./select.mjs', import.meta.url), 'utf8');
 const tuplePath = 'distribution/companion-release.json', selectorPath = 'distribution/select-companion-release.mjs';
@@ -15,6 +16,7 @@ function once(text, from, to) {
   return text.replace(from, to);
 }
 function migrateContrib(text) {
+  text = bindRunName(text, 'contrib');
   if (text.includes(`node ${selectorPath} contrib`)) {
     assert(!/inputs\.\w+_ref \|\| '[a-f0-9]{40}'/.test(text), 'Duplicate literal pin remains'); return text;
   }
@@ -36,6 +38,7 @@ function migrateContrib(text) {
   return text + tail;
 }
 function migrateChronolog(text) {
+  text = bindRunName(text, 'chronolog');
   if (text.includes(`node ${selectorPath} chronolog`)) {
     assert(!/inputs\.\w+_ref \|\| '[a-f0-9]{40}'/.test(text)); return text;
   }
@@ -77,7 +80,9 @@ export async function planProposal(tuple, { api, automationSource }) {
     if (await read(path) === files[path]) delete files[path];
   }
   // Read and retain the actual base tree; applying never overwrites a branch.
-  return { repository, mode, automationSource, base: base.sha, baseTree: base.commit.tree.sha, baseBranch: repo.default_branch,
+  return { repository, mode, automationSource,
+    companions: { core: tuple.core.source, kernel: tuple.kernel.source, ...(tuple.contrib ? { contrib: tuple.contrib.source } : {}) },
+    base: base.sha, baseTree: base.commit.tree.sha, baseBranch: repo.default_branch,
     branch: `release/tuple-${tuple.id.slice(0, 16)}-${automationSource.slice(0, 12)}`, tupleId: tuple.id,
     title: `Qualify companion release ${tuple.core.source.slice(0, 12)}`,
     body: `Consume verified release tuple ${tuple.id}.\n\nCore: ${tuple.core.source}\nKernel archive source: ${tuple.kernel.source}\nManifest SHA-256: ${tuple.release.manifestSha256}\n${tuple.contrib ? `Qualified merged Contrib: ${tuple.contrib.source}\n` : ''}\nNormal repository qualification and human review remain required. This PR does not merge or deploy.`, files };
