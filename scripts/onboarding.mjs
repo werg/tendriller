@@ -8,7 +8,7 @@ export const ONBOARDING_DOCS = Object.freeze([
   'agent.md', 'docs/MCP_AGENT_GUIDE.md', 'docs/CAPABILITIES.md', 'docs/AGENT_DELIVERY.md',
   'docs/BUILD_AN_APP.md', 'docs/APP_PATTERNS.md', 'docs/AI_INPUT.md',
   'docs/STATE_MODELS.md', 'docs/SESSION_BOOTSTRAP.md',
-  'docs/MULTIPARTICIPANT.md', 'docs/AGENT_BINDINGS.md', 'docs/APPLICATION_SIGNALS.md',
+  'docs/MULTIPARTICIPANT.md', 'docs/TRANSPORT_DIAGNOSTICS.md', 'docs/AGENT_BINDINGS.md', 'docs/APPLICATION_SIGNALS.md',
   'docs/CHATGPT_INTEGRATION.md', 'docs/CLOUDFLARE_ASSISTANT.md',
   'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md',
 ]);

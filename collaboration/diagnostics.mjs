@@ -1,3 +1,4 @@
+import { readTransportDiagnostics } from './transport-diagnostics.mjs';
 /** Inert, redacted observations. Diagnostics never submit work or activate data. */
 export const DIAGNOSTIC_PROTOCOL = 'tendriller.diagnostics.v1';
 const actions = {
@@ -63,13 +64,13 @@ export async function diagnoseApplicationSession(session, { mode = 'own', signal
   signal?.throwIfAborted();
   const endpoint=endpointOf(session.endpoint),scope=pick({applicationId:session.applicationId,historyId:session.historyId,
     deviceId:session.deviceId,...endpoint,...endpoint?.identity,...endpoint?.context},scopeKeys);
-  const findings=[];let status={},definition=null,participation=null,endpoints;
+  const findings=[];let status={},definition=null,participation=null,endpoints,participant;
   const add=(code,severity='error')=>findings.push(diagnosticFinding(code,{scope:{...scope,...status},state:status,severity}));
   try{status=stateOf(session.status);}catch(error){add(error);}
   try{const value=session.describe();const names=entries=>Array.isArray(entries)?entries.map(entry=>text(entry?.name)).filter(Boolean).slice(0,256):[];
     definition={...pick(value,['id','version']),commands:names(value.commands),queries:names(value.queries)};
   }catch(error){add(error);}
-  try{const value=session.participation?.status;if(value)participation={...pick(value,['phase']),
+  try{participant=session.participation;const value=participant?.status;if(value)participation={...pick(value,['phase']),
     connectedPeers:Array.isArray(value.connectedPeers)?value.connectedPeers.map(text).filter(Boolean).slice(0,32):[],
     reviewRequired:value.phase==='approval-required',hasError:!!value.error};
   }catch(error){add(error);}
@@ -85,8 +86,9 @@ export async function diagnoseApplicationSession(session, { mode = 'own', signal
     try{const listed=await session.endpoints();signal?.throwIfAborted();endpoints=listed.slice(0,32).map(endpointOf);}
     catch(error){signal?.throwIfAborted();add(error,'warning');}
   }
+  const transport = await readTransportDiagnostics(participant, { signal });
   signal?.throwIfAborted();
   return {protocol:DIAGNOSTIC_PROTOCOL,assessment:status.phase==='closed'?'unavailable':findings.some(item=>item.severity==='error')?'attention-required':'ready',
     identity:{mode,applicationId:scope.applicationId??null,historyId:scope.historyId??null,deviceId:scope.deviceId??null,endpoint},
-    scope,status,definition,participation,capabilities:endpoint?.capabilities??null,...(endpoints?{endpoints}:{}),findings};
+    scope,status,definition,participation,transport,capabilities:endpoint?.capabilities??null,...(endpoints?{endpoints}:{}),findings};
 }
