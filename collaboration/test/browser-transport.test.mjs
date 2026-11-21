@@ -169,9 +169,15 @@ for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay', 'late']
   test(`virtual elected liveness: ${mode} preserves the authenticated bounded fence`, async t => {
     const advance = virtualClock(t);
     let response;
-    const f = await fixture({ onRequest: value => { response = value; } });
+    const f = await fixture({ onRequest: value => {
+      if (value.frame.value === 'liveness baseline') value.port.postMessage({ id: value.frame.id, value: value.frame.value });
+      else response = value;
+    } });
     t.after(async () => { t.mock.timers.reset(); await f.close(); });
     const client = await f.attach({ livenessTimeoutMs: 15000, requestTimeoutMs: 30000 });
+    // This authenticated response follows the opening ping in the encrypted
+    // queues. Drain it before pausing output or advancing the virtual clock.
+    await client.send(9999, 'liveness baseline');
     let request = ['finite', 'hung', 'continuous'].includes(mode) ? { startedAt: 0, deadline: 30000 } : null;
     client.endpoint.bindRequestSource({ get boundedRequest() { return request; } });
     const replay = f.traffic.find(packet => packet.type === 'sealed' && packet.direction === 'owner');
@@ -181,12 +187,15 @@ for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay', 'late']
     await until(() => response, 'owner received private request');
     for (let second = 1; second <= (mode === 'late' ? 40 : mode === 'finite' ? 17 : ['hung', 'continuous'].includes(mode) ? 30 : 15); second++) {
       if (mode === 'late' && second === 10) request = { startedAt: 10000, deadline: 40000 };
-      if (mode === 'continuous' && second < 30) {
+      if (mode === 'continuous' && second >= 6 && second < 30) {
+        // Keep the initial call through the first 5s pulse. Replacing it before
+        // that sample would legitimately select a later first grace window.
         request = { startedAt: second * 1000, deadline: second * 1000 + 30000 };
         client.port.postMessage({ id: second + 1, value: 'new caller request' });
         // A caller can copy route/owner IDs, but cannot supply authenticated progress.
         f.observer.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'frame', ownerInstanceId: f.announcement.ownerInstanceId,
           route: client.route, frame: { id: second, value: 'fake reply' } });
+        await until(() => response?.frame.id === second + 1, 'owner received replacement request');
       }
       if (mode === 'replay') f.observer.postMessage(replay);
       await advance(1000);
