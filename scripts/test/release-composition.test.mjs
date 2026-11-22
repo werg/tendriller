@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { prepareRelease, REQUIRED_SDK_EXPORTS, sourceIdentity, verifyReleaseArtifacts } from '../release-composition.mjs';
 import { runtimeManifest } from '../runtime-manifest.mjs';
-import { TUTORIAL_FILES } from '../onboarding.mjs';
+import { TUTORIAL_FILES, tutorialSource, copyTutorialSources } from '../onboarding.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n');
@@ -22,8 +22,8 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
   writeFileSync(join(root, '.gitignore'), 'dist/\n.build/\nserver/public/\n');
   writeJson(join(root, 'package.json'), { version, devDependencies: { '@chronolog/peer-session': 'file:session.tgz' } });
   for (const file of TUTORIAL_FILES) {
-    mkdirSync(dirname(join(root, 'docs/tutorial', file)), { recursive: true });
-    writeFileSync(join(root, 'docs/tutorial', file), `fixture ${file}\n`);
+    mkdirSync(dirname(tutorialSource(root, file)), { recursive: true });
+    writeFileSync(tutorialSource(root, file), `fixture ${file}\n`);
   }
   const chronolog = { repository: 'werg/chronolog-db', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40),
     dirty: false, profile: 'peer-generation-v1' };
@@ -72,8 +72,10 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
       source_commit: identity.source, source_tree: identity.sourceTree, dirty: false, artifacts: [artifact('tools')] });
   };
   packAll();
+  const starterSources = join(root, '.build/starter-source');
+  copyTutorialSources(root, starterSources);
   execFileSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-czf',
-    join(root, 'server/public/downloads/tendriller-first-app.tgz'), '-C', join(root, 'docs/tutorial'), ...TUTORIAL_FILES]);
+    join(root, 'server/public/downloads/tendriller-first-app.tgz'), '-C', starterSources, ...TUTORIAL_FILES]);
   return { root, version, contract, identity, runtime, files, packAll, prepare: () => prepareRelease({ root, version, contract }),
     editProof(name, changes) { const path = join(root, 'dist', name); writeJson(path, { ...readJson(path), ...changes }); } };
 }
@@ -89,7 +91,7 @@ test('release identity binds actual package bytes, starter, companion and comple
   assert.equal(composition.chronolog.session.source, 'a'.repeat(40));
   const archive = join(f.root, 'dist', manifest.first_app.file);
   for (const file of TUTORIAL_FILES)
-    assert.equal(execFileSync('tar', ['-xOf', archive, file]).toString(), readFileSync(join(f.root, 'docs/tutorial', file), 'utf8'));
+    assert.equal(execFileSync('tar', ['-xOf', archive, file]).toString(), readFileSync(tutorialSource(f.root, file), 'utf8'));
   for (const component of composition.components.filter(item => ['sdk', 'tools', 'session'].includes(item.role)))
     assert.equal(digest(execFileSync('tar', ['-xOf', archive, `packages/${component.file}`])), component.sha256);
   const bytes = digest(readFileSync(archive));
@@ -154,7 +156,7 @@ test('release rejects a stale served starter even with a matching core version',
   mkdirSync(directory);
   for (const file of TUTORIAL_FILES) {
     mkdirSync(dirname(join(directory, file)), { recursive: true });
-    writeFileSync(join(directory, file), file === 'assistant.mjs' ? 'stale' : readFileSync(join(f.root, 'docs/tutorial', file)));
+    writeFileSync(join(directory, file), file === 'assistant.mjs' ? 'stale' : readFileSync(tutorialSource(f.root, file)));
   }
   execFileSync('tar', ['-czf', join(f.root, 'server/public/downloads/tendriller-first-app.tgz'), '-C', directory, ...TUTORIAL_FILES]);
   assert.throws(f.prepare, /Starter source is stale: assistant.mjs/);
@@ -254,4 +256,15 @@ test('sealing omits development runtime residue while restored-graph checks reje
 test('release requires the native factory and normal exact RTC dependency in the default session', t => {
   assert.throws(fixture(t, { nativeRtc: false }).prepare, /default session must include native RTC/);
   assert.throws(fixture(t, { werift: '^0.27.0' }).prepare, /normal pinned werift@0.27.0 dependency/);
+});
+
+
+test('release rejects a stale deployment launcher in the served starter before sealing the kit', t => {
+  const f = fixture(t), directory = join(f.root, '.build/stale-deploy');
+  for (const file of TUTORIAL_FILES) {
+    mkdirSync(dirname(join(directory, file)), { recursive: true });
+    writeFileSync(join(directory, file), file === 'deploy/participant.mjs' ? 'stale launcher' : readFileSync(tutorialSource(f.root, file)));
+  }
+  execFileSync('tar', ['-czf', join(f.root, 'server/public/downloads/tendriller-first-app.tgz'), '-C', directory, ...TUTORIAL_FILES]);
+  assert.throws(f.prepare, /Starter source is stale: deploy\/participant\.mjs/);
 });

@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { TUTORIAL_DOWNLOAD, TUTORIAL_FILES } from './onboarding.mjs';
+import { TUTORIAL_DOWNLOAD, TUTORIAL_FILES, tutorialSource, copyTutorialSources } from './onboarding.mjs';
 import { verifyRuntimeManifest } from './runtime-manifest.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -225,7 +225,7 @@ export function prepareRelease({ root, version, contract }) {
     fail('The starter must contain exactly the maintained source allowlist. Rebuild onboarding assets.');
   for (const file of TUTORIAL_FILES) {
     const bytes = execFileSync('tar', ['-xOf', starterPath, file]);
-    if (digest(bytes) !== digest(readFileSync(join(root, 'docs/tutorial', file)))) fail(`Starter source is stale: ${file}`);
+    if (digest(bytes) !== digest(readFileSync(tutorialSource(root, file)))) fail(`Starter source is stale: ${file}`);
   }
   copyFileSync(starterPath, join(dist, starterFile));
   components.push(component(dist, 'starter', starterFile));
@@ -238,10 +238,7 @@ export function prepareRelease({ root, version, contract }) {
   try {
     // Exact allowlisted bytes checked against the served starter above. Never
     // package an existing developer application directory or its private state.
-    for (const file of TUTORIAL_FILES) {
-      mkdirSync(dirname(join(directory, file)), { recursive: true });
-      copyFileSync(join(root, 'docs/tutorial', file), join(directory, file));
-    }
+    copyTutorialSources(root, directory);
     copyFileSync(join(dist, 'composition.json'), join(directory, 'composition.json'));
     mkdirSync(join(directory, 'packages'));
     const localPackages = components.filter(item => ['sdk', 'tools', 'session'].includes(item.role));

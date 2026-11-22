@@ -1,7 +1,8 @@
 import { ARCHIVE_METADATA } from './archive-metadata.mjs';
 // Package public onboarding from the same maintained sources used in the repo.
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 export const ONBOARDING_DOCS = Object.freeze([
@@ -24,7 +25,26 @@ export const TUTORIAL_FILES = Object.freeze([
   'sql/.gitignore', 'sql/README.md', 'sql/package.json', 'sql/local.mjs',
   'sql/engine.mjs', 'sql/domain.mjs', 'sql/setup.mjs', 'sql/session.mjs',
   'sql/demo.mjs', 'sql/worker.mjs', 'sql/index.html', 'sql/page.mjs', 'sql/build.mjs',
+  'deploy/participant.mjs', 'deploy/Dockerfile', 'deploy/Dockerfile.dockerignore',
+  'deploy/tendriller.service', 'deploy/dev.tendriller.participant.plist', 'deploy/install-windows-task.ps1',
 ]);
+// Root deploy/ is the single maintained source; only its explicit public files ship.
+export const TUTORIAL_SOURCES = Object.freeze(Object.fromEntries(TUTORIAL_FILES.map(file =>
+  [file, file.startsWith('deploy/') ? file : `docs/tutorial/${file}`])));
+
+export function tutorialSource(root, file) {
+  if (!Object.hasOwn(TUTORIAL_SOURCES, file)) throw Error(`Unlisted starter source: ${file}`);
+  return join(root, TUTORIAL_SOURCES[file]);
+}
+
+export function copyTutorialSources(root, destination) {
+  for (const file of TUTORIAL_FILES) {
+    const target = join(destination, file);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(tutorialSource(root, file), target);
+  }
+}
+
 export const TUTORIAL_DOWNLOAD = '/downloads/tendriller-first-app.tgz';
 
 export function combinedOnboarding(root) {
@@ -45,6 +65,10 @@ export function buildOnboardingAssets(root, out) {
   mkdirSync(join(out, 'downloads'), { recursive: true });
   // Explicit inputs prevent accidental publication of local devices, handles,
   // keys, node_modules or generated UI from a developer's tutorial checkout.
-  execFileSync('tar', [...ARCHIVE_METADATA,
-    '-czf', join(out, TUTORIAL_DOWNLOAD.slice(1)), '-C', join(root, 'docs/tutorial'), ...TUTORIAL_FILES]);
+  const staged = mkdtempSync(join(tmpdir(), 'tendriller-starter-'));
+  try {
+    copyTutorialSources(root, staged);
+    execFileSync('tar', [...ARCHIVE_METADATA,
+      '-czf', join(out, TUTORIAL_DOWNLOAD.slice(1)), '-C', staged, ...TUTORIAL_FILES]);
+  } finally { rmSync(staged, { recursive: true, force: true }); }
 }
