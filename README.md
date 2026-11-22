@@ -30,6 +30,8 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Connect ChatGPT](docs/CHATGPT_INTEGRATION.md) — plugin install, workspace sharing, and per-app consent
 - [Cloudflare assistant](docs/CLOUDFLARE_ASSISTANT.md) — hosting and enrolling apps on `/mcp`
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — failing stages, safe retries, and next actions
+- [Upgrade from rc.16](docs/MIGRATION_RC16_RC17.md) — breaking host, SDK, and starter changes with before/after examples
+- [Test a release locally](docs/LOCAL_HOST.md) — verified local host, test owner, publication, and pairing
 
 ### Reference and operations
 - [Agent guide](agent.md) — concise agent workflow and contract reference
@@ -41,6 +43,7 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Peer connections](docs/PEER_CONNECTIONS.md) — discovery, invitations, direct WebRTC, and relay fallback
 - [CLI and preview](docs/tools/CLI.md) — public session CLI and authored-file preview
 - [Development](docs/DEVELOPMENT.md) — building, testing, and artifact provenance
+- [Changelog](CHANGELOG.md) — version tags, source releases, and migration notes
 - [Operations](docs/OPERATIONS.md) — fresh provisioning, storage baseline, readiness, and staging checks
 - [Three-repository qualification](docs/RELEASE_COMPOSITION.md) — composing core, Chronolog, and cookbooks
 - [Agent onboarding acceptance](docs/AGENT_ONBOARDING_TEST.md) — cold-start domain evaluation

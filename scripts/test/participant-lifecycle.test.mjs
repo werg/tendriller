@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { superviseParticipant } from '../../docs/tutorial/helpers/participant-lifecycle.mjs';
+import { watchApplicationSetup } from '../../contract/setup-watch.mjs';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const approved = (revision = 'approval-1') => ({ type: 'setup', version: 1, assistant: { proposalId: 'a'.repeat(64), approved: true, revision } });
 function fixture(options = {}) {
@@ -196,4 +197,33 @@ test('late optional activity errors after replacement or shutdown are fenced fro
  assert(!f.reports.some(x=>x.state==='adapter_activity_failed'));assert.equal(f.adapters[1].closes,0);
  await f.lifecycle.close();activities[1].reject(Error('late shutdown activity'));await flush();
  assert(!f.reports.some(x=>x.state==='adapter_activity_failed'));
+});
+
+test('a missing application keeps reporting setup failures without closing the channel or claiming revocation', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let probes = 0, ended = false;
+  const f = fixture({ watch: callbacks => watchApplicationSetup({
+    api: 'https://service.example/api/t/aaaaaaaaaaaa', token: 'tk_' + 'a'.repeat(32), ...callbacks,
+    openSocket() { throw Error('upgrade rejected'); },
+    fetcher: async () => { probes++; return Response.json({ error: { code: 'not_found', message: 'No such tendril' } }, { status: 404 }); },
+  }) });
+  f.lifecycle.done.then(() => { ended = true; });
+  await flush(); t.mock.timers.tick(1000); await flush();
+  const failures = f.reports.filter(x => x.setup?.state === 'application_not_found');
+  assert.equal(probes, 2); assert.equal(failures.length, 2); assert.equal(ended, false);
+  assert.deepEqual(failures.map(x => x.setup.retryInMs), [1000, 2000]);
+  assert(failures.every(x => /Recreate the application/.test(x.setup.next)));
+  assert(!f.reports.some(x => x.state === 'setup_channel_closed' || x.setup?.state === 'access_revoked'));
+  assert(!JSON.stringify(f.reports).includes('Restore this retained host credential'));
+  await f.lifecycle.close(); assert.equal(ended, true);
+});
+
+test('an unexpectedly closed setup channel preserves missing-application recovery guidance', async () => {
+  const f = fixture();
+  f.status({ state: 'application_not_found', retryInMs: 1000, next: 'Recreate the application and retain the old device storage.' });
+  f.status({ state: 'closed' }); f.watchClosed(); await flush();
+  const status = f.reports.find(x => x.state === 'setup_channel_closed');
+  assert.equal(status.reason, 'application_not_found'); assert.match(status.next, /Recreate the application/);
+  assert(!status.next.includes('credential'));
+  await f.lifecycle.close();
 });

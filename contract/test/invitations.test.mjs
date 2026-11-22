@@ -5,7 +5,10 @@ import { createPeerInvitationListener, createPeersClient, PEER_INVITATION_LIMITS
 class Socket extends EventTarget {
   readyState = 1; sent = []; closed;
   send(data) { this.sent.push(JSON.parse(data)); }
-  close(code, reason) { this.readyState = 3; this.closed = { code, reason }; this.dispatchEvent(Object.assign(new Event('close'), { code, reason })); }
+  close(code, reason) {
+    if (code !== 1000 && !(code >= 3000 && code <= 4999)) throw new DOMException('Invalid code', 'InvalidAccessError');
+    this.readyState = 3; this.closed = { code, reason }; this.dispatchEvent(Object.assign(new Event('close'), { code, reason }));
+  }
   receive(value) { this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(value) })); }
 }
 
@@ -28,6 +31,7 @@ test('invitation queues, cancellation, malformed frames and opening deadlines re
   socket.receive({ t: 'ready', version: 1, peerId: 'target' }); await listener.ready;
   for (let i = 0; i <= PEER_INVITATION_LIMITS.pending; i++) socket.receive({ t: 'invitation', channel: `channel-${i}`, requesterPeerId: 'source' });
   assert.equal((await listener.closed).code, 1008);
+  assert.equal(socket.closed.code, 1000);
   await assert.rejects(listener.invitations[Symbol.asyncIterator]().next(), { code: 'invitation_backpressure' });
   const abort = new AbortController(), cancelled = createPeerInvitationListener(new Socket(), 'target', { signal: abort.signal });
   abort.abort(); await assert.rejects(cancelled.ready, { name: 'AbortError' }); await cancelled.closed;
@@ -36,6 +40,22 @@ test('invitation queues, cancellation, malformed frames and opening deadlines re
   const invalidSocket = new Socket(), invalid = createPeerInvitationListener(invalidSocket, 'target');
   invalidSocket.receive({ t: 'ready', version: 1, peerId: 'somebody-else' });
   await assert.rejects(invalid.ready, { code: 'invalid_invitation' });
+});
+
+test('acknowledgement failures retain their cause even when closing the transport also fails', async t => {
+  for (const closeThrows of [false, true]) await t.test(`close throws: ${closeThrows}`, async () => {
+    const socket = new Socket(), listener = createPeerInvitationListener(socket, 'target');
+    socket.receive({ t: 'ready', version: 1, peerId: 'target' }); await listener.ready;
+    const cause = Error('Acknowledgement send failed');
+    socket.send = () => { throw cause; };
+    if (closeThrows) socket.close = () => { throw Error('Transport already failed'); };
+    socket.receive({ t: 'invitation', channel: 'fresh', requesterPeerId: 'source' });
+    await assert.rejects(listener.invitations[Symbol.asyncIterator]().next(), error => error === cause);
+    assert.deepEqual(await listener.closed, { code: 1011, reason: 'Invitation acknowledgement failed' });
+    assert.equal(listener.stats.closed, true);
+    if (!closeThrows) assert.equal(socket.closed.code, 1000);
+    assert.doesNotThrow(() => listener.close());
+  });
 });
 
 test('the public client preserves private protocol credentials and only posts on demand', async () => {

@@ -74,6 +74,8 @@ artifact versions in the private build record so mismatches are visible.
 | `/api/service` returns HTML, a challenge, or `invalid_response` | Check that the URL is the service origin, not a page or agent API URL. Inspect HTTP status and content type. If ordinary automated clients are blocked before the Worker, report the host access problem with a redacted response. Do not treat it as a successful descriptor. |
 | `APPLICATION_WORKER_METADATA_INVALID` when attaching to a running owner | Check for a mixed package/owner composition, including an older owner missing current participation metadata. Preserve device identities, storage and original signed operation references. Close old app tabs, update native participants and the signed UI to the same qualified public package composition, then reopen the retained profile. Do not reset or clear app data. |
 | `contract_mismatch`, missing package export, or incompatible definition/engine artifacts | Compare the host contract, core release and exact installed artifact manifests. Follow [artifact acquisition](tools/ARTIFACTS.md) and the [release composition](RELEASE_COMPOSITION.md) record. Supply a compatible public Chronolog session archive; the core host's control dependency is not the full native/browser session package. Do not assume that unrelated latest package versions compose. |
+| `Unknown advertisement field` after a host upgrade | An older participant may still send `ttlMs`; current discovery uses an authenticated presence socket. Upgrade native and browser packages and copied starter code together from the selected host's exact kit, republish, and close old tabs before reopening the same retained profile. Follow the [rc.16 migration guide](MIGRATION_RC16_RC17.md#discovery-advertisements-no-longer-have-leases); removing one field from the old renewal loop is insufficient. |
+| `application_not_found`, or `404` with `error.code: "not_found"` and `No such tendril` from the application's authenticated `self` endpoint | Confirm the original service origin and handle. A deleted application or a fresh host storage deployment needs [explicit recreation](MIGRATION_RC16_RC17.md#recreate-after-a-host-storage-reset): retain the old private project, install the matching kit in a fresh directory, run `npm run create` and `npm run init` again, then publish and enroll using the new handle. Host credential renewal cannot restore a missing application. This is separate from data recovery. |
 | `unauthorized` from an agent API | Check the saved handle's service/API and current bearer token. For a claimed application, use [same-app owner delegation](BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss) to retain a reviewed credential with `npm run host:adopt`; do not create another page or signer. |
 | `setup_expired` or `setup_binding_inactive` after owner claim | The 24-hour setup credential or its original OAuth grant is no longer active. Have the same owner open `page_url` + `_tendril/manage`, choose **Add agent**, review the native scopes and save its one-use code privately. Redeem it with `npm run host:adopt -- SERVICE_ORIGIN .tendriller/delegation-code.txt`, then reopen the retained native device and verify existing data. Claim does not extend the setup credential. |
 | `setup_recovery_required` from `npm run create` | The directory retains setup, signer or recovery evidence without a usable handle. Preserve it and restore or continue the original application. A reviewed host credential plus the matching retained descriptor resumes the same page even when the original handle is missing; incomplete or conflicting evidence cannot authorize replacement creation. |
@@ -89,6 +91,16 @@ artifact versions in the private build record so mismatches are visible.
 
 Unclaimed pages expire after 24 hours. Creating another page is a new application
 setup decision, not a recovery mechanism for an existing claimed application.
+After a confirmed host storage reset, the old application itself is absent;
+follow the explicit recreation route above. Older rc.17 clients can incorrectly
+label this missing-application `404` as `access_revoked` and stop reconnecting.
+The corrected setup watcher reports `application_not_found` with recreation
+guidance and retries after 1, 2, 4 seconds, up to a 60-second maximum. A still-running
+process with that status is unhealthy. Retries do not create an app or change its
+handle; intentionally recreate and restart with the new handle, or have the host
+operator restore the original application. `401`/`403` remain access failures.
+These checks run after connection failure, not as polling on a healthy idle socket.
+
 The account-linked setup credential has its own 24-hour deadline even for a
 claimed resident page. The starter retains reviewed host credentials separately
 from the initial handle, so `project()` and terminal attachment resume the same

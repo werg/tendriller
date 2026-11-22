@@ -64,6 +64,8 @@ jobs:
         env:
           TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
       - run: npm --prefix tools ci
+      - name: Qualify the local host with the exact release artifacts
+        run: node scripts/test-dev-host.mjs --artifacts "$GITHUB_WORKSPACE/dist"
       # Actions mounts a temporary home whose owner can differ from the image's
       # active user. Firefox requires its existing home to belong to that user.
       - name: Match temporary home ownership to the container user

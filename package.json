@@ -6,6 +6,7 @@
     "build": "node scripts/build.mjs && node scripts/package-engine.mjs",
     "build:deploy": "node scripts/build.mjs --clean-public && node scripts/package-engine.mjs",
     "dev": "node scripts/dev.mjs",
+    "dev:host": "node scripts/dev-host.mjs",
     "test": "npm run build && npm run test:server",
     "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
     "test:tts": "playwright test --config runtime/test/tts/playwright.config.ts",

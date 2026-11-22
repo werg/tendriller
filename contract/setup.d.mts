@@ -1,4 +1,4 @@
-export { watchApplicationSetup, validateSetupNotice, SETUP_WATCH_PROTOCOL, type SetupNotice } from './setup-watch.mjs';
+export { watchApplicationSetup, validateSetupNotice, SETUP_WATCH_PROTOCOL, type SetupNotice, type SetupWatchStatus } from './setup-watch.mjs';
 import type { PageHandle } from './client.mjs';
 export interface SetupInput { operationId: string; name?: string; mode?: 'interactive' | 'dashboard'; applicationId?: string }
 export interface SetupRequest { operationId: string; name: string; mode: 'interactive' | 'dashboard'; applicationId: string; credentialCommitment: string }

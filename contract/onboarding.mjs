@@ -38,6 +38,8 @@ export function onboardingDescriptor(base) {
       collaboration: url('/docs/MULTIPARTICIPANT.md'),
       agent_bindings: url('/docs/AGENT_BINDINGS.md'),
       troubleshooting: url(ASSISTANT_GUIDES.troubleshooting),
+      migration: url('/docs/MIGRATION_RC16_RC17.md'),
+      local_host: url('/docs/LOCAL_HOST.md'),
       application: url('/docs/APPLICATION_BACKENDS.md'),
       browser: url('/docs/BROWSER_API.md'),
       cli: url('/docs/tools/CLI.md'),
