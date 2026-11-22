@@ -201,13 +201,15 @@ it('publishes a complete signed app before claim and adopts its existing keys an
   expect(await inDO(h.id, t => ({ lifetime: t.db.get('lifetime', 'ad_hoc'), expires: t.expiresAt() })))
     .toMatchObject({ lifetime: 'ad_hoc', expires: expect.any(Number) });
   expect((await req(h.page_url, { anonymous: true, redirect: 'manual' })).status).toBe(302);
-  const tooLarge = await signPublicationManifest({ ...prepared.publication.payload,
+  await expect(signPublicationManifest({ ...prepared.publication.payload,
     operationId: 'oversized-before-claim', revision: 1, previous: prepared.publication.id,
     files: prepared.publication.payload.files.map(file => file.path === 'engine/sqlite3.wasm'
-      ? { ...file, size: RESOURCE_LIMITS.file_bytes + 1 } : file) }, author);
-  const refused = await peerApi(h, 'publication/publish', { publication: tooLarge, assets: [] });
-  expect(refused.status).toBe(413);
-  expect(await refused.json()).toMatchObject({ error: { code: 'peer_publication_file_too_large' } });
+      ? { ...file, size: RESOURCE_LIMITS.file_bytes + 1 } : file) }, author))
+    .rejects.toMatchObject({ code: 'PEER_INTEGER_INVALID' });
+  expect(await inDO(h.id, t => {
+    try { t.checkLocalStorage(RESOURCE_LIMITS.page_bytes); return null; }
+    catch (error) { return (error as { code: string }).code; }
+  })).toBe('quota');
   await evictDurableObject(env.TENDRIL.get(env.TENDRIL.idFromName(h.id)));
   expect(await peerApiJson(h, 'publication/read')).toEqual(receipt);
   const accountId = 'prepared-owner-' + crypto.randomUUID();
