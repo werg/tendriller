@@ -8,7 +8,7 @@ import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tuto
 import { buildPage } from '../../docs/tutorial/sql/build.mjs';
 import { registerLifecycleFlush } from '../../docs/tutorial/helpers/diagnostics-panel.mjs';
 
-const snapshot = () => ({ revision: { generation: 'g1', sequence: 7 },
+const snapshot = () => ({ revision: { generation: 'g1', point: { sequence: 7 } },
   value: { stock: [{ id: 'source', units: 10 }, { id: 'destination', units: 0 }] } });
 const reference = { applicationId: 'app', historyId: 'history', author: 'device', operationId: 'op' };
 function retained() { return { ...transferIntent(snapshot(), { from: 'source', to: 'destination', units: 2 }, 'op'), reference }; }
@@ -23,8 +23,8 @@ function session(state = null) {
 }
 test('transfer captures the actual domain fields and clones the reviewed revision', () => {
   const before = snapshot(), intent = transferIntent(before, { from: 'source', to: 'destination', units: 2 }, 'op');
-  before.revision.sequence++; before.value.stock[0].units = 3;
-  assert.deepEqual(intent, { id: 'op', command: 'transfer', basedOn: { generation: 'g1', sequence: 7 },
+  before.revision.point.sequence++; before.value.stock[0].units = 3;
+  assert.deepEqual(intent, { id: 'op', command: 'transfer', basedOn: { generation: 'g1', point: { sequence: 7 } },
     input: { transferId: 'op', from: 'source', to: 'destination', units: 2, expectedSource: 10, expectedDestination: 0 } });
   for (const units of [0, -1, 1.2, NaN, 11, 1_000_001]) assert.throws(() => transferIntent(snapshot(), { from: 'source', to: 'destination', units }, 'op'));
   assert.throws(() => transferIntent(snapshot(), { from: 'pantry', to: 'counter', units: 1 }, 'op'));
