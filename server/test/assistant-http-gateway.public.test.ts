@@ -87,7 +87,7 @@ it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP co
         const hit = recordedOps.get(msg.operationId);
         client.send(JSON.stringify({
           type: 'result', id: msg.id,
-          value: hit ? { state: { status: 'applied', outcome: msg.input.text === 'reject' ? 'rejected' : 'accepted', operationId: msg.operationId, author: device.publicKey, generation: gen.id, sequence: 1, attemptId: 'att-1' } } : null,
+          value: hit ? { state: { status: 'applied', outcome: hit.text === 'reject' ? 'rejected' : 'accepted', operationId: msg.operationId, author: device.publicKey, generation: gen.id, sequence: 1, attemptId: 'att-1' } } : null,
         }));
       }
     });
