@@ -269,7 +269,8 @@ credentials cannot claim the page for them. An unclaimed page expires after
 24 hours; report a blocked claim explicitly.
 Claim does not change publication capacity: the service's `/api/service`
 advertises one resource policy for both prepared and claimed pages, currently
-8 MiB per authored file. Publish the complete signed graph, including a matching
+8 MiB per authored file and 25 MiB per page, including retained control bytes.
+Publish the complete signed graph, including a matching
 SQL WASM engine when used, before asking the owner to sign in. Signed publication
 and service-wide storage/admission limits still apply.
 This is a real provisioning step to attempt now, rather than a prerequisite to

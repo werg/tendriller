@@ -10,6 +10,7 @@ import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expir
 import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
 import { applicationSelection } from '../../contract/application.mjs';
 import { selectedApplication } from './application';
+import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 import runtimeRelease from './runtime-release.json';
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
@@ -631,9 +632,9 @@ export class Tendril extends DurableObject<Env> {
   }
 
   checkLocalStorage(additional: number): void {
-    const limit = this.db.get<string | null>("owner_account", null) ? 25 * MB : 2 * MB;
-    const used = this.storageUsed() + (this.db.get('owner_account', null) ? 0
-      : this.db.one<{ n: number }>('SELECT COALESCE(SUM(length(value)),0) AS n FROM participant_records')!.n);
+    const limit = RESOURCE_LIMITS.page_bytes;
+    const used = this.storageUsed()
+      + this.db.one<{ n: number }>('SELECT COALESCE(SUM(length(value)),0) AS n FROM participant_records')!.n;
     if (used + additional > limit) throw new HttpError(413, "quota", "Tendril storage limit reached", { limit, used });
   }
 
