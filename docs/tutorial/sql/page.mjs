@@ -38,7 +38,7 @@ function showState(state) {
   }
 }
 function renderStock(snapshot) {
-  $('#revision-label').textContent = `Generation ${snapshot.revision.generation.slice(0, 12)} · seq ${snapshot.revision.sequence}`;
+  $('#revision-label').textContent = `Generation ${snapshot.revision.generation.slice(0, 12)} · seq ${snapshot.revision.point.sequence}`;
   const tbody = $('#stock-rows'); tbody.replaceChildren();
   for (const row of snapshot.value.stock) {
     const tr = document.createElement('tr');

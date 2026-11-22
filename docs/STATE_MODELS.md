@@ -214,13 +214,20 @@ the application's pinned authority and reader grant, and calls
 and creates an OPFS SAH pool. The session's command/query/operation/replication
 interface is unchanged.
 
-**This SQL directory supplies a native starter and a browser Worker, not a
-second finished browser UI.** Shared Notes remains the runnable page/UI
-reference. An authored inventory UI must render the `inventory` query and
-capture its two reviewed balances when preparing a `transfer` command. Keep
-the unresolved operation's ID, input and `basedOn` revision across reloads, and
-reuse them on an uncertain retry. Do not wire Shared Notes' `addNote` form to
-this definition or claim a browser SQL run from native results.
+The SQL directory includes a guarded inventory UI. It renders the `inventory`
+query's `id`/`units` rows and captures both displayed balances for `transfer`.
+The original operation ID, input and `basedOn` revision remain in the browser's
+view store across an uncertain response or reload. Inspect or retry that exact
+intent; recovery never silently replaces it. The diagnostics download contains
+status only, not a device checkpoint.
+
+After native initialization, build with the matching `--sql-browser` package
+and four verified WASM files under `sql/engine/`, then publish the complete
+`sql/page/` output. The build rejects missing or mismatched setup and engine
+artifacts and removes incomplete output. Enroll the browser public key in the
+same SQL application before opening its data. See the shipped
+[SQL tutorial README](tutorial/sql/README.md) for the complete procedure. Native
+SQL results alone do not qualify browser behavior.
 
 For a browser build, prepare both optional package entries and the separate
 engine assets from the same pinned checkout. The maintained toolchain is
