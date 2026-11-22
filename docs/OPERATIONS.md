@@ -97,9 +97,15 @@ source and manifest.
    [route replacement API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/update/):
    `PUT /zones/{zone_id}/workers/routes/{route_id}` with the unchanged `pattern`
    and the selected new `script`. Read back ID, pattern, owner and fail-open
-   setting. For production's service domain, use the
-   [domain attachment API](https://developers.cloudflare.com/api/resources/workers/subresources/domains/methods/update/)
-   to attach `tendriller.dev` to `tendriller-production-s11`, then verify ownership.
+   setting. For production's service domain, the generic account-domain attachment
+   API can return HTTP 409 while the old Worker owns the hostname. After the
+   wildcard route points at the verified new Worker, use Wrangler's custom-domain
+   replacement from the exact restored graph and canonical production config,
+   keeping crons empty in the temporary config. Noninteractive Wrangler overrides
+   the existing origin through its domain changeset/records operation; inventory
+   and restrict the targets to `tendriller.dev` first. Pass the same source and
+   composition variables with `--no-bundle`, then verify domain ownership and
+   the current module bytes again. No domain deletion is needed.
    **Do not delete/unassign routes first**, move the domain to the bootstrap,
    or alter unrelated/shared bindings.
 
@@ -137,18 +143,26 @@ publication. Normal deployment must restore the sealed graph without rebuilding
 its bytes and find all selected routes already owned by s11.
 
 Require staging smoke, remote staging acceptance and MCP qualification green.
-Only then repeat qualified upload/verified takeover for production, restore
-`PRODUCTION_READY=true`, and dispatch the normal workflow again on the unchanged
-master. Its own staging acceptance and MCP gates still precede its production
-job. Verify actual production readiness source/runtime/composition and creation
-availability; a configured READY flag alone proves none of them. All restored
-artifact bytes must match the immutable public graph; stop on any mismatch.
+Only then repeat qualified upload/verified takeover for production and restore
+`PRODUCTION_READY=true`. When the completed same-source run already has all
+release, publication and staging gates green, rerun its production job by its
+actual job ID (`POST /repos/{owner}/{repo}/actions/jobs/{job_id}/rerun`). Verify
+that this creates a real production deployment with the original manifest and
+successful predecessors; a skipped job is not success. If the job cannot be
+rerun, dispatch the normal workflow again on unchanged master. Its own staging
+acceptance and MCP gates still precede production. Verify production readiness
+source/runtime/composition, creation availability and the post-deployment MCP
+qualification; a READY flag alone proves none of them. All restored artifact
+bytes must match the immutable public graph; stop on any mismatch.
 
-After qualified s11 production is healthy, remove the **old-s10** Workers' cron
-triggers with the
+For each environment, once its verified new engine owns all its public bindings
+and smoke checks pass, retire that environment's **old-s10** cron before normal
+deployment installs the new cron. This ordering frees the old slot when the
+account is at its free-plan cron limit; do not remove a still-active production
+schedule while preparing staging. Remove only the retired Worker's triggers with the
 [schedules API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/methods/update/)
 (`PUT /accounts/{account_id}/workers/scripts/{old_script}/schedules`, body `[]`)
-and verify both schedules are empty. Verify no public routes, custom domains,
+and verify its old schedule is empty. After both cutovers, verify no public routes, custom domains,
 workers.dev or preview endpoints remain attached to those exact retired Workers.
 Only remove known obsolete bindings still owned by them; never detach s11 or
 unknown shared resources. Old stored resources may remain inert; this requires
