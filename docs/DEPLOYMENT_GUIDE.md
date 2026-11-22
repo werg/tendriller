@@ -16,7 +16,7 @@ from its other participant before reporting it available.
 | Container | While its orchestrator runs it | Volume mounted at `/app/.tendriller` |
 
 A remote MCP client still needs a running authorized application participant.
-The request adapter in `@tendriller/core/serverless` is an application integration
+The [request adapter](SERVERLESS_HOST.md) in `@tendriller/core/serverless` is an application integration
 primitive; it does not automatically turn an ordinary starter into an on-demand
 Chronolog participant. Do not describe a template as qualifying such a deployment.
 

@@ -1,7 +1,7 @@
 export declare const ASSISTANT_GUIDES: Readonly<{
   start: '/docs/MCP_AGENT_GUIDE.md'; build: '/docs/BUILD_AN_APP.md';
   capabilities: '/docs/CAPABILITIES.md'; connect: '/docs/CLOUDFLARE_ASSISTANT.md';
-  delivery: '/docs/AGENT_DELIVERY.md'; troubleshooting: '/docs/TROUBLESHOOTING.md';
+  deployment: '/docs/DEPLOYMENT_GUIDE.md'; delivery: '/docs/AGENT_DELIVERY.md'; troubleshooting: '/docs/TROUBLESHOOTING.md';
 }>;
 export interface OnboardingDescriptor {
   schema_version: number; name: string; contract: number; core_release: string;

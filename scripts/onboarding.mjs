@@ -10,7 +10,7 @@ export const ONBOARDING_DOCS = Object.freeze([
   'docs/STATE_MODELS.md', 'docs/SESSION_BOOTSTRAP.md',
   'docs/MULTIPARTICIPANT.md', 'docs/TRANSPORT_DIAGNOSTICS.md', 'docs/AGENT_BINDINGS.md', 'docs/APPLICATION_SIGNALS.md',
   'docs/CHATGPT_INTEGRATION.md', 'docs/CLOUDFLARE_ASSISTANT.md',
-  'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md',
+  'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md', 'docs/DEPLOYMENT_GUIDE.md', 'docs/SERVERLESS_HOST.md',
 ]);
 export const TUTORIAL_FILES = Object.freeze([
   '.gitignore', 'README.md', 'package.json', 'domain.mjs', 'setup.mjs', 'account-setup.mjs', 'host-adoption.mjs',

@@ -46,6 +46,9 @@ Page creation or package installation alone is not completion. Verify a browser 
 
 ## Tools, examples, and verification
 
+- [Deployment](https://tendriller.dev/docs/DEPLOYMENT_GUIDE.md): choose a retained participant host, process lifetime and resume route.
+- [Request-driven hosting](https://tendriller.dev/docs/SERVERLESS_HOST.md): explicit storage-owner serialization, authorization and bounded execution.
+
 - [CLI](https://tendriller.dev/docs/tools/CLI.md): `tendril guide --server URL`, `tendril service --server URL`, and session inspection.
 - [Preview](https://tendriller.dev/docs/tools/PREVIEW.md): static and live authored-file preview.
 - [Releases](https://github.com/werg/tendriller/releases): SDK, runtime, tools, and first-app kit archives.

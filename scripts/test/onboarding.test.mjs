@@ -33,7 +33,7 @@ test('MCP, published onboarding and installable skill retain one current discove
   }
   const skill = readFileSync(join(root, 'plugin/skills/connect-tendriller/SKILL.md'), 'utf8');
   assert(skill.includes('tendril_guide') && skill.includes('serviceOrigin'));
-  for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery'])
+  for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery', 'deployment'])
     assert(skill.includes(`topic: "${topic}"`), `Packaged skill lost the ${topic} guide route`);
   for (const path of ['AGENTS.md', 'agent.md', 'docs/MCP_AGENT_GUIDE.md',
     'plugin/skills/connect-tendriller/SKILL.md']) {
