@@ -340,7 +340,7 @@ async function elected(url,options,handshake,deadline){
       const attempt=new AbortController(),expired=new SessionError('OWNER_PROVISIONAL_TIMEOUT','The provisional owner did not authenticate');
       const abort=()=>attempt.abort(opening.signal.reason);
       opening.signal.addEventListener('abort',abort,{once:true});
-      const attemptTimer=setTimeout(()=>attempt.abort(expired),Math.min(3000,Math.max(0,deadline-performance.now())));
+      const attemptTimer=setTimeout(()=>attempt.abort(expired),Math.ceil(Math.min(3000,Math.max(0,deadline-performance.now()))));
       let session;
       try{
         transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,

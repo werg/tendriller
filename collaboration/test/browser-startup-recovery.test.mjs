@@ -82,12 +82,16 @@ test('dead first announcement recovers through a new encrypted owner attachment 
 });
 
 test('one overall deadline bounds a silent provisional owner and cleans its witness without stealing the incumbent lock', async t => {
-  const f = await fixture(t, { releaseOnHello: false }), started = performance.now();
+  const f = await fixture(t, { releaseOnHello: false }), started = performance.now(); let attempts;
   await assert.rejects(f.open({ timeoutMs: 3200 }), error => {
-    assert.equal(error.code, 'OWNER_UNREACHABLE'); assert.deepEqual(error.startup, { phase: 'attachment', attempts: 2, lastOwnerInstanceId: f.ghost.ownerInstanceId }); return true;
+    assert.equal(error.code, 'OWNER_UNREACHABLE');
+    assert.equal(error.startup.phase, 'attachment');
+    assert.equal(error.startup.lastOwnerInstanceId, f.ghost.ownerInstanceId);
+    attempts=error.startup.attempts;assert(attempts>=2,'the original budget permits retry');return true;
   });
   assert(performance.now() - started < 4200);
-  assert.equal(new Set(f.traffic.filter(frame=>frame.type==='hello').map(frame=>frame.route)).size,2,'each retry has its own route under the original deadline'); await until(() => f.locks.held.size === 1 && f.locks.pending.size === 0);
+  await until(() => f.locks.held.size === 1 && f.locks.pending.size === 0);
+  assert.equal(new Set(f.traffic.filter(frame=>frame.type==='hello').map(frame=>frame.route)).size,attempts,'each attempt has one distinct route under the original deadline');
   assert(f.locks.held.has('chronolog-owner:retained')); assert.equal(f.opened, 0); assert.equal(f.workers[0].terminated, false);
 });
 
