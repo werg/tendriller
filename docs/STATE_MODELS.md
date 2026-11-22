@@ -226,7 +226,7 @@ and four verified WASM files under `sql/engine/`, then publish the complete
 `sql/page/` output. The build rejects missing or mismatched setup and engine
 artifacts and removes incomplete output. Enroll the browser public key in the
 same SQL application before opening its data. See the shipped
-[SQL tutorial README](tutorial/sql/README.md) for the complete procedure. Native
+`sql/README.md` in the [downloaded starter](https://tendriller.dev/downloads/tendriller-first-app.tgz) for the complete procedure. Native
 SQL results alone do not qualify browser behavior.
 
 For a browser build, prepare both optional package entries and the separate
