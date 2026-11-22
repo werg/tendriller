@@ -17,6 +17,13 @@ Construct `createServerlessHostAdapter` with all of:
   isolate-local promise queue or independent locks in separate Workers do not
   meet this requirement. A host may cancel queued admission using `signal`; it
   must never release an acquired lock while `work()` is still running.
+- `retainTask(task)`, registering the physical work with the embedding execution
+  context **before it starts**. In a Cloudflare Worker, bind this to
+  `task => ctx.waitUntil(task)` on a per-request adapter. A module-global Promise
+  does not extend a Worker request's lifetime. Other hosts must supply their real
+  task-lifetime guarantee; a no-op is valid only if that guarantee already covers
+  the entire physical operation and cleanup. The hook receives an observed,
+  settling Promise, so request errors are not duplicated in host error logs.
 - `openSession({store, signal})`, returning `{session, flush?, close?}`. Flush
   persists the original saved intents even on command wait failure. Close releases
   that request's owned resources; it does not rotate the device identity.
@@ -24,11 +31,15 @@ Construct `createServerlessHostAdapter` with all of:
 The default response deadline is 30 seconds (`timeoutMs`, maximum 120 seconds).
 JSON bodies and GET query input are limited to 64 KiB (`maxBodyBytes`, maximum
 1 MiB); a batch has at most 64 commands. Supply a distinct retained `operationId`
-for each batch item. Batches execute sequentially, **not atomically**.
+for each batch item. IDs follow the canonical 512-code-unit nonempty text limit
+(no control characters below U+0020). Every command must supply its own `input`
+field; use `null` deliberately for a command without arguments. Batches execute sequentially, **not atomically**.
 
 A deadline bounds the response, not a promise that non-cooperative engine work has
 stopped. Physical work retains its owner lock until it settles and flush/close
-complete. This can block subsequent requests; it cannot admit a second writer.
+complete. The embedding execution context must retain that physical task. A generic
+Promise or a lock alone does not guarantee post-response execution in a Worker.
+This can block subsequent requests; it cannot admit a second writer.
 Do not treat cancellation as permission to start another device or unlock storage.
 
 Command responses distinguish `recorded`, `applied`, `rejected`, `unknown`,

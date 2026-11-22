@@ -30,6 +30,8 @@ export interface ServerlessHostAdapterOptions {
   /** Must cover all isolates/processes sharing these bytes; held through flush and close. */
   readonly withLock: ServerlessOwnerLock;
   readonly authorize: (request: Request) => boolean | Promise<boolean>;
+  /** Register physical execution with the host lifetime (for example ctx.waitUntil), before work starts. */
+  readonly retainTask: (task: Promise<void>) => void;
   readonly openSession: (options: {readonly store: ReturnType<typeof createTransactionalBytesStore>; readonly signal: AbortSignal}) => Promise<ServerlessOwnedSession>;
   /** Whole-request response deadline, 1..120000 ms; default 30000. */
   readonly timeoutMs?: number;
