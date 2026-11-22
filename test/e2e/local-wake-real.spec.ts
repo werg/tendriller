@@ -1,4 +1,6 @@
 import { test, expect } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { serveWakePipeline } from "./wake-pipeline-fixture";
 
 test("pinned model detects a wake phrase through the actual voice adapter and AudioWorklet", async ({ page }, info) => {
@@ -24,6 +26,9 @@ test("pinned model detects a wake phrase through the actual voice adapter and Au
     await page.locator("#stop").click();
     expect(await page.evaluate(() => (window as any).wakePipeline.voice.microphoneActive)).toBe(false);
     expect(await page.evaluate(() => (window as any).wakePipeline.streams.every((stream: MediaStream) => stream.getTracks().every(track => track.readyState === "ended")))).toBe(true);
-    await info.attach("wake-model-pipeline", { body: JSON.stringify({ ...result, phrase: fixture.fixture.phrase, fixture_sha256: fixture.fixture.sha256, evidence: "Real browser, AudioWorklet and pinned speech model; injected synthetic WAV microphone source, no physical-device accuracy claim." }, null, 2), contentType: "application/json" });
+    const evidencePath = info.outputPath("wake-model-pipeline.json");
+    await mkdir(dirname(evidencePath), { recursive: true });
+    await writeFile(evidencePath, JSON.stringify({ ...result, phrase: fixture.fixture.phrase, fixture_sha256: fixture.fixture.sha256, evidence: "Real browser, AudioWorklet and pinned speech model; injected synthetic WAV microphone source, no physical-device accuracy claim." }, null, 2) + "\n");
+    await info.attach("wake-model-pipeline", { path: evidencePath, contentType: "application/json" });
   } finally { await page.evaluate(() => (window as any).wakePipeline?.close()).catch(() => {}); await fixture.close(); }
 });

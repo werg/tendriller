@@ -95,6 +95,11 @@ Those tests do **not** measure recognition accuracy, physical microphone access,
 operating-system permission UI, or mobile power use. The mobile WebKit project
 is a browser engine with an iPhone viewport; it is not an iPhone running Safari.
 
+Linux CI provides a clocked PulseAudio null sink for Firefox's real AudioContext.
+This preserves browser activation checks while allowing the synthetic audio
+graph to run without speakers attached to the runner. Successful pipeline and
+model runs retain their JSON evidence in the uploaded test artifacts.
+
 The runtime unit tests exercise detector, worker, resource verification, and
 cancellation behavior independently of this presentation suite. The pinned
 speech integration test downloads/verifies the real assets and runs actual

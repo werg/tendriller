@@ -1,8 +1,16 @@
 import { test, expect } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { serveWakePipeline } from "../../test/e2e/wake-pipeline-fixture";
 
 test("real browser AudioWorklet segments microphone PCM, sends one bounded utterance and releases tracks", async ({ page }, info) => {
   const fixture = await serveWakePipeline(false);
+  const evidence = async (name: string, value: unknown) => {
+    const path = info.outputPath(name + ".json");
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(value, null, 2) + "\n");
+    await info.attach(name, { path, contentType: "application/json" });
+  };
   try {
     await page.goto(fixture.origin);
     await expect(page.locator("#start")).toBeEnabled();
@@ -13,7 +21,7 @@ test("real browser AudioWorklet segments microphone PCM, sends one bounded utter
     if (!supported) {
       const stopped = await page.evaluate(() => ({ active: (window as any).wakePipeline.voice.microphoneActive, requests: (window as any).wakePipeline.starts, message: (window as any).wakePipeline.error }));
       expect(stopped.active).toBe(false); expect(stopped.requests).toBe(0); expect(stopped.message).toBeTruthy();
-      await info.attach("unsupported-audio", { body: JSON.stringify(stopped), contentType: "application/json" });
+      await evidence("unsupported-audio", stopped);
       return;
     }
     expect(await page.evaluate(() => (window as any).wakePipeline.error)).toBeNull();
@@ -26,6 +34,6 @@ test("real browser AudioWorklet segments microphone PCM, sends one bounded utter
     expect(await page.evaluate(() => (window as any).wakePipeline.streams.every((stream: MediaStream) => stream.getTracks().every(track => track.readyState === "ended")))).toBe(true);
     expect(await page.evaluate(() => (window as any).wakePipeline.voice.microphoneActive)).toBe(false);
     expect(fixture.requests.every(request => request.method === "GET")).toBe(true);
-    await info.attach("pcm-evidence", { body: JSON.stringify({ fixture_sha256: fixture.fixture.sha256, stats, environment: info.project.name, inference: "deterministic fixture; actual browser audio capture graph and AudioWorklet", physical_microphone: false }), contentType: "application/json" });
+    await evidence("pcm-evidence", { fixture_sha256: fixture.fixture.sha256, stats, environment: info.project.name, inference: "deterministic fixture; actual browser audio capture graph and AudioWorklet", physical_microphone: false });
   } finally { await page.evaluate(() => (window as any).wakePipeline?.close()).catch(() => {}); await fixture.close(); }
 });

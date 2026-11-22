@@ -1,8 +1,8 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test, expect } from "@playwright/test";
 import { wordErrorRate } from "./speech-fixture.mjs";
 
@@ -85,7 +85,10 @@ test("pinned Cactus WASM and Whistle model recognize silence and a known spoken 
       } finally { worker.terminate(); }
     }, config);
     const errorRate = wordErrorRate(fixture.transcript, messages.spoken?.text || "");
-    await info.attach("speech-results", { body: JSON.stringify({ ...messages, expected: fixture.transcript, word_error_rate: errorRate, fixture_sha256: fixture.sha256, runtime_id: runtime.id, worker_sha256: hash(worker), script_sha256: hash(js), wasm_sha256: hash(wasm), model_sha256: hash(model), evidence: "Synthetic recorded WAV replay in real Chromium; no physical microphone/device accuracy qualification." }, null, 2), contentType: "application/json" });
+    const evidencePath = info.outputPath("speech-results.json");
+    await mkdir(dirname(evidencePath), { recursive: true });
+    await writeFile(evidencePath, JSON.stringify({ ...messages, expected: fixture.transcript, word_error_rate: errorRate, fixture_sha256: fixture.sha256, runtime_id: runtime.id, worker_sha256: hash(worker), script_sha256: hash(js), wasm_sha256: hash(wasm), model_sha256: hash(model), evidence: "Synthetic recorded WAV replay in real Chromium; no physical microphone/device accuracy qualification." }, null, 2) + "\n");
+    await info.attach("speech-results", { path: evidencePath, contentType: "application/json" });
     expect(messages.ready).toMatchObject({ ready: true });
     expect(messages.silence).toMatchObject({ text: "" });
     expect(messages.spoken?.error).toBeUndefined();

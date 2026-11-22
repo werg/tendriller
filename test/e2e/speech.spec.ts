@@ -41,7 +41,14 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
   const h = await createPage();
   try {
     await page.addInitScript(() => {
-      (window as any).__speechE2E = { decoderCalls: 0, transcribes: 0 };
+      (window as any).__speechE2E = { decoderCalls: 0, transcribes: 0, recordedBytes: 0 };
+      const NativeRecorder = window.MediaRecorder;
+      (window as any).MediaRecorder = class extends NativeRecorder {
+        constructor(stream: MediaStream, options?: MediaRecorderOptions) {
+          super(stream, options);
+          this.addEventListener("dataavailable", event => { (window as any).__speechE2E.recordedBytes += event.data.size; });
+        }
+      };
       const NativeWorker = window.Worker;
       (window as any).Worker = class {
         onmessage: ((event: MessageEvent) => void) | null = null;
@@ -72,6 +79,9 @@ test("microphone starts after consent and transcribes via OfflineAudioContext wi
     await expect(mic).toBeVisible();
     await mic.click();
     await expect(mic).toHaveAttribute("aria-pressed", "true");
+    // Observe encoded input instead of racing an immediate finish against the
+    // real MediaRecorder's first chunk. No fixed sleep or fabricated audio.
+    await expect.poll(() => page.evaluate(() => (window as any).__speechE2E.recordedBytes)).toBeGreaterThan(0);
     await mic.click();
     await expect.poll(async () => (await page.evaluate(() => (window as any).__speechE2E)).transcribes).toBe(1);
     await expect(page.locator("#draft")).toHaveValue("recognized voice");

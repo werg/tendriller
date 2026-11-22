@@ -9,6 +9,7 @@ on:
       - "contract/voice.d.mts"
       - "contract/index.d.mts"
       - "scripts/build.mjs"
+      - "scripts/start-ci-audio.sh"
       - "test/e2e/wake-pipeline-fixture.ts"
       - "test/fixtures/speech/**"
       - "package.json"
@@ -20,6 +21,7 @@ on:
       - "contract/voice.d.mts"
       - "contract/index.d.mts"
       - "scripts/build.mjs"
+      - "scripts/start-ci-audio.sh"
       - "test/e2e/wake-pipeline-fixture.ts"
       - "test/fixtures/speech/**"
       - "package.json"
@@ -45,6 +47,11 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx playwright install --with-deps chromium firefox webkit
+      - name: Start Linux audio output for real Web Audio tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pulseaudio pulseaudio-utils
+          bash scripts/start-ci-audio.sh
       # Real browser DOM, trusted input, AudioContext and AudioWorklet behavior.
       # Inference is deterministic in this suite. The separate pinned-model job
       # tests real WASM inference; neither job claims physical iOS/microphone QA.
