@@ -8,6 +8,7 @@ import type { Tendril } from './tendril';
 import { createVersion, storeContent, type VersionFile } from './files';
 import { HttpError } from './http';
 import { withPeerControlAuthority } from './peer-generations';
+import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 
 const HEAD = 'peer_publication_head';
 const CONTENT_LIMIT = PUBLICATION_LIMITS.bytes;
@@ -86,7 +87,7 @@ export async function exchangePeerPublication(t: Tendril, principal: Principal, 
 
     const files = new Map<string, VersionFile>(), required = new Map<string, PublicationFile>();
     for (const file of publication.payload.files) {
-      if (file.size > t.fileLimit()) throw new HttpError(413, 'peer_publication_file_too_large');
+      if (file.size > RESOURCE_LIMITS.file_bytes) throw new HttpError(413, 'peer_publication_file_too_large');
       files.set(file.path, { path: file.path, hash: file.hash, size: file.size, type: file.type });
       const duplicate = required.get(file.hash);
       if (duplicate && duplicate.size !== file.size) throw new HttpError(400, 'peer_publication_assets_invalid');

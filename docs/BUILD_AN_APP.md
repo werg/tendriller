@@ -267,6 +267,11 @@ publish and start the participant before
 asking the owner to open the ready URL and sign in. Agent
 credentials cannot claim the page for them. An unclaimed page expires after
 24 hours; report a blocked claim explicitly.
+Claim does not change publication capacity: the service's `/api/service`
+advertises one resource policy for both prepared and claimed pages, currently
+8 MiB per authored file. Publish the complete signed graph, including a matching
+SQL WASM engine when used, before asking the owner to sign in. Signed publication
+and service-wide storage/admission limits still apply.
 This is a real provisioning step to attempt now, rather than a prerequisite to
 defer until after delivering a local artifact. If it fails, retain the actual
 response and name its missing permission or capability.

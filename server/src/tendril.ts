@@ -10,7 +10,6 @@ import { isRelaySocket, handleRelayMessage, closeRelay, nextRelayDeadline, expir
 import { isInvitationSocket, handleInvitationMessage } from './peer-invitations';
 import { applicationSelection } from '../../contract/application.mjs';
 import { selectedApplication } from './application';
-import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 import runtimeRelease from './runtime-release.json';
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
@@ -362,7 +361,6 @@ export class Tendril extends DurableObject<Env> {
       lifetime: this.db.get("lifetime", "ad_hoc"),
       mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
-      unclaimed_limits: { request_body_bytes: RESOURCE_LIMITS.unclaimed_body_bytes },
       next_step: "Prepare and publish the signed app now with this private setup handle; do not wait for claim or ask the person to reply claimed. Give the human owner page_url while you configure authority, select the initial generation, build and publish, start the native participant and prepare any assistant-access proposal. The owner signs in to access the ready page within 24 hours. Their sign-in retains the prepared authority, publication and keys, makes the configured page resident within account quotas, and activates any prepared permission review. Browser device enrollment and assistant consent remain explicit.",
       application,
       agent_setup: {
@@ -624,9 +622,6 @@ export class Tendril extends DurableObject<Env> {
     return { shared_by: this.db.get<string>('owner_label', 'Tendriller user'), ...runtimeRelease.features };
   }
 
-  fileLimit(): number {
-    return this.db.get<string | null>("owner_account", null) ? RESOURCE_LIMITS.file_bytes : RESOURCE_LIMITS.unclaimed_file_bytes;
-  }
 
 
 

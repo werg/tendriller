@@ -53,6 +53,9 @@ See [transport diagnostics](https://tendriller.dev/docs/TRANSPORT_DIAGNOSTICS.md
 
 Build and publish the SQL page from this directory after same-origin readiness
 and package acquisition described in the state-model guide:
+Prepare all four engine files and publish the complete page before owner
+sign-in. Prepared and claimed pages use the same advertised file-size budget;
+claim is not a prerequisite for uploading the WASM engine.
 
 ```sh
 npm run create -- https://YOUR_SERVICE VERIFIED_OWNER_EMAIL "Shared inventory"
