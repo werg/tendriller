@@ -324,6 +324,7 @@ test('local Stdio MCP handler and ServerlessHostAdapter execute unified five-ste
   const kv = new Map();
   const adapter = createServerlessHostAdapter({
     applicationId: '33'.repeat(32),
+    withLock: (_id, work) => work(),
     storage: { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v); }, list: async () => [...kv.keys()] },
     authorize: req => req.headers.get('Authorization') === 'Bearer ok',
     openSession: async () => ({ session: fakeSession }),
