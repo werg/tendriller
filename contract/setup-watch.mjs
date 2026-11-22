@@ -30,38 +30,58 @@ export function watchApplicationSetup({ api, token, signal, onChange, onStatus =
       try {
         const transport = socket = openSocket(url.href, [SETUP_WATCH_PROTOCOL, token]);
         await new Promise(resolve => {
-          let timer;
-          const done = code => { clearTimeout(timer); lifetime.removeEventListener('abort', abort); terminal = code === 4003 || code === 1008;
-            resolve(); };
-          const abort = () => { try { transport.close(); } finally { done(1000); } };
-          timer = setTimeout(abort, 7000);
-          lifetime.addEventListener('abort', abort, { once: true });
-          transport.addEventListener('close', event => done(event.code), { once: true });
-          transport.addEventListener('open', () => { clearTimeout(timer); onStatus({ state: 'connected', futureWakeVerified: false }); }, { once: true });
-          transport.addEventListener('message', event => {
+          let timer, ended = false;
+          const done = code => {
+            if (ended) return;
+            ended = true; clearTimeout(timer); lifetime.removeEventListener('abort', abort);
+            for (const [type, listener] of listeners) transport.removeEventListener(type, listener);
+            terminal = code === 4003 || code === 1008; resolve();
+          };
+          const close = (code = 1000, reason) => {
+            done(code);
+            // A client cannot send the semantic 1008/1011 close codes. Settle
+            // locally first so even a synchronous close event preserves them.
+            try { if (transport.readyState < 2) transport.close(1000, reason); }
+            catch { /* Completion and cleanup must survive a failed close. */ }
+          };
+          const abort = () => close();
+          const disconnected = event => done(event.code);
+          const opened = () => { clearTimeout(timer); onStatus({ state: 'connected', futureWakeVerified: false }); };
+          const errored = () => close(1011, 'Setup transport failed');
+          const message = event => {
             if (lifetime.aborted || socket !== transport) return;
             try {
               if (typeof event.data !== 'string' || new TextEncoder().encode(event.data).length > 1024) throw fail('INVALID_SETUP_NOTICE');
               const notice = validateSetupNotice(JSON.parse(event.data)); failures = 0;
               Promise.resolve(onChange(notice)).catch(() => onStatus({ state: 'handler_failed' }));
-            } catch { terminal = true; transport.close(1008, 'Invalid setup notice'); }
-          });
+            } catch { close(1008, 'Invalid setup notice'); }
+          };
+          const listeners = [['close', disconnected], ['open', opened], ['error', errored], ['message', message]];
+          timer = setTimeout(abort, 7000);
+          lifetime.addEventListener('abort', abort, { once: true });
+          for (const [type, listener] of listeners) transport.addEventListener(type, listener);
           if (lifetime.aborted) abort();
         });
       } catch { /* bounded reconnect backoff for transport outages */ }
       finally { socket = undefined; }
       if (lifetime.aborted || terminal) break;
-      // WebSocket upgrade errors hide HTTP status. Classify definitive revoked
-      // credentials only after failure, never by polling a healthy idle socket.
+      // WebSocket upgrade errors hide HTTP status. Diagnose failed sockets,
+      // never poll a healthy idle one. A missing host application cannot be
+      // repaired by restoring its credential, and must remain visibly retrying.
+      let applicationMissing = false;
       try {
         const response = await fetcher(api + '/self', { headers: { Authorization: 'Bearer ' + token }, redirect: 'error',
           signal: AbortSignal.any([lifetime, AbortSignal.timeout(5000)]) });
-        await response.body?.cancel();
-        if ([401, 403, 404].includes(response.status)) { onStatus({ state: 'access_revoked' }); break; }
+        if (response.status === 404) applicationMissing = (await response.json())?.error?.code === 'not_found';
+        else await response.body?.cancel();
+        if ([401, 403].includes(response.status)) { onStatus({ state: 'access_revoked' }); break; }
       } catch { /* network failure remains retryable */ }
       if (lifetime.aborted) break;
       const retryInMs = Math.min(60000, 1000 * 2 ** Math.min(failures++, 6));
-      onStatus({ state: 'reconnecting', retryInMs }); await pause(retryInMs, lifetime);
+      if (applicationMissing) onStatus({ state: 'application_not_found', retryInMs,
+        next: 'Recreate the application in a new project directory: run npm run create and npm run init, publish, then restart with the new host handle. Keep the original private project, device storage and history for recovery.' });
+      else onStatus({ state: 'reconnecting', retryInMs });
+      await pause(retryInMs, lifetime);
     }
     onStatus({ state: 'closed', futureWakeVerified: false });
   })();

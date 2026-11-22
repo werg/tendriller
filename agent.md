@@ -16,6 +16,12 @@ browser Worker and a signed publication. Use its complete files first, then adap
 the commands and UI to the user's task. The [session bootstrap](docs/SESSION_BOOTSTRAP.md)
 explains the setup code. This page is the concise workflow and contract reference.
 
+For an existing rc.16 application, read the
+[rc.17 migration guide](docs/MIGRATION_RC16_RC17.md) before changing its packages.
+It covers missing applications after a host storage reset, SDK imports and copied
+starter helpers. Use the [local release host](docs/LOCAL_HOST.md) to test a chosen
+release's complete setup and connection flow with a separate test application.
+
 For several views or agents, use [multi-participant composition](docs/MULTIPARTICIPANT.md)
 and [scoped agent bindings](docs/AGENT_BINDINGS.md). Browser pages attach to one
 retained owner; native tools attach or deliberately choose a separately enrolled

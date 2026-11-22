@@ -24,6 +24,21 @@ enrollment, signed publication, reopen and exact retry. The source is in
 [first-app source archive](/downloads/tendriller-first-app.tgz).
 There is no missing `deployment.mjs` to invent.
 
+**Upgrading an existing app?** Read the
+[rc.16 to rc.17 migration guide](MIGRATION_RC16_RC17.md) for host storage resets,
+changed SDK imports, participation and starter helpers. A `404` `not_found`
+(`No such tendril`) from the original application's authenticated `self` endpoint
+means that handle's application is absent; restoring a credential cannot recreate
+it. Confirm the service origin and follow the guide's
+[recreation procedure](MIGRATION_RC16_RC17.md#recreate-after-a-host-storage-reset),
+preserving the original private project and using a fresh directory for the
+replacement. Do not treat an uncertain request or ordinary access failure as a
+confirmed deletion.
+
+To test an app against a release before touching production, use the
+[local release host](LOCAL_HOST.md). It provides a verified host and synthetic
+test owner for the same create, init, publish, pair and connect flow below.
+
 When adapting this starter to a checklist or another application, first verify its
 unchanged connected loop, then change the domain and UI. Keep device identity
 independent of titles: the page, pairing Worker and application Worker all import

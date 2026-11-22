@@ -8,6 +8,8 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run build:tools` | Package the session CLI, authored-file packer and explicit preview against built public artifacts |
 | `npm run build:artifacts` | Build all four public archives |
 | `npm run dev` | Build assets and run the local account/page host |
+| `npm run dev:host -- --release FULL_SOURCE_SHA --open` | Run a verified release's packed host and assets with retained local storage and a synthetic owner; see [local release testing](LOCAL_HOST.md) |
+| `node scripts/test-dev-host.mjs --artifacts /absolute/release-assets` | After sealing a release: verify local-host startup, synthetic browser sign-in, owner claim, assets and retained state across restart |
 | `npm run test:onboarding` | After a build: validate the discovery documentation graph, generated combined guide and safe tutorial archive |
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |

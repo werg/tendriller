@@ -31,8 +31,12 @@ export function createPeerInvitationListener(socket, peerId, { signal, timeoutMs
     waiting?.(); waiting = undefined; resolveClosed(Object.freeze({ code, reason }));
   };
   const close = (cause, code = 1000, reason = 'Invitation listener closed') => {
+    if (ended) return;
     finish(cause, code, reason);
-    if (socket.readyState < 2) socket.close(code, reason.slice(0, 100));
+    // WHATWG clients may send only 1000 or 3000–4999. Keep the semantic
+    // failure code in `closed`, independently of the transport close frame.
+    try { if (socket.readyState < 2) socket.close(1000, reason.slice(0, 100)); }
+    catch { /* Local completion must not throw from a transport event handler. */ }
   };
   const message = event => {
     if (ended) return;

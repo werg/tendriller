@@ -2,7 +2,7 @@
 export function superviseParticipant({ owned, signal, watch, startAdapter, prepareAdapter, proposalId, onOnline, report = () => {},
   retryMs = 1000, maxRetryMs = 60000 }) {
   const stop = new AbortController(), lifetime = AbortSignal.any([owned.session.signal, stop.signal, signal].filter(Boolean));
-  let notice, dirty = false, processing, adapter, adapterAbort;
+  let notice, setupFailure, dirty = false, processing, adapter, adapterAbort;
   let expiryTimer, retryTimer, failures = 0, adapterTask, adapterKey, blockedKey;
   let optionalTimer, optionalFailures = 0, preparing, optionalStopped = false;
   const optionalStop = new AbortController(), optionalLifetime = AbortSignal.any([lifetime, optionalStop.signal]);
@@ -156,14 +156,18 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
     }
   }
   const channel = watch({ signal: lifetime, onChange: reconcile, onStatus: status => {
+    if (['access_revoked', 'application_not_found'].includes(status.state)) setupFailure = status;
+    else if (status.state === 'connected') setupFailure = undefined;
     report({ setup: status, participantRunning: true });
     if (status.state === 'access_revoked') stopOptional('access_revoked');
   } });
   track(Promise.resolve(channel.closed).then(() => {
     if (!lifetime.aborted) {
       stopOptional('setup_channel_closed');
-      report({ state: 'setup_channel_closed', participantRunning: true,
-        next: 'Restore this retained host credential and reconnect; the application remains running.' });
+      report({ state: 'setup_channel_closed', participantRunning: true, reason: setupFailure?.state,
+        next: setupFailure?.next ?? (setupFailure?.state === 'access_revoked'
+          ? 'Restore this retained host credential and reconnect; the application remains running.'
+          : 'Reconnect the setup channel and inspect its preceding status if it remains unavailable; the local application remains running.') });
     }
   }));
   prepare();

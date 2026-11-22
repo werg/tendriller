@@ -19,6 +19,8 @@
 - [MCP agent start](https://tendriller.dev/docs/MCP_AGENT_GUIDE.md): `tendril_guide`, account-bound setup (`prepare_tendril_setup`), and connecting existing apps.
 - [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md#agent-walkthrough): plugin install, workspace sharing, account linking, per-app consent, and event delivery.
 - [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): failing stages, safe retries, and exact next actions.
+- [rc.16 to rc.17 migration](https://tendriller.dev/docs/MIGRATION_RC16_RC17.md): source releases, host resets, package changes, and before/after code.
+- [Test a release locally](https://tendriller.dev/docs/LOCAL_HOST.md): verified packed host, synthetic owner, and create/init/publish/pair/connect before production.
 
 Page creation or package installation alone is not completion. Verify a browser command in a native read, a native command in the browser, persistence after reload, and the signed publication receipt. Keep private identity, keys, and exact operation IDs outside published UI.
 
