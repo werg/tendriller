@@ -9,8 +9,8 @@ import { parseArgs } from "node:util";
 
 // contract/release-verify.mjs
 import { createHash } from "node:crypto";
-import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, unlinkSync, lstatSync } from "node:fs";
-import { dirname, join, resolve, parse } from "node:path";
+import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, unlinkSync, lstatSync, realpathSync } from "node:fs";
+import { dirname, join, resolve, parse, basename } from "node:path";
 
 // contract/archive.mjs
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -240,12 +240,12 @@ function writeVerifiedFileAtomic(targetPath, bytes) {
   const temp = `${full}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const fd = openSync(temp, "wx", 420);
   try {
-    writeFileSync(fd, bytes);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  try {
+    try {
+      writeFileSync(fd, bytes);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(temp, full);
   } catch (error) {
     try {
@@ -267,7 +267,9 @@ function extractVerifiedTarGz(archiveBytes, targetDirectory, {
     if (sha256Hex(bytes) !== expectedSha256) throw fail2("release_bytes_mismatch", "Archive SHA-256 digest mismatch.");
   }
   const files = unpackTarGz(bytes, { ...maxTotalBytes === void 0 ? {} : { maxTotalBytes } });
-  const destinationRoot = resolve(targetDirectory);
+  const requestedRoot = resolve(targetDirectory);
+  mkdirSync(dirname(requestedRoot), { recursive: true });
+  const destinationRoot = join(realpathSync(dirname(requestedRoot)), basename(requestedRoot));
   ensureSafeDirectory(destinationRoot);
   const written = [];
   const preserved = [];
