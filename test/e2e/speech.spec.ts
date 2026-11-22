@@ -10,8 +10,9 @@ test("speech Worker passes model length as bigint to an i64 WASM export", async 
   const source = await readFile("dist/runtime/assets/voice-worker.js", "utf8");
   const wasm = new Uint8Array([1, 2, 3]);
   const model = new Uint8Array([4, 5, 6, 7]);
+  const engineScript = new TextEncoder().encode("/* verified fixture script */");
   await page.goto("https://service.localhost:8790/health");
-  const result = await page.evaluate(async ({ script, wasmBytes, wasmHash, modelBytes, modelHash }) => {
+  const result = await page.evaluate(async ({ script, scriptBytes, scriptHash, wasmBytes, wasmHash, modelBytes, modelHash }) => {
     const preamble = `
       var createCactus = async () => ({
         _malloc: () => 1, _free: () => {}, HEAPU8: new Uint8Array(1024),
@@ -19,7 +20,7 @@ test("speech Worker passes model length as bigint to an i64 WASM export", async 
         ccall: () => 0, UTF8ToString: () => '{"text":""}'
       });
       self.importScripts = () => {};
-      self.fetch = async url => new Response(new Uint8Array(String(url).endsWith('cactus.wasm') ? ${JSON.stringify(wasmBytes)} : ${JSON.stringify(modelBytes)}));
+      self.fetch = async url => new Response(new Uint8Array(String(url).endsWith('cactus.js') ? ${JSON.stringify(scriptBytes)} : String(url).endsWith('cactus.wasm') ? ${JSON.stringify(wasmBytes)} : ${JSON.stringify(modelBytes)}));
     `;
     const worker = new Worker(URL.createObjectURL(new Blob([preamble, script], { type: "text/javascript" })));
     const messages: any[] = [];
@@ -27,11 +28,11 @@ test("speech Worker passes model length as bigint to an i64 WASM export", async 
       worker.onerror = event => reject(new Error(event.message));
       worker.onmessage = event => { messages.push(event.data); if (event.data.ready || event.data.error) resolve(event.data); };
     });
-    worker.postMessage({ id: 1, action: "init", engine: { script: "/fixture/cactus.js", wasm: "/fixture/cactus.wasm", wasm_sha256: wasmHash }, modelUrl: "/whistle.cact", modelSha256: modelHash });
+    worker.postMessage({ id: 1, action: "init", engine: { script: "https://fixture.test/cactus.js", script_sha256: scriptHash, wasm: "https://fixture.test/cactus.wasm", wasm_sha256: wasmHash }, modelUrl: "https://fixture.test/whistle.cact", modelSha256: modelHash });
     const response = await settled;
     worker.terminate();
     return { response, messages };
-  }, { script: source, wasmBytes: [...wasm], wasmHash: hash(wasm), modelBytes: [...model], modelHash: hash(model) });
+  }, { script: source, scriptBytes: [...engineScript], scriptHash: hash(engineScript), wasmBytes: [...wasm], wasmHash: hash(wasm), modelBytes: [...model], modelHash: hash(model) });
   expect(result.response).toMatchObject({ id: 1, ready: true });
   expect(result.messages.some((m: any) => m.progress?.includes("Verifying"))).toBe(true);
 });

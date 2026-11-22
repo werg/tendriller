@@ -1,0 +1,58 @@
+name: Foreground wake word
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "runtime/**"
+      - "contract/voice.d.mts"
+      - "contract/index.d.mts"
+      - "scripts/build.mjs"
+      - "test/e2e/wake-pipeline-fixture.ts"
+      - "test/fixtures/speech/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/wake-word.yml"
+  pull_request:
+    paths:
+      - "runtime/**"
+      - "contract/voice.d.mts"
+      - "contract/index.d.mts"
+      - "scripts/build.mjs"
+      - "test/e2e/wake-pipeline-fixture.ts"
+      - "test/fixtures/speech/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/wake-word.yml"
+
+permissions:
+  contents: read
+concurrency:
+  group: foreground-wake-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-controls-and-pcm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium firefox webkit
+      # Real browser DOM, trusted input, AudioContext and AudioWorklet behavior.
+      # Inference is deterministic in this suite. The separate pinned-model job
+      # tests real WASM inference; neither job claims physical iOS/microphone QA.
+      - run: npm run test:e2e:voice-controls
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: foreground-wake-browser-results
+          path: test-results/voice-controls/
+          include-hidden-files: true
+          if-no-files-found: ignore

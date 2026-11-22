@@ -44,6 +44,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   };
 
   let disposed = false;
+  let voiceControls: { dispose(): void; element: HTMLElement } | null = null;
   // The runtime owns the page's one publication watch and switches at the next safe
   // point. This card is shown while a switch waits (unsaved input, an application hold,
   // or a page pinned to its release), with an explicit way to open the update now.
@@ -84,6 +85,32 @@ export function mountUtility(api: RuntimeApi): () => void {
     element("p", "Save this version’s page files on this device. Your app’s data and connections are managed separately.", "note"), save, savedMessage);
   offline.hidden = !api.identity.publication || !("serviceWorker" in navigator);
   panel.append(offline);
+  const voiceSection = element("section", undefined, "section");
+  const voiceSetup = button("Set up voice input", "secondary");
+  const voiceMessage = element("p", undefined, "message"); voiceMessage.hidden = true; voiceMessage.setAttribute("role", "status");
+  const voiceContainer = element("div");
+  voiceSection.append(element("h3", "Speech input"),
+    element("p", "Tap to talk or choose an optional wake word while this page is visible. Review and copy your text. Microphone access and model downloads need your consent.", "note"),
+    voiceSetup, voiceMessage, voiceContainer);
+  panel.append(voiceSection);
+  voiceSetup.addEventListener("click", async event => {
+    if (!event.isTrusted || disposed || voiceSetup.disabled) return;
+    voiceSetup.disabled = true; voiceMessage.hidden = false; voiceMessage.textContent = "Opening voice controls…";
+    try {
+      // Optional presentation loads only on a local click. The headless kernel,
+      // initial page graph and service worker never acquire a microphone.
+      const url = api.assetUrl("voice.mjs");
+      const module = await import(/* @vite-ignore */ url) as typeof import("./voice/index");
+      if (disposed) return;
+      voiceControls = module.mountVoiceControls(api, { container: voiceContainer });
+      voiceSetup.hidden = true; voiceMessage.hidden = true;
+      const toggle = voiceControls.element.shadowRoot?.querySelector<HTMLButtonElement>('button[aria-controls="voice-panel"]');
+      toggle?.focus();
+    } catch {
+      if (disposed) return;
+      voiceSetup.disabled = false; voiceMessage.textContent = "Voice controls could not load. Check your connection and try again; typed input remains available.";
+    }
+  });
   const transportInspector = mountTransportInspector(api.transport); panel.append(transportInspector.element);
   const links = element("div", undefined, "links");
   const latest = element("a", "Open latest version"); latest.href = api.identity.base;
@@ -248,7 +275,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
   renderInstallation(); renderSensors(); attach(); observer.observe(document, { childList: true, subtree: true });
   return () => {
-    disposed = true; transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
+    disposed = true; voiceControls?.dispose(); transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();
   };

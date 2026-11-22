@@ -54,6 +54,7 @@ test("whole-word phrase detection preserves the following command", () => {
   assert.equal(matchWakePhrase("hey kitchens set a timer", "hey kitchen"), null);
   assert.equal(matchWakePhrase("hey", "hey kitchen"), null);
   assert.deepEqual(matchWakePhrase("bonjour café ! allume les lumières", "Bonjour Café"), { command: "allume les lumières" });
+  assert.deepEqual(matchWakePhrase("Bonjour cafe\u0301, allume les lumières", "bonjour café"), { command: "allume les lumières" });
 });
 
 test("local recognition is strict, opt-in, and commands follow normal callbacks", () => {
@@ -100,6 +101,10 @@ test("spoken agent replies cannot trigger wake commands", () => {
   assert.deepEqual(commands, []);
   setOutputSpeaking(false);
   rec.heard("Hey Tendril, change the dashboard");
+  assert.deepEqual(commands, []); // Late output cannot become a command after playback.
+  assert.equal(capture.running, false);
+  capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" });
+  instances.at(-1).heard("Hey Tendril, change the dashboard");
   assert.deepEqual(commands, ["change the dashboard"]);
   capture.stop();
 });
@@ -138,4 +143,71 @@ test("recognizer construction failure leaves the microphone off", () => {
   assert.equal(capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" }), false);
   assert.equal(capture.running, false);
   assert.equal(states.at(-1).state, "error");
+});
+
+test("prefixed browser recognition is explicit and never used for local mode", () => {
+  const { capture, instances, states } = env();
+  window.webkitSpeechRecognition = window.SpeechRecognition;
+  delete window.SpeechRecognition;
+  assert.equal(capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "local" }), false);
+  assert.equal(instances.length, 0);
+  assert.equal(capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" }), true);
+  assert.equal(capture.microphoneActive, true); capture.stop();
+  assert.equal(capture.microphoneActive, false);
+  assert.equal(capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "model" }), false);
+  assert.match(states.at(-1).detail, /model adapter/);
+});
+
+test("a browser that ignores processLocally cannot silently send audio to its provider", () => {
+  const { capture, states } = env(); let starts = 0;
+  window.SpeechRecognition = class {
+    get processLocally() { return false; }
+    set processLocally(_value) {}
+    start() { starts++; }
+    abort() {}
+  };
+  assert.equal(capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "local" }), false);
+  assert.equal(starts, 0); assert.match(states.at(-1).detail, /could not enable on-device/);
+});
+
+test("invalid phrases and language tags do not start a recognizer", () => {
+  const { capture, instances } = env();
+  for (const phrase of ["", "!", "a".repeat(121), "one two three four five six seven eight nine", "hey\nTendril"]) {
+    assert.equal(capture.start({ phrase, lang: "en-US", mode: "browser" }), false);
+  }
+  assert.equal(capture.start({ phrase: "Hey Tendril", lang: "not_a_language", mode: "browser" }), false);
+  assert.equal(instances.length, 0);
+});
+
+test("startup and overall session deadlines stop without a recognition result", () => {
+  const { capture, states, instances } = env();
+  const timers = new Map(); let serial = 0;
+  window.setTimeout = (callback, ms) => { const id = ++serial; timers.set(id, { callback, ms }); return id; };
+  window.clearTimeout = id => timers.delete(id);
+  const Factory = window.SpeechRecognition;
+  window.SpeechRecognition = class extends Factory { start() { this.started = true; } };
+  assert.equal(capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" }), true);
+  assert.equal(capture.microphoneActive, false);
+  [...timers.values()].find(timer => timer.ms === 15000).callback();
+  assert.equal(capture.running, false); assert.equal(instances.at(-1).aborted, true); assert.match(states.at(-1).detail, /startup timed out/);
+  window.SpeechRecognition = Factory;
+  capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" });
+  [...timers.values()].find(timer => timer.ms === 300000).callback();
+  assert.equal(capture.running, false); assert.match(states.at(-1).detail, /five-minute/); assert.equal(timers.size, 0);
+});
+
+test("a delayed recognizer end retains settlement and prevents overlapping starts", async () => {
+  const { capture, instances } = env();
+  const Factory = window.SpeechRecognition;
+  window.SpeechRecognition = class extends Factory { abort() { this.aborted = true; } };
+  capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" });
+  const rec = instances.at(-1); let settled = false;
+  capture.microphoneSettled.then(() => { settled = true; });
+  capture.stop(); await Promise.resolve(); assert.equal(settled, false);
+  assert.equal(capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" }), false);
+  rec.onend(); await capture.microphoneSettled; assert.equal(settled, true);
+  window.SpeechRecognition = Factory;
+  capture.start({ phrase: "Hey Tendril", lang: "en-US", mode: "browser" });
+  rec.onend(); // A duplicated old end cannot disturb the new recognizer.
+  assert.equal(capture.microphoneActive, true); capture.stop();
 });

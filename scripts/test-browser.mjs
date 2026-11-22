@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 const suites = [
   ["runtime/test/playwright.config.ts"],
   ["runtime/test/tts/playwright.config.ts"],
+  ["runtime/test/voice-controls.playwright.config.ts"],
   ["test/e2e/playwright.config.ts"],
   ["tools/preview/test/preview.playwright.config.ts"],
 ];

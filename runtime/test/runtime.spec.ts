@@ -352,3 +352,35 @@ test.describe('mobile home-screen setup', () => {
     await expect(page.getByText('Choose Add to Home Screen.')).toBeVisible();
   });
 });
+
+test('hosted voice controls load only on a local choice and remain microphone-free through consent review', async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = (window as any).__voiceOpening = { microphones: 0, contexts: 0 };
+    navigator.mediaDevices.getUserMedia = async () => { state.microphones++; throw new Error('The test never consents to capture'); };
+    const NativeAudio = window.AudioContext;
+    (window as any).AudioContext = class extends NativeAudio {
+      constructor(options?: AudioContextOptions) { super(options); state.contexts++; }
+    };
+  });
+  const fixture = mock.create(); await open(page, fixture);
+  const voiceRequests = () => mock.requests.filter(path => path.startsWith(mock.base(fixture)) && /voice|cactus|whistle|resources\.json/.test(path));
+  expect(voiceRequests()).toEqual([]);
+  await page.getByRole('button', { name: 'Page options', exact: true }).click();
+  expect(voiceRequests()).toEqual([]);
+  const setup = page.getByRole('button', { name: 'Set up voice input', exact: true });
+  await setup.evaluate((button: HTMLButtonElement) => button.click());
+  expect(voiceRequests()).toEqual([]);
+  await setup.click();
+  const controls = page.locator('tendril-voice-controls');
+  await expect(controls.getByRole('heading', { name: 'Wake word', exact: true })).toBeVisible();
+  await expect(controls.getByLabel('Wake phrase', { exact: true })).toHaveValue('Listen computer');
+  await controls.getByLabel('Text to review or type').fill('Keep this typed draft');
+  await controls.getByRole('button', { name: 'Set up wake word' }).click();
+  await expect(controls.getByText(/18,224,260 bytes/)).toBeVisible();
+  await expect(controls.getByRole('button', { name: 'Start microphone', exact: true })).toBeVisible();
+  await controls.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(controls.getByLabel('Text to review or type')).toHaveValue('Keep this typed draft');
+  expect(voiceRequests()).toEqual([new URL('voice.mjs', mock.origin + mock.runtimeUrl(fixture)).pathname]);
+  expect(await page.evaluate(() => (window as any).__voiceOpening)).toEqual({ microphones: 0, contexts: 0 });
+  expect(await page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: [] });
+});

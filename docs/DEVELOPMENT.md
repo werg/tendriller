@@ -12,6 +12,8 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
+| `npm run test:e2e:voice-controls` | Chromium, Firefox, desktop WebKit and mobile WebKit controls plus real AudioWorklet fixtures; deterministic inference |
+| `npm run test:e2e:speech-real` | Verified speech assets and real WASM/model inference, including wake-phrase and command fixtures |
 | `npm run test:agent:acceptance -- --help` | Maintained fresh-agent domain/MCP evaluation with private owner controls and independent observations |
 | `npm run test:idle:soak -- --config PRIVATE_JSON --state PRIVATE_DIRECTORY` | Actual 24/48h isolated staging residency and idle measurement; see [idle soak](IDLE_SOAK.md) |
 | `npm run test:idle:metrics -- --config PRIVATE_JSON --state PRIVATE_DIRECTORY --probe` | Read-only Cloudflare analytics schema/access probe, without application traffic |
@@ -65,6 +67,13 @@ This does not preempt a synchronous SQL call or qualify passive-only SQL stalls.
 ## Verification
 
 Use `test:contract` for wire filters and SDK semantics; `test:runtime-unit` for inert composition, capability/sensor lifecycle and immutable publication caching; `test:server` for real workerd authorization, controls, signed releases, storage CAS and restart. `test:tools` exercises public-session tooling and extracted artifacts. Browser tests cover actual runtime behavior, owner claim/origin boundaries, signed code serving and explicit speech use.
+
+The optional wake-word pipeline has separate real-model, PCM/AudioWorklet, consent,
+and cross-tab lifetime checks. `scripts/qualify-speech-node.mjs` can run the exact
+pinned WASM and fixtures without a browser; it cannot establish browser microphone
+or Safari/iOS behavior. Keep the [physical-device matrix](WAKE_WORD_QUALIFICATION.md)
+explicitly pending until actual devices have been exercised. Browser startup
+failures and missing assets are failures, never passing skips for a release.
 
 The application session's command/query/replication implementation is qualified in Chronolog and by independent contrib consumers. A static browser fixture does not establish RTC, recovery or database guarantees. The public host fixture permits combining those real boundaries without private imports.
 

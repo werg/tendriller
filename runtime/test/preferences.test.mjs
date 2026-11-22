@@ -17,7 +17,7 @@ test("voice settings are page-local and muted by default, without presentation v
   assert.equal(JSON.parse(env.saved.get("tendril:voice:A:preferences")).audio, undefined);
   assert.deepEqual([...env.saved.keys()], ["tendril:voice:A:preferences"]);
   a.get().audio = false; assert.equal(a.get().audio, true);
-  assert.equal(b.get().wakeMode, "local");
+  assert.equal(b.get().wakeMode, "model");
   assert.throws(() => a.update({ textSize: "large" }), /Unknown preference/);
 });
 test("another tab cannot change a live adapter's engine or session consent", () => {

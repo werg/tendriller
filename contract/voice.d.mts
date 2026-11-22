@@ -3,7 +3,7 @@ export interface VoicePreferences {
   /** Session permission, never persisted or synchronized between tabs. */
   audio: boolean; language: string | null; voice: "browser" | "neural";
   /** Selection only; listening never resumes automatically. */
-  wakePhrase: string; wakeMode: "local" | "browser";
+  wakePhrase: string; wakeMode: "model" | "local" | "browser";
 }
 export interface VoicePreferencesApi {
   get(): VoicePreferences; update(patch: Partial<VoicePreferences>): void;
