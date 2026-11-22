@@ -1,8 +1,8 @@
 // Shared pure-Node release downloader and SHA-256 integrity verifier used by
 // tendriller, tendriller-contrib, and the standalone single-file bootstrapper.
 import { createHash } from 'node:crypto';
-import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, unlinkSync, lstatSync } from 'node:fs';
-import { dirname, join, resolve, parse } from 'node:path';
+import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, unlinkSync, lstatSync, realpathSync } from 'node:fs';
+import { dirname, join, resolve, parse, basename } from 'node:path';
 import { unpackTarGz } from './archive.mjs';
 
 export const RELEASE_DOWNLOAD_LIMITS = Object.freeze({
@@ -154,12 +154,12 @@ export function writeVerifiedFileAtomic(targetPath, bytes) {
   const temp = `${full}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const fd = openSync(temp, 'wx', 0o644);
   try {
-    writeFileSync(fd, bytes);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  try {
+    try {
+      writeFileSync(fd, bytes);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(temp, full);
   } catch (error) {
     try { unlinkSync(temp); } catch {}
@@ -183,7 +183,11 @@ export function extractVerifiedTarGz(archiveBytes, targetDirectory, {
     if (sha256Hex(bytes) !== expectedSha256) throw fail('release_bytes_mismatch', 'Archive SHA-256 digest mismatch.');
   }
   const files = unpackTarGz(bytes, { ...(maxTotalBytes === undefined ? {} : { maxTotalBytes }) });
-  const destinationRoot = resolve(targetDirectory);
+  const requestedRoot = resolve(targetDirectory);
+  // Parent directories are supplied by the caller, not by archive entries.
+  // Resolve OS aliases (macOS /var, /tmp) before inspecting the extraction root.
+  mkdirSync(dirname(requestedRoot), {recursive:true});
+  const destinationRoot = join(realpathSync(dirname(requestedRoot)), basename(requestedRoot));
   ensureSafeDirectory(destinationRoot);
   const written = [];
   const preserved = [];

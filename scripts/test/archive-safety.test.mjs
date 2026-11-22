@@ -63,3 +63,16 @@ test('release downloads validate expectations before fetching and keep retained 
   await assert.rejects(downloader.download('extra.tgz'),{code:'release_size_limit'});
   assert.equal(calls,2);
 });
+
+test('trusted parent aliases resolve canonically while extraction-root and authored child links stay forbidden',t=>{
+  const root=mkdtempSync(join(tmpdir(),'archive-system-alias-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
+  const physical=join(root,'physical');mkdirSync(physical);
+  const alias=join(root,'system-alias');symlinkSync(physical,alias,'dir');
+  const archive=packTarGz([{path:'nested/file',bytes:'safe'}]);
+  extractVerifiedTarGz(archive,join(alias,'project'));
+  assert.equal(readFileSync(join(physical,'project/nested/file'),'utf8'),'safe');
+  symlinkSync(join(physical,'project'),join(root,'linked-project'),'dir');
+  assert.throws(()=>extractVerifiedTarGz(archive,join(root,'linked-project')),{code:'ARCHIVE_PATH_UNSAFE'});
+  symlinkSync(physical,join(physical,'project/child'),'dir');
+  assert.throws(()=>extractVerifiedTarGz(packTarGz([{path:'child/escape',bytes:'bad'}]),join(alias,'project')),{code:'ARCHIVE_PATH_UNSAFE'});
+});
