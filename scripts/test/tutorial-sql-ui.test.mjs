@@ -64,7 +64,7 @@ test('build requires setup and exact engine graph, removes stale or partial outp
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = new URL('page/', root), engine = new URL('engine/', root);
   await mkdir(engine); await writeFile(new URL('index.html', root), '<html>SQL</html>');
-  const wasm = Buffer.from('fixture-engine'), manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex') };
+  const wasm = Buffer.from('fixture-engine'), manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex'), loaderSha256: createHash('sha256').update('module').digest('hex') };
   for (const [name, bytes] of Object.entries({ 'manifest.json': JSON.stringify(manifest), 'sqlite3.wasm': wasm, 'sqlite3.mjs': 'module', 'sqlite3-opfs-async-proxy.js': 'proxy' })) await writeFile(new URL(name, engine), bytes);
   const records = { 'handle.json': { application: { id: 'app' }, page_url: 'https://page.example/', privateCredential: 'never publish' },
     'descriptor.json': { payload: { applicationId: 'app' } }, 'initialized.json': { applicationId: 'app', deviceId: 'native' } };
@@ -83,6 +83,10 @@ test('build requires setup and exact engine graph, removes stale or partial outp
     await assert.rejects(buildPage({ ...opts, ...failure }), /no publishable page/);
     await assert.rejects(access(output), { code: 'ENOENT' });
   }
+  await writeFile(new URL('sqlite3.mjs', engine), 'mismatched loader');
+  await assert.rejects(buildPage(opts), /loader does not match/);
+  await assert.rejects(access(output), { code: 'ENOENT' });
+  await writeFile(new URL('sqlite3.mjs', engine), 'module');
   await writeFile(new URL('sqlite3.wasm', engine), 'wrong');
   await assert.rejects(buildPage(opts), /does not match/);
   await assert.rejects(access(output), { code: 'ENOENT' });

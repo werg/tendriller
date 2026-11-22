@@ -21,6 +21,8 @@ export async function buildPage({ root = new URL('./', import.meta.url), engine 
     const wasm = files.get('sqlite3.wasm');
     if (manifest.wasmSha256 !== createHash('sha256').update(wasm).digest('hex') || manifest.wasmBytes !== wasm.length)
       throw Error('SQL browser engine does not match manifest.json. Restore the exact matching WASM build.');
+    if (manifest.loaderSha256 !== createHash('sha256').update(files.get('sqlite3.mjs')).digest('hex'))
+      throw Error('SQL browser loader does not match manifest.json. Restore the exact matching engine assets.');
     await verifyWasmBuild(wasm, manifest); // Verify bytes and supported identity with the installed public SQL package.
     await mkdir(new URL('engine/', output), { recursive: true });
     for (const [name, bytes] of files) await writeFile(new URL(`engine/${name}`, output), bytes);
