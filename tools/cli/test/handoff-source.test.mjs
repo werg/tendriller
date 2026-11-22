@@ -23,3 +23,10 @@ test('source handoff rejects a credential embedded in authored code', t => {
   writeFileSync(join(dir, 'page.mjs'), 'export const secret = "td_a_' + 'a'.repeat(64) + '";');
   assert.throws(() => exportSourceHandoff(dir, join(dir, 'handoff.tgz')), { code: 'handoff_secret_detected' });
 });
+
+test('source handoff rejects a raw signing key literal as well as host tokens', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'handoff-signing-key-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'identity.mjs'), 'export const identity = { privateKey: "' + 'a'.repeat(64) + '" };');
+  assert.throws(() => exportSourceHandoff(dir, join(dir, 'handoff.tgz')), { code: 'handoff_secret_detected' });
+});

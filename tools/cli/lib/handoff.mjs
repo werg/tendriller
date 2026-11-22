@@ -10,6 +10,7 @@ const SOURCE_EXTENSIONS = new Set(['.mjs', '.cjs', '.js', '.ts', '.tsx', '.jsx',
 const SOURCE_JSON = /^(?:package(?:-lock)?|tsconfig(?:\.[A-Za-z0-9_-]+)?)\.json$/u;
 const EXCLUDED_FILES = new Set(['.env', '.env.local', 'provider-secrets.json', 'provider-local.mjs']);
 const SECRET_PATTERNS = [
+  /\b(?:privateKey|secretKey|clientSecret|accessToken|refreshToken|apiKey)\b["']?\s*[:=]\s*["'][^"']{16,}["']/u,
   /td_a_[a-f0-9]{64}/u,
   /td_n_[a-f0-9]{64}/u,
   /td_c_[a-f0-9-]{36}\.[a-f0-9]{64}/u,
@@ -76,7 +77,8 @@ export function exportSourceHandoff(projectDir, outputPath, { nextCommand = 'npm
     createdAt: new Date().toISOString(),
     fileCount: entries.length,
     nextCommand,
-    containsPrivateState: false,
+    privateStatePolicy: 'known runtime state and secret files excluded; recognized credentials rejected',
+    sourceReviewRequired: true,
     inclusionPolicy: 'Code, documentation, static assets and package/TypeScript manifests only. Review authored source for embedded credentials before sharing.',
   };
   entries.push({ path: 'handoff-manifest.json', bytes: encoder.encode(JSON.stringify(manifest, null, 2) + '\n') });
