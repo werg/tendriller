@@ -17,8 +17,12 @@ concurrency:
 jobs:
   sql-starter:
     name: Guarded SQL starter from public artifacts
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
+    env:
+      # Same toolchain/cache identity as staging-acceptance.yml.
+      EMSDK_VERSION: '4.0.20'
+      EMSDK_SHA: e4fe26ef59168ff44f4c23c466e497bf60b3411e
     steps:
       - uses: actions/checkout@v4
         with:
@@ -68,3 +72,46 @@ jobs:
           path: core/.results/first-app-sql.json
           include-hidden-files: true
           if-no-files-found: ignore
+      - uses: actions/cache@v4
+        id: wasm
+        with:
+          path: ${{ runner.temp }}/chronolog-fixture/wasm
+          key: chronolog-wasm-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.session.outputs.source }}-${{ env.EMSDK_VERSION }}-${{ env.EMSDK_SHA }}
+      - name: Build exact Chronolog WASM engine for tutorial qualification
+        if: steps.wasm.outputs.cache-hit != 'true'
+        working-directory: chronolog
+        run: |
+          git clone --depth 1 --branch "$EMSDK_VERSION" https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/emsdk"
+          test "$(git -C "$RUNNER_TEMP/emsdk" rev-parse HEAD)" = "$EMSDK_SHA"
+          "$RUNNER_TEMP/emsdk/emsdk" install "$EMSDK_VERSION"
+          "$RUNNER_TEMP/emsdk/emsdk" activate "$EMSDK_VERSION"
+          node tools/build-wasm-engine.mjs --emsdk "$RUNNER_TEMP/emsdk" --output "$RUNNER_TEMP/chronolog-build"
+          mkdir -p "$RUNNER_TEMP/chronolog-fixture/wasm"
+          cp "$RUNNER_TEMP"/chronolog-build/{manifest.json,sqlite3.mjs,sqlite3.wasm,sqlite3-opfs-async-proxy.js} "$RUNNER_TEMP/chronolog-fixture/wasm/"
+      - name: Build matching public native and browser SQL session
+        working-directory: chronolog
+        env:
+          CHRONOLOG_SHA: ${{ steps.session.outputs.source }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$CHRONOLOG_SHA"
+          node tools/package-peer-session.mjs --sql-native --sql-browser --output "$RUNNER_TEMP/chronolog-fixture/session"
+      - name: Install the exact SQL consumer and pinned Chromium
+        working-directory: core
+        run: |
+          npm install --prefix "$RUNNER_TEMP/consumer" --ignore-scripts "$RUNNER_TEMP"/chronolog-fixture/session/*.tgz
+          node node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Qualify actual signed SQL tutorial UI, enrollment, replication and checkpoint replay
+        working-directory: core
+        timeout-minutes: 6
+        run: |
+          export E2E_CHRONOLOG_CONSUMER="$RUNNER_TEMP/consumer"
+          export E2E_CHRONOLOG_WASM="$RUNNER_TEMP/chronolog-fixture/wasm"
+          node node_modules/@playwright/test/cli.js test --config test/e2e/browser-sql-opening.playwright.config.ts sql-tutorial.spec.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sql-tutorial-browser-qualification
+          path: core/test-results/e2e
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
