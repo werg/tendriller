@@ -8,7 +8,7 @@ function ownerLock(){let tail=Promise.resolve();return(_id,work)=>{const next=ta
 
 test('failed/aborted command wait flushes the original saved intent before closing',async()=>{
   const order=[];let saved=false;
-  const adapter=createServerlessHostAdapter({applicationId:id,storage,withLock:ownerLock(),authorize:()=>true,openSession:async()=>({
+  const adapter=createServerlessHostAdapter({applicationId:id,storage,retainTask:()=>{},withLock:ownerLock(),authorize:()=>true,openSession:async()=>({
     session:{async command(_name,_input,{operationId}){assert.equal(operationId,'original');saved=true;return{applied:async()=>{throw Error('response lost');}};}},
     flush:async()=>{assert.equal(saved,true);order.push('flush');},close:async()=>order.push('close'),
   })});
@@ -18,7 +18,7 @@ test('failed/aborted command wait flushes the original saved intent before closi
 
 test('commands and the entire batch require retained IDs before opening a session',async()=>{
   let opens=0;
-  const adapter=createServerlessHostAdapter({applicationId:id,storage,withLock:ownerLock(),authorize:()=>true,openSession:async()=>{opens++;throw Error('must not open');}});
+  const adapter=createServerlessHostAdapter({applicationId:id,storage,retainTask:()=>{},withLock:ownerLock(),authorize:()=>true,openSession:async()=>{opens++;throw Error('must not open');}});
   assert.equal((await adapter.handleRequest(request({command:'add'}))).status,400);
   const response=await adapter.handleRequest(new Request(`https://test/v1/apps/${id}/commands/batch`,{method:'POST',body:JSON.stringify({commands:[{command:'add',operationId:'original'},{command:'add'}]})}));
   assert.equal(response.status,400);assert.equal(opens,0);
@@ -27,7 +27,7 @@ test('commands and the entire batch require retained IDs before opening a sessio
 test('queued cancellation never opens a session; flush failure still closes and cannot report success',async()=>{
   let release,entered;
   const firstStarted=new Promise(resolve=>entered=resolve), held=new Promise(resolve=>release=resolve);let opens=0,closes=0;
-  const adapter=createServerlessHostAdapter({applicationId:id,storage,withLock:ownerLock(),authorize:()=>true,openSession:async()=>{opens++;return{session:{},flush:async()=>{throw Error('flush failed');},close:async()=>{closes++;}};}});
+  const adapter=createServerlessHostAdapter({applicationId:id,storage,retainTask:()=>{},withLock:ownerLock(),authorize:()=>true,openSession:async()=>{opens++;return{session:{},flush:async()=>{throw Error('flush failed');},close:async()=>{closes++;}};}});
   const first=adapter.withActiveSession(undefined,async()=>{entered();await held;});
   await firstStarted;
   const controller=new AbortController(),second=adapter.withActiveSession(controller.signal,async()=>{});

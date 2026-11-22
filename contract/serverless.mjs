@@ -12,7 +12,7 @@ function boundary(parent, timeoutMs) {
   const abort = () => controller.abort(parent.reason);
   if (parent?.aborted) abort(); else parent?.addEventListener('abort', abort, {once:true});
   const timer = setTimeout(() => controller.abort(fail('serverless_deadline', 'Request deadline expired; inspect original operation IDs.', 504)), timeoutMs);
-  return {signal:controller.signal, dispose(){clearTimeout(timer);parent?.removeEventListener('abort',abort);}};
+  return {signal:controller.signal, abort:reason=>controller.abort(reason), dispose(){clearTimeout(timer);parent?.removeEventListener('abort',abort);}};
 }
 function until(promise, signal) {
   if (signal.aborted) { Promise.resolve(promise).catch(()=>{}); return Promise.reject(signal.reason); }
@@ -54,15 +54,16 @@ export function createTransactionalBytesStore(backend) {
 const lifecycle = state => {
   if(state?.status==='abandoned'||state?.status==='needsReapply')return state.status;
   if(state?.status==='saved')return 'recorded';
-  if(state?.status==='applied' || state?.outcome==='accepted' || state?.outcome==='rejected')
+  if(state?.status==='applied')
     return state.outcome==='rejected'?'rejected':state.outcome==='accepted'?'applied':'unknown';
   return 'unknown';
 };
+const operationIdValid = value => typeof value==='string' && value.length>0 && value.length<=512 && [...value].every(character=>character.charCodeAt(0)>=32);
 const commandInput = item => {
-  if(!item || typeof item.command!=='string' || !item.command.length || item.command.length>128 ||
-    typeof item.operationId!=='string' || !item.operationId.length || item.operationId.length>256 ||
+  if(!item || typeof item!=='object' || Array.isArray(item) || !Object.hasOwn(item,'input') || typeof item.command!=='string' || !item.command.length || item.command.length>128 ||
+    !operationIdValid(item.operationId) ||
     item.wait!==undefined && !['recorded','applied'].includes(item.wait))
-    throw fail('invalid_command','Supply a command, original operationId and optional recorded/applied wait.',400);
+    throw fail('invalid_command','Supply a command, an own input field, original operationId and optional recorded/applied wait.',400);
   return item;
 };
 async function readJson(request, signal, maximum) {
@@ -81,18 +82,27 @@ async function readJson(request, signal, maximum) {
   } finally {if(!complete)void reader.cancel().catch(()=>{});reader.releaseLock();}
 }
 
-export function createServerlessHostAdapter({applicationId,storage,withLock,openSession,authorize,timeoutMs,maxBodyBytes}) {
+export function createServerlessHostAdapter({applicationId,storage,withLock,openSession,authorize,retainTask,timeoutMs,maxBodyBytes}) {
   if(typeof applicationId!=='string'||!/^[a-f0-9]{64}$/u.test(applicationId))throw fail('SERVERLESS_APP_ID_INVALID','Supply a lowercase hex64 applicationId.');
   if(typeof withLock!=='function')throw fail('SERVERLESS_OWNER_LOCK_REQUIRED','Supply a storage-owner lock shared by every isolate using this application.');
   if(typeof authorize!=='function')throw fail('SERVERLESS_AUTHORIZATION_REQUIRED','Supply explicit request authorization.');
+  if(typeof retainTask!=='function')throw fail('SERVERLESS_TASK_RETENTION_REQUIRED','Supply an execution-context retainer for physical work through flush and close.');
   if(typeof openSession!=='function')throw fail('SERVERLESS_OPEN_SESSION_REQUIRED','Supply openSession({store,signal}).');
   timeoutMs=bounded(timeoutMs,30_000,120_000);maxBodyBytes=bounded(maxBodyBytes,65_536,1_048_576);
   const rawStore=createTransactionalBytesStore(storage);
+  const retain = (scope, work) => {
+    const physical=Promise.resolve().then(()=>{scope.signal.throwIfAborted();return work();});
+    // Register before starting work, not after the response deadline. Observe
+    // rejection locally; the retainer holds lifetime without logging app errors.
+    try{retainTask(physical.then(()=>{},()=>{}));}
+    catch(error){scope.abort(error);scope.dispose();throw fail('SERVERLESS_TASK_RETENTION_FAILED','The host could not retain physical execution.');}
+    return physical;
+  };
   async function active(signal,run) {
     const scope=boundary(signal,timeoutMs);
     // Only the response races the deadline. The physical work retains the owner
     // lock until open/run/flush/close settle, including non-cooperative promises.
-    const physical=Promise.resolve().then(()=>withLock(applicationId,async()=>{
+    const physical=retain(scope,()=>withLock(applicationId,async()=>{
       scope.signal.throwIfAborted();
       let owned, result, primary, failed=false;const cleanupErrors=[];
       try {
@@ -117,7 +127,7 @@ export function createServerlessHostAdapter({applicationId,storage,withLock,open
   // raw store under its already-held lock, avoiding recursive lock acquisition.
   const store=Object.freeze(Object.fromEntries(['get','put','entries'].map(name=>[name,async(...args)=>{
     const scope=boundary(undefined,timeoutMs);
-    const physical=Promise.resolve().then(()=>withLock(applicationId,()=>{scope.signal.throwIfAborted();return rawStore[name](...args);},{signal:scope.signal}));
+    const physical=retain(scope,()=>withLock(applicationId,()=>{scope.signal.throwIfAborted();return rawStore[name](...args);},{signal:scope.signal}));
     try{return await until(physical,scope.signal);}finally{scope.dispose();}
   }])));
   async function handleRequest(request) {
@@ -168,7 +178,7 @@ export function createServerlessHostAdapter({applicationId,storage,withLock,open
       }
       if(rest.startsWith('/operations/')&&request.method==='GET'){
         let operationId;try{operationId=decodeURIComponent(rest.slice('/operations/'.length));}catch{throw fail('invalid_operation','Invalid operation ID.',400);}
-        if(!operationId||operationId.length>256)throw fail('invalid_operation','Invalid operation ID.',400);
+        if(!operationIdValid(operationId))throw fail('invalid_operation','Invalid operation ID.',400);
         const state=await active(scope.signal,({session})=>session.operations.get(operationId));
         return {operationId,lifecycle:lifecycle(state),state};
       }

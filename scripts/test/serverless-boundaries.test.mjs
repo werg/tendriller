@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServerlessHostAdapter,createTransactionalBytesStore} from '../../contract/serverless.mjs';
 const id='b'.repeat(64),storage={get:async()=>null,put:async()=>{}};
-const base={applicationId:id,storage,authorize:()=>true,withLock:(_id,work)=>work(),openSession:async()=>({session:{}})};
+const base={applicationId:id,storage,retainTask:()=>{},authorize:()=>true,withLock:(_id,work)=>work(),openSession:async()=>({session:{}})};
 const request=(path,body)=>new Request(`https://host.test/v1/apps/${id}/${path}`,body===undefined?{}:{method:'POST',body:JSON.stringify(body)});
 const command=operationId=>({command:'add',input:null,operationId});
 function mutex(){let tail=Promise.resolve();return(_id,work)=>{const next=tail.then(work,work);tail=next.catch(()=>{});return next;};}
