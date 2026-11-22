@@ -116,7 +116,7 @@ test('actual SQL tutorial: signed publication, explicit enrollment, native repli
       expect(inspected.state.status).toBe('applied');
       expect(inspected.state.outcome).toBe('accepted');
     });
-    await test.step('exactly one receipt/event per transfer survives browser reload and native reopen', async () => {
+    await test.step('device-only CLI handoff replays SQL history, receipts, events and the uncertain attempt', async () => {
       await stock(page, 8, 2);
       await expect.poll(async () => {
         const { value } = await native.query('inventory', null);
@@ -129,12 +129,31 @@ test('actual SQL tutorial: signed publication, explicit enrollment, native repli
       await stock(page, 8, 2);
       expect(await page.evaluate(() => (window as any).tendril.identity.publication)).toBe(app.publication.id);
       await page.locator('#close').click(); await expect(page.locator('#session-status')).toContainText('Detached.');
+      // Capture the original browser-authored signed attempt on the native
+      // participant before it moves. Reconcile that exact author/ID after replay.
+      const beforeMove = await native.query('inventory', null);
+      const originalAttempt = await native.operations.inspect(uncertainId, { author: browserKey });
+      expect(originalAttempt?.state).toMatchObject({ operationId: uncertainId, status: 'applied', outcome: 'accepted' });
+      expect(originalAttempt?.attempt).toBeTruthy();
       await page.close(); await app.stop();
-      native = await app.start();
+      const handoff = await app.moveCheckpoint(); // Actual dist/tools CLI, ephemeral env secret.
+      expect(handoff).toEqual({ exported: { retiredSource: true, deviceId: nativeKey, hasSqlDatabase: false },
+        restored: { materialization: 'rebuild-on-open', deviceId: nativeKey }, sourceRetired: true });
+      expect(await app.movedMaterializationExists()).toBe(false);
+      // Root handle/descriptor/schema stay in place. Only the restored device
+      // journal is under profiles/moved; there is no copied derived SQL file.
+      native = await app.start('moved');
       expect(native.deviceId).toBe(nativeKey);
-      const reopened = await native.query('inventory', null);
-      expect(reopened.value.stock).toEqual([{ id: 'destination', units: 2 }, { id: 'source', units: 8 }]);
-      expect(reopened.value.transfers).toHaveLength(3);
+      const replayed = await native.query('inventory', null);
+      expect(await app.movedMaterializationExists()).toBe(true);
+      expect(replayed.value).toEqual(beforeMove.value);
+      expect(replayed.value.stock).toEqual([{ id: 'destination', units: 2 }, { id: 'source', units: 8 }]);
+      expect(replayed.value.transfers).toHaveLength(3);
+      expect(replayed.value.transfers.filter((row: any) => row.id === uncertainId)).toHaveLength(1);
+      expect(replayed.value.activity.filter((event: any) => event.topic === 'inventory.transferred')).toHaveLength(3);
+      const reconciled = await native.operations.inspect(uncertainId, { author: browserKey });
+      expect(reconciled?.attempt).toEqual(originalAttempt.attempt);
+      expect(reconciled?.state).toMatchObject({ operationId: uncertainId, status: 'applied', outcome: 'accepted' });
     });
   } finally {
     // Browser attachments retire before native supervisor/database cleanup.
