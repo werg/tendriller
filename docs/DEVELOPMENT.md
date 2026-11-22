@@ -70,8 +70,11 @@ The application session's command/query/replication implementation is qualified 
 
 With a restored qualified deployment graph and the matching combined SQL consumer
 and WASM engine, run `E2E_CHRONOLOG_CONSUMER=/absolute/consumer E2E_CHRONOLOG_WASM=/absolute/wasm node node_modules/@playwright/test/cli.js test --config test/e2e/browser-sql-opening.playwright.config.ts`.
-Staging acceptance runs this local regression before the live scenarios, using the
-packaged Worker with bundling disabled. It retains SQL replication, correction and
+The pre-merge SQL starter gate runs the actual tutorial publication, explicit
+browser enrollment, replication, uncertain-command reload/retry, and device-only
+checkpoint replay with matching native/WASM assets. Staging acceptance runs that
+scenario and the asymmetric-startup regression before the live scenarios, using
+the packaged Worker with bundling disabled. It retains SQL replication, correction and
 reopen checks while delaying either peer's metadata response by twelve seconds,
 and combining a six-second metadata delay with a cold SQL response held for at
 least twenty-one seconds. This explicit SQL fixture keeps metadata preparation's

@@ -86,10 +86,8 @@ function host(t: Tendril): HostState {
       state!.assistantGrants = undefined;
       t.transaction(() => {
         state!.guard?.();
-        if (!t.db.get('owner_account', null)) {
-          const previous = t.db.one<{ n: number }>('SELECT length(value) AS n FROM participant_records WHERE key=?', key)?.n ?? 0;
-          t.checkLocalStorage(bytes.byteLength - previous);
-        }
+        const previous = t.db.one<{ n: number }>('SELECT length(value) AS n FROM participant_records WHERE key=?', key)?.n ?? 0;
+        t.checkLocalStorage(bytes.byteLength - previous);
         t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, bytes.buffer);
         if (state!.pendingAccounts) t.db.set(ACCOUNTS, state!.pendingAccounts);
         if (state!.pendingFingerprint) t.db.set(state!.pendingFingerprint.key, state!.pendingFingerprint.value);
@@ -315,7 +313,7 @@ export async function exchangePeerControl(t: Tendril, principal: Principal, acti
           const root = t.db.one<{ value: ArrayBuffer }>("SELECT value FROM participant_records WHERE key='peer-generation/identity'");
           if (root && !retainedSigner || !root && retainedSigner)
             throw new HttpError(409, 'peer_control_identity_conflict');
-          if (!t.db.get('owner_account', null)) t.checkLocalStorage([...staged.values()].reduce((sum, bytes) => sum + bytes.byteLength, 0));
+          t.checkLocalStorage([...staged.values()].reduce((sum, bytes) => sum + bytes.byteLength, 0));
           for (const [key, bytes] of staged) t.db.run('INSERT INTO participant_records(key,value) VALUES(?,?)', key, bytes.buffer);
           t.db.set(CONFIG, { descriptor, control, fingerprint, definition: published.definition, schema: published.schema }); t.db.set(ACCOUNTS, bindings);
         });

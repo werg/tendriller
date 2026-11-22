@@ -72,7 +72,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (PEER_ROUTE.test(sub)) return handlePeers(t, req, url, sub, principal);
   if (sub === "application") return handleApplication(t, req, principal);
   if (sub === 'manage') return handleManagement(t, req, base, principal);
-  if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t));
+  if (sub === 'service' && m === 'GET') return json(serviceDescriptor());
   if (sub === "trust-version" && m === "POST") {
     if (!allows(principal, "page.owner") || !session?.account_id) throw new HttpError(403, "forbidden");
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));

@@ -98,7 +98,7 @@ export async function prepareSqlTutorial(handle: Handle, consumer: string, engin
     const descriptor = authority.descriptor.payload;
     const initial = await tutorial.readPrivate('initial-input.json');
     const device = await native.openNativeDevice({ path: join(privateDirectory, 'device.sqlite') });
-    let publication: any;
+    let publication: any, publicationVersion = 0;
     try {
       const files: any[] = [], assets = new Map();
       async function collect(directory: string) {
@@ -123,9 +123,12 @@ export async function prepareSqlTutorial(handle: Handle, consumer: string, engin
         entry: 'index.html', files }, device.identity);
       await log.verifyPublicationManifest(publication, verified);
       const receipt = await peers.publish(publication, [...assets.values()]);
-      if (receipt.publication.id !== publication.id) throw Error('Signed tutorial publication receipt mismatch');
+      if (receipt.publication.id !== publication.id || !Number.isSafeInteger(receipt.version) || receipt.version < 1)
+        throw Error('Signed tutorial publication receipt mismatch');
+      publicationVersion = receipt.version;
       const served = await peers.publication();
-      if (served?.publication.id !== publication.id) throw Error('Host did not retain the exact signed tutorial graph');
+      if (served?.publication.id !== publication.id || served.version !== publicationVersion)
+        throw Error('Host did not retain the exact signed tutorial graph and host version mapping');
     } finally { await device.close(); }
     const movedDirectory = join(privateDirectory, 'profiles/moved');
     async function exists(path: string) {
@@ -133,7 +136,7 @@ export async function prepareSqlTutorial(handle: Handle, consumer: string, engin
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
     }
     return {
-      publication,
+      publication, publicationVersion,
       sessionProvenance: JSON.parse(await readFile(join(packageRoot, 'provenance.json'), 'utf8')),
       async enroll(publicKey: string) { await tutorial.enrollBrowser(publicKey); },
       async start(profile = 'main') {

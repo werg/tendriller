@@ -12,6 +12,7 @@ import { authenticateAgentToken } from '../src/access';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { servedVersion } from '../src/files';
 import { sha256Hex } from '../src/ids';
+import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 
 const definition = { id: 'code-release', version: '1', schema: null, commands: [], queries: [] } as const;
 const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
@@ -179,12 +180,36 @@ it('publishes a complete signed app before claim and adopts its existing keys an
   const input = configuration(author, coordinator);
   const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', input);
   const prepared = await release(authority, author, 'prepared-before-claim', null, 'Already deployed before sign-in');
+  // Real SQL engines exceed the former unclaimed-only 1 MiB limit. Prepare
+  // the complete signed graph now; sign-in must never be a deployment gate.
+  const wasm = new Uint8Array(2 * 1024 * 1024);
+  wasm.set([0, 97, 115, 109, 1, 0, 0, 0]);
+  const wasmHash = await bytesDigest(wasm);
+  let binary = '';
+  for (let offset = 0; offset < wasm.length; offset += 32768)
+    binary += String.fromCharCode(...wasm.subarray(offset, offset + 32768));
+  prepared.publication = await signPublicationManifest({ ...prepared.publication.payload,
+    files: [...prepared.publication.payload.files, { path: 'engine/sqlite3.wasm', type: 'application/wasm', hash: wasmHash, size: wasm.length }]
+      .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0) }, author);
+  prepared.assets.push({ hash: wasmHash, bytes: btoa(binary) });
+  const service = await apiJson(h, 'GET', 'service');
+  expect(service.limits.resources.file_bytes).toBe(RESOURCE_LIMITS.file_bytes);
+  expect(service.limits.resources).not.toHaveProperty('unclaimed_file_bytes');
   const receipt = await peerApiJson(h, 'publication/publish', prepared);
   expect(receipt.publication.id).toBe(prepared.publication.id);
   expect((await apiJson(h, 'GET', '')).owner_account_id).toBeNull();
   expect(await inDO(h.id, t => ({ lifetime: t.db.get('lifetime', 'ad_hoc'), expires: t.expiresAt() })))
     .toMatchObject({ lifetime: 'ad_hoc', expires: expect.any(Number) });
   expect((await req(h.page_url, { anonymous: true, redirect: 'manual' })).status).toBe(302);
+  await expect(signPublicationManifest({ ...prepared.publication.payload,
+    operationId: 'oversized-before-claim', revision: 1, previous: prepared.publication.id,
+    files: prepared.publication.payload.files.map(file => file.path === 'engine/sqlite3.wasm'
+      ? { ...file, size: RESOURCE_LIMITS.file_bytes + 1 } : file) }, author))
+    .rejects.toMatchObject({ code: 'PEER_INTEGER_INVALID' });
+  expect(await inDO(h.id, t => {
+    try { t.checkLocalStorage(RESOURCE_LIMITS.page_bytes); return null; }
+    catch (error) { return (error as { code: string }).code; }
+  })).toBe('quota');
   await evictDurableObject(env.TENDRIL.get(env.TENDRIL.idFromName(h.id)));
   expect(await peerApiJson(h, 'publication/read')).toEqual(receipt);
   const accountId = 'prepared-owner-' + crypto.randomUUID();
@@ -193,6 +218,9 @@ it('publishes a complete signed app before claim and adopts its existing keys an
   const page = await req(h.page_url, { anonymous: true, headers: { Cookie: cookie } });
   expect(page.status).toBe(200);
   expect(await page.text()).toContain('Already deployed before sign-in');
+  const servedEngine = await req(h.page_url + 'engine/sqlite3.wasm', { anonymous: true, headers: { Cookie: cookie } });
+  expect(servedEngine.status).toBe(200);
+  expect(await bytesDigest(new Uint8Array(await servedEngine.arrayBuffer()))).toBe(wasmHash);
   expect(await peerApiJson(h, 'publication/publish', prepared)).toEqual(receipt);
   expect((await peerApiJson<AuthorityBundle>(h, 'control/configure', input)).descriptor).toEqual(authority.descriptor);
   expect(await inDO(h.id, t => ({ owner: t.db.get('owner_account', null), lifetime: t.db.get('lifetime', 'ad_hoc'), expires: t.expiresAt(),

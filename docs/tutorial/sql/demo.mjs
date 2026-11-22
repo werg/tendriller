@@ -6,9 +6,15 @@ import { readPrivate, savePrivate } from './local.mjs';
 
 const timeout = () => AbortSignal.timeout(30_000);
 const balances = snapshot => Object.fromEntries(snapshot.value.stock.map(row => [row.id, row.units]));
-let session;
+let owned, session;
+async function closeOwned() {
+  // Closing only the kernel session starts supervisor cleanup asynchronously.
+  // Await the returned owner lifetime so its IPC listener and lease are gone.
+  await owned?.close();
+  owned = session = undefined;
+}
 try {
-  ({ session } = await openSession({ signal: timeout() }));
+  owned = await openSession({ signal: timeout() }); session = owned.session;
   const seed = await session.command('seed', null, { operationId: 'inventory-demo-seed-v1' });
   assert.equal((await seed.applied({ signal: timeout() })).outcome, 'accepted');
 
@@ -43,12 +49,13 @@ try {
   assert.deepEqual(afterRejected.value, afterAccepted.value, 'Rejected transfer must leave both balances, receipts and effective events unchanged.');
 
   const deviceId = session.deviceId;
-  await session.close(); session = undefined;
-  ({ session } = await openSession({ signal: timeout() }));
+  await closeOwned();
+  owned = await openSession({ signal: timeout() }); session = owned.session;
   assert.equal(session.deviceId, deviceId, 'Reopen must retain the signer.');
   assert.deepEqual(balances(await session.query('inventory', null)), { destination: 3, source: 7 });
   assert.equal((await session.operations.get(transfer.options.operationId)).outcome, 'accepted');
   assert.equal((await session.operations.get(invalid.options.operationId)).outcome, 'rejected');
+  await closeOwned();
   console.log(JSON.stringify({ status: 'passed', stock: { source: 7, destination: 3 },
     accepted: transfer.options.operationId, rejected: invalid.options.operationId,
     checked: ['guarded two-bin transfer and receipt', 'rejection leaves data and events unchanged',
@@ -57,4 +64,12 @@ try {
   console.error(`${error.code ?? error.name}: ${error.message}`);
   console.error('Inspect the saved demo operation IDs before retrying. Do not delete .tendriller or invent a new operation ID after an uncertain result.');
   process.exitCode = 1;
-} finally { await session?.close(); }
+} finally {
+  try { await closeOwned(); }
+  catch (error) {
+    // Report cleanup separately; never replace an already reported command or
+    // reopen failure with an unhandled rejection from the finally block.
+    console.error(`SQL owner cleanup failed: ${error.code ?? error.name}: ${error.message}`);
+    process.exitCode = 1;
+  }
+}

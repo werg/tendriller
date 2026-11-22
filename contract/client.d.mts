@@ -1,8 +1,7 @@
 import type { CreateRequest, ValidationIssue, PublicError } from './index.mjs';
 import type { ApplicationSelection } from './application.mjs';
 export interface PageHandle { id: string; api: string; token: string; page_url: string; name?: string;
-  application: ApplicationSelection; expires_at?: number | null; next_step?: string;
-  unclaimed_limits?: { request_body_bytes: number } }
+  application: ApplicationSelection; expires_at?: number | null; next_step?: string }
 export interface ClientOptions { fetch?: typeof globalThis.fetch; applicationId?: string }
 export interface AgentClient {
   readonly peers: import('./peers.mjs').PeersClient;

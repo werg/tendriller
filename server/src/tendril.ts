@@ -362,7 +362,6 @@ export class Tendril extends DurableObject<Env> {
       lifetime: this.db.get("lifetime", "ad_hoc"),
       mode: this.db.get("mode", "interactive"),
       expires_at: this.expiresAt(),
-      unclaimed_limits: { request_body_bytes: RESOURCE_LIMITS.unclaimed_body_bytes },
       next_step: "Prepare and publish the signed app now with this private setup handle; do not wait for claim or ask the person to reply claimed. Give the human owner page_url while you configure authority, select the initial generation, build and publish, start the native participant and prepare any assistant-access proposal. The owner signs in to access the ready page within 24 hours. Their sign-in retains the prepared authority, publication and keys, makes the configured page resident within account quotas, and activates any prepared permission review. Browser device enrollment and assistant consent remain explicit.",
       application,
       agent_setup: {
@@ -624,9 +623,6 @@ export class Tendril extends DurableObject<Env> {
     return { shared_by: this.db.get<string>('owner_label', 'Tendriller user'), ...runtimeRelease.features };
   }
 
-  fileLimit(): number {
-    return this.db.get<string | null>("owner_account", null) ? RESOURCE_LIMITS.file_bytes : RESOURCE_LIMITS.unclaimed_file_bytes;
-  }
 
 
 
@@ -636,9 +632,9 @@ export class Tendril extends DurableObject<Env> {
   }
 
   checkLocalStorage(additional: number): void {
-    const limit = this.db.get<string | null>("owner_account", null) ? 25 * MB : 2 * MB;
-    const used = this.storageUsed() + (this.db.get('owner_account', null) ? 0
-      : this.db.one<{ n: number }>('SELECT COALESCE(SUM(length(value)),0) AS n FROM participant_records')!.n);
+    const limit = RESOURCE_LIMITS.page_bytes;
+    const used = this.storageUsed()
+      + this.db.one<{ n: number }>('SELECT COALESCE(SUM(length(value)),0) AS n FROM participant_records')!.n;
     if (used + additional > limit) throw new HttpError(413, "quota", "Tendril storage limit reached", { limit, used });
   }
 

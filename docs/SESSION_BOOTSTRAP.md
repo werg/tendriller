@@ -28,7 +28,7 @@ page release does not initialize or replace an application session.
 
 First create the hosted page and prepare its first signed release before claim.
 The private setup credential can configure authority and publish within the
-unclaimed page's limits and 24-hour expiry. The owner later signs in to open the
+common publication capacity and the unclaimed page's 24-hour expiry. The owner later signs in to open the
 ready page; existing keys, controls and publications are adopted without reset.
 Open an explicit new device with
 `openNativeDevice({ path, create: true })`; retain its identity, a new epoch key
