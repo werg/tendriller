@@ -2,7 +2,7 @@ import type { VoicePreferencesApi, VoicePreferences } from "../../../contract/vo
 
 const defaults: VoicePreferences = {
   audio: false, language: null, voice: "browser",
-  wakePhrase: "Hey Tendril", wakeMode: "local",
+  wakePhrase: "Listen computer", wakeMode: "model",
 };
 
 function validate(patch: unknown): Partial<VoicePreferences> {
@@ -28,7 +28,7 @@ function validate(patch: unknown): Partial<VoicePreferences> {
         result.wakePhrase = phrase; break;
       }
       case "wakeMode":
-        if (value !== "local" && value !== "browser") throw new TypeError("wakeMode must be local or browser");
+        if (value !== "model" && value !== "local" && value !== "browser") throw new TypeError("wakeMode must be model, local or browser");
         result.wakeMode = value; break;
       default: throw new TypeError(`Unknown preference: ${key}`);
     }

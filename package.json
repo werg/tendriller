@@ -12,6 +12,7 @@
     "typecheck": "tsc -p server/tsconfig.json --noEmit && tsc -p runtime/tsconfig.json --noEmit && tsc -p contract/tsconfig.json --noEmit",
     "test:e2e:public": "npm run build && playwright test --config test/e2e/public.playwright.config.ts",
     "test:e2e:speech-real": "npm run build && E2E_REAL_SPEECH=1 playwright test --config test/e2e/speech-real.playwright.config.ts",
+    "test:e2e:voice-controls": "playwright test --config runtime/test/voice-controls.playwright.config.ts",
     "test:e2e:all": "npm run test:e2e && npm run test:tts",
     "build:watch": "node scripts/build.mjs --watch",
     "contract:generate": "node scripts/contract.mjs --write",

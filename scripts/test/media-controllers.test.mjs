@@ -3,6 +3,7 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
+import { RUNTIME_FEATURES } from '../../runtime/resources.mjs';
 
 const sources = { Camera: '../../docs/tutorial/media/camera.mjs', VoiceControls: '../../docs/tutorial/media/voice.mjs',
   Sensors: '../../runtime/src/sensors.ts', Voice: '../../runtime/src/voice/index.ts' };
@@ -49,7 +50,11 @@ function environment({ media, consent = () => true, decode, encode } = {}) {
       toBlob(callback, type) { if (encode) encode(callback, canvas); else callback(new Blob(['frame'], { type })); } };
     canvases.push(canvas); return canvas;
   } });
-  const navigator = { language: 'en-US', mediaDevices: { getUserMedia(constraints) {
+  let locked = false;
+  const navigator = { language: 'en-US', locks: { async request(_name, _options, callback) {
+    if (locked) return callback(null);
+    locked = true; try { return await callback({}); } finally { locked = false; }
+  } }, mediaDevices: { getUserMedia(constraints) {
     acquisitions++; return media ? media(constraints, stream) : Promise.resolve(stream(constraints.audio ? 'audio' : 'video'));
   } } };
   const runtime = { identity: { page: 'test', base: 'https://page.example/' }, assetUrl: path => `https://page.example/runtime/${path}`,
@@ -59,9 +64,7 @@ function environment({ media, consent = () => true, decode, encode } = {}) {
     setInterval() {}, clearInterval() {}, location: { href: runtime.identity.base },
     SpeechSynthesisUtterance: class { constructor(text) { this.text = text; } },
     localStorage: { getItem: key => settings.get(key) ?? null, setItem: (key, value) => settings.set(key, value) },
-    fetch: async () => { fetches++; return { ok: true, json: async () => ({ features: { speech: {
-      model: 'fixture', url: 'model', sha256: 'a'.repeat(64), engine: { script: 'engine', wasm: 'engine.wasm', wasm_sha256: 'b'.repeat(64) },
-    } } }) }; } };
+    fetch: async () => { fetches++; return { ok: true, json: async () => ({ features: structuredClone(RUNTIME_FEATURES) }) }; } };
   for (const bundle of bundles) runInNewContext(bundle, context);
   const tracker = context.Sensors.installSensorWrappers();
   const emit = (type, value) => { for (const callback of handlers.get(type) ?? []) callback(value); };
@@ -130,7 +133,9 @@ test('voice cancels decoding and keeps a later reviewed transcript bound to its 
   await env.prepared(voice); await voice.start(gesture, { context: { task: 'discarded' } }); voice.finish(); await flush();
   voice.cancel(); decoding.resolve(env.decoded()); await flush(); assert.deepEqual(env.drafts, []);
   delay = false; const context = { task: 'second', revision: { sequence: 2 } };
-  await voice.start(gesture, { context }); context.task = 'mutated form'; context.revision.sequence = 99;
+  const restarted = voice.start(gesture, { context }); await flush();
+  env.workers.at(-1).respond('init'); await restarted;
+  context.task = 'mutated form'; context.revision.sequence = 99;
   voice.finish(); await flush(); env.workers.at(-1).respond('transcribe', { text: '  editable suggestion  ' }); await flush();
   assert.equal(env.drafts.length, 1); assert.equal(env.drafts[0].text, 'editable suggestion');
   assert.equal(env.drafts[0].context.task, 'second'); assert.equal(env.drafts[0].context.revision.sequence, 2);

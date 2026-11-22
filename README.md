@@ -14,6 +14,8 @@ The name combines an agent's tendrils reaching new interfaces and sensors with a
 
 Open **Page options** on any published page to add it to your Home Screen (native install prompt on supporting browsers; **Share → Add to Home Screen** on iOS/iPadOS). **Save for offline use** caches that release's immutable page files; application state and device enrollment remain owned by the Chronolog session. See [Browser API](docs/BROWSER_API.md#home-screen-setup).
 
+**Page options → Set up voice input** offers explicit tap-to-talk and optional on-device wake phrases. Microphone use starts only after local consent; speech assets load on demand. The controls keep an editable draft for review and copying, stop when the page is hidden, and never listen with every tab closed. Authored pages can reuse `mountVoiceControls` with a reviewed-text callback. See [voice lifecycle](docs/HANDS_FREE.md) and [browser/device qualification](docs/WAKE_WORD_QUALIFICATION.md).
+
 ## Documentation
 
 ### Building and connecting apps

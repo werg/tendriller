@@ -64,6 +64,15 @@ jobs:
         env:
           TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
       - run: npm --prefix tools ci
+      # Actions mounts a temporary home whose owner can differ from the image's
+      # active user. Firefox requires its existing home to belong to that user.
+      - name: Match temporary home ownership to the container user
+        run: chown "$(id -u):$(id -g)" "$HOME"
+      - name: Start Linux audio output for real Web Audio tests
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends pulseaudio pulseaudio-utils
+          bash scripts/start-ci-audio.sh
       - run: node scripts/test-browser.mjs
       - name: Qualify the exact immutable first-app kit
         run: npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz"

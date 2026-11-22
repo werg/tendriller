@@ -29,7 +29,7 @@ the current browser without requesting permissions.
 | Photo/file → analysis → editable suggestions → explicit commit | `createReviewedInput`, immutable session content and a declared command | `helpers/reviewed-input.mjs`, `media/`; [reviewed AI input](AI_INPUT.md) |
 | Camera permission, preview and frame capture | Browser acquisition plus the supplied camera controller | `media/camera.mjs`; [reviewed AI input](AI_INPUT.md) |
 | Active/pending sensor indicators and Stop all | `tendril.sensors.status/on/stopAll` | [Browser API](BROWSER_API.md#sensors-and-voice) |
-| Speech recognition, transcription, audio output or wake modes | `createVoice` from `@tendriller/runtime/voice` | `media/voice.mjs`; [voice lifecycle](HANDS_FREE.md) |
+| Speech recognition, transcription, audio output or wake modes | Hosted **Page options → Set up voice input**; `createVoice` / `mountVoiceControls` from `@tendriller/runtime/voice` | `media/voice.mjs`; [voice lifecycle](HANDS_FREE.md), [wake-word qualification](WAKE_WORD_QUALIFICATION.md) |
 | UI preview and headless browser interaction | `tendril-preview ./page`; add a real bootstrap for session execution | [Preview](tools/PREVIEW.md) |
 | Inference using a protected provider credential | An explicitly enabled native participant with an allowed-device list and request budget | `media/inference-client.mjs`, `media/inference-service.mjs`; [reviewed AI input](AI_INPUT.md) |
 | Agent-side tools and a connected process | The same owned session plus `createApplicationTools` / `serveApplicationToolLines` | [Delivery and process lifetime](AGENT_DELIVERY.md) |

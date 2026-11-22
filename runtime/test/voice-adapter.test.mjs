@@ -6,14 +6,19 @@ const built = await build({ entryPoints: [new URL('../src/voice/index.ts', impor
 const tick = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 function environment(consent = () => true) {
   const spoken = [], handlers = new Map(), settings = new Map(); let reads = 0, starts = 0, aborted = 0, installs = 0;
-  const window = Object.assign(new EventTarget(), { speechSynthesis: { speaking: false, speak(utterance) { spoken.push(utterance.text); }, cancel() {} } });
+  const window = Object.assign(new EventTarget(), { setTimeout, clearTimeout, speechSynthesis: { speaking: false, speak(utterance) { spoken.push(utterance.text); }, cancel() {} } });
   const document = Object.assign(new EventTarget(), { visibilityState: 'visible' });
   class Recognition extends EventTarget { processLocally = false; start() { starts++; this.onstart?.(); } abort() { aborted++; this.onend?.(); } static async available() { return 'available'; } static async install() { installs++; return true; } }
   window.SpeechRecognition = Recognition;
   const runtime = { identity: { page: 'page', base: 'https://test.example/page/' }, device: { id: 'device', name: 'Device' },
     assetUrl: path => new URL(path, 'https://test.example/runtime/').href,
     on(type, listener) { if (!handlers.has(type)) handlers.set(type, new Set()); handlers.get(type).add(listener); return () => handlers.get(type).delete(listener); } };
-  const context = { window, document, navigator: { language: 'en-US' }, location: { href: runtime.identity.base },
+  let locked = false;
+  const locks = { async request(_name, _options, callback) {
+    if (locked) return callback(null);
+    locked = true; try { return await callback({ name: 'tendriller-microphone' }); } finally { locked = false; }
+  } };
+  const context = { window, document, navigator: { language: 'en-US', locks }, location: { href: runtime.identity.base },
     localStorage: { getItem: key => settings.get(key) || null, setItem: (key, value) => settings.set(key, value) },
     SpeechSynthesisUtterance: class { constructor(text) { this.text = text; } }, URL, DOMException, AbortController, setTimeout, clearTimeout,
     fetch: async () => { reads++; throw Error('No resource should be fetched in this test'); } };
@@ -42,7 +47,7 @@ test('output and wake remain explicit, muted/hidden/stopped states do not auto-r
   assert.equal(env.voice.muted, true);
   assert.equal(await env.voice.startWake({ phrase: 'Hey test', mode: 'local' }), true); assert.equal(env.voice.listening, true);
   env.emit('sensors_stopped', { count: 1 }); assert.equal(env.voice.listening, false); assert.equal(env.aborted, 1);
-  assert.equal(await env.voice.startWake({ phrase: 'Hey test', mode: 'local' }), true);
+  assert.equal(await env.voice.startWake({ phrase: 'Hey test', mode: 'local' }), true, JSON.stringify(env.statuses));
   env.document.visibilityState = 'hidden'; env.document.dispatchEvent(new Event('visibilitychange'));
   env.document.visibilityState = 'visible'; env.document.dispatchEvent(new Event('visibilitychange'));
   assert.equal(env.voice.listening, false); assert.equal(env.starts, 2); assert.equal(env.reads, 0);

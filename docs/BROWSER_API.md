@@ -115,7 +115,28 @@ Use the [application contract](APPLICATION_BACKENDS.md) or the session directly.
 
 `sensors.status()` separates active resources from pending permission acquisitions. `sensors.stopAll()` cancels pending results, stops tracked media and location watches, and prevents late grants from becoming active. This local safety control does not report camera or microphone use to the host.
 
-Load optional voice from `import(runtime.assetUrl('voice.mjs'))` or `@tendriller/runtime/voice`. Supply consent, transcript and status callbacks. Route an accepted transcript into the application's chosen command; invoke `voice.speak(text)` explicitly for the application's chosen output. Importing or constructing voice starts no capture, playback or download. See [voice lifecycle](HANDS_FREE.md).
+Every hosted published page offers **Page options → Set up voice input**. The
+shared controls load lazily and provide tap-to-talk, an explicitly enabled
+on-device wake phrase, a visible microphone indicator and Stop, and an editable
+review-and-copy draft. Opening them does not download the model or open a
+microphone. A separate trusted local Start action is required. Generic controls
+never submit application commands.
+
+An authored page can import `mountVoiceControls` from
+`import(runtime.assetUrl('voice.mjs'))` or `@tendriller/runtime/voice` and supply a
+`container` and optional `transcript(text)` callback. That callback runs only when
+the person reviews the draft and chooses **Use text**. The lower-level
+`createVoice` adapter accepts explicit consent, transcript, and status callbacks;
+`startWake({ phrase, mode: 'model' })` selects the pinned local path. Its
+`microphoneActive` state is separate from preparation, and `stop()` cancels
+pending starts and results. `voice.speak(text)` stops input before queuing output.
+Construction starts no capture, playback or model download.
+
+The verified speech model is 16,919,407 bytes; model plus engines total
+18,224,260 bytes. Listening is bounded and foreground-only, with same-origin
+microphone ownership across tabs and no automatic rearming. See the
+[voice lifecycle, consent, and engine choices](HANDS_FREE.md) and
+[device qualification limits](WAKE_WORD_QUALIFICATION.md).
 
 ## Immutable code and offline use
 

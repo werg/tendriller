@@ -713,6 +713,19 @@ native acquisition plus runtime sensor tracking. These modules are supplied in
 the archive; an agent should not need to invent REST/SSE plumbing, a camera
 lifecycle or a voice stack to make the app useful.
 
+Hosted pages already expose **Page options → Set up voice input** for optional
+tap-to-talk and a foreground wake phrase. Model download and microphone access
+require a separate local consent action; the generic control only produces a
+reviewable, editable draft and **Copy text**. It does not submit domain commands.
+For an authored input flow, use `mountVoiceControls(runtime, { container,
+transcript })` from the optional `voice.mjs` module; `transcript` runs after the
+person chooses **Use text**. Feed that reviewed text into the application's
+existing review/submission flow. The default control uses the pinned on-device
+model (18,224,260 bytes including engines), with a visible microphone state,
+Stop, bounded sessions, and no listening while hidden or closed. Follow the
+[voice lifecycle and consent guide](HANDS_FREE.md) and preserve the
+[physical-device qualification limits](WAKE_WORD_QUALIFICATION.md).
+
 Define the domain before initial configuration: the descriptor binds the public
 definition, semantic version, schema and execution manifest. A UI publication
 does not replace that immutable application definition. For a new initial domain,

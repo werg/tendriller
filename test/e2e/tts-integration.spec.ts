@@ -35,11 +35,18 @@ async function setUpVoice(context: BrowserContext, page: Page, withInput = false
   await context.route(/\/_tendril\/runtime\/[a-f0-9]{64}\/tts\/index\.js$/, route => route.fulfill({ status: 200, contentType: "text/javascript", body: phonon }));
   await page.addInitScript((mockInput) => {
     const w = window as any;
-    w.__ttsE2E = { loads: 0, spoken: [], completed: [], aborted: [], disposals: 0, fallback: [], starts: 0 };
+    w.__ttsE2E = { loads: 0, spoken: [], completed: [], aborted: [], disposals: 0, fallback: [], starts: 0, recordedBytes: 0 };
     Object.defineProperty(window, "speechSynthesis", { configurable: true, value: { speak: (utterance: any) => w.__ttsE2E.fallback.push(utterance.text), cancel() {} } });
     const start = AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start = function (...args: any[]) { w.__ttsE2E.starts++; return start.apply(this, args as any); };
     if (mockInput) {
+      const NativeRecorder = window.MediaRecorder;
+      w.MediaRecorder = class extends NativeRecorder {
+        constructor(stream: MediaStream, options?: MediaRecorderOptions) {
+          super(stream, options);
+          this.addEventListener("dataavailable", event => { w.__ttsE2E.recordedBytes += event.data.size; });
+        }
+      };
       const NativeWorker = window.Worker;
       w.Worker = class {
         onmessage: ((event: MessageEvent) => void) | null = null;
@@ -91,6 +98,9 @@ test("voice input interrupts speech, reaches the page callback, and later output
     const mic = page.locator("#record");
     await mic.click();
     await expect(mic).toHaveAttribute("aria-pressed", "true");
+    // A recording state precedes the encoder's first audio. Finishing before
+    // any chunk exists correctly produces a no-audio result, not a transcript.
+    await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.recordedBytes)).toBeGreaterThan(0);
     await mic.click();
     await expect(page.locator("#draft")).toHaveValue("voice follow up");
     await expect.poll(() => page.evaluate(() => (window as any).__ttsE2E.aborted)).toContain("long reply");

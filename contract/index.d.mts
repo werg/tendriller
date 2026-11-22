@@ -10,7 +10,8 @@ export type ServiceDescriptor = WireContracts['serviceDescriptor'];
 export interface RuntimeLocalEventMap { ready: void; application_ready: void; capabilities: CapabilityReport; sensors: SensorStatus; sensors_stopped: { count: number } }
 export interface PublicationAsset { path: string; sha256: string; type: string }
 export interface RuntimeArtifactFeatures {
-  speech: { model: string; url: string; sha256: string; engine: { script: string; wasm: string; wasm_sha256: string } } | null;
+  speech: { model: string; url: string; sha256: string; size?: number; total_size?: number; languages?: string[];
+    engine: { script: string; script_sha256: string; script_size?: number; wasm: string; wasm_sha256: string; wasm_size?: number } } | null;
 }
 export interface PublicationManifest {
   id: string; base: string;

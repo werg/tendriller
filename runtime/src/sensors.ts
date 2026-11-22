@@ -19,6 +19,15 @@ const SENSOR_ORDER: SensorKind[] = ["camera", "microphone", "screen", "location"
 
 let singleton: SensorTracker | null = null;
 
+// Optional adapters are separate bundles. A private, non-enumerable promise
+// marker carries the native acquisition lifetime across that boundary without
+// delaying Stop all's public cancellation result.
+const MEDIA_SETTLED = Symbol.for("tendriller.media-settled.v1");
+export function mediaRequestSettled(request: Promise<MediaStream>): Promise<void> {
+  const native = (request as Promise<MediaStream> & { [key: symbol]: Promise<void> | undefined })[MEDIA_SETTLED];
+  return Promise.resolve(native || request).then(() => {}, () => {});
+}
+
 export function installSensorWrappers(): SensorTracker {
   if (singleton) return singleton;
   const w = window as any;
@@ -92,7 +101,9 @@ export function installSensorWrappers(): SensorTracker {
   };
   const acquireMedia = (request: () => Promise<MediaStream>, screen: boolean, kinds: SensorKind[]): Promise<MediaStream> => {
     const acquisitionEpoch = epoch;
-    return new Promise((resolve, reject) => {
+    let settleNative: () => void;
+    const nativeSettled = new Promise<void>(resolve => { settleNative = resolve; });
+    const acquisition = new Promise<MediaStream>((resolve, reject) => {
       let settled = false;
       const cancel = () => {
         if (settled) return;
@@ -111,22 +122,28 @@ export function installSensorWrappers(): SensorTracker {
         pendingMedia.delete(cancel);
         notify();
         if (!settled) { settled = true; reject(error); }
+        settleNative!();
         return;
       }
       Promise.resolve(requested).then((stream) => {
         // Always observe the native result, even after rejecting our promise:
         // late grants and later addtrack events still need resource cleanup.
-        trackStream(stream, screen, acquisitionEpoch);
-        if (acquisitionEpoch !== epoch) { cancel(); return; }
-        pendingMedia.delete(cancel);
-        notify();
-        if (!settled) { settled = true; resolve(stream); }
+        try {
+          trackStream(stream, screen, acquisitionEpoch);
+          if (acquisitionEpoch !== epoch) { cancel(); return; }
+          pendingMedia.delete(cancel);
+          notify();
+          if (!settled) { settled = true; resolve(stream); }
+        } finally { settleNative!(); }
       }, (error) => {
         pendingMedia.delete(cancel);
         notify();
         if (!settled) { settled = true; reject(error); }
+        settleNative!();
       });
     });
+    Object.defineProperty(acquisition, MEDIA_SETTLED, { value: nativeSettled });
+    return acquisition;
   };
   const md: any = navigator.mediaDevices;
   let origGUM: ((c: MediaStreamConstraints) => Promise<MediaStream>) | null = null;

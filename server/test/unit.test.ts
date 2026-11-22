@@ -19,7 +19,7 @@ describe("helpers", () => {
   });
 
   it("injection escapes the config", () => {
-    const html = injectRuntime("<HEAD data-x='1'>t</HEAD>", { id: "x", base: "/b/", version: 1, documentPath: null, application: { id: "12".repeat(32) }, features: { shared_by: "</script>", speech: { model: "whistle", url: "x", sha256: "x", engine: {script:"engine.js",wasm:"engine.wasm",wasm_sha256:"x"} } } });
+    const html = injectRuntime("<HEAD data-x='1'>t</HEAD>", { id: "x", base: "/b/", version: 1, documentPath: null, application: { id: "12".repeat(32) }, features: { shared_by: "</script>", speech: { model: "whistle", url: "x", sha256: "x", engine: {script:"engine.js",script_sha256:"x",wasm:"engine.wasm",wasm_sha256:"x"} } } });
     expect(html).toContain(`<HEAD data-x='1'><base href="/b/">`);
     expect(html).toContain('<link rel="manifest" href="/b/_tendril/manifest.webmanifest" crossorigin="use-credentials">');
     expect(html).not.toContain('"</script>"');

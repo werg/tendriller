@@ -46,7 +46,7 @@ export async function buildPublicArtifacts() {
   mkdirSync(assets, { recursive: true }); mkdirSync(sdk, { recursive: true });
   const common = { bundle: true, format: "iife", target: "es2022", minify: !watching && !process.env.NO_MINIFY, sourcemap: watching ? "inline" : false, logLevel: "warning" };
   const graphs = {};
-  for (const [source, target, format] of [["runtime/src/index.ts", "tendril.js", "iife"], ["runtime/src/kernel.ts", "kernel.mjs", "esm"], ["runtime/src/sw.ts", "sw.js", "iife"], ["runtime/src/voice/index.ts", "voice.mjs", "esm"], ["runtime/src/voice/worker.ts", "voice-worker.js", "iife"]]) {
+  for (const [source, target, format] of [["runtime/src/index.ts", "tendril.js", "iife"], ["runtime/src/kernel.ts", "kernel.mjs", "esm"], ["runtime/src/sw.ts", "sw.js", "iife"], ["runtime/src/voice/index.ts", "voice.mjs", "esm"], ["runtime/src/voice/worker.ts", "voice-worker.js", "iife"], ["runtime/src/voice/pcm-worklet.ts", "voice-pcm-worklet.js", "iife"]]) {
     const result = await build({ ...common, format, entryPoints: [join(root, source)], outfile: join(assets, target), metafile: true });
     const inputs = Object.keys(result.metafile.inputs).map(path => relative(root, join(process.cwd(), path)).replaceAll("\\", "/")).sort();
     graphs[target] = { inputs, bytes: readFileSync(join(assets, target)).length, gzip: gzipSync(readFileSync(join(assets, target))).length };

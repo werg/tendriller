@@ -25,6 +25,9 @@ const weights = {
 const address = file => `_tendril/assets/${file.sha256}/${file.name}`;
 export const RUNTIME_RESOURCES = Object.freeze([script, wasm, weights].map(file => Object.freeze({ ...file, url: address(file) })));
 export const RUNTIME_FEATURES = Object.freeze({ speech: {
-  model: 'cactus-whistle-v4', url: address(weights), sha256: weights.sha256,
-  engine: { script: address(script), wasm: address(wasm), wasm_sha256: wasm.sha256 },
+  model: 'cactus-whistle-v4', url: address(weights), sha256: weights.sha256, size: weights.size,
+  total_size: script.size + wasm.size + weights.size,
+  languages: ['en', 'de', 'fr', 'es', 'it', 'nl', 'pl'],
+  engine: { script: address(script), script_sha256: script.sha256, script_size: script.size,
+    wasm: address(wasm), wasm_sha256: wasm.sha256, wasm_size: wasm.size },
 } });

@@ -8,11 +8,20 @@ on:
     branches: [master]
     paths:
       - "runtime/src/voice/**"
+      - "runtime/src/sensors.ts"
+      - "runtime/resources.*"
+      - "contract/voice.d.mts"
+      - "contract/index.d.mts"
       - "scripts/e2e-speech-assets.mjs"
+      - "scripts/qualify-speech-node.mjs"
+      - "scripts/generate-speech-fixture.mjs"
+      - "scripts/generate-wake-fixtures.mjs"
       - "scripts/build.mjs"
       - "package.json"
       - "package-lock.json"
       - "test/e2e/real-speech.spec.ts"
+      - "test/e2e/local-wake-real.spec.ts"
+      - "test/e2e/wake-pipeline-fixture.ts"
       - "test/e2e/speech-fixture.mjs"
       - "test/e2e/speech-real.playwright.config.ts"
       - "test/fixtures/speech/**"
@@ -20,11 +29,20 @@ on:
   pull_request:
     paths:
       - "runtime/src/voice/**"
+      - "runtime/src/sensors.ts"
+      - "runtime/resources.*"
+      - "contract/voice.d.mts"
+      - "contract/index.d.mts"
       - "scripts/e2e-speech-assets.mjs"
+      - "scripts/qualify-speech-node.mjs"
+      - "scripts/generate-speech-fixture.mjs"
+      - "scripts/generate-wake-fixtures.mjs"
       - "scripts/build.mjs"
       - "package.json"
       - "package-lock.json"
       - "test/e2e/real-speech.spec.ts"
+      - "test/e2e/local-wake-real.spec.ts"
+      - "test/e2e/wake-pipeline-fixture.ts"
       - "test/e2e/speech-fixture.mjs"
       - "test/e2e/speech-real.playwright.config.ts"
       - "test/fixtures/speech/**"
@@ -50,7 +68,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/tendriller-e2e/speech-4.0.0
-          key: ${{ runner.os }}-speech-${{ hashFiles('scripts/e2e-speech-assets.mjs') }}
+          key: ${{ runner.os }}-speech-${{ hashFiles('scripts/e2e-speech-assets.mjs', 'runtime/resources.mjs') }}
       # Cache hits are still SHA-256 verified; an unavailable download fails the
       # job instead of turning a missing real-model check into a passing skip.
       - run: node scripts/e2e-speech-assets.mjs
