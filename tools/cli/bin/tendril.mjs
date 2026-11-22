@@ -10,7 +10,7 @@ import { describeReadiness, requireCreationReady, createPage } from '@tendriller
 import { probeCapabilities } from '@tendriller/core/probe';
 import { checkService } from '../lib/service.mjs';
 import { serveStdioMcp } from '../lib/mcp-stdio.mjs';
-import { exportSourceHandoff, exportSqliteCheckpoint, restoreSqliteCheckpoint } from '../lib/handoff.mjs';
+import { exportSourceHandoff, exportNativeCheckpoint, restoreNativeCheckpoint } from '../lib/handoff.mjs';
 
 const usage = `Usage: tendril <command> [options]
 
@@ -20,7 +20,7 @@ Start with a service domain (no saved handle or session required):
   service [--server URL]                Read the public host contract and limits
   readiness --server URL               Check current creation availability before setup
   handoff source <out.tgz> [--project DIR]  Pack non-secret source files for another sandbox
-  checkpoint export|restore <file> --device <path> [--sql <path>] [--secret-env VAR]
+  checkpoint export|restore <file> --device <path> [--secret-env VAR] [--project DIR]
 
 Application session (--session /absolute/application.mjs):
   --mode attach | own | independent [--profile NAME] [--run RUN_ID]
@@ -62,7 +62,7 @@ const flagsByCommand = {
   retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: [],
   signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
-  handoff: ['project'], checkpoint: ['device', 'sql', 'secret-env', 'keep-source'],
+  handoff: ['project'], checkpoint: ['device', 'secret-env', 'project'],
   readiness: ['server'], new: ['owner', 'server', 'as'], info: ['show-url'], service: ['server'], meta: [], release: [], link: [], token: ['scopes'],
   activity: ['after'], remove: ['yes'],
 };
@@ -96,10 +96,10 @@ async function hostCommand(command, args, flags, signal) {
     if (!secret) throw invalid(`Set environment variable ${secretVar} (64-hex key or >=12-char passphrase).`);
     if (!flags.device) throw invalid('Supply --device <path/to/device.sqlite>');
     if (args[0] === 'export') {
-      return exportSqliteCheckpoint({ devicePath: flags.device, outputPath: args[1], secret, sqlPath: flags.sql ?? null, retireSource: !flags['keep-source'] });
+      return exportNativeCheckpoint({ devicePath: flags.device, outputPath: args[1], secret, projectDir: flags.project ?? process.cwd() });
     }
     if (args[0] === 'restore') {
-      return restoreSqliteCheckpoint({ inputPath: args[1], devicePath: flags.device, secret, sqlPath: flags.sql ?? null });
+      return restoreNativeCheckpoint({ inputPath: args[1], devicePath: flags.device, secret, projectDir: flags.project ?? process.cwd() });
     }
     throw invalid('Use: tendril checkpoint export|restore <file> --device <path>');
   }

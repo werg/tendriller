@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { DatabaseSync } from 'node:sqlite';
 
 import { packTarGz, unpackTarGz, listTarGz, readTarGzFile } from '../../contract/archive.mjs';
 import { createReleaseDownloader, extractVerifiedTarGz } from '../../contract/release-verify.mjs';
@@ -15,7 +14,7 @@ import { acquireAtomicLock, resolveUnixSocketPath, resolveWindowsPipePath } from
 import { createPersistentOutbox } from '../../session/outbox.mjs';
 import { connectOrStartNativeSession } from '../../session/native.mjs';
 import { buildCompositionV2, COMPOSITION_V2_PROFILES } from '../release-composition.mjs';
-import { exportSourceHandoff, exportSqliteCheckpoint, restoreSqliteCheckpoint } from '../../tools/cli/lib/handoff.mjs';
+import { exportSourceHandoff } from '../../tools/cli/lib/handoff.mjs';
 import { handleStdioMcpMessage } from '../../tools/cli/lib/mcp-stdio.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -103,7 +102,8 @@ test('standalone zero-dependency bootstrapper probes, extracts nondestructively,
     bootstrap, '--archive-file', kitPath, '--expected-sha256', sha256(bytes), '--project', projectDir, '--profile', 'events-relay-only',
   ], { encoding: 'utf8' }));
   assert.equal(okOut.ok, true);
-  assert.equal(okOut.readiness, 'app_initialized');
+  assert.equal(okOut.readiness, 'project_prepared');
+  assert.equal(okOut.profileConfigured, false);
   assert.equal(readFileSync(join(projectDir, '.tendriller/handle.json'), 'utf8'), '{"keep":true}');
 
   // Tampered hash exits with semantic code 3 (INTEGRITY_FAILURE).
@@ -156,7 +156,7 @@ test('cross-platform IPC naming, atomic lock stale recovery, and INSTANCE_UNRESP
   const stateDir = join(dir, 'stale');
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   writeFileSync(join(stateDir, 'owner.lock'), JSON.stringify({
-    version: 1, lockId: 'dead', pid: 999999999, hostId: 'other-dead-host', startedAt: 1, heartbeatAt: 1, leaseTtlMs: 1000,
+    version: 1, lockId: 'dead', pid: 999999999, hostId: hostname(), startedAt: 1, heartbeatAt: 1, leaseTtlMs: 1000,
   }), { mode: 0o600 });
   const reclaimed = await acquireAtomicLock(stateDir, { probeReachable: async () => false });
   // While we hold the lock in this live process with unreachable IPC, a second acquire MUST fail with INSTANCE_UNRESPONSIVE.
@@ -255,7 +255,7 @@ test('connectOrStartNativeSession supports bounded zero-IPC mode and concurrent 
   await owner.close();
 });
 
-test('source handoff blocks secrets and SQLite checkpoint encrypts, restores, and retires source', async t => {
+test('source handoff blocks secrets and excludes device state', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'tendriller-handoff-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const proj = join(dir, 'app');
@@ -269,25 +269,7 @@ test('source handoff blocks secrets and SQLite checkpoint encrypts, restores, an
   writeFileSync(join(proj, 'leak.mjs'), `export const k = 'td_a_${'f'.repeat(64)}';`);
   assert.throws(() => exportSourceHandoff(proj, join(dir, 'leak.tgz')), { code: 'handoff_secret_detected' });
 
-  // SQLite checkpoint export + restore + anti-split-brain retirement
-  const srcDbPath = join(dir, 'src.sqlite');
-  const dstDbPath = join(dir, 'dst.sqlite');
-  const db = new DatabaseSync(srcDbPath);
-  db.exec('CREATE TABLE stored_bytes(key TEXT PRIMARY KEY, value BLOB NOT NULL)');
-  db.prepare('INSERT INTO stored_bytes(key, value) VALUES(?, ?)').run('peer-session/device/v1', Buffer.from('identity-payload'));
-  db.close();
 
-  const secret = 'b'.repeat(64);
-  const exported = await exportSqliteCheckpoint({ devicePath: srcDbPath, outputPath: join(dir, 'cp.clcp'), secret, retireSource: true });
-  assert.equal(exported.retiredSource, true);
-  await assert.rejects(exportSqliteCheckpoint({ devicePath: srcDbPath, outputPath: join(dir, 'cp2.clcp'), secret }), { code: 'DEVICE_RETIRED_BY_CHECKPOINT' });
-
-  const restored = await restoreSqliteCheckpoint({ inputPath: exported.output, devicePath: dstDbPath, secret });
-  assert.equal(restored.restoredEntries, 1);
-  const reopened = new DatabaseSync(dstDbPath);
-  const row = reopened.prepare('SELECT value FROM stored_bytes WHERE key=?').get('peer-session/device/v1');
-  reopened.close();
-  assert.equal(Buffer.from(row.value).toString('utf8'), 'identity-payload');
 });
 
 test('local Stdio MCP handler and ServerlessHostAdapter execute unified five-step workflows', async () => {
@@ -323,6 +305,8 @@ test('local Stdio MCP handler and ServerlessHostAdapter execute unified five-ste
   const kv = new Map();
   const adapter = createServerlessHostAdapter({
     applicationId: '33'.repeat(32),
+    withLock: (_id, work) => work(),
+    retainTask: () => {},
     storage: { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v); }, list: async () => [...kv.keys()] },
     authorize: req => req.headers.get('Authorization') === 'Bearer ok',
     openSession: async () => ({ session: fakeSession }),

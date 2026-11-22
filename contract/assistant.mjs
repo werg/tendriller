@@ -53,14 +53,14 @@ export async function proposeApplicationAssistant({ api, token, key, backupKeys 
 }
 
 /** The existing participant executes approved native tools. The socket is inert when idle. */
-export function connectApplicationAssistant({ api, key, session, tools, queries = [], commands = [], onStatus = () => {},
+export function connectApplicationAssistant({ api, key, session, tools, onStatus = () => {},
   openSocket = (url, protocols) => new WebSocket(url, protocols), initialConnectTimeoutMs = 600_000, signal }) {
   if (!keyFormat.test(key)) throw error('INVALID_ASSISTANT_KEY');
   if (!Number.isSafeInteger(initialConnectTimeoutMs) || initialConnectTimeoutMs < 1000 || initialConnectTimeoutMs > 600_000)
     throw error('INVALID_ASSISTANT_STARTUP_TIMEOUT');
+  if (typeof tools?.execute !== 'function') throw error('INVALID_ASSISTANT_TOOLS');
   const url = socketUrl(api), stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, session.signal, ...(signal ? [signal] : [])]);
-  const allowed = { query: new Set(queries), command: new Set(commands) };
   const acknowledgements = new Map(), waitingForOpen = new Set();
   let socket, active = 0;
   function send(message) {
@@ -75,21 +75,26 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
     active++;
     try {
       const journal = ['operation', 'retry', 'wait'].includes(kind), write = kind === 'command' || kind === 'reapply';
-      if (message.applicationId !== session.applicationId || !(journal || write || kind === 'query') ||
-          !(kind === 'query' ? allowed.query : allowed.command).has(name))
+      if (message.applicationId !== session.applicationId || !(journal || write || kind === 'query'))
         throw error('APPLICATION_ASSISTANT_OPERATION_NOT_ALLOWED');
       if (generation !== session.status.generation) throw error('APPLICATION_ASSISTANT_GENERATION_CHANGED');
       if (caller && (typeof caller.agentBindingId !== 'string' || typeof caller.bindingRevision !== 'number' ||
           !['approved-binding', 'oauth-client'].includes(caller.verification))) throw error('APPLICATION_ASSISTANT_CALLER_INVALID');
-      const args = journal ? { operationId } : { name, input, ...(write ? {
-        operationId, ...(basedOn !== undefined ? { basedOn } : {}),
+      const raw = await tools.execute({ kind, name, input, operationId, basedOn, generation,
         ...(kind === 'reapply' ? { originalOperationId: message.originalOperationId, originalAuthor: message.originalAuthor } : {}),
-      } : {}) };
-      const raw = await tools.call(kind, args, { signal: AbortSignal.any([connection, AbortSignal.timeout(4800)]),
+      }, { signal: AbortSignal.any([connection, AbortSignal.timeout(4800)]),
         ...(caller ? { caller: Object.freeze(structuredClone(caller)) } : {}) });
-      const value = raw && (write || journal) ? { ...raw, operationReference: {
-        applicationId: session.applicationId, historyId: session.historyId ?? null, deviceId: session.deviceId, operationId,
-      } } : raw;
+      // Translate the canonical author into this host wire protocol's device field.
+      // The scoped controller owns validation, actual IDs and signed-attempt evidence.
+      let value = raw;
+      if (raw?.operationReference && (write || journal)) {
+        const { author, ...reference } = raw.operationReference;
+        if (typeof author !== 'string' || !/^[a-f0-9]{64}$/u.test(author) ||
+            reference.applicationId !== session.applicationId || reference.historyId !== session.historyId ||
+            typeof reference.operationId !== 'string' || !reference.operationId || reference.operationId.length > 512)
+          throw error('APPLICATION_ASSISTANT_REFERENCE_INVALID');
+        value = { ...raw, operationReference: { ...reference, deviceId: author } };
+      }
       if (generation !== session.status.generation) throw error('APPLICATION_ASSISTANT_GENERATION_CHANGED');
       if (socket === transport) send({ type: 'result', id, value: value ?? null });
     } catch (cause) {
@@ -196,40 +201,25 @@ export function connectApplicationAssistant({ api, key, session, tools, queries 
   };
 }
 
-/** Advance the native cursor only after the host retains each projected event. */
-export async function forwardApplicationEvents({ session, assistant, topics, project, checkpoint, signal, onSkipped = () => {} }) {
-  const lifetime = AbortSignal.any([session.signal, ...(signal ? [signal] : [])]);
-  let cursor = await checkpoint.load();
-  for await (const change of session.changes({ signal: lifetime })) {
-    if (change.kind === 'recovery' && cursor !== undefined)
-      throw error('APPLICATION_ASSISTANT_REVIEW_RECOVERY');
-    for (;;) {
-      lifetime.throwIfAborted();
-      const view = await session.readView();
-      let batch;
-      try { batch = await view.readEvents({ ...(cursor === undefined ? {} : { cursor }), topics, limit: 32 }); }
-      finally { await view.release(); }
-      for (const event of batch.events) {
-        const projection = await project(event);
-        if (projection) {
-          const value = { ...projection, sourceEventId: event.id, generation: batch.revision.generation };
-          for (let attempt = 0; ; attempt++) {
-            await assistant.waitUntilOnline({ signal: lifetime });
-            try { await assistant.publish(value); break; }
-            catch (cause) {
-              if (cause?.code === 'event_not_approved') {
-                onSkipped({ name: value.name, sourceEventId: value.sourceEventId });
-                break;
-              }
-              const retryable = ['APPLICATION_ASSISTANT_OFFLINE', 'APPLICATION_ASSISTANT_ACK_TIMEOUT', 'delivery_backlog_full', 'application_event_unavailable', 'page_rate_limited', 'account_rate_limited'].includes(cause?.code);
-              if (!retryable || attempt >= 5) throw cause;
-              await delay(Math.min(8000, 500 * 2 ** attempt), lifetime);
-            }
-          }
+/** Host-specific acknowledgement/retry callback for Chronolog forwardSessionEvents. */
+export function createAssistantEventDelivery({ assistant, onSkipped = () => {} }) {
+  return async (projection, event, batch, signal) => {
+    const value = { ...projection, sourceEventId: event.id, generation: batch.revision.generation };
+    for (let attempt = 0; ; attempt++) {
+      signal.throwIfAborted();
+      await assistant.waitUntilOnline({ signal });
+      signal.throwIfAborted();
+      try { await assistant.publish(value); return; }
+      catch (cause) {
+        signal.throwIfAborted();
+        if (cause?.code === 'event_not_approved') {
+          onSkipped({ name: value.name, sourceEventId: value.sourceEventId });
+          return;
         }
+        const retryable = ['APPLICATION_ASSISTANT_OFFLINE', 'APPLICATION_ASSISTANT_ACK_TIMEOUT', 'delivery_backlog_full', 'application_event_unavailable', 'page_rate_limited', 'account_rate_limited'].includes(cause?.code);
+        if (!retryable || attempt >= 5) throw cause;
+        await delay(Math.min(8000, 500 * 2 ** attempt), signal);
       }
-      if (batch.cursor !== cursor) { await checkpoint.save(batch.cursor); cursor = batch.cursor; }
-      if (!batch.hasMore) break;
     }
-  }
+  };
 }

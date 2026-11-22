@@ -283,3 +283,14 @@ bootstrap. They are not independent setup programs. For a domain-only entry,
 return to [Build an app](docs/BUILD_AN_APP.md), or run `tendril guide --server URL`
 for a credential-free workflow map. `tendril service --server URL` inspects a host
 before creating or selecting a page.
+
+## Choose the participant host explicitly
+
+Use [deployment guidance](docs/DEPLOYMENT_GUIDE.md), also available through
+`tendril_guide` with `topic: "deployment"`, to choose the process lifetime and
+retained storage for the app. Local MCP over stdio and ordered batches use the
+same application session; an HTTP fallback is available for restricted networks.
+Prefer direct WebRTC and the existing hibernating hosted fallback. A capability
+probe, installed template, or successful extraction does not establish a running
+participant or future conversation wake. Verify the actual applied command,
+other-participant read, reload/reopen, and exact published version.

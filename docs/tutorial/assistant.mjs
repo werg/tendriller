@@ -2,8 +2,8 @@
 import { pathToFileURL } from 'node:url';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { createApplicationTools } from '@chronolog/peer-session';
-import { createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant, forwardApplicationEvents } from '@tendriller/core/assistant';
+import { createScopedApplicationTools, forwardSessionEvents } from '@chronolog/peer-session';
+import { createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant, createAssistantEventDelivery } from '@tendriller/core/assistant';
 import { project, privateDirectory, readPrivate, savePrivate } from './local.mjs';
 import { openSession } from './session.mjs';
 import { createCliLifetime } from './helpers/cli-lifetime.mjs';
@@ -27,7 +27,7 @@ async function checkpoint(cursor) {
 // Dependency hooks qualify this lifecycle without real accounts or credentials.
 export async function runAssistant({ signal, events = false } = {}, {
   prepare = prepareAssistant, open = openSession, connect = connectApplicationAssistant,
-  tools = createApplicationTools, forward = forwardApplicationEvents, watch,
+  tools = createScopedApplicationTools, forward = forwardSessionEvents, watch,
   onOwned, onClosed, report = value => console.log(JSON.stringify(value)),
 } = {}) {
   signal?.throwIfAborted();
@@ -49,15 +49,18 @@ export async function runAssistant({ signal, events = false } = {}, {
           next: 'The owner opens the published page and reviews these permissions; no claimed reply is needed.' });
         return prepared.review.proposed;
       },
-      startAdapter: callbacks => connect({ ...options, session: owned.session, tools: tools(owned.session), ...callbacks }),
-      onOnline: events ? (assistant, lifetime) => forward({ session: owned.session, assistant, topics: ['note'], signal: lifetime,
+      startAdapter: callbacks => connect({ ...options, session: owned.session,
+        tools: tools(owned.session, { queries: options.queries, commands: options.commands }), ...callbacks }),
+      onOnline: events ? (assistant, lifetime) => forward({ session: owned.session, topics: ['note'], signal: lifetime,
+        deliver: createAssistantEventDelivery({ assistant,
+          onSkipped: () => report({ state: 'event_skipped', name: 'note.added', reason: 'event_not_approved',
+            delivered: false, roundTripVerified: false, futureWakeVerified: false }),
+        }),
         checkpoint: { load: async () => {
           try { return JSON.parse(await readFile(new URL('assistant-event-cursor.json', privateDirectory), 'utf8')); }
           catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
         }, save: checkpoint },
         project: event => ({ name: 'note.added', payload: { operationId: event.operationId } }),
-        onSkipped: () => report({ state: 'event_skipped', name: 'note.added', reason: 'event_not_approved',
-          delivered: false, roundTripVerified: false, futureWakeVerified: false }),
       }) : undefined, report });
     await lifecycle.done;
   } finally {

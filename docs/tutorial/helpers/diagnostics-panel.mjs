@@ -87,11 +87,15 @@ export function mountDiagnosticsPanel(container, { appName = 'Tendriller app' } 
 }
 
 /**
- * Register browser lifecycle flush hooks (`visibilitychange`, `pagehide`, `freeze`) so pending
- * local state and checkpoints are flushed before tab suspension or eviction.
+ * Best-effort lifecycle notification only. Callers must supply a real flush; a no-op
+ * does not flush storage or create a checkpoint. Browsers need not await promises
+ * during eviction. Durable intent must already be saved before sending commands.
  */
-export function registerLifecycleFlush(onFlush) {
-  const flush = () => { try { void onFlush(); } catch {} };
+export function registerLifecycleFlush(onFlush, { onError = () => {} } = {}) {
+  if (typeof onFlush !== 'function') throw TypeError('Provide a lifecycle flush callback.');
+  // Observe asynchronous failures too, including a rejecting error reporter.
+  const failed = error => { try { Promise.resolve(onError(error)).catch(() => {}); } catch {} };
+  const flush = () => { try { Promise.resolve(onFlush()).catch(failed); } catch (error) { failed(error); } };
   const onVisibility = () => { if (document.visibilityState === 'hidden') flush(); };
   document.addEventListener('visibilitychange', onVisibility);
   window.addEventListener('pagehide', flush);

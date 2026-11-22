@@ -1,8 +1,8 @@
 // Shared pure-Node release downloader and SHA-256 integrity verifier used by
 // tendriller, tendriller-contrib, and the standalone single-file bootstrapper.
 import { createHash } from 'node:crypto';
-import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, unlinkSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync, unlinkSync, lstatSync, realpathSync } from 'node:fs';
+import { dirname, join, resolve, parse, basename } from 'node:path';
 import { unpackTarGz } from './archive.mjs';
 
 export const RELEASE_DOWNLOAD_LIMITS = Object.freeze({
@@ -44,12 +44,20 @@ export function createReleaseDownloader(baseUrl, {
   onVerified,
 } = {}) {
   const base = String(baseUrl).replace(/\/+$/u, '');
+  const parsedBase = new URL(base);
+  if (parsedBase.protocol !== 'https:' || parsedBase.username || parsedBase.password || parsedBase.port || parsedBase.search || parsedBase.hash || !allowedHosts.has(parsedBase.hostname))
+    throw fail('release_expectation_invalid', 'Require an allowed public HTTPS release base URL.');
   const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(limits.timeoutMs)]) : AbortSignal.timeout(limits.timeoutMs);
-  let totalBytes = 0;
+  let totalBytes = 0, artifacts = 0;
 
   async function download(file, expectedHash, expectedSize, retain = false) {
+    if (typeof file !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(file) ||
+        expectedHash !== undefined && !SHA256_RE.test(expectedHash) ||
+        expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize < 0))
+      throw fail('release_expectation_invalid', 'Require a release asset filename and valid hash/size expectations.');
+    if (++artifacts > limits.artifacts) throw fail('release_size_limit', 'Release asset count exceeds its bound.');
     const initial = new URL(`${base}/${file}`);
-    const maximum = retain ? limits.metadataBytes : limits.artifactBytes;
+    const maximum = file.endsWith('.json') ? limits.metadataBytes : limits.artifactBytes;
     let url = initial;
     let response;
     for (let redirect = 0; ; redirect++) {
@@ -126,18 +134,32 @@ export async function readPublishedManifest(sourceCommit, options = {}) {
 /**
  * Atomically write verified bytes to a target file with fsync + rename (no partial files on crash).
  */
+function ensureSafeDirectory(path) {
+  const full = resolve(path), root = parse(full).root;
+  let current = root;
+  for (const segment of full.slice(root.length).split(/[\\/]/u).filter(Boolean)) {
+    current = join(current, segment);
+    try { mkdirSync(current); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const stat = lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw fail('ARCHIVE_PATH_UNSAFE', 'Extraction requires real directories, without symbolic links.');
+  }
+}
+
 export function writeVerifiedFileAtomic(targetPath, bytes) {
   const full = resolve(targetPath);
-  mkdirSync(dirname(full), { recursive: true });
+  ensureSafeDirectory(dirname(full));
+  try {
+    if (lstatSync(full).isSymbolicLink()) throw fail('ARCHIVE_PATH_UNSAFE', 'Refusing a symbolic link destination.');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const temp = `${full}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const fd = openSync(temp, 'wx', 0o644);
   try {
-    writeFileSync(fd, bytes);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
-  }
-  try {
+    try {
+      writeFileSync(fd, bytes);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(temp, full);
   } catch (error) {
     try { unlinkSync(temp); } catch {}
@@ -161,8 +183,12 @@ export function extractVerifiedTarGz(archiveBytes, targetDirectory, {
     if (sha256Hex(bytes) !== expectedSha256) throw fail('release_bytes_mismatch', 'Archive SHA-256 digest mismatch.');
   }
   const files = unpackTarGz(bytes, { ...(maxTotalBytes === undefined ? {} : { maxTotalBytes }) });
-  const destinationRoot = resolve(targetDirectory);
-  mkdirSync(destinationRoot, { recursive: true });
+  const requestedRoot = resolve(targetDirectory);
+  // Parent directories are supplied by the caller, not by archive entries.
+  // Resolve OS aliases (macOS /var, /tmp) before inspecting the extraction root.
+  mkdirSync(dirname(requestedRoot), {recursive:true});
+  const destinationRoot = join(realpathSync(dirname(requestedRoot)), basename(requestedRoot));
+  ensureSafeDirectory(destinationRoot);
   const written = [];
   const preserved = [];
   for (const [entryPath, content] of files) {

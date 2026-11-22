@@ -1,6 +1,8 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
-  "name": "tendriller-staging-s10",
+  "name": "tendriller-staging-s11",
+  "workers_dev": false,
+  "preview_urls": false,
   "main": "../dist/engine/worker.mjs",
   "compatibility_date": "2026-11-01",
   "compatibility_flags": [
@@ -40,15 +42,15 @@
   "d1_databases": [
     {
       "binding": "ACCOUNTS",
-      "database_name": "tendriller-staging-s9-accounts",
-      "database_id": "93e78d5b-994c-4d45-b54f-ab5e69a03412",
+      "database_name": "tendriller-staging-s11-accounts",
+      "database_id": "d8731d6f-2a67-4853-9c8c-66c46e6aff35",
       "migrations_dir": "migrations"
     }
   ],
   "r2_buckets": [
     {
       "binding": "FILES",
-      "bucket_name": "tendriller-staging-s9-files"
+      "bucket_name": "tendriller-staging-s11-files"
     }
   ],
   "triggers": {

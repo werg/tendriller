@@ -1,39 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { forwardApplicationEvents } from '../assistant.mjs';
-
-test('the assistant forwarder rearms a committed event and skips only a declined projection', async () => {
-  const generation = 'a'.repeat(64), lifetime = new AbortController();
-  const fixtures = [{ id: 'first' }, { id: 'declined' }, { id: 'last' }];
-  const deliveries = [], skipped = [], checkpoints = [];
-  let released = 0;
-  const session = {
-    signal: lifetime.signal,
-    async *changes() { yield { kind: 'applied' }; },
-    async readView() {
-      return { readEvents: () => ({ cursor: 'saved', hasMore: false, revision: { generation }, events: fixtures }),
-        release: () => { released++; } };
-    },
-  };
-  const assistant = {
-    async waitUntilOnline() {},
-    async publish(event) {
-      deliveries.push(event);
-      if (deliveries.length === 1) throw Object.assign(new Error('Alarm write failed'), { code: 'application_event_unavailable' });
-      if (event.name === 'declined') throw Object.assign(new Error('Owner declined'), { code: 'event_not_approved' });
-    },
-  };
-  await forwardApplicationEvents({ session, assistant, topics: ['test'],
-    checkpoint: { load: () => undefined, save: cursor => checkpoints.push(cursor) },
-    onSkipped: event => skipped.push(event),
-    project: event => ({ name: event.id, payload: { value: event.id } }),
-  });
-  assert.equal(released, 1);
-  assert.deepEqual(deliveries.map(event => event.sourceEventId), ['first', 'first', 'declined', 'last']);
-  assert.deepEqual(deliveries[0], deliveries[1]);
-  assert.deepEqual(skipped, [{ name: 'declined', sourceEventId: 'declined' }]);
-  assert.deepEqual(checkpoints, ['saved']);
-});
+import { createAssistantEventDelivery } from '../assistant.mjs';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 async function startupFixture(t, options = {}) {
@@ -46,7 +13,7 @@ async function startupFixture(t, options = {}) {
     close(code = 1000) { this.readyState = 3; this.dispatchEvent(Object.assign(new Event('close'), { code })); }
   }
   const participant = connectApplicationAssistant({ api: 'https://staging.example/api/t/aaaaaaaaaaaa',
-    key: 'td_a_' + 'a'.repeat(64), session: { deviceId: 'b'.repeat(64), signal: stop.signal }, tools: {},
+    key: 'td_a_' + 'a'.repeat(64), session: { deviceId: 'b'.repeat(64), signal: stop.signal }, tools: { execute: async () => {} },
     onStatus: value => reports.push(value), ...options,
     openSocket: () => { attempts++; if (attempts < (options.succeedAt ?? Infinity)) throw Error('awaiting owner consent'); return socket = new Socket(); },
   });
@@ -89,4 +56,58 @@ test('startup consent windows reject unbounded or unsupported values before open
   for (const initialConnectTimeoutMs of [0, NaN, Infinity, 600001, 2.5])
     assert.throws(() => connectApplicationAssistant({ key: 'td_a_' + 'a'.repeat(64), initialConnectTimeoutMs,
       openSocket() { assert.fail('invalid options opened a socket'); } }), { code: 'INVALID_ASSISTANT_STARTUP_TIMEOUT' });
+});
+
+test('a raw unscoped tool service fails before opening a hosted connection', async () => {
+  const { connectApplicationAssistant } = await import('../assistant.mjs');
+  assert.throws(() => connectApplicationAssistant({ key: 'td_a_' + 'a'.repeat(64), tools: { call() {} },
+    openSocket() { assert.fail('invalid tool controller opened a socket'); } }), { code: 'INVALID_ASSISTANT_TOOLS' });
+});
+
+test('the hosted adapter uses scoped execute and preserves the canonical signed reference on its wire', async t => {
+  const { connectApplicationAssistant } = await import('../assistant.mjs');
+  const stop = new AbortController(), calls = [], frames = [], generation = 'a'.repeat(64), author = 'b'.repeat(64);
+  let socket;
+  class Socket extends EventTarget {
+    readyState = 0;
+    send(data) { frames.push(JSON.parse(data)); }
+    close(code = 1000) { this.readyState = 3; this.dispatchEvent(Object.assign(new Event('close'), { code })); }
+  }
+  const reference = { applicationId: 'c'.repeat(64), historyId: 'history', author,
+    operationId: 'scoped/original-id', attemptId: 'd'.repeat(64), generation };
+  const participant = connectApplicationAssistant({ api: 'https://service.example/api/t/aaaaaaaaaaaa', key: 'td_a_' + 'e'.repeat(64),
+    session: { applicationId: reference.applicationId, historyId: reference.historyId, deviceId: author, status: { generation }, signal: stop.signal },
+    tools: { execute: async (call, options) => {
+      calls.push({ call, options });
+      return { operationId: reference.operationId, operationReference: reference };
+    } }, openSocket() {
+      socket = new Socket(); queueMicrotask(() => { socket.readyState = 1; socket.dispatchEvent(new Event('open')); }); return socket;
+    } });
+  t.after(() => participant.close()); await participant.waitUntilOnline();
+  const message = { type: 'call', id: 'call-1', applicationId: reference.applicationId, generation,
+    kind: 'operation', name: 'addNote', operationId: reference.operationId };
+  socket.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify(message) }));
+  await flush(); await flush();
+  assert.equal(calls.length, 1); assert.equal(calls[0].call.kind, 'operation'); assert.equal(calls[0].call.name, 'addNote');
+  assert.equal(calls[0].call.operationId, reference.operationId); assert(calls[0].options.signal instanceof AbortSignal);
+  const { author: _author, ...wire } = reference;
+  assert.deepEqual(frames.find(frame => frame.id === message.id), { type: 'result', id: message.id,
+    value: { operationId: reference.operationId, operationReference: { ...wire, deviceId: author } } });
+});
+
+test('event delivery does not publish or report a skip after cancellation during an internal wait', async () => {
+  const stop = new AbortController(), gate = Promise.withResolvers(), cause = Error('owner stopped');
+  let published = 0, skipped = 0;
+  const deliver = createAssistantEventDelivery({ assistant: {
+    waitUntilOnline: () => gate.promise, publish: async () => { published++; },
+  }, onSkipped: () => skipped++ });
+  const pending = deliver({ name: 'note', payload: null }, { id: 'event-1' }, { revision: { generation: 'a'.repeat(64) } }, stop.signal);
+  stop.abort(cause); gate.resolve(); await assert.rejects(pending, error => error === cause);
+  assert.equal(published, 0); assert.equal(skipped, 0);
+
+  const second = new AbortController(), response = Promise.withResolvers();
+  const late = createAssistantEventDelivery({ assistant: { waitUntilOnline: async () => {}, publish: () => response.promise },
+    onSkipped: () => skipped++ })({ name: 'note', payload: null }, { id: 'event-2' }, { revision: { generation: 'a'.repeat(64) } }, second.signal);
+  await flush(); second.abort(cause); response.reject(Object.assign(Error('declined'), { code: 'event_not_approved' }));
+  await assert.rejects(late, error => error === cause); assert.equal(skipped, 0);
 });

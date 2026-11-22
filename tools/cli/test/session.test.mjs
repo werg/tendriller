@@ -12,6 +12,36 @@ async function directory(t) {
   return path;
 }
 
+test('command batches validate later envelopes before submitting earlier commands', async () => {
+  let commands = 0;
+  await assert.rejects(runSessionCommand({ session: { command() { commands++; } } }, 'command-batch', [JSON.stringify([
+    { command: 'add', input: {}, operationId: 'first' }, null,
+  ])]), /Every batched command/);
+  assert.equal(commands, 0);
+});
+
+test('an uncertain batch keeps earlier results and does not submit later commands', async () => {
+  const calls = [], saved = { status: 'saved', operationId: 'second' };
+  const session = {
+    command: async (_name, _input, { operationId }) => {
+      calls.push(operationId);
+      return { applied: async () => {
+        if (operationId === 'second') throw Error('lost reply');
+        return { status: 'applied', outcome: 'accepted' };
+      } };
+    }, operations: { get: async () => saved },
+  };
+  const result = await runSessionCommand({ session }, 'command-batch', [JSON.stringify(
+    ['first', 'second', 'third'].map(operationId => ({ command: 'add', input: {}, operationId })),
+  )]);
+  assert.deepEqual(calls, ['first', 'second']);
+  assert.equal(result.complete, false);
+  assert.equal(result.nextIndex, 2);
+  assert.equal(result.results[0].lifecycle, 'applied');
+  assert.equal(result.results[1].lifecycle, 'unknown');
+  assert.deepEqual(result.results[1].state, saved);
+});
+
 test('missing application setup reports the next step before issuing session work', async () => {
   let called = false;
   await assert.rejects(withSession(undefined, () => { called = true; }),

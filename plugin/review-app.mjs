@@ -5,8 +5,8 @@ import { resolve } from 'node:path';
 import { createClient, createPage } from '@tendriller/core';
 import { participateNativeApplication } from '@tendriller/core/native-rtc';
 import { createNativeSessionSupervisor } from '@tendriller/core/native-owner';
-import { connectApplicationAssistant, createAssistantKey, forwardApplicationEvents, proposeApplicationAssistant } from '@tendriller/core/assistant';
-import { bytesDigest, bytesToHex, createApplicationTools, describeApplication, eventExecutionManifest,
+import { connectApplicationAssistant, createAssistantKey, createAssistantEventDelivery, proposeApplicationAssistant } from '@tendriller/core/assistant';
+import { bytesDigest, bytesToHex, createScopedApplicationTools, forwardSessionEvents, describeApplication, eventExecutionManifest,
   executionManifestArtifacts, participantGrant, signTransitionRequest, signPublicationManifest, verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
@@ -96,8 +96,9 @@ try {
     const expectedProposalId = retainedReviewProposal(await read('assistant-proposal.json'), options.key);
     const lifecycle = superviseReviewAssistant({ session, signal: stop.signal, expectedProposalId,
       watch: callbacks => watchApplicationSetup({ api: handle.api, token: handle.token, ...callbacks }),
-      startAdapter: callbacks => connectApplicationAssistant({ ...options, session, tools: createApplicationTools(session), ...callbacks }),
-      onOnline: (assistant, signal) => forwardApplicationEvents({ session, assistant, topics: ['completed'], signal,
+      startAdapter: callbacks => connectApplicationAssistant({ ...options, session, tools: createScopedApplicationTools(session, options), ...callbacks }),
+      onOnline: (assistant, signal) => forwardSessionEvents({ session, topics: ['completed'], signal,
+        deliver: createAssistantEventDelivery({ assistant }),
         checkpoint: { load: async () => (await read('event-cursor.json')) ?? undefined, save: cursor => save('event-cursor.json', cursor) },
         project: event => ({ name: 'item.completed', payload: { id: event.payload.id } }) }),
     });

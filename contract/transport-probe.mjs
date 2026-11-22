@@ -121,22 +121,6 @@ async function probeHttpEndpoint(url, { fetcher = globalThis.fetch, timeoutMs = 
   }
 }
 
-async function probeWebSocketEndpoint(wsUrl, { timeoutMs = 4000 } = {}) {
-  if (!wsUrl) return 'unknown';
-  if (typeof globalThis.WebSocket !== 'function') return { reachable: false, error: 'websocket_unsupported' };
-  const start = Date.now();
-  return new Promise(resolvePromise => {
-    let settled = false;
-    const finish = value => { if (!settled) { settled = true; clearTimeout(timer); resolvePromise(value); } };
-    const timer = setTimeout(() => { try { socket.close(); } catch {} finish({ reachable: false, error: 'timeout', latencyMs: Date.now() - start }); }, timeoutMs);
-    let socket;
-    try { socket = new WebSocket(wsUrl); }
-    catch (error) { finish({ reachable: false, error: error?.name ?? 'websocket_error', latencyMs: Date.now() - start }); return; }
-    socket.addEventListener('open', () => { try { socket.close(); } catch {} finish({ reachable: true, latencyMs: Date.now() - start }); });
-    socket.addEventListener('error', () => { finish({ reachable: false, error: 'websocket_failed', latencyMs: Date.now() - start }); });
-  });
-}
-
 /**
  * Probe HTTPS, WebSocket (wss://), and WebRTC capabilities independently.
  * Never infers WebSocket or WebRTC availability from a passing HTTPS check.
@@ -147,14 +131,16 @@ export async function probeTransports({ serviceOrigin, npmRegistryUrl, releaseAs
   const gatewayCheck = origin ? await probeHttpEndpoint(`${origin}/.well-known/oauth-protected-resource/mcp`, { fetcher, timeoutMs, signal }) : 'unknown';
   const npmCheck = npmRegistryUrl ? await probeHttpEndpoint(npmRegistryUrl, { fetcher, timeoutMs, signal }) : 'unknown';
   const releaseCheck = releaseAssetsUrl ? await probeHttpEndpoint(releaseAssetsUrl, { fetcher, timeoutMs, signal }) : 'unknown';
-  const wsUrl = origin ? origin.replace(/^http/u, 'ws') + '/api/service' : null;
-  const wssCheck = wsUrl ? await probeWebSocketEndpoint(wsUrl, { timeoutMs }) : 'unknown';
+  // /api/service is HTTP discovery, not an authenticated relay upgrade.
+  // Its WebSocket rejection says nothing about the participant's relay path.
+  const wssCheck = 'unknown';
   const webrtcGlobal = typeof globalThis.RTCPeerConnection === 'function';
   return Object.freeze({
     proxy: detectProxyEnvironment(),
     https443: httpsCheck,
     httpsGateway: gatewayCheck,
     wssRelay443: wssCheck,
+    wssRelayProbe: 'requires-authenticated-relay-target',
     webrtcDirect: webrtcGlobal ? 'runtime-available' : 'unknown',
     npmRegistry: npmCheck,
     releaseAssets: releaseCheck,
@@ -223,7 +209,9 @@ export async function probeCapabilities({
     reason: 'Use standalone Node process, container, OS service, or ServerlessHostAdapter for post-exit availability.',
   });
 
-  const sqlRecommendedEngine = wasmSupported ? 'wasm-portable' : 'unavailable';
+  // The WebAssembly global proves no SQL module can load or execute. Engine
+  // qualification belongs to an actual matching public engine session.
+  const sqlRecommendedEngine = wasmSupported ? 'unknown' : 'unavailable';
 
   return Object.freeze({
     schemaVersion: 1,
@@ -243,6 +231,7 @@ export async function probeCapabilities({
       wasm: wasmSupported,
       nativeAddonSupport: runtimeName === 'node' || runtimeName === 'bun',
       sqlDefaultEngine: sqlRecommendedEngine,
+      sqlEngineValidated: false,
       totalMemoryMb: totalMemMb,
       freeMemoryMb: freeMemMb,
       fitsConstrainedSandboxBudget: totalMemMb >= 512,

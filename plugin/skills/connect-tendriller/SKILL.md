@@ -44,7 +44,7 @@ ready page and permission-review URLs. Never wait for claim or ask for a
 "claimed" reply before publishing. Use `topic: "delivery"` for completion evidence. Complete claim, authority/first generation, device
 connection, signed publication and bidirectional verification. Then follow
 `topic: "connect"` to expose selected app operations through MCP. If the necessary
-runtime is unavailable, name that prerequisite and offer a concrete handoff to a
+runtime is unavailable, read `topic: "deployment"` for measured hosting and handoff choices, name that prerequisite and offer a concrete handoff to a
 coding-agent/runtime with the same origin and guide. MCP alone does not host a
 new app's executable participant.
 

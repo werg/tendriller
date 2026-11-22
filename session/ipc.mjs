@@ -43,12 +43,12 @@ export async function writePrivateJsonAtomic(root, name, data) {
   const target = join(root, name);
   const file = await open(temporary, 'wx', 0o600);
   try {
-    await file.writeFile(JSON.stringify(data));
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-  try {
+    try {
+      await file.writeFile(JSON.stringify(data));
+      await file.sync();
+    } finally {
+      await file.close();
+    }
     await rename(temporary, target);
     if (!isWindows()) {
       const parent = await open(root, 'r');
@@ -141,10 +141,10 @@ export async function acquireAtomicLock(root, {
       } finally {
         await fd.close();
       }
-      let released = false;
+      let released = false, pendingHeartbeat = Promise.resolve();
       const heartbeat = setInterval(() => {
         if (released) return;
-        void writePrivateJsonAtomic(root, lockName, makeRecord()).catch(() => {});
+        pendingHeartbeat = pendingHeartbeat.then(() => released ? undefined : writePrivateJsonAtomic(root, lockName, makeRecord())).catch(() => {});
       }, Math.max(1000, Math.floor(leaseTtlMs / 3)));
       heartbeat.unref?.();
       return Object.freeze({
@@ -154,6 +154,7 @@ export async function acquireAtomicLock(root, {
           if (released) return;
           released = true;
           clearInterval(heartbeat);
+          await pendingHeartbeat;
           const current = await readPrivateJson(root, lockName).catch(() => null);
           if (!current || current.lockId === lockId) {
             await unlink(lockPath).catch(() => {});
@@ -163,6 +164,8 @@ export async function acquireAtomicLock(root, {
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       const existing = await readPrivateJson(root, lockName).catch(() => null);
+      if (!existing || typeof existing.lockId !== 'string' || !Number.isSafeInteger(existing.pid) || existing.pid <= 0)
+        throw fail('OWNER_BUSY', 'Preserve the incomplete or unrecognized owner lock; an opening owner may still be publishing it.');
       const endpoint = await readPrivateJson(root, 'endpoint.json').catch(() => null);
       const reachable = probeReachable ? await probeReachable(endpoint) : await probeEndpointReachable(endpoint);
       if (reachable) {
@@ -170,8 +173,7 @@ export async function acquireAtomicLock(root, {
       }
       const sameHost = !existing?.hostId || existing.hostId === hostId;
       const alive = sameHost && existing?.pid ? isProcessAlive(existing.pid) : false;
-      const expired = !existing?.heartbeatAt || (Date.now() - existing.heartbeatAt) > (existing.leaseTtlMs ?? leaseTtlMs) * 2;
-      if (alive && !expired) {
+      if (alive || !sameHost) {
         const lockAgeMs = typeof existing?.startedAt === 'number' ? Math.max(0, Date.now() - existing.startedAt) : Infinity;
         throw fail('INSTANCE_UNRESPONSIVE', `Lock held by live PID ${existing.pid} whose IPC endpoint is unreachable. Inspect or stop that process; never mint a duplicate device.`, {
           pid: existing.pid,
@@ -183,8 +185,25 @@ export async function acquireAtomicLock(root, {
       if (attempt >= maxStaleRetries) {
         throw fail('OWNER_BUSY', 'Unable to reclaim stale lock after bounded retries.', { pid: existing?.pid ?? null });
       }
-      // Atomic stale-lock reclamation via unlink + retry of O_CREAT|O_EXCL.
-      await unlink(lockPath).catch(() => {});
+      // Serialize reclaimers: two callers must not both unlink a dead lock,
+      // with the delayed one accidentally removing the winner's new live lock.
+      const recoveryPath = join(root, `${lockName}.reclaim`);
+      let recovery;
+      try { recovery = await open(recoveryPath, 'wx', 0o600); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw fail('OWNER_BUSY', 'Another caller is reclaiming this lock. Preserve an abandoned reclaim marker for explicit inspection.');
+        throw error;
+      }
+      try {
+        const current = await readPrivateJson(root, lockName);
+        if (current?.lockId === existing.lockId && current.pid === existing.pid && current.hostId === existing.hostId) {
+          if (isProcessAlive(current.pid)) throw fail('INSTANCE_UNRESPONSIVE', 'The retained owner is still alive; preserve its lock.');
+          await unlink(lockPath);
+        }
+      } finally {
+        await recovery.close();
+        await unlink(recoveryPath).catch(() => {});
+      }
     }
   }
   throw fail('OWNER_BUSY', 'Failed to acquire exclusive project lock.');
@@ -203,16 +222,22 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
 
   let lastError;
   for (const kind of transportOrder) {
+    let server, boundAddress;
+    const cleanup = async () => {
+      if (server?.listening) await new Promise(done => server.close(() => done()));
+      if (boundAddress) await unlink(boundAddress).catch(() => {});
+    };
     if (kind === 'unix-socket') {
       const address = resolveUnixSocketPath(root);
       try {
         const st = await lstat(address).catch(() => null);
         if (st?.isSocket()) await unlink(address).catch(() => {});
-        const server = createServer(onConnection);
+        server = createServer(onConnection);
         await new Promise((resolvePromise, reject) => {
           server.once('error', reject);
           server.listen(address, () => { server.removeListener('error', reject); resolvePromise(); });
         });
+        boundAddress = address;
         await chmod(address, 0o600);
         const descriptor = Object.freeze({ version: 1, transport: 'unix-socket', address, pid: process.pid });
         await writePrivateJsonAtomic(root, 'endpoint.json', descriptor);
@@ -227,12 +252,13 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
           },
         });
       } catch (error) {
+        await cleanup();
         lastError = error;
       }
     } else if (kind === 'windows-named-pipe') {
       const address = resolveWindowsPipePath(root);
       try {
-        const server = createServer(onConnection);
+        server = createServer(onConnection);
         await new Promise((resolvePromise, reject) => {
           server.once('error', reject);
           server.listen(address, () => { server.removeListener('error', reject); resolvePromise(); });
@@ -249,13 +275,14 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
           },
         });
       } catch (error) {
+        await cleanup();
         lastError = error;
       }
     } else if (kind === 'loopback-tcp') {
       try {
         const loopbackToken = randomBytes(32).toString('hex');
         const expectedBuf = Buffer.from(loopbackToken, 'hex');
-        const server = createServer(onConnection);
+        server = createServer(onConnection);
         await new Promise((resolvePromise, reject) => {
           server.once('error', reject);
           server.listen(0, '127.0.0.1', () => { server.removeListener('error', reject); resolvePromise(); });
@@ -277,6 +304,7 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
           },
         });
       } catch (error) {
+        await cleanup();
         lastError = error;
       }
     }

@@ -24,10 +24,12 @@ export async function createPersistentOutbox(directory) {
   };
   const load = async () => {
     const saved = await readPrivateJson(root, FILE, 2 * 1024 * 1024);
-    if (!saved || saved.version !== 1 || !Array.isArray(saved.entries)) return [];
+    if (saved === null) return [];
+    if (saved.version !== 1 || !Array.isArray(saved.entries) || saved.entries.some(entry => !entry || typeof entry.operationId !== 'string'))
+      throw Object.assign(new Error('Preserve the unrecognized outbox before retrying.'), {code:'OUTBOX_INVALID'});
     return saved.entries;
   };
-  const save = entries => writePrivateJsonAtomic(root, FILE, { version: 1, entries: entries.slice(-MAX_ENTRIES) });
+  const save = entries => writePrivateJsonAtomic(root, FILE, { version: 1, entries });
 
   return Object.freeze({
     async record({ operationId, appId, deviceId, command, input }) {
@@ -36,12 +38,17 @@ export async function createPersistentOutbox(directory) {
         const entries = await load();
         const existing = entries.find(item => item.operationId === operationId);
         if (existing) {
-          if (existing.payloadHash !== payloadHash || existing.appId !== appId) {
+          if (existing.payloadHash !== payloadHash || existing.appId !== appId || existing.deviceId !== deviceId) {
             throw Object.assign(new Error(`Outbox conflict: operationId ${operationId} already exists with different payload.`), {
               code: 'OUTBOX_OPERATION_CONFLICT',
             });
           }
           return existing;
+        }
+        if (entries.length >= MAX_ENTRIES) {
+          const terminal = entries.findIndex(entry => ['applied', 'rejected'].includes(entry.status));
+          if (terminal < 0) throw Object.assign(new Error('Resolve retained operations before submitting more commands.'), {code:'OUTBOX_FULL'});
+          entries.splice(terminal, 1);
         }
         const entry = {
           operationId,

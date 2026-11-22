@@ -10,6 +10,7 @@ import { CORE_RELEASE, CONTRACT_VERSION } from "../contract/index.mjs";
 import { RUNTIME_FEATURES, RUNTIME_RESOURCES } from "../runtime/resources.mjs";
 import { runtimeManifest } from "./runtime-manifest.mjs";
 import { buildOnboardingAssets } from "./onboarding.mjs";
+import { buildBootstrap } from "./build-bootstrap.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const out = join(root, "server/public");
@@ -31,6 +32,7 @@ const releaseIdentity = { name: 'release-source', setup(builder) {
 } };
 
 export async function buildPublicArtifacts() {
+  buildBootstrap();
   const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
   if (packageVersion !== CORE_RELEASE) throw new Error("Package and public core release identities must agree");
   mkdirSync(dist, { recursive: true });
@@ -150,7 +152,7 @@ if (!process.argv.includes("--skip-initial")) await buildAll();
 if (watching) {
   let timer, building = false, again = false;
   const rebuild = async () => { if (building) { again = true; return; } building = true; do { again = false; try { await buildAll(); } catch (error) { console.error(error); } } while (again); building = false; };
-  const watchers = ["runtime/src", "runtime/resources.mjs", "runtime/types", "server/src", "server/inbox", "contract", "session", "collaboration", "docs", "legal", "agent.md", "AGENTS.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
+  const watchers = ["runtime/src", "runtime/resources.mjs", "runtime/types", "server/src", "server/inbox", "contract", "session", "collaboration", "docs", "deploy", "legal", "agent.md", "AGENTS.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
     if (name === "runtime-release.json") return;
     clearTimeout(timer); timer = setTimeout(rebuild, 120);
   }));

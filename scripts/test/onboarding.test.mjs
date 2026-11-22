@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readSessionPin } from '../session-pin.mjs';
 import { ASSISTANT_GUIDES, onboardingDescriptor } from '../../contract/onboarding.mjs';
-import { buildOnboardingAssets, combinedOnboarding, ONBOARDING_DOCS, TUTORIAL_FILES, TUTORIAL_DOWNLOAD } from '../onboarding.mjs';
+import { buildOnboardingAssets, combinedOnboarding, ONBOARDING_DOCS, TUTORIAL_FILES, TUTORIAL_DOWNLOAD, TUTORIAL_SOURCES, tutorialSource } from '../onboarding.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const publicRoot = join(root, 'server/public');
@@ -33,7 +33,7 @@ test('MCP, published onboarding and installable skill retain one current discove
   }
   const skill = readFileSync(join(root, 'plugin/skills/connect-tendriller/SKILL.md'), 'utf8');
   assert(skill.includes('tendril_guide') && skill.includes('serviceOrigin'));
-  for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery'])
+  for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery', 'deployment'])
     assert(skill.includes(`topic: "${topic}"`), `Packaged skill lost the ${topic} guide route`);
   for (const path of ['AGENTS.md', 'agent.md', 'docs/MCP_AGENT_GUIDE.md',
     'plugin/skills/connect-tendriller/SKILL.md']) {
@@ -83,9 +83,9 @@ test('the downloadable starter contains complete parseable source and no local p
   assert.deepEqual(entries.sort(), [...TUTORIAL_FILES].sort());
   for (const path of TUTORIAL_FILES) {
     const archived = execFileSync('tar', ['-xOf', archive, path]);
-    assert.equal(digest(archived), digest(readFileSync(join(root, 'docs/tutorial', path))), `Stale tutorial file: ${path}`);
+    assert.equal(digest(archived), digest(readFileSync(tutorialSource(root, path))), `Stale tutorial file: ${path}`);
     if (path.endsWith('.mjs')) {
-      execFileSync(process.execPath, ['--check', join(root, 'docs/tutorial', path)]);
+      execFileSync(process.execPath, ['--check', tutorialSource(root, path)]);
       // Nested helpers and optional providers must remain usable after the
       // archive is extracted independently of this repository.
       for (const [, relative] of archived.toString('utf8').matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)['"](\.[^'"]+)['"]/g)) {
@@ -106,7 +106,7 @@ test('building a starter excludes nested private state, provider secrets, genera
   const secret = 'NEVER_PUBLISH_THIS_PRIVATE_RECORD';
   const providerKey = process.env.OPENAI_API_KEY;
   try {
-    for (const path of [...ONBOARDING_DOCS, ...TUTORIAL_FILES.map(path => `docs/tutorial/${path}`)]) {
+    for (const path of [...ONBOARDING_DOCS, ...Object.values(TUTORIAL_SOURCES)]) {
       mkdirSync(dirname(join(directory, path)), { recursive: true });
       cpSync(join(root, path), join(directory, path));
     }
@@ -122,6 +122,10 @@ test('building a starter excludes nested private state, provider secrets, genera
       mkdirSync(dirname(destination), { recursive: true });
       writeFileSync(destination, secret);
     }
+    for (const path of ['deploy/.env', 'deploy/.tendriller/device.sqlite', 'deploy/node_modules/secret.txt', 'deploy/local-run.mjs']) {
+      const destination = join(directory, path);
+      mkdirSync(dirname(destination), { recursive: true }); writeFileSync(destination, secret);
+    }
     process.env.OPENAI_API_KEY = secret;
     const out = join(directory, 'public');
     mkdirSync(out);
@@ -129,7 +133,10 @@ test('building a starter excludes nested private state, provider secrets, genera
     const archive = join(out, TUTORIAL_DOWNLOAD);
     const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' });
     assert.deepEqual(entries.trim().split('\n').sort(), [...TUTORIAL_FILES].sort());
-    assert(!/\.tendriller|node_modules|(?:^|\/)\.env|page\/config|provider-local|provider-secrets|local-build/.test(entries));
+    for (const file of TUTORIAL_FILES.filter(path => path.startsWith('deploy/')))
+      assert.equal(digest(execFileSync('tar', ['-xOf', archive, file])), digest(readFileSync(tutorialSource(root, file))), `Stale mapped deployment file: ${file}`);
+    for (const entry of entries.trim().split('\n'))
+      assert(!/(?:^|\/)(?:\.tendriller|node_modules)(?:\/|$)|(?:^|\/)\.env|page\/config|provider-local|provider-secrets|local-build|local-run/.test(entry), `Private archive path: ${entry}`);
     const content = execFileSync('tar', ['-xOf', archive], { encoding: 'utf8' });
     assert(!content.includes(secret), 'Source packaging must never substitute provider credentials or include private files.');
     const provider = execFileSync('tar', ['-xOf', archive, 'media/provider-openai.mjs'], { encoding: 'utf8' });
@@ -177,4 +184,25 @@ test('live views have one SDK implementation and the starter page uses bounded i
   const source = readFileSync(join(root, 'docs/tutorial/page.mjs'), 'utf8');
   assert.match(source, /import \{ createLiveView, createViewStore, operationReference \} from '@chronolog\/peer-session\/browser'/);
   assert.match(source, /await liveView\.ready\(\{[^}]*timeoutMs: 30_000/);
+});
+
+
+test('deployment template paths resolve to maintained root sources and guide links are public routes', () => {
+  const files = ['participant.mjs', 'Dockerfile', 'Dockerfile.dockerignore',
+    'tendriller.service', 'dev.tendriller.participant.plist', 'install-windows-task.ps1'];
+  for (const name of files) {
+    const path = `deploy/${name}`;
+    assert(TUTORIAL_FILES.includes(path), `Unshipped deployment file: ${path}`);
+    assert.equal(tutorialSource(root, path), join(root, path));
+    assert(!existsSync(join(root, 'docs/tutorial', path)), 'Do not maintain duplicate deployment sources');
+  }
+  assert.throws(() => tutorialSource(root, 'deploy/.env'), /Unlisted/);
+  const guide = readFileSync(join(root, 'docs/DEPLOYMENT_GUIDE.md'), 'utf8');
+  const targets = links(guide).map(path => new URL(path, 'https://tendriller.dev/docs/DEPLOYMENT_GUIDE.md'));
+  assert(targets.some(url => url.pathname === TUTORIAL_DOWNLOAD));
+  for (const url of targets) if (url.origin === 'https://tendriller.dev') {
+    assert(url.pathname === TUTORIAL_DOWNLOAD || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(url.pathname),
+      `Deployment guide advertises an unavailable public path: ${url.pathname}`);
+    if (url.pathname !== TUTORIAL_DOWNLOAD) assert(existsSync(join(root, url.pathname)));
+  }
 });

@@ -26,32 +26,34 @@ export interface AssistantParticipant {
   publish(event: { sourceEventId: string; name: string; generation: string; payload: unknown;
     context?: Omit<AssistantCallerContext['context'], 'evidence'> }): Promise<number>;
 }
+/** Portable host request; the supplied scoped controller validates native semantics. */
+export interface AssistantToolRequest {
+  readonly kind: 'query' | 'command' | 'reapply' | 'operation' | 'retry' | 'wait';
+  readonly name: string;
+  readonly input?: unknown;
+  readonly operationId?: string;
+  readonly basedOn?: unknown;
+  readonly originalOperationId?: string;
+  readonly originalAuthor?: string;
+  readonly generation?: string;
+}
 export function createAssistantKey(): string;
 export function createApplicationAgentKey(bindingId?: string): string;
 export function proposeApplicationAssistant(options: AssistantEndpoint & AssistantExposure & {
   token: string; backupKeys?: readonly string[]; label: string; events?: readonly AssistantEventDefinition[]; signal?: AbortSignal; fetcher?: typeof fetch;
 }): Promise<{ applicationId: string; proposed: string; approved: boolean; reviewUrl: string }>;
-export function connectApplicationAssistant(options: AssistantEndpoint & AssistantExposure & {
+export function connectApplicationAssistant(options: AssistantEndpoint & {
   session: AssistantSession;
-  tools: { call(name: string, input: unknown, options?: { signal?: AbortSignal; caller?: Readonly<AssistantCallerContext> }): Promise<unknown> };
+  tools: { execute(call: AssistantToolRequest, options?: { signal?: AbortSignal; caller?: Readonly<AssistantCallerContext> }): Promise<unknown> };
   onStatus?: (status: { state: string; reason?: string; retryInMs?: number }) => void;
   openSocket?: (url: string, protocols: string[]) => WebSocket;
   /** Initial sign-in/consent window, 1000–600000 ms; defaults to ten minutes. */
   initialConnectTimeoutMs?: number;
   signal?: AbortSignal;
 }): AssistantParticipant;
-export function forwardApplicationEvents<Event extends { readonly id: string }>(options: {
-  session: AssistantSession & {
-    changes(options?: { signal?: AbortSignal }): AsyncIterable<{ kind: string }>;
-    readView(): Promise<{
-      readEvents(options: { topics: readonly string[]; cursor?: string; limit?: number }):
-        { readonly events: readonly Event[]; readonly cursor: string; readonly hasMore: boolean; readonly revision: { readonly generation: string } };
-      release(): void | Promise<void>;
-    }>;
-  };
-  assistant: AssistantParticipant; topics: readonly string[];
-  project(event: Event): { name: string; payload: unknown } | null | Promise<{ name: string; payload: unknown } | null>;
+/** Host-specific delivery callback for Chronolog's forwardSessionEvents. */
+export function createAssistantEventDelivery(options: {
+  assistant: AssistantParticipant;
   onSkipped?: (event: { name: string; sourceEventId: string }) => void;
-  checkpoint: { load(): string | undefined | Promise<string | undefined>; save(cursor: string): void | Promise<void> };
-  signal?: AbortSignal;
-}): Promise<void>;
+}): (projection: { name: string; payload: unknown }, event: { readonly id: string },
+  batch: { readonly revision: { readonly generation: string } }, signal: AbortSignal) => Promise<void>;

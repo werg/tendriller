@@ -116,6 +116,52 @@ async function pageRequest(env: Env, pageId: string, req: Request, payload: obje
   return body;
 }
 
+const commandFields = ['command', 'input', 'operationId', 'basedOn', 'context'];
+function commandBatch(value: unknown) {
+  const batch = fields(value, ['commands', 'stopOnError'], ['commands']);
+  if (!Array.isArray(batch.commands) || batch.commands.length > 16)
+    throw new HttpError(400, 'batch_limit_exceeded', 'Supply an array of 0..16 commands.');
+  if (batch.stopOnError !== undefined && typeof batch.stopOnError !== 'boolean')
+    throw new HttpError(400, 'invalid_arguments');
+  // Validate the entire envelope before submitting any signed work. A malformed
+  // later element must not turn an invalid batch into a partial write.
+  const commands = batch.commands.map(value => {
+    const item = fields(value, commandFields, ['command', 'input', 'operationId']);
+    string(item.command, 128);
+    string(item.operationId, 200, /^[A-Za-z0-9_.:-]+$/u);
+    if (item.basedOn !== undefined && !isPlainObject(item.basedOn) ||
+        item.context !== undefined && !isPlainObject(item.context))
+      throw new HttpError(400, 'invalid_arguments');
+    return item;
+  });
+  return { commands, stopOnError: batch.stopOnError === true };
+}
+async function submitCommandBatch(env: Env, pageId: string, req: Request, applicationId: string,
+  principal: Principal, input: unknown) {
+  const { commands, stopOnError } = commandBatch(input);
+  const results = [];
+  // Each admitted operation keeps its existing fixed deadline. Bound the entire
+  // request too; an interrupted batch never starts its remaining commands.
+  const signal = AbortSignal.any([req.signal, AbortSignal.timeout(25_000)]);
+  // The gateway has already consumed req.body; only its URL and lifetime are needed.
+  const bounded = new Request(req.url, { signal });
+  for (const item of commands) {
+    if (signal.aborted) break;
+    try {
+      const { value } = await pageRequest(env, pageId, bounded,
+        { principal, applicationId, method: 'call_application_command', params: item });
+      results.push({ ok: true, operationId: item.operationId, command: item.command, result: value });
+      if (stopOnError && isPlainObject(value) && value.outcome !== 'applied') break;
+    } catch (error) {
+      const expected = error instanceof HttpError;
+      results.push({ ok: false, operationId: item.operationId, command: item.command,
+        error: { code: expected ? error.code : 'assistant_unavailable', message: expected ? error.message : 'Command failed' } });
+      if (stopOnError) break;
+    }
+  }
+  return { applicationId, results, complete: results.length === commands.length, nextIndex: results.length };
+}
+
 export async function routeAssistant(req: Request, env: Env, url: URL) {
   const config = await assistantOAuth(env);
   if (!config || config.issuer !== url.origin) throw new HttpError(404, 'not_found');
@@ -270,21 +316,9 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
       const connected = await resolveConnection(env, principal.account, applicationId);
       const { bindingToken: _bindingToken, ...safeArgs } = args;
       if (selected.name === 'call_application_commands_batch') {
-        const commands = Array.isArray(safeArgs.commands) ? safeArgs.commands : [];
-        if (commands.length > 16) throw new HttpError(400, 'batch_limit_exceeded', 'Batch allows at most 16 commands.');
-        const results = [];
-        for (const item of commands) {
-          try {
-            const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'call_application_command', params: item });
-            results.push({ ok: true, operationId: item.operationId, command: item.command, result: value });
-            if (safeArgs.stopOnError === true && isPlainObject(value) && value.outcome === 'rejected') break;
-          } catch (error) {
-            const expected = error instanceof HttpError;
-            results.push({ ok: false, operationId: item.operationId, command: item.command, error: { code: expected ? error.code : 'assistant_unavailable', message: expected ? error.message : 'Command failed' } });
-            if (safeArgs.stopOnError === true) break;
-          }
-        }
-        return complete(toolResult({ applicationId, results }, modern));
+        const { commands, stopOnError } = safeArgs;
+        return complete(toolResult(await submitCommandBatch(env, connected.pageId, req, applicationId, principal,
+          { commands, ...(stopOnError === undefined ? {} : { stopOnError }) }), modern));
       }
       const { value, metadata } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: selected.name, params: safeArgs });
       return complete({ ...toolResult(value, modern), ...(metadata ? { _meta: { activity: metadata, origin: config.issuer } } : {}) });
@@ -300,6 +334,11 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
   } catch (error) { return failure(id, error, method === 'tools/call' && !(error instanceof HttpError && error.extra?.rpcCode === -32602), modern); }
 }
 
+function parseQueryJson(value: string): unknown {
+  try { return JSON.parse(value); }
+  catch { throw new HttpError(400, 'invalid_arguments', 'Query parameters must contain valid JSON.'); }
+}
+
 /**
  * Outbound HTTPS-only Command/Status Polling Gateway (W5) for environments where WebSockets
  * and WebRTC are blocked. Reuses exact OAuth 2.1 verification and page DO admission.
@@ -313,6 +352,7 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
 export async function routeAssistantHttpGateway(req: Request, env: Env, url: URL): Promise<Response> {
   const config = await assistantOAuth(env);
   if (!config || config.issuer !== url.origin) throw new HttpError(404, 'not_found');
+  if (req.headers.has('Origin') && req.headers.get('Origin') !== config.issuer) throw new HttpError(403, 'invalid_origin');
   const match = /^\/v1\/apps\/([a-f0-9]{64})\/(commands(?:\/batch)?|operations\/([A-Za-z0-9_.:-]{1,200})|query|events)$/.exec(url.pathname);
   if (!match) throw new HttpError(404, 'not_found');
   if (env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: 'assistant-http:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
@@ -343,6 +383,8 @@ export async function routeAssistantHttpGateway(req: Request, env: Env, url: URL
   const connected = await resolveConnection(env, principal.account, applicationId);
 
   const readJsonBody = async () => {
+    if (req.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase() !== 'application/json')
+      throw new HttpError(415, 'unsupported_media_type');
     try {
       const parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await readBody(req, REQUEST_LIMIT, 3000)));
       if (!isPlainObject(parsed)) throw new HttpError(400, 'invalid_arguments', 'Expected JSON object body.');
@@ -363,21 +405,7 @@ export async function routeAssistantHttpGateway(req: Request, env: Env, url: URL
   if (action === 'commands/batch') {
     if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
     requireScope(principal, 'applications:write');
-    const body = await readJsonBody();
-    if (!Array.isArray(body.commands) || body.commands.length > 16) throw new HttpError(400, 'batch_limit_exceeded', 'Supply 0..16 commands.');
-    const results = [];
-    for (const item of body.commands) {
-      try {
-        const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'call_application_command', params: item });
-        results.push({ ok: true, operationId: item?.operationId, command: item?.command, result: value });
-        if (body.stopOnError === true && isPlainObject(value) && value.outcome === 'rejected') break;
-      } catch (error) {
-        const expected = error instanceof HttpError;
-        results.push({ ok: false, operationId: item?.operationId, command: item?.command, error: { code: expected ? error.code : 'assistant_unavailable', message: expected ? error.message : 'Command failed' } });
-        if (body.stopOnError === true) break;
-      }
-    }
-    return json({ applicationId, results });
+    return json(await submitCommandBatch(env, connected.pageId, req, applicationId, principal, await readJsonBody()));
   }
   if (opIdParam !== undefined) {
     if (req.method !== 'GET') throw new HttpError(405, 'method_not_allowed');
@@ -390,7 +418,7 @@ export async function routeAssistantHttpGateway(req: Request, env: Env, url: URL
     requireScope(principal, 'applications:read');
     const params = req.method === 'POST'
       ? await readJsonBody()
-      : { query: url.searchParams.get('query') ?? '', input: JSON.parse(url.searchParams.get('input') ?? 'null') };
+      : { query: url.searchParams.get('query') ?? '', input: parseQueryJson(url.searchParams.get('input') ?? 'null') };
     const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'query_application', params });
     return json(value);
   }
@@ -401,9 +429,12 @@ export async function routeAssistantHttpGateway(req: Request, env: Env, url: URL
     const limit = url.searchParams.get('limit');
     const params: Record<string, unknown> = {};
     if (since !== null) {
-      try { params.after = JSON.parse(since); } catch { params.after = since === '0' ? 0 : null; }
+      params.after = parseQueryJson(since);
     }
-    if (limit !== null && /^\d+$/.test(limit)) params.limit = Math.min(25, Math.max(1, Number(limit)));
+    if (limit !== null) {
+      if (!/^(?:[1-9]|1[0-9]|2[0-5])$/.test(limit)) throw new HttpError(400, 'invalid_arguments');
+      params.limit = Number(limit);
+    }
     const { value } = await pageRequest(env, connected.pageId, req, { principal, applicationId, method: 'read_application_events', params });
     return json(value);
   }

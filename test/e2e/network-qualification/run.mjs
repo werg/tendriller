@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { NETWORK_PROFILES } from './scenarios.mjs';
 import { releaseAnchor, sha256 } from './anchor.mjs';
 import { prepareMountTargets } from './mounts.mjs';
+import { networkLabResources } from './resources.mjs';
 
 const { values } = parseArgs({ options: {
   output: { type: 'string' }, image: { type: 'string', default: 'tendriller-network-lab:playwright-1.65' },
@@ -14,8 +15,10 @@ const { values } = parseArgs({ options: {
   'browser-controls': { type: 'boolean', default: false },
   'artifact-root': { type: 'string' }, profile: { type: 'string' },
   'idle-ms': { type: 'string', default: '15000' },
+  'memory-mib': { type: 'string' }, cpus: { type: 'string' },
 } });
 if (!values.output) throw new Error('Usage: node test/e2e/network-qualification/run.mjs --output NEW_DIRECTORY [--node-binary NODE24]');
+const resources = networkLabResources({ memoryMiB: values['memory-mib'], cpus: values.cpus });
 const application = Boolean(values['artifact-root']);
 if (application && (!(values.profile === 'suite' || NETWORK_PROFILES.includes(values.profile)) || values['browser-controls'])) throw new Error('Choose one application --profile, without --browser-controls');
 if (!application && values.profile) throw new Error('An application profile requires --artifact-root');
@@ -39,7 +42,8 @@ const name = `tendriller-network-lab-${randomUUID()}`;
 await writeFile(resolve(output, 'run.json'), JSON.stringify({ version: 1, startedAt: new Date().toISOString(),
   observerPid: process.pid, container: name, profile: values.profile ?? null, idleMs, anchor: anchor ?? null,
   nodeSha256: sha256(await readFile(values['node-binary'])), harnessEntrySha256: sha256(await readFile(fileURLToPath(import.meta.url))),
-  config: { image: values.image, cpus: 2, memoryBytes: 7 * 1024 ** 3, publishedPorts: [], restart: 'no',
+  config: { image: values.image, cpus: resources.cpus, memoryBytes: resources.memoryBytes,
+    memorySwapBytes: resources.memorySwapBytes, publishedPorts: [], restart: 'no',
     idleCounterSampling: 'closed-segment-endpoints-only', localProgressIntervalMs: 60_000 },
   scope: 'local application/host traffic; not Cloudflare billing, physical OS sleep, or future model wake' }, null, 2) + '\n', { mode: 0o600 });
 let stopped = false;
@@ -64,7 +68,8 @@ try {
   // No host networking, no published ports and no host filesystem state except
   // this new output directory and the read-only fixture/Node binary.
   await new Promise((accept, reject) => {
-    child = spawn('docker', ['run', '--rm', '--init', '--name', name, '--cap-add', 'NET_ADMIN', '--cpus=2', '--memory=7g',
+    child = spawn('docker', ['run', '--rm', '--init', '--name', name, '--label', 'com.tendriller.network-lab=true',
+      '--cap-add', 'NET_ADMIN', ...resources.dockerArgs,
       '--mount', `type=bind,source=${source},target=/lab,readonly`,
       '--mount', `type=bind,source=${resolve(values['node-binary'])},target=/usr/local/bin/node,readonly`,
       '--mount', `type=bind,source=${output},target=/evidence`,

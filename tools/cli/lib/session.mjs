@@ -110,20 +110,41 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   if (command === 'command-batch') {
     const items = jsonInput(args[0], 'command batch JSON array');
     if (!Array.isArray(items) || items.length > 64) throw Error('Supply a JSON array of 0..64 command objects.');
+    for (const item of items) {
+      if (!item || typeof item !== 'object' || Array.isArray(item) ||
+          Object.keys(item).some(key => !['operationId', 'command', 'input', 'basedOn'].includes(key)) ||
+          !Object.hasOwn(item, 'input')) throw Error('Every batched command needs a name, input and stable operationId.');
+      required(item.operationId, 'operationId on every batched command');
+      required(item.command, 'command name on every batched command');
+    }
     const results = [];
     for (const item of items) {
-      const opId = required(item?.operationId, 'operationId on every batched command');
-      const handle = await session.command(required(item?.command, 'command name'), item?.input ?? null, {
-        operationId: opId, ...(item?.basedOn === undefined ? {} : { basedOn: item.basedOn }),
-      });
-      if (options.saved) results.push({ operationId: opId, command: item.command, lifecycle: 'recorded', state: await handle.get() });
-      else {
-        const applied = await handle.applied({ signal });
-        results.push({ operationId: opId, command: item.command, lifecycle: applied.outcome === 'rejected' ? 'rejected' : 'applied', applied });
+      if (signal?.aborted) break;
+      const opId = item.operationId;
+      try {
+        const handle = await session.command(item.command, item.input, {
+          operationId: opId, ...(item.basedOn === undefined ? {} : { basedOn: item.basedOn }),
+        });
+        if (options.saved) {
+          const state = await handle.get();
+          results.push({ operationId: opId, command: item.command,
+            lifecycle: state?.status === 'applied' ? state.outcome === 'rejected' ? 'rejected' : 'applied'
+              : state?.status === 'saved' ? 'recorded' : 'unknown', state });
+        } else {
+          const applied = await handle.applied({ signal });
+          results.push({ operationId: opId, command: item.command, lifecycle: applied.outcome === 'rejected' ? 'rejected' : 'applied', applied });
+        }
+      } catch (error) {
+        results.push({ operationId: opId, command: item.command, lifecycle: 'unknown',
+          state: await session.operations.get(opId).catch(() => null),
+          error: { code: error?.code ?? 'operation_uncertain', message: error?.message ?? String(error) },
+          nextAction: 'Inspect this original operation before retrying. Keep its ID and input unchanged.' });
+        break;
       }
     }
-    return { results };
+    return { results, complete: results.length === items.length, nextIndex: results.length };
   }
+
   if (command === 'retry') {
     const operationId = required(args[0], 'the original operation identity');
     await session.retry(operationId);

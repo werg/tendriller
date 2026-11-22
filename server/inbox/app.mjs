@@ -2,7 +2,7 @@ import { createWidgetBridge } from './bridge.mjs';
 
 const status = document.querySelector('#status');
 const send = document.querySelector('#send');
-const bridge = createWidgetBridge({ window, onClose: disconnect });
+const bridge = createWidgetBridge({ window, onClose() { send.disabled = true; disconnect(); } });
 let application, socket, timer, handledProof, submitting = false;
 
 function disconnect() {
@@ -54,8 +54,14 @@ function accept(result) {
 }
 
 bridge.onResult(accept);
-const { mode } = await bridge.connect();
-if (mode === 'unavailable') status.textContent = 'Open this card in a compatible chat. You can still ask the chat to check the inbox directly.';
+try {
+  const { mode } = await bridge.connect();
+  if (mode === 'unavailable') status.textContent = 'Open this card in a compatible chat. You can still ask the chat to check the inbox directly.';
+} catch {
+  bridge.close();
+  send.disabled = true;
+  status.textContent = 'This chat did not establish the inbox connection. Ask the chat to check the inbox directly.';
+}
 if (application) send.disabled = !bridge.canMessage;
 send.addEventListener('click', async () => {
   if (submitting || !application || !bridge.canMessage) return;
@@ -68,6 +74,6 @@ send.addEventListener('click', async () => {
     if (delivery?.isError) throw Error('Inbox follow-up rejected');
     status.textContent = 'Inbox request sent to this chat.';
   } catch { status.textContent = 'The chat did not confirm receipt. Check the conversation before trying again.'; }
-  finally { send.disabled = false; submitting = false; }
+  finally { send.disabled = !application || !bridge.canMessage; submitting = false; }
 });
 window.addEventListener('pagehide', () => bridge.close(), { once: true });

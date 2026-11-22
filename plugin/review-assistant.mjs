@@ -19,7 +19,7 @@ export function superviseReviewAssistant({ session, signal, watch, expectedPropo
         if (lifetime.aborted) return;
         // An event cursor needing review must not reconnect a healthy tool provider or reset retained progress.
         forwardingBlocked = true;
-        report?.({ state: 'event_forwarding_review_required', reason: error?.code === 'APPLICATION_ASSISTANT_REVIEW_RECOVERY' ? 'recovery' : 'forwarding_failed', participantRunning: true });
+        report?.({ state: 'event_forwarding_review_required', reason: error?.code === 'EVENT_FORWARDER_REVIEW_RECOVERY' ? 'recovery' : 'forwarding_failed', participantRunning: true });
       }
     } : undefined,
   });

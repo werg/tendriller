@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { TUTORIAL_DOWNLOAD, TUTORIAL_FILES } from './onboarding.mjs';
+import { TUTORIAL_DOWNLOAD, TUTORIAL_FILES, tutorialSource, copyTutorialSources } from './onboarding.mjs';
 import { verifyRuntimeManifest } from './runtime-manifest.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -36,7 +36,8 @@ export function buildCompositionV2({ version, contract, runtime, core, chronolog
   for (const [name, spec] of Object.entries(profiles)) {
     if (!Object.hasOwn(COMPOSITION_V2_PROFILES, name)) fail(`Unknown composition v2 profile: ${name}`);
     const rules = COMPOSITION_V2_PROFILES[name];
-    if (Boolean(spec.sql) !== rules.sql || Boolean(spec.nativeRtc) !== rules.nativeRtc) {
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec) ||
+        ['sql', 'nativeRtc', 'wasmSql', 'nativeSql'].some(key => Boolean(spec[key]) !== rules[key])) {
       fail(`Profile ${name} capabilities do not match its declared v2 contract.`);
     }
     normalized[name] = {
@@ -45,7 +46,12 @@ export function buildCompositionV2({ version, contract, runtime, core, chronolog
       nativeRtc: rules.nativeRtc,
       wasmSql: Boolean(spec.wasmSql),
       nativeSql: Boolean(spec.nativeSql),
-      components: spec.components ?? [],
+      components: (spec.components ?? []).map(component => {
+        if (!component || typeof component !== 'object' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(component.file) ||
+            !/^[a-f0-9]{64}$/.test(component.sha256) || !Number.isSafeInteger(component.size) || component.size < 1)
+          fail(`Profile ${name} must bind exact component file names, SHA-256 values and sizes.`);
+        return { ...component };
+      }),
     };
   }
   const body = { format: 'tendriller-release-composition-v2', version, contract, runtime, core, chronolog, profiles: normalized };
@@ -225,7 +231,7 @@ export function prepareRelease({ root, version, contract }) {
     fail('The starter must contain exactly the maintained source allowlist. Rebuild onboarding assets.');
   for (const file of TUTORIAL_FILES) {
     const bytes = execFileSync('tar', ['-xOf', starterPath, file]);
-    if (digest(bytes) !== digest(readFileSync(join(root, 'docs/tutorial', file)))) fail(`Starter source is stale: ${file}`);
+    if (digest(bytes) !== digest(readFileSync(tutorialSource(root, file)))) fail(`Starter source is stale: ${file}`);
   }
   copyFileSync(starterPath, join(dist, starterFile));
   components.push(component(dist, 'starter', starterFile));
@@ -238,10 +244,7 @@ export function prepareRelease({ root, version, contract }) {
   try {
     // Exact allowlisted bytes checked against the served starter above. Never
     // package an existing developer application directory or its private state.
-    for (const file of TUTORIAL_FILES) {
-      mkdirSync(dirname(join(directory, file)), { recursive: true });
-      copyFileSync(join(root, 'docs/tutorial', file), join(directory, file));
-    }
+    copyTutorialSources(root, directory);
     copyFileSync(join(dist, 'composition.json'), join(directory, 'composition.json'));
     mkdirSync(join(directory, 'packages'));
     const localPackages = components.filter(item => ['sdk', 'tools', 'session'].includes(item.role));

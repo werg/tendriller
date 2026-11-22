@@ -26,14 +26,15 @@ function writeOctal(buf, offset, length, value) {
 function parseOctal(buf, offset, length) {
   const raw = decoder.decode(buf.subarray(offset, offset + length)).replace(/\0.*$/u, '').trim();
   if (!raw) return 0;
+  if (!/^[0-7]+$/u.test(raw)) throw fail('ARCHIVE_CORRUPT', `Invalid octal header field: ${raw}`);
   const value = parseInt(raw, 8);
   if (!Number.isSafeInteger(value) || value < 0) throw fail('ARCHIVE_CORRUPT', `Invalid octal header field: ${raw}`);
   return value;
 }
 
 function normalizeEntryName(name) {
-  const normalized = String(name).replaceAll('\\', '/').replace(/^\.\//u, '').replace(/^\/+/u, '');
-  if (!normalized || normalized.includes('\0') || normalized.split('/').some(seg => seg === '..' || seg === '.')) {
+  const normalized = String(name).replaceAll('\\', '/').replace(/^\.\//u, '');
+  if (!normalized || normalized.startsWith('/') || /^[a-z]:/iu.test(normalized) || normalized.includes('\0') || normalized.split('/').some(seg => seg === '..' || seg === '.')) {
     throw fail('ARCHIVE_PATH_UNSAFE', `Unsafe archive entry path: ${name}`);
   }
   return normalized;
@@ -113,11 +114,16 @@ export function unpackTarGz(compressedBytes, { maxTotalBytes = 128 * 1024 * 1024
   const files = new Map();
   let offset = 0;
   let totalBytes = 0;
-  let paxPath = null;
+  let paxPath = null, headers = 0, ended = false;
 
   while (offset + BLOCK <= tar.byteLength) {
     const header = tar.subarray(offset, offset + BLOCK);
-    if (header.every(byte => byte === 0)) break;
+    if (header.every(byte => byte === 0)) {
+      if (paxPath !== null || offset + BLOCK * 2 > tar.byteLength || !tar.subarray(offset).every(byte => byte === 0))
+        throw fail('ARCHIVE_CORRUPT', 'Invalid tar end marker.');
+      ended = true; break;
+    }
+    if (++headers > maxEntries) throw fail('ARCHIVE_ENTRY_LIMIT', 'Archive exceeds maximum entry count.');
     offset += BLOCK;
 
     const recordedChecksum = parseOctal(header, 148, 8);
@@ -130,15 +136,28 @@ export function unpackTarGz(compressedBytes, { maxTotalBytes = 128 * 1024 * 1024
     const typeFlag = header[156];
     const size = parseOctal(header, 124, 12);
     const dataEnd = offset + size;
-    if (dataEnd > tar.byteLength) throw fail('ARCHIVE_CORRUPT', 'Truncated tar entry payload.');
+    if (!Number.isSafeInteger(dataEnd) || offset + Math.ceil(size / BLOCK) * BLOCK > tar.byteLength) throw fail('ARCHIVE_CORRUPT', 'Truncated tar entry payload.');
     const payload = tar.subarray(offset, dataEnd);
     offset += Math.ceil(size / BLOCK) * BLOCK;
 
     // PAX extended header ('x') or GNU LongLink ('L')
     if (typeFlag === 0x78) {
-      const text = decoder.decode(payload);
-      const match = /\d+ path=([^\n]+)\n/u.exec(text);
-      if (match) paxPath = match[1];
+      let cursor = 0;
+      while (cursor < payload.length) {
+        const space = payload.indexOf(0x20, cursor);
+        const lengthText = decoder.decode(payload.subarray(cursor, space));
+        const length = Number(lengthText);
+        if (space < cursor || !/^[1-9][0-9]*$/u.test(lengthText) || !Number.isSafeInteger(length) ||
+            length <= space - cursor + 1 || cursor + length > payload.length || payload[cursor + length - 1] !== 0x0a)
+          throw fail('ARCHIVE_CORRUPT', 'Invalid PAX record length.');
+        const record = decoder.decode(payload.subarray(space + 1, cursor + length - 1));
+        const equal = record.indexOf('=');
+        if (equal < 1) throw fail('ARCHIVE_CORRUPT', 'Invalid PAX record.');
+        const key = record.slice(0, equal), value = record.slice(equal + 1);
+        if (key === 'path') paxPath = value;
+        if (key === 'size' || key === 'linkpath') throw fail('ARCHIVE_UNSUPPORTED_ENTRY', 'PAX size/link overrides are unsupported.');
+        cursor += length;
+      }
       continue;
     }
     if (typeFlag === 0x4c) {
@@ -150,8 +169,12 @@ export function unpackTarGz(compressedBytes, { maxTotalBytes = 128 * 1024 * 1024
     const combined = paxPath ?? (rawPrefix ? `${rawPrefix}/${rawName}` : rawName);
     paxPath = null;
 
-    // Directory ('5')
-    if (typeFlag === 0x35 || combined.endsWith('/')) continue;
+    // Validate directories too; a trailing slash never turns a link into a directory.
+    if (typeFlag === 0x35) {
+      const directory = combined.replace(/\/+$/u, '');
+      if (directory !== '.' && directory !== '') normalizeEntryName(directory);
+      continue;
+    }
     // Regular file ('0' or '\0')
     if (typeFlag !== 0x30 && typeFlag !== 0x00) {
       throw fail('ARCHIVE_UNSUPPORTED_ENTRY', `Unsupported non-regular tar entry type ${typeFlag} for ${combined}`);
@@ -161,8 +184,10 @@ export function unpackTarGz(compressedBytes, { maxTotalBytes = 128 * 1024 * 1024
     if (files.size >= maxEntries) throw fail('ARCHIVE_ENTRY_LIMIT', 'Archive exceeds maximum entry count.');
     totalBytes += size;
     if (totalBytes > maxTotalBytes) throw fail('ARCHIVE_SIZE_LIMIT', 'Archive exceeds maximum uncompressed byte limit.');
+    if (files.has(cleanPath)) throw fail('ARCHIVE_DUPLICATE_ENTRY', `Duplicate archive entry: ${cleanPath}`);
     files.set(cleanPath, payload.slice());
   }
+  if (!ended) throw fail('ARCHIVE_CORRUPT', 'Missing tar end marker.');
   return files;
 }
 

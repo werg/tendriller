@@ -52,7 +52,7 @@ test('revocation aborts event forwarding, replacement cannot redial the same rev
 });
 test('event recovery review preserves the healthy MCP adapter and never silently resets or retries its cursor',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});
-  const f=await fixture(t,{forwardingError:'APPLICATION_ASSISTANT_REVIEW_RECOVERY'});
+  const f=await fixture(t,{forwardingError:'EVENT_FORWARDER_REVIEW_RECOVERY'});
   f.send(notice(true));await flush();await flush();
   assert.equal(f.adapters.length,1);assert.equal(f.adapters[0].closes,0);assert.equal(f.forwarded.length,1);
   assert(f.reports.some(x=>x.state==='event_forwarding_review_required'&&x.reason==='recovery'));

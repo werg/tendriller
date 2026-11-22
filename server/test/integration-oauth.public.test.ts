@@ -7,13 +7,13 @@ import { CORE_RELEASE } from '../../contract/index.mjs';
 import { oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
 import { challengeFor } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
-import { bytesDigest, bytesToHex, createApplicationTools, describeApplication, eventExecutionManifest, executionManifestArtifacts, MemoryBytesStore,
+import { bytesDigest, bytesToHex, createApplicationTools, createScopedApplicationTools, forwardSessionEvents, describeApplication, eventExecutionManifest, executionManifestArtifacts, MemoryBytesStore,
   openApplicationDevice, openPeerApplication, participantGrant, signTransitionRequest } from '@chronolog/peer-session';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { resolveConnection } from '../src/assistant-shared';
 import { createPeersClient } from '../../contract/peers.mjs';
 import { defineApplication, defineCommand, defineQuery, emit, program, type ApplicationReadView } from '@chronolog/peer-session';
-import { connectApplicationAssistant, createAssistantKey, createApplicationAgentKey, forwardApplicationEvents, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
+import { connectApplicationAssistant, createAssistantKey, createApplicationAgentKey, createAssistantEventDelivery, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
 import { peerApiJson } from './peer-exchange';
 import { createPeerIdentity } from '@chronolog/peer-session';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
@@ -569,8 +569,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await checkStatus(review(blueprints.queries), 303);
     let dropNextResult = false, droppedResult: Record<string, any> | null = null;
     const start = (whichKey = key, peer = session) => {
-      const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools: createApplicationTools(peer),
-        ...blueprints, openSocket: (_url, protocols) => {
+      const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools: createScopedApplicationTools(peer, blueprints),
+        openSocket: (_url, protocols) => {
           const socket = testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous'), send = socket.send.bind(socket);
           socket.send = data => {
             const frame = typeof data === 'string' ? JSON.parse(data) : null;
@@ -703,8 +703,9 @@ it('serves unrelated native applications through one MCP endpoint and retains in
 
     const capture = new AbortController();
     const bareAlarm = await inDO(b.page.id, async t => t.ctx.storage.getAlarm());
-    const consumer = forwardApplicationEvents({
-      session: second.session, assistant: second.adapter, topics: ['reading'], signal: capture.signal,
+    const consumer = forwardSessionEvents({
+      session: second.session, topics: ['reading'], signal: capture.signal,
+      deliver: createAssistantEventDelivery({ assistant: second.adapter }),
       checkpoint: { load: () => undefined, save: () => capture.abort() },
       project: event => ({ name: second.eventName, payload: event.payload }),
     });

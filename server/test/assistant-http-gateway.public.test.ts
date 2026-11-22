@@ -81,13 +81,13 @@ it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP co
         recordedOps.set(msg.operationId, { operationId: msg.operationId, text: msg.input.text });
         client.send(JSON.stringify({
           type: 'result', id: msg.id,
-          value: { state: { status: 'applied', outcome: 'accepted', operationId: msg.operationId, author: device.publicKey, generation: gen.id, sequence: recordedOps.size, attemptId: 'att-' + recordedOps.size } },
+          value: { state: { status: 'applied', outcome: msg.input.text === 'reject' ? 'rejected' : 'accepted', operationId: msg.operationId, author: device.publicKey, generation: gen.id, sequence: recordedOps.size, attemptId: 'att-' + recordedOps.size } },
         }));
       } else if (msg.kind === 'operation') {
         const hit = recordedOps.get(msg.operationId);
         client.send(JSON.stringify({
           type: 'result', id: msg.id,
-          value: hit ? { state: { status: 'applied', outcome: 'accepted', operationId: msg.operationId, author: device.publicKey, generation: gen.id, sequence: 1, attemptId: 'att-1' } } : null,
+          value: hit ? { state: { status: 'applied', outcome: hit.text === 'reject' ? 'rejected' : 'accepted', operationId: msg.operationId, author: device.publicKey, generation: gen.id, sequence: 1, attemptId: 'att-1' } } : null,
         }));
       }
     });
@@ -112,6 +112,29 @@ it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP co
     // 1. Unauthenticated HTTPS gateway returns 401 challenge
     const denied = await route(new Request(`${ORIGIN}/v1/apps/${handle.application.id}/query?query=notes`), testEnv);
     expect(denied.status).toBe(401);
+
+    // A malformed later item must not partially submit the valid first item.
+    for (const commands of [null, {}, [null], [{ command: 'add', input: { text: 'must-not-submit' }, operationId: 'invalid-batch-first' }, null]]) {
+      const invalid = await route(new Request(`${ORIGIN}/v1/apps/${handle.application.id}/commands/batch`, {
+        method: 'POST', headers: authHeader, body: JSON.stringify({ commands }),
+      }), testEnv);
+      expect(invalid.status).toBe(400);
+      expect(recordedOps.size).toBe(0);
+      const mcpInvalid = await route(new Request(`${ORIGIN}/mcp`, {
+        method: 'POST', headers: authHeader, body: JSON.stringify({ jsonrpc: '2.0', id: 2,
+          method: 'tools/call', params: { name: 'call_application_commands_batch', arguments: { applicationId: handle.application.id, commands } } }),
+      }), testEnv);
+      expect((await mcpInvalid.json<{ result: { isError: boolean } }>()).result.isError).toBe(true);
+      expect(recordedOps.size).toBe(0);
+    }
+    for (const suffix of ['query?query=notes&input=bad-json', 'events?since=not-json', 'events?limit=100']) {
+      const invalid = await route(new Request(`${ORIGIN}/v1/apps/${handle.application.id}/${suffix}`, { headers: authHeader }), testEnv);
+      expect(invalid.status).toBe(400);
+    }
+    const crossOrigin = await route(new Request(`${ORIGIN}/v1/apps/${handle.application.id}/query?query=notes`, {
+      headers: { ...authHeader, Origin: 'https://elsewhere.example' },
+    }), testEnv);
+    expect(crossOrigin.status).toBe(403);
 
     // 2. HTTPS Polling Gateway batched commands
     const batchRes = await route(new Request(`${ORIGIN}/v1/apps/${handle.application.id}/commands/batch`, {
@@ -158,6 +181,17 @@ it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP co
     expect(mcpBatch.status).toBe(200);
     const mcpBody = await mcpBatch.json<{ result: { structuredContent: { results: { ok: boolean }[] } } }>();
     expect(mcpBody.result.structuredContent.results[0].ok).toBe(true);
+    const stopped = await route(new Request(`${ORIGIN}/v1/apps/${handle.application.id}/commands/batch`, {
+      method: 'POST', headers: authHeader, body: JSON.stringify({ stopOnError: true, commands: [
+        { command: 'add', input: { text: 'reject' }, operationId: 'reject-first' },
+        { command: 'add', input: { text: 'must-not-submit' }, operationId: 'after-rejection' },
+      ] }),
+    }), testEnv);
+    const stoppedBody = await stopped.json<{ results: unknown[]; complete: boolean; nextIndex: number }>();
+    expect(stoppedBody.results).toHaveLength(1);
+    expect(stoppedBody.complete).toBe(false);
+    expect(stoppedBody.nextIndex).toBe(1);
+    expect(recordedOps.size).toBe(4);
   } finally {
     await inDO(handle.id, () => { clientSocket.close(); });
   }

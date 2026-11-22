@@ -21,10 +21,10 @@ Call `tendril_guide` with `topic: "start"` for the [MCP workflow](MCP_AGENT_GUID
 4. Attach `connectApplicationAssistant` to the running Chronolog session, connect the MCP client to `<PUBLIC_BASE>/mcp`, and verify `list_tendrils`, `describe_application`, a read query, and an applied command.
 
 ```js
-import { createScopedApplicationTools } from '@chronolog/peer-session';
+import { createScopedApplicationTools, forwardSessionEvents } from '@chronolog/peer-session';
 import {
   createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant,
-  forwardApplicationEvents,
+  createAssistantEventDelivery,
 } from '@tendriller/core/assistant';
 
 // Setup once using the private host handle; persist `key` privately.
@@ -41,14 +41,14 @@ console.log(proposal.reviewUrl);
 const assistant = connectApplicationAssistant({
   api: handle.api, key, session,
   tools: createScopedApplicationTools(session, exposed),
-  ...exposed,
   onStatus: status => console.log(status),
 });
 await assistant.waitUntilOnline();
 
 // Optional durable event forwarding (atomic checkpoint with load()/save(cursor)):
-await forwardApplicationEvents({
-  session, assistant, topics: ['note'], checkpoint,
+await forwardSessionEvents({
+  session, topics: ['note'], checkpoint,
+  deliver: createAssistantEventDelivery({ assistant }),
   project: event => ({ name: 'note.added', payload: { noteId: event.id } }),
 });
 ```
@@ -57,7 +57,7 @@ await forwardApplicationEvents({
 
 - **Authorization & routing:** the Worker verifies the adapter key and device against signed Chronolog grants. Reads can route to any eligible approved replica; new writes route to one owner-selected provider. Each WebSocket connection carries a monotonic epoch so replaced sockets cannot act for their successor.
 - **Exact retries:** Tendriller retains the input digest and original signing device per `operationId`. Retries target that same signer and never silently move a saved operation to a different device. Use `inspect_application_operation`, `retry_application_operation`, or bounded `wait_application_operation` for uncertain outcomes; use `reapply_application_operation` with a new ID to deliberately link replacement work.
-- **Event forwarding:** `forwardApplicationEvents` advances the checkpoint only after host acknowledgement, skips owner-declined projections (`onSkipped`), and halts for explicit review after generation recovery.
+- **Event forwarding:** Chronolog's `forwardSessionEvents` owns recovery, cancellation, read views, and checkpoint advancement. Tendriller's `createAssistantEventDelivery` supplies host acknowledgement/retry and owner-declined projection handling (`onSkipped`). The checkpoint advances only after delivery completes.
 - **Double scoping:** both the host gateway and the local participant (`createScopedApplicationTools` + `@tendriller/core/assistant`) enforce the exact allowed command/query set. Stop the adapter via `assistant.close()` or closing its session.
 
 ## Independently acting agents (consumer bindings)
@@ -82,3 +82,27 @@ Each binding gets isolated `operationId` namespaces, subscriptions, cursors, and
 - Account discovery (`list_tendrils`) queries D1 without waking page Durable Objects; calls wake only the target page.
 - Inbound participant and inbox sockets use Durable Object hibernation (zero idle polling or keepalives).
 - Per-page bounds: 256 retained inbox events (plus records with pending deliveries), 8 subscriptions, 256 queued deliveries, 4 mounted live inboxes, 32 consumer bindings, 4,096 operation mappings, 8 concurrent RPCs (at most 2 RPCs and 4 subscriptions per binding). Delivery alarms lease up to 4 due jobs per pass. Disconnecting removes the page's inbox and subscriptions.
+
+
+## HTTPS fallback when persistent transports are blocked
+
+An already authorized OAuth client may use the same service origin's
+`/v1/apps/APPLICATION_ID` gateway: `POST /commands`, `POST /commands/batch`,
+`GET /operations/OPERATION_ID`, `GET` or `POST /query`, and `GET /events`.
+Use its bearer token and, for an independently approved agent, the
+`Tendriller-Agent-Binding` header. Command/query JSON has the same fields as the
+corresponding MCP tool; batches contain `commands` and optional `stopOnError`.
+The same account, OAuth scopes, reviewed capabilities and original signer
+admission apply. Store credentials privately.
+
+The HTTP and MCP batch tools accept up to 16 ordered individual commands and
+return per-command outcomes, `complete`, and `nextIndex`. They are not an atomic
+transaction. The complete HTTP request has a 25-second budget; remaining entries
+are not submitted after cancellation or that deadline. Keep all original IDs
+and inspect uncertain results before resuming at `nextIndex`.
+
+For event catch-up, retain the returned compound cursor and JSON-encode it in
+`since`; `limit` is 1..25. This endpoint returns immediately and supplies no
+background wake. Prefer native supported push and hibernating WebSockets for
+ongoing connections; use this fallback during an active turn when those routes
+are unavailable. Continuous status polling creates unnecessary requests.

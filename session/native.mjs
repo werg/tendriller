@@ -1,4 +1,4 @@
-import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { serialize } from 'node:v8';
@@ -31,17 +31,6 @@ async function privatePath(path, kind, mode) {
 }
 async function directory(path, create = false) {
   return ensurePrivateDirectory(path, create);
-}
-async function atomicJSON(root, name, data) {
-  const temporary = join(root, `pending-${randomUUID()}.json`), target = join(root, name);
-  const file = await open(temporary, 'wx', 0o600);
-  try { await file.writeFile(JSON.stringify(data)); await file.sync(); }
-  finally { await file.close(); }
-  try {
-    await rename(temporary, target);
-    const parent = await open(root, 'r');
-    try { await parent.sync(); } finally { await parent.close(); }
-  } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
 }
 async function retainedJSON(root, name, maximum = 131072) {
   const path = join(root, name);
@@ -147,7 +136,7 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
     }
   })();
   const abort = () => { void close().catch(() => {}); };
-  const persist = next => atomicJSON(root, 'bindings.json', { version: 1, profileId, bindings: [...next.values()] });
+  const persist = next => writePrivateJsonAtomic(root, 'bindings.json', { version: 1, profileId, bindings: [...next.values()] });
   const mutate = work => {
     const pending = changes.then(async () => {
       if (stopped) throw failure('OWNER_UNREACHABLE');
@@ -190,7 +179,7 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
       definitionId: description.id, definitionVersion: description.version };
     const previous = await retainedJSON(root, 'profile.json', 4096);
     if (previous && JSON.stringify(previous) !== JSON.stringify(profile)) throw failure('SUPERVISOR_PROFILE_CHANGED', 'Resume the original signer and immutable definition; enroll another profile explicitly.');
-    if (!previous) await atomicJSON(root, 'profile.json', profile);
+    if (!previous) await writePrivateJsonAtomic(root, 'profile.json', profile);
     const onConnection = socket => {
       if (stopped || clients.size >= maxClients) { socket.destroy(); return; }
       const client = { socket, bindingId: null, revision: null, detach: undefined, port: undefined, snapshot: null, failed: false };
@@ -372,17 +361,12 @@ export async function connectOrStartNativeSession({
     try {
       owner = await openOwner({ signal, profileId });
       if (!owner?.session) throw failure('SUPERVISOR_OWNER_INVALID');
-      return {
-        session: owner.session,
-        mode: 'bounded',
-        owner,
-        async close() {
-          try { await owner.close(); } finally { await lock.release(); }
-        },
-        async detach() {
-          try { await owner.close(); } finally { await lock.release(); }
-        },
-      };
+      signal?.throwIfAborted();
+      let closing;
+      const close = () => closing ??= (async () => {
+        try { await owner.close(); } finally { await lock.release(); }
+      })();
+      return { session: owner.session, mode: 'bounded', owner, close, detach: close };
     } catch (error) {
       try { await owner?.close(); } catch {}
       await lock.release();
@@ -431,10 +415,8 @@ export async function connectOrStartNativeSession({
       });
       return { ...attached, startedSupervisor: false, close: attached.detach };
     } catch (attachError) {
-      if (!['ENOENT', 'ECONNREFUSED', 'OWNER_UNREACHABLE', 'IPC_PRIVATE_PATH_INVALID'].includes(attachError?.code)) {
-        // Re-check if the live supervisor is unresponsive vs genuine auth/definition mismatch.
-        if (['SUPERVISOR_BINDING_REVOKED', 'SUPERVISOR_AUTHENTICATION_REQUIRED'].includes(attachError?.code)) throw attachError;
-      }
+      signal?.throwIfAborted();
+      if (!['ENOENT', 'ECONNREFUSED', 'OWNER_UNREACHABLE'].includes(attachError?.code)) throw attachError;
     }
 
     // 2. No live instance answered; try starting the shared supervisor atomically.

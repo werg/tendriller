@@ -1,12 +1,20 @@
 # Tendriller & Chronolog-DB: Complete Agent Ergonomics, Simplification & Cross-Platform Portability Specification
 
+> Design specification. This document includes target work and is not a support
+> matrix or evidence that every workstream is complete. Use
+> [Build an app](BUILD_AN_APP.md), [deployment guidance](DEPLOYMENT_GUIDE.md),
+> and the exact published release manifest for current supported paths. A profile
+> name or capability probe does not qualify a SQL engine, browser persistence,
+> future agent wake, or participant availability after its process exits.
+
+
 **Repositories:** `werg/tendriller`, `werg/chronolog-db`, `werg/tendriller-contrib`  
 **Specification Date:** 21 November 2026  
 **Architecture Alignment:** Built as one piece around **`chronolog-db` (`@chronolog/peer-session`) as the central pipe**, keeping Tendriller's Worker host application-neutral (zero `node:*` imports) and basic `@tendriller/runtime` / `@tendriller/tools` decoupled from `@chronolog/*`.
 
 ### Review Corrections & Architectural Refinements (Applied Before Implementation)
 
-1. **Central-pipe placement (`chronolog-db` owns core primitives):** Canonical lifecycle mapping (`describeOperationLifecycle`), batched idempotent command submission (`submitBatch`), unified app client facade (`createAppClient`), AES-256-GCM atomic encrypted device checkpoints with anti-split-brain retirement tombstones (`exportDeviceCheckpoint` / `restoreDeviceCheckpoint`), explicit disposable native storage (`openDisposableNativeDevice`), Node WASM SQL adapter (`@chronolog/peer-session/sql-wasm`), and relay-only `--no-native-rtc` packaging live directly in `chronolog-db` rather than being duplicated in `tendriller`.
+1. **Central-pipe placement (`chronolog-db` owns core primitives):** Canonical lifecycle mapping (`describeOperationLifecycle`), batched idempotent command submission (`submitBatch`), unified app client facade (`createAppClient`), AES-256-GCM atomic encrypted device checkpoints with anti-split-brain retirement tombstones (`exportDeviceCheckpoint` / `restoreDeviceCheckpoint`), explicit disposable native storage (`openDisposableNativeDevice`), Node WASM SQL adapter (`@chronolog/peer-session/sql-wasm-node`), and relay-only `--no-native-rtc` packaging live directly in `chronolog-db` rather than being duplicated in `tendriller`.
 2. **Existing Port-443 Remote HTTPS MCP Server (W5 correction):** Tendriller's Cloudflare Worker **already ships** an OAuth 2.1 + PKCE + CIMD port-443 Remote HTTPS MCP server at `POST /mcp` (`server/src/assistant-gateway.ts` + `server/src/assistant.ts`). W5 therefore extends `/mcp` with batched idempotent command submission (`call_application_commands_batch`), adds the RESTful **Outbound HTTPS Command/Status Polling Gateway** (`/api/assistant/v1/apps/:appId/*`) on the exact same `assistantRequest` Durable Object path, adds independent transport probing & proxy awareness, and adds the **Local Stdio MCP Server** (`tendril mcp-stdio`) in `@tendriller/tools`.
 3. **Operation ID safety (W1 refinement):** Automatic trusted local access (`0600` Unix socket, Windows named pipe, or per-project loopback TCP bearer token) preserves caller-supplied `operationId` **verbatim** (`preserveOperationId: true`), eliminating divergence between in-process and shared local calls. Explicit third-party/restricted delegated bindings retain namespace scoping so independent agents on one shared profile cannot collide or hijack each other's operations.
 4. **Honest local vs. external qualification scope (W12 / CI):** All 12 Workstreams (W1–W12) are implemented in code, tests, CI workflows, and qualification harnesses across all three repositories. Quantitative telemetry is recorded from actual local runs; external commercial cloud-agent surfaces (Meta Muse, Grok Bot, OpenAI Dots, Claude Duet, Instinct) and non-Linux OS builds remain explicitly `"unknown"` / `"pending_live_access"` until executed on those live surfaces—never fabricated.

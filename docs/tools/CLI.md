@@ -47,6 +47,15 @@ transition request before sending it, then verify the selected authority before
 opening the session. `configureApplication` alone does not satisfy this step;
 the tutorial's initialization command performs both stages.
 
+## Inspect capabilities and choose a host
+
+`tendril probe --server YOUR_ORIGIN --project ./app --check-network` reports
+measured capabilities separately from unknowns. It does not create a page,
+request a browser permission, or establish future process availability. Prefer
+WebRTC when available; select the encrypted relay for restricted environments.
+See [deployment guidance](../DEPLOYMENT_GUIDE.md) for the process, storage and
+lifetime required by each hosting route.
+
 ## Choose attachment or ownership
 
 `--session /absolute/application.mjs` names the application's public bootstrap.
@@ -66,8 +75,7 @@ An unavailable owner never causes it to open a second signer.
 session must expose a local `detach()` method. `openSession` returns
 `{session, control?, close?}`; the optional `close()` also releases the owner's
 profile fence. The CLI calls the appropriate cleanup exactly once, including an
-interrupted invocation. A legacy bootstrap exporting only `openSession` retains
-its explicit owned behavior. `--run RUN_ID` supplies caller-asserted run context;
+interrupted invocation. A bootstrap exporting only `openSession` uses explicit ownership. `--run RUN_ID` supplies caller-asserted run context;
 it is not authorization to impersonate a participant.
 
 For the tutorial's default `main` profile:
@@ -335,3 +343,68 @@ state. The default capacity is 10,000 effect identities with 128 KiB records;
 a full journal refuses new effects instead of evicting duplicate protection.
 `close()` releases the SQLite connection. Network work belongs outside
 `transact()`; an asynchronous transaction callback is rejected.
+
+
+## Local MCP and ordered command batches
+
+A local MCP client can launch the installed tools executable with arguments
+`["--session", "/absolute/app/session.mjs", "--mode", "attach", "mcp-stdio"]`.
+Start the app's resident participant first. This newline-delimited stdio server
+exposes `app_discover`, `state_query`, `command_submit`,
+`command_submit_batch`, and `operation_inspect`. It attaches to the same local
+signer; closing the MCP client detaches that caller. Tool calls have a fixed
+30-second deadline and support cancellation. Saved work survives a waiter
+cancelling or timing out. This supplies local tools; it does not imply that the
+client supports background conversation wake.
+
+`command-batch '<JSON array>'` accepts up to 64 ordered entries with `command`,
+`input`, `operationId`, and optional `basedOn`; `--saved` returns the observed
+recorded/applied state without waiting for application. The local MCP batch
+accepts up to 32 entries. These are ordered individual commands, not one atomic
+transaction. Declare one domain command when all changes must commit together.
+Malformed envelopes fail before the first submission. Results preserve the
+original operation IDs and report incomplete batches with `nextIndex`.
+Inspect uncertain operations rather than assigning replacement IDs.
+
+## Share source without device state
+
+`tendril handoff source handoff.tgz --project ./app` exports code, documentation,
+static assets and package/TypeScript manifests. It excludes hidden files,
+environment files, runtime/configuration JSON, device/checkpoint bytes and
+state directories, and rejects recognized credentials embedded in source.
+Review authored source before sharing: arbitrary embedded credentials cannot be
+identified reliably by a file filter. The recipient configures its own private
+setup and device; the source archive transfers no authority.
+
+
+## Move a stopped retained device
+
+The checkpoint commands use the selected project's matching public Chronolog
+package. Load `TENDRILLER_CHECKPOINT_SECRET` from private storage (a 64-hex random
+key or a passphrase of at least 12 characters), then stop the original participant:
+
+```sh
+tendril checkpoint export ./move.clcp --project ./app --device ./app/.tendriller/device.sqlite
+tendril checkpoint restore ./move.clcp --project ./app --device ./app/.tendriller/profiles/moved/device.sqlite
+# In the supplied starter, reopen that retained identity in its new profile:
+cd app
+npm run peer -- moved
+```
+
+The encrypted file is durably written before the source store is retired.
+Restore verifies the signing identity in a temporary store, then publishes one
+fresh private directory. Existing output files and destination directories are
+never replaced. A running source is rejected by the native store's exclusive
+writer fence. This fences the original store; run only one restored copy of the
+same signing identity. Enroll another device for simultaneous participants.
+
+The checkpoint carries canonical device identity, keys, signed attempts and
+retained history. SQL materialization is rebuilt from that history when the
+application reopens; copying its engine files is unnecessary. Preserve the same
+application code, signed schema/descriptor and private host configuration too.
+For the example above those remain in the original project. A cross-machine move
+must retain that private project context separately; source-only handoff excludes
+it. Verify a coherent query, original operation outcomes and remote interaction
+after reopening before reporting the handoff complete. The checkpoint is bounded
+to 4,096 entries and 16 MiB of source data (32 MiB encoded); oversized state is
+rejected without retiring the source.
