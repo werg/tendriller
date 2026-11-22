@@ -23,9 +23,13 @@ Chronolog participant. Do not describe a template as qualifying such a deploymen
 ## Start and stop the same participant
 
 These templates target the current native starter's exported
-`runPeer({ signal }, { onOwned, onClosed })` lifecycle. Copy the maintained
-[`deploy`](../deploy/) files into your authored project as `deploy/`, alongside
-its `session.mjs`, `local.mjs`, helpers and pinned package lock. Install the
+`runPeer({ signal }, { onOwned, onClosed })` lifecycle. The immutable first-app kit selected by that service's build guide
+and the [source-only starter download](../downloads/tendriller-first-app.tgz)
+include the `deploy/` directory alongside `session.mjs`, `local.mjs` and helpers.
+Retain that directory when extracting the kit. For an existing authored project,
+copy `deploy/` from the selected qualified kit into its project root; no separate
+repository checkout is required. Those files are packaged directly from the
+maintained root `deploy/` sources, without a second maintained copy. Install the
 project's exact dependencies and finish its normal setup first. Use **Node 24
 or newer** for this launcher and native starter, even though some portable Core
 modules support Node 22. Do not infer native/SQL compatibility from that lower
@@ -54,8 +58,8 @@ store; never rerun initialization merely because the process stopped.
 ## Linux and macOS
 
 Edit the absolute Node/project paths in
-[`tendriller.service`](../deploy/tendriller.service) or
-[`dev.tendriller.participant.plist`](../deploy/dev.tendriller.participant.plist).
+`deploy/tendriller.service` or
+`deploy/dev.tendriller.participant.plist`.
 Verify the selected Node binary's version. Create the dedicated service user and
 private `.tendriller` directory before installing the unit; systemd's writable
 path must exist and contain the retained setup/store. Do not put credentials in
@@ -70,7 +74,7 @@ or offline. Stop the unit before deliberately starting another owner manually.
 
 ## Windows
 
-[`install-windows-task.ps1`](../deploy/install-windows-task.ps1) registers a
+`deploy/install-windows-task.ps1` registers a
 **current-user logon task**, not a Windows Service. `node.exe` does not implement
 the Service Control Manager protocol and must not be passed directly to
 `New-Service`. The task stores no account password, uses limited privileges,
@@ -95,13 +99,13 @@ deleting the project or state.
 
 ## Container
 
-The [Dockerfile](../deploy/Dockerfile) uses Node 24 on Debian, a non-root user,
+The `deploy/Dockerfile` uses Node 24 on Debian, a non-root user,
 and the project's locked runtime dependencies. It is a native events-starter
 template. A native SQL engine with install-time build requirements needs its own
 matching prepared runtime/image; `--ignore-scripts` does not compile such an engine
 or establish SQL support. No silent fallback to events is permitted.
 
-Use the matching [Dockerfile.dockerignore](../deploy/Dockerfile.dockerignore)
+Use the matching `deploy/Dockerfile.dockerignore`
 when building from the project root. It excludes the standard private store,
 checkpoint files, environment secrets, Git data and local dependencies. Review
 the authored context for any additional private paths before building. Never
