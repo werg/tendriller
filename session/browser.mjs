@@ -50,7 +50,7 @@ export async function openBrowserOwner(options){
   const deadline=performance.now()+timeoutMs;
   const handshake={applicationId:options.applicationId,definitionId:options.definitionId,
     definitionVersion:options.definitionVersion,context:options.context??{},signal:options.signal,timeoutMs:options.timeoutMs};
-  if(!shared)return elected(url,options,handshake);
+  if(!shared)return elected(url,options,handshake,deadline);
   for(let attempt=0;;attempt++){
     try{
       const remaining=deadline-performance.now();
@@ -295,25 +295,81 @@ async function attachExisting(options,handshake,waitMs){
     return facade({session,transport,provider,channel,route:'existing',options});
   }catch(error){await transport?.close();channel.close();throw error;}
 }
-async function elected(url,options,handshake){
+async function elected(url,options,handshake,deadline){
   if(typeof BroadcastChannel!=='function'||typeof Worker!=='function')throw new SessionError('OWNER_CAPABILITY_UNAVAILABLE','The elected owner route needs Worker and BroadcastChannel');
-  const id=crypto.randomUUID(),channel=new BroadcastChannel(ownerChannelName(options.profileId));let worker,transport,booted=false,bootstrapRtc,bootstrapProvider,provider;
+  const id=crypto.randomUUID(),channel=new BroadcastChannel(ownerChannelName(options.profileId)),opening=new AbortController();
+  const timeout=new SessionError('OWNER_UNREACHABLE','The owner did not answer; preserve the original operation reference');
+  let worker,transport,booted=false,bootstrapRtc,bootstrapProvider,provider,phase='discovery',attempts=0,lastOwnerInstanceId;
+  const cancel=()=>opening.abort(options.signal.reason);
+  if(options.signal?.aborted)cancel();else options.signal?.addEventListener('abort',cancel,{once:true});
+  const timer=setTimeout(()=>opening.abort(timeout),Math.max(0,Math.ceil(deadline-performance.now())));
+  const check=()=>{if(performance.now()>=deadline)opening.abort(timeout);opening.signal.throwIfAborted();};
+  const failed=event=>opening.abort(new SessionError('OWNER_UNREACHABLE',event.message??'Owner worker failed to load'));
+  const workerMessage=({data})=>{if(data?.protocol===BROWSER_OWNER_PROTOCOL&&data.type==='failure')opening.abort(new SessionError(data.code??'OWNER_UNREACHABLE',data.message));};
+  // Stop waiting at the opening fence, but retain handlers on asynchronous
+  // cleanup. A pending cleanup is terminal: it can never start another route.
+  function whileOpening(task){
+    return new Promise((resolve,reject)=>{
+      const abort=()=>{clean();reject(opening.signal.reason);};
+      const clean=()=>opening.signal.removeEventListener('abort',abort);
+      opening.signal.addEventListener('abort',abort,{once:true});
+      Promise.resolve(task).then(value=>{clean();resolve(value);},error=>{clean();reject(error);});
+      if(opening.signal.aborted)abort();
+    });
+  }
+  async function closeRoute(){
+    const oldProvider=provider,oldTransport=transport;provider=undefined;transport=undefined;
+    // Always attempt both releases; a cleanup failure must never replace the
+    // startup error or permit another provisional route to open.
+    const results=await Promise.allSettled([Promise.resolve().then(()=>oldProvider?.close()),Promise.resolve().then(()=>oldTransport?.close())]);
+    const rejected=results.find(result=>result.status==='rejected');if(rejected)throw rejected.reason;
+  }
   try{
-    worker=new Worker(url,{type:'module',name:`tendriller-owner-${id}`});
-    const ready=waitFor(channel,data=>isOwnerAnnouncement(data,options.profileId),options);
-    // The worker queues an exclusive Web Lock. Suspension never permits takeover.
-    worker.addEventListener('message',({data})=>{if(data?.protocol===BROWSER_OWNER_PROTOCOL&&data.type==='failure')channel.dispatchEvent(new MessageEvent('message',{data}));});
+    check();worker=new Worker(url,{type:'module',name:`tendriller-owner-${id}`});
+    worker.addEventListener('message',workerMessage);worker.addEventListener('error',failed);
+    const discovered=waitFor(channel,data=>isOwnerAnnouncement(data,options.profileId),{signal:opening.signal,timeoutMs:Math.max(1,deadline-performance.now())});
+    void discovered.catch(()=>{});
+    // Keep this single candidate and its exclusive physical owner fence through
+    // rediscovery. A public announcement can select only a provisional route.
     worker.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'boot',mode:'elected',id,profileId:options.profileId});booted=true;
-    bootstrapRtc=createRootRtcEndpoint(worker,{profileId:options.profileId,rootId:id});bootstrapProvider=registerBrowserRtcProvider(bootstrapRtc,{signal:options.signal??new AbortController().signal});
+    bootstrapRtc=createRootRtcEndpoint(worker,{profileId:options.profileId,rootId:id});bootstrapProvider=registerBrowserRtcProvider(bootstrapRtc,{signal:options.signal?AbortSignal.any([options.signal,opening.signal]):opening.signal});
     channel.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'discover'});
-    const active=await ready;transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,
-      onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
-    provider=registerBrowserRtcProvider(transport.rtc,{signal:options.signal??new AbortController().signal});
-    const session=await connectApplicationOwner(transport,handshake);
-    const providers={adopt(session){provider.adopt(session);bootstrapProvider.adopt(session);},async close(){await Promise.all([provider.close(),bootstrapProvider.close()]);}};
-    return facade({session,transport,provider:providers,bootstrapRtc,channel,worker,route:'elected',options});
-  }catch(error){await provider?.close();await bootstrapProvider?.close();bootstrapRtc?.dispose();await transport?.close();channel.close();
-    if(booted)await retireCandidate(worker,options.profileId,Math.min(options.timeoutMs??30000,3000));else worker?.terminate();throw error;}
+    let active=await discovered;
+    for(;;){
+      check();attempts++;phase='attachment';lastOwnerInstanceId=active.ownerInstanceId;
+      const attempt=new AbortController(),expired=new SessionError('OWNER_PROVISIONAL_TIMEOUT','The provisional owner did not authenticate');
+      const abort=()=>attempt.abort(opening.signal.reason);
+      opening.signal.addEventListener('abort',abort,{once:true});
+      const attemptTimer=setTimeout(()=>attempt.abort(expired),Math.min(3000,Math.max(0,deadline-performance.now())));
+      let session;
+      try{
+        transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,
+          onReplaced:value=>{if(session)options.onOwnerReplaced?.(value);},livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
+        provider=registerBrowserRtcProvider(transport.rtc,{signal:attempt.signal});
+        session=await connectApplicationOwner(transport,{...handshake,signal:options.signal?AbortSignal.any([options.signal,attempt.signal]):attempt.signal});check();
+      }catch(error){
+        let cleanupFailed=false;try{await whileOpening(closeRoute());}catch{cleanupFailed=true;}
+        if(!(error===expired||['APPLICATION_WORKER_READY_TIMEOUT','OWNER_UNREACHABLE','ENDPOINT_STALE'].includes(error?.code??error?.message)))throw error;
+        check();if(cleanupFailed)throw error;
+      }finally{clearTimeout(attemptTimer);opening.signal.removeEventListener('abort',abort);}
+      if(session){
+        phase='ready';
+        const providers={adopt(current){provider.adopt(current);bootstrapProvider.adopt(current);},async close(){await Promise.all([provider.close(),bootstrapProvider.close()]);}};
+        return facade({session,transport,provider:providers,bootstrapRtc,channel,worker,route:'elected',options});
+      }
+      phase='discovery';check();
+      const next=waitFor(channel,data=>isOwnerAnnouncement(data,options.profileId),{signal:opening.signal,timeoutMs:Math.max(1,deadline-performance.now())});
+      channel.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'discover'});active=await next;
+    }
+  }catch(error){
+    opening.abort(error);
+    try{if(error&&typeof error==='object'&&Object.isExtensible(error))Object.assign(error,{startup:{phase,attempts,lastOwnerInstanceId}});}catch{}
+    // Aborted openings do not wait for arbitrary asynchronous provider teardown.
+    await whileOpening(Promise.allSettled([closeRoute(),Promise.resolve().then(()=>bootstrapProvider?.close())])).catch(()=>{});
+    try{bootstrapRtc?.dispose();}catch{}
+    try{channel.close();}catch{}
+    if(booted)await retireCandidate(worker,options.profileId,1);else worker?.terminate();throw error;
+  }finally{clearTimeout(timer);options.signal?.removeEventListener('abort',cancel);worker?.removeEventListener('message',workerMessage);worker?.removeEventListener('error',failed);}
 }
 /** Enrollment is deliberate. A lock/storage failure never creates a replacement signer. */
 export async function createBrowserIdentity(options){
