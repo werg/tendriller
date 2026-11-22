@@ -10,6 +10,23 @@ async function stock(page: Page, source: number, destination: number) {
   await expect(page.locator('#stock-rows tr').filter({ has: page.getByRole('cell', { name: 'destination', exact: true }) }))
     .toHaveText(`destination${destination}`);
 }
+async function publishedGraph(page: Page, app: { publication: any; publicationVersion: number }) {
+  const hosted = await page.evaluate(() => ({
+    version: (window as any).tendril.identity.version,
+    publication: (window as any).tendril.identity.publication,
+    manifest: (window as any).__TENDRIL__.publication,
+  }));
+  // Runtime identity addresses the immutable host version; the signed manifest
+  // hash is verified independently by the fixture's publication readback.
+  expect(hosted.version).toBe(app.publicationVersion);
+  expect(hosted.publication).toBe(String(app.publicationVersion));
+  expect(hosted.manifest.id).toBe(String(app.publicationVersion));
+  expect(hosted.manifest.entry).toBe(app.publication.payload.entry);
+  const byPath = (a: { path: string }, b: { path: string }) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  expect(hosted.manifest.assets.sort(byPath)).toEqual(app.publication.payload.files.map((file: any) => ({
+    path: file.path, sha256: file.hash, size: file.size, type: file.type,
+  })).sort(byPath));
+}
 async function pendingRecord(page: Page, operationId: string) {
   return page.evaluate(id => {
     for (const raw of Object.values(localStorage)) {
@@ -36,12 +53,12 @@ test('actual SQL tutorial: signed publication, explicit enrollment, native repli
     });
     const app = fixture!;
     await testInfo.attach('sql-tutorial-public-graph', { contentType: 'application/json', body: Buffer.from(JSON.stringify({
-      session: app.sessionProvenance, publication: app.publication,
+      session: app.sessionProvenance, publication: app.publication, hostVersion: app.publicationVersion,
       limits: ['Synthetic local owner, not live OAuth or Internet NAT.', 'Native supervisor/SQL close is checked; raw workerd TCP close is outside this UI scenario.'],
     }, null, 2)) });
     await signInFixture(context); await openClaimed(page, handle);
     await expect(page.getByRole('heading', { name: 'Shared Inventory (SQL)', exact: true })).toBeVisible();
-    expect(await page.evaluate(() => (window as any).tendril.identity.publication)).toBe(app.publication.id);
+    await publishedGraph(page, app);
     // No browser identity or grant is fabricated by the test fixture. Exercise
     // the deliberate enrollment action on the signed tutorial itself.
     await expect(page.locator('#session-status')).toHaveText('Connection unavailable', { timeout: 35_000 });
@@ -127,7 +144,7 @@ test('actual SQL tutorial: signed publication, explicit enrollment, native repli
       await expect(page.locator('#submit-transfer')).toBeEnabled({ timeout: 35_000 });
       await expect(page.locator('#device-key')).toHaveValue(browserKey);
       await stock(page, 8, 2);
-      expect(await page.evaluate(() => (window as any).tendril.identity.publication)).toBe(app.publication.id);
+      await publishedGraph(page, app);
       await page.locator('#close').click(); await expect(page.locator('#session-status')).toContainText('Detached.');
       // Capture the original browser-authored signed attempt on the native
       // participant before it moves. Reconcile that exact author/ID after replay.
