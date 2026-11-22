@@ -14,6 +14,8 @@ export interface BytesStore {
 	put(key: string, bytes: Uint8Array): Promise<void>;
 	/** Optional deterministic snapshot enumeration for atomic encrypted device checkpoints. */
 	entries?(): Promise<readonly BytesStoreEntry[]>;
+	/** Atomically initialize an empty store; false leaves an existing store untouched. */
+	putAllIfEmpty?(entries: readonly BytesStoreEntry[]): Promise<boolean>;
 }
 export declare const PEER_GENERATION_PROFILE: "peer-generation-v1";
 export declare const PEER_GENERATION_POLICY: "eligible-members-v1";
