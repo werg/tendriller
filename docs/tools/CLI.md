@@ -375,3 +375,36 @@ state directories, and rejects recognized credentials embedded in source.
 Review authored source before sharing: arbitrary embedded credentials cannot be
 identified reliably by a file filter. The recipient configures its own private
 setup and device; the source archive transfers no authority.
+
+
+## Move a stopped retained device
+
+The checkpoint commands use the selected project's matching public Chronolog
+package. Load `TENDRILLER_CHECKPOINT_SECRET` from private storage (a 64-hex random
+key or a passphrase of at least 12 characters), then stop the original participant:
+
+```sh
+tendril checkpoint export ./move.clcp --project ./app --device ./app/.tendriller/device.sqlite
+tendril checkpoint restore ./move.clcp --project ./app --device ./app/.tendriller/profiles/moved/device.sqlite
+# In the supplied starter, reopen that retained identity in its new profile:
+cd app
+npm run peer -- moved
+```
+
+The encrypted file is durably written before the source store is retired.
+Restore verifies the signing identity in a temporary store, then publishes one
+fresh private directory. Existing output files and destination directories are
+never replaced. A running source is rejected by the native store's exclusive
+writer fence. This fences the original store; run only one restored copy of the
+same signing identity. Enroll another device for simultaneous participants.
+
+The checkpoint carries canonical device identity, keys, signed attempts and
+retained history. SQL materialization is rebuilt from that history when the
+application reopens; copying its engine files is unnecessary. Preserve the same
+application code, signed schema/descriptor and private host configuration too.
+For the example above those remain in the original project. A cross-machine move
+must retain that private project context separately; source-only handoff excludes
+it. Verify a coherent query, original operation outcomes and remote interaction
+after reopening before reporting the handoff complete. The checkpoint is bounded
+to 4,096 entries and 16 MiB of source data (32 MiB encoded); oversized state is
+rejected without retiring the source.

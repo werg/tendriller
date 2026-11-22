@@ -5,7 +5,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { DatabaseSync } from 'node:sqlite';
 
 import { packTarGz, unpackTarGz, listTarGz, readTarGzFile } from '../../contract/archive.mjs';
 import { createReleaseDownloader, extractVerifiedTarGz } from '../../contract/release-verify.mjs';
@@ -15,7 +14,7 @@ import { acquireAtomicLock, resolveUnixSocketPath, resolveWindowsPipePath } from
 import { createPersistentOutbox } from '../../session/outbox.mjs';
 import { connectOrStartNativeSession } from '../../session/native.mjs';
 import { buildCompositionV2, COMPOSITION_V2_PROFILES } from '../release-composition.mjs';
-import { exportSourceHandoff, exportSqliteCheckpoint, restoreSqliteCheckpoint } from '../../tools/cli/lib/handoff.mjs';
+import { exportSourceHandoff } from '../../tools/cli/lib/handoff.mjs';
 import { handleStdioMcpMessage } from '../../tools/cli/lib/mcp-stdio.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -256,7 +255,7 @@ test('connectOrStartNativeSession supports bounded zero-IPC mode and concurrent 
   await owner.close();
 });
 
-test('source handoff blocks secrets and SQLite checkpoint encrypts, restores, and retires source', async t => {
+test('source handoff blocks secrets and excludes device state', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'tendriller-handoff-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const proj = join(dir, 'app');
@@ -270,25 +269,7 @@ test('source handoff blocks secrets and SQLite checkpoint encrypts, restores, an
   writeFileSync(join(proj, 'leak.mjs'), `export const k = 'td_a_${'f'.repeat(64)}';`);
   assert.throws(() => exportSourceHandoff(proj, join(dir, 'leak.tgz')), { code: 'handoff_secret_detected' });
 
-  // SQLite checkpoint export + restore + anti-split-brain retirement
-  const srcDbPath = join(dir, 'src.sqlite');
-  const dstDbPath = join(dir, 'dst.sqlite');
-  const db = new DatabaseSync(srcDbPath);
-  db.exec('CREATE TABLE stored_bytes(key TEXT PRIMARY KEY, value BLOB NOT NULL)');
-  db.prepare('INSERT INTO stored_bytes(key, value) VALUES(?, ?)').run('peer-session/device/v1', Buffer.from('identity-payload'));
-  db.close();
 
-  const secret = 'b'.repeat(64);
-  const exported = await exportSqliteCheckpoint({ devicePath: srcDbPath, outputPath: join(dir, 'cp.clcp'), secret, retireSource: true });
-  assert.equal(exported.retiredSource, true);
-  await assert.rejects(exportSqliteCheckpoint({ devicePath: srcDbPath, outputPath: join(dir, 'cp2.clcp'), secret }), { code: 'DEVICE_RETIRED_BY_CHECKPOINT' });
-
-  const restored = await restoreSqliteCheckpoint({ inputPath: exported.output, devicePath: dstDbPath, secret });
-  assert.equal(restored.restoredEntries, 1);
-  const reopened = new DatabaseSync(dstDbPath);
-  const row = reopened.prepare('SELECT value FROM stored_bytes WHERE key=?').get('peer-session/device/v1');
-  reopened.close();
-  assert.equal(Buffer.from(row.value).toString('utf8'), 'identity-payload');
 });
 
 test('local Stdio MCP handler and ServerlessHostAdapter execute unified five-step workflows', async () => {
