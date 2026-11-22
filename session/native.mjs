@@ -136,7 +136,7 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
     }
   })();
   const abort = () => { void close().catch(() => {}); };
-  const persist = next => atomicJSON(root, 'bindings.json', { version: 1, profileId, bindings: [...next.values()] });
+  const persist = next => writePrivateJsonAtomic(root, 'bindings.json', { version: 1, profileId, bindings: [...next.values()] });
   const mutate = work => {
     const pending = changes.then(async () => {
       if (stopped) throw failure('OWNER_UNREACHABLE');
