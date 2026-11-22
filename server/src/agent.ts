@@ -155,7 +155,6 @@ route("POST", /^release$/, t => withUnconfiguredPeerApplication(t, async () => {
   if (t.db.one("SELECT 1 AS x FROM guest_accounts WHERE approved = 1")) {
     throw new HttpError(403, "forbidden", "A tendril with an approved guest cannot be released");
   }
-  if (t.storageUsed() > 2 * 1024 * 1024) throw new HttpError(413, "quota", "Reduce storage below the unclaimed limit before release", { limit: 2 * 1024 * 1024, used: t.storageUsed() });
   if (!t.env.ACCOUNTS || !t.env.ADMISSION) throw new HttpError(503, "unavailable");
   const admission = t.env.ADMISSION.get(t.env.ADMISSION.idFromName("global"));
   const reopened = await admission.fetch(new Request("https://admission.internal/reopen", { method: "POST", headers: { "x-tendril-id": t.tid } }));
