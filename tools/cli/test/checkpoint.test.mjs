@@ -69,3 +69,13 @@ test('an unrelated SQLite database is rejected without changing its bytes', asyn
   assert.deepEqual(readFileSync(source), before);
   assert.equal(existsSync(f.outputPath), false);
 });
+test('entry limits reject oversized snapshots before enumeration and preserve the source', async t => {
+  const f = await fixture(t), sql = new DatabaseSync(f.devicePath);
+  sql.exec("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<4097) INSERT INTO stored_bytes SELECT 'extra-'||x, x'' FROM n");
+  sql.close();
+  await assert.rejects(exportNativeCheckpoint(f), { code: 'CHECKPOINT_LIMIT_EXCEEDED' });
+  assert.equal(existsSync(f.outputPath), false);
+  const resumed = await openNativeDevice({ path: f.devicePath });
+  try { assert.equal(resumed.identity.publicKey, f.key); }
+  finally { await resumed.close(); }
+});
