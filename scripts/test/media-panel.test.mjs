@@ -15,7 +15,9 @@ async function until(predicate) {
     await setImmediate();
   }
 }
-function panel(t, { prepareCommit, commit }) {
+function panel(t, { prepareCommit, commit, capabilities = async () => ({ capabilities: {
+  camera: { available: true, permission: 'prompt' }, microphone: { available: true, permission: 'prompt' },
+} }) }) {
   const document = Object.assign(new EventTarget(), { visibilityState: 'visible' });
   const window = new EventTarget();
   const previousGlobals = new Map();
@@ -36,7 +38,8 @@ function panel(t, { prepareCommit, commit }) {
     if (!elements.has(selector)) elements.set(selector, new Element());
     return elements.get(selector);
   };
-  const runtime = { on: () => () => {}, sensors: {
+  const callbacks = new Map();
+  const runtime = { capabilities, on(name, callback) { callbacks.set(name, callback); return () => callbacks.delete(name); }, sensors: {
     status: () => ({ active: [], pending: [] }), on: () => () => {}, stopAll() {},
   } };
   const controls = mountReviewedMedia({ container: { querySelector: $ }, runtime, session: {},
@@ -53,7 +56,7 @@ function panel(t, { prepareCommit, commit }) {
   });
   const click = id => $(id).dispatchEvent(new Event('click'));
   const edit = text => { $('#media-review').value = text; $('#media-review').dispatchEvent(new Event('input')); };
-  return { $, controls, click, edit,
+  return { $, controls, click, edit, emit: name => callbacks.get(name)?.(),
     async choose() {
       $('#media-file').files = [new Blob(['photo'], { type: 'image/png' })];
       $('#media-file').dispatchEvent(new Event('change'));
@@ -138,4 +141,59 @@ test('an uncertain review stays locked until its original operation or explicit 
   assert.equal(ui.$('#media-preview').hidden, true);
   assert.equal(ui.$('#media-review').readOnly, false);
   assert.equal(submitted.length, 1, 'Resolving the UI never retries or reapplies a command itself.');
+});
+
+
+test('capability gating inspects only camera and microphone and preserves file and typed fallbacks', async t => {
+  const filters = [];
+  const ui = panel(t, { prepareCommit: async () => {}, commit: async () => ({}),
+    capabilities: async filter => { filters.push(filter); return { capabilities: {
+      camera: { available: false, permission: 'unknown' }, microphone: { available: true, permission: 'denied' },
+    } }; },
+  });
+  await until(() => ui.$('#media-camera').hidden);
+  assert.deepEqual(filters, [['camera', 'microphone']]);
+  assert.equal(ui.$('#media-file').disabled, false);
+  assert.equal(ui.$('#voice-start').disabled, true);
+  assert.match(ui.$('#voice-status').textContent, /Type a note/);
+  await ui.choose(); ui.edit('Manual review without sensors');
+  assert.equal(ui.$('#media-review').readOnly, false);
+  assert.equal(ui.$('#media-commit').disabled, false);
+});
+
+test('failed or late capability inspection cannot enable closed controls', async t => {
+  const inspected = deferred();
+  const ui = panel(t, { prepareCommit: async () => {}, commit: async () => ({}), capabilities: () => inspected.promise });
+  assert.equal(ui.$('#media-camera').disabled, true); assert.equal(ui.$('#media-file').disabled, false);
+  ui.controls.close();
+  inspected.resolve({ capabilities: { camera: { available: true, permission: 'granted' }, microphone: { available: true, permission: 'granted' } } });
+  await setImmediate(); assert.equal(ui.$('#media-camera').disabled, true);
+});
+
+
+test('permission refresh updates task-relevant routes and late capability responses cannot reopen closed controls', async t => {
+  const late = deferred(); let call = 0;
+  const ui = panel(t, { prepareCommit: async () => {}, commit: async () => {}, capabilities: async () => {
+    if (++call === 1) return { capabilities: { camera: { available: true, permission: 'denied' }, microphone: { available: false } } };
+    return late.promise;
+  } });
+  await until(() => ui.$('#voice-start').hidden);
+  assert.equal(ui.$('#media-camera').disabled, true);
+  ui.emit('capabilities'); ui.controls.close();
+  late.resolve({ capabilities: { camera: { available: true, permission: 'granted' }, microphone: { available: true } } });
+  await setImmediate();
+  assert.equal(ui.$('#media-camera').disabled, true);
+  assert.equal(ui.$('#voice-start').hidden, true);
+});
+
+test('voice status recovers from checking text once microphone capability is available', async t => {
+  const pending = deferred();
+  const ui = panel(t, { prepareCommit: async () => {}, commit: async () => ({}), capabilities: () => pending.promise });
+  assert.match(ui.$('#voice-status').textContent, /Checking browser support/);
+  pending.resolve({ capabilities: {
+    camera: { available: true, permission: 'prompt' },
+    microphone: { available: true, permission: 'prompt' },
+  } });
+  await until(() => !ui.$('#voice-start').disabled);
+  assert.doesNotMatch(ui.$('#voice-status').textContent, /Checking browser support/);
 });

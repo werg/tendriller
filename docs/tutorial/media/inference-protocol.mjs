@@ -3,6 +3,21 @@
 export const INFERENCE_TOPICS = Object.freeze({ request: 'media/inference/request', cancel: 'media/inference/cancel', reply: 'media/inference/reply' });
 export const INFERENCE_LIMITS = Object.freeze({ evidenceBytes: 8 * 1024 * 1024, contextBytes: 4096, suggestionBytes: 6000, promptCharacters: 2000 });
 export const IMAGE_TYPES = Object.freeze(['image/jpeg', 'image/png', 'image/webp']);
+// Bounded clips use the same immutable evidence transport. Provider support is
+// separate: the bundled OpenAI image adapter deliberately rejects audio.
+export const AUDIO_TYPES = Object.freeze(['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/wav']);
+export const MEDIA_TYPES = Object.freeze([...IMAGE_TYPES, ...AUDIO_TYPES]);
+// MediaRecorder commonly includes a codecs parameter on its local Blob.
+// Content references use the canonical type/subtype; staging normalizes only
+// that metadata while preserving the original capture bytes and digest.
+// Byte limits bound transport; acquisition controllers additionally bound time.
+export function normalizeEvidenceType(type) {
+  if (typeof type !== 'string' || type.length > 128 || /[\x00-\x1f\x7f]/u.test(type)) return null;
+  if (IMAGE_TYPES.includes(type)) return type;
+  const base = type.split(';', 1)[0].trim().toLowerCase();
+  return AUDIO_TYPES.includes(base) ? base : null;
+}
+export function isEvidenceType(type) { return normalizeEvidenceType(type) !== null; }
 export const digestPattern = /^[a-f0-9]{64}$/u;
 export const validId = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
 export function inferenceError(code) {
@@ -39,7 +54,7 @@ export function validRequest(value, { applicationId, historyId, workerDeviceId, 
     || ref.profile !== 'peer-content-v1' || ref.applicationId !== applicationId || ref.historyId !== historyId
     || !digestPattern.test(ref.id) || !Number.isSafeInteger(ref.epoch) || ref.epoch < 0
     || !Number.isSafeInteger(ref.bytes) || ref.bytes < 1 || ref.bytes > maxEvidenceBytes
-    || !IMAGE_TYPES.includes(ref.mediaType)) throw inferenceError('invalid');
+    || !MEDIA_TYPES.includes(ref.mediaType)) throw inferenceError('invalid');
   jsonCopy(value.context, INFERENCE_LIMITS.contextBytes);
   return value;
 }

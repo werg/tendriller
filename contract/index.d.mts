@@ -31,12 +31,39 @@ export type RuntimeConfiguration = {
   { publication: PublicationManifest; documentPath: string }
   | { publication?: undefined; documentPath: null }
 );
-export type SensorKind = "camera" | "microphone" | "screen" | "location" | "motion";
+/** Automatic core kinds plus application-defined cooperative resource kinds. */
+export type SensorKind = "camera" | "microphone" | "screen" | "location" | "motion" | (string & {});
+export type ResourcePhase = "pending" | "active" | "stopping" | "failed";
+export interface RegisteredSensorOptions {
+  /** Use a capability key (for example bluetooth or wake_lock) when one exists. */
+  kind: string;
+  /** Human-readable, local-only label displayed in Page options. */
+  label?: string;
+  /** Defaults to pending: register before starting a browser chooser/acquisition. */
+  state?: ResourcePhase;
+  /** Called at most once, after signal invalidation. Return asynchronous cleanup. */
+  stop(): void | Promise<void>;
+}
+export interface RegisteredSensorHandle {
+  readonly signal: AbortSignal;
+  /** Ignored after cancellation; cannot revive an old acquisition. */
+  setState(state: ResourcePhase): void;
+  /** Abort and run cleanup at most once. Repeated disposal preserves failures; explicitly acknowledge only after manual recovery. */
+  unregister(options?: { acknowledgeFailure: true }): void;
+}
+export interface RegisteredSensorStatus {
+  readonly id: string;
+  readonly kind: string;
+  readonly label?: string;
+  readonly state: ResourcePhase;
+}
 export interface SensorStatus {
-  /** Observed live resources, registered watches/listeners, or a recent location fix. */
+  /** Observed use, a recent location fix, and custom resources in the active phase. */
   active: SensorKind[];
-  /** Wrapped media acquisitions and one-shot location reads awaiting a native result. */
+  /** Wrapped acquisitions and custom resources in the pending phase. */
   pending: SensorKind[];
+  /** Present only while custom registrations exist, including stopping/failed cleanup. */
+  resources?: RegisteredSensorStatus[];
 }
 export interface Capability { available: boolean; permission: "granted" | "prompt" | "denied" | "unknown"; needs_user_tap: boolean; active: boolean | null; note?: string }
 export interface CapabilityReport { captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }
@@ -66,7 +93,8 @@ export interface RuntimeServices {
   on<K extends keyof RuntimeLocalEventMap>(type: K, fn: (payload: RuntimeLocalEventMap[K]) => void): () => void;
   /** Page UI readiness, independent of application synchronization. */
   ready(): void;
-  capabilities(): Promise<CapabilityReport>;
+  /** No-prompt inspection. Unknown filter keys are ignored; an empty filter queries nothing. */
+  capabilities(filter?: readonly string[]): Promise<CapabilityReport>;
   readonly version: number;
   readonly identity: Readonly<{ page: string; version: number; publication: string | null; documentPath: string | null; base: string; managementUrl: string }>;
   /** Browser installation state and an explicit native prompt; never registers offline support. */
@@ -89,7 +117,13 @@ export interface RuntimeServices {
     /** Load the latest selected release now. */
     update(): void;
   };
-  sensors: { status(): SensorStatus; on(listener: (status: SensorStatus) => void): () => void; stopAll(): number };
+  sensors: {
+    status(): SensorStatus;
+    on(listener: (status: SensorStatus) => void): () => void;
+    register(options: RegisteredSensorOptions): RegisteredSensorHandle;
+    /** Number of newly stopped/cancelled resources; async cleanup may still be stopping. */
+    stopAll(): number;
+  };
 }
 /** Application work belongs to the installed session; host services are explicit. */
 export interface RuntimeApi extends RuntimeServices {}

@@ -69,9 +69,15 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     capabilityObserver?.refresh();
   };
   let offSensors: (() => void) | null = tracker.onChange(sensorChanged);
+  const stopSensors = () => {
+    const count = tracker.stopAll();
+    core.bus.emit("sensors_stopped", { count });
+    return count;
+  };
   // BFCache restores the same JavaScript realm without running startRuntime again.
   // Suspend observation while away, then reattach and resynchronize the utility.
   window.addEventListener("pagehide", () => {
+    stopSensors();
     installation.suspend(); transport.suspend();
     capabilityObserver?.dispose(); capabilityObserver = null;
     offSensors?.(); offSensors = null;
@@ -88,7 +94,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     signals: createSignalBinding(options.signals),
     on: (type, listener) => core.bus.on(type, listener),
     ready: () => core.ready(),
-    capabilities: () => describeCapabilities(tracker.status().active),
+    capabilities: filter => describeCapabilities(tracker.status().active, filter),
     version: cfg.version,
     identity,
     installation: installation.api,
@@ -104,11 +110,8 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     sensors: {
       status: () => tracker.status(),
       on: listener => core.bus.on("sensors", listener),
-      stopAll() {
-        const count = tracker.stopAll();
-        core.bus.emit("sensors_stopped", { count });
-        return count;
-      },
+      register: options => tracker.register(options),
+      stopAll: stopSensors,
     },
   };
   return Object.freeze(shared);

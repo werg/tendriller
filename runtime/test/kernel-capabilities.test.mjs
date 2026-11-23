@@ -35,6 +35,7 @@ async function environment() {
     setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id; }, clearTimeout(id) { timers.delete(id); },
     fixture: { core: { bus, raw(frame) { sensorUsage.push(frame); } }, tracker: {
       status: () => ({ active: [...active], pending: [...pending] }), onChange(fn) { sensorListeners.add(fn); return () => sensorListeners.delete(fn); },
+      stopAll() { const count = active.length + pending.length; active = []; pending = []; return count; },
     } },
   };
   runInNewContext(compiled.outputFiles[0].text, context);
@@ -94,4 +95,16 @@ test('sensor changes remain local while capability observations stay available',
   assert.deepEqual(env.sensorReports, [{ active: ['camera'], pending: [] }]);
   assert.deepEqual(env.reports, [true]);
   assert.deepEqual(env.sensorUsage, []);
+});
+
+test('runtime forwards capability filters and pagehide synchronously stops active resources', async () => {
+  const env = await environment();
+  const report = await env.runtime.capabilities(['camera']);
+  assert.deepEqual(Object.keys(report.capabilities), ['camera']);
+  const stopped = [];
+  env.runtime.on('sensors_stopped', event => stopped.push(event.count));
+  env.sensors(['camera']); env.pending(['location']);
+  env.hide();
+  assert.deepEqual(env.runtime.sensors.status(), { active: [], pending: [] });
+  assert.deepEqual(stopped, [2]);
 });

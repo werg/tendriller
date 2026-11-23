@@ -26,6 +26,7 @@ test('MCP, published onboarding and installable skill retain one current discove
   }
   const descriptor = onboardingDescriptor('https://staging.example');
   assert.equal(descriptor.documentation.mcp, 'https://staging.example' + ASSISTANT_GUIDES.start);
+  assert.equal(descriptor.documentation.sensors, 'https://staging.example' + ASSISTANT_GUIDES.sensors);
   assert.equal(descriptor.start_here, 'https://staging.example' + ASSISTANT_GUIDES.build);
   for (const path of ['agent.md', 'llms.txt', 'docs/BUILD_AN_APP.md', 'docs/CHATGPT_INTEGRATION.md']) {
     assert(links(readFileSync(join(root, path), 'utf8')).some(target => target.includes('MCP_AGENT_GUIDE.md')),
@@ -33,7 +34,7 @@ test('MCP, published onboarding and installable skill retain one current discove
   }
   const skill = readFileSync(join(root, 'plugin/skills/connect-tendriller/SKILL.md'), 'utf8');
   assert(skill.includes('tendril_guide') && skill.includes('serviceOrigin'));
-  for (const topic of ['start', 'build', 'capabilities', 'connect', 'delivery', 'deployment'])
+  for (const topic of ['start', 'build', 'capabilities', 'sensors', 'connect', 'delivery', 'deployment'])
     assert(skill.includes(`topic: "${topic}"`), `Packaged skill lost the ${topic} guide route`);
   for (const path of ['AGENTS.md', 'agent.md', 'docs/MCP_AGENT_GUIDE.md',
     'plugin/skills/connect-tendriller/SKILL.md']) {

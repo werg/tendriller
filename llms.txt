@@ -6,6 +6,7 @@
 
 - [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md): complete first application; create → define state → configure authority and first generation → publish → owner sign-in → connect devices → verify.
 - [Capability map](https://tendriller.dev/docs/CAPABILITIES.md): task keywords mapped to Chronolog, session, UI, camera, voice, inference, and preview APIs.
+- [Sensors and agent-requested observations](https://tendriller.dev/docs/SENSORS.md): filtered capability inspection, cooperative resource lifecycle, runnable location/motion/instrument/media examples, and local consent.
 - [Deliver the running app](https://tendriller.dev/docs/AGENT_DELIVERY.md): provision early, publish before claim, start the participant, and verify live state plus process/resume details.
 - [Download the first app](https://tendriller.dev/downloads/tendriller-first-app.tgz): starter source files; follow the build guide for the verified `firstApp.release` package kit.
 - [Reusable application patterns](https://tendriller.dev/docs/APP_PATTERNS.md): `createLiveView`, operation tracking, connection UX, and reviewed input over the real session.
@@ -56,6 +57,7 @@ Page creation or package installation alone is not completion. Verify a browser 
 - [Releases](https://github.com/werg/tendriller/releases): SDK, runtime, tools, and first-app kit archives.
 - [Chronolog](https://github.com/werg/chronolog-db): native/browser session implementation and package builder.
 - [Cookbooks](https://github.com/werg/tendriller-contrib): application patterns, larger examples, and independent qualification.
+- [Requested observation reference](https://tendriller.dev/docs/OBSERVATION_REFERENCE.md): browser/native simulation and location, correlated replies, durable review/retry and a real Worker qualifier.
 - [Cold-start acceptance](https://tendriller.dev/docs/AGENT_ONBOARDING_TEST.md): domain-only agent evaluation.
 
 Use the requested service origin throughout. Application identity is `{id}`; device signing identity is `session.deviceId`.

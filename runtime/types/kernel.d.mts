@@ -1,5 +1,6 @@
 import type { RuntimeApi, RuntimeConfiguration } from "@tendriller/core/contract";
-export type { RuntimeConfiguration } from "@tendriller/core/contract";
+export type { RuntimeConfiguration, RuntimeApi, Capability, CapabilityReport, SensorKind, SensorStatus,
+  ResourcePhase, RegisteredSensorOptions, RegisteredSensorHandle, RegisteredSensorStatus } from "@tendriller/core/contract";
 /** One installed application backend and its live signals. Starts no transport or permissions. */
 export interface RuntimeOptions {
   application?: import("@tendriller/core/application").ApplicationBackend;

@@ -4,8 +4,10 @@ Signals carry ephemeral observations through the application session. They have 
 
 Install the session's signal port with `tendril.signals.install(session.signals)`, or pass `signals` when calling `startRuntime`. The binding can be installed independently from the durable application binding. An uninstalled port rejects immediately and queues nothing for later replay.
 
+On the receiving participant, start observing before the producer sends:
+
 ```js
-await tendril.signals.send('typing', { active: true }, { ttlMs: 1000 });
+const abort = new AbortController();
 for await (const signal of tendril.signals.subscribe({
   topics: ['typing'], mode: 'latest', signal: abort.signal,
 })) {
@@ -13,7 +15,21 @@ for await (const signal of tendril.signals.subscribe({
 }
 ```
 
+On the sending page, after installing its own session's signal port:
+
+```js
+await tendril.signals.send('typing', { active: true }, { ttlMs: 1000 });
+```
+
 Choose `latest` for replaceable state and `all` for bounded FIFO delivery. Respect cancellation, expiration and the authenticated sender context supplied by Chronolog. Application payloads cannot claim another sender's identity.
+
+A subscription starts empty when iteration begins. `latest` coalesces newly
+received values within that active subscription; it is not a current-value query,
+a replay cursor or a cache of earlier sends. A late-joining agent should request a
+fresh observation or status announcement through the same session. If a resident
+receiver retains the last value for short-lived agent tools, bound that cache and
+expire entries even when no later packet arrives. Report stale or disconnected
+state separately from the previous value.
 
 ## Independent runs and endpoints
 
@@ -37,6 +53,40 @@ The owner supplies each attachment's endpoint ID and incarnation. Signed author,
 signal-session incarnation, topic, endpoint, stream and target all participate in
 the latest-value key. An expiring stream does not expire another run. Selectors
 restrict observation; a target is not a read grant or an execution claim.
+
+## Page observations and sensor readings
+
+Page code acquires observations with standard browser APIs or an application
+controller, then sends them through its existing session. Sensor acquisition and
+local user controls remain separate from transport; the signal port does not
+request browser permission or start a device. See
+[sensor tracking and voice](BROWSER_API.md#sensors-and-voice) and the supplied
+[media controllers](AI_INPUT.md).
+
+| Observation | Session path |
+| --- | --- |
+| Small replaceable readings, location previews or derived detections | JSON signals with an explicit stream and expiry |
+| Bounded image, audio or other binary evidence | `session.content`; send the resulting small reference when needed |
+| Measurements or reviewed evidence that the application intends to retain | A declared command and its emitted events |
+
+A signal's complete signed frame is bounded to 16 KiB, including its envelope.
+Browser objects such as `Blob`, `MediaStream` and sensor event objects are not
+signal JSON. Extract the needed fields; use content for media bytes.
+
+Document each payload's units, capture time and any accuracy or quality fields.
+Transport issue time is assigned when `send()` is called, so a newly sent packet
+can still contain an old measurement. Enforce the application's maximum sample
+age as well as signal expiry, with explicit clock assumptions across devices.
+Use the verified author, endpoint and stream context to identify the source;
+a payload label is not proof of device identity.
+
+Rate-limit and coalesce replaceable samples at the source **before** sending.
+Receiver-side `latest` coalescing does not reduce capture or network traffic.
+Await each send, and discard or replace unsent samples on backpressure according
+to the application's freshness policy. When a route or subscription ends, show
+that state and obtain fresh observations on reconnection. Do not build a durable
+retry queue of old sensor readings. Use the bounded request/reply helper below
+for on-demand answers; expired samples still need to be discarded.
 
 ## Reach, local echo and limits
 

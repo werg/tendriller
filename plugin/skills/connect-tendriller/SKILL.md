@@ -70,6 +70,15 @@ commands. Event forwarding is an explicit `--events` choice with its own owner
 review; it does not configure a subscription, extend the process lifetime or
 establish future chat wake.
 
+For sensor work, read `tendril_guide` with `topic: "sensors"`. Inspect task-relevant
+keys with `tendril.capabilities(filter)`; use standard browser APIs and existing
+session signals/content/commands. Register custom resources before acquisition
+with `tendril.sensors.register({ kind, stop })`, check its cancellation signal
+after awaits, and return asynchronous cleanup. Reuse the guide's runnable
+observation reference and contrib snippets for freshness, coalescing and review.
+An agent-requested observation renders a local prompt; only a trusted local
+gesture starts capture, and explicit review authorizes sharing or retention.
+
 For an **existing application**, call `list_tendrils`, then
 `describe_application`. An empty list means no assistant-connected applications
 for this account; it is not evidence of a missing plugin. For a known app, check

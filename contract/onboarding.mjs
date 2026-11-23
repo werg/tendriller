@@ -1,7 +1,7 @@
 // Canonical public navigation. Host, SDK consumers and packaged CLI share this module.
 export const ASSISTANT_GUIDES = Object.freeze({
   start: '/docs/MCP_AGENT_GUIDE.md', build: '/docs/BUILD_AN_APP.md',
-  capabilities: '/docs/CAPABILITIES.md', connect: '/docs/CLOUDFLARE_ASSISTANT.md',
+  capabilities: '/docs/CAPABILITIES.md', sensors: '/docs/SENSORS.md', connect: '/docs/CLOUDFLARE_ASSISTANT.md',
   deployment: '/docs/DEPLOYMENT_GUIDE.md', delivery: '/docs/AGENT_DELIVERY.md', troubleshooting: '/docs/TROUBLESHOOTING.md',
 });
 
@@ -31,7 +31,7 @@ export function onboardingDescriptor(base) {
     capabilities: url('/.well-known/tendriller-capabilities.json'),
     documentation: {
       index: url('/llms.txt'), full: url('/llms-full.txt'),
-      mcp: url(ASSISTANT_GUIDES.start), deployment: url(ASSISTANT_GUIDES.deployment), capabilities: url(ASSISTANT_GUIDES.capabilities), delivery: url(ASSISTANT_GUIDES.delivery),
+      mcp: url(ASSISTANT_GUIDES.start), deployment: url(ASSISTANT_GUIDES.deployment), capabilities: url(ASSISTANT_GUIDES.capabilities), sensors: url(ASSISTANT_GUIDES.sensors), delivery: url(ASSISTANT_GUIDES.delivery),
       patterns: url('/docs/APP_PATTERNS.md'), reviewed_input: url('/docs/AI_INPUT.md'),
       state_models: url('/docs/STATE_MODELS.md'),
       bootstrap: url('/docs/SESSION_BOOTSTRAP.md'),

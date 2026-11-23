@@ -2,13 +2,14 @@
 // one stop switch. Wrappers are installed during runtime bootstrap, synchronously
 // from tendril.js before any page script runs.
 
-import type { SensorKind, SensorStatus } from "../../contract/index.mjs";
-export type { SensorKind, SensorStatus } from "../../contract/index.mjs";
+import type { SensorKind, SensorStatus, ResourcePhase, RegisteredSensorOptions, RegisteredSensorHandle, RegisteredSensorStatus } from "../../contract/index.mjs";
+export type { SensorKind, SensorStatus, ResourcePhase, RegisteredSensorOptions, RegisteredSensorHandle, RegisteredSensorStatus } from "../../contract/index.mjs";
 
 export interface SensorTracker {
   /** Observed use and unanswered acquisitions are separate, coherent views. */
   status(): SensorStatus;
   onChange(fn: () => void): () => void;
+  register(options: RegisteredSensorOptions): RegisteredSensorHandle;
   /** Stops tracked resources and abandons pending acquisitions/callbacks. Returns the number stopped or cancelled. */
   stopAll(): number;
 }
@@ -43,8 +44,13 @@ export function installSensorWrappers(): SensorTracker {
   const motion: { type: string; listener: any; options: any; wrapped: any; cleanup(): void }[] = [];
   const recognizers = new Set<any>();
   const subs = new Set<() => void>();
+  type Resource = { id: string; kind: string; label?: string; state: ResourcePhase;
+    controller: AbortController; stop: () => void | Promise<void>; stopRequested: boolean };
+  const resources = new Map<string, Resource>();
+  const phases = new Set<ResourcePhase>(["pending", "active", "stopping", "failed"]);
+  let nextResource = 0;
   let recentLocationUntil = 0;
-  let lastSig = "|";
+  let lastSig = '{"active":[],"pending":[]}';
   let epoch = 0;
 
   const compute = (): SensorStatus => {
@@ -59,17 +65,104 @@ export function installSensorWrappers(): SensorTracker {
     const pending = new Set<SensorKind>();
     for (const kinds of pendingMedia.values()) for (const kind of kinds) pending.add(kind);
     if (pendingLocations.size) pending.add("location");
-    return { active: SENSOR_ORDER.filter(k => out.has(k)), pending: SENSOR_ORDER.filter(k => pending.has(k)) };
+    const registered: RegisteredSensorStatus[] = [];
+    for (const resource of resources.values()) {
+      if (resource.state === "active") out.add(resource.kind);
+      if (resource.state === "pending") pending.add(resource.kind);
+      registered.push({ id: resource.id, kind: resource.kind, state: resource.state,
+        ...(resource.label === undefined ? {} : { label: resource.label }) });
+    }
+    const ordered = (kinds: Set<SensorKind>) => [...SENSOR_ORDER.filter(k => kinds.has(k)),
+      ...[...kinds].filter(k => !SENSOR_ORDER.includes(k))];
+    return { active: ordered(out), pending: ordered(pending), ...(registered.length ? { resources: registered } : {}) };
   };
   const check = () => {
     const status = compute();
-    const sig = status.active.join(",") + "|" + status.pending.join(",");
+    const sig = JSON.stringify(status);
     if (sig !== lastSig) {
       lastSig = sig;
       for (const f of subs) { try { f(); } catch { /* ignore */ } }
     }
   };
   const notify = () => queueMicrotask(check);
+
+  // --- Cooperative page-owned resources ---
+  const prepareStop = (resource: Resource): boolean => {
+    if (resource.stopRequested || !resources.has(resource.id)) return false;
+    resource.stopRequested = true;
+    resource.state = "stopping";
+    return true;
+  };
+  const invalidate = (resource: Resource) => {
+    resource.controller.abort(new DOMException("Sensor resource was cancelled.", "AbortError"));
+  };
+  const finishStop = (resource: Resource) => {
+    resources.delete(resource.id);
+    notify();
+  };
+  const failedStop = (resource: Resource) => {
+    // Do not report physical shutdown when page-owned cleanup failed.
+    resource.state = "failed";
+    notify();
+  };
+  const invokeStop = (resource: Resource) => {
+    try {
+      const stop = resource.stop;
+      const result = stop();
+      if (result && typeof result.then === "function")
+        void Promise.resolve(result).then(() => finishStop(resource), () => failedStop(resource));
+      else finishStop(resource);
+    } catch { failedStop(resource); }
+  };
+  const CONTROL_CHARS = /[\x00-\x1f\x7f]/u;
+  const register = (options: RegisteredSensorOptions): RegisteredSensorHandle => {
+    if (!options || typeof options.kind !== "string" || !options.kind.trim() ||
+        options.kind !== options.kind.trim() || options.kind.length > 128 || CONTROL_CHARS.test(options.kind) ||
+        typeof options.stop !== "function")
+      throw new TypeError("Sensor registration requires a kind and stop callback");
+    let label: string | undefined;
+    if (options.label !== undefined) {
+      if (typeof options.label !== "string" || CONTROL_CHARS.test(options.label))
+        throw new TypeError("Sensor label must contain 1–160 printable characters");
+      label = options.label.trim();
+      if (!label || label.length > 160)
+        throw new TypeError("Sensor label must contain 1–160 printable characters");
+    }
+    const state = options.state ?? "pending";
+    if (!phases.has(state)) throw new TypeError("Unknown sensor resource phase");
+    const resource: Resource = { id: "resource-" + ++nextResource, kind: options.kind,
+      ...(label === undefined ? {} : { label }), state,
+      controller: new AbortController(), stop: options.stop, stopRequested: false };
+    resources.set(resource.id, resource);
+    notify();
+    return Object.freeze({
+      signal: resource.controller.signal,
+      setState(state: ResourcePhase) {
+        if (!phases.has(state)) throw new TypeError("Unknown sensor resource phase");
+        if (resource.stopRequested || !resources.has(resource.id)) return;
+        resource.state = state;
+        notify();
+      },
+      unregister(options?: { acknowledgeFailure: true }) {
+        if (options !== undefined) {
+          if (!options || typeof options !== "object" || Array.isArray(options) ||
+              Object.keys(options).length !== 1 || !Object.hasOwn(options, "acknowledgeFailure") ||
+              options.acknowledgeFailure !== true)
+            throw new TypeError("Failure acknowledgement requires { acknowledgeFailure: true }");
+          // Repeated teardown must not hide a failed physical cleanup. Only a
+          // deliberate acknowledgement after recovery removes that failure;
+          // it cannot stop fresh work or hide cleanup that is still pending.
+          if (resource.stopRequested && resource.state === "failed" && resources.delete(resource.id)) notify();
+          return;
+        }
+        if (prepareStop(resource)) {
+          invalidate(resource);
+          invokeStop(resource);
+          notify();
+        }
+      },
+    });
+  };
 
   // --- Media (camera, microphone, screen) ---
   const addTrack = (t: MediaStreamTrack, screen: boolean, acquisitionEpoch: number) => {
@@ -330,27 +423,42 @@ export function installSensorWrappers(): SensorTracker {
   singleton = {
     status: compute,
     onChange(fn) { subs.add(fn); return () => subs.delete(fn); },
+    register,
     stopAll() {
       // Invalidate first, before stopping resources can invoke page callbacks.
       // Calls deliberately made after this boundary belong to the next epoch.
       epoch++;
-      let n = 0;
-      for (const cancel of [...pendingMedia.keys()]) { cancel(); n++; }
-      for (const request of pendingLocations) { request.active = false; n++; }
+      const stopping = [...resources.values()].filter(prepareStop);
+      // Snapshot the old epoch before abort listeners can start fresh work.
+      const cancelledMedia = [...pendingMedia.keys()];
+      pendingMedia.clear();
+      const cancelledLocations = [...pendingLocations];
       pendingLocations.clear();
+      for (const request of cancelledLocations) request.active = false;
       const stoppedTracks = [...tracks.keys()];
       tracks.clear();
       const stoppedWatches = [...watches];
       watches.clear();
-      recentLocationUntil = 0;
-      for (const t of stoppedTracks) { if (t.readyState === "live") { try { t.stop(); n++; } catch { /* ignore */ } } }
-      for (const [id, request] of stoppedWatches) { request.active = false; try { origClear?.(id); n++; } catch { /* ignore */ } }
-      for (const m of [...motion]) { try { origRemove.call(window, m.type, m.wrapped, m.options); n++; } catch { /* ignore */ } m.cleanup(); }
-      for (const k of ["ondevicemotion", "ondeviceorientation", "ondeviceorientationabsolute"]) {
-        if (w[k]) { try { w[k] = null; n++; } catch { /* ignore */ } }
-      }
-      for (const r of [...recognizers]) { try { r.abort(); n++; } catch { /* ignore */ } }
+      for (const [, request] of stoppedWatches) request.active = false;
+      const stoppedMotion = motion.splice(0);
+      const stoppedHandlers = ["ondevicemotion", "ondeviceorientation", "ondeviceorientationabsolute"]
+        .map(key => [key, w[key]] as const);
+      const stoppedRecognizers = [...recognizers];
       recognizers.clear();
+      recentLocationUntil = 0;
+      // Prepare every entry before abort listeners can reenter unregister or
+      // stopAll, then invalidate all signals before invoking any stop callback.
+      for (const resource of stopping) invalidate(resource);
+      let n = stopping.length + cancelledLocations.length;
+      for (const cancel of cancelledMedia) { cancel(); n++; }
+      for (const t of stoppedTracks) { if (t.readyState === "live") { try { t.stop(); n++; } catch { /* ignore */ } } }
+      for (const [id] of stoppedWatches) { try { origClear?.(id); n++; } catch { /* ignore */ } }
+      for (const m of stoppedMotion) { try { origRemove.call(window, m.type, m.wrapped, m.options); n++; } catch { /* ignore */ } m.cleanup(); }
+      for (const [key, handler] of stoppedHandlers) {
+        if (handler && w[key] === handler) { try { w[key] = null; n++; } catch { /* ignore */ } }
+      }
+      for (const r of stoppedRecognizers) { try { r.abort(); n++; } catch { /* ignore */ } }
+      for (const resource of stopping) invokeStop(resource);
       check();
       return n;
     },

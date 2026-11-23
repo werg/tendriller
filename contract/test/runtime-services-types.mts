@@ -23,3 +23,22 @@ void documentHref;
 // @ts-expect-error URL references must be strings.
 runtime.documentUrl({ path: 'other.html' });
 void services;
+
+const capabilityFilter = ['camera', 'bluetooth'] as const;
+void runtime.capabilities(capabilityFilter);
+const resource = runtime.sensors.register({ kind: 'serial', label: 'Bench meter', state: 'pending', async stop() {} });
+const cancellation: AbortSignal = resource.signal;
+resource.setState('active');
+resource.unregister();
+resource.unregister({ acknowledgeFailure: true });
+// @ts-expect-error Failure acknowledgement must be an explicit options object.
+resource.unregister(true);
+// @ts-expect-error Arbitrary truthy acknowledgement values are not accepted.
+resource.unregister({ acknowledgeFailure: 'yes' });
+// @ts-expect-error False does not explicitly acknowledge a failure.
+resource.unregister({ acknowledgeFailure: false });
+// @ts-expect-error Phases are explicit.
+resource.setState('complete');
+// @ts-expect-error Cleanup is required.
+runtime.sensors.register({ kind: 'serial' });
+void cancellation;

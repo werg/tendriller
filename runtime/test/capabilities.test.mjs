@@ -62,3 +62,64 @@ test("a detached observer does not publish a pending permission result", async (
   env.queries[0](env.status("granted")); await flush();
   assert.equal(env.changed.length, 0);
 });
+
+function inspectEnvironment() {
+  const requested = [], replies = new Map();
+  let mediaProbes = 0;
+  const context = { window: { isSecureContext: true }, document: {}, screen: {},
+    navigator: { userAgent: 'fixture', geolocation: {}, bluetooth: {},
+      get mediaDevices() { mediaProbes++; return { getUserMedia() { throw Error('no acquisition allowed'); } }; },
+      permissions: { query({ name }) {
+        requested.push(name);
+        return new Promise((resolve, reject) => replies.set(name, { resolve, reject }));
+      } },
+    } };
+  runInNewContext(compiled.outputFiles[0].text, context);
+  return { inspect: context.Capabilities.describeCapabilities, requested, replies, context, get mediaProbes() { return mediaProbes; } };
+}
+
+test('filtered permission probes run in parallel and preserve deterministic report order', async () => {
+  const env = inspectEnvironment();
+  const pending = env.inspect([], ['location', 'camera', 'microphone', 'camera', 'unknown']);
+  assert.deepEqual(env.requested, ['camera', 'microphone', 'geolocation'],
+    'all queries must start before any of them resolves');
+  env.replies.get('geolocation').resolve({ state: 'granted' });
+  env.replies.get('microphone').reject(Error('unsupported permission name'));
+  env.replies.get('camera').resolve({ state: 'denied' });
+  const report = await pending;
+  assert.deepEqual(Object.keys(report.capabilities), ['camera', 'microphone', 'location']);
+  assert.equal(report.capabilities.camera.permission, 'denied');
+  assert.equal(report.capabilities.microphone.permission, 'unknown');
+  assert.equal(report.capabilities.location.permission, 'granted');
+  assert.equal(report.secure, true);
+});
+
+test('empty and unknown filters never probe unrelated APIs or permissions', async () => {
+  const env = inspectEnvironment();
+  for (const filter of [[], ['unknown', '__proto__', 'constructor']]) {
+    const report = await env.inspect([], filter);
+    assert.deepEqual(Object.keys(report.capabilities), []);
+  }
+  const report = await env.inspect([], ['keyboard', 'serial']);
+  assert.equal(report.capabilities.keyboard.available, true);
+  assert.equal(report.capabilities.serial.available, false);
+  assert.equal(env.mediaProbes, 0);
+  assert.deepEqual(env.requested, []);
+  await assert.rejects(env.inspect([], 'camera'), { name: 'TypeError' });
+  await assert.rejects(env.inspect([], [1]), { name: 'TypeError' });
+});
+
+test('registered kinds activate known capabilities without inventing unknown capability keys', async () => {
+  const env = inspectEnvironment();
+  const pending = env.inspect(['bluetooth', 'serial', 'custom-loop', 'screen', 'motion'], ['bluetooth', 'serial', 'screen_capture', 'orientation', 'custom-loop']);
+  env.replies.get('bluetooth').resolve({ state: 'prompt' });
+  const report = await pending;
+  assert.equal(report.capabilities.bluetooth.active, true);
+  assert.equal(report.capabilities.serial.active, true);
+  assert.equal(report.capabilities.screen_capture.active, true);
+  assert.equal(report.capabilities.orientation.active, true);
+  assert.equal(report.capabilities['custom-loop'], undefined);
+  const idle = await env.inspect([], ['serial', 'screen_capture']);
+  assert.equal(idle.capabilities.serial.active, null);
+  assert.equal(idle.capabilities.screen_capture.active, false);
+});

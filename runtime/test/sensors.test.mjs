@@ -55,7 +55,7 @@ function environment(media = {}) {
       clearWatch(id) { watches.delete(id); },
     },
   };
-  const context = { window, navigator, queueMicrotask, setInterval() {}, setTimeout() {}, Date: class extends Date { static now() { return now; } }, DOMException };
+  const context = { window, navigator, queueMicrotask, setInterval() {}, setTimeout() {}, Date: class extends Date { static now() { return now; } }, DOMException, AbortController };
   runInNewContext(built.outputFiles[0].text, context);
   const tracker = context.Sensors.installSensorWrappers();
   return { tracker, window, navigator, watches, watchRequests, locationRequests, Track, Stream, Recognition, advance(ms) { now += ms; }, get calls() { return calls; }, get track() { return track; } };
@@ -300,4 +300,184 @@ test('cleared watches suppress queued callbacks, and one-shot native errors rele
   env.locationRequests[1].error(failure);
   assert.deepEqual(delivered, [failure]);
   assert.equal(env.tracker.stopAll(), 0);
+});
+
+test('cooperative resources preserve legacy snapshots and expose pending, active and detached state', async () => {
+  const env = environment(), snapshots = [];
+  const plain = () => JSON.parse(JSON.stringify(env.tracker.status()));
+  assert.deepEqual(plain(), { active: [], pending: [] });
+  env.tracker.onChange(() => snapshots.push(plain()));
+  let stopped = 0;
+  const handle = env.tracker.register({ kind: 'serial', label: 'Bench meter', stop() { stopped++; } });
+  assert.equal(env.calls, 0);
+  assert.equal(handle.signal.aborted, false);
+  assert.deepEqual(plain().pending, ['serial']);
+  assert.equal(plain().resources[0].label, 'Bench meter');
+  await flush();
+  handle.setState('active'); await flush();
+  assert.deepEqual(plain().active, ['serial']);
+  const snapshot = env.tracker.status();
+  snapshot.resources[0].state = 'failed';
+  snapshot.active.push('forged');
+  assert.equal(plain().resources[0].state, 'active');
+  assert.deepEqual(plain().active, ['serial']);
+  handle.unregister(); handle.unregister();
+  assert.equal(handle.signal.aborted, true);
+  assert.equal(stopped, 1);
+  assert.equal(env.tracker.stopAll(), 0);
+  handle.setState('active');
+  assert.deepEqual(plain(), { active: [], pending: [] });
+  await flush();
+  assert.deepEqual(snapshots.map(s => s.resources?.[0].state ?? 'removed'), ['pending', 'active', 'removed']);
+});
+
+test('Stop all invalidates every custom signal before cleanup and tracks async stopping honestly', async () => {
+  const env = environment(), firstDone = deferred(), secondDone = deferred(), order = [];
+  let a, b;
+  a = env.tracker.register({ kind: 'bluetooth', label: 'Scale', state: 'active', stop() {
+    assert.equal(a.signal.aborted, true); assert.equal(b.signal.aborted, true);
+    a.unregister(); b.unregister();
+    order.push('a'); return firstDone.promise;
+  } });
+  b = env.tracker.register({ kind: 'wake_lock', stop() {
+    assert.equal(a.signal.aborted, true); assert.equal(b.signal.aborted, true);
+    order.push('b'); return secondDone.promise;
+  } });
+  a.signal.addEventListener('abort', () => { a.unregister(); b.unregister(); });
+  assert.equal(env.tracker.stopAll(), 2);
+  assert.deepEqual(order, ['a', 'b']);
+  assert.equal(env.tracker.stopAll(), 0);
+  assert.deepEqual([...env.tracker.status().active], []);
+  assert.deepEqual([...env.tracker.status().pending], []);
+  assert.deepEqual([...env.tracker.status().resources].map(r => r.state), ['stopping', 'stopping']);
+  a.setState('active'); b.setState('failed');
+  assert.equal(env.tracker.status().resources[0].state, 'stopping');
+  const replacement = env.tracker.register({ kind: 'bluetooth', state: 'active', stop() {} });
+  firstDone.resolve(); await flush();
+  assert.equal(env.tracker.status().resources.length, 2);
+  secondDone.resolve(); await flush();
+  assert.equal(env.tracker.status().resources.length, 1);
+  assert.equal(replacement.signal.aborted, false);
+  replacement.unregister();
+  assert.equal(env.tracker.status().resources, undefined);
+});
+
+test('pending cooperative chooser can close a late grant without reviving a cancelled resource', async () => {
+  const env = environment(), chooser = deferred();
+  let port, closeCalls = 0, stopCalls = 0, acquisition;
+  const handle = env.tracker.register({ kind: 'serial', stop() {
+    stopCalls++;
+    return acquisition.then(() => { if (port) { port.close(); port = null; } });
+  } });
+  acquisition = chooser.promise.then(value => {
+    if (handle.signal.aborted) { value.close(); return; }
+    port = value; handle.setState('active');
+  });
+  assert.equal(env.tracker.stopAll(), 1);
+  assert.equal(handle.signal.aborted, true);
+  assert.equal(env.tracker.status().resources[0].state, 'stopping');
+  chooser.resolve({ close() { closeCalls++; } });
+  await acquisition; await flush();
+  assert.equal(closeCalls, 1);
+  assert.equal(stopCalls, 1);
+  assert.equal(env.tracker.status().resources, undefined);
+  handle.unregister();
+  assert.equal(env.tracker.stopAll(), 0);
+});
+
+test('cooperative stop failures are observed and visible until explicitly acknowledged', async () => {
+  for (const asyncFailure of [false, true]) {
+    const env = environment();
+    let calls = 0;
+    const handle = env.tracker.register({ kind: 'usb', state: 'active', stop() {
+      calls++;
+      if (asyncFailure) return Promise.reject(Error('cannot close'));
+      throw Error('cannot close');
+    } });
+    assert.equal(env.tracker.stopAll(), 1);
+    await flush();
+    assert.equal(env.tracker.status().resources[0].state, 'failed');
+    assert.equal(handle.signal.aborted, true);
+    assert.equal(env.tracker.stopAll(), 0);
+    assert.equal(calls, 1);
+    handle.unregister(); handle.unregister();
+    assert.equal(env.tracker.status().resources[0].state, 'failed', 'ordinary repeated disposal cannot acknowledge failed cleanup');
+    assert.equal(env.tracker.stopAll(), 0);
+    handle.unregister({ acknowledgeFailure: true });
+    handle.unregister({ acknowledgeFailure: true });
+    assert.equal(env.tracker.status().resources, undefined);
+    assert.equal(calls, 1);
+  }
+});
+
+test('registration changes notify even when kinds are duplicated and metadata never leaks into legacy snapshots', async () => {
+  const env = environment(), changes = [];
+  env.tracker.onChange(() => changes.push(JSON.parse(JSON.stringify(env.tracker.status()))));
+  const first = env.tracker.register({ kind: 'camera', label: 'Scan loop', state: 'active', stop() {} });
+  await flush();
+  const second = env.tracker.register({ kind: 'camera', label: 'Document loop', state: 'active', stop() {} });
+  await flush();
+  assert.deepEqual([...env.tracker.status().active], ['camera']);
+  assert.equal(changes.length, 2);
+  second.setState('failed'); await flush();
+  assert.equal(changes.at(-1).resources[1].state, 'failed');
+  first.unregister(); second.unregister();
+  assert.deepEqual(JSON.parse(JSON.stringify(env.tracker.status())), { active: [], pending: [] });
+});
+
+test('invalid cooperative metadata fails before allocating a registration', () => {
+  const env = environment();
+  for (const options of [null, {}, { kind: '', stop() {} }, { kind: 'serial' },
+    { kind: 'serial\nfake', stop() {} }, { kind: 'serial', label: 'Bench\nmeter', stop() {} },
+    { kind: 'serial', label: '   ', stop() {} },
+    { kind: 'serial', state: 'complete', stop() {} }, { kind: 'serial', label: '', stop() {} }])
+    assert.throws(() => env.tracker.register(options), { name: 'TypeError' });
+  assert.equal(env.tracker.status().resources, undefined);
+  const trimmed = env.tracker.register({ kind: 'serial', label: '  Bench meter  ', stop() {} });
+  assert.equal(env.tracker.status().resources[0].label, 'Bench meter');
+  trimmed.unregister();
+});
+
+test('abort listeners can deliberately start a new acquisition without the old stop epoch cancelling it', async () => {
+  const env = environment();
+  let request;
+  const handle = env.tracker.register({ kind: 'serial', stop() {} });
+  handle.signal.addEventListener('abort', () => {
+    request = env.navigator.mediaDevices.getUserMedia({ video: true });
+  });
+  assert.equal(env.tracker.stopAll(), 1);
+  const stream = await request;
+  assert.equal(stream.getTracks()[0].readyState, 'live');
+  assert.deepEqual([...env.tracker.status().active], ['camera']);
+  assert.equal(env.tracker.stopAll(), 1);
+});
+
+test('failure acknowledgement cannot stop fresh work, hide pending cleanup or accept truthy substitutes', async () => {
+  const env = environment(), cleanup = deferred();
+  let calls = 0;
+  const handle = env.tracker.register({ kind: 'serial', state: 'failed', stop() { calls++; return cleanup.promise; } });
+  handle.unregister({ acknowledgeFailure: true });
+  assert.equal(handle.signal.aborted, false, 'a page-reported failed phase is not a failed stop attempt');
+  assert.equal(env.tracker.status().resources[0].state, 'failed');
+  assert.equal(calls, 0);
+  handle.unregister();
+  assert.equal(handle.signal.aborted, true);
+  assert.equal(calls, 1);
+  handle.unregister({ acknowledgeFailure: true });
+  handle.unregister();
+  assert.equal(env.tracker.status().resources[0].state, 'stopping');
+  cleanup.reject(Error('device is still open'));
+  await flush();
+  for (const options of [true, null, [], {}, { acknowledgeFailure: false },
+    { acknowledgeFailure: true, extra: true },
+    { acknowledgeFailure: 'yes' }, { acknowledgeFailure: 1 }, Object.create({ acknowledgeFailure: true })]) {
+    assert.throws(() => handle.unregister(options), { name: 'TypeError' });
+    assert.equal(env.tracker.status().resources[0].state, 'failed');
+  }
+  handle.unregister();
+  assert.equal(env.tracker.stopAll(), 0);
+  assert.equal(env.tracker.status().resources[0].state, 'failed');
+  handle.unregister({ acknowledgeFailure: true });
+  assert.equal(env.tracker.status().resources, undefined);
+  assert.equal(calls, 1);
 });

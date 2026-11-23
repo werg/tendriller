@@ -62,7 +62,7 @@ function environment({ defaultEntry = false } = {}) {
     async register() { calls.registrations++; return registration; },
     async getRegistration() { return registration; }, ready: Promise.resolve(registration),
   });
-  const context = { window, document, URL, TextEncoder, Uint8Array, ArrayBuffer, AbortController, Response, Blob,
+  const context = { window, document, URL, TextEncoder, Uint8Array, ArrayBuffer, AbortController, DOMException, Response, Blob,
     location: new URL('https://fixture.test/page/_publications/1/app.html'),
     navigator: { userAgent: 'Fixture', onLine: true, serviceWorker }, screen: {},
     localStorage: storage(), sessionStorage: storage(), crypto: webcrypto, queueMicrotask,
@@ -300,4 +300,63 @@ test('document URL construction is inert and preserves the live or explicitly pi
   assert.notEqual(before, env.context.location.href);
   await flush();
   assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
+});
+
+test('real runtime forwards cooperative resources to Page options and cancels them on BFCache entry', async () => {
+  const env = environment({ defaultEntry: true });
+  let resolveStop, stopCalls = 0;
+  const done = new Promise(resolve => { resolveStop = resolve; });
+  const handle = env.api.sensors.register({ kind: 'serial', label: 'Bench meter', state: 'active', stop() {
+    assert.equal(handle.signal.aborted, true); stopCalls++; return done;
+  } });
+  await flush();
+  const host = env.document.body.children.find(element => element.tagName === 'tendril-utility');
+  const nav = host.shadowRoot.children.find(element => element.tagName === 'nav');
+  const indicator = nav.children.find(element => element.tagName === 'span');
+  assert.equal(indicator.textContent, 'Bench meter active');
+  assert.equal((await env.api.capabilities(['serial'])).capabilities.serial.active, true);
+  const stopped = [];
+  env.api.on('sensors_stopped', event => stopped.push(event.count));
+  env.window.dispatchEvent(Object.assign(new Event('pagehide'), { persisted: true }));
+  assert.equal(handle.signal.aborted, true);
+  assert.equal(stopCalls, 1);
+  assert.equal(env.api.sensors.status().resources[0].state, 'stopping');
+  env.window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+  await flush();
+  assert.equal(indicator.textContent, 'Bench meter stopping');
+  assert.deepEqual(stopped, [1]);
+  handle.setState('active');
+  resolveStop(); await flush();
+  assert.deepEqual(plain(env.api.sensors.status()), { active: [], pending: [] });
+  assert.equal(indicator.hidden, true);
+  assert.equal(stopCalls, 1);
+  assert.equal(env.calls.fetch.length, 0, 'cooperative labels/status remain local');
+});
+
+test('local Stop, global Stop and BFCache teardown preserve a failed cleanup until explicit recovery acknowledgement', async () => {
+  const env = environment({ defaultEntry: true });
+  let calls = 0;
+  const handle = env.api.sensors.register({ kind: 'serial', label: 'Bench meter', state: 'active', stop() {
+    calls++; throw Error('device refused close');
+  } });
+  handle.unregister();
+  handle.unregister();
+  assert.equal(env.api.sensors.stopAll(), 0);
+  env.window.dispatchEvent(Object.assign(new Event('pagehide'), { persisted: true }));
+  handle.unregister(); // A view cleanup following the runtime teardown is ordinary disposal.
+  env.window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+  await flush();
+  assert.equal(calls, 1);
+  assert.equal(handle.signal.aborted, true);
+  assert.equal(env.api.sensors.status().resources[0].state, 'failed');
+  const host = env.document.body.children.find(element => element.tagName === 'tendril-utility');
+  const nav = host.shadowRoot.children.find(element => element.tagName === 'nav');
+  const indicator = nav.children.find(element => element.tagName === 'span');
+  assert.equal(indicator.textContent, 'Bench meter failed');
+  assert.equal(indicator.hidden, false);
+  handle.unregister({ acknowledgeFailure: true });
+  await flush();
+  assert.deepEqual(plain(env.api.sensors.status()), { active: [], pending: [] });
+  assert.equal(indicator.hidden, true);
+  assert.equal(calls, 1);
 });

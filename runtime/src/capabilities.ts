@@ -54,21 +54,31 @@ async function permission(name?: string): Promise<Capability["permission"]> {
   } catch { return "unknown"; }
 }
 
-export async function describeCapabilities(active: string[] = []): Promise<CapabilityReport> {
-  const capabilities: Record<string, Capability> = {};
-  for (const [name, definition] of Object.entries(definitions)) {
-    let available = false;
-    try { available = definition.available(); } catch { /* unavailable */ }
-    capabilities[name] = {
-      available,
-      permission: available ? await permission(definition.permission) : "unknown",
-      needs_user_tap: !!definition.tap,
-      active: ["camera", "microphone", "location", "motion", "orientation", "screen_capture"].includes(name)
-        ? active.includes(name === "screen_capture" ? "screen" : name === "orientation" ? "motion" : name) : null,
-      ...(definition.note ? { note: definition.note } : {}),
-    };
-  }
-  return { captured_at: Date.now(), secure: window.isSecureContext, device: navigator.userAgent, capabilities };
+export async function describeCapabilities(active: readonly string[] = [], filter?: readonly string[]): Promise<CapabilityReport> {
+  if (filter !== undefined && (!Array.isArray(filter) || filter.some(name => typeof name !== "string")))
+    throw new TypeError("Capability filter must be an array of names");
+  const selected = filter === undefined ? null : new Set(filter);
+  const activeSet = new Set(active);
+  const coreKinds: Record<string, string> = { camera: "camera", microphone: "microphone", location: "location",
+    motion: "motion", orientation: "motion", screen_capture: "screen" };
+  // Start every selected no-prompt permission query together. Filtering happens
+  // before even probing availability; unrelated permissions are never queried.
+  const entries = await Promise.all(Object.entries(definitions)
+    .filter(([name]) => selected === null || selected.has(name))
+    .map(async ([name, definition]): Promise<[string, Capability]> => {
+      let available = false;
+      try { available = definition.available(); } catch { /* unavailable */ }
+      const coreKind = coreKinds[name];
+      return [name, {
+        available,
+        permission: available ? await permission(definition.permission) : "unknown",
+        needs_user_tap: !!definition.tap,
+        active: activeSet.has(name) || (coreKind !== undefined && activeSet.has(coreKind)) ? true : coreKind !== undefined ? false : null,
+        ...(definition.note ? { note: definition.note } : {}),
+      }];
+    }));
+  return { captured_at: Date.now(), secure: window.isSecureContext, device: navigator.userAgent,
+    capabilities: Object.fromEntries(entries) };
 }
 
 /** One owner orders reports from browser signals and explicit sensor refreshes. */

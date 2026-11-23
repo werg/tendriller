@@ -1,10 +1,33 @@
 import { mountTransportInspector } from "./transport-view";
 import { encodePublicationPath } from "./paths";
-import type { RuntimeApi } from "../../contract/index.mjs";
+import type { RuntimeApi, SensorStatus } from "../../contract/index.mjs";
 
 const labels: Record<string, string> = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", motion: "Motion" };
 const SUGGEST_AFTER_MS = 12_000;
 const DISMISS_FOR_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Local-only presentation; caller inserts message as text, never markup. */
+export function sensorSummary(status: SensorStatus) {
+  const resources = status.resources ?? [];
+  const name = (kind: string) => labels[kind] ?? kind;
+  // A pending custom loop must not mask an independently active core sensor
+  // of the same kind (and vice versa). Deduplicate only within the same phase.
+  const describedActive = new Set(resources.filter(r => r.state === "active").map(r => r.kind));
+  const describedPending = new Set(resources.filter(r => r.state === "pending").map(r => r.kind));
+  const active = status.active.filter(kind => !describedActive.has(kind));
+  const pending = status.pending.filter(kind => !describedPending.has(kind));
+  const phase = { active: "active", pending: "request pending", stopping: "stopping", failed: "failed" };
+  const parts = [
+    active.length ? active.map(name).join(", ") + " active" : "",
+    pending.length ? pending.map(name).join(", ") + " request pending" : "",
+    ...resources.map(resource => (resource.label ?? name(resource.kind)) + " " + phase[resource.state]),
+  ].filter(Boolean);
+  const names = [...new Set([...active, ...pending].map(name).concat(resources.map(resource => resource.label ?? name(resource.kind))))];
+  return { message: parts.join(". "), names, visible: parts.length > 0,
+    // A page can report stopping/failed before the runtime has cancelled it.
+    // Keep Stop reachable; repeating a requested cleanup is already idempotent.
+    canStop: status.active.length > 0 || status.pending.length > 0 || resources.length > 0 };
+}
 
 /** Page installation, explicit offline saving and always-reachable sensor cancellation. */
 export function mountUtility(api: RuntimeApi): () => void {
@@ -21,7 +44,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     a:focus-visible,button:focus-visible{outline:2px solid Highlight;outline-offset:2px}
     button:hover,a:hover{background:#8882}button:disabled{opacity:.65;cursor:default}
     .stop{background:#a32020;color:white}.stop:hover{background:#8e1717}
-    .sensors{padding:0 8px;max-width:min(54vw,260px);font-size:12px}
+    .sensors{padding:0 8px;max-width:min(54vw,260px);font-size:12px;overflow-wrap:anywhere}
     .options{font-weight:650}.card{flex-shrink:1;min-height:0;width:min(360px,calc(100vw - 24px));border-radius:16px;padding:18px;margin:0 0 10px auto;overflow:auto;max-height:calc(100vh - 112px);max-height:calc(100dvh - 112px - env(safe-area-inset-bottom))}
     .heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
     h2{font-size:18px;line-height:1.3;margin:3px 0 10px;font-weight:700;letter-spacing:-.02em}h2:focus{outline:none}
@@ -154,7 +177,7 @@ export function mountUtility(api: RuntimeApi): () => void {
       const focused = document.activeElement;
       const editing = focused?.matches("input,textarea,select,[contenteditable]:not([contenteditable=false])");
       const sensors = api.sensors.status();
-      if (disposed || document.hidden || editing || !panel.hidden || sensors.active.length || sensors.pending.length || !eligible()) return;
+      if (disposed || document.hidden || editing || !panel.hidden || sensors.active.length || sensors.pending.length || sensors.resources?.length || !eligible()) return;
       suggested = true; suggestion.hidden = false;
     }, SUGGEST_AFTER_MS);
   };
@@ -246,15 +269,13 @@ export function mountUtility(api: RuntimeApi): () => void {
   });
 
   const renderSensors = () => {
-    const status = api.sensors.status();
-    const sensors = [...new Set([...status.active, ...status.pending])];
-    active.hidden = stop.hidden = sensors.length === 0;
-    active.textContent = [
-      status.active.length ? status.active.map(sensor => labels[sensor]).join(", ") + " active" : "",
-      status.pending.length ? status.pending.map(sensor => labels[sensor]).join(", ") + " request pending" : "",
-    ].filter(Boolean).join(". ");
-    stop.setAttribute("aria-label", "Stop " + sensors.map(sensor => labels[sensor]).join(", "));
-    if (sensors.length) { suggestion.hidden = true; cancelSuggestion(); } else scheduleSuggestion();
+    const summary = sensorSummary(api.sensors.status());
+    active.hidden = stop.hidden = !summary.visible;
+    active.textContent = summary.message;
+    active.title = summary.message;
+    stop.disabled = !summary.canStop;
+    stop.setAttribute("aria-label", "Stop " + summary.names.join(", "));
+    if (summary.visible) { suggestion.hidden = true; cancelSuggestion(); } else scheduleSuggestion();
   };
   const interact = (event: Event) => {
     if (!event.isTrusted || event.composedPath().includes(host)) return;

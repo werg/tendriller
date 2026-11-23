@@ -6,7 +6,8 @@ The machine-readable equivalent is
 [`/.well-known/tendriller-capabilities.json`](/.well-known/tendriller-capabilities.json).
 Its task keywords, exact imports, examples and ownership boundaries are searchable.
 It describes software capabilities; `tendril.capabilities()` separately inspects
-the current browser without requesting permissions.
+the current browser without requesting permissions. Browser API detection does
+not establish working hardware, successful acquisition or fresh readings.
 
 ## Task to implementation
 
@@ -28,7 +29,13 @@ the current browser without requesting permissions.
 | Typing, presence, disposable progress | `session.signals.send/subscribe` | [Live signals](APPLICATION_SIGNALS.md) |
 | Photo/file → analysis → editable suggestions → explicit commit | `createReviewedInput`, immutable session content and a declared command | `helpers/reviewed-input.mjs`, `media/`; [reviewed AI input](AI_INPUT.md) |
 | Camera permission, preview and frame capture | Browser acquisition plus the supplied camera controller | `media/camera.mjs`; [reviewed AI input](AI_INPUT.md) |
-| Active/pending sensor indicators and Stop all | `tendril.sensors.status/on/stopAll` | [Browser API](BROWSER_API.md#sensors-and-voice) |
+| Active/pending sensor indicators and Stop all | `tendril.sensors.status/on/register/stopAll` with pending registration before acquisition | [Sensors guide](SENSORS.md); [Browser API and tracking coverage](BROWSER_API.md#sensors-and-voice) |
+| Location fixes, watches and progress | Page-owned `navigator.geolocation`; session signals for disposable readings | [Location cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/follow-location-progress/COOKBOOK.md); [live signals](APPLICATION_SIGNALS.md) |
+| Screen frame or bounded audio clip | Standard `getDisplayMedia` / `MediaRecorder`, reviewed session content and file/typed fallback | [Sensors guide](SENSORS.md); [reviewed capture cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/capture-reviewed-evidence/COOKBOOK.md) |
+| Hardware instruments and custom resources | Standard browser Serial/Bluetooth plus `tendril.sensors.register()` | [Instrument cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/connect-instrument/COOKBOOK.md) |
+| Agent asks for a fresh observation | A local request card, trusted Start, correlated signals and explicit retention | [Observation flow](SENSORS.md#agent-requested-observation-eyes-and-ears-loop); [runnable browser/native reference](OBSERVATION_REFERENCE.md) |
+| Motion, orientation, tilt and shake | Page-owned motion/orientation APIs with permission handling and listener cleanup | [Motion cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/interpret-motion/COOKBOOK.md); [tracking coverage](BROWSER_API.md#sensors-and-voice) |
+| Local perception from camera, audio or other sensor input | An application-selected browser library or local engine over acquired samples | [Local perception cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/select-local-perception/COOKBOOK.md); [reviewed media](AI_INPUT.md) |
 | Speech recognition, transcription, audio output or wake modes | Hosted **Page options → Set up voice input**; `createVoice` / `mountVoiceControls` from `@tendriller/runtime/voice` | `media/voice.mjs`; [voice lifecycle](HANDS_FREE.md), [wake-word qualification](WAKE_WORD_QUALIFICATION.md) |
 | UI preview and headless browser interaction | `tendril-preview ./page`; add a real bootstrap for session execution | [Preview](tools/PREVIEW.md) |
 | Inference using a protected provider credential | An explicitly enabled native participant with an allowed-device list and request budget | `media/inference-client.mjs`, `media/inference-service.mjs`; [reviewed AI input](AI_INPUT.md) |
@@ -72,10 +79,23 @@ relevant pieces, and each is visible in the supplied controller and review flow.
 | Responsibility | Owner | What completion establishes |
 | --- | --- | --- |
 | Permission and acquisition | A trusted user gesture calling browser `getUserMedia`, a file input or another native API | The requested resource or selected file is actually available |
-| Active/pending observation and global cancellation | Tendriller sensor wrappers | Tracked use is visible; Stop all invalidates pending acquisitions and stops tracked resources |
+| Active/pending observation and global cancellation | Tendriller wrappers and cooperative registration | Tracked use is visible; Stop all invalidates pending acquisitions and stops tracked resources |
 | Preview, frame extraction and local cleanup | Application camera controller | The candidate is the frame/file the person can inspect; obsolete resources are released |
 | Analysis | A deliberately chosen local engine or credential-owning provider integration | Suggestions associated with that exact source, subject to the provider's limits |
 | Review and command submission | The person and the application's declared command | An explicit immutable reviewed intent enters the real operation journal |
+
+New sensors and perception libraries can be ordinary page modules. Acquire
+through the browser API, keep user controls and resource cleanup in the page,
+then use the existing session's signals, content or declared commands according
+to the data's lifetime. This extension path does not require a host sensor API.
+
+Automatic tracking covers camera, microphone, screen, location and legacy
+motion/orientation events. Discovery is broader: Generic Sensors and hardware
+connectors use cooperative `tendril.sensors.register({ kind, stop })` before
+acquisition, then report their phase and return asynchronous cleanup. Filter
+inspection with `tendril.capabilities(['location', 'bluetooth'])` to avoid unrelated
+probes. An active watch/listener does not establish a fresh sample; see
+[sensor status semantics](BROWSER_API.md#sensors-and-voice).
 
 Calling `getUserMedia` is the acquisition layer; replacing the existing voice
 lifecycle or global sensor cancellation is unnecessary. There is no

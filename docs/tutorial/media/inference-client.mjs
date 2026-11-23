@@ -1,4 +1,4 @@
-import { INFERENCE_TOPICS, INFERENCE_LIMITS, IMAGE_TYPES, digestPattern, validId, inferenceError, sha256, jsonCopy, abortable } from './inference-protocol.mjs';
+import { INFERENCE_TOPICS, INFERENCE_LIMITS, normalizeEvidenceType, digestPattern, validId, inferenceError, sha256, jsonCopy, abortable } from './inference-protocol.mjs';
 
 /**
  * Browser-side analysis adapter for createReviewedInput({ analyze }). No HTTP
@@ -15,8 +15,9 @@ export function createPeerInferenceClient({ session, workerDeviceId, prompt,
     async analyze({ candidate, signal } = {}) {
       if (closed) throw inferenceError('closed');
       if (active) throw inferenceError('busy');
-      if (!candidate || !validId(candidate.id) || !digestPattern.test(candidate.sha256) || !(candidate.blob instanceof Blob)
-        || !IMAGE_TYPES.includes(candidate.blob.type) || candidate.blob.size < 1 || candidate.blob.size > maxEvidenceBytes) throw inferenceError('invalid');
+      const mediaType = candidate?.blob instanceof Blob ? normalizeEvidenceType(candidate.blob.type) : null;
+      if (!candidate || !validId(candidate.id) || !digestPattern.test(candidate.sha256)
+        || !mediaType || candidate.blob.size < 1 || candidate.blob.size > maxEvidenceBytes) throw inferenceError('invalid');
       const captured = { id: candidate.id, sha256: candidate.sha256, blob: candidate.blob,
         context: jsonCopy(candidate.context, INFERENCE_LIMITS.contextBytes) };
       const owner = new AbortController(); active = owner;
@@ -53,7 +54,9 @@ export function createPeerInferenceClient({ session, workerDeviceId, prompt,
         response.catch(() => {});
         const bytes = new Uint8Array(await abortable(captured.blob.arrayBuffer(), lifetime));
         if (await abortable(sha256(bytes), lifetime) !== captured.sha256) throw inferenceError('source');
-        const upload = await abortable(session.content.stage({ bytes: bytes.length, mediaType: captured.blob.type }), lifetime);
+        // Content references accept a canonical type/subtype, not MIME
+        // parameters. Keep the original Blob and bytes; do not transcode.
+        const upload = await abortable(session.content.stage({ bytes: bytes.length, mediaType }), lifetime);
         for (let offset = 0; offset < bytes.length; offset += 65_536) {
           lifetime.throwIfAborted();
           await abortable(upload.write(offset / 65_536, bytes.slice(offset, offset + 65_536)), lifetime);

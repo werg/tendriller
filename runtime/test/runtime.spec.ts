@@ -384,3 +384,53 @@ test('hosted voice controls load only on a local choice and remain microphone-fr
   expect(await page.evaluate(() => (window as any).__voiceOpening)).toEqual({ microphones: 0, contexts: 0 });
   expect(await page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: [] });
 });
+
+test('cooperative resource labels and asynchronous stopping stay visible in the real browser', async ({ page }) => {
+  await open(page, mock.create());
+  await page.evaluate(() => {
+    const w = window as any;
+    w.stopCalls = 0;
+    w.resource = window.tendril.sensors.register({ kind: 'serial', label: 'Bench meter', stop() {
+      if (!w.resource.signal.aborted) throw Error('signal must be invalidated before cleanup');
+      w.stopCalls++;
+      return new Promise<void>(resolve => { w.finishStop = resolve; });
+    } });
+  });
+  const indicator = page.locator('tendril-utility').getByRole('status');
+  await expect(indicator).toHaveText('Bench meter request pending');
+  await page.evaluate(() => (window as any).resource.setState('active'));
+  await expect(indicator).toHaveText('Bench meter active');
+  expect(await page.evaluate(async () => (await window.tendril.capabilities(['serial'])).capabilities.serial.active)).toBe(true);
+  const stop = page.getByRole('button', { name: 'Stop Bench meter', exact: true });
+  await stop.click();
+  await expect(indicator).toHaveText('Bench meter stopping');
+  await expect(stop).toBeEnabled();
+  expect(await page.evaluate(() => window.tendril.sensors.stopAll())).toBe(0);
+  expect(await page.evaluate(() => (window as any).stopCalls)).toBe(1);
+  await page.evaluate(() => { (window as any).resource.setState('active'); (window as any).finishStop(); });
+  await expect(indicator).toBeHidden();
+  expect(await page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: [] });
+});
+
+test('failed cooperative cleanup remains visible after repeated local and global Stop', async ({ page }) => {
+  await open(page, mock.create());
+  await page.evaluate(() => {
+    const w = window as any;
+    w.stopCalls = 0;
+    w.resource = window.tendril.sensors.register({ kind: 'serial', label: 'Bench meter', state: 'active', stop() {
+      w.stopCalls++;
+      throw Error('device refused close');
+    } });
+  });
+  const indicator = page.locator('tendril-utility').getByRole('status');
+  const stop = page.getByRole('button', { name: 'Stop Bench meter', exact: true });
+  await stop.click();
+  await expect(indicator).toHaveText('Bench meter failed');
+  await stop.click();
+  await page.evaluate(() => { (window as any).resource.unregister(); (window as any).resource.unregister(); });
+  await expect(indicator).toHaveText('Bench meter failed');
+  expect(await page.evaluate(() => (window as any).stopCalls)).toBe(1);
+  await page.evaluate(() => (window as any).resource.unregister({ acknowledgeFailure: true }));
+  await expect(indicator).toBeHidden();
+  expect(await page.evaluate(() => window.tendril.sensors.status())).toEqual({ active: [], pending: [] });
+});

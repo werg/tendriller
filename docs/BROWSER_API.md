@@ -46,7 +46,7 @@ Safari device-qualification guarantee.
 | `identity` | Page/version/publication identity, base and management URL |
 | `ready()` | Authored UI readiness |
 | `on(...)` | Local readiness, capability and sensor observations |
-| `capabilities()` | Describe browser availability and permissions without requesting them |
+| `capabilities(filter?)` | Inspect selected browser APIs and permissions in parallel without requesting access |
 | `sensors` | Observe tracked use and cancel active or pending acquisitions |
 | `assetUrl(path)` | Resolve an explicit dependency in the pinned runtime |
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
@@ -148,7 +148,60 @@ Use the [application contract](APPLICATION_BACKENDS.md) or the session directly.
 
 ## Sensors and voice
 
-`sensors.status()` separates active resources from pending permission acquisitions. `sensors.stopAll()` cancels pending results, stops tracked media and location watches, and prevents late grants from becoming active. This local safety control does not report camera or microphone use to the host.
+`tendril.capabilities(filter?: readonly string[])` inspects exposed browser APIs
+and queryable permissions in parallel without requesting access. Filter before
+probing: for example `await tendril.capabilities(['camera', 'location'])`.
+Omitting the filter returns every known key; `[]` returns none, and unknown keys
+are ignored. `available` means the API is exposed, not that
+working hardware or usable readings have been verified. `permission: 'unknown'`
+can mean that the browser cannot query that permission. Capability and sensor
+observations stay local unless the application explicitly shares them.
+
+Automatic sensor tracking covers **camera, microphone, screen, location and
+motion**: media acquired through `getUserMedia`/`getDisplayMedia`, geolocation,
+legacy motion/orientation event listeners, and browser speech recognition.
+`sensors.status().active` includes registered watches/listeners and a recent
+location fix; it does not prove that fresh measurements are arriving. `pending`
+covers wrapped media acquisitions, one-shot location reads, and cooperative
+registrations awaiting acquisition. Custom active/pending kinds join the same
+arrays. Track the last successful reading separately when freshness matters.
+`sensors.on(listener)` observes changes; read `status()` for the initial snapshot.
+
+`sensors.register({ kind, label?, state?, stop })` enrolls any page-owned resource
+before acquisition. The default phase is `pending`; the handle exposes an
+`AbortSignal`, `setState('pending' | 'active' | 'stopping' | 'failed')`, and
+`unregister()`. `setState()` reports lifecycle state without acquiring or stopping
+hardware. Use `unregister()` for local Stop/dispose: it invalidates the signal
+and invokes the same at-most-once cleanup as Stop sensors. Late grants must check
+the signal and release their own resources. Returning an asynchronous cleanup
+promise keeps the entry visible as `stopping`; failed cleanup remains `failed`
+across repeated Stop/disposal and teardown. After manual resolution, use
+`unregister({ acknowledgeFailure: true })` to remove the failed entry explicitly.
+That acknowledgement never stops fresh work or hides cleanup still in progress;
+ordinary `unregister()` remains idempotent.
+
+`sensors.stopAll(): number` synchronously reports the number of newly
+stopped/cancelled resources, rather than waiting for physical shutdown. It
+invalidates all selected cooperative signals before invoking their callbacks.
+The optional `status().resources` snapshots contain `{ id, kind, label?, state }`
+and are omitted when no cooperative resources remain. Page options displays
+human-readable labels and cleanup phases. Matching known capability keys report
+`active: true` while custom resources are active.
+
+The runtime also stops resources and emits `sensors_stopped` on `pagehide`,
+including BFCache entry; restoration never restarts capture. Controllers still
+own sampling loops, preview UI and visibility cleanup. The
+[cooperative lifecycle example](SENSORS.md#cooperative-resource-registration)
+shows registration without adding sensor-specific wrappers. These observations
+remain local and do not report sensor use to the host.
+
+Ordinary page code can acquire a new sensor through its browser API, with local
+user interaction and permission handling. Send small disposable readings through
+[session signals](APPLICATION_SIGNALS.md), and carry binary observations through
+session content using the [reviewed media pattern](AI_INPUT.md). A declared
+application command retains an observation when the application intentionally
+saves it. See the [capability map](CAPABILITIES.md#task-to-implementation) for
+location, motion and local perception cookbook links.
 
 Every hosted published page offers **Page options → Set up voice input**. The
 shared controls load lazily and provide tap-to-talk, an explicitly enabled

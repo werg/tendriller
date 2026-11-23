@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createPeerInferenceClient } from '../../docs/tutorial/media/inference-client.mjs';
 import { servePeerInference } from '../../docs/tutorial/media/inference-service.mjs';
 import { createInferenceProvider } from '../../docs/tutorial/media/provider-openai.mjs';
-import { INFERENCE_TOPICS as topics, sha256 } from '../../docs/tutorial/media/inference-protocol.mjs';
+import { INFERENCE_TOPICS as topics, AUDIO_TYPES, IMAGE_TYPES, MEDIA_TYPES, normalizeEvidenceType, isEvidenceType, sha256 } from '../../docs/tutorial/media/inference-protocol.mjs';
 
 const applicationId = 'a'.repeat(64), browser = 'b'.repeat(64), native = 'c'.repeat(64), stranger = 'd'.repeat(64);
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -127,6 +127,7 @@ test('invalid sizes/scopes are refused before reads and mismatched evidence neve
   await net.endpoint(browser).signals.send(topics.request, { ...input, reference: { ...input.reference, bytes: 9 * 1024 * 1024 } });
   await net.endpoint(browser).signals.send(topics.request, { ...input, reference: { ...input.reference, applicationId: stranger } });
   await net.endpoint(browser).signals.send(topics.request, { ...input, context: { oversized: 'x'.repeat(5000) } });
+  await net.endpoint(browser).signals.send(topics.request, { ...input, reference: { ...input.reference, mediaType: 'audio/webm;codecs=opus' } });
   await flush(); await flush(); assert.equal(net.reads.length, 0); assert.equal(service.snapshot().admitted, 0);
   const corrupt = { ...input, sha256: 'f'.repeat(64) };
   await net.endpoint(browser).signals.send(topics.request, corrupt);
@@ -192,4 +193,86 @@ test('OpenAI adapter uses the selected model, native credential and bounded sugg
   assert.equal(body.input[0].content[1].image_url, 'data:image/png;base64,AQI='); assert(!options.body.includes(secret));
   const failing = createInferenceProvider({ apiKey: secret, model: 'explicit-model', fetch: async () => new Response('private provider diagnostic', { status: 401 }) });
   await assert.rejects(failing({ bytes: new Uint8Array([1]), mediaType: 'image/png', prompt: 'Describe.', signal }), error => /HTTP 401/.test(error.message) && !error.message.includes('private provider diagnostic'));
+});
+
+
+test('bounded audio clips preserve container type and bytes with an explicitly audio-capable provider', async t => {
+  assert.deepEqual(IMAGE_TYPES, ['image/jpeg', 'image/png', 'image/webp']);
+  assert.deepEqual(MEDIA_TYPES, [...IMAGE_TYPES, ...AUDIO_TYPES]);
+  const net = network(), calls = [];
+  const service = servePeerInference({ session: net.endpoint(native), allowedDevices: [browser], maxRequests: 5,
+    infer: async value => { calls.push(value); return { text: 'Editable transcript suggestion.' }; } });
+  t.after(() => service.close());
+  const client = createPeerInferenceClient({ session: net.endpoint(browser), workerDeviceId: native, prompt: 'Suggest a transcript for review.' });
+  t.after(() => client.close());
+  for (const type of ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/wav', 'audio/webm;codecs=opus']) {
+    const blob = new Blob([new Uint8Array(65_537).fill(27)], { type });
+    const input = { id: crypto.randomUUID(), blob, sha256: await sha256(await blob.arrayBuffer()), context: { durationMs: 1000 } };
+    const result = await client.analyze({ candidate: input });
+    assert.equal(result.source.reference.mediaType, type.split(';', 1)[0]);
+    assert.equal(input.blob.type, type);
+    assert.equal(result.suggestion.text, 'Editable transcript suggestion.');
+    assert.equal(calls.at(-1).mediaType, type.split(';', 1)[0]); assert.equal(calls.at(-1).bytes.length, 65_537);
+    assert(calls.at(-1).bytes.every(value => value === 27));
+  }
+  assert.equal(net.commands.length, 0);
+});
+
+test('audio inference rejects oversized or unsupported media before transport and the OpenAI image provider rejects audio before HTTP', async () => {
+  assert.equal(normalizeEvidenceType('audio/webm;codecs=opus'), 'audio/webm');
+  assert.equal(normalizeEvidenceType('audio/webm;codecs=opus\x7f'), null);
+  assert.equal(isEvidenceType('audio/ogg;codecs=opus\n'), false);
+  const net = network();
+  const client = createPeerInferenceClient({ session: net.endpoint(browser), workerDeviceId: native, prompt: 'Transcribe.', maxEvidenceBytes: 64 });
+  for (const [type, size] of [['audio/webm', 65], ['audio/mpeg', 2], ['video/webm', 2]]) {
+    const blob = new Blob([new Uint8Array(size)], { type });
+    await assert.rejects(client.analyze({ candidate: { id: crypto.randomUUID(), blob,
+      sha256: await sha256(await blob.arrayBuffer()), context: null } }), { code: 'invalid' });
+  }
+  assert.equal(net.sent.length, 0); assert.equal(net.content.size, 0); client.close();
+  let requests = 0;
+  const provider = createInferenceProvider({ apiKey: 'private-test-key', model: 'selected-image-model', fetch: async () => { requests++; throw Error('Unexpected HTTP request.'); } });
+  await assert.rejects(provider({ bytes: new Uint8Array([1]), mediaType: 'audio/ogg', prompt: 'Transcribe.', signal: new AbortController().signal }), /Unsupported provider input/);
+  assert.equal(requests, 0);
+});
+
+
+test('recorder MIME parameters cross actual public-session content and signal APIs without changing evidence bytes', { timeout: 20_000 }, async t => {
+  const peer = await import('@chronolog/peer-session'), cleanup = [];
+  t.after(async () => { for (const close of cleanup.reverse()) await close(); });
+  const definition = peer.defineApplication({ id: 'audio-inference-content-check', version: '1', commands: {}, queries: {} });
+  const [pageDevice, workerDevice] = await Promise.all([0, 1].map(() => peer.openApplicationDevice({ store: new peer.MemoryBytesStore(), create: true })));
+  cleanup.push(() => pageDevice.close(), () => workerDevice.close());
+  const host = await peer.createPeerIdentity(), key = crypto.getRandomValues(new Uint8Array(32));
+  const manifest = await peer.executionManifestArtifacts(await peer.eventExecutionManifest());
+  const descriptor = await peer.signApplicationDescriptor({ applicationId: 'd7'.repeat(32), historyId: 'audio-inference-content',
+    profile: 'peer-generation-v1', policy: 'eligible-members-v1', controlPublicKey: host.publicKey, schemaAdministrator: workerDevice.identity.publicKey,
+    executionManifestDigest: peer.bytesToHex(manifest.executionManifestDigest), definitionDigest: await peer.applicationDefinitionDigest(definition), schemaDigest: null }, host);
+  const control = await peer.signControlRevision({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
+    policy: descriptor.payload.policy, revision: 0, previous: null, epoch: 0, keyDigest: await peer.bytesDigest(key), recoveryFloor: null,
+    grants: [peer.participantGrant(workerDevice.identity.publicKey, { administrator: true }), peer.participantGrant(pageDevice.identity.publicKey)] }, host);
+  const registry = await peer.createGenerationRegistry({ store: new peer.MemoryBytesStore(), descriptor, controls: [control], signer: host });
+  await registry.select(await peer.signTransitionRequest({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
+    policy: descriptor.payload.policy, transitionId: 'initial', expectedGeneration: null, requester: workerDevice.identity.publicKey,
+    coordinator: workerDevice.identity.publicKey, controlRevision: 0, reason: 'create', base: null }, workerDevice.identity));
+  const authority = await registry.read();
+  const [pageSession, workerSession] = await Promise.all([pageDevice, workerDevice].map(device => peer.openPeerApplication({ device, definition, authority, epochKeys: new Map([[0, key]]) })));
+  cleanup.push(() => pageSession.close(), () => workerSession.close());
+  const link = await peer.connectApplications(pageSession, workerSession); cleanup.push(() => link.close());
+  const received = [];
+  const service = servePeerInference({ session: workerSession, allowedDevices: [pageSession.deviceId], infer: async value => {
+    received.push(value); return { text: 'Review this transcript.' };
+  } });
+  cleanup.push(() => service.close());
+  const client = createPeerInferenceClient({ session: pageSession, workerDeviceId: workerSession.deviceId, prompt: 'Suggest a transcript.', timeoutMs: 5000 });
+  cleanup.push(async () => client.close());
+  const bytes = new Uint8Array(65_537).map((_, index) => index % 251), blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
+  const evidence = { id: crypto.randomUUID(), blob, sha256: await sha256(bytes), context: { durationMs: 1200 } };
+  const result = await client.analyze({ candidate: evidence });
+  assert.equal(result.source.reference.mediaType, 'audio/webm');
+  assert.equal(result.source.sha256, evidence.sha256);
+  assert.equal(evidence.blob.type, 'audio/webm;codecs=opus', 'The local capture metadata is preserved.');
+  assert.equal(received[0].mediaType, 'audio/webm');
+  assert.deepEqual(received[0].bytes, bytes, 'Normalizing reference metadata must not transcode or alter bytes.');
+  assert.equal(result.suggestion.text, 'Review this transcript.');
 });

@@ -16,7 +16,7 @@ another website builder does not attach an application to this session.
 
 This guide is available through `tendril_guide` even before account linking.
 Use its `topic` argument for the maintained instructions themselves: `build`,
-`capabilities`, `connect`, `delivery` or `troubleshooting`. You do not need a web
+`capabilities`, `sensors`, `connect`, `delivery` or `troubleshooting`. You do not need a web
 browsing tool to read those documents. Use the `serviceOrigin` returned by MCP
 throughout; staging must stay on staging.
 
@@ -95,6 +95,20 @@ email, account credentials or application keys.
    the requested command, then verify the applied result and retained state
    after reload. Use `topic: "delivery"` for the completion evidence and report
    the actual running process and how to resume its saved device store.
+
+## Use browser observations
+
+Read `tendril_guide` with `topic: "sensors"` for capability-first sensor work.
+Inspect only relevant keys with `tendril.capabilities(filter)`, then use standard
+browser APIs and the existing session's signals/content/commands. Register custom
+resources with `tendril.sensors.register()` before acquisition so pending choosers,
+active use and asynchronous cleanup appear in Stop sensors.
+
+When the agent needs an observation, send a bounded request that renders a local
+card. A trusted local gesture starts capture; the person reviews before sharing
+or retaining it. Use the guide's runnable observation reference and contrib
+snippets for correlation, producer coalescing, stale/disconnected state and
+explicit command retention. An incoming request never activates a sensor.
 
 ## Use or connect an existing application
 
