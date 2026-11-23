@@ -124,6 +124,10 @@ guide's native-tool or manual-handoff fallback and name the exact prerequisite.
 
 ## Ship a finished experience
 
+- **Recognizable favicon:** choose an emoji that fits the user's task and set
+  `icon`, for example `{"icon":"🌱"}`, through the agent metadata API. The host
+  converts it to an SVG automatically. Do this while preparing the app; see
+  [the runnable example](docs/BUILD_AN_APP.md#give-the-app-a-recognizable-favicon).
 - **Connection:** keep the starter's connection component (`connection.mjs`,
   `connect-view.mjs`). Opening the page connects; a new browser is approved once
   on the service origin and returns by itself; later visits and other tabs show
@@ -274,7 +278,7 @@ Each asset is `{hash, bytes}`, with canonical base64 bytes. The signed manifest 
 
 After the page has helped with the task, naturally suggest **Page options → Add to Home Screen** for repeat use on a phone. The default runtime provides native installation when the browser supports it, iPhone/iPad Share instructions, and a quiet mobile suggestion with a remembered **Not now** choice. Keep setup optional. Do not force installation, open prompts on load, or add a competing automatic nudge. For authored controls, use [`tendril.installation`](docs/BROWSER_API.md#home-screen-setup) and invoke `prompt()` directly from a click.
 
-Give the page a recognizable `name`, short Home Screen label and appropriate icon using the existing agent API: `PATCH` the returned agent `api` URL with `name`, `short_name`, `icon` (an HTTPS URL), and optionally `theme_color` and `background_color`. The host supplies default install metadata; authored manifest and icon tags can provide more specific branding. The Home Screen launch targets the stable page URL and selected publication, while an already open page remains pinned to its publication.
+Give the page a recognizable `name`, short Home Screen label and appropriate icon using the existing agent API: `PATCH` the returned agent `api` URL with `name`, `short_name`, `icon` (one emoji or an HTTPS image URL), and optionally `theme_color` and `background_color`. For example, `{"icon":"🌱"}` creates an SVG favicon automatically; `{"icon":null}` restores the default. The [branding reference](docs/BROWSER_API.md#favicons-and-page-branding) explains the API, reload behavior and installation artwork. The host supplies default install metadata; authored manifest and icon tags can provide more specific branding. The Home Screen launch targets the stable page URL and selected publication, while an already open page remains pinned to its publication.
 
 Offer **Save for offline use** when retaining this version's code is useful. Explain separately what the application can do with disconnected data or peers. Installing the Home Screen app does not save its code or transfer a device signer; iOS may require sign-in and the session's normal device connection/recovery again. See [browser setup and storage details](docs/BROWSER_API.md#home-screen-setup).
 

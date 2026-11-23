@@ -10,6 +10,8 @@ The name combines an agent's tendrils reaching new interfaces and sensors with a
 
 **Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **create → define state → configure authority and initial generation → publish → owner sign-in → connect devices → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). Deliver the [running connected application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
 
+Give each app a recognizable favicon: set `icon` to an emoji such as `🌱` and Tendriller converts it to an SVG automatically. HTTPS image URLs work too. See [favicons and page branding](docs/BROWSER_API.md#favicons-and-page-branding) for the agent API and CLI examples.
+
 ## Keep a page on your phone
 
 Open **Page options** on any published page to add it to your Home Screen (native install prompt on supporting browsers; **Share → Add to Home Screen** on iOS/iPadOS). **Save for offline use** caches that release's immutable page files; application state and device enrollment remain owned by the Chronolog session. See [Browser API](docs/BROWSER_API.md#home-screen-setup).

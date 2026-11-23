@@ -57,6 +57,41 @@ Safari device-qualification guarantee.
 
 The hosted `tendril.js` entry opens one receive-only publication metadata WebSocket during construction, including on holding and explicitly pinned pages. The bare `startRuntime()` kernel opens it only when passed `watchPublication: true`; otherwise construction starts no host connection or fetch. A healthy publication watch sends no heartbeat or periodic HTTP request; transport failure can trigger bounded recovery reads and reconnects. This watch does not install an application transport. Construction creates no IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
 
+## Favicons and page branding
+
+Give every published app a recognizable favicon so people can find its tab among
+their other Tendriller pages. Set the existing `icon` metadata field to one emoji; the
+host converts it to an SVG automatically. No image file, upload or image service
+is needed. Compound emoji such as `👩🏽‍💻`, flags and keycaps are supported. The SVG
+uses the device's emoji font, so its appearance can vary by platform.
+
+From a native agent using the private handle and public SDK:
+
+```js
+const host = createClient(handle, { applicationId: handle.application.id });
+await host.request('', { method: 'PATCH', body: { icon: '🌱' } });
+```
+
+Import `createClient` from `@tendriller/core`. The equivalent HTTP request is
+`PATCH` to the returned handle's `api` URL, with `Authorization: Bearer TOKEN`,
+`Content-Type: application/json` and the body `{"icon":"🌱"}`. This host metadata
+operation requires `host:manage`; keep the agent credential outside browser code.
+For the CLI, see [set a favicon](tools/CLI.md#set-a-favicon).
+
+| `icon` value | Result |
+| --- | --- |
+| One emoji, such as `"🌱"` or `"👩🏽‍💻"` | Generated SVG favicon; preserves the complete emoji sequence |
+| An HTTPS image URL | Uses that image for the favicon |
+| `null` | Restores the generated default icon |
+
+Choose an emoji that fits the user's task when creating the app, and give the
+page a useful `name` and `short_name` in the same request if needed. Reload the
+page after a metadata change; it does not push a favicon update into an already
+open document. Authored `<link rel="icon">` tags take precedence. An authored
+manifest also suppresses host icon defaults, so update that authored branding
+when it is present. Before the first publication, the holding page retains the
+Tendriller icon.
+
 ## Home Screen setup
 
 Open **Page options** to add the page to the Home Screen or read the current platform's setup steps. A native **Add to Home Screen** button appears only after the browser supplies a `beforeinstallprompt` event. Android otherwise uses the browser menu's **Add to Home Screen** or **Install app**. On iPhone and iPad, use **Share → Add to Home Screen**, leave **Open as Web App** enabled if shown, then tap **Add**. Share may be inside the page menu. If the option is missing, try Safari and **Share → Edit Actions**. Supporting third-party iOS browsers can also add web apps; Safari is a fallback, not a requirement. See [Chrome's custom install guidance](https://web.dev/articles/customize-install) and [Apple's Home Screen instructions](https://support.apple.com/guide/iphone/open-as-web-app-iphea86e5236/ios).
@@ -65,7 +100,7 @@ Startup does not open an install prompt. On eligible published mobile pages, a s
 
 The default manifest uses the page's stable base URL for `id`, `start_url` and `scope`. Each Tendriller page has its own identity and launch target; a fresh Home Screen launch requests its currently selected publication. A page always shows the latest release by default (see below). Authored metadata takes precedence over host defaults. An authored manifest also suppresses the host's icon, Apple title and theme defaults so its branding remains in control; viewport defaults still fill a missing viewport tag.
 
-For the default manifest, a custom page `icon` URL ending in `.png`, `.webp`, or `.svg` replaces the generated installation artwork. Serve a square image large enough for the target browsers. Use an authored manifest to declare exact sizes, provide alternate icons, or reference artwork at a URL without a supported file extension.
+For the default manifest, an emoji `icon` uses the same generated SVG as the favicon. A custom HTTPS `icon` URL ending in `.png`, `.webp`, or `.svg` replaces the generated installation artwork. Serve a square image large enough for the target browsers. Apple touch icons continue to use the default PNG unless `icon` is an HTTPS PNG URL or the page supplies its own Apple touch icon. Use an authored manifest to declare exact sizes, provide alternate icons, or reference artwork at a URL without a supported file extension.
 
 Existing signed publications pin their `runtime_id`. Deploying this host updates metadata on newly served HTML, but existing pages receive the new Page options UI and `installation` API only through a new signed publication using the updated runtime. Cached HTML and already open tabs retain their existing publication behavior.
 

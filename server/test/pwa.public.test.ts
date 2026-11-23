@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { apiJson, create, req } from './helpers';
+import { api, apiJson, create, req } from './helpers';
 
 interface Manifest {
   id: string; start_url: string; scope: string; display: string; name: string; short_name: string;
@@ -43,6 +43,7 @@ describe('page installation metadata', () => {
 
   it('retains access gates for manifests and private page icons, including HEAD', async () => {
     const handle = await create();
+    await apiJson(handle, 'PATCH', '', { icon: '🌱' });
     for (const route of ['manifest.webmanifest', 'icon', 'icon.svg']) {
       const url = handle.page_url + '_tendril/' + route;
       const head = await req(url, { method: 'HEAD' });
@@ -53,6 +54,46 @@ describe('page installation metadata', () => {
         expect(denied.status).toBe(302);
         expect(denied.headers.get('Location')).toContain('/auth/page?');
       }
+    }
+  });
+
+  it('converts configured emoji into private SVG artwork and supports changing or resetting it', async () => {
+    const handle = await create({ name: 'Garden notes' });
+    const base = new URL(handle.page_url).pathname;
+    for (const icon of ['🌱', '❤️', '👍🏽', '🧑🏽‍🚀', '👨‍👩‍👧‍👦', '🇦🇹', '1️⃣']) {
+      const updated = await apiJson(handle, 'PATCH', '', { icon });
+      expect(updated.meta.icon).toBe(icon);
+      expect((await apiJson(handle, 'GET', '')).meta.icon).toBe(icon);
+      for (const route of ['icon', 'icon.svg']) {
+        const response = await req(handle.page_url + '_tendril/' + route);
+        expect(response.status).toBe(200);
+        expect(response.headers.get('Content-Type')).toBe('image/svg+xml');
+        expect(response.headers.get('Cache-Control')).toBe('private, no-cache');
+        expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+        expect(await response.text()).toContain(`>${icon}</text>`);
+      }
+      const manifest = await (await req(handle.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
+      expect(manifest.icons).toEqual([{ src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]);
+    }
+
+    expect((await apiJson(handle, 'PATCH', '', { icon: null })).meta.icon).toBeNull();
+    const reset = await (await req(handle.page_url + '_tendril/icon.svg')).text();
+    expect(reset).toContain('>G</text>');
+    expect(reset).not.toContain('1️⃣');
+    const manifest = await (await req(handle.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
+    expect(manifest.icons).toHaveLength(2);
+    expect(manifest.icons).toContainEqual({ src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' });
+  });
+
+  it('rejects invalid icons without replacing the configured emoji', async () => {
+    const handle = await create();
+    await apiJson(handle, 'PATCH', '', { icon: '🌱' });
+    for (const icon of ['', 'garden', '🌱🌻', '🌱 garden', '1', 'http://example.test/icon.png',
+      'javascript:alert(1)', 'data:image/svg+xml,<svg/>', '<svg onload="alert(1)">🌱</svg>', 123, true, {}, ['🌱']]) {
+      const response = await api(handle, 'PATCH', '', { icon });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: 'bad_request', message: 'icon must be a single emoji, an https URL, or null to reset' } });
+      expect((await apiJson(handle, 'GET', '')).meta.icon).toBe('🌱');
     }
   });
 

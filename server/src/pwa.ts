@@ -8,6 +8,15 @@ export interface PageBranding {
 
 export const DEFAULT_THEME_COLOR = "#2d6a4f";
 
+// Unicode's complete emoji sequences include flags, skin tones and ZWJ families.
+// Also accept single pictographs and keycaps without a presentation selector.
+// Use the constructor because the server's TypeScript target is ES2023.
+const EMOJI_ICON = new RegExp(String.raw`^(?:\p{RGI_Emoji}|\p{Extended_Pictographic}\uFE0F?|[0-9#*]\uFE0F?\u20E3)$`, "v");
+
+export function isEmojiIcon(icon: string): boolean {
+  return EMOJI_ICON.test(icon);
+}
+
 export function iconMediaType(icon: string): string | undefined {
   try {
     const extension = /\.([a-z0-9]+)$/i.exec(new URL(icon).pathname)?.[1].toLowerCase();
@@ -17,6 +26,9 @@ export function iconMediaType(icon: string): string | undefined {
 }
 
 export function pageIcons(base: string, icon: string | null) {
+  if (icon && isEmojiIcon(icon)) {
+    return [{ src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" }];
+  }
   const type = icon ? iconMediaType(icon) : undefined;
   if (icon && (type === "image/png" || type === "image/webp" || type === "image/svg+xml")) {
     // Chromium skips entries without sizes and prefers a sized default over a
