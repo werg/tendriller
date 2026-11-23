@@ -303,6 +303,25 @@ separate action from initialization; neither a saved handle nor an accepted
 setup result establishes device enrollment, assistant approval or an online
 participant.
 
+### Give the app a recognizable favicon
+
+Choose a task-specific emoji while preparing the app so its browser tab is easy
+to find. From the starter directory, set it using the retained private handle:
+
+```sh
+node --input-type=module <<'NODE'
+import { project } from './local.mjs';
+const { host } = await project();
+await host.request('', { method: 'PATCH', body: { icon: '📝' } });
+NODE
+```
+
+The host converts the emoji to an SVG favicon automatically, including compound
+emoji such as `👩🏽‍💻`. An HTTPS image URL also works; `icon: null` restores the
+default. Reload the page to see a change. Authored icon tags or a manifest retain
+control when supplied. See [favicons and page branding](BROWSER_API.md#favicons-and-page-branding)
+for the API and [CLI example](tools/CLI.md#set-a-favicon).
+
 ### Continue the same app after setup credential expiry or loss
 
 The account-linked setup credential expires 24 hours after preparation, including

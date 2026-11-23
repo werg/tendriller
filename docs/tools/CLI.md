@@ -306,6 +306,21 @@ local field.
 The default invocation timeout is 30 seconds. `watch` continues until interrupted
 unless `--timeout SECONDS` supplies a bound. `--pretty` formats the JSON result.
 
+### Set a favicon
+
+Give each app a recognizable emoji favicon during setup. With a saved CLI handle
+named `garden`, one command sets it:
+
+```sh
+tendril --tendril garden meta '{"icon":"🌱"}'
+```
+
+The host converts a single emoji (including compound emoji) to an SVG. An HTTPS
+image URL is also accepted. Use `meta '{"icon":null}'` with the same handle to
+restore the default. If you selected the handle through `TENDRIL_API` and
+`TENDRIL_TOKEN`, omit `--tendril garden`. Reload the page after a change. Authored
+icon tags or manifests take precedence; see [page branding](../BROWSER_API.md#favicons-and-page-branding).
+
 ## Retain irreversible provider effects separately
 
 `createEffectDispatcher` requires a durable journal outside the application's

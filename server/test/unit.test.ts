@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { injectRuntime } from "../src/inject";
+import { emojiIconSvg, injectRuntime } from "../src/inject";
 import { resolveType } from "../src/mime";
+import { isEmojiIcon } from "../src/pwa";
 import { normalizeFilePath } from "../src/urls";
 
 describe("helpers", () => {
@@ -16,6 +17,39 @@ describe("helpers", () => {
   it("file paths", () => {
     expect(normalizeFilePath("/a/b.js")).toBe("a/b.js");
     for (const bad of ["", "a/", "../x", "a//b", "_tendril/x", "a/./b"]) expect(normalizeFilePath(bad), bad).toBeNull();
+  });
+
+  it("accepts one complete emoji, including keyboard sequences", () => {
+    for (const emoji of ["🌱", "❤", "❤️", "👍🏽", "👩‍💻", "👩🏽‍💻", "👨‍👩‍👧‍👦", "🇦🇹", "1️⃣", "#⃣",
+      "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}"]) {
+      expect(isEmojiIcon(emoji), emoji).toBe(true);
+    }
+  });
+
+  it("rejects plain text, multiple emoji and markup as emoji icons", () => {
+    for (const value of ["", " ", "A", "garden", "1", "#", ":seedling:", "🌱🌻", "🌱 garden", "🌱\n",
+      "🌱\u0301", "👩‍🌱", "\uFE0F", "\u200D", "\uD83C", "<svg></svg>", "🌱</text><script>alert(1)</script>",
+      "https://example.test/icon.svg", "javascript:alert(1)"]) {
+      expect(isEmojiIcon(value), JSON.stringify(value)).toBe(false);
+    }
+  });
+
+  it("renders complete emoji sequences as SVG text", () => {
+    for (const emoji of ["🌱", "❤️", "👩🏽‍💻", "🇦🇹", "1️⃣"]) {
+      const svg = emojiIconSvg(emoji);
+      expect(svg).toContain('<svg xmlns="http://www.w3.org/2000/svg"');
+      expect(svg).toContain(emoji);
+      expect(svg).toContain("</text>");
+      expect(svg).toContain("</svg>");
+      expect(svg).not.toContain("\uFFFD");
+    }
+  });
+
+  it("escapes SVG text even when called with unvalidated input", () => {
+    const svg = emojiIconSvg('</text><script>alert(1)</script>&"');
+    expect(svg).toContain('&lt;/text&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;');
+    expect(svg).not.toContain("<script>");
+    expect((svg.match(/<\/text>/g) || []).length).toBe(1);
   });
 
   it("injection escapes the config", () => {
@@ -36,16 +70,70 @@ describe("helpers", () => {
 
   it("leaves an authored manifest's icon, name and theme in charge while filling a missing viewport", () => {
     const authored = '<link rel="manifest" href="./my-app.webmanifest" crossorigin="use-credentials">';
-    const html = injectRuntime(`<head>${authored}</head><body></body>`, { id: "x", base: "/b/", version: 0,
-      documentPath: null, application: { id: "12".repeat(32) }, features: { speech: null, shared_by: "owner" },
-      branding: { name: "Host name", shortName: "Host", themeColor: "#102030", icon: "https://example.test/host.png" } });
-    expect(html).toContain(authored);
-    expect(html).not.toContain('_tendril/manifest.webmanifest');
-    expect(html).not.toContain('rel="icon"');
-    expect(html).not.toContain('apple-touch-icon');
-    expect(html).not.toContain('apple-mobile-web-app-title');
-    expect(html).not.toContain('name="theme-color"');
-    expect(html).toContain('<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">');
+    for (const icon of ["https://example.test/host.png", "🌱"]) {
+      const html = injectRuntime(`<head>${authored}</head><body></body>`, { id: "x", base: "/b/", version: 0,
+        documentPath: null, application: { id: "12".repeat(32) }, features: { speech: null, shared_by: "owner" },
+        branding: { name: "Host name", shortName: "Host", themeColor: "#102030", icon } });
+      expect(html).toContain(authored);
+      expect(html).not.toContain('_tendril/manifest.webmanifest');
+      expect(html).not.toContain('rel="icon"');
+      expect(html).not.toContain('apple-touch-icon');
+      expect(html).not.toContain('apple-mobile-web-app-title');
+      expect(html).not.toContain('name="theme-color"');
+      expect(html).toContain('<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">');
+    }
+  });
+
+  it("uses configured HTTPS artwork as the favicon with its actual media type", () => {
+    for (const [icon, type] of [
+      ["https://example.test/icon.svg?version=2&variant=small", "image/svg+xml"],
+      ["https://example.test/icon.PNG", "image/png"],
+      ["https://example.test/icon.ico", "image/x-icon"],
+      ["https://example.test/dynamic-icon", undefined],
+    ]) {
+      const html = injectRuntime('<head></head>', { id: "x", base: "/b/", version: 0, documentPath: null,
+        application: { id: "12".repeat(32) }, features: { speech: null, shared_by: "owner" },
+        branding: { name: "Page", icon } });
+      const favicons = html.match(/<link\b[^>]*\brel="icon"[^>]*>/g) || [];
+      expect(favicons).toHaveLength(1);
+      expect(favicons[0]).toContain(`href="${icon!.replaceAll("&", "&amp;")}"`);
+      if (type) expect(favicons[0]).toContain(`type="${type}"`);
+      else expect(favicons[0]).not.toContain("type=");
+      expect(favicons[0]).not.toContain("sizes=");
+    }
+  });
+
+  it("uses the local generated SVG favicon for an emoji", () => {
+    const html = injectRuntime('<head></head>', { id: "x", base: "/b/", version: 0, documentPath: null,
+      application: { id: "12".repeat(32) }, features: { speech: null, shared_by: "owner" },
+      branding: { name: "Page", icon: "👩🏽‍💻" } });
+    const favicons = html.match(/<link\b[^>]*\brel="icon"[^>]*>/g) || [];
+    expect(favicons).toHaveLength(1);
+    expect(favicons[0]).toMatch(/href="\/b\/_tendril\/icon\.svg(?:\?[^\"]*)?"/);
+    expect(favicons[0]).toContain('type="image/svg+xml"');
+    expect(favicons[0]).toContain('sizes="any"');
+  });
+
+  it("escapes configured favicon URLs in injected attributes", () => {
+    const html = injectRuntime('<head></head>', { id: "x", base: "/b/", version: 0, documentPath: null,
+      application: { id: "12".repeat(32) }, features: { speech: null, shared_by: "owner" },
+      branding: { name: "Page", icon: 'https://example.test/icon.svg?a=1&label="<script>"' } });
+    expect(html).toContain('href="https://example.test/icon.svg?a=1&amp;label=&quot;&lt;script');
+    expect(html).not.toContain('label="<script>"');
+  });
+
+  it("preserves an authored favicon when a URL or emoji icon is configured", () => {
+    const authored = '<link rel="shortcut icon" href="./own.ico">';
+    for (const icon of ["https://example.test/host.svg", "🌱"]) {
+      const html = injectRuntime(`<head>${authored}</head>`, { id: "x", base: "/b/", version: 0, documentPath: null,
+        application: { id: "12".repeat(32) }, features: { speech: null, shared_by: "owner" },
+        branding: { name: "Page", icon } });
+      expect(html).toContain(authored);
+      expect(html).not.toContain('rel="icon"');
+      expect(html).not.toContain('_tendril/icon.svg');
+      expect(html).not.toContain('https://example.test/host.svg');
+      expect(html).toContain('_tendril/manifest.webmanifest');
+    }
   });
 
   it("fills mobile metadata gaps with escaped page branding", () => {

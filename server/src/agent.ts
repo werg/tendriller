@@ -15,6 +15,7 @@ import { serviceDescriptor } from './descriptor';
 import { agentBinding, agentScopes, authenticateAgent, currentPrincipal, requireAgentScope } from './access';
 import { onboardingDescriptor } from './onboarding';
 import { publicBase } from './urls';
+import { isEmojiIcon } from './pwa';
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -129,8 +130,8 @@ route("PATCH", /^$/, async (t, req) => {
   }
   if (b.icon !== undefined) {
     if (b.icon !== null) {
-      const ok = typeof b.icon === "string" && /^https:\/\/\S+$/.test(b.icon);
-      if (!ok) throw new HttpError(400, "bad_request", "icon must be an https URL");
+      const ok = typeof b.icon === "string" && (/^https:\/\/\S+$/.test(b.icon) || isEmojiIcon(b.icon));
+      if (!ok) throw new HttpError(400, "bad_request", "icon must be a single emoji, an https URL, or null to reset");
     }
     t.db.set("icon", b.icon);
   }

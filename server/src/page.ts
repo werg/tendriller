@@ -6,13 +6,13 @@ import type { Tendril } from "./tendril";
 import { tendrilMeta } from "./agent";
 import { servePageFile, servedVersion, versionFiles, publicationManifest } from "./files";
 import { HttpError, json, readBody, readJson } from "./http";
-import { iconSvg } from "./inject";
+import { emojiIconSvg, iconSvg } from "./inject";
 import { serviceDescriptor } from "./descriptor";
 import { accountActive, allows, authenticateLocalPage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
-import { DEFAULT_THEME_COLOR, pageIcons } from "./pwa";
+import { DEFAULT_THEME_COLOR, isEmojiIcon, pageIcons } from "./pwa";
 
 /** Internal admission result; the Worker consumes it before returning a page response. */
 export const PAGE_ACCESS_HEADER = "x-tendril-page-access";
@@ -168,7 +168,8 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const icon = t.db.get<string | null>("icon", null);
     if (sub === "icon" && icon && /^https:\/\//.test(icon)) return new Response(null, { status: 302,
       headers: { Location: icon, "Cache-Control": "private, no-cache" } });
-    const svg = iconSvg(t.db.get("name", "Tendril"), t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR);
+    const svg = icon && isEmojiIcon(icon) ? emojiIconSvg(icon)
+      : iconSvg(t.db.get("name", "Tendril"), t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR);
     return new Response(m === "HEAD" ? null : svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
   }
 

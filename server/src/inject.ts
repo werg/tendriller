@@ -1,7 +1,7 @@
 import runtimeRelease from "./runtime-release.json";
 import type { RuntimeArtifactFeatures } from "../../contract/index.mjs";
 import { brandHead, brandLink, brandLogo, brandStyle } from "./brand";
-import { DEFAULT_THEME_COLOR, iconMediaType, type PageBranding } from "./pwa";
+import { DEFAULT_THEME_COLOR, iconMediaType, isEmojiIcon, type PageBranding } from "./pwa";
 
 // Runtime injection into served HTML (PROTOCOL section 5) and built-in pages.
 
@@ -81,13 +81,15 @@ function installMetadata(html: string, cfg: InjectConfig): string {
   const meta = (name: string) => tags.some(({ tag, attributes }) => tag === "meta" && attributes.get("name")?.toLowerCase() === name);
   const authoredManifest = link("manifest");
   const branding = cfg.branding;
+  const customFavicon = branding?.icon && !isEmojiIcon(branding.icon) ? branding.icon : null;
+  const faviconType = customFavicon ? iconMediaType(customFavicon) : "image/svg+xml";
   const customAppleIcon = branding?.icon && iconMediaType(branding.icon) === "image/png" ? branding.icon : null;
   return [
     // Fetching a same-origin manifest still omits cookies without this attribute.
     !authoredManifest ? `<link rel="manifest" href="${attr(cfg.base)}_tendril/manifest.webmanifest" crossorigin="use-credentials">` : "",
     // Apple touch icons and title/theme metadata can take precedence over a
     // manifest's branding. Leave an authored manifest in charge of those defaults.
-    !authoredManifest && !link("icon") ? `<link rel="icon" href="${attr(cfg.base)}_tendril/icon.svg" type="image/svg+xml" sizes="any">` : "",
+    !authoredManifest && !link("icon") ? `<link rel="icon" href="${attr(customFavicon ?? `${cfg.base}_tendril/icon.svg`)}"${faviconType ? ` type="${faviconType}"` : ""}${customFavicon ? "" : ' sizes="any"'}>` : "",
     !authoredManifest && !link("apple-touch-icon", "apple-touch-icon-precomposed") ? customAppleIcon
       ? `<link rel="apple-touch-icon" href="${attr(customAppleIcon)}">`
       : `<link rel="apple-touch-icon" href="/_tendril/brand/icon-180.png" sizes="180x180">` : "",
@@ -211,6 +213,12 @@ footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);f
 </main>
 </body>
 </html>`;
+}
+
+export function emojiIconSvg(emoji: string): string {
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">` +
+    `<text x="256" y="416" text-anchor="middle" font-family="Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif" font-size="416">${escapeHtml(emoji)}</text>` +
+    `</svg>`;
 }
 
 export function iconSvg(name: string, color: string): string {

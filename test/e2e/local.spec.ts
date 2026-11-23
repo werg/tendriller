@@ -177,6 +177,38 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     // that inspecting manifest JSON alone cannot establish.
     expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
     expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
+
+    const emoji = '🧑🏽‍🚀';
+    expect((await agent(handle, '', 'PATCH', { icon: emoji })).status).toBe(200);
+    await page.reload();
+    const favicon = page.locator('link[rel="icon"]');
+    const generatedIcon = `${new URL(base).pathname}_tendril/icon.svg`;
+    await expect(favicon).toHaveAttribute('href', generatedIcon);
+    await expect(favicon).toHaveAttribute('type', 'image/svg+xml');
+    const rendered = await page.evaluate(async () => {
+      const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')!;
+      const response = await fetch(icon.href, { cache: 'no-store' });
+      const svg = new DOMParser().parseFromString(await response.text(), 'image/svg+xml');
+      const image = new Image();
+      image.src = icon.href;
+      await image.decode();
+      return { status: response.status, type: response.headers.get('Content-Type'),
+        cache: response.headers.get('Cache-Control'), text: svg.querySelector('text')?.textContent,
+        parseError: svg.querySelector('parsererror') !== null,
+        width: image.naturalWidth, height: image.naturalHeight };
+    });
+    expect(rendered).toMatchObject({ status: 200, type: 'image/svg+xml', cache: 'private, no-cache',
+      text: emoji, parseError: false });
+    expect(rendered.width).toBeGreaterThan(0);
+    expect(rendered.height).toBe(rendered.width);
+    const emojiManifest = await cdp.send('Page.getAppManifest');
+    expect(emojiManifest.errors).toEqual([]);
+    expect(JSON.parse(emojiManifest.data!).icons).toEqual([
+      { src: generatedIcon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+    ]);
+    expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
+    expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
+
     const icons: Record<string, { type: string; body: string | Uint8Array }> = {
       'index.html': { type: 'text/html', body: '<!doctype html><html><head><title>My mobile page</title></head><body><h1>Latest version</h1></body></html>' },
     };
@@ -202,6 +234,8 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       const customIcon = new URL(`custom.${format}`, page.url()).href;
       expect((await agent(handle, '', 'PATCH', { icon: customIcon })).status).toBe(200);
       await page.reload();
+      await expect(favicon).toHaveAttribute('href', customIcon);
+      await expect(favicon).toHaveAttribute('type', `image/${format}`);
       const branded = await cdp.send('Page.getAppManifest');
       expect(JSON.parse(branded.data!).icons).toEqual([
         { src: customIcon, sizes: 'any', type: `image/${format}`, purpose: 'any' },
@@ -209,6 +243,10 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
       expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
     }
+    expect((await agent(handle, '', 'PATCH', { icon: null })).status).toBe(200);
+    await page.reload();
+    await expect(favicon).toHaveAttribute('href', generatedIcon);
+    await expect(favicon).toHaveAttribute('type', 'image/svg+xml');
     await cdp.detach();
   } finally {
     await context?.close();
