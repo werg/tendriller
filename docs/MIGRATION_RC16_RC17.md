@@ -288,6 +288,23 @@ running before opening the browser's review; preserve its exact signed proposal
 and ordering pause through uncertain replies. The optional assistant remains a
 separate lifetime within that participant.
 
+## Migrate removed executables and re-arm consumers
+
+The common-session tooling change removed `tendril-wait`, `tendril-events`,
+`tendril-watch`, `codex-bridge`, `claude-channel`, `hermes-bridge`,
+`openclaw-bridge` and `tendril-stream`. Current tools ship `tendril` and
+`tendril-preview`. The [complete executable migration table](AGENT_RESTART.md#retired-bridge-binaries-rc8-to-rc17)
+names each replacement route and the features without a drop-in equivalent.
+Old host-socket listeners and numeric pending/ack checkpoints are not current
+session event consumers.
+
+After upgrading or restarting a participant, follow the [re-arm checklist](AGENT_RESTART.md).
+An attach client does not survive owner replacement automatically. Retain its
+profile and signed attempts, reconnect using the current binding, resume from
+the handled event cursor, and verify an actual request/receipt/answer on the page.
+The [agent request pattern](AGENT_REQUESTS.md) supplies durable listener check-ins
+and request state for late-joining pages.
+
 ## Verify the upgraded application
 
 Check the host/source/composition identities, then start the updated native
