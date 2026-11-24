@@ -295,24 +295,71 @@ it('enforces the display quota atomically across parallel link preparation', asy
   expect(result).toEqual({ fulfilled: 1, count: 3 });
 });
 
-it('lets a signed-in visitor join an owner-created guest invite link in one go without a Request access screen', async () => {
+it('lets a signed-in visitor join any open guest invite in one go and enforces optional email gating', async () => {
   const h = await create();
-  const guestRes = await req(h.page_url + '_tendril/links', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ role: 'guest', label: 'Friend' }),
-  });
-  expect(guestRes.status).toBe(201);
-  const { url: inviteUrl } = await guestRes.json() as { url: string };
-  const key = new URL(inviteUrl).pathname.split('/')[2];
-  const friendId = crypto.randomUUID(), rawSession = 'friend-' + crypto.randomUUID();
-  await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(friendId, Date.now(), 'friend@example.test').run();
-  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
-    .bind(await sha256Hex(rawSession), friendId, Date.now(), Date.now() + 86_400_000).run();
+  const makeAccount = async (email: string) => {
+    const id = crypto.randomUUID(), rawSession = 'guest-' + crypto.randomUUID();
+    await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(id, Date.now(), email).run();
+    await env.ACCOUNTS.prepare('INSERT INTO identities(provider,subject,account_id,login,email,created_at) VALUES(?,?,?,?,?,?)')
+      .bind('github', id, id, email.split('@')[0], email, Date.now()).run();
+    await env.ACCOUNTS.prepare('INSERT INTO identity_emails(provider,subject,email) VALUES(?,?,?)')
+      .bind('github', id, email.toLowerCase()).run();
+    await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
+      .bind(await sha256Hex(rawSession), id, Date.now(), Date.now() + 86_400_000).run();
+    return { id, cookie: `__Host-tendriller=${rawSession}` };
+  };
 
-  const auth = await req(`https://tendriller.dev/auth/page?tendril=${h.id}&key=${key}`, {
-    anonymous: true, redirect: 'manual', headers: { Cookie: `__Host-tendriller=${rawSession}` },
+  // Open guest invite (including agent-created): joins in one go with no waiting screen.
+  const openRes = await api(h, 'POST', 'links', { role: 'guest', label: 'Open friend' });
+  expect(openRes.status).toBe(201);
+  const { url: openUrl } = await openRes.json() as { url: string };
+  const openKey = new URL(openUrl).pathname.split('/')[2];
+  const friend = await makeAccount('friend@example.test');
+  const openAuth = await req(`https://tendriller.dev/auth/page?tendril=${h.id}&key=${openKey}`, {
+    anonymous: true, redirect: 'manual', headers: { Cookie: friend.cookie },
   });
-  expect(auth.status).toBe(303);
-  expect(auth.headers.get('Location')).toContain('_tendril/auth/session?code=');
-  expect(await inDO(h.id, t => t.db.one('SELECT approved FROM guest_accounts WHERE account_id=?', friendId))).toEqual({ approved: 1 });
+  expect(openAuth.status).toBe(303);
+  expect(openAuth.headers.get('Location')).toContain('_tendril/auth/session?code=');
+  expect(await inDO(h.id, t => t.db.one('SELECT approved FROM guest_accounts WHERE account_id=?', friend.id))).toEqual({ approved: 1 });
+
+  // Email-gated guest invite: rejects non-matching email and admits matching OAuth email in one go.
+  const badEmail = await req(h.page_url + '_tendril/links', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'guest', email: 'not-an-email' }),
+  });
+  expect(badEmail.status).toBe(400);
+  const displayWithEmail = await req(h.page_url + '_tendril/links', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'display', email: 'alex@example.test' }),
+  });
+  expect(displayWithEmail.status).toBe(400);
+
+  const gatedRes = await req(h.page_url + '_tendril/links', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'guest', label: 'Alex only', email: 'Alex@Example.Test' }),
+  });
+  expect(gatedRes.status).toBe(201);
+  const gated = await gatedRes.json() as { url: string; email: string };
+  expect(gated.email).toBe('alex@example.test');
+  const gatedKey = new URL(gated.url).pathname.split('/')[2];
+
+  // Signed-out sign-in prompt shows masked email hint.
+  const promptHtml = await (await req(`https://tendriller.dev/auth/page?tendril=${h.id}&key=${gatedKey}`, { anonymous: true })).text();
+  expect(promptHtml).toContain('Invited email: a***@example.test');
+
+  // Wrong email gets clear 403 screen, never admitted.
+  const wrongAuth = await req(`https://tendriller.dev/auth/page?tendril=${h.id}&key=${gatedKey}`, {
+    anonymous: true, redirect: 'manual', headers: { Cookie: friend.cookie },
+  });
+  expect(wrongAuth.status).toBe(403);
+  expect(await wrongAuth.text()).toContain('This invitation is for another email address');
+
+  // Matching verified OAuth email joins straight in one go!
+  const alex = await makeAccount('alex@example.test');
+  const alexAuth = await req(`https://tendriller.dev/auth/page?tendril=${h.id}&key=${gatedKey}`, {
+    anonymous: true, redirect: 'manual', headers: { Cookie: alex.cookie },
+  });
+  expect(alexAuth.status).toBe(303);
+  expect(alexAuth.headers.get('Location')).toContain('_tendril/auth/session?code=');
+  expect(await inDO(h.id, t => t.db.one('SELECT approved FROM guest_accounts WHERE account_id=?', alex.id))).toEqual({ approved: 1 });
 });

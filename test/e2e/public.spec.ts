@@ -384,18 +384,6 @@ for (const isPrivate of [false, true]) {
       expect(invitation.status).toBe(201);
       const { url: guestUrl } = await invitation.json();
       await second.goto(guestUrl);
-      await test.step('Guest requests access', async () => {
-        await second.getByRole('button', { name: 'Request access' }).click();
-        await expect(second.locator('#claim-status')).toBeVisible();
-      });
-      const management = await page.context().newPage();
-      try {
-        await management.goto(new URL('_tendril/manage', handle.page_url).href);
-        await expect(management.getByRole('heading', { name: 'Guest requests' })).toBeVisible();
-        await management.getByRole('listitem').filter({ hasText: guest.email })
-          .getByRole('button', { name: 'Approve', exact: true }).click();
-        await expect(management.getByRole('status')).toHaveText('Guest access approved.');
-      } finally { await management.close(); }
       await expect(second.getByRole('heading')).toHaveText(/is getting ready/, { timeout: 20_000 });
       const fixture = await test.step('Publish and open browser SQL peers', () => openBrowserSqlSpecimen({ consumer: consumer!, engineDirectory: engineDirectory!,
         peers: client(handle).peers, pageUrl: handle.page_url, applicationId: handle.application.id,

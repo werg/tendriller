@@ -312,7 +312,7 @@ test('signed publication HTTP delivery preserves authored bytes and exact retry 
   } finally { await authenticated.dispose(); await deletePage(handle); }
 });
 
-test('browser forms request and approve guest access, report a page, and sign out', async ({ page, context, browser }) => {
+test('browser forms join guest invites directly, report a page, and sign out', async ({ page, context, browser }) => {
   const handle = await createPage();
   const guest = await browser.newContext({ ignoreHTTPSErrors: true });
   try {
@@ -322,12 +322,10 @@ test('browser forms request and approve guest access, report a page, and sign ou
     expect(invitation.status).toBe(201);
     await signInFixture(guest, OTHER_TOKEN);
     const visitor = await guest.newPage();
+    await claim(guest, { ...handle, page_url: invitation.data.url });
     await visitor.goto(localPageUrl({ ...handle, page_url: invitation.data.url }));
-    await visitor.getByRole('button', { name: 'Request access' }).click();
-    await expect(visitor.getByRole('heading', { name: 'Waiting for the owner' })).toBeVisible();
+    await expect(visitor.getByRole('heading')).toHaveText(/is getting ready/);
     await page.goto(new URL('_tendril/manage', localPageUrl(handle)).href);
-    await page.getByRole('button', { name: 'Approve', exact: true }).click();
-    await expect(page.getByRole('status')).toHaveText('Guest access approved.');
     await page.getByRole('link', { name: 'Report this page' }).click();
     await page.locator('textarea').fill('Synthetic browser form check');
     await page.getByRole('button', { name: 'Send report' }).click();

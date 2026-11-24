@@ -45,6 +45,7 @@ export interface Link {
   key: string;
   role: Role;
   label: string | null;
+  expected_email?: string | null;
   created_at: number;
   expires_at: number | null;
   created_by_agent?: number;
@@ -471,8 +472,8 @@ export class Tendril extends DurableObject<Env> {
     if (!link) throw new HttpError(404, "not_found", "Unknown or expired link");
     if (url.pathname === "/claim/info" && req.method === "GET") {
       return json({ claimed: !!this.db.get<string | null>("owner_account", null),
-        expected: maskOwner(this.db.get<string | null>("intended_owner", null)), role: link.role,
-        direct: link.role === "guest" && !link.created_by_agent });
+        expected: link.role === "guest" ? maskOwner(link.expected_email ?? null) : maskOwner(this.db.get<string | null>("intended_owner", null)),
+        role: link.role });
     }
     if (url.pathname === "/claim/guest-status" && req.method === "GET") {
       if (link.role !== "guest") throw new HttpError(403, "forbidden");
@@ -502,14 +503,19 @@ export class Tendril extends DurableObject<Env> {
       return json({ ok: true });
     }
     if (url.pathname === "/claim/guest" && req.method === "POST") {
-      const b = await readJson(req, 4096);
+      const b = await readJson(req, 8192);
       if (link.role !== "guest" || !this.db.get<string | null>("owner_account", null) || typeof b.account_id !== "string") throw new HttpError(403, "forbidden");
-      this.db.run("INSERT OR IGNORE INTO guest_accounts (account_id, link_id, approved, created_at) VALUES (?, ?, ?, ?)",
-        b.account_id, link.id, link.created_by_agent ? 0 : 1, this.now());
+      if (link.expected_email) {
+        if (!Array.isArray(b.identities) || !ownerMatches(link.expected_email, b.identities)) {
+          throw new HttpError(403, "wrong_guest_email", "This invitation is for a different email address");
+        }
+      }
+      this.db.run("INSERT OR IGNORE INTO guest_accounts (account_id, link_id, approved, created_at) VALUES (?, ?, 1, ?)",
+        b.account_id, link.id, this.now());
       const row = this.db.one<{ approved: number }>("SELECT approved FROM guest_accounts WHERE account_id = ? AND link_id = ?", b.account_id, link.id);
       await this.recordVisitorSignal("guest", b.account_id);
       if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled");
-      if (row?.approved === -1) throw new HttpError(403, "declined", "The owner declined this invitation");
+      if (row?.approved === -1) throw new HttpError(403, "declined", "This invitation was revoked");
       return json({ approved: row?.approved === 1 });
     }
     if (url.pathname === "/claim/owner" && req.method === "POST") {
@@ -679,7 +685,9 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- links
 
-  async createLink(role: Role, label: string | null, expiresIn: number | null, fromAgent = false, beforeInsert?: () => void): Promise<Link> {
+  async createLink(role: Role, label: string | null, expiresIn: number | null, fromAgent = false, beforeInsert?: () => void, expectedEmail: string | null = null): Promise<Link> {
+    if (expectedEmail !== null && role !== "guest") throw new HttpError(400, "bad_request", "Email restriction is only supported on guest invite links");
+    const email = expectedEmail === null ? null : validOptionalEmail(expectedEmail);
     const id = newLinkId();
     const key = newPageKey();
     const hash = await sha256Hex(key);
@@ -692,12 +700,14 @@ export class Tendril extends DurableObject<Env> {
         if (n >= 3) throw new HttpError(413, "quota", "At most three display links are allowed", { limit: 3, used: n });
       }
       this.db.run("INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at, created_by_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, key, hash, role, label, now, expires, fromAgent ? 1 : 0);
+      if (email) this.db.set(`link_email:${id}`, email);
     });
-    return { id, key, role, label, created_at: now, expires_at: expires, created_by_agent: fromAgent ? 1 : 0 };
+    return { id, key, role, label, expected_email: email, created_at: now, expires_at: expires, created_by_agent: fromAgent ? 1 : 0 };
   }
 
   renderLink(l: Link) {
-    return { id: l.id, url: this.linkUrl(l.key), role: l.role, label: l.label ?? null, created_at: l.created_at, expires_at: l.expires_at ?? null };
+    const email = l.expected_email !== undefined ? l.expected_email : this.db.get<string | null>(`link_email:${l.id}`, null);
+    return { id: l.id, url: this.linkUrl(l.key), role: l.role, label: l.label ?? null, email: email ?? null, created_at: l.created_at, expires_at: l.expires_at ?? null };
   }
 
   listLinks() {
@@ -721,7 +731,9 @@ export class Tendril extends DurableObject<Env> {
     const hash = await sha256Hex(key);
     const l = this.db.cached(`links:key:${hash}`, () => {
       const row = this.db.one<Link & { key_hash: string }>("SELECT * FROM links WHERE key_hash = ?", hash);
-      return row ? Object.freeze(row) : null;
+      if (!row) return null;
+      const expected_email = this.db.get<string | null>(`link_email:${row.id}`, null);
+      return Object.freeze({ ...row, expected_email });
     });
     if (!l || !safeEqual(l.key_hash, hash)) return null;
     if (l.expires_at !== null && l.expires_at < this.now()) return null;
@@ -857,6 +869,17 @@ export class Tendril extends DurableObject<Env> {
 export function validName(v: unknown): string {
   if (typeof v !== "string" || !v.trim() || v.length > 100) throw new HttpError(400, "bad_request", "name must be a non-empty string of at most 100 characters");
   return v.trim();
+}
+
+export function validOptionalEmail(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "string") throw new HttpError(400, "invalid_email", "Email must be a valid email address");
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+    throw new HttpError(400, "invalid_email", "Enter a valid email address");
+  }
+  return trimmed.toLowerCase();
 }
 
 function validIntendedOwner(value: unknown): string {

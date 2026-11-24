@@ -121,12 +121,11 @@ export function mountUtility(api: RuntimeApi): () => void {
     element("p", "Save this version’s page files on this device. Your app’s data and connections are managed separately.", "note"), save, savedMessage);
   offline.hidden = !api.identity.publication || !("serviceWorker" in navigator);
 
-  type ShareLink = { id: string; url: string; role: "owner" | "guest" | "display"; label: string | null; expires_at: number | null };
-  type PendingGuest = { account_id: string; link_id: string; email: string | null };
+  type ShareLink = { id: string; url: string; role: "owner" | "guest" | "display"; label: string | null; email?: string | null; expires_at: number | null };
   const canNativeShare = () => typeof navigator.share === "function";
   const shareSection = element("section", undefined, "section");
   const shareHeading = element("h3", "Share & invite");
-  const shareIntro = element("p", "Share this page or create an invite link — anyone with an invite link can sign in and join directly.", "note");
+  const shareIntro = element("p", "Share this page or create an invite link (optionally locked to one email address).", "note");
   const shareMessage = element("p", undefined, "message"); shareMessage.hidden = true; shareMessage.setAttribute("role", "status");
   const shareCurrentBtn = button(canNativeShare() ? "Share this page" : "Copy page link", "primary");
   const inviteDetails = element("details", undefined, "share-opts");
@@ -137,18 +136,17 @@ export function mountUtility(api: RuntimeApi): () => void {
   const displayBtn = button("Page-only link", "secondary");
   const shareBar = element("div", undefined, "share-bar"); shareBar.append(inviteBtn, displayBtn);
   const shareFields = element("div", undefined, "share-fields");
+  const shareEmail = document.createElement("input"); shareEmail.type = "email"; shareEmail.maxLength = 254; shareEmail.placeholder = "Restrict to email (optional, invites only)";
+  shareEmail.setAttribute("aria-label", "Restrict invite to email (optional)");
   const shareLabel = document.createElement("input"); shareLabel.type = "text"; shareLabel.maxLength = 100; shareLabel.placeholder = "Optional label (e.g. Alex or Tablet)";
   shareLabel.setAttribute("aria-label", "Invite label (optional)");
   const shareExpiry = document.createElement("select"); shareExpiry.setAttribute("aria-label", "Link expiry");
   for (const [val, text] of [["604800", "Expires in 7 days"], ["86400", "Expires in 24 hours"], ["2592000", "Expires in 30 days"], ["", "No expiry"]]) {
     const opt = document.createElement("option"); opt.value = val; opt.textContent = text; shareExpiry.append(opt);
   }
-  shareFields.append(shareLabel, shareExpiry);
+  shareFields.append(shareEmail, shareLabel, shareExpiry);
   const shareList = element("ul", undefined, "share-list");
-  const guestBox = element("div", undefined, "guest-box"); guestBox.hidden = true;
-  const guestList = element("ul", undefined, "share-list");
-  guestBox.append(element("h3", "Waiting for approval"), guestList);
-  shareOwnerBox.append(shareFields, shareBar, shareList, guestBox);
+  shareOwnerBox.append(shareFields, shareBar, shareList);
   const shareVisitorNote = element("p", "Only the page owner can create invite or page-only links.", "note"); shareVisitorNote.hidden = true;
   inviteBody.append(shareOwnerBox, shareVisitorNote);
   inviteDetails.append(inviteSummary, inviteBody);
@@ -186,8 +184,8 @@ export function mountUtility(api: RuntimeApi): () => void {
     for (const link of active) {
       const li = element("li", undefined, "share-item");
       const top = element("div", undefined, "share-top");
-      const roleLabel = link.role === "guest" ? "Guest invite" : "Page-only";
-      top.append(element("strong", link.label || roleLabel), element("span", roleLabel, "share-role"));
+      const roleLabel = link.role === "guest" ? (link.email ? link.email : "Guest invite") : "Page-only";
+      top.append(element("strong", link.label || (link.role === "guest" ? "Guest invite" : "Page-only")), element("span", roleLabel, "share-role"));
       const expired = link.expires_at !== null && link.expires_at <= Date.now();
       const urlEl = element("div", expired ? "Expired" : link.url, "share-url");
       const rowActions = element("div", undefined, "share-row-actions");
@@ -199,7 +197,7 @@ export function mountUtility(api: RuntimeApi): () => void {
         rowActions.append(shareBtn);
       }
       const copyBtn = button("Copy");
-      copyBtn.addEventListener("click", () => { void copyText(link.url, `${roleLabel} link copied.`); });
+      copyBtn.addEventListener("click", () => { void copyText(link.url, `${link.role === "guest" ? "Guest invite" : "Page-only"} link copied.`); });
       const revokeBtn = button("Revoke", "revoke");
       revokeBtn.addEventListener("click", async () => {
         revokeBtn.disabled = true;
@@ -219,39 +217,10 @@ export function mountUtility(api: RuntimeApi): () => void {
       shareList.append(li);
     }
   };
-  const renderPendingGuests = (guests: PendingGuest[]) => {
-    while (guestList.firstChild) guestList.firstChild.remove();
-    guestBox.hidden = guests.length === 0;
-    for (const guest of guests) {
-      const li = element("li", undefined, "share-item");
-      li.append(element("strong", guest.email || guest.account_id));
-      const rowActions = element("div", undefined, "share-row-actions");
-      const act = async (kind: "approve" | "decline", btn: HTMLButtonElement) => {
-        btn.disabled = true;
-        try {
-          const res = await fetch(`${api.identity.base}_tendril/guests/${encodeURIComponent(guest.account_id)}/${encodeURIComponent(guest.link_id)}/${kind}`, { method: "POST", credentials: "same-origin" });
-          if (!res.ok) throw Error();
-          showShareStatus(kind === "approve" ? "Guest approved." : "Guest declined.");
-          await refreshShareState();
-        } catch {
-          btn.disabled = false;
-          showShareStatus("Could not update guest request.");
-        }
-      };
-      const approveBtn = button("Approve"); approveBtn.addEventListener("click", () => { void act("approve", approveBtn); });
-      const declineBtn = button("Decline", "revoke"); declineBtn.addEventListener("click", () => { void act("decline", declineBtn); });
-      rowActions.append(approveBtn, declineBtn);
-      li.append(rowActions);
-      guestList.append(li);
-    }
-  };
   const refreshShareState = async () => {
     if (disposed || !api.identity.base) return;
     try {
-      const [linksRes, guestsRes] = await Promise.all([
-        fetch(`${api.identity.base}_tendril/links`, { credentials: "same-origin", cache: "no-store" }),
-        fetch(`${api.identity.base}_tendril/guests`, { credentials: "same-origin", cache: "no-store" }),
-      ]);
+      const linksRes = await fetch(`${api.identity.base}_tendril/links`, { credentials: "same-origin", cache: "no-store" });
       if (disposed) return;
       if (linksRes.status === 403 || linksRes.status === 401) {
         shareOwnerBox.hidden = true; shareVisitorNote.hidden = false;
@@ -262,10 +231,6 @@ export function mountUtility(api: RuntimeApi): () => void {
       if (data.name) sharePageName = data.name;
       shareOwnerBox.hidden = false; shareVisitorNote.hidden = true;
       renderShareLinks(data.links ?? []);
-      if (guestsRes.ok) {
-        const g = await guestsRes.json() as { guests?: PendingGuest[] };
-        renderPendingGuests(g.guests ?? []);
-      }
     } catch {
       if (disposed) return;
       shareOwnerBox.hidden = true; shareVisitorNote.hidden = false;
@@ -281,6 +246,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     showShareStatus(role === "guest" ? "Creating invite link…" : "Creating page-only link…");
     try {
       const body: Record<string, unknown> = { role };
+      if (role === "guest" && shareEmail.value.trim()) body.email = shareEmail.value.trim();
       if (shareLabel.value.trim()) body.label = shareLabel.value.trim();
       if (shareExpiry.value) body.expires_in = Number(shareExpiry.value);
       const res = await fetch(`${api.identity.base}_tendril/links`, {
@@ -293,6 +259,7 @@ export function mountUtility(api: RuntimeApi): () => void {
         throw Error(err?.error?.message || "Could not create link.");
       }
       const created = await res.json() as ShareLink;
+      shareEmail.value = "";
       shareLabel.value = "";
       await refreshShareState();
       await deliverLink(created.url, sharePageName, role === "guest" ? `Join ${sharePageName}` : `View ${sharePageName}`);

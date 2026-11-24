@@ -105,8 +105,8 @@ pre{font:400 .8rem/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;bac
 .field{display:flex;flex-direction:column;gap:.35rem;margin:0 0 .9rem}
 .field:last-child{margin-bottom:0}
 .field-label{font-size:.86rem;font-weight:640;color:var(--text)}
-input[type=text],input[type=url],input[type=password],input:not([type]),textarea,select{font:inherit;width:100%;max-width:34rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:.58rem .78rem;background:var(--surface);color:var(--text);transition:border-color .15s,box-shadow .15s}
-input[type=text]:focus,input[type=url]:focus,input[type=password]:focus,input:not([type]):focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
+input[type=text],input[type=email],input[type=url],input[type=password],input:not([type]),textarea,select{font:inherit;width:100%;max-width:34rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:.58rem .78rem;background:var(--surface);color:var(--text);transition:border-color .15s,box-shadow .15s}
+input[type=text]:focus,input[type=email]:focus,input[type=url]:focus,input[type=password]:focus,input:not([type]):focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--ring)}
 textarea{min-height:7.5rem;resize:vertical}
 label{display:block;margin:.6rem 0}
 fieldset{border:1px solid var(--border);border-radius:var(--radius-sm);padding:1rem;margin:1rem 0}
