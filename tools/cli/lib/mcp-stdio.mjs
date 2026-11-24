@@ -1,6 +1,8 @@
 // Local Stdio MCP Server (W5) for Grok Bot local MCP, Cursor, and local coding agents.
 // Implements JSON-RPC 2.0 over newline-delimited stdin/stdout backed directly by the opened session.
 import { once } from 'node:events';
+import { resolveConfig } from './config.mjs';
+import { client as hostApiClient } from './api.mjs';
 
 const PROTOCOL_VERSION = '2025-11-25';
 
@@ -86,6 +88,22 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'notify_user',
+    description: 'Send an opt-in Web Push notification to subscribed devices for this Tendriller page (even when the page is closed).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', minLength: 1, maxLength: 120 },
+        body: { type: 'string', maxLength: 500 },
+        path: { type: 'string', maxLength: 256 },
+        tag: { type: 'string', maxLength: 64 },
+        badge: { type: 'integer', minimum: 0, maximum: 999 },
+      },
+      required: ['title'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 function lifecycleOf(operationId, state) {
@@ -125,6 +143,13 @@ function validateArguments(name, args) {
   if (name === 'signal_send') {
     if (typeof args.topic !== 'string' || !args.topic.trim() || args.topic.length > 128) throw invalid('Supply a signal topic');
     if (args.ttlMs !== undefined && (!Number.isSafeInteger(args.ttlMs) || args.ttlMs < 100 || args.ttlMs > 60_000)) throw invalid('ttlMs must be 100..60000');
+  }
+  if (name === 'notify_user') {
+    if (typeof args.title !== 'string' || !args.title.trim() || args.title.trim().length > 120) throw invalid('Supply a notification title (1..120 chars)');
+    if (args.body !== undefined && (typeof args.body !== 'string' || args.body.length > 500)) throw invalid('body must be a string up to 500 chars');
+    if (args.path !== undefined && (typeof args.path !== 'string' || args.path.length > 256)) throw invalid('path must be a relative string up to 256 chars');
+    if (args.tag !== undefined && (typeof args.tag !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(args.tag))) throw invalid('tag must be 1..64 alphanumeric/._- chars');
+    if (args.badge !== undefined && (!Number.isSafeInteger(args.badge) || args.badge < 0 || args.badge > 999)) throw invalid('badge must be 0..999');
   }
   if (args.wait !== undefined && !['recorded', 'applied'].includes(args.wait)) throw invalid('wait must be recorded or applied');
   if (args.stopOnError !== undefined && typeof args.stopOnError !== 'boolean') throw invalid('stopOnError must be boolean');
@@ -182,6 +207,20 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
       if (name === 'signal_send') {
         await session.signals.send(args.topic, args.payload, args.ttlMs === undefined ? {} : { ttlMs: args.ttlMs });
         return toolOk({ sent: true, topic: args.topic, durable: false });
+      }
+      if (name === 'notify_user') {
+        const payload = {
+          title: args.title.trim(),
+          ...(args.body !== undefined ? { body: args.body } : {}),
+          ...(args.path !== undefined ? { path: args.path } : {}),
+          ...(args.tag !== undefined ? { tag: args.tag } : {}),
+          ...(args.badge !== undefined ? { badge: args.badge } : {}),
+        };
+        if (typeof owned.notify === 'function') {
+          return toolOk(await owned.notify(payload, { signal }));
+        }
+        const api = hostApiClient(resolveConfig({}));
+        return toolOk(await api.post('/push', payload, { signal }));
       }
       if (name === 'operation_inspect') {
         const state = await session.operations.get(args.operationId);

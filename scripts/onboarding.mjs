@@ -24,7 +24,7 @@ export const TUTORIAL_FILES = Object.freeze([
   'helpers/cli-lifetime.mjs', 'helpers/browser-profile.mjs', 'helpers/participant-lifecycle.mjs', 'helpers/submission-state.mjs',
   'ui/patterns.mjs', 'ui/dashboard.mjs', 'ui/chat-session.mjs', 'ui/showcase.html', 'ui/showcase.mjs',
   'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs', 'helpers/signal-request.mjs', 'helpers/diagnostics-panel.mjs',
-  'helpers/agent-requests.mjs', 'helpers/dev-telemetry.mjs', 'helpers/data-feed.mjs',
+  'helpers/agent-requests.mjs', 'helpers/dev-telemetry.mjs', 'helpers/data-feed.mjs', 'helpers/mobile-media.mjs',
   'media/panel.mjs', 'media/camera.mjs', 'media/voice.mjs', 'media/inference-client.mjs',
   'media/inference-service.mjs', 'media/inference-protocol.mjs',
   'media/inference-peer.mjs', 'media/provider-openai.mjs',

@@ -295,7 +295,7 @@ BEGIN
   SELECT CASE WHEN (SELECT COUNT(*) FROM tendrils WHERE owner_account = NEW.owner_account AND state = 'active') >= 20
     THEN RAISE(ABORT, 'account_tendrils_full') END;
   SELECT CASE WHEN NEW.lifetime = 'resident' AND
-    (SELECT COUNT(*) FROM tendrils WHERE owner_account = NEW.owner_account AND lifetime = 'resident' AND state = 'active') >= 3
+    (SELECT COUNT(*) FROM tendrils WHERE owner_account = NEW.owner_account AND lifetime = 'resident' AND state = 'active') >= 5
     THEN RAISE(ABORT, 'account_residents_full') END;
 END;
 
@@ -305,7 +305,7 @@ BEGIN
   SELECT CASE WHEN (SELECT COUNT(*) FROM tendrils WHERE owner_account = NEW.owner_account AND state = 'active' AND id != NEW.id) >= 20
     THEN RAISE(ABORT, 'account_tendrils_full') END;
   SELECT CASE WHEN NEW.lifetime = 'resident' AND
-    (SELECT COUNT(*) FROM tendrils WHERE owner_account = NEW.owner_account AND lifetime = 'resident' AND state = 'active' AND id != NEW.id) >= 3
+    (SELECT COUNT(*) FROM tendrils WHERE owner_account = NEW.owner_account AND lifetime = 'resident' AND state = 'active' AND id != NEW.id) >= 5
     THEN RAISE(ABORT, 'account_residents_full') END;
 END;
 

@@ -131,7 +131,6 @@ test('the application runtime operates with no host connection, host outbox, bac
   for (let i = 0; i < 3; i++) await env.advance();
   assert.deepEqual(plain(env.api.sensors.status().active), ['motion']);
   assert.equal('pendingWork' in env.api, false);
-  assert.equal('notifications' in env.api, false);
   assert.deepEqual(env.calls, { fetch: [], sockets: 0, stores: 0, registrations: 0, publications: [] });
 });
 
@@ -257,7 +256,7 @@ test('disabled or unsupported offline saving fails immediately without attemptin
 test('application runtime exposes only supported services and leaves authority to the application session', async () => {
   const env = environment();
   for (const name of ['send', 'state', 'scopes', 'conversation', 'timers', 'streams', 'records', 'upload', 'uploadEvent',
-    'setBlobRetention', 'retryCapture', 'discardCapture', 'captures', 'pendingWork', 'connected', 'presence', 'service', 'notifications',
+    'setBlobRetention', 'retryCapture', 'discardCapture', 'captures', 'pendingWork', 'connected', 'presence', 'service',
     'peers', 'members', 'request', 'blobUrl', 'deviceHeaders']) assert.equal(name in env.api, false, name);
   assert.equal('device' in env.api, false);
   assert.equal('deviceHeaders' in env.api.host, false);

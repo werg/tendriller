@@ -1,6 +1,6 @@
 import type { SpeechStatus } from "../../../contract/voice.mjs";
 import type { RuntimeApi, RuntimeArtifactFeatures } from "../../../contract/index.mjs";
-import { createSpeechOutput } from "./output";
+import { createSpeechOutput, type SpeechMediaSessionOptions } from "./output";
 import { createPreferences } from "./preferences";
 import { SpeechCapture } from "./capture";
 import { WakeWordCapture, type WakeMode, type WakeState } from "./wakeword";
@@ -41,6 +41,8 @@ export interface VoiceOptions {
   level?(level: number): void;
   /** Automatically enable spoken output ("browser" | "neural" | true for "browser") when consent allows. */
   autoOutput?: boolean | "browser" | "neural";
+  /** Optional Media Session metadata & play handler for lock-screen / headphone controls while speaking. */
+  mediaSession?: SpeechMediaSessionOptions;
 }
 export { matchWakePhrase } from "./wakeword";
 export type { WakeMode, WakeState } from "./wakeword";
@@ -129,7 +131,7 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
   const output = createSpeechOutput(new URL(".", runtime.assetUrl("voice.mjs")).href, { on: () => () => {}, emit(type, value: any) {
     if (type === "tts") notify({ kind: "output", state: value.state, message: value.message, speaking: output.speaking });
     else if (type === "tts_speaking") notify({ kind: "output", state: value.speaking ? "speaking" : output.status.state, message: output.status.message, speaking: Boolean(value.speaking), completed: value.completed === true });
-  } }, preferences);
+  } }, preferences, undefined, options.mediaSession);
   const wake = new WakeWordCapture({
     onState: (state, message) => handleWake("recognizer", state, message),
     onWake: () => output.stop(), onCommand: deliver, isOutputSpeaking: () => output.speaking,

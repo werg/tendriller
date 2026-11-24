@@ -245,7 +245,7 @@ it('retains unclaimed expiry, intended-owner checks and account resident quotas 
   await expect(signInAsOwner(h, wrong, 'other@example.com')).rejects.toThrow('403');
   const account = 'full-' + crypto.randomUUID();
   await env.ACCOUNTS.prepare('INSERT INTO accounts(id,email,created_at) VALUES(?,?,?)').bind(account, ownerEmail, Date.now()).run();
-  for (let i = 0; i < 3; i++) await env.ACCOUNTS.prepare("INSERT INTO tendrils(id,owner_account,created_at,lifetime) VALUES(?,?,?,'resident')")
+  for (let i = 0; i < 5; i++) await env.ACCOUNTS.prepare("INSERT INTO tendrils(id,owner_account,created_at,lifetime) VALUES(?,?,?,'resident')")
     .bind(crypto.randomUUID(), account, Date.now()).run();
   await expect(signInAsOwner(h, account, ownerEmail)).rejects.toThrow('429');
   const cookie = crypto.randomUUID();
@@ -257,7 +257,7 @@ it('retains unclaimed expiry, intended-owner checks and account resident quotas 
   expect(claimPage.headers.get('Content-Type')).toContain('text/html');
   const content = await claimPage.text();
   expect(content).toContain('Your account is at its page limit');
-  expect(content).toContain('3 resident pages');
+  expect(content).toContain('5 resident pages');
   expect(content).toContain('href="/dashboard"');
   expect(content).toContain('Your prepared app has not been claimed');
   expect((await apiJson(h, 'GET', '')).owner_account_id).toBeNull();

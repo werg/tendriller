@@ -1,3 +1,4 @@
+import { RESIDENT_LIMIT } from "../limits";
 import type { Env } from "../env";
 import { errorResponse } from "../http";
 import { PAGE_KEY_RE, sha256Hex, TENDRIL_ID_RE } from "../ids";
@@ -31,8 +32,8 @@ async function claimFailure(req: Request, response: Response): Promise<Response>
   const body = await response.clone().json().catch(() => null) as { error?: { code?: string; limit?: number } } | null;
   if (body?.error?.code !== 'quota') return response;
   const limit = body.error.limit;
-  const explanation = response.status === 429 && limit === 3
-    ? 'Your account can keep up to 3 resident pages.'
+  const explanation = response.status === 429 && limit === RESIDENT_LIMIT
+    ? `Your account can keep up to ${RESIDENT_LIMIT} resident pages.`
     : response.status === 429 && limit === 20 ? 'Your account can keep up to 20 pages.'
     : response.status === 413 ? 'Your account has reached its page storage allowance.' : 'Your account has reached its page allowance.';
   return html(`<h1>Your account is at its page limit</h1><p>${explanation}</p><p>Open your dashboard to remove a page you no longer need, then return to this page link. Your prepared app has not been claimed.</p><p><a class="button" href="/dashboard">Open dashboard</a></p>`, response.status);

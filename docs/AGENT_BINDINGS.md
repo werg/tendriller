@@ -11,6 +11,13 @@ Redeeming this code through the existing adoption endpoint is additive. Existing
 agents remain authorized. **Replace all agent credentials for recovery** is a
 separate, explicit action and retains the replacing recovery semantics.
 
+The owner can start this from the dashboard (**Add people & devices → An agent**),
+the page's **Page options** panel, or page settings. Each produces a paste-ready
+invitation containing the one-time code and the exact redemption request below,
+plus a short alternative that links to `<service origin>/join/agent?...`. That
+link renders the same instructions statelessly from validated query fields; it
+never looks up or confirms the code. Treat both forms as a credential.
+
 For a retained application, redeem the code with
 `POST <service origin>/api/adopt` and a JSON body containing `code`,
 `expectedMode: "delegate"` and the original `applicationId`. The host verifies
