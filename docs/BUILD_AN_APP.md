@@ -91,12 +91,20 @@ Worker source change. The separate `/api/service` contract remains unchanged.
 
 ## 1. Get the starter and matching public packages
 
-Use **Node 24**, npm, curl, tar and a SHA-256 checker. The released first-app
+Use **Node 24**, npm, curl, tar and a SHA-256 checker. Node 24 is the qualified
+first-app runtime and both starters require at least 24; core's separate minimum
+remains Node 22.15. The released first-app
 archive contains the maintained starter and its exact public SDK, tools and
 Chronolog events packages. Ordinary setup does not need a second repository
 checkout or a Chronolog build. SQL, native RTC and WASM engines are separate
 optional capabilities. For relational guards and multi-entity transactions, use
 the concrete [SQL alternative](STATE_MODELS.md) before configuring authority.
+
+For machine-readable setup output, use `npm run --silent create -- ...` and
+`npm run --silent init`, or invoke `node setup.mjs create ...` / `node setup.mjs init`
+directly. Parse stdout and check the exit status. Node diagnostics, including
+SQLite experimental warnings, stay on stderr; keep them visible and separate
+from JSON. Node 24 does not promise warning-free stderr.
 
 Set the origin to the domain supplied by the user or selected connector. Keep it
 for readiness, package matching, creation, owner sign-in and assistant setup.
@@ -201,6 +209,10 @@ through initialization, building and publication before asking for sign-in.
 Then give the owner the ready page URL. Never stop to request a "claimed" reply.
 Once `page/` exists, `npx tendril-preview ./page` checks layout immediately;
 [static versus real-session preview](tools/PREVIEW.md) explains what it establishes.
+To exercise connected domain flows with development data before production sign-in,
+use the [existing local-host UX review path](tools/PREVIEW.md#connected-ux-review-before-production-sign-in).
+Complete the full UX pass before final delivery; production owner sign-in is not
+blocked on a synthetic preview.
 Keep the published page as the verification target for the actual account,
 device enrollment and session. Enrollment requires `owner_account_id` in the
 host's authenticated agent `info()` response; absence is a host upgrade boundary.
@@ -503,11 +515,28 @@ npm run build
 
 The build produces a complete `page/` graph containing `index.html`, bundled
 page and Worker modules, their shared chunks, and `configuration.json`.
-Configuration contains only the application ID, page URL, initialized native
-device public key (`nativeDeviceId`) and pinned public descriptor. The native
+Configuration contains only public application/definition IDs and versions,
+page/service addresses, the initialized native device public key (`nativeDeviceId`)
+and the pinned public descriptor. The native
 public key identifies the optional inference participant; it is not a credential.
 The build never copies the private handle, native database or
 initial epoch key into `page/`.
+
+The build derives `definitionId` and `definitionVersion` from `domain.mjs` and
+checks its public definition digest against the retained initialized descriptor.
+A mismatch fails the build and removes `page/`; restore the initialized definition
+or use a fresh project for a different domain. Rebuilding UI does not authorize
+replacement of a signer, definition or history. Initialization and generic peer
+logging need no domain-specific query.
+
+When adapting the starter, deliberately edit the domain, rendered views and
+handlers, display name, and assistant command/query allowlists and event
+projection. New declared commands are not automatically granted to the assistant.
+Keep executable domain and optional SQL initialization in the native/Worker
+composition; the page needs only the generated public identity.
+
+Before choosing external APIs or assets, read the [published-page security policy](BROWSER_API.md#published-page-security-policy).
+The sign-in redirect is not evidence of the authenticated authored page's policy.
 
 The implementation is deliberately ordinary:
 

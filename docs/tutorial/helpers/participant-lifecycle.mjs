@@ -5,6 +5,7 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
   let notice, setupFailure, dirty = false, processing, adapter, adapterAbort;
   let expiryTimer, retryTimer, failures = 0, adapterTask, adapterKey, blockedKey;
   let optionalTimer, optionalFailures = 0, preparing, optionalStopped = false;
+  let waitingConsentFor, waitingOwnerClaim = false;
   const optionalStop = new AbortController(), optionalLifetime = AbortSignal.any([lifetime, optionalStop.signal]);
   const tasks = new Set();
   const track = task => { tasks.add(task); task.finally(() => tasks.delete(task)).catch(() => {}); return task; };
@@ -66,10 +67,14 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
   function updateAdapter() {
     if (optionalLifetime.aborted) return;
     const key = approvedKey();
+    if (key) waitingConsentFor = undefined;
     if (!startAdapter || !key || blockedKey === key) {
       // Abort a start in flight as well as an online adapter on revocation.
       if (adapter || adapterAbort) track(stopAdapter());
-      if (startAdapter && !key) report({ state: 'awaiting_assistant_consent', participantRunning: true });
+      if (startAdapter && !key && waitingConsentFor !== (proposalId ?? null)) {
+        waitingConsentFor = proposalId ?? null;
+        report({ state: 'awaiting_assistant_consent', participantRunning: true });
+      }
       return;
     }
     if (adapterTask) {
@@ -128,6 +133,7 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
       dirty = false; updateAdapter();
       try {
         const results = owned.processPairings ? await owned.processPairings({ signal: lifetime }) : [];
+        waitingOwnerClaim = false;
         failures = 0; clearTimeout(expiryTimer); expiryTimer = undefined;
         for (const result of results) report({ pairing: result });
         if (results.some(result => result.state === 'committed') && await owned.session.orderingPause?.()) dirty = true;
@@ -138,7 +144,14 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
         if (deadlines.length) expiryTimer = setTimeout(reconcile, Math.min(...deadlines) - Date.now() + 1);
       } catch (error) {
         if (lifetime.aborted) return;
-        report({ state: 'pairing_unavailable', code: safeCode(error), participantRunning: true });
+        if (error.code === 'pairing_account_required') {
+          if (!waitingOwnerClaim) report({ state: 'awaiting_owner_claim', code: safeCode(error), participantRunning: true,
+            next: 'The owner opens the already-published page and signs in; pairing resumes from its setup notification.' });
+          waitingOwnerClaim = true;
+        } else {
+          waitingOwnerClaim = false;
+          report({ state: 'pairing_unavailable', code: safeCode(error), participantRunning: true });
+        }
         if (terminal(error)) stopOptional(safeCode(error));
         // Missing owner claim is resolved by its notification; don't poll it.
         if (!['pairing_account_required', 'pairing_account_revoked', 'forbidden', 'agent_binding_revoked'].includes(error.code) &&

@@ -139,7 +139,7 @@ async function connectSession({ signal } = {}) {
   try {
     const identity = window.tendril?.identity;
     attachment = await openBrowserOwner({ workerUrl: new URL(configuration.ownerWorkerUrl || './worker.mjs', import.meta.url),
-      profileId, applicationId: configuration.applicationId, definitionId: 'shared-notes', definitionVersion: '2',
+      profileId, applicationId: configuration.applicationId, definitionId: configuration.definitionId, definitionVersion: configuration.definitionVersion,
       signal, timeoutMs: 30_000, context: { viewId, ...(identity?.documentPath ? { documentPath: identity.documentPath } : {}),
         ...(identity?.publication ? { publicationId: identity.publication } : {}) },
       // Another tab or a page update took over this tab's route: reconnect.

@@ -39,7 +39,9 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   if (mode === 'independent' && profile === 'main') throw Error('Independent mode requires a separately provisioned and enrolled profile.');
   const selected = paths(profile);
   let binding = await readPrivate(selected.credential, true);
-  if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey() });
+  if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey(),
+    policy: { capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'publish'] } });
+  // Reuse retained binding policy verbatim; resuming never broadens its authority.
   let session, control, pairing, processPairings, setupHandle;
   const supervisor = await createNativeSessionSupervisor({ directory: selected.directory, profileId: profile, signal,
     bindings: [binding], openOwner: async () => {
@@ -76,20 +78,17 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
     watchSetup: callbacks => watchApplicationSetup({ api: setupHandle.api, token: setupHandle.token, ...callbacks }), close: () => supervisor.close() };
 }
 
-export async function runPeer({ signal, profile = 'main' } = {}, { onOwned, onClosed } = {}) {
+export async function runPeer({ signal, profile = 'main' } = {}, { onOwned, onClosed, report = value => console.log(JSON.stringify(value)) } = {}) {
   const owned = await openSession({ signal, profile });
   let lifecycle;
   try {
     onOwned?.();
-    lifecycle = superviseParticipant({ owned, signal, watch: owned.watchSetup,
-      report: status => console.log(JSON.stringify(status)) });
-    console.log(JSON.stringify({ running: true, profile, deviceId: owned.session.deviceId,
-      ownerInstanceId: owned.supervisor.ownerInstanceId, terminal: 'tendril --session ./session.mjs --mode attach self' }));
-    owned.session.participation.onStatus(status => console.log(JSON.stringify({ connection: status.phase, error: status.error })));
-    for await (const change of owned.session.changes({ signal })) {
-      const snapshot = await owned.session.query('notes', null);
-      console.log(JSON.stringify({ notes: snapshot.value.length, revision: snapshot.revision, change: change.kind }));
-    }
+    lifecycle = superviseParticipant({ owned, signal, watch: owned.watchSetup, report });
+    report({ running: true, profile, deviceId: owned.session.deviceId,
+      ownerInstanceId: owned.supervisor.ownerInstanceId, terminal: 'tendril --session ./session.mjs --mode attach self' });
+    owned.session.participation.onStatus(status => report({ connection: status.phase, error: status.error }));
+    for await (const change of owned.session.changes({ signal }))
+      report({ revision: change.revision, change: change.kind });
   } finally { try { await lifecycle?.close(); } finally { await owned.close(); } onClosed?.(); }
 }
 

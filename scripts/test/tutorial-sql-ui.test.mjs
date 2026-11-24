@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tutorial/sql/ui-state.mjs';
 import { buildPage } from '../../docs/tutorial/sql/build.mjs';
+import { applicationDefinitionDigest } from '@chronolog/peer-session';
+import { definition as inventoryDefinition } from '../../docs/tutorial/sql/domain.mjs';
 import { registerLifecycleFlush } from '../../docs/tutorial/helpers/diagnostics-panel.mjs';
 
 const snapshot = () => ({ revision: { generation: 'g1', point: { sequence: 7 } },
@@ -66,13 +68,19 @@ test('build requires setup and exact engine graph, removes stale or partial outp
   await mkdir(engine); await writeFile(new URL('index.html', root), '<html>SQL</html>');
   const wasm = Buffer.from('fixture-engine'), manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex'), loaderSha256: createHash('sha256').update('module').digest('hex') };
   for (const [name, bytes] of Object.entries({ 'manifest.json': JSON.stringify(manifest), 'sqlite3.wasm': wasm, 'sqlite3.mjs': 'module', 'sqlite3-opfs-async-proxy.js': 'proxy' })) await writeFile(new URL(name, engine), bytes);
+  const definition = { ...inventoryDefinition, id: 'warehouse', version: '3', queries: { stock: inventoryDefinition.queries.inventory } };
   const records = { 'handle.json': { application: { id: 'app' }, page_url: 'https://page.example/', privateCredential: 'never publish' },
-    'descriptor.json': { payload: { applicationId: 'app' } }, 'initialized.json': { applicationId: 'app', deviceId: 'native' } };
-  const opts = { root, readPrivate: async name => records[name], verifyWasmBuild: (bytes, meta) => { assert.deepEqual(bytes, wasm); assert.deepEqual(meta, manifest); }, bundle: async () => {} };
+    'descriptor.json': { payload: { applicationId: 'app', definitionDigest: await applicationDefinitionDigest(definition) } }, 'initialized.json': { applicationId: 'app', deviceId: 'native' } };
+  const opts = { root, definition, readPrivate: async name => records[name], verifyWasmBuild: (bytes, meta) => { assert.deepEqual(bytes, wasm); assert.deepEqual(meta, manifest); }, bundle: async () => {} };
   await buildPage(opts);
   assert.equal((await readFile(new URL('engine/sqlite3.wasm', output))).toString(), wasm.toString());
   const config = JSON.parse(await readFile(new URL('configuration.json', output)));
-  assert.deepEqual(Object.keys(config).sort(), ['applicationId', 'descriptor', 'page_url']);
+  assert.deepEqual(Object.keys(config).sort(), ['applicationId', 'definitionId', 'definitionVersion', 'descriptor', 'page_url']);
+  assert.equal(config.definitionId, definition.id); assert.equal(config.definitionVersion, definition.version);
+  const retained = structuredClone(records);
+  await assert.rejects(buildPage({ ...opts, definition: { ...definition, version: '4' } }), /retained initialized descriptor/);
+  assert.deepEqual(records, retained, 'a rebuild never rewrites retained initialization');
+  await assert.rejects(access(output), { code: 'ENOENT' });
   for (const failure of [
     { readPrivate: async () => { throw Error('missing setup'); } },
     { readPrivate: async name => name === 'initialized.json' ? { applicationId: 'other' } : records[name] },
@@ -145,13 +153,16 @@ test('page wiring retains before command, renders bins, locks edited input and r
       async ready() { this.onStatus({ phase: 'ready', database: 'ready', generation: 'g1' }); emitParticipation({ phase: 'following' }); this.listener(this.snapshot); },
       async refresh() { return this.snapshot; }, close() {} };
     runInNewContext(source, { document, window, location: { origin: 'https://page.example', pathname: '/' },
-      fetch: async () => ({ ok: true, json: async () => ({ applicationId: 'app', page_url: 'https://page.example/' }) }),
+      fetch: async () => ({ ok: true, json: async () => ({ applicationId: 'app', definitionId: 'warehouse', definitionVersion: '3', page_url: 'https://page.example/' }) }),
       sessionStorage: { getItem: () => 'view', setItem() {} }, localStorage: {},
       crypto: { randomUUID: () => 'op' }, URL, AbortSignal, structuredClone, setTimeout,
       mountDiagnosticsPanel: () => ({ update() {}, snapshot: () => ({}) }), createSubmissionState,
       transferIntent, checkIntentSession, retryIntent,
       describeOperationLifecycle: (id, state) => ({ lifecycle: state?.status ?? 'unknown' }),
-      createApplicationBackend: () => ({}), openBrowserOwner: async () => ({ session, mode: 'elected', detach: async () => {} }),
+      createApplicationBackend: () => ({}), openBrowserOwner: async options => {
+        assert.equal(options.definitionId, 'warehouse'); assert.equal(options.definitionVersion, '3');
+        return { session, mode: 'elected', detach: async () => {} };
+      },
       createBrowserIdentity: async () => 'device',
       createLiveView: (_session, opts) => { live.onStatus = opts.onStatus; return live; },
       createViewStore: () => ({ pending: () => [...contexts.values()],

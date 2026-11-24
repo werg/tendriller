@@ -6,15 +6,22 @@ import { createScopedApplicationTools, forwardSessionEvents } from '@chronolog/p
 import { createAssistantKey, proposeApplicationAssistant, connectApplicationAssistant, createAssistantEventDelivery } from '@tendriller/core/assistant';
 import { project, privateDirectory, readPrivate, savePrivate } from './local.mjs';
 import { openSession } from './session.mjs';
+import { definition } from './domain.mjs';
 import { createCliLifetime } from './helpers/cli-lifetime.mjs';
 import { superviseParticipant } from './helpers/participant-lifecycle.mjs';
 
 export async function prepareAssistant({ events = false, signal } = {}) {
   signal?.throwIfAborted();
+  // Review this explicit subset when adapting the domain; new commands gain no authority.
+  const selected = { queries: ['notes'], commands: ['addNote'] };
+  for (const kind of ['queries', 'commands']) for (const name of selected[kind]) {
+    if (!Object.hasOwn(definition[kind], name))
+      throw Error(`Assistant ${kind} includes undeclared ${name}. Review the explicit capability selection in assistant.mjs for this domain.`);
+  }
   const { handle } = await project({ signal });
   const key = await readPrivate('assistant-key.json', true) ?? await savePrivate('assistant-key.json', createAssistantKey());
   const options = { api: handle.api, token: handle.token, key, label: 'Shared notes', signal,
-    queries: ['notes'], commands: ['addNote'],
+    ...selected,
     events: events ? [{ name: 'note.added', description: 'A note was added. Only its original operation ID is exposed.' }] : [] };
   signal?.throwIfAborted();
   return { options, review: await proposeApplicationAssistant(options) };

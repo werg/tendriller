@@ -227,3 +227,63 @@ test('an unexpectedly closed setup channel preserves missing-application recover
   assert(!status.next.includes('credential'));
   await f.lifecycle.close();
 });
+
+test('pre-claim and consent waits coalesce independently, resume on notices and never poll', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let claimed = false, calls = 0, failure;
+  const pending = { ...approved(), assistant: { proposalId: 'a'.repeat(64), approved: false, revision: null } };
+  const f = fixture({ owned: { session: { signal: new AbortController().signal }, processPairings: async () => {
+    calls++;
+    if (failure) throw Object.assign(Error(failure), { code: failure });
+    if (!claimed) throw Object.assign(Error('Sign in'), { code: 'pairing_account_required' });
+    return [{ state: 'committed' }];
+  } } });
+  t.after(() => f.lifecycle.close());
+  f.notice(pending); await flush();
+  f.notice(pending); await flush();
+  f.status({ state: 'connected' }); f.notice(pending); await flush();
+  assert.equal(f.reports.filter(x => x.state === 'awaiting_assistant_consent').length, 1);
+  const waiting = f.reports.filter(x => x.state === 'awaiting_owner_claim');
+  assert.equal(waiting.length, 1);
+  assert.equal(waiting[0].code, 'pairing_account_required');
+  assert.equal(waiting[0].participantRunning, true);
+  assert.match(waiting[0].next, /published page.*signs in/);
+  assert(!f.reports.some(x => x.state === 'pairing_unavailable' || x.state === 'setup_retry'));
+  const beforeIdle = calls;
+  t.mock.timers.tick(48 * 3600000); await flush();
+  assert.equal(calls, beforeIdle, 'expected waiting adds no polling');
+
+  claimed = true;
+  f.notice(pending); await flush();
+  assert(f.reports.some(x => x.pairing?.state === 'committed'));
+  assert.equal(f.adapters.length, 0, 'owner claim is not assistant consent');
+  f.notice(approved()); await flush(); await flush();
+  assert.equal(f.adapters.length, 1);
+  f.notice(pending); await flush(); await flush();
+  assert.equal(f.reports.filter(x => x.state === 'awaiting_assistant_consent').length, 2,
+    'a real approval transition reports the new wait');
+  failure = 'forbidden';
+  f.notice(pending); await flush();
+  assert(f.reports.some(x => x.state === 'pairing_unavailable' && x.code === 'forbidden'));
+  assert(f.reports.some(x => x.state === 'assistant_stopped' && x.reason === 'forbidden'));
+  assert.equal(f.reports.filter(x => x.state === 'awaiting_owner_claim').length, 1);
+});
+
+test('waiting coalescing preserves changed pairing failures and retry deadlines', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let code = 'pairing_account_required';
+  const f = fixture({ owned: { session: { signal: new AbortController().signal }, processPairings: async () => {
+    throw Object.assign(Error(code), { code });
+  } } });
+  t.after(() => f.lifecycle.close());
+  f.notice(approved()); await flush();
+  code = 'NETWORK_UNAVAILABLE'; f.notice(approved()); await flush();
+  t.mock.timers.tick(10); await flush();
+  code = 'PAIRING_OUTCOME_UNCERTAIN'; t.mock.timers.tick(20); await flush();
+  assert.deepEqual(f.reports.filter(x => x.state === 'pairing_unavailable').map(x => x.code),
+    ['NETWORK_UNAVAILABLE', 'NETWORK_UNAVAILABLE', 'PAIRING_OUTCOME_UNCERTAIN']);
+  assert.deepEqual(f.reports.filter(x => x.state === 'setup_retry').map(x => x.retryInMs), [10, 20, 20]);
+  code = 'pairing_account_required'; f.notice(approved()); await flush();
+  assert.equal(f.reports.filter(x => x.state === 'awaiting_owner_claim').length, 2,
+    'returning to expected waiting after a failure is a visible transition');
+});

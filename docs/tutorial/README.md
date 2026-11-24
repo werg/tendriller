@@ -7,8 +7,20 @@ independent of titles: the page, pairing Worker and application Worker all impor
 or replace a retained browser store. Keep `configuration.page_url` from the page
 handle; the service origin and the published page origin serve different roles.
 
+Adapt these deliberate application choices: `domain.mjs`, the rendered views and
+command/query handlers in `page.mjs`, the display name/HTML, and the explicit
+assistant command/query selection and event projection in `assistant.mjs`.
+The build derives definition ID/version from the domain into public configuration;
+page plumbing has no second definition name to edit. It verifies the domain's
+public binding against the retained initialized descriptor and refuses a mismatch.
+A UI rebuild cannot replace an initialized definition. Restore that definition
+for existing history, or initialize a different domain in a fresh project.
+Do not rewrite retained history IDs as a branding change. Initialization uses a
+coherent read view; generic peer logs report revisions without querying domain data.
+
 This is the complete source used by the selected service's
-`/docs/BUILD_AN_APP.md`. Use Node 24 and check that service's `/api/readiness`
+`/docs/BUILD_AN_APP.md`. Node 24 is the qualified first-app runtime (the starter
+requires at least 24); core's separate minimum remains Node 22.15. Check that service's `/api/readiness`
 before acquiring dependencies. Follow its build guide to download and verify
 the immutable `tendriller-first-app-VERSION.tgz` release kit in a new application
 directory. The kit carries this starter, `composition.json`, and its exact SDK,
@@ -22,7 +34,13 @@ For source development, build and qualify one clean matching composition as
 described in the selected service's development guide.
 
 The parent guide supplies the package acquisition commands and every setup
-checkpoint. After installing those dependencies:
+checkpoint. For scripts that parse helper output, use `npm run --silent create -- ...`
+and `npm run --silent init`, or invoke `node setup.mjs create ...` / `node setup.mjs init`
+directly. Read JSON from stdout and check the exit status; Node diagnostics such as
+SQLite experimental warnings remain on stderr. Do not combine the streams or
+suppress warnings globally. Node 24 does not promise warning-free stderr.
+
+After installing those dependencies:
 
 ```sh
 npm run setup:prepare -- https://YOUR_HOST "Shared notes"
@@ -40,6 +58,12 @@ npm run serve # Native participant with optional reviewed MCP access.
 # the page opens the service-origin approval once. One Approve tap returns to the
 # page, which connects as soon as the peer commits. Later visits just connect.
 ```
+
+Before claim, `awaiting_owner_claim` means the owner should open that published
+page and sign in. `awaiting_assistant_consent` is a separate optional permission
+review. Repeated unchanged waiting notices are coalesced; actual failures retain
+their codes and retry details. The participant stays running and waits for setup
+notifications, without polling for a claim.
 
 The account-linked route derives the verified owner on the host and requires its
 existing `tendrils:create` grant. It needs no local OAuth credential or owner email.
@@ -159,6 +183,14 @@ can be expanded deliberately after reviewing the membership and availability
 requirements. With the peer running, ordinary CLI commands attach to its
 owner automatically. Use `--mode own` only for deliberate standalone ownership
 while the peer is stopped; it takes the same exclusive fence.
+
+A freshly created `local-terminal` attachment explicitly includes `publish` with
+ordinary application capabilities, but not `ownerAdmin`. Retained bindings are
+reused as saved and are never upgraded during resume. For an older binding that
+lacks publication authority, deliberately create a separately scoped binding with
+`supervisor.createBinding({ id, policy: { capabilities: ['publish'] } })`, retain
+its credential privately, and use it for publication. Do not edit or replace a
+revoked binding record to restore access.
 
 Ctrl-C/SIGTERM waits for owned shutdown. Standalone peer/assistant/SQL/inference
 entry points then flush their output and dispose the dedicated Node process,
