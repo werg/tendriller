@@ -21,13 +21,12 @@ export async function oauthConnections(req: Request, env: Env, config: OAuthConf
   const csrf = await intent(env, browser, 'revoke', { resource: config.resource });
   const rows = await env.ACCOUNTS.prepare('SELECT * FROM integration_oauth_grants WHERE account_id=? AND resource=? ORDER BY created_at DESC LIMIT 100')
     .bind(browser.id, config.resource).all<OAuthGrant>();
-  return authorizationPage('Connected integrations', `<h1>Connected integrations</h1>
-    <p>These authorizations identify which integration clients may act for your account. Individual application connections have their own permissions.</p>
-    <p>Revoking an authorization stops future token use and subscriptions bound to that authorization. Requests already sent cannot be retracted.</p>
-    ${rows.results.length ? rows.results.map(grant => {
+  return authorizationPage('Connected integrations', `<a class="back-link" href="/dashboard">← Back to dashboard</a><div class="page-head"><span class="eyebrow">Integrations</span><h1>Connected OAuth clients</h1>
+    <p class="lead">Manage which external clients can act on your account. Revoking stops future token use and subscriptions.</p></div>
+    <div class="stack">${rows.results.length ? rows.results.map(grant => {
       const client = config.clients.find(value => value.id === grant.client_id), active = grant.revoked_at === null && grant.expires_at > Date.now();
-      return `<section class="card"><h2>${escapeHtml(client?.name ?? grant.client_id)}</h2><p>${active ? 'Active' : 'Revoked or expired'} · Expires ${escapeHtml(new Date(grant.expires_at).toISOString())}</p>
-        <p><code>${escapeHtml(grant.resource)}</code></p><p>Permissions: ${escapeHtml(grant.scope || 'Account identity only')}</p>
-        ${active ? `<form method="post"><input type="hidden" name="intent" value="${csrf}"><input type="hidden" name="grant_id" value="${escapeHtml(grant.id)}"><button type="submit">Revoke this authorization</button></form>` : ''}</section>`;
-    }).join('') : '<p>No integration authorizations.</p>'}`);
+      return `<section class="card"><div class="card-head"><div><h2>${escapeHtml(client?.name ?? grant.client_id)}</h2><p>Expires ${escapeHtml(new Date(grant.expires_at).toISOString())}</p></div><span class="badge${active ? ' ok' : ''}">${active ? 'Active' : 'Revoked or expired'}</span></div>
+        <dl class="meta-grid"><dt>Resource</dt><dd><code>${escapeHtml(grant.resource)}</code></dd><dt>Permissions</dt><dd>${escapeHtml(grant.scope || 'Account identity only')}</dd></dl>
+        ${active ? `<form method="post"><input type="hidden" name="intent" value="${csrf}"><input type="hidden" name="grant_id" value="${escapeHtml(grant.id)}"><div class="actions"><button class="danger sm" type="submit">Revoke authorization</button></div></form>` : ''}</section>`;
+    }).join('') : '<p class="empty">No integration authorizations.</p>'}</div>`);
 }

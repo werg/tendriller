@@ -12,7 +12,8 @@ it('serves recovery independently of authored code and enforces owner and origin
   expect(response.headers.get('cache-control')).toBe('no-store');
   expect(response.headers.get('content-security-policy')).toContain("default-src 'none'");
   expect(html).toContain('Add agent');
-  expect(html).toContain('value="control:write"> Update signed application control');
+  expect(html).toContain('value="control:write"');
+  expect(html).toContain('Update signed application control');
   expect(html).toContain('Replace all agent credentials for recovery');
   expect(html).not.toContain('tendril.js');
   expect(html).not.toContain('<script');
@@ -188,4 +189,108 @@ it('a late failed redemption cannot restore the code replaced during its policy 
     expect(await inDO(h.id, t => t.db.get('adopt', null))).toEqual(replacement);
     expect(await inDO(h.id, t => t.db.one('SELECT COUNT(*) AS n FROM tokens'))).toEqual({ n: 1 });
   } finally { await inDO(h.id, restore); }
+});
+
+it('lets the owner create, list and revoke guest and display share links via page API and management UI', async () => {
+  const h = await create();
+  const linksUrl = h.page_url + '_tendril/links';
+  const manageUrl = h.page_url + '_tendril/manage';
+
+  const guestRes = await req(linksUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'guest', label: 'Alex', expires_in: 86400 }),
+  });
+  expect(guestRes.status).toBe(201);
+  const guestLink = await guestRes.json() as { id: string; url: string; role: string; label: string };
+  expect(guestLink.role).toBe('guest');
+  expect(guestLink.label).toBe('Alex');
+
+  const displayRes = await req(linksUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'display', label: 'Kitchen tablet' }),
+  });
+  expect(displayRes.status).toBe(201);
+  const displayLink = await displayRes.json() as { id: string; url: string; role: string; label: string };
+  expect(displayLink.role).toBe('display');
+
+  const listed = await (await req(linksUrl)).json() as { links: { id: string; role: string }[] };
+  expect(listed.links.map(l => l.id)).toContain(guestLink.id);
+  expect(listed.links.map(l => l.id)).toContain(displayLink.id);
+
+  // Display visitors cannot manage or list owner links
+  expect((await req(displayLink.url + '_tendril/links', { anonymous: true })).status).toBe(403);
+  expect((await req(linksUrl + '/l_main', { method: 'DELETE' })).status).toBe(400);
+
+  // Management HTML shows created links and can create/revoke them without scripts
+  const html = await (await req(manageUrl)).text();
+  expect(html).toContain('Share &amp; invite');
+  expect(html).toContain('Alex');
+  expect(html).toContain('Kitchen tablet');
+
+  const formCreate = await req(manageUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'action=create-link&role=guest&label=Sam&expires_in=604800',
+  });
+  expect(formCreate.status).toBe(200);
+  expect(await formCreate.text()).toContain('Guest invite link created:');
+
+  expect((await req(`${linksUrl}/${guestLink.id}`, { method: 'DELETE' })).status).toBe(204);
+  const after = await (await req(linksUrl)).json() as { links: { id: string }[] };
+  expect(after.links.map(l => l.id)).not.toContain(guestLink.id);
+});
+
+it('keeps expired page-only links visible and revocable so their slots can be reused', async () => {
+  const h = await create(), manageUrl = h.page_url + '_tendril/manage';
+  const links = await inDO(h.id, async t => {
+    const rows = [];
+    for (let i = 0; i < 3; i++) rows.push(await t.createLink('display', `Expired tablet ${i}`, 1));
+    t.db.run("UPDATE links SET expires_at=? WHERE role='display'", t.now() - 1);
+    return rows;
+  });
+  const html = await (await req(manageUrl)).text();
+  expect(html).toContain('Shares page files only; does not grant access to application data or connect a device.');
+  expect(html).toContain('Expired tablet 0');
+  expect(html).toContain('Expired');
+  expect(html).toContain(`name="link_id" value="${links[0].id}"`);
+  const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+  expect((await req(manageUrl, { method: 'POST', headers, body: `action=revoke-link&link_id=${links[0].id}` })).status).toBe(200);
+  expect((await req(manageUrl, { method: 'POST', headers, body: 'action=create-link&role=display&label=Replacement' })).status).toBe(200);
+});
+
+it('rechecks owner revocation and total quota at the link insertion boundary for both creation routes', async () => {
+  for (const route of ['manage', 'links']) {
+    for (const change of ['session', 'quota']) {
+      const h = await create(), url = h.page_url + '_tendril/' + route;
+      const restore = await inDO(h.id, t => {
+        const original = t.createLink;
+        t.createLink = async (...args) => {
+          if (change === 'session') t.db.run('DELETE FROM page_sessions');
+          else {
+            for (let i = 0; i < 49; i++) t.db.run(`INSERT INTO links(id,key,key_hash,role,created_at,created_by_agent)
+              VALUES(?,?,?,'guest',?,0)`, `filler-${i}`, `filler-key-${i}`, `filler-hash-${i}`, t.now());
+          }
+          return original.apply(t, args);
+        };
+        return () => { t.createLink = original; };
+      });
+      try {
+        const response = await req(url, { method: 'POST', headers: { 'Content-Type': route === 'manage' ? 'application/x-www-form-urlencoded' : 'application/json' },
+          body: route === 'manage' ? 'action=create-link&role=guest&label=MustNotExist' : JSON.stringify({ role: 'guest', label: 'MustNotExist' }) });
+        expect(response.status, `${route}: ${change}`).toBe(change === 'session' ? 401 : 429);
+        expect(await inDO(h.id, t => t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links WHERE label='MustNotExist'")!.n)).toBe(0);
+      } finally { await inDO(h.id, restore); }
+    }
+  }
+});
+
+it('enforces the display quota atomically across parallel link preparation', async () => {
+  const h = await create();
+  const result = await inDO(h.id, async t => {
+    await t.createLink('display', 'one', null);
+    await t.createLink('display', 'two', null);
+    const results = await Promise.allSettled([t.createLink('display', 'three', null), t.createLink('display', 'four', null)]);
+    return { fulfilled: results.filter(row => row.status === 'fulfilled').length,
+      count: t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links WHERE role='display'")!.n };
+  });
+  expect(result).toEqual({ fulfilled: 1, count: 3 });
 });

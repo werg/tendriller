@@ -194,9 +194,9 @@ export async function routeAssistant(req: Request, env: Env, url: URL) {
     const rows = await env.ACCOUNTS.prepare(`SELECT c.page_id,c.label,c.enabled FROM assistant_connections c
       JOIN tendrils t ON t.id=c.page_id WHERE c.owner_account=? AND t.owner_account=c.owner_account AND t.state='active'
       ORDER BY c.page_id LIMIT 20`).bind(owner.id).all<{ page_id: string; label: string; enabled: number }>();
-    return servicePage('Assistant connections', '<h1>Assistant connections</h1>' + (rows.results.length
-      ? '<ul>' + rows.results.map(row => `<li><a href="/connections/${row.page_id}">${escapeHtml(row.label)}</a> · ${row.enabled ? 'Connected' : 'Review access'}</li>`).join('') + '</ul>'
-      : '<p>Ask your application’s participant to propose a connection.</p>') + '<p><a href="/oauth/connections">Manage linked OAuth clients</a></p>');
+    return servicePage('Assistant connections', `<div class="page-head"><span class="eyebrow">Integrations</span><h1>Assistant connections</h1><p class="lead">Choose which apps your connected assistants can read and update.</p></div>` + (rows.results.length
+      ? '<ul class="list">' + rows.results.map(row => `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(row.label)} <span class="badge${row.enabled ? ' ok' : ' warn'}">${row.enabled ? 'Connected' : 'Ready to connect'}</span></div></div><a class="button sm secondary" href="/connections/${row.page_id}">${row.enabled ? 'Manage' : 'Review'}</a></li>`).join('') + '</ul>'
+      : '<p class="empty">No apps have proposed an assistant connection yet.</p>') + '<div class="actions"><a class="button secondary" href="/oauth/connections">Manage OAuth clients</a></div>');
   }
 
   if (req.headers.has('Origin') && req.headers.get('Origin') !== config.issuer) throw new HttpError(403, 'invalid_origin');

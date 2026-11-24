@@ -678,16 +678,20 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- links
 
-  async createLink(role: Role, label: string | null, expiresIn: number | null, fromAgent = false): Promise<Link> {
-    if (role === "display") {
-      const n = this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links WHERE role = 'display'")?.n ?? 0;
-      if (n >= 3) throw new HttpError(413, "quota", "At most three display links are allowed", { limit: 3, used: n });
-    }
+  async createLink(role: Role, label: string | null, expiresIn: number | null, fromAgent = false, beforeInsert?: () => void): Promise<Link> {
     const id = newLinkId();
     const key = newPageKey();
+    const hash = await sha256Hex(key);
     const now = this.now();
     const expires = expiresIn ? now + expiresIn * 1000 : null;
-    this.db.run("INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at, created_by_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, key, await sha256Hex(key), role, label, now, expires, fromAgent ? 1 : 0);
+    this.transaction(() => {
+      beforeInsert?.();
+      if (role === "display") {
+        const n = this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links WHERE role = 'display'")?.n ?? 0;
+        if (n >= 3) throw new HttpError(413, "quota", "At most three display links are allowed", { limit: 3, used: n });
+      }
+      this.db.run("INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at, created_by_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, key, hash, role, label, now, expires, fromAgent ? 1 : 0);
+    });
     return { id, key, role, label, created_at: now, expires_at: expires, created_by_agent: fromAgent ? 1 : 0 };
   }
 

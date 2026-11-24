@@ -1,12 +1,15 @@
 // A state-aware connection card for createOwnerConnection. One message, at most one
 // primary action, progress while setup runs, and technical details folded away.
 // While not connected, the app shows this card instead of empty or stale data.
-const STYLE = `.tc-card{display:flex;gap:1rem;align-items:flex-start;background:#fff;border:1px solid #cbdccd;border-radius:.8rem;padding:1.2rem;margin:1rem 0}
-.tc-spinner{flex:none;width:1.4rem;height:1.4rem;border-radius:50%;border:3px solid #cbdccd;border-top-color:#17634b;animation:tc-spin 1s linear infinite}
+const STYLE = `.tc-card{display:flex;gap:.9rem;align-items:flex-start;background:#fff;color:#111a16;border:1px solid #dde5e0;border-radius:12px;padding:1rem 1.15rem;margin:1rem 0;box-shadow:0 1px 2px rgba(15,26,21,.05)}
+.tc-spinner{flex:none;width:1.15rem;height:1.15rem;margin-top:.15rem;border-radius:50%;border:2.5px solid #dde5e0;border-top-color:#146c4a;animation:tc-spin .9s linear infinite}
 .tc-card[data-phase=failed] .tc-spinner,.tc-card[data-phase=approve] .tc-spinner,.tc-card[data-phase=preview] .tc-spinner{display:none}
-.tc-title{font-weight:650;margin:0 0 .2rem}.tc-detail{margin:0;color:#4f695c}.tc-action{margin-top:.8rem}
-.tc-card details{margin-top:.6rem;font-size:.85rem;color:#4f695c}.tc-card code{overflow-wrap:anywhere}
-.tc-card[hidden]{display:none}@keyframes tc-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.tc-spinner{animation:none}}`;
+.tc-title{font-weight:650;font-size:.95rem;margin:0 0 .18rem}.tc-detail{margin:0;font-size:.88rem;color:#53665d}
+.tc-action{margin-top:.75rem;padding:.45rem .9rem;border:0;border-radius:8px;background:#146c4a;color:#fff;font:inherit;font-size:.88rem;font-weight:620;cursor:pointer}
+.tc-action:hover{background:#0f583c}
+.tc-card details{margin-top:.55rem;font-size:.82rem;color:#53665d}.tc-card code{overflow-wrap:anywhere}
+.tc-card[hidden]{display:none}@keyframes tc-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.tc-spinner{animation:none}}
+@media(prefers-color-scheme:dark){.tc-card{background:#141b18;color:#eef3f0;border-color:#26332d;box-shadow:none}.tc-spinner{border-color:#26332d;border-top-color:#1f9d68}.tc-detail,.tc-card details{color:#91a49a}.tc-action{background:#1f9d68;color:#05140d}.tc-action:hover{background:#26b377}}`;
 
 export function mountConnectionView(container, { hideWhenConnected = true } = {}) {
   if (!document.getElementById('tc-style')) document.head.append(Object.assign(document.createElement('style'), { id: 'tc-style', textContent: STYLE }));

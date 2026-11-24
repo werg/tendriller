@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { exportNativeCheckpoint, restoreNativeCheckpoint, loadCheckpointLibrary } from '../lib/handoff.mjs';
 
 const projectDir = process.env.TENDRILLER_CHECKPOINT_TEST_PROJECT ?? process.cwd();
-const { native: { openNativeDevice } } = await loadCheckpointLibrary(projectDir);
+const { native: { openNativeDevice, NativeBytesStore } } = await loadCheckpointLibrary(projectDir);
 const secret = 'a'.repeat(64);
 async function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'checkpoint-cli-'));
@@ -78,4 +78,20 @@ test('entry limits reject oversized snapshots before enumeration and preserve th
   const resumed = await openNativeDevice({ path: f.devicePath });
   try { assert.equal(resumed.identity.publicKey, f.key); }
   finally { await resumed.close(); }
+});
+
+
+for (const method of ['checkpointWal', 'close']) test('restore awaits asynchronous ' + method + ' failure before publishing its destination', async t => {
+  const f = await fixture(t); await exportNativeCheckpoint(f);
+  const target = join(f.root, 'restored'), devicePath = join(target, 'device.sqlite');
+  const failure = new Error('asynchronous ' + method + ' failure'), original = NativeBytesStore.prototype[method];
+  t.mock.method(NativeBytesStore.prototype, method, async function (...args) {
+    await new Promise(resolve => setImmediate(resolve));
+    await original.apply(this, args);
+    throw failure;
+  });
+  await assert.rejects(restoreNativeCheckpoint({ inputPath: f.outputPath, devicePath, secret, projectDir }), error => error === failure);
+  assert.equal(existsSync(target), false);
+  assert.deepEqual(readdirSync(f.root).filter(name => name.startsWith('.checkpoint-restore-')), []);
+  assert.equal(existsSync(f.outputPath), true);
 });

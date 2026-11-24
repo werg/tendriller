@@ -56,8 +56,18 @@ export function mountUtility(api: RuntimeApi): () => void {
     .section{border-top:1px solid #8885;padding-top:14px;margin-top:14px}.links{display:flex;flex-wrap:wrap;gap:2px;margin:12px -8px -8px;border-top:1px solid #8885;padding-top:6px}.links a{font-size:12px}
     .diag-list{list-style:none;margin:0 0 10px;padding:0;display:grid;gap:6px}.diag-item{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 8px;border-radius:8px;background:#8881;overflow-wrap:anywhere}
     .diag-actions{display:flex;gap:6px;flex-wrap:wrap}.diag-actions .secondary{width:auto;flex:1}
+    .share-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}.share-bar button{flex:1;min-width:110px}
+    .share-opts{margin:6px 0 8px}.share-opts summary{font-size:12px;opacity:.85;cursor:pointer;padding:4px 0}
+    .share-fields{display:grid;gap:6px;margin-top:6px}.share-fields input,.share-fields select{font:inherit;font-size:13px;padding:7px 9px;border:1px solid #8886;border-radius:8px;background:Canvas;color:CanvasText;width:100%}
+    .share-list{list-style:none;margin:8px 0 0;padding:0;display:grid;gap:8px}
+    .share-item{border:1px solid #8884;border-radius:10px;padding:8px 10px;display:grid;gap:6px;background:#8881}
+    .share-top{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:13px}.share-role{font-size:11px;font-weight:650;padding:2px 7px;border-radius:999px;background:#1e644a22;color:#1e644a}
+    .share-url{font:11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;opacity:.8;overflow-wrap:anywhere}
+    .share-row-actions{display:flex;gap:6px;flex-wrap:wrap}.share-row-actions button{min-height:34px;padding:5px 10px;font-size:12px;border:1px solid #8886;width:auto;flex:1}
+    .share-row-actions .revoke{color:#a32020;border-color:#a3202055;flex:0 0 auto}.share-row-actions .revoke:hover{background:#a3202018}
+    .guest-box{margin-top:8px;padding-top:8px;border-top:1px solid #8884}
     .message{font-size:13px;margin:10px 0 0}.suggestion p{margin:0 0 8px}.suggestion strong{font-size:16px}.actions{display:flex;align-items:center;gap:6px}.actions .primary{width:auto;margin:0;flex:1}.actions button{white-space:nowrap}
-    @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}}
+    @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}.share-role{background:#a6dfbd22;color:#a6dfbd}.share-row-actions .revoke{color:#fca5a5;border-color:#fca5a555}}
   `;
   const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
     const node = document.createElement(tag);
@@ -110,7 +120,190 @@ export function mountUtility(api: RuntimeApi): () => void {
   offline.append(element("h3", "Use without a connection"),
     element("p", "Save this version’s page files on this device. Your app’s data and connections are managed separately.", "note"), save, savedMessage);
   offline.hidden = !api.identity.publication || !("serviceWorker" in navigator);
-  panel.append(offline);
+
+  type ShareLink = { id: string; url: string; role: "owner" | "guest" | "display"; label: string | null; expires_at: number | null };
+  type PendingGuest = { account_id: string; link_id: string; email: string | null };
+  const canNativeShare = () => typeof navigator.share === "function";
+  const shareSection = element("section", undefined, "section");
+  const shareHeading = element("h3", "Share & invite");
+  const shareIntro = element("p", "Share this page or create guest invites. Page-only links share files, not application data or device access.", "note");
+  const shareMessage = element("p", undefined, "message"); shareMessage.hidden = true; shareMessage.setAttribute("role", "status");
+  const shareCurrentBtn = button(canNativeShare() ? "Share this page" : "Copy page link", "primary");
+  const inviteDetails = element("details", undefined, "share-opts");
+  const inviteSummary = element("summary", "Invite others & manage share links");
+  const inviteBody = element("div");
+  const shareOwnerBox = element("div"); shareOwnerBox.hidden = true;
+  const inviteBtn = button("Invite person", "secondary");
+  const displayBtn = button("Page-only link", "secondary");
+  const shareBar = element("div", undefined, "share-bar"); shareBar.append(inviteBtn, displayBtn);
+  const shareFields = element("div", undefined, "share-fields");
+  const shareLabel = document.createElement("input"); shareLabel.type = "text"; shareLabel.maxLength = 100; shareLabel.placeholder = "Optional label (e.g. Alex or Tablet)";
+  shareLabel.setAttribute("aria-label", "Invite label (optional)");
+  const shareExpiry = document.createElement("select"); shareExpiry.setAttribute("aria-label", "Link expiry");
+  for (const [val, text] of [["604800", "Expires in 7 days"], ["86400", "Expires in 24 hours"], ["2592000", "Expires in 30 days"], ["", "No expiry"]]) {
+    const opt = document.createElement("option"); opt.value = val; opt.textContent = text; shareExpiry.append(opt);
+  }
+  shareFields.append(shareLabel, shareExpiry);
+  const shareList = element("ul", undefined, "share-list");
+  const guestBox = element("div", undefined, "guest-box"); guestBox.hidden = true;
+  const guestList = element("ul", undefined, "share-list");
+  guestBox.append(element("h3", "Waiting for approval"), guestList);
+  shareOwnerBox.append(shareFields, shareBar, shareList, guestBox);
+  const shareVisitorNote = element("p", "Only the page owner can create invite or page-only links.", "note"); shareVisitorNote.hidden = true;
+  inviteBody.append(shareOwnerBox, shareVisitorNote);
+  inviteDetails.append(inviteSummary, inviteBody);
+  const manualLink = document.createElement("input"); manualLink.type = "text"; manualLink.readOnly = true; manualLink.hidden = true;
+  manualLink.setAttribute("aria-label", "Link to copy"); manualLink.style.cssText = "width:100%;font:inherit";
+  shareSection.append(shareHeading, shareIntro, shareCurrentBtn, inviteDetails, shareMessage, manualLink);
+  panel.append(shareSection, offline);
+
+  let sharePageName = document.title || "Tendriller page";
+  const showShareStatus = (msg: string) => { shareMessage.hidden = false; shareMessage.textContent = msg; };
+  const copyText = async (value: string, label = "Link copied.") => {
+    manualLink.hidden = true;
+    try { await navigator.clipboard.writeText(value); if (!disposed) showShareStatus(label); return true; }
+    catch {
+      if (disposed) return false;
+      manualLink.value = value; manualLink.hidden = false; manualLink.focus(); manualLink.select();
+      showShareStatus("Copy the selected link below."); return false;
+    }
+  };
+  const deliverLink = async (url: string, title: string, text: string) => {
+    if (canNativeShare()) {
+      try { await navigator.share({ title, text, url }); showShareStatus("Shared."); return; }
+      catch (err) { if ((err as { name?: string })?.name === "AbortError") return; }
+    }
+    await copyText(url, "Link copied to clipboard.");
+  };
+  shareCurrentBtn.addEventListener("click", () => {
+    void deliverLink(location.href, sharePageName, `Open ${sharePageName}`);
+  });
+  const renderShareLinks = (links: ShareLink[]) => {
+    while (shareList.firstChild) shareList.firstChild.remove();
+    // Keep expired links revocable: they still consume the host's link limits.
+    const active = links.filter(l => l.role !== "owner");
+    shareList.hidden = active.length === 0;
+    for (const link of active) {
+      const li = element("li", undefined, "share-item");
+      const top = element("div", undefined, "share-top");
+      const roleLabel = link.role === "guest" ? "Guest invite" : "Page-only";
+      top.append(element("strong", link.label || roleLabel), element("span", roleLabel, "share-role"));
+      const expired = link.expires_at !== null && link.expires_at <= Date.now();
+      const urlEl = element("div", expired ? "Expired" : link.url, "share-url");
+      const rowActions = element("div", undefined, "share-row-actions");
+      if (!expired && canNativeShare()) {
+        const shareBtn = button("Share");
+        shareBtn.addEventListener("click", () => {
+          void deliverLink(link.url, sharePageName, link.role === "guest" ? `Join ${sharePageName}` : `View ${sharePageName}`);
+        });
+        rowActions.append(shareBtn);
+      }
+      const copyBtn = button("Copy");
+      copyBtn.addEventListener("click", () => { void copyText(link.url, `${roleLabel} link copied.`); });
+      const revokeBtn = button("Revoke", "revoke");
+      revokeBtn.addEventListener("click", async () => {
+        revokeBtn.disabled = true;
+        try {
+          const res = await fetch(`${api.identity.base}_tendril/links/${encodeURIComponent(link.id)}`, { method: "DELETE", credentials: "same-origin" });
+          if (!res.ok) throw Error();
+          showShareStatus("Link revoked.");
+          await refreshShareState();
+        } catch {
+          revokeBtn.disabled = false;
+          showShareStatus("Could not revoke link.");
+        }
+      });
+      copyBtn.disabled = expired;
+      rowActions.append(copyBtn, revokeBtn);
+      li.append(top, urlEl, rowActions);
+      shareList.append(li);
+    }
+  };
+  const renderPendingGuests = (guests: PendingGuest[]) => {
+    while (guestList.firstChild) guestList.firstChild.remove();
+    guestBox.hidden = guests.length === 0;
+    for (const guest of guests) {
+      const li = element("li", undefined, "share-item");
+      li.append(element("strong", guest.email || guest.account_id));
+      const rowActions = element("div", undefined, "share-row-actions");
+      const act = async (kind: "approve" | "decline", btn: HTMLButtonElement) => {
+        btn.disabled = true;
+        try {
+          const res = await fetch(`${api.identity.base}_tendril/guests/${encodeURIComponent(guest.account_id)}/${encodeURIComponent(guest.link_id)}/${kind}`, { method: "POST", credentials: "same-origin" });
+          if (!res.ok) throw Error();
+          showShareStatus(kind === "approve" ? "Guest approved." : "Guest declined.");
+          await refreshShareState();
+        } catch {
+          btn.disabled = false;
+          showShareStatus("Could not update guest request.");
+        }
+      };
+      const approveBtn = button("Approve"); approveBtn.addEventListener("click", () => { void act("approve", approveBtn); });
+      const declineBtn = button("Decline", "revoke"); declineBtn.addEventListener("click", () => { void act("decline", declineBtn); });
+      rowActions.append(approveBtn, declineBtn);
+      li.append(rowActions);
+      guestList.append(li);
+    }
+  };
+  const refreshShareState = async () => {
+    if (disposed || !api.identity.base) return;
+    try {
+      const [linksRes, guestsRes] = await Promise.all([
+        fetch(`${api.identity.base}_tendril/links`, { credentials: "same-origin", cache: "no-store" }),
+        fetch(`${api.identity.base}_tendril/guests`, { credentials: "same-origin", cache: "no-store" }),
+      ]);
+      if (disposed) return;
+      if (linksRes.status === 403 || linksRes.status === 401) {
+        shareOwnerBox.hidden = true; shareVisitorNote.hidden = false;
+        return;
+      }
+      if (!linksRes.ok) throw Error();
+      const data = await linksRes.json() as { name?: string; links?: ShareLink[] };
+      if (data.name) sharePageName = data.name;
+      shareOwnerBox.hidden = false; shareVisitorNote.hidden = true;
+      renderShareLinks(data.links ?? []);
+      if (guestsRes.ok) {
+        const g = await guestsRes.json() as { guests?: PendingGuest[] };
+        renderPendingGuests(g.guests ?? []);
+      }
+    } catch {
+      if (disposed) return;
+      shareOwnerBox.hidden = true; shareVisitorNote.hidden = false;
+      shareVisitorNote.textContent = "Could not load share links while offline.";
+    }
+  };
+  inviteDetails.addEventListener("toggle", () => {
+    if (inviteDetails.open) void refreshShareState();
+  });
+  const createShareLink = async (role: "guest" | "display", trigger: HTMLButtonElement) => {
+    if (trigger.disabled) return;
+    trigger.disabled = true;
+    showShareStatus(role === "guest" ? "Creating invite link…" : "Creating page-only link…");
+    try {
+      const body: Record<string, unknown> = { role };
+      if (shareLabel.value.trim()) body.label = shareLabel.value.trim();
+      if (shareExpiry.value) body.expires_in = Number(shareExpiry.value);
+      const res = await fetch(`${api.identity.base}_tendril/links`, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => null) as { error?: { message?: string } } | null;
+        throw Error(err?.error?.message || "Could not create link.");
+      }
+      const created = await res.json() as ShareLink;
+      shareLabel.value = "";
+      await refreshShareState();
+      await deliverLink(created.url, sharePageName, role === "guest" ? `Join ${sharePageName}` : `View ${sharePageName}`);
+    } catch (err) {
+      showShareStatus(err instanceof Error ? err.message : "Could not create link.");
+    } finally {
+      if (!disposed) trigger.disabled = false;
+    }
+  };
+  inviteBtn.addEventListener("click", () => { void createShareLink("guest", inviteBtn); });
+  displayBtn.addEventListener("click", () => { void createShareLink("display", displayBtn); });
   const voiceSection = element("section", undefined, "section");
   const voiceSetup = button("Set up voice input", "secondary");
   const voiceMessage = element("p", undefined, "message"); voiceMessage.hidden = true; voiceMessage.setAttribute("role", "status");
@@ -231,6 +424,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const openPanel = () => {
     suggested = true; suggestion.hidden = true; cancelSuggestion(); panel.hidden = false;
     options.setAttribute("aria-expanded", "true"); heading.focus(); transportInspector.open(); renderDiagnostics();
+    if (inviteDetails.open) void refreshShareState();
   };
   const closePanel = () => {
     panel.hidden = true; options.setAttribute("aria-expanded", "false"); options.focus();

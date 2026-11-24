@@ -120,6 +120,8 @@ function writeNewPrivate(path, bytes) {
 }
 const secretValue = (kernel, secret) => typeof secret === 'string' && /^[a-f0-9]{64}$/iu.test(secret)
   ? kernel.decodeCheckpointKeyHex(secret) : secret;
+const checkpointOpenError = error => error?.code === 'BYTES_STORE_IN_USE' || error?.message === 'BYTES_STORE_IN_USE' || /locked|busy/iu.test(error?.message ?? '')
+  ? fail('BYTES_STORE_IN_USE', 'Stop the original participant before moving its retained device.') : error;
 const nonConflicting = paths => {
   const values = paths.filter(Boolean).map(path => resolve(path));
   if (new Set(values).size !== values.length) throw fail('CHECKPOINT_PATH_CONFLICT', 'Checkpoint, device and SQL files must use distinct paths.');
@@ -143,13 +145,14 @@ export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
     if (!probe.prepare('SELECT 1 FROM stored_bytes WHERE key=?').get('peer-session/device/v1'))
       throw fail('CHECKPOINT_IDENTITY_MISSING', 'The selected file contains no retained Chronolog signing identity.');
   } catch (error) {
-    if (/locked|busy/iu.test(error.message)) throw fail('BYTES_STORE_IN_USE', 'Stop the original participant before moving its retained device.');
-    throw error;
+    throw checkpointOpenError(error);
   } finally { probe?.close(); }
   const { kernel, native } = await loadCheckpointLibrary(projectDir);
   // The public native device verifies its key/binding and holds the same
   // cross-process SQLite writer fence as the application participant.
-  const device = await native.openNativeDevice({ path: source });
+  let device;
+  try { device = await native.openNativeDevice({ path: source }); }
+  catch (error) { throw checkpointOpenError(error); }
   try {
     if (deviceId !== null && deviceId !== device.identity.publicKey)
       throw fail('CHECKPOINT_IDENTITY_MISMATCH', 'Requested device identity does not match the retained signer.');
@@ -161,7 +164,7 @@ export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
       retireSource: true,
       persist: ({ bytes }) => writeNewPrivate(destination, bytes),
     });
-    device.store.checkpointWal();
+    await device.store.checkpointWal();
     return { output: destination, size: checkpoint.bytes.byteLength,
       retiredSource: checkpoint.retiredSource, metadata: checkpoint.metadata };
   } finally { await device.close(); }
@@ -184,7 +187,7 @@ export async function restoreNativeCheckpoint({ inputPath, devicePath, secret, p
     if (restored.outbox.length) throw fail('CHECKPOINT_EXTERNAL_OUTBOX', 'Restore the application-owned outbox through its own verified host adapter.');
     if (restored.sqlDatabaseBytes !== null)
       throw fail('CHECKPOINT_APP_RESTORE_REQUIRED', 'This checkpoint includes external SQL bytes. Use its application-owned restore adapter; the CLI restores canonical device history and rebuilds derived materialization.');
-    store.checkpointWal(); store.close(); store = undefined;
+    await store.checkpointWal(); await store.close(); store = undefined;
     verification = await native.openNativeDevice({ path: stagedDevice });
     if (restored.metadata.deviceId !== null && verification.identity.publicKey !== restored.metadata.deviceId)
       throw fail('CHECKPOINT_IDENTITY_MISMATCH', 'Restored signing identity does not match the authenticated checkpoint metadata.');
@@ -196,8 +199,8 @@ export async function restoreNativeCheckpoint({ inputPath, devicePath, secret, p
       restoredEntries: restored.restoredEntries, metadata: restored.metadata };
   } finally {
     try { await verification?.close(); } finally {
-      store?.close();
-      if (!published) rmSync(staging, { recursive: true, force: true });
+      try { await store?.close(); }
+      finally { if (!published) rmSync(staging, { recursive: true, force: true }); }
     }
   }
 }

@@ -96,12 +96,31 @@ it('requires the page session, correct origin and exact private-key proof; inval
   await jsonResponse(await browser(h, { action: 'challenge', requestId: crypto.randomUUID(), publicKey: device.publicKey, rights: { reader: true, writer: true, administrator: true } }), 400);
 });
 
-it('prepares one verified immutable proposal before owner review without selecting authority', async () => {
+async function provenGuest(h: Handle, device: PeerIdentity) {
+  const g = await guest(h);
+  const c = await jsonResponse(await browser(g.handle, { action: 'challenge', requestId: crypto.randomUUID(), publicKey: device.publicKey, rights: { reader: true, writer: true } }, undefined, g.headers));
+  const status = await jsonResponse(await browser(g.handle, { action: 'prove', pairingId: c.pairingId, signature: await signDevicePairingChallenge(c.challenge, device) }, undefined, g.headers));
+  return { g, status };
+}
+
+it('requires service-origin owner review even when the authenticated owner proves the device key', async () => {
   const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  const staged = await jsonResponse(await stage(h, c, prepared));
+  expect(staged.state).toBe('pending');
+  expect(staged.preparedDigest).toBe(await peerDigest(prepared));
+  await jsonResponse(await commit(h, c, prepared), 409);
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)).toBeNull();
+  expect((await review(c, cookie)).status).toBe(200);
+  const committed = await jsonResponse(await commit(h, c, prepared));
+  expect(committed.state).toBe('committed');
+  expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)?.writer).toBe(true);
+});
+
+it('prepares one verified immutable proposal before owner review without selecting authority', async () => {
+  const { h, native, device, cookie } = await fixture(), { g, status: c } = await provenGuest(h, device), prepared = await prepare(h, native, c);
   const waiting = await form(c, cookie), before = await peerApiJson<AuthorityBundle>(h, 'control/read');
   expect(waiting.csrf).toBe(''); expect(waiting.html).not.toContain('id="pairing-approve"');
   expect(waiting.html).toContain('Waiting for the native participant');
-  expect((await review(c, cookie, 'approve', waiting)).status).toBe(403);
   expect((await apiJson(h, 'GET', 'peers/pairing')).pairings).toEqual([c]);
   const base = prepared.request.payload.base!;
   const invalidPrefix = { ...prepared, request: await signTransitionRequest({ ...prepared.request.payload,
@@ -114,7 +133,7 @@ it('prepares one verified immutable proposal before owner review without selecti
   expect(staged.preparedDigest).toBe(await peerDigest(prepared));
   expect(await peerApiJson(h, 'control/read')).toEqual(before);
   expect(await inDO(h.id, t => t.db.get<{ publicKey: string }[]>('peer_generation_accounts', []).some(row => row.publicKey === device.publicKey))).toBe(false);
-  const publicStatus = await jsonResponse(await browser(h, undefined, c.pairingId));
+  const publicStatus = await jsonResponse(await browser(g.handle, undefined, c.pairingId, g.headers));
   expect(publicStatus.preparedDigest).toBe(staged.preparedDigest); expect(publicStatus.prepared).toBeUndefined();
   await inDO(h.id, t => t.ctx.abort('Retain the exact unapproved proposal')).catch(() => {});
   expect(await jsonResponse(await stage(h, c, prepared))).toEqual(staged);
@@ -177,7 +196,7 @@ it('consumes one raced review form and selects only one exact proposal when two 
 });
 
 it('commits only the exact reviewed grant, recovers a lost response after restart and keeps revoked grants revoked', async () => {
-  const { h, device, native, cookie } = await fixture(), c = await proven(h, device);
+  const { h, device, native, cookie } = await fixture(), { g, status: c } = await provenGuest(h, device);
   const prepared = await prepare(h, native, c);
   await jsonResponse(await commit(h, c, prepared), 409);
   const badSignature = { ...prepared, request: { ...prepared.request, signature: '00'.repeat(64) } };
@@ -191,7 +210,7 @@ it('commits only the exact reviewed grant, recovers a lost response after restar
   expect((await review(c, cookie)).status).toBe(200);
   await jsonResponse(await commit(h, c, badSignature), 409);
   await jsonResponse(await commit(h, c, broad), 409);
-  expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('approved');
+  expect((await jsonResponse(await browser(g.handle, undefined, c.pairingId, g.headers))).state).toBe('approved');
   const accepted = await jsonResponse(await commit(h, c, prepared));
   expect(accepted.state).toBe('committed'); expect(accepted.generation).toBeDefined();
   // The authoritative receipt, not only the endpoint's final write, recovers an uncertain response.
@@ -479,7 +498,7 @@ it('fails closed for missing storage and finite retained and device-binding capa
 });
 
 it('returns the owner to the requesting page after one approval, and only to that page', async () => {
-  const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  const { h, native, device, cookie } = await fixture(), { g, status: c } = await provenGuest(h, device), prepared = await prepare(h, native, c);
   const page = new URL('some/view?tab=2#data', h.page_url).href, back = `${c.reviewUrl}?return_to=${encodeURIComponent(page)}`;
   const signedOut = await req(back, { redirect: 'manual', anonymous: true });
   expect(signedOut.status).toBe(303);
@@ -491,7 +510,7 @@ it('returns the owner to the requesting page after one approval, and only to tha
   expect(response.status, html).toBe(200);
   expect(response.headers.get('Content-Security-Policy')).toContain(`form-action 'self' ${c.challenge.pageOrigin}`);
   expect(response.headers.get('Content-Security-Policy')).toContain("frame-ancestors 'none'");
-  expect(html).toContain('Add this browser to'); expect(html).toContain('id="pairing-approve"');
+  expect(html).toContain('Admit a browser to'); expect(html).toContain('id="pairing-approve"');
   const csrf = /name="csrf" value="([^"]+)"/.exec(html)![1], digest = /name="digest" value="([^"]+)"/.exec(html)![1];
   const action = /<form method="post" action="([^"]+)"/.exec(html)![1].replaceAll('&amp;', '&');
   expect(action, html.slice(0, 0)).toBe(back);
@@ -502,21 +521,21 @@ it('returns the owner to the requesting page after one approval, and only to tha
   const approved = await req(action, { method: 'POST', redirect: 'manual', headers: { Cookie: cookie, Origin: new URL(c.reviewUrl).origin,
     'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ csrf, digest, action: 'approve' }).toString() });
   expect(approved.status, await approved.clone().text() + ' ' + action).toBe(303); expect(approved.headers.get('Location')).toBe(page);
-  expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('approved');
+  expect((await jsonResponse(await browser(g.handle, undefined, c.pairingId, g.headers))).state).toBe('approved');
   const after = await (await req(back, { headers: { Cookie: cookie } })).text();
   expect(after).toContain(`<meta http-equiv="refresh" content="1;url=${page.replaceAll('&', '&amp;')}">`);
   expect(after).toContain('id="pairing-return"');
 });
 
 it('reports the exact staged proposal as committed when its native administrator selects it directly', async () => {
-  const { h, native, device } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
+  const { h, native, device } = await fixture(), { g, status: c } = await provenGuest(h, device), prepared = await prepare(h, native, c);
   await jsonResponse(await stage(h, c, prepared));
   await peerApiJson(h, 'control/select', prepared);
-  const result = await jsonResponse(await browser(h, undefined, c.pairingId));
+  const result = await jsonResponse(await browser(g.handle, undefined, c.pairingId, g.headers));
   expect(result.state).toBe('committed');
   for (let retry = 0; retry < 2; retry++) {
     expect((await jsonResponse(await commit(h, c, prepared))).state).toBe('committed');
-    expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('committed');
+    expect((await jsonResponse(await browser(g.handle, undefined, c.pairingId, g.headers))).state).toBe('committed');
   }
   const retained = await inDO(h.id, t => JSON.parse(t.db.one<{ data: string }>('SELECT data FROM device_pairings WHERE id=?', c.pairingId)!.data));
   expect(retained.state).toBe('pending'); expect(retained.reviewedDigest).toBeUndefined();
