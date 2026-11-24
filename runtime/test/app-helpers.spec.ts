@@ -55,7 +55,7 @@ test.beforeAll(async () => {
         import {mountDashboardShell,mountMetricCard,mountFeedListCard,mountFeedbackCard} from '/dashboard.js';
         window.sent=[];window.feedback=[];window.actions=[];window.failSend=false;
         const listeners = new Map();
-        window.runtime={identity:{page:'test-page'},on(type,fn){let set=listeners.get(type);if(!set)listeners.set(type,set=new Set());set.add(fn);return()=>set.delete(fn)}};
+        window.runtime={identity:{page:'test-page'},sensors:{},on(type,fn){let set=listeners.get(type);if(!set)listeners.set(type,set=new Set());set.add(fn);return()=>set.delete(fn)}};
         window.emitRuntime=(type,value)=>{for(const fn of listeners.get(type)||[])fn(value)};
         window.chat=mountAgentChat(window.runtime,{title:'Test assistant',voiceOutput:new URL(location.href).searchParams.has('speech')?'browser':false,
           onSend:async input=>{if(window.failSend)throw Error('Delivery unavailable');window.sent.push(input)},
