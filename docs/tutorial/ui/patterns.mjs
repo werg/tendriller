@@ -20,7 +20,7 @@ const STYLE = String.raw`
 .tp-items{display:grid;gap:.6rem;list-style:none;padding:0;margin:.8rem 0 0}.tp-items a{display:block;padding:.85rem;border:1px solid #d7e1dc;border-radius:.6rem;color:inherit;text-decoration:none;overflow-wrap:anywhere}
 .tp-items a[aria-current=true]{background:#eaf4ef;border-color:#24664b}.tp-items a:hover{border-color:#24664b}
 .tp-items strong,.tp-items small{display:block}.tp-items small{margin-top:.3rem;color:#526b60}
-.tp-inspector header{display:flex;gap:1rem;align-items:start;justify-content:space-between}.tp-inspector h2{margin:0 0 .4rem;font-size:1.45rem;overflow-wrap:anywhere}
+.tp-inspector header{display:flex;gap:1rem;align-items:start;justify-content:space-between}.tp-inspector>header>button{flex:none;white-space:nowrap}.tp-inspector h2{min-width:0;margin:0 0 .4rem;font-size:1.45rem;overflow-wrap:anywhere}
 .tp-inspector[hidden],.tp-state[hidden],.tp-workspace [hidden],.tp-editor [hidden]{display:none!important}
 .tp-body{min-width:0;overflow-wrap:anywhere}.tp-body p{line-height:1.6}
 .tp-actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.9rem}
@@ -81,8 +81,9 @@ export function mountComparison(container, { before, after, label = 'Review chan
   container.append(root); return { element:root, close() { root.remove(); } };
 }
 
-// renderDetail(record, container) may return cleanup. Replacing a selection,
-// changing query results and close() dispose the previous domain view.
+// Stateful details return { update(record), close() } and keep their instance
+// for the same record ID. A cleanup-only renderer still remounts on replacement
+// objects, so existing static renderers cannot silently display stale values.
 export function mountListDetail(container, {
   records = [], filters = [], renderDetail, routeKey = 'item', searchLabel = 'Search records',
 }) {
@@ -100,7 +101,12 @@ export function mountListDetail(container, {
   const items = element('ul', undefined, 'tp-items'); items.setAttribute('aria-label', 'Records');
   const state = mountViewState(list); state.element.remove();
   list.append(toolbar, count, items, state.element); root.append(list); container.append(root);
-  let current = records, cleanup, renderedRecord, renderedRoute, closed = false;
+  let current = records, detail, renderedRecord, renderedRoute, closed = false;
+  const disposeDetail = () => {
+    const previous = detail; detail = undefined;
+    if (typeof previous === 'function') previous();
+    else previous?.close?.();
+  };
   const keys = { item:routeKey, search:routeKey + '-search', filter:routeKey + '-status' };
   const locationState = () => {
     const params = new URL(location.href).searchParams;
@@ -151,14 +157,17 @@ export function mountListDetail(container, {
       ...(current.length && { action:{ label:'Clear filters', run:() => navigate({ search:'', filter:'' }, true) } }),
     });
     const selected = current.find(record => record.id === route.id);
-    const replacingDetail = selected !== renderedRecord || !selected;
+    const sameRecord = selected && renderedRecord && selected.id === renderedRecord.id;
+    const canUpdate = sameRecord && typeof detail?.update === 'function';
+    const replacingDetail = !sameRecord || (selected !== renderedRecord && !canUpdate);
     if (replacingDetail) {
-      cleanup?.(); cleanup = undefined; inspector.content.replaceChildren();
+      disposeDetail(); inspector.content.replaceChildren();
     }
     root.dataset.selected = String(Boolean(route.id));
     if (selected) {
       inspector.show(selected.title, { focus:focus || (replacingDetail && focusedContent) });
-      if (selected !== renderedRecord) cleanup = renderDetail?.(selected, inspector.content);
+      if (replacingDetail) detail = renderDetail?.(selected, inspector.content);
+      else if (canUpdate) detail.update(selected);
     } else if (route.id) {
       inspector.show('Record unavailable', { focus:focus || focusedContent });
       inspector.content.append(element('p', 'This record is no longer in the current view. Return to the list.'));
@@ -178,40 +187,57 @@ export function mountListDetail(container, {
   return {
     element:root,
     setRecords(value) { current = value; render(); },
-    close() { closed = true; cleanup?.(); window.removeEventListener('popstate', historyChange); root.remove(); },
+    close() {
+      if (closed) return;
+      closed = true;
+      try { disposeDetail(); }
+      finally { window.removeEventListener('popstate', historyChange); root.remove(); }
+    },
   };
 }
 
 // onSave/onUndo must resolve { confirmed:true, value:string } only after an
-// accepted applied result. Failure/uncertainty locks this editor until reconcile()
-// supplies a confirmed authoritative value; it never manufactures a retry/undo.
+// accepted applied result. observe() supplies coherent snapshot values, never
+// operation outcomes. Only explicit reconcile() can unlock uncertain work.
 export function mountInlineReview(container, { label, value, onSave, onUndo }) {
   styles(); const root = element('section', undefined, 'tp-editor'), field = element('textarea');
   const fieldLabel = element('label', label); fieldLabel.append(field);
   const comparison = element('div'), message = element('p', undefined, 'tp-message');
-  message.setAttribute('role', 'status');
+  const conflict = element('p', undefined, 'tp-message');
+  message.setAttribute('role', 'status'); conflict.setAttribute('role', 'status');
   const actions = element('div', undefined, 'tp-actions');
-  let baseline = value, previous, reviewed, busy = false, blocked = false, disposed = false;
+  let baseline = value, observed = value, observation = 0, previous, reviewed;
+  let busy = false, blocked = false, disposed = false;
   field.value = value;
   const review = button('Review changes', () => {
+    if (disposed || busy || blocked) return;
+    // This explicit review, not an incoming snapshot, accepts a changed baseline.
+    if (observed !== baseline) { baseline = observed; previous = undefined; }
     reviewed = field.value; comparison.replaceChildren();
     mountComparison(comparison, { before:baseline, after:reviewed }); update();
   });
   const save = button('Save reviewed change', () => void commit(false)); save.className = 'tp-primary';
   const cancel = button('Discard draft', () => {
-    field.value = baseline; reviewed = undefined; comparison.replaceChildren(); message.textContent = ''; update();
+    if (disposed || busy || blocked) return;
+    if (observed !== baseline) previous = undefined;
+    baseline = observed; field.value = baseline; reviewed = undefined;
+    comparison.replaceChildren(); message.textContent = ''; update();
   });
   const undo = button('Undo saved change', () => void commit(true));
-  actions.append(review, save, cancel, undo); root.append(fieldLabel, comparison, actions, message); container.append(root);
+  actions.append(review, save, cancel, undo); root.append(fieldLabel, comparison, actions, message, conflict); container.append(root);
   async function commit(revert) {
-    if (busy || blocked || (revert ? previous === undefined : reviewed === undefined)) return;
-    const before = baseline, after = revert ? previous : reviewed;
+    if (disposed || busy || blocked || observed !== baseline || (revert ? previous === undefined : reviewed === undefined)) return;
+    const before = baseline, after = revert ? previous : reviewed, startedObservation = observation;
     busy = true; message.textContent = 'Waiting for confirmation…'; update();
     try {
       const result = await (revert ? onUndo : onSave)({ before, after });
       if (result?.confirmed !== true || typeof result.value !== 'string') throw Error('The change has not been confirmed.');
       if (disposed) return;
       previous = revert ? undefined : before; baseline = result.value; field.value = baseline;
+      // The callback can confirm before the live view observes this write. Do not
+      // treat the pre-dispatch snapshot as a concurrent edit. A changed value
+      // observed during the callback remains visible if it differs from its result.
+      if (observation === startedObservation) observed = baseline;
       reviewed = undefined; comparison.replaceChildren(); message.textContent = revert ? 'Saved change undone.' : 'Change saved.';
     } catch {
       if (disposed) return;
@@ -219,20 +245,38 @@ export function mountInlineReview(container, { label, value, onSave, onUndo }) {
     } finally { busy = false; if (!disposed) update(); }
   }
   function update() {
+    const changed = observed !== baseline;
     field.disabled = busy || blocked;
-    review.disabled = busy || blocked || field.value === baseline;
-    save.hidden = reviewed === undefined; save.disabled = busy || blocked;
-    cancel.disabled = busy || blocked || field.value === baseline;
+    review.disabled = busy || blocked || field.value === observed;
+    save.hidden = reviewed === undefined; save.disabled = busy || blocked || changed;
+    cancel.disabled = busy || blocked || (field.value === baseline && !changed);
     undo.hidden = previous === undefined || !onUndo;
-    undo.disabled = busy || blocked || field.value !== baseline;
+    undo.disabled = busy || blocked || changed || field.value !== baseline;
+    conflict.hidden = !changed;
+    conflict.textContent = !changed ? '' : busy
+      ? 'The saved value changed while confirmation is pending.'
+      : blocked ? 'The latest value changed. Inspect the original operation before continuing.'
+        : 'The saved value changed. Review your draft against the latest value or discard it.';
   }
   field.addEventListener('input', () => { reviewed = undefined; comparison.replaceChildren(); message.textContent = ''; update(); });
   update();
   return {
     element:root,
+    observe(currentValue) {
+      if (disposed || currentValue === observed) return;
+      if (typeof currentValue !== 'string') throw TypeError('Expected a coherent string value.');
+      observed = currentValue; observation++;
+      if (!busy && !blocked) {
+        if (field.value === baseline && reviewed === undefined && previous === undefined) {
+          baseline = currentValue; field.value = currentValue; message.textContent = 'Value updated from the latest snapshot.';
+        } else { reviewed = undefined; comparison.replaceChildren(); }
+      }
+      update();
+    },
     reconcile(confirmedValue) {
+      if (disposed) return;
       if (busy) throw Error('Wait for the outstanding callback before reconciliation.');
-      baseline = confirmedValue; field.value = confirmedValue; previous = reviewed = undefined;
+      baseline = observed = confirmedValue; field.value = confirmedValue; previous = reviewed = undefined;
       blocked = false; comparison.replaceChildren(); message.textContent = ''; update();
     },
     close() { disposed = true; root.remove(); },

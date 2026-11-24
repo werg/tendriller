@@ -23,7 +23,7 @@ if (new URL(location.href).searchParams.has('states')) {
     action:{ label:'Approve this browser', run() {} },
   });
 } else {
-  const records = [
+  let records = [
     { id:'episode-17', title:'The missing delivery', subtitle:'Episode 017 · 6 actions · Needs review', status:'review',
       summary:'The agent checks the order, confirms the new delivery date, and asks before contacting the carrier.' },
     { id:'episode-18', title:'A calendar conflict', subtitle:'Episode 018 · 4 actions · Reviewed', status:'reviewed',
@@ -31,10 +31,11 @@ if (new URL(location.href).searchParams.has('states')) {
     { id:'episode-19', title:'A clearer project brief', subtitle:'Episode 019 · 5 actions · Needs review', status:'review',
       summary:'The agent turns a rough brief into a scoped plan with explicit open questions.' },
   ];
-  mountListDetail(root, {
+  const collection = mountListDetail(root, {
     records, searchLabel:'Search episodes', filters:[['review','Needs review'],['reviewed','Reviewed']],
     renderDetail(record, content) {
-      content.append(node('span', record.status === 'review' ? 'Needs review' : 'Reviewed', 'tag'), node('span', 'Agent actions', 'tag'));
+      const status = node('span', record.status === 'review' ? 'Needs review' : 'Reviewed', 'tag');
+      content.append(status, node('span', 'Agent actions', 'tag'));
       const summary = node('p', record.summary, 'episode-summary');
       content.append(summary);
       const heading = node('h3', 'What the agent did'), timeline = document.createElement('ol'); timeline.className = 'timeline';
@@ -51,8 +52,13 @@ if (new URL(location.href).searchParams.has('states')) {
       content.append(details);
       const related = node('p', 'Consumed by '), link = node('a', 'Customer support training run');
       link.href = '?item=episode-18'; related.append(link); content.append(related);
-      const confirmSummary = ({ after }) => {
-        record.summary = after; summary.textContent = after;
+      const confirmSummary = ({ before, after }) => {
+        const current = records.find(item => item.id === record.id);
+        if (!current || current.summary !== before) throw Error('The summary changed. Inspect the current record before continuing.');
+        // Model a coherent live query: every record is a fresh snapshot object.
+        // It can arrive before the command callback confirms the accepted value.
+        records = records.map(item => ({ ...item, ...(item.id === record.id ? { summary:after } : {}) }));
+        collection.setRecords(records);
         return { confirmed:true, value:after };
       };
       const editor = mountInlineReview(content, {
@@ -61,7 +67,14 @@ if (new URL(location.href).searchParams.has('states')) {
         // original operation ID, then confirm the accepted applied result.
         onSave:confirmSummary, onUndo:confirmSummary,
       });
-      return () => editor.close();
+      return {
+        update(next) {
+          record = next;
+          status.textContent = next.status === 'review' ? 'Needs review' : 'Reviewed';
+          summary.textContent = next.summary; editor.observe(next.summary);
+        },
+        close() { editor.close(); },
+      };
     },
   });
 }

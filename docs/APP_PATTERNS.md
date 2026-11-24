@@ -145,17 +145,82 @@ import {
 | Searchable list/detail | `mountListDetail(container, { records, filters, renderDetail, routeKey?, searchLabel? })` | Records contain `id`, `title`, optional `subtitle`, `status` and `searchText`. Filters are `[value, label]` pairs. Search, filter and selected record are URL-addressable; Back and reload restore them. `setRecords(records)` accepts the next coherent query value; `close()` disposes listeners and the active detail. Filtering is over that authorized value, not a second backend query. |
 | Inspector | `mountInspector(container, { onClose })` | `show(title, { focus })`, `content`, `hide()` and `close()` support a desktop side panel and narrow detail view. The list/detail composition provides Back to list and restores focus. A standalone inspector supplies its own navigation callback. |
 | Compare | `mountComparison(container, { before, after, label? })` | Readable before/after text with explicit headings. Authored values are inserted as text. `close()` removes it. Adapt the presentation for domain fields or line-level code diffs. |
-| Inline edit, review and undo | `mountInlineReview(container, { label, value, onSave, onUndo? })` | Keeps an editable draft, previews exact before/after values, saves only reviewed text and offers undo only with an injected callback. The callbacks receive `{ before, after }`; confirm an accepted applied result before returning `{ confirmed: true, value }`. Failure or uncertainty locks the editor until explicit `reconcile(confirmedValue)`; it does not resubmit or pretend a failed write was cancelled. `close()` stops rendering, not a dispatched command. |
+| Inline edit, review and undo | `mountInlineReview(container, { label, value, onSave, onUndo? })` | Keeps an editable draft, previews exact before/after values, saves only reviewed text and offers undo only with an injected callback. The callbacks receive `{ before, after }`; confirm an accepted applied result before returning `{ confirmed: true, value }`. `observe(value)` handles live values without resolving operations. Failure or uncertainty locks the editor until explicit `reconcile(confirmedValue)`; it does not resubmit or pretend a failed write was cancelled. `close()` stops rendering, not a dispatched command. |
 | Empty/loading/error | `mountViewState(container)` then `render({ phase, title, detail?, action? })` | `loading` exposes busy status, `error` exposes an alert, `empty` explains the next action, and `ready` hides the card. An optional action is `{ label, run }`; wire it to a real operation. `close()` removes the view. |
 | Connection | `mountConnectionView(container)` from `connect-view.mjs` | Use the real `createOwnerConnection` state and action. The specimen renders the same component; [the complete connection route](#connect-the-browser) stays authoritative. |
 
-`renderDetail(record, container)` renders the domain view and may return a cleanup
-function. Search/filter/navigation retain that view while its record object is
-unchanged; replacing a record in `setRecords` disposes and rebuilds it. Keep edited
-and uncertain work in the app's draft/submission controller when live snapshots
-replace objects. Do not use an inspector rerender as a command cancellation.
-Give independent list/detail instances distinct `routeKey` values. The helper
-preserves unrelated URL parameters.
+`renderDetail(record, container)` can return **`{ update(record), close() }`**.
+The detail stays mounted while the selected ID is unchanged; fresh coherent
+snapshots call `update`, including when their objects have new identities.
+Selection changes, record removal and `close()` dispose that detail once. A
+renderer returning only a cleanup function (or nothing) still remounts for a
+replacement object so a static detail cannot silently show stale data.
+
+A stateful detail updates its display and observes its edited value separately:
+
+```js
+function renderSummaryDetail(record, container) {
+  const summary = document.createElement('p');
+  summary.textContent = record.summary; container.append(summary);
+  const editor = mountInlineReview(container, {
+    label: 'Summary', value: record.summary,
+    // Application handlers capture guards/revision and the original operation ID.
+    onSave: change => saveSummary(record.id, change),
+    onUndo: change => saveSummary(record.id, change),
+  });
+  return {
+    update(next) {
+      record = next;
+      summary.textContent = next.summary;
+      editor.observe(next.summary);
+    },
+    close() { editor.close(); },
+  };
+}
+// Pass renderDetail: renderSummaryDetail when mounting the list/detail.
+```
+
+`observe(value)` accepts the edited field from the same coherent live view.
+Unchanged values preserve draft, confirmation and Undo. A changed value refreshes
+a pristine editor; with a draft or saved Undo it keeps that local work, disables
+stale Save/Undo, and asks for an explicit review against the latest value or
+Discard draft. A background refresh never steals focus or dispatches a command.
+The application's command must still guard the exact reviewed baseline.
+
+During a save, observation records the latest value without settling the pending
+operation. A matching snapshot can arrive before or after its accepted callback.
+A differing concurrent value remains visible as a conflict. A failed or uncertain
+callback stays locked even when a later snapshot matches the draft: inspect the
+original operation, then deliberately call `reconcile(confirmedValue)`. That
+method clears draft/review/Undo; it is not a live-refresh method.
+
+Keep retained drafts and uncertain operation references in the app's existing
+draft/submission controller when navigation closes a detail. Closing a renderer
+does not cancel a dispatched command. Give independent list/detail instances
+distinct `routeKey` values; the helper preserves unrelated URL parameters.
+
+### Compose a map or another companion view
+
+These helpers are application-owned source, not a general component framework.
+For a map/list application, adapt the existing `mountListDetail` render path:
+compute `route` and filtered `visible` records once, then pass those same values
+to the companion. For example, add this call after the existing list rendering:
+
+```js
+// paintMap is this application's view adapter, not a Tendriller API.
+paintMap(visible, {
+  selectedId: route.id,
+  onSelect: id => navigate({ item: id }, false, true),
+});
+```
+
+Keep `locationState()` and `navigate()` as that adapted helper's single route
+owner. Its initial render, search/filter changes, `popstate` and `setRecords()`
+then update both views without reading private DOM nodes, another backend query
+or a second synchronized selection store. The companion must not change route
+state while merely rendering it. An application with its own list/router can
+instead compose the lower-level `mountInspector`. The shared helper does not
+need map-specific options, a state subscription API or another router.
 
 A connected app feeds one declared query through `createLiveView`, adapts those
 records for the list, and injects existing command handlers into the editor. Capture
@@ -181,7 +246,8 @@ These are real Chromium captures of the supplied specimen, at 1200×1100 and
 `node --test scripts/test/browser/ui-patterns.test.mjs` in the source repository;
 set `UPDATE_PATTERN_SCREENSHOTS=1` to refresh the images after reviewing a change.
 The check covers fresh contexts, search/filter, named links, deep links, Back,
-reload, keyboard focus, review/save/undo, uncertainty locking and narrow overflow.
+reload, keyboard focus, immutable-snapshot/save ordering, concurrent edited values,
+review/save/undo, uncertainty locking, long phone headings and narrow overflow.
 It does not establish live pairing, replication or physical-phone behavior.
 
 ## Durable agent requests and listener status
