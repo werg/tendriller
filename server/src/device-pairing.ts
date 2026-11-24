@@ -3,12 +3,10 @@ import { peerDigest, type PeerAuthority, type SignedGeneration, type SignedTrans
 import { DEVICE_PAIRING_DOMAIN, DEVICE_PAIRING_LIMITS as LIMITS, pairingProofBytes, validateDevicePairingChallenge,
   verifyDevicePairingProof, type DevicePairingChallenge, type DevicePairingStatus, type DevicePairingPrepared } from '../../contract/pairing.mjs';
 import { accountActive, currentPrincipal, freshPrincipal, pageAccessAllowed, requireAgentScope, type Principal } from './access';
-import { serviceSession } from './accounts/auth';
-import { servicePage } from './accounts/ui';
 import { selectedApplication } from './application';
 import type { Env } from './env';
-import { HttpError, json, readBody, readJson } from './http';
-import { safeEqual, sha256Hex } from './ids';
+import { HttpError, json, readJson } from './http';
+import { sha256Hex } from './ids';
 import { exchangePeerControl, peerControlSelectionMatches, withPeerPairingAuthority } from './peer-generations';
 import { requireWritesOpen } from './service-state';
 import type { Tendril } from './tendril';
@@ -107,11 +105,11 @@ function scope(t: Tendril, req: Request, principal: Principal, record: PairingRe
 const grantFor = (c: DevicePairingChallenge): PeerGrant => ({ publicKey: c.publicKey, reader: true, writer: c.rights.writer,
   coordinator: false, recovery: false, administrator: false, publisher: false, dataRole: 'member' });
 const nextActions: Record<DevicePairingStatus['state'], string> = {
-  challenge: 'Prove possession with the retained browser device.', pending: 'Open the review URL and ask the application owner to review this exact device.',
-  approved: 'Keep the authorized native participant running to commit the reviewed grant.', committing: 'Inspect this same request and retry its retained signed transition; do not prepare another transition.',
+  challenge: 'Prove possession with the retained browser device.', pending: 'Keep the authorized native participant running; it stages the member-only grant and this browser is added automatically.',
+  approved: 'Keep the authorized native participant running to commit the approved grant.', committing: 'Inspect this same request and retry its retained signed transition; do not prepare another transition.',
   committed: 'Connect the retained device through its normal peer session, then verify an application query before showing connected.',
-  expired: 'This request expired. Keep the same device; explicitly start a new request and obtain a new review.',
-  denied: 'The request was rejected. No device grant was created by this request.', stale: 'Authority changed. Keep the same device and explicitly request a newly reviewed proposal.',
+  expired: 'This request expired. Keep the same device and start a new request.',
+  denied: 'The request was rejected. No device grant was created by this request.', stale: 'Authority changed. Keep the same device and request a new proposal.',
   revoked: 'The account or device grant was revoked. This request cannot restore it.',
   reconciliation_required: 'Preserve the request and signed attempt. Ask the operator to reconcile the retained authority; do not create a replacement.',
 };
@@ -142,7 +140,7 @@ async function status(t: Tendril, record: PairingRecord, authority: PeerAuthorit
   }
   return { pairingId: c.pairingId, requestId: c.requestId, state, challenge: c, expiresAt: c.expiresAt,
     reviewUrl: `${c.serviceOrigin}/pairings/${t.tid}/${c.pairingId}`,
-    nextAction: state === 'pending' && !record.prepared ? 'Keep the authorized native participant running to prepare the exact signed proposal before owner review.' : nextActions[state],
+    nextAction: state === 'pending' && !record.prepared ? 'Keep the authorized native participant running to prepare the exact signed proposal; approval is automatic.' : nextActions[state],
     ...(record.preparedDigest ? { preparedDigest: record.preparedDigest } : {}),
     ...(generation ? { generation } : {}), ...(native && record.prepared ? { prepared: record.prepared } : {}) };
 }
@@ -292,7 +290,7 @@ async function commit(t: Tendril, req: Request, principal: Principal, input: Rec
   // An accepted transition remains inspectable after expiry or later revocation.
   const prior = await withPeerPairingAuthority(t, async authority => {
     const record = await verified(t, id); scope(t, req, principal, record); await fresh(t, principal);
-    if (!record.preparedDigest) throw new HttpError(409, 'pairing_proposal_required', 'Prepare the exact signed proposal and obtain its owner review before committing.');
+    if (!record.preparedDigest) throw new HttpError(409, 'pairing_proposal_required', 'Prepare the exact signed proposal before committing.');
     if (record.preparedDigest !== preparedDigest) throw new HttpError(409, 'pairing_transition_conflict');
     const value = await status(t, record, authority, true);
     if (value.generation && value.state !== 'reconciliation_required' && record.reviewedDigest) {
@@ -394,84 +392,33 @@ export async function handleDevicePairing(t: Tendril, req: Request, url: URL, pr
   } finally { pending.set(t, (pending.get(t) ?? 1) - 1); }
 }
 
-/** Review lives on the service origin, outside application-authored scripts and frames. */
+/** Legacy review links (from older app kits) only return the browser to its page. */
 export async function routeDevicePairingReview(req: Request, env: Env, url: URL): Promise<Response> {
   const match = /^\/pairings\/([a-z2-7]{12})\/([0-9a-f]{64})$/.exec(url.pathname);
   if (!match) throw new HttpError(404, 'not_found');
-  if (req.method !== 'GET' && req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
-  if (req.method === 'POST' && req.headers.get('Origin') !== publicBase(env)) throw new HttpError(403, 'bad_origin');
-  const session = await serviceSession(req, env);
-  if (!session) {
-    if (req.method === 'POST') throw new HttpError(401, 'unauthorized', 'Sign in again before reviewing this device.');
-    return Response.redirect(`${publicBase(env)}/auth?return_to=${encodeURIComponent(url.pathname + url.search)}`, 303);
-  }
-  if (!(await env.ACCOUNT_RATE.limit({ key: `pairing-review:${session.accountId}` })).success) throw new HttpError(429, 'rate_limited');
-  const raw = /(?:^|;\s*)__Host-tendriller=([^;]+)/.exec(req.headers.get('Cookie') ?? '')![1];
-  const headers = new Headers({ 'x-tendril-id': match[1], 'x-pairing-id': match[2], 'x-account-id': session.accountId,
-    'x-review-session': await sha256Hex(raw), 'x-review-origin': url.origin });
-  if (req.headers.has('Content-Type')) headers.set('Content-Type', req.headers.get('Content-Type')!);
-  // The page that asked for review may name where to continue. The Durable
-  // Object accepts it only on that request's exact page origin.
+  if (req.method !== 'GET') throw new HttpError(410, 'pairing_review_removed', 'Browser access is approved automatically; there is nothing to review.');
+  const headers = new Headers({ 'x-tendril-id': match[1], 'x-pairing-id': match[2] });
+  // The page that asked may name where to continue. The Durable Object accepts
+  // it only on that request's exact page origin.
   const returnTo = url.searchParams.get('return_to');
   if (returnTo !== null) {
     if ([...url.searchParams.keys()].length !== 1 || returnTo.length > 2048) throw new HttpError(400, 'invalid_pairing_review');
     headers.set('x-review-return', returnTo);
   } else if (url.search) throw new HttpError(400, 'invalid_pairing_review');
   return env.TENDRIL.get(env.TENDRIL.idFromName(match[1])).fetch(new Request('https://tendril.internal/pairing-review', {
-    method: req.method, headers, ...(req.method === 'POST' ? { body: req.body } : {}), signal: req.signal,
-    // The return to the requesting page is the browser's navigation, never followed here.
-    redirect: 'manual',
+    method: 'GET', headers, signal: req.signal, redirect: 'manual',
   }));
 }
-const escape = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]!));
-async function reviewOwner(t: Tendril, req: Request): Promise<{ id: string; session: string }> {
-  const id = req.headers.get('x-account-id'), session = req.headers.get('x-review-session');
-  if (!id || id !== t.db.get('owner_account', null) || !session || !HEX.test(session) || req.headers.get('x-review-origin') !== publicBase(t.env))
-    throw new HttpError(403, 'pairing_owner_required', 'The application owner must review this device on the service origin.');
-  if (!await pageAccessAllowed(t) || !await t.env.ACCOUNTS.prepare(`SELECT 1 FROM sessions s JOIN accounts a ON a.id=s.account_id
-    WHERE s.hash=? AND s.account_id=? AND s.expires_at>? AND a.suspended_at IS NULL AND a.deleting_at IS NULL`).bind(session, id, t.now()).first() || id !== t.db.get('owner_account', null))
-    throw new HttpError(403, 'pairing_owner_required');
-  return { id, session };
-}
+/**
+ * Browser enrollment has no manual review step: the server approves a verified
+ * member-only grant when the native participant stages it. Older app kits may
+ * still send the browser here; return it to the page that asked.
+ */
 export async function reviewDevicePairing(t: Tendril, req: Request): Promise<Response> {
-  const id = pairingId(req.headers.get('x-pairing-id'));
-  await reviewOwner(t, req);
-  const form = req.method === 'POST' ? new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096))) : null;
-  if (form && ([...form.keys()].some(key => !['csrf', 'digest', 'action'].includes(key)) || [...form.keys()].length !== 3)) throw new HttpError(400, 'invalid_pairing_review');
-  return withPeerPairingAuthority(t, async authority => {
-    const owner = await reviewOwner(t, req), record = await verified(t, id);
-    // Refuse a foreign return address before issuing or consuming any form.
-    const target = returnTarget(req, record.challenge);
-    let result = await status(t, record, authority), csrf: string | undefined;
-    const digest = await reviewDigest(record);
-    if (form) {
-      await requireWritesOpen(t.env);
-      const tokenHash = await sha256Hex(form.get('csrf') ?? '');
-      if (!record.prepared || !record.csrf || record.csrf.session !== owner.session || record.csrf.expiresAt <= t.now() ||
-        record.csrf.digest !== digest || !safeEqual(record.csrf.hash, tokenHash) || form.get('digest') !== digest ||
-        !['approve', 'deny'].includes(form.get('action') ?? ''))
-        throw new HttpError(403, 'pairing_review_stale', 'This review form is expired or already used. Open the review URL again.');
-      requireOpen(record, result, ['pending', 'approved', 'committing']);
-      if (!record.proof || !await verifyDevicePairingProof(record.challenge, record.proof)) throw unavailable();
-      await reviewOwner(t, req);
-      if (record.challenge.expiresAt <= t.now()) throw new HttpError(409, 'pairing_expired');
-      record.state = form.get('action') === 'deny' ? 'denied' : record.state === 'committing' ? 'committing' : 'approved';
-      record.reviewedAccount = owner.id; record.reviewedDigest = digest; delete record.csrf;
-      t.transaction(() => { if (owner.id !== t.db.get('owner_account', null)) throw new HttpError(403, 'pairing_owner_required'); save(t, record); notifySetupChanged(t); });
-      result = await status(t, record, authority);
-    } else if (record.prepared && ['pending', 'approved', 'committing'].includes(result.state)) {
-      await requireWritesOpen(t.env);
-      csrf = crypto.randomUUID() + crypto.randomUUID();
-      record.csrf = { hash: await sha256Hex(csrf), session: owner.session, digest, expiresAt: Math.min(record.challenge.expiresAt, t.now() + 120_000) };
-      await reviewOwner(t, req);
-      t.transaction(() => save(t, record));
-    }
-    if (form && target) {
-      // One tap continues on the page that asked. Approval itself stays here.
-      return new Response(null, { status: 303, headers: { Location: target.href, 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin' } });
-    }
-    return reviewPage(t, record, result, owner.id, digest, csrf, target);
-  });
+  if (req.method !== 'GET') throw new HttpError(410, 'pairing_review_removed', 'Browser access is approved automatically; there is nothing to review.');
+  const record = await verified(t, pairingId(req.headers.get('x-pairing-id')));
+  const target = returnTarget(req, record.challenge) ?? new URL(record.challenge.pageOrigin);
+  return new Response(null, { status: 303, headers: { Location: target.href, 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin' } });
 }
 /** Only the exact page origin that created this request may receive the browser back. */
 function returnTarget(req: Request, c: DevicePairingChallenge): URL | null {
@@ -482,36 +429,4 @@ function returnTarget(req: Request, c: DevicePairingChallenge): URL | null {
   if (target.protocol !== new URL(c.pageOrigin).protocol || target.origin !== c.pageOrigin || target.username || target.password || target.href.length > 2048)
     throw new HttpError(400, 'invalid_pairing_review', 'The return address must be the page that requested this device.');
   return target;
-}
-function reviewPage(t: Tendril, record: PairingRecord, result: DevicePairingStatus, ownerId: string, digest: string, csrf: string | undefined, target: URL | null): Response {
-  const c = record.challenge, name = escape(t.db.get<string>('name', 'Tendril')), own = c.accountId === ownerId;
-  const back = target ? `?return_to=${encodeURIComponent(target.href)}` : '';
-  const rights = c.rights.writer ? 'read and update' : 'read';
-  const fingerprint = c.publicKey.match(/.{1,8}/g)!.join(' ');
-  const waiting = !record.prepared && ['challenge', 'pending'].includes(result.state);
-  const done = ['approved', 'committing', 'committed'].includes(result.state);
-  const badgeClass = done ? 'ok' : ['denied', 'revoked', 'reconciliation_required'].includes(result.state) ? 'danger' : waiting || result.state === 'pending' ? 'warn' : '';
-  const badgeLabel = done ? 'Approved' : waiting ? 'Preparing' : result.state === 'pending' ? 'Review required' : result.state.replaceAll('_', ' ');
-  const formHtml = csrf && !(target && done)
-    ? `<form method="post" action="${escape(result.reviewUrl + back)}"><input type="hidden" name="csrf" value="${escape(csrf)}"><input type="hidden" name="digest" value="${digest}"><div class="actions"><button id="pairing-approve" class="lg" name="action" value="approve">Approve device</button><button id="pairing-deny" class="secondary lg" name="action" value="deny">Reject</button></div></form>`
-    : '';
-  const proposal = record.prepared?.request.payload;
-  const proposalHtml = proposal
-    ? `<div id="pairing-proposal" class="stack-sm"><h3 style="margin-top:1rem">Signed proposal</h3><dl class="meta-grid"><dt>Proposal digest</dt><dd><code>${record.preparedDigest}</code></dd><dt>Generation</dt><dd><code>${escape(proposal.expectedGeneration!)}</code></dd><dt>Control revision</dt><dd>${proposal.controlRevision}</dd><dt>Native signer</dt><dd><code>${escape(proposal.requester)}</code></dd><dt>Coordinator</dt><dd><code>${escape(proposal.coordinator)}</code></dd><dt>History checkpoint</dt><dd>Sequence ${proposal.base!.point.sequence} in <code>${escape(proposal.base!.point.generation)}</code>, root <code>${escape(proposal.base!.point.root)}</code></dd></dl><details class="disclosure"><summary>Raw signed transition JSON</summary><div class="disclosure-body"><pre>${escape(JSON.stringify(record.prepared, null, 2))}</pre></div></details></div>`
-    : '<p id="pairing-proposal" class="muted" style="margin-top:.75rem">Waiting for the native participant to stage the signed proposal. Keep the native participant running; this page refreshes automatically.</p>';
-  const statusLine = `<p id="pairing-state" class="notice${badgeClass ? ` ${badgeClass}` : ''}" role="status"><strong>${escape(result.state)}</strong>: ${escape(result.nextAction)}</p>`;
-  const details = `<details id="pairing-details" class="disclosure"><summary>Technical details</summary><div class="disclosure-body">${formHtml ? statusLine : ''}<dl class="meta-grid"><dt>Application</dt><dd><code>${escape(c.applicationId)}</code></dd><dt>Account</dt><dd><code>${escape(c.accountId)}</code></dd><dt>Device key</dt><dd id="pairing-fingerprint"><code>${fingerprint}</code></dd><dt>Rights</dt><dd>Read${c.rights.writer ? ' and write' : ' only'}; member data role; no coordination, recovery, administration or publishing</dd><dt>Page origin</dt><dd><code>${escape(c.pageOrigin)}</code></dd><dt>Expires</dt><dd>${escape(new Date(c.expiresAt).toISOString())}</dd><dt>Request</dt><dd><code>${escape(c.requestId)}</code></dd></dl>${proposalHtml}</div></details>`;
-  const lead = waiting ? `<p class="lead">Preparing the device request for <strong>${name}</strong>. This takes a moment…</p>`
-    : done && target ? `<p class="lead">This browser is approved for <strong>${name}</strong>. Returning to the app…</p>`
-    : csrf ? `<p class="lead">${own ? `Approve this browser to ${rights} data in <strong>${name}</strong>.` : `A guest account is requesting access to <strong>${name}</strong> from a new browser. Approving lets that browser ${rights} app data with its own member key.`}</p>`
-    : done ? `<p class="lead">This browser is approved for <strong>${name}</strong>. You can return to the app.</p>`
-    : `<p class="lead">${escape(result.nextAction)}</p>`;
-  const returnLink = target && (!csrf || done) ? `<div class="actions"><a class="button${done ? '' : ' secondary'}" id="pairing-return" href="${escape(target.href)}">Return to ${name}</a></div>` : '';
-  const refresh = waiting ? `<meta http-equiv="refresh" content="2">` : done && target ? `<meta http-equiv="refresh" content="1;url=${escape(target.href)}">` : '';
-  const heading = done ? `Browser approved for ${name}` : own ? `Add this browser to ${name}?` : `Admit a browser to ${name}?`;
-  const response = servicePage('Device access', `${refresh}<div class="stack"><section class="card"><div class="card-head"><div><span class="eyebrow">Device access</span><h1>${heading}</h1></div><span class="badge ${badgeClass}">${escape(badgeLabel)}</span></div>${lead}${formHtml}${returnLink}<p class="muted" style="margin-top:1rem;font-size:.84rem">Origin <code>${escape(c.pageOrigin)}</code> · Key <code>${fingerprint.slice(0, 17)}…</code></p></section>${formHtml ? '' : statusLine}${details}</div>`);
-  const policy = response.headers.get('Content-Security-Policy')!;
-  // A completed form redirects to the requesting page; CSP form-action also governs that redirect.
-  response.headers.set('Content-Security-Policy', (target ? policy.replace("form-action 'self'", `form-action 'self' ${c.pageOrigin}`) : policy) + "; frame-ancestors 'none'");
-  response.headers.set('X-Frame-Options', 'DENY'); return response;
 }

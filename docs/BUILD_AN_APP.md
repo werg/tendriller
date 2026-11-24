@@ -56,7 +56,7 @@ handle; the service origin and the published page origin serve different roles.
 | Build the UI | Bundle the page and owning Worker | `page/` contains the complete authored graph and public configuration |
 | Publish | Use the creator session's saved signed publication | A receipt and selected immutable release ready for the owner’s first signed-in visit |
 | Owner sign-in | Give the person the already-published page and any prepared permission-review URL | Existing authority, keys and code retained; no new publication needed |
-| Connect the browser | Request access with its own device, let the native peer stage an exact proposal, review it, then connect | The reviewed signed grant is committed; the session acquires keys and reads real application state |
+| Connect the browser | Request access with its own device and let the native peer stage an exact member-only proposal; the host approves it automatically | The approved signed grant is committed; the session connects, acquires keys and reads real application state |
 | Verify | Submit, reload, read, inspect and retry | Retained notes and the same device/operation identities survive reopening |
 
 The owner sign-in and enrollment decision are real authority boundaries. Prepare
@@ -655,22 +655,18 @@ Opening the page is the whole flow; agents keep it when adapting the UI:
    application, service/page origins, exact read/write rights, current authority
    and expiry. The private key stays in Worker storage.
 3. The host wakes the native owner. It saves the pairing intent, **durably pauses
-   command ordering**, and stages the exact signed control proposal before
-   review. The pause freezes the selected prefix; the proposal preserves all
+   command ordering**, and stages the exact signed control proposal. The pause freezes the selected prefix; the proposal preserves all
    existing grants, epoch/key commitments and recovery floor and adds only the
    proved account/key with the narrow browser rights.
-4. The page then opens the service-origin approval once, with `return_to` set to
-   itself. The signed-in owner sees **Add this browser to APP?** and taps
-   **Approve this device**: the single confirmation, with same-origin and CSRF
-   checks, on a page that cannot be framed. Technical details (fingerprint,
-   origins, generation, retained prefix, proposal digest) are folded below it.
-   The service returns to the page, and only to that page's origin.
+4. The host verifies the staged member-only proposal against the proved key,
+   account and current authority and approves it automatically for the
+   signed-in owner or an admitted guest. There is no approval screen; the page
+   stays put and shows **Setting up this browser…**.
 5. The page shows **Finishing setup…** while the native owner saves the exact
-   commit attempt and submits the reviewed transition (the server rechecks
+   commit attempt and submits the approved transition (the server rechecks
    account access and authority), then connects by itself.
 
-If the owner leaves the approval without deciding, the page offers one
-**Approve this browser** action. Expired or stale requests are renewed for the
+Expired or stale requests are renewed for the
 same device once automatically per visit; further expiry waits for **Request another review**, so an unattended tab cannot exhaust its retained history. A denied request waits for an explicit **Ask again**. A request that
 the participant committed while the page was away is found on the next open.
 Errors are shown in user words (`describeConnectionError`), with the code folded
@@ -696,7 +692,7 @@ For a deliberate inspection/retry step with the resident owner stopped,
 `npm run pair` performs one prepare/inspect/commit pass. It does not wait for human
 approval. `npm run enroll -- PUBLIC_KEY` remains a deliberate manual
 administration route; the ordinary browser flow uses its own signed proof and the
-service-origin approval above.
+automatic host approval described above.
 
 This first app grants the browser **read and write**, with **no publication,
 administration, coordination or recovery authority**. This keeps the first
@@ -860,7 +856,7 @@ mobile suspension.
 | Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
 | `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Use `--mode attach` for CLI work against the running peer; standalone `--mode own` requires that peer to be stopped. |
-| Browser is not enrolled | Request access from its retained browser device, keep the native peer running to stage the exact proposal, and complete the service-origin owner review. Check committed status before connecting. Account login and device grants are separate. |
+| Browser is not enrolled | Request access from its retained browser device, and keep the native peer running to stage the exact proposal; the host approves it automatically. Check committed status before connecting. Account login and device grants are separate. |
 | Pairing is pending or ordering is paused | Inspect the original request and retained native proposal. Keep the native owner running for setup notifications; after a process stop, reopen the same owner and reconcile uncertain commitment before resuming ordering. Never delete the pause or silently rebase the review. |
 | `awaiting-keys`, connecting, or locally saved work | Keep the authorized native donor/coordinator running and inspect participation status and host access. Never paste the epoch key into the page. |
 | Publication forbidden | Inspect the current explicit publisher grant and submitting account authorization. Administration is a separate right. |
@@ -905,5 +901,6 @@ the real permission-review URL even before claim. Give the owner the ready page
 and that URL together; sign-in adopts the prepared application and makes the
 permission review available. It does not approve MCP data access automatically.
 Use a finite setup-status check if needed, without requiring a chat acknowledgement.
-The owner still explicitly enrolls their browser and approves assistant capabilities.
+The browser completes proved-device enrollment automatically; assistant
+capabilities still require explicit owner approval.
 A source ZIP or temporary process is not durable hosting for the native participant.

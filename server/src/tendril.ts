@@ -191,6 +191,7 @@ export class Tendril extends DurableObject<Env> {
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
           name: this.db.get("name", "Tendril"), page_url: this.mainPageUrl(),
+          icon: this.db.get<string | null>("icon", null), theme_color: this.db.get<string | null>("theme_color", null),
           version: this.db.get("current", 0), held: this.db.get("disabled", false),
           bytes: this.storageUsed(),
           agents: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")?.n ?? 0,

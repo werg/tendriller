@@ -49,7 +49,6 @@ void connection.start();
 | Approved, native owner committing | "Finishing setup…" | none |
 | Another tab is starting the owner | "Connecting…" | none (retries) |
 | Declined | "The request was declined" | **Ask again** |
-| Approval left without a decision | "Approve this browser" | **Approve this browser** |
 | Signed out, private mode, other failures | Plain words from `describeConnectionError`; code under *Technical details* | **Reload** or **Try again** where useful |
 
 While not connected, show only this card: no empty tables, "no data yet" or

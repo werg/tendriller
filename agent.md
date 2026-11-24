@@ -65,8 +65,8 @@ created application's code by itself.
    Use the browser's retained-key pairing request and the same running native
    owner. Its hibernating setup subscription receives later device requests
    without idle polling. That owner pauses ordering and stages the exact signed
-   proposal before owner review. Optional MCP adapter failures leave it running. Preserve uncertain requests and their durable
-   pause across restart; approve only the complete displayed proposal.
+   proposal; the host approves it automatically (no approval screen). Optional MCP adapter failures leave it running. Preserve uncertain requests and their durable
+   pause across restart.
    Do the setup in the agent's
    supported runtime and preserve it so later invocations can resume.
 4. Finish only after a browser command is visible in a native read, a native
@@ -192,7 +192,7 @@ The complete [bootstrap](docs/SESSION_BOOTSTRAP.md) covers this missing connecti
 between configuration and session opening.
 
 For ordinary browser enrollment, use the starter's challenge/proof, native
-preparation, service-origin owner review and exact signed commitment. The
+preparation, automatic host approval and exact signed commitment. The
 browser retains its own key; account sign-in grants no device rights. For a
 deliberate manual enrollment, the authenticated agent's `host.info()` includes
 `owner_account_id` (`null` until claimed). Use it as an explicit account binding

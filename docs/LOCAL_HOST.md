@@ -122,8 +122,8 @@ Leave that process running. Open the `page_url` returned by creation in the
 runner's Chromium window. Keep its URL unchanged; the browser handles local
 port routing. Sign in to the local test account first if necessary, claim the
 page, and follow the normal browser connection flow. The running native owner
-stages the browser's signed device proposal. Review the fingerprint and rights
-on the service-origin approval page, then approve and return to the app.
+stages the browser's signed device proposal; the host approves it automatically
+and the page connects by itself, without an approval screen.
 The [build guide](BUILD_AN_APP.md) describes these normal connection steps.
 
 Add a note in the browser. From another terminal in the same application

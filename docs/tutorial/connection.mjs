@@ -2,12 +2,12 @@
 //
 // Opening the page is the whole flow:
 //   1. attach to this browser's device owner (shared by every tab) and open the app;
-//   2. if this browser has no device grant yet, create its key and a pairing request,
-//      then open the service-origin approval once, with a return to this page;
-//   3. after approval, wait for the native participant to commit, then connect;
+//   2. if this browser has no device grant yet, create its key and a pairing request;
+//   3. the native participant stages the member-only grant, the host approves it
+//      automatically for the signed-in owner or admitted guest, the native
+//      participant commits it, then this page connects — no approval screen;
 //   4. any other failure is said in plain words and retried with backoff.
-// Later visits only do step 1. The browser key never leaves its Worker; approval
-// stays on the service origin; the native owner stages the exact proposal first.
+// Later visits only do step 1. The browser key never leaves its Worker.
 
 const NOT_ENROLLED = new Set(['APPLICATION_DEVICE_NOT_FOUND', 'DEVICE_NOT_ENROLLED', 'APPLICATION_PEER_NOT_AUTHORIZED']);
 const TRANSIENT = new Set(['OWNER_BUSY', 'OWNER_UNREACHABLE', 'ENDPOINT_STALE', 'OWNER_HANDSHAKE_TIMEOUT', 'OWNER_REPLACED',
@@ -48,24 +48,15 @@ const sleep = (ms, signal) => new Promise(resolve => {
  * @param options.connect   async () => anything: attach with openBrowserOwner, mount, return when the app is usable.
  *                          Throw the attach error unchanged (its `code` drives the flow).
  * @param options.pairing   createBrowserPairing(...) from pairing-browser.mjs.
- * @param options.onState   receives { phase, title, detail, action?, technical?, reviewUrl? } on every change.
+ * @param options.onState   receives { phase, title, detail, action?, technical? } on every change.
  * @param options.appName   used in user-facing copy.
- * Phases: connecting · enrolling · approve · finishing · connected · failed · preview.
+ * Phases: connecting · enrolling · finishing · connected · failed · preview.
  */
 export function createOwnerConnection({ configuration, pairing, connect, onState = () => {}, appName = 'this app',
-  storage = sessionStorage, navigate = url => location.assign(url), here = () => location.href, maxDelayMs = 15_000 }) {
-  const reviewedKey = id => `tendriller:reviewed:${configuration.applicationId}:${id}`;
+  navigate = url => location.assign(url), maxDelayMs = 15_000 }) {
   const lifetime = new AbortController();
   let state = { phase: 'connecting', title: 'Connecting…', detail: '' }, running, wake = () => {};
   const set = value => { if (lifetime.signal.aborted) return; state = Object.freeze(value); try { onState(state); } catch { /* A view cannot stop the flow. */ } };
-  const reviewUrl = status => {
-    const target = new URL(here());
-    // Preserve the complete return address when possible; the review endpoint has
-    // a fixed URL bound. Even an unusually long document path can return home.
-    if (target.href.length > 2048) { target.search = ''; target.hash = ''; }
-    if (target.href.length > 2048) target.pathname = '/';
-    const url = new URL(status.reviewUrl); url.searchParams.set('return_to', target.href); return url.href;
-  };
   let renewRequested = false, automaticRenewals = 0, started = false;
   const visibility = () => { if (document.visibilityState === 'visible') nudge(); };
   const deadline = () => AbortSignal.any([lifetime.signal, AbortSignal.timeout(35_000)]);
@@ -94,22 +85,9 @@ export function createOwnerConnection({ configuration, pairing, connect, onState
     if (status.state === 'committed') return 'connect';
     if (status.state === 'denied') { set({ phase: 'failed', ...describeConnectionError({ code: 'denied' }, { appName }), action: { label: 'Ask again', run: () => (renewRequested = true, restart()) } }); return 'stop'; }
     if (['revoked', 'reconciliation_required'].includes(status.state)) throw Object.assign(Error(status.nextAction), { code: status.state });
-    if (status.state === 'pending' && !storage.getItem(reviewedKey(status.pairingId)) && status.preparedDigest) {
-      // One trip to the service origin; it returns here by itself after Approve.
-      storage.setItem(reviewedKey(status.pairingId), String(Date.now()));
-      set({ phase: 'approve', title: 'Opening approval…', detail: `You approve this browser once, on ${new URL(status.reviewUrl).host}.`, reviewUrl: reviewUrl(status) });
-      navigate(reviewUrl(status));
-      return 'stop';
-    }
-    if (status.state === 'pending' && status.preparedDigest) {
-      // Back without approving (or approval in another tab): offer the one action.
-      set({ phase: 'approve', title: 'Approve this browser', detail: `Confirm on ${new URL(status.reviewUrl).host} that this browser may open ${appName}.`,
-        reviewUrl: reviewUrl(status), action: { label: 'Approve this browser', run: () => navigate(reviewUrl(status)) } });
-      return 'wait';
-    }
     set({ phase: status.state === 'pending' ? 'enrolling' : 'finishing',
       title: status.state === 'pending' ? 'Setting up this browser…' : 'Finishing setup…',
-      detail: status.state === 'pending' ? `${appName} is preparing the request. This takes a few seconds.` : `Approved. ${appName} is adding this browser.` });
+      detail: status.state === 'pending' ? `${appName} is preparing this browser. This takes a few seconds.` : `${appName} is adding this browser.` });
     return 'wait';
   }
 

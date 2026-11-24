@@ -64,15 +64,17 @@ ship an always-failing RTC stub or defer P2P setup. Follow the selected service'
 peer-connection guide and verify real application traffic with no hosted relay
 payload when direct connectivity is available; explicitly qualify forced fallback.
 
-Use the starter's reviewed browser pairing flow. The browser retains its own
-key and request; the existing native owner durably pauses ordering and stages
-the exact signed proposal before owner review. The service-origin review binds
-the fingerprint, account, narrow rights, generation and retained prefix. The
-native participant receives later pairing requests through a hibernating setup
-subscription, without idle polling. Individual reviews expire after ten minutes;
-uncertain replies and process restart preserve the ordering pause. Reopen that same participant and reconcile the original
-outcome rather than signing a replacement. A committed grant still needs a real
-session connection and cross-device command/read evidence.
+Use the starter's browser pairing flow. The browser retains its own key and
+request; the existing native owner durably pauses ordering and stages the exact
+signed member-only proposal. The host verifies and approves it automatically for
+the signed-in owner or an admitted guest; there is no approval screen. The
+fingerprint, account, narrow rights, generation and retained prefix remain bound
+to that exact signed proposal. The native participant receives later pairing
+requests through a hibernating setup subscription, without idle polling.
+Individual requests expire after ten minutes; uncertain replies and process
+restart preserve the ordering pause. Reopen that same participant and reconcile
+the original outcome, preserving its signed proposal. A committed grant still
+needs a real session connection and cross-device command/read evidence.
 
 Run the starter's assistant participant for ordinary approved queries and
 commands. Event forwarding is an explicit `--events` choice with its own owner
