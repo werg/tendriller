@@ -622,41 +622,19 @@ export async function closeLocalTransport() {
     assert.deepEqual((await peer.request('ordering-pause')).pause, paused,
       'Closing and reopening the native owner must preserve the exact review prefix.');
     const prepared = await peer.request('pairing-process');
-    assert.equal(prepared.find(item => item.publicKey === browserDevice)?.state, 'pending',
-      'The original signed proposal must be prepared and awaiting owner review.');
-    // A pending proof alone cannot authorize enrollment. The actual native
-    // participant prepares and retains the full signed control change first.
-    // Once it has, the page opens the service-origin approval by itself.
-    await page.waitForURL(url => url.pathname.startsWith('/pairings/'), { timeout: 30_000 });
-    const reviewUrl = new URL(page.url());
-    assert.equal(reviewUrl.origin, SERVICE);
-    assert.equal(new URL(reviewUrl.searchParams.get('return_to')).origin, new URL(handle.page_url).origin);
-    const reviewResponse = await page.reload();
-    assert.match(reviewResponse.headers()['content-security-policy'], /frame-ancestors 'none'/);
-    await expect(page.getByRole('heading', { name: /Add this browser to/ })).toBeVisible();
-    await page.locator('#pairing-details > summary').click();
-    await expect(page.getByText(browserDevice.match(/.{1,8}/g).join(' '), { exact: true })).toBeVisible();
-    await expect(page.locator('#pairing-proposal')).toContainText(paused.base.point.generation);
-    await page.locator('#pairing-details > summary').click();
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true,
-      'The approval must fit a phone without horizontal overflow.');
-    await page.screenshot({ path: join(dirname(reportPath), 'first-app-pairing-review-mobile.png'), fullPage: true });
-    report.screenshots.pairing_review_narrow_viewport = 'first-app-pairing-review-mobile.png';
-    await expect(page.getByRole('button', { name: 'Approve device', exact: true })).toBeEnabled({ timeout: 30_000 });
-    await page.locator('#pairing-approve').focus();
-    await expect(page.locator('#pairing-approve')).toBeFocused();
-    // The one confirmation tap. The service returns to the page, which finishes and connects.
-    await page.keyboard.press('Enter');
-    await page.waitForURL(url => url.origin === new URL(handle.page_url).origin, { timeout: 30_000 });
+    assert.equal(prepared.find(item => item.publicKey === browserDevice)?.state, 'committed',
+      'The authenticated browser must auto-approve and commit without a manual review redirect.');
     await expect(page.locator('#app-content')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('#connection-card')).toBeHidden();
+    assert.equal(new URL(page.url()).origin, new URL(handle.page_url).origin,
+      'The browser must stay on the app page without redirecting to /pairings/.');
     await expect.poll(async () => (await peer.request('ordering-pause')).pause,
       { timeout: 30_000, message: 'Only verified committed authority may release the retained pause.' }).toBeNull();
     await page.screenshot({ path: join(dirname(reportPath), 'first-app-connected-after-approval-mobile.png'), fullPage: true });
     report.screenshots.connected_after_approval_narrow_viewport = 'first-app-connected-after-approval-mobile.png';
     await page.setViewportSize({ width: 1280, height: 960 });
-    report.pairing = { reviewed_prefix: paused.base, recovered_native_pause: true, committed: true };
-    passed('retained browser proof, full owner review, durable native pause across restart and exact signed enrollment');
+    report.pairing = { reviewed_prefix: paused.base, recovered_native_pause: true, committed: true, autoApproved: true };
+    passed('retained browser proof, one-go automatic enrollment without review redirect, durable native pause across restart and exact signed enrollment');
     const attached = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'self']));
     assert.equal(attached.deviceId, device.deviceId);
     assert.equal(attached.endpoint.ownerInstanceId, peer.metadata.ownerInstanceId);

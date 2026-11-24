@@ -471,7 +471,8 @@ export class Tendril extends DurableObject<Env> {
     if (!link) throw new HttpError(404, "not_found", "Unknown or expired link");
     if (url.pathname === "/claim/info" && req.method === "GET") {
       return json({ claimed: !!this.db.get<string | null>("owner_account", null),
-        expected: maskOwner(this.db.get<string | null>("intended_owner", null)), role: link.role });
+        expected: maskOwner(this.db.get<string | null>("intended_owner", null)), role: link.role,
+        direct: link.role === "guest" && !link.created_by_agent });
     }
     if (url.pathname === "/claim/guest-status" && req.method === "GET") {
       if (link.role !== "guest") throw new HttpError(403, "forbidden");

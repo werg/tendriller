@@ -21,7 +21,7 @@ import { requestPersistentStorage } from '@tendriller/core/browser-owner';
 export function describeConnectionError(error, { appName = 'this app' } = {}) {
   const code = codeOf(error), technical = `${code}${error?.message && error.message !== code ? `: ${error.message}` : ''}`;
   const copy = (title, detail, retry = true, extra = {}) => ({ code, title, detail, retry, technical, ...extra });
-  if (NOT_ENROLLED.has(code)) return copy('Setting up this browser…', `This browser is new to ${appName}. It gets its own key; you approve it once.`, true, { enroll: true });
+  if (NOT_ENROLLED.has(code)) return copy('Setting up this browser…', `Connecting this browser to ${appName}…`, true, { enroll: true });
   if (TRANSIENT.has(code) || /timed? ?out|network|failed to fetch/i.test(error?.message ?? ''))
     return copy('Connecting…', code.startsWith('OWNER') || code === 'ENDPOINT_STALE' ? `Another tab of ${appName} is starting the connection.` : 'The connection is slow. Retrying…');
   if (['pairing_account_required', 'pairing_account_revoked', 'pairing_owner_required', 'unauthorized'].includes(code) || error?.status === 401)
