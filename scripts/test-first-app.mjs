@@ -928,7 +928,7 @@ export async function closeLocalTransport() {
     assert.equal(resumedAdoption.attemptId, adopted.attemptId);
     assert.equal(resumedAdoption.resumed, true, 'A retained response is reused without redeeming the code twice.');
     await management.locator('form:has(input[name="agent"][value="setup"])').getByRole('button', { name: 'Disconnect', exact: true }).click();
-    await expect(management.locator('[role="status"]')).toContainText('Disconnected setup.');
+    await expect(management.locator('.notice[role="status"]')).toContainText('Disconnected setup.');
     await management.close();
     const rejectedSetup = await fetch(handle.api, { headers: { Authorization: 'Bearer ' + handle.token }, redirect: 'error' });
     assert.equal(rejectedSetup.status, 401, 'The old setup credential must no longer authorize host access.');

@@ -208,6 +208,12 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       { src: generatedIcon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
       maskableIcon,
     ]);
+    const maskableSize = await page.evaluate(async url => {
+      const image = new Image(); image.src = url; await image.decode();
+      return { width: image.naturalWidth, height: image.naturalHeight };
+    }, maskableIcon.src);
+    expect(maskableSize.width).toBeGreaterThan(0);
+    expect(maskableSize.height).toBe(maskableSize.width);
     expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
     expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
 

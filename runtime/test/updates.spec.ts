@@ -3,7 +3,10 @@ import { build } from 'esbuild';
 import { MockServer } from './mock-server';
 
 // Exercise the policy source in a real DOM without rebuilding shared release assets.
-const compiled = await build({ entryPoints: [new URL('../src/updates.ts', import.meta.url).pathname], bundle: true,
+const compiled = await build({ stdin: {
+  contents: "export * from './runtime/src/updates.ts';export {mountUtility} from './runtime/src/utility.ts';export {createTransportBinding} from './runtime/src/transport.ts';",
+  resolveDir: new URL('../..', import.meta.url).pathname, loader: 'ts',
+}, bundle: true,
   format: 'iife', globalName: 'UpdatePolicy', platform: 'browser', write: false });
 let mock: MockServer;
 test.beforeAll(async () => { mock = new MockServer(); await mock.start(); });
@@ -31,6 +34,48 @@ async function policy(page: Page, html = '<button id="outside">Outside</button>'
   };
 }
 const reloads = (page: Page) => page.evaluate(() => (window as any).reloads);
+async function mountUtility(page: Page) {
+  await page.evaluate(() => {
+    const w = window as any, noop = () => () => {};
+    w.disposeUtility = w.UpdatePolicy.mountUtility({
+      transport: w.UpdatePolicy.createTransportBinding().api,
+      identity: { base: w.cfg.base, version: 1, publication: null, managementUrl: w.cfg.base + '_tendril/manage' },
+      publication: w.updates,
+      installation: { status: () => ({ state: 'unavailable', platform: 'desktop' }), on: noop },
+      sensors: { status: () => ({ active: [], pending: [] }), on: noop, stopAll: () => 0 },
+    });
+  });
+}
+
+test('fresh utility permission defaults do not block an idle publication switch', async ({ page }) => {
+  const notice = await policy(page);
+  await mountUtility(page);
+  expect(await page.locator('tendril-utility input[type=checkbox]').evaluateAll(inputs => inputs.map(input => {
+    const box = input as HTMLInputElement; return [box.checked, box.defaultChecked];
+  }))).toEqual([[true, true], [true, true], [false, false], [false, false], [false, false]]);
+  await notice(2);
+  expect(await reloads(page)).toBe(1);
+});
+
+test('edited utility permissions still protect a blurred draft until restored', async ({ page }) => {
+  const notice = await policy(page);
+  await mountUtility(page);
+  await page.evaluate(() => {
+    const box = document.querySelector('tendril-utility')!.shadowRoot!.querySelector('input[type=checkbox]') as HTMLInputElement;
+    box.checked = false;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+  });
+  await notice(2); await page.clock.runFor(60_000);
+  expect(await reloads(page)).toBe(0);
+  await page.evaluate(() => {
+    const box = document.querySelector('tendril-utility')!.shadowRoot!.querySelector('input[type=checkbox]') as HTMLInputElement;
+    box.checked = box.defaultChecked;
+    box.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  });
+  await page.clock.runFor(1);
+  expect(await reloads(page)).toBe(1);
+});
+
 const dirtyControls = [
   { name: 'checkbox checkedness (constant value=yes)', html: '<input id="editor" type="checkbox" value="yes">', kind: 'checkbox' },
   { name: 'default-on checkbox checkedness', html: '<input id="editor" type="checkbox" value="yes" checked>', kind: 'checkbox' },

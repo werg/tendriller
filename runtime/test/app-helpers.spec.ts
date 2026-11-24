@@ -55,7 +55,12 @@ test.beforeAll(async () => {
         import {mountDashboardShell,mountMetricCard,mountFeedListCard,mountFeedbackCard} from '/dashboard.js';
         window.sent=[];window.feedback=[];window.actions=[];window.failSend=false;
         const listeners = new Map();
-        window.runtime={identity:{page:'test-page'},sensors:{},on(type,fn){let set=listeners.get(type);if(!set)listeners.set(type,set=new Set());set.add(fn);return()=>set.delete(fn)}};
+        window.wakeFixture={requests:0,releases:0,unavailable:true};
+        window.runtime={identity:{page:'test-page'},sensors:{async wakeLock(){
+          window.wakeFixture.requests++;
+          if(window.wakeFixture.unavailable)throw Error('Wake lock unavailable');
+          return {async release(){window.wakeFixture.releases++}};
+        }},on(type,fn){let set=listeners.get(type);if(!set)listeners.set(type,set=new Set());set.add(fn);return()=>set.delete(fn)}};
         window.emitRuntime=(type,value)=>{for(const fn of listeners.get(type)||[])fn(value)};
         window.chat=mountAgentChat(window.runtime,{title:'Test assistant',voiceOutput:new URL(location.href).searchParams.has('speech')?'browser':false,
           onSend:async input=>{if(window.failSend)throw Error('Delivery unavailable');window.sent.push(input)},
@@ -133,6 +138,8 @@ test('releasing a held microphone during preparation cancels the pending recordi
 });
 
 test('hands-free only rearms on natural completion, never Stop, barge-in or Stop sensors', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
   await page.goto(`${origin}/?speech`); await page.waitForFunction(() => (window as any).ready);
   await page.clock.install();
   await page.getByRole('button', { name: 'Test assistant', exact: true }).click();
@@ -160,6 +167,19 @@ test('hands-free only rearms on natural completion, never Stop, barge-in or Stop
   await page.evaluate(() => (window as any).voiceFixture.output(false,true));
   await page.clock.runFor(1000);
   expect(await page.evaluate(() => (window as any).voiceFixture.starts)).toBe(3);
+  // Unavailable wake locks are best-effort; they must not break conversation controls.
+  expect(await page.evaluate(() => (window as any).wakeFixture.requests)).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});
+
+test('hands-free releases its available wake lock when the dock closes', async ({ page }) => {
+  await page.goto(`${origin}/?speech`); await page.waitForFunction(() => (window as any).ready);
+  await page.evaluate(() => { (window as any).wakeFixture.unavailable = false; });
+  await page.getByRole('button', { name: 'Test assistant', exact: true }).click();
+  await page.getByRole('button', { name: 'Hands-free', exact: true }).click();
+  expect(await page.evaluate(() => (window as any).wakeFixture.requests)).toBe(1);
+  await page.keyboard.press('Escape');
+  expect(await page.evaluate(() => (window as any).wakeFixture.releases)).toBe(1);
 });
 
 test('Escape stops recording, closes the dock and restores keyboard focus', async ({ page }) => {
