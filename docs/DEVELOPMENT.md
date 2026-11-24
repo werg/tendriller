@@ -237,7 +237,9 @@ event consumer and browser stay active, exact and stale publication retries, the
 direct, attached and forwarding consumers hold work. Recovery checks require
 verified evidence and deliberate rescans with durable handled-work receipts.
 The fixture controls do not enter shipped source or packages. This gate records
-its own limits and evidence in `.results/first-app-feedback.json` and gates
+its own limits and evidence by default in
+`.results/first-app-feedback/first-app-feedback.json`, with screenshots in that
+separate directory, and gates
 publication alongside the unmodified-kit and native/browser checks.
 For a local offline run, set `FIRST_APP_NPM_CACHE` to an existing npm download
 cache and `npm_config_offline=true`; the application install is still isolated,

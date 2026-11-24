@@ -45,7 +45,10 @@ const feedbackQualification = Boolean(values['feedback-qualification']);
 if (feedbackQualification && (sqlOnly || values['native-only'] || values['network-lab-profile']))
   throw Error('Feedback qualification requires the ordinary events browser/native composition.');
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
-const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
+const defaultReportPath = feedbackQualification
+  ? join(root, '.results/first-app-feedback/first-app-feedback.json')
+  : join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`);
+const reportPath = resolve(values.report ?? defaultReportPath);
 const directory = await mkdtemp(join(tmpdir(), 'tfa-'));
 // A local cache can be reused without sharing the independent consumer install.
 const npmCache = process.env.FIRST_APP_NPM_CACHE ? resolve(process.env.FIRST_APP_NPM_CACHE) : join(directory, 'npm-cache');
