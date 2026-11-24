@@ -209,7 +209,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   for (const [value, label, on] of [["host:read", "Read host status", true], ["participants:connect", "Connect enrolled participants", true],
     ["control:write", "Update signed application control", false], ["publication:write", "Publish signed code", false], ["assistant:manage", "Propose assistant access", false]] as const) {
     const row = document.createElement("label"); const box = document.createElement("input");
-    box.type = "checkbox"; box.value = value; box.checked = on; row.append(box, element("span", label)); scopeList.append(row);
+    box.type = "checkbox"; box.value = value; box.checked = box.defaultChecked = on; row.append(box, element("span", label)); scopeList.append(row);
   }
   scopeBox.append(scopeList);
   const agentCreate = button("Create agent invitation", "primary");
