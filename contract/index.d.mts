@@ -82,6 +82,41 @@ export interface SensorStatus {
   /** Present only while custom registrations exist, including stopping/failed cleanup. */
   resources?: RegisteredSensorStatus[];
 }
+export interface WakeLockOptions {
+  label?: string;
+  /** Re-acquire automatically when returning to visible while this lease remains open. Defaults to false. */
+  autoReacquire?: boolean;
+}
+export interface WakeLockLease {
+  readonly supported: boolean;
+  readonly active: boolean;
+  release(): Promise<void>;
+}
+export interface SharedPayload {
+  title?: string;
+  text?: string;
+  url?: string;
+  files: File[];
+}
+export interface RuntimeShareTarget {
+  /** Consume any pending Web Share Target payload (from ?_shared=<id>), deleting it from local cache and cleaning the URL. */
+  consume(): Promise<SharedPayload | null>;
+  /** Subscribe to an incoming share payload; invokes immediately if one is already pending. */
+  onShare(listener: (payload: SharedPayload) => void): () => void;
+}
+export interface NotificationStatus {
+  state: "unsupported" | "install_required" | "prompt" | "granted" | "denied";
+  subscribed: boolean;
+}
+export interface RuntimeNotifications {
+  status(): Promise<NotificationStatus>;
+  /** Must be called from a user gesture. Requests browser notification permission and registers Web Push with the page host. */
+  enable(): Promise<NotificationStatus>;
+  /** Unsubscribe this browser from Web Push and delete its host subscription. */
+  disable(): Promise<void>;
+  /** Update the PWA app icon badge when supported (0 or omitted clears). */
+  setBadge(count?: number): Promise<void>;
+}
 export interface Capability { available: boolean; permission: "granted" | "prompt" | "denied" | "unknown"; needs_user_tap: boolean; active: boolean | null; note?: string }
 export interface CapabilityReport { captured_at: number; secure: boolean; device: string; capabilities: Record<string, Capability> }
 export interface InstallationStatus {
@@ -140,9 +175,15 @@ export interface RuntimeServices {
     status(): SensorStatus;
     on(listener: (status: SensorStatus) => void): () => void;
     register(options: RegisteredSensorOptions): RegisteredSensorHandle;
+    /** Acquire a Screen Wake Lock integrated with Stop sensors and visibility lifecycle. */
+    wakeLock?(options?: WakeLockOptions): Promise<WakeLockLease>;
     /** Number of newly stopped/cancelled resources; async cleanup may still be stopping. */
     stopAll(): number;
   };
+  /** Consume content shared into this installed PWA via the OS share sheet (zero network requests). */
+  readonly shareTarget?: RuntimeShareTarget;
+  /** Opt-in Web Push notifications and app icon badging (zero eager network requests). */
+  readonly notifications?: RuntimeNotifications;
 }
 /** Application work belongs to the installed session; host services are explicit. */
 export interface RuntimeApi extends RuntimeServices {}

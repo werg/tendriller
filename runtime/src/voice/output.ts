@@ -20,9 +20,17 @@ function waitFor<T>(task: Promise<T>, signal?: AbortSignal, timeoutMs = 0): Prom
   });
 }
 
+export interface SpeechMediaSessionOptions {
+  title?: string;
+  artist?: string;
+  artworkUrl?: string;
+  onPlay?: () => void;
+}
+
 /** Browser speech is immediate; neural English speech is an optional device preference. */
 export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePreferencesApi,
-  moduleLoader: (url: string) => Promise<typeof import("phonon-tts")> = url => import(/* @vite-ignore */ url)): SpeechOutput {
+  moduleLoader: (url: string) => Promise<typeof import("phonon-tts")> = url => import(/* @vite-ignore */ url),
+  mediaOptions?: SpeechMediaSessionOptions): SpeechOutput {
   const prefs = () => preferences.get();
   let enabled = prefs().voice === "neural";
   let status: SpeechStatus = { enabled, state: "idle", message: enabled ? "Natural voice is enabled. Prepare it once to cache about 65 MB on this device." : "Browser voice is ready. Natural voice is an optional download." };
@@ -42,7 +50,38 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
     status = { enabled, state, message };
     bus.emit("tts", { ...status });
   };
+  let mediaSessionActive = false;
+  const syncMediaSession = (speaking: boolean) => {
+    const ms = typeof navigator !== "undefined" ? (navigator as Navigator & { mediaSession?: MediaSession }).mediaSession : undefined;
+    if (!ms) return;
+    if (speaking) {
+      mediaSessionActive = true;
+      try {
+        if (typeof MediaMetadata === "function") {
+          const title = mediaOptions?.title || (typeof document !== "undefined" ? document.title : "") || "Assistant";
+          ms.metadata = new MediaMetadata({
+            title,
+            artist: mediaOptions?.artist || "Tendriller Assistant",
+            ...(mediaOptions?.artworkUrl ? { artwork: [{ src: mediaOptions.artworkUrl, sizes: "192x192", type: "image/svg+xml" }] } : {}),
+          });
+        }
+        ms.playbackState = "playing";
+        ms.setActionHandler("pause", () => stop());
+        ms.setActionHandler("stop", () => stop());
+        if (mediaOptions?.onPlay) ms.setActionHandler("play", () => mediaOptions.onPlay?.());
+      } catch { /* mediaSession optional on older UAs */ }
+    } else if (mediaSessionActive) {
+      mediaSessionActive = false;
+      try {
+        ms.playbackState = "none";
+        ms.setActionHandler("pause", null);
+        ms.setActionHandler("stop", null);
+        ms.setActionHandler("play", null);
+      } catch { /* ignore */ }
+    }
+  };
   const emitSpeaking = (speaking: boolean, completed = false) => {
+    syncMediaSession(speaking);
     bus.emit("tts_speaking", { speaking, completed });
   };
   const audioContext = () => {
@@ -119,6 +158,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
     sources.clear();
     try { window.speechSynthesis?.cancel(); } catch { /* unavailable */ }
     if (wasSpeaking) emitSpeaking(false);
+    else syncMediaSession(false);
   };
   const browserSpeak = (text: string) => {
     try {

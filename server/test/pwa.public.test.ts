@@ -44,7 +44,7 @@ describe('page installation metadata', () => {
   it('retains access gates for manifests and private page icons, including HEAD', async () => {
     const handle = await create();
     await apiJson(handle, 'PATCH', '', { icon: '🌱' });
-    for (const route of ['manifest.webmanifest', 'icon', 'icon.svg']) {
+    for (const route of ['manifest.webmanifest', 'icon', 'icon.svg', 'icon-maskable.svg']) {
       const url = handle.page_url + '_tendril/' + route;
       const head = await req(url, { method: 'HEAD' });
       expect(head.status).toBe(200);
@@ -73,7 +73,10 @@ describe('page installation metadata', () => {
         expect(await response.text()).toContain(`>${icon}</text>`);
       }
       const manifest = await (await req(handle.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
-      expect(manifest.icons).toEqual([{ src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' }]);
+      expect(manifest.icons).toEqual([
+        { src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+        { src: `${base}_tendril/icon-maskable.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' },
+      ]);
     }
 
     expect((await apiJson(handle, 'PATCH', '', { icon: null })).meta.icon).toBeNull();
@@ -81,8 +84,9 @@ describe('page installation metadata', () => {
     expect(reset).toContain('>G</text>');
     expect(reset).not.toContain('1️⃣');
     const manifest = await (await req(handle.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
-    expect(manifest.icons).toHaveLength(2);
+    expect(manifest.icons).toHaveLength(3);
     expect(manifest.icons).toContainEqual({ src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' });
+    expect(manifest.icons).toContainEqual({ src: `${base}_tendril/icon-maskable.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' });
   });
 
   it('rejects invalid icons without replacing the configured emoji', async () => {
@@ -109,12 +113,15 @@ describe('page installation metadata', () => {
     ]) {
       await apiJson(handle, 'PATCH', '', { icon });
       const manifest = await (await req(handle.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
+      const base = new URL(handle.page_url).pathname;
+      const maskable = { src: `${base}_tendril/icon-maskable.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' };
       if (type) {
-        expect(manifest.icons).toEqual([{ src: icon, type, sizes: 'any', purpose: 'any' }]);
+        expect(manifest.icons).toEqual([{ src: icon, type, sizes: 'any', purpose: 'any' }, maskable]);
       } else {
         expect(manifest.icons).toEqual([
           { src: '/_tendril/brand/icon-180.png', sizes: '180x180', type: 'image/png', purpose: 'any' },
-          { src: `${new URL(handle.page_url).pathname}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+          { src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+          maskable,
         ]);
       }
     }

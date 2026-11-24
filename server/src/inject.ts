@@ -229,3 +229,21 @@ export function iconSvg(name: string, color: string): string {
     `<text x="256" y="256" dy=".35em" text-anchor="middle" font-family="system-ui,sans-serif" font-size="300" font-weight="600" fill="#fff">${letter}</text>` +
     `</svg>`;
 }
+
+/** Maskable icon with full square background bleed and artwork centered inside the 70% adaptive safe zone. */
+export function maskableIconSvg(name: string, color: string): string {
+  const letter = escapeHtml((name.trim()[0] ?? "T").toUpperCase());
+  const bg = /^#[0-9a-f]{3,8}$/i.test(color) ? color : "#2d6a4f";
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">` +
+    `<rect width="512" height="512" fill="${bg}"/>` +
+    `<text x="256" y="256" dy=".35em" text-anchor="middle" font-family="system-ui,sans-serif" font-size="220" font-weight="650" fill="#fff">${letter}</text>` +
+    `</svg>`;
+}
+
+export function maskableEmojiIconSvg(emoji: string, color: string): string {
+  const bg = /^#[0-9a-f]{3,8}$/i.test(color) ? color : "#2d6a4f";
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">` +
+    `<rect width="512" height="512" fill="${bg}"/>` +
+    `<text x="256" y="346" text-anchor="middle" font-family="Apple Color Emoji,Segoe UI Emoji,Noto Color Emoji,sans-serif" font-size="250">${escapeHtml(emoji)}</text>` +
+    `</svg>`;
+}

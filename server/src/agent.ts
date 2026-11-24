@@ -15,7 +15,8 @@ import { serviceDescriptor } from './descriptor';
 import { agentBinding, agentScopes, authenticateAgent, currentPrincipal, requireAgentScope } from './access';
 import { onboardingDescriptor } from './onboarding';
 import { publicBase } from './urls';
-import { isEmojiIcon } from './pwa';
+import { isEmojiIcon, validateShortcuts, type PageShortcut } from './pwa';
+import { sendPushNotification } from './push';
 
 const ROLES = new Set(["owner", "guest", "display"]);
 
@@ -47,6 +48,11 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   if (rest === 'assistant/propose' && method === 'POST') {
     requireAgentScope(principal, 'assistant:manage');
     return proposeAssistant(t, req, principal);
+  }
+  if (rest === 'push' && method === 'POST') {
+    requireAgentScope(principal, 'notifications:send');
+    const body = await readJson(req, 8192);
+    return json(await sendPushNotification(t, body));
   }
   if (rest === 'application') { requireAgentScope(principal, 'host:read'); return handleApplication(t, req, principal); }
   if (rest === 'self' && method === 'GET') return json({ name: principal.name, binding: principal.binding,
@@ -107,6 +113,8 @@ export function tendrilMeta(t: Tendril) {
     theme_color: t.db.get<string | null>("theme_color", null),
     background_color: t.db.get<string | null>("background_color", null),
     icon: t.db.get<string | null>("icon", null),
+    shortcuts: t.db.get<PageShortcut[] | null>("page_shortcuts", null),
+    share_target: t.db.get<boolean>("share_target_enabled", true),
   };
 }
 
@@ -134,6 +142,19 @@ route("PATCH", /^$/, async (t, req) => {
       if (!ok) throw new HttpError(400, "bad_request", "icon must be a single emoji, an https URL, or null to reset");
     }
     t.db.set("icon", b.icon);
+  }
+  if (b.shortcuts !== undefined) {
+    if (b.shortcuts === null) {
+      t.db.del("page_shortcuts");
+    } else {
+      try { t.db.set("page_shortcuts", validateShortcuts(b.shortcuts)); }
+      catch (err) { throw new HttpError(400, "bad_request", err instanceof Error ? err.message : "Invalid shortcuts"); }
+    }
+  }
+  if (b.share_target !== undefined) {
+    if (b.share_target === null) t.db.set("share_target_enabled", true);
+    else if (typeof b.share_target === "boolean") t.db.set("share_target_enabled", b.share_target);
+    else throw new HttpError(400, "bad_request", "share_target must be a boolean or null");
   }
   t.scheduleAlarm();
   return json(await tendrilInfo(t));

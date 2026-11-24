@@ -42,6 +42,7 @@ Host lifecycle (--tendril NAME, or TENDRIL_API and TENDRIL_TOKEN):
   info [--show-url] | service --tendril NAME | meta <json> | release
   link list | create <json> | rotate <id> | remove <id>
   token list | create <name> [--scopes JSON] | rotate <name> | remove <name>
+  notify --title TEXT [--body TEXT] [--path REL] [--tag TAG] [--badge N]
   activity [--after N] | remove --yes
 
 --timeout SECONDS bounds an invocation (default 30; watch waits until interrupted).
@@ -69,6 +70,7 @@ const flagsByCommand = {
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['device', 'secret-env', 'project'],
   readiness: ['server'], new: ['owner', 'server', 'as'], info: ['show-url'], service: ['server'], meta: [], release: [], link: [], token: ['scopes'],
+  notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
 };
 const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2],
@@ -76,7 +78,7 @@ const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0
   reapply: [3, 3], events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], recovery: [1, 2], definition: [0, 0], publication: [0, 0],
   'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
   readiness: [0, 0], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
-  link: [1, 2], token: [1, 2], activity: [0, 0], remove: [0, 0] };
+  link: [1, 2], token: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
@@ -136,6 +138,18 @@ async function hostCommand(command, args, flags, signal) {
   }
   if (command === 'service') return api.get('/service', options);
   if (command === 'meta') return api.patch('', jsonInput(args[0]), options);
+  if (command === 'notify') {
+    const title = typeof flags.title === 'string' ? flags.title.trim() : '';
+    if (!title) throw invalid('notify requires --title TEXT');
+    const payload = {
+      title,
+      ...(typeof flags.body === 'string' ? { body: flags.body } : {}),
+      ...(typeof flags.path === 'string' ? { path: flags.path } : {}),
+      ...(typeof flags.tag === 'string' ? { tag: flags.tag } : {}),
+      ...(flags.badge !== undefined ? { badge: intFlag(flags.badge, 'badge') } : {}),
+    };
+    return api.post('/push', payload, options);
+  }
   if (command === 'release') return api.post('/release', {}, options);
   if (command === 'activity') return api.get(`/activity${flags.after === undefined ? '' : `?after=${checkedName(flags.after)}`}`, options);
   if (command === 'remove') {

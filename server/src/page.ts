@@ -7,16 +7,18 @@ import { validOptionalEmail } from "./tendril";
 import { tendrilMeta } from "./agent";
 import { servePageFile, servedVersion, versionFiles, publicationManifest } from "./files";
 import { HttpError, json, readBody, readJson } from "./http";
-import { emojiIconSvg, iconSvg } from "./inject";
+import { emojiIconSvg, iconSvg, maskableEmojiIconSvg, maskableIconSvg } from "./inject";
 import { serviceDescriptor } from "./descriptor";
 import { accountActive, allows, authenticateLocalPage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
+import { agentInviteResponse, issueAgentInvite } from "./sharing";
 import { addActivity } from "./activity";
 import { brandHead, brandMark, brandStyle } from "./brand";
 import { serviceStyle } from "./accounts/ui";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
-import { DEFAULT_THEME_COLOR, isEmojiIcon, pageIcons } from "./pwa";
+import { DEFAULT_THEME_COLOR, isEmojiIcon, pageIcons, resolveShortcuts } from "./pwa";
+import { deletePushSubscription, savePushSubscription, validatePushSubscriptionInput, vapidConfig } from "./push";
 
 /** Internal admission result; the Worker consumes it before returning a page response. */
 export const PAGE_ACCESS_HEADER = "x-tendril-page-access";
@@ -32,7 +34,8 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   // browser origin for every mutation and WebSocket upgrade; cookies alone
   // cannot distinguish a hostile sibling origin.
   const upgrade = req.headers.get("Upgrade")?.toLowerCase() === "websocket";
-  const writes = req.method !== "GET" && req.method !== "HEAD" || upgrade;
+  const shareTargetFallback = rest === "_tendril/share-target" && req.method === "POST";
+  const writes = (req.method !== "GET" && req.method !== "HEAD" && !shareTargetFallback) || upgrade;
   if (writes) {
     const expected = req.headers.get("x-tendril-origin");
     if (!expected || req.headers.get("Origin") !== expected) throw new HttpError(403, "bad_origin", "Request must originate from this tendril");
@@ -150,6 +153,14 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
     return json({ agents: t.db.all("SELECT name, created_at, last_used FROM tokens ORDER BY created_at") });
   }
+  if (sub === "agents" && m === "POST") {
+    if (!allows(principal, "page.owner") || !principal.accountId) throw new HttpError(403, "forbidden");
+    const b = await readJson(req, 4096);
+    const invite = await issueAgentInvite(t, principal.accountId, b.name, b.scopes, () => {
+      if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
+    });
+    return json(agentInviteResponse(invite, t.db.get("name", "Tendril")), 201);
+  }
   const disconnect = /^agents\/([A-Za-z0-9_.@-]{1,64})\/disconnect$/.exec(sub);
   if (disconnect && m === "POST") {
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
@@ -192,10 +203,37 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return json({ application: selectedApplication(t), id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }
 
+  if (sub === "share-target" && m === "POST") {
+    // Side-effect-free fallback when the page service worker is not yet active.
+    // Never retain or log the posted share payload on the server.
+    await req.body?.cancel();
+    return new Response(null, { status: 303, headers: { Location: base, "Cache-Control": "no-store" } });
+  }
+
+  if (sub === "push/key" && m === "GET") {
+    if (!allows(principal, "page.write")) throw new HttpError(403, "forbidden");
+    const cfg = vapidConfig(t.env);
+    return json({ configured: Boolean(cfg), publicKey: cfg?.publicKey ?? null });
+  }
+  if (sub === "push/subscribe" && m === "POST") {
+    if (!allows(principal, "page.write") || !principal.accountId) throw new HttpError(403, "forbidden");
+    if (!vapidConfig(t.env)) throw new HttpError(503, "push_not_configured", "Web Push notifications are not configured on this host");
+    const input = validatePushSubscriptionInput(await readJson(req, 4096));
+    const saved = savePushSubscription(t, principal.accountId, principal.role, input);
+    return json({ id: saved.id, subscribed: true }, 201);
+  }
+  if (sub === "push/subscribe" && m === "DELETE") {
+    if (!allows(principal, "page.write") || !principal.accountId) throw new HttpError(403, "forbidden");
+    const body = await readJson(req, 4096);
+    if (typeof body.endpoint !== "string" || !body.endpoint) throw new HttpError(400, "bad_request", "endpoint required");
+    deletePushSubscription(t, principal.accountId, body.endpoint);
+    return new Response(null, { status: 204 });
+  }
+
   if (sub === "manifest.webmanifest" && (m === "GET" || m === "HEAD")) {
     const meta = tendrilMeta(t);
     const name = t.db.get("name", "Tendril");
-    const body = {
+    const body: Record<string, unknown> = {
       name,
       short_name: meta.short_name ?? name.slice(0, 12),
       id: base,
@@ -206,6 +244,22 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       background_color: meta.background_color ?? "#ffffff",
       icons: pageIcons(base, meta.icon),
     };
+    if (meta.shortcuts && meta.shortcuts.length > 0) {
+      body.shortcuts = resolveShortcuts(meta.shortcuts, base);
+    }
+    if (meta.share_target !== false) {
+      body.share_target = {
+        action: `${base}_tendril/share-target`,
+        method: "POST",
+        enctype: "multipart/form-data",
+        params: {
+          title: "title",
+          text: "text",
+          url: "url",
+          files: [{ name: "files", accept: ["image/*", "text/*", "application/pdf"] }],
+        },
+      };
+    }
     return new Response(m === "HEAD" ? null : JSON.stringify(body), { headers: { "Content-Type": "application/manifest+json; charset=utf-8", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
   }
 
@@ -215,6 +269,14 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       headers: { Location: icon, "Cache-Control": "private, no-cache" } });
     const svg = icon && isEmojiIcon(icon) ? emojiIconSvg(icon)
       : iconSvg(t.db.get("name", "Tendril"), t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR);
+    return new Response(m === "HEAD" ? null : svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
+  }
+
+  if (sub === "icon-maskable.svg" && (m === "GET" || m === "HEAD")) {
+    const icon = t.db.get<string | null>("icon", null);
+    const themeColor = t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR;
+    const svg = icon && isEmojiIcon(icon) ? maskableEmojiIconSvg(icon, themeColor)
+      : maskableIconSvg(t.db.get("name", "Tendril"), themeColor);
     return new Response(m === "HEAD" ? null : svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
   }
 

@@ -45,6 +45,8 @@ export interface AgentChatOptions {
   layout?: "embedded" | "drawer" | "dock";
   open?: boolean;
   presence?: AgentChatPresence;
+  /** Automatically prefill composer / attach files from OS Web Share Target payloads (default true). Never auto-sends. */
+  consumeShares?: boolean;
 }
 
 export interface AgentChatHandle {
@@ -86,7 +88,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
   if (layout === "embedded") {
     host.style.cssText = "display:flex;flex-direction:column;width:100%;height:100%;min-height:320px;max-width:100%;";
   } else {
-    host.style.cssText = `position:fixed;right:${utilityRight};bottom:calc(${utilityBottom} + var(--tendril-utility-height,54px) + 10px);z-index:2147483645;display:flex;flex-direction:column;align-items:flex-end;pointer-events:none;`;
+    host.style.cssText = `position:fixed;right:${utilityRight};bottom:calc(${utilityBottom} + var(--tendril-utility-height,54px) + 10px + var(--tendril-keyboard-height,0px));z-index:2147483645;display:flex;flex-direction:column;align-items:flex-end;pointer-events:none;`;
   }
 
   const root = host.attachShadow({ mode: "open" });
@@ -103,7 +105,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
     .launcher:hover:not(:disabled){background:#174d39}
     .shell{pointer-events:auto;display:flex;flex-direction:column;background:Canvas;color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 16%,transparent);border-radius:16px;overflow:hidden;min-height:0}
     .shell.embedded{width:100%;height:100%;flex:1}
-    .shell.drawer{width:min(420px,calc(100vw - 20px));height:min(640px,calc(100dvh - 110px));box-shadow:0 10px 36px #0003;margin-bottom:8px}
+    .shell.drawer{width:min(420px,calc(100vw - 20px));height:min(640px,calc(var(--tendril-viewport-height,100dvh) - 110px));max-height:calc(var(--tendril-viewport-height,100dvh) - 24px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));box-shadow:0 10px 36px #0003;margin-bottom:8px}
     .header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent);background:color-mix(in srgb,Canvas 96%,CanvasText)}
     .title-group{display:flex;flex-direction:column;min-width:0}
     .title{font-weight:700;font-size:15px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -158,7 +160,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
       .launcher:hover:not(:disabled),.send-btn:hover:not(:disabled){background:#37a078}
     }
     @media(max-width:600px){
-      .shell.drawer{width:calc(100vw - 16px);height:min(76dvh,calc(100dvh - 88px))}
+      .shell.drawer{width:calc(100vw - 16px);height:min(76dvh,calc(var(--tendril-viewport-height,100dvh) - 88px))}
     }
     @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
   `;
@@ -256,16 +258,54 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
   const ctxClear = btn("Clear");
   ctxBar.append(ctxText, ctxClear);
 
+  const haptic = (pattern: number | number[]) => {
+    try {
+      if (window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return;
+      navigator.vibrate?.(pattern);
+    } catch { /* ignore */ }
+  };
+
+  let wakeLease: { release(): Promise<void> } | null = null;
+  let wakeSeq = 0;
+  const syncWakeLock = () => {
+    const want = handsFreeLoop && isOpen && !disposed && document.visibilityState === "visible";
+    if (want && !wakeLease && runtime.sensors.wakeLock) {
+      const seq = ++wakeSeq;
+      void runtime.sensors.wakeLock({ label: "Hands-free voice", autoReacquire: true }).then(lease => {
+        if (seq !== wakeSeq || !handsFreeLoop || !isOpen || disposed || document.visibilityState !== "visible") {
+          void lease.release();
+          return;
+        }
+        wakeLease = lease;
+      }).catch(() => {});
+    } else if (!want) {
+      ++wakeSeq;
+      const prev = wakeLease;
+      wakeLease = null;
+      void prev?.release();
+    }
+  };
+
   // Composer
   const composer = el("div", "composer");
   const composerRow = el("div", "composer-row");
   const fileInput = el("input");
   fileInput.type = "file";
   fileInput.hidden = true;
+  const cameraInput = el("input");
+  cameraInput.type = "file";
+  cameraInput.accept = "image/*";
+  cameraInput.setAttribute("capture", "environment");
+  cameraInput.hidden = true;
   const attachBtn = btn("+", "icon-btn");
   attachBtn.setAttribute("aria-label", "Attach photo or file");
   attachBtn.title = "Attach photo or file";
   attachBtn.hidden = !options.onAttach;
+  const isTouchDevice = (typeof navigator !== "undefined" && (navigator.maxTouchPoints ?? 0) > 0);
+  const cameraBtn = btn("Cam", "icon-btn");
+  cameraBtn.setAttribute("aria-label", "Take photo");
+  cameraBtn.title = "Take photo with camera";
+  cameraBtn.hidden = !options.onAttach || !isTouchDevice;
 
   const textarea = el("textarea");
   textarea.rows = 1;
@@ -282,7 +322,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
   micBtn.title = "Tap to talk (or press and hold)";
 
   const sendBtn = btn("Send", "send-btn");
-  composerRow.append(fileInput, attachBtn, textarea, micBtn, sendBtn);
+  composerRow.append(fileInput, cameraInput, attachBtn, cameraBtn, textarea, micBtn, sendBtn);
 
   const composerFoot = el("div", "composer-foot");
   const autoSendLabel = el("label", "check-label");
@@ -443,8 +483,19 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
     consentMode,
     consent: consentMode === "auto" ? undefined : request => requestInlineConsent(request.description),
     autoOutput: autoSpeak && outputEngine ? outputEngine : false,
+    mediaSession: {
+      title: options.title || document.title || "Assistant",
+      artworkUrl: `${runtime.identity.base}_tendril/icon.svg`,
+      onPlay: () => {
+        const lastAgent = [...messages].reverse().find(m => m.role === "agent" && m.text?.trim());
+        if (lastAgent && outputEngine !== false) {
+          void ensureOutputEnabled().then(ok => { if (ok && !disposed) voice.speak(lastAgent.text); });
+        }
+      },
+    },
     transcript(text) {
       if (disposed || !text.trim()) return;
+      haptic([10, 30, 10]);
       voiceError = "";
       if (autoSendVoice) {
         void submitText(text, "voice");
@@ -495,7 +546,10 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
   const beginMic = () => {
     clearHandsFreeTimer();
     voiceError = "";
-    if (voice.speaking) voice.stop();
+    if (voice.speaking) {
+      haptic(20);
+      voice.stop();
+    }
     if (captureState === "recording") {
       voice.finishCapture();
       return;
@@ -504,6 +558,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
       voice.cancelCapture();
       return;
     }
+    haptic(12);
     void voice.startCapture();
   };
 
@@ -547,6 +602,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
       autoSpeak = false;
       handsFreeLoop = false;
       clearHandsFreeTimer();
+      syncWakeLock();
       voice.mute();
     } else {
       const ok = await ensureOutputEnabled();
@@ -559,8 +615,10 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
     if (handsFreeLoop) {
       handsFreeLoop = false;
       clearHandsFreeTimer();
+      syncWakeLock();
     } else {
       handsFreeLoop = true;
+      syncWakeLock();
       if (!autoSpeak && outputEngine !== false) {
         autoSpeak = await ensureOutputEnabled();
       }
@@ -569,6 +627,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
   });
 
   stopSpeakBtn.addEventListener("click", () => {
+    haptic(20);
     clearHandsFreeTimer();
     voice.stop();
     speaking = false;
@@ -607,24 +666,40 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
   sendBtn.addEventListener("click", () => { void submitText(textarea.value, "text"); });
 
   attachBtn.addEventListener("click", () => fileInput.click());
-  fileInput.addEventListener("change", () => {
-    const file = fileInput.files?.[0];
-    fileInput.value = "";
+  cameraBtn.addEventListener("click", () => cameraInput.click());
+  const deliverAttachedFile = (file: File | undefined) => {
     if (!file || !options.onAttach) return;
     void Promise.resolve().then(() => options.onAttach?.(file)).catch(err => {
       voiceError = err instanceof Error ? err.message : String(err);
       renderControls();
     });
+  };
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    fileInput.value = "";
+    deliverAttachedFile(file);
   });
+  cameraInput.addEventListener("change", () => {
+    const file = cameraInput.files?.[0];
+    cameraInput.value = "";
+    deliverAttachedFile(file);
+  });
+
+  textarea.addEventListener("focus", () => { feed.scrollTop = feed.scrollHeight; });
+  const onViewportResize = () => {
+    if (root.activeElement === textarea) feed.scrollTop = feed.scrollHeight;
+  };
+  window.visualViewport?.addEventListener("resize", onViewportResize);
 
   const suspendConversation = () => {
     clearHandsFreeTimer();
     if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; }
     holding = false;
     pendingConsentResolve?.(false);
+    syncWakeLock();
   };
   const offSensorsStopped = runtime.on("sensors_stopped", suspendConversation);
-  const onHidden = () => { if (document.visibilityState !== "visible") suspendConversation(); };
+  const onHidden = () => { if (document.visibilityState !== "visible") suspendConversation(); else syncWakeLock(); };
   document.addEventListener("visibilitychange", onHidden);
   window.addEventListener("pagehide", suspendConversation);
 
@@ -632,6 +707,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
     isOpen = next;
     shell.hidden = !isOpen;
     launcher.hidden = layout !== "dock" || isOpen;
+    syncWakeLock();
     if (!isOpen) {
       suspendConversation(); voice.stop();
       if (layout === "dock") launcher.focus();
@@ -641,6 +717,21 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
       textarea.focus();
     }
   };
+  const offShare = (options.consumeShares !== false && runtime.shareTarget)
+    ? runtime.shareTarget.onShare(payload => {
+      if (disposed) return;
+      const parts = [payload.title, payload.text, payload.url].filter(Boolean);
+      if (parts.length) {
+        textarea.value = [textarea.value.trim(), parts.join("\n")].filter(Boolean).join("\n\n");
+        autoResize();
+        try { sessionStorage.setItem(draftKey, textarea.value); } catch { /* ignore */ }
+      }
+      if (!isOpen) setOpen(true);
+      renderControls();
+      textarea.focus();
+      for (const file of payload.files) deliverAttachedFile(file);
+    })
+    : () => {};
   launcher.addEventListener("click", () => setOpen(true));
   closeBtn.addEventListener("click", () => setOpen(false));
   root.addEventListener("keydown", event => {
@@ -709,7 +800,10 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
       clearHandsFreeTimer();
       if (holdTimer !== null) clearTimeout(holdTimer);
       pendingConsentResolve?.(false);
+      syncWakeLock();
+      offShare();
       offSensorsStopped();
+      window.visualViewport?.removeEventListener("resize", onViewportResize);
       document.removeEventListener("visibilitychange", onHidden);
       window.removeEventListener("pagehide", suspendConversation);
       voice.dispose();

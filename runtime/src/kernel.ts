@@ -13,14 +13,17 @@ import type { RuntimeApi, RuntimeServices } from "../../contract/index.mjs";
 import { createTransportBinding } from "./transport";
 import { createErrorTracker } from "./errors";
 import { createSignalBinding } from "../../contract/signals.mjs";
+import { createWakeLockLease } from "./wake-lock";
+import { createShareTarget } from "./share-target";
+import { createNotifications } from "./notifications";
 
-async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<boolean> {
-  if (!("serviceWorker" in navigator) || !cfg.publication) return false;
-  if ((window as any).__TENDRIL_NO_SW__) return false;
+async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<ServiceWorkerRegistration | null> {
+  if (!("serviceWorker" in navigator) || !cfg.publication) return null;
+  if ((window as any).__TENDRIL_NO_SW__) return null;
   try {
     const registration = await navigator.serviceWorker.register(cfg.base + "_tendril/sw.js", { scope: cfg.base });
     // Blocked or unavailable support must not leave callbacks holding no registration.
-    if (!registration) return false;
+    if (!registration) return null;
     const announce = () => {
       // A worker can stop between selection and messaging. The explicit save
       // acknowledgement determines success; an advisory announcement must not
@@ -31,10 +34,10 @@ async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof
     navigator.serviceWorker.addEventListener("controllerchange", announce);
     navigator.serviceWorker.addEventListener("message", event => { if (event.data?.t === "publication_request") announce(); });
     announce();
-    return true;
+    return registration;
   } catch (error) {
     console.info("[tendril] offline support unavailable:", error instanceof Error ? error.message : error);
-    return false;
+    return null;
   }
 }
 
@@ -50,9 +53,10 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   // selected release. Opening an immutable /_publications/ID/ URL pins explicitly.
   const updates = watchPublicationUpdates(cfg, { pinned: explicitlyPinned(cfg), watch: options.watchPublication === true });
   const core = createCore(cfg, options.application);
-  let registration: Promise<void> | undefined;
+  let registration: Promise<ServiceWorkerRegistration> | undefined;
   const registerOffline = () => registration ??= registerServiceWorker(cfg, core).then(registered => {
     if (!registered) throw Object.assign(new Error("Offline saving could not be prepared on this device. Check your connection and try again."), { code: "offline_unavailable" });
+    return registered;
   }).catch(error => {
     registration = undefined;
     throw error;
@@ -113,8 +117,11 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
       status: () => tracker.status(),
       on: listener => core.bus.on("sensors", listener),
       register: options => tracker.register(options),
+      wakeLock: options => createWakeLockLease(o => tracker.register(o), fn => core.bus.on("sensors_stopped", fn), options),
       stopAll: stopSensors,
     },
+    shareTarget: createShareTarget(identity.base),
+    notifications: createNotifications(identity.base, installation.api, () => registerOffline().catch(() => null)),
   };
   return Object.freeze(shared);
 }

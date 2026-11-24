@@ -47,4 +47,8 @@ export interface Env {
   BUDGET_WEBHOOK_SECRET?: string;
   BUDGET_PAUSE_POLICY_ID?: string;
   BUDGET_READ_ONLY_POLICY_ID?: string;
+  /** Optional Web Push VAPID configuration (uncompressed P-256 base64url public key, JWK or raw base64url private key, mailto:/https: subject). */
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
 }

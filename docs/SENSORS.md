@@ -111,9 +111,23 @@ array contains local `{ id, kind, label?, state }` snapshots and is omitted when
 no custom registrations remain. Page options displays labels and stopping/failed
 states. Read `status()` first; `sensors.on(listener)` observes subsequent changes.
 
-For example, a page with Start/Stop buttons can own a Wake Lock without a new
-runtime wrapper. Inspect `wake_lock` before enabling Start, and supply
-`startButton`, `stopButton`, and `showError` from the authored UI:
+For Screen Wake Lock (dashboards, timers, recipes, hands-free voice), use the
+built-in helper directly inside a trusted click handler:
+
+```js
+const lease = await tendril.sensors.wakeLock({
+  label: 'Keep screen awake',
+  autoReacquire: true, // optional: re-acquire when returning to the tab
+});
+// Later:
+await lease.release();
+```
+
+`tendril.sensors.wakeLock` registers a `wake_lock` resource automatically so
+**Stop sensors** and `pagehide` release it cleanly.
+
+For custom browser APIs without a built-in helper (such as Bluetooth, Serial, or
+custom sampling loops), register directly with `tendril.sensors.register`:
 
 ```js
 let current;

@@ -25,19 +25,80 @@ export function iconMediaType(icon: string): string | undefined {
   } catch { return undefined; }
 }
 
+export interface PageShortcut {
+  name: string;
+  short_name?: string;
+  description?: string;
+  url: string;
+}
+
+export function isSafeRelativePageUrl(raw: string): boolean {
+  if (raw === "") return true;
+  if (raw.length > 256 || /[\u0000-\u001f\u007f\\]/.test(raw)) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith("//") || raw.startsWith("/")) return false;
+  const pathPart = raw.split(/[?#]/, 1)[0] ?? "";
+  if (pathPart.split("/").some(seg => seg === ".." || seg === ".")) return false;
+  return true;
+}
+
+export function validateShortcuts(raw: unknown): PageShortcut[] {
+  if (!Array.isArray(raw)) throw new Error("shortcuts must be an array");
+  if (raw.length > 4) throw new Error("At most 4 shortcuts are allowed");
+  const out: PageShortcut[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Each shortcut must be an object");
+    const rec = item as Record<string, unknown>;
+    if (typeof rec.name !== "string" || !rec.name.trim() || rec.name.trim().length > 64) {
+      throw new Error("Each shortcut requires a name (1–64 characters)");
+    }
+    if (typeof rec.url !== "string" || !isSafeRelativePageUrl(rec.url.trim())) {
+      throw new Error("Shortcut url must be a relative path, query, or fragment within this page");
+    }
+    const entry: PageShortcut = { name: rec.name.trim(), url: rec.url.trim() };
+    if (rec.short_name !== undefined && rec.short_name !== null) {
+      if (typeof rec.short_name !== "string" || !rec.short_name.trim() || rec.short_name.trim().length > 24) {
+        throw new Error("Shortcut short_name must be 1–24 characters");
+      }
+      entry.short_name = rec.short_name.trim();
+    }
+    if (rec.description !== undefined && rec.description !== null) {
+      if (typeof rec.description !== "string" || rec.description.trim().length > 120) {
+        throw new Error("Shortcut description must be at most 120 characters");
+      }
+      if (rec.description.trim()) entry.description = rec.description.trim();
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
+export function resolveShortcuts(shortcuts: PageShortcut[], base: string): PageShortcut[] {
+  return shortcuts.map(s => ({
+    name: s.name,
+    ...(s.short_name ? { short_name: s.short_name } : {}),
+    ...(s.description ? { description: s.description } : {}),
+    url: s.url ? `${base}${s.url}` : base,
+  }));
+}
+
 export function pageIcons(base: string, icon: string | null) {
+  const maskable = { src: `${base}_tendril/icon-maskable.svg`, sizes: "any", type: "image/svg+xml", purpose: "maskable" };
   if (icon && isEmojiIcon(icon)) {
-    return [{ src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" }];
+    return [
+      { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
+      maskable,
+    ];
   }
   const type = icon ? iconMediaType(icon) : undefined;
   if (icon && (type === "image/png" || type === "image/webp" || type === "image/svg+xml")) {
     // Chromium skips entries without sizes and prefers a sized default over a
     // custom raster candidate marked "any". Let it decode and size the custom
     // asset without claiming pixel dimensions that the URL cannot establish.
-    return [{ src: icon, sizes: "any", type, purpose: "any" }];
+    return [{ src: icon, sizes: "any", type, purpose: "any" }, maskable];
   }
   return [
     { src: "/_tendril/brand/icon-180.png", sizes: "180x180", type: "image/png", purpose: "any" },
     { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
+    maskable,
   ];
 }
