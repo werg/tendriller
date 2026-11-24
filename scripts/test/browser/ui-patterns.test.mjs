@@ -70,19 +70,32 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         assert.equal(await page.locator('h2').evaluate(element => document.activeElement === element), true);
         const editor = page.getByLabel('Reviewer summary');
         const original = await editor.inputValue();
-        await editor.fill('Verified the order and prepared a carrier message for review.');
+        const revised = 'Verified the order and prepared a carrier message for review.';
+        const summary = page.locator('.episode-summary');
+        assert.equal(await summary.textContent(), original);
+        await editor.fill(revised);
         await page.getByRole('button', { name:'Review changes', exact:true }).click();
         assert.equal(await page.getByRole('group', { name:'Review changes' }).isVisible(), true);
         assert.equal(await page.locator('.tp-compare del').textContent(), original);
         await screenshot(page, name);
         await page.getByRole('button', { name:'Save reviewed change' }).click();
         assert.equal(await page.getByText('Change saved.', { exact:true }).isVisible(), true);
+        assert.equal(await summary.textContent(), revised);
+        assert.equal(await page.getByRole('button', { name:'Undo saved change' }).isEnabled(), true);
         await page.getByRole('button', { name:'Undo saved change' }).click();
         assert.equal(await editor.inputValue(), original);
+        assert.equal(await summary.textContent(), original);
+        // Reopening a detail uses the edited record, while the live editor above
+        // retained its own undo state rather than being remounted after save.
+        await editor.fill(revised);
+        await page.getByRole('button', { name:'Review changes', exact:true }).click();
+        await page.getByRole('button', { name:'Save reviewed change' }).click();
         await page.getByRole('button', { name:'Back to list' }).click();
         assert.equal(new URL(page.url()).searchParams.has('item'), false);
         await page.goBack();
         assert.equal(await page.getByRole('heading', { name:'The missing delivery', exact:true }).isVisible(), true);
+        assert.equal(await summary.textContent(), revised);
+        assert.equal(await editor.inputValue(), revised);
         await page.reload();
         assert.equal(await page.getByRole('heading', { name:'The missing delivery', exact:true }).isVisible(), true);
         // Unknown deep links offer recovery rather than an empty inspector.

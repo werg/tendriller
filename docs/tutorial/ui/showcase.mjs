@@ -35,7 +35,8 @@ if (new URL(location.href).searchParams.has('states')) {
     records, searchLabel:'Search episodes', filters:[['review','Needs review'],['reviewed','Reviewed']],
     renderDetail(record, content) {
       content.append(node('span', record.status === 'review' ? 'Needs review' : 'Reviewed', 'tag'), node('span', 'Agent actions', 'tag'));
-      content.append(node('p', record.summary));
+      const summary = node('p', record.summary, 'episode-summary');
+      content.append(summary);
       const heading = node('h3', 'What the agent did'), timeline = document.createElement('ol'); timeline.className = 'timeline';
       for (const [title, body] of [
         ['Understood the request', 'Identified the person’s goal and checked the available evidence.'],
@@ -50,12 +51,15 @@ if (new URL(location.href).searchParams.has('states')) {
       content.append(details);
       const related = node('p', 'Consumed by '), link = node('a', 'Customer support training run');
       link.href = '?item=episode-18'; related.append(link); content.append(related);
+      const confirmSummary = ({ after }) => {
+        record.summary = after; summary.textContent = after;
+        return { confirmed:true, value:after };
+      };
       const editor = mountInlineReview(content, {
         label:'Reviewer summary', value:record.summary,
         // Demonstration only. In a connected app, capture the revision and
         // original operation ID, then confirm the accepted applied result.
-        async onSave({ after }) { record.summary = after; return { confirmed:true, value:after }; },
-        async onUndo({ after }) { record.summary = after; return { confirmed:true, value:after }; },
+        onSave:confirmSummary, onUndo:confirmSummary,
       });
       return () => editor.close();
     },
