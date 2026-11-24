@@ -250,11 +250,45 @@ durable authority and reconciliation boundary.
 opaque cursor belongs to that history. The caller commits derived state and its
 processed cursor together; reading a batch does not acknowledge external work.
 `watch` streams actual session changes, including explicit recovery notices,
-with stdout backpressure. It creates no checkpoint file or polling loop.
+with stdout backpressure. These are coalesced revision notifications, not retained
+events or replay cursors. Existing change rows keep their shape.
+
+For a durable consumer, use `watch --events`. It reads coherent applied event
+batches after each change, drains every page before waiting again, and prints
+`{revision, events, cursor, hasMore}` rows. It accepts the same opaque `--cursor`,
+`--topics` and `--limit` options as `events`; those flags require `--events` on a
+watch. The first batch exposes a cursor even when the history is empty. Neither
+mode creates a checkpoint file, polls or acknowledges that application work was
+handled.
+
+An unexpected end, owner loss, revoked attachment or read failure exits nonzero.
+The error on stderr retains the original cause and a `watch` object containing
+`mode`, `cursor` and `revision`, without copying event payloads. `cursor` is the
+last batch successfully written to stdout (or the supplied starting cursor);
+change mode reports `null`. A missing owner fails immediately instead of opening
+a second signer or retrying forever. Attachment watches do not reconnect to a
+replacement owner automatically.
+
+A running watch's requested `--timeout` or explicit SIGINT/SIGTERM stops normally,
+awaits cleanup and exits 0. It writes a JSON `watch` summary to stderr with
+`reason: "timeout"` or `"interrupted"` and the same progress fields. Output and
+cleanup failures still exit nonzero. Other commands retain their existing
+nonzero timeout/cancellation behavior.
+
+Persist the **processed** event cursor together with the consumer's own results.
+A successful stdout write only means the CLI emitted that batch, not that the
+next process processed it. After owner restart, start a new attachment with the
+same profile and topic filter, using the last cursor whose work was committed.
+Use `events --cursor` for a bounded catch-up or `watch --events --cursor` to
+continue listening. If recovery invalidates that cursor, the watch fails with
+the original recovery error and retained cursor; review/rebuild derived state
+for the new generation explicitly. It never silently resets to the beginning.
 
 ```sh
 tendril --session ./application.mjs events --topics '["message"]' --limit 100
 tendril --session ./application.mjs watch
+tendril --session ./application.mjs --mode attach watch --events --topics '["message"]'
+tendril --session ./application.mjs --mode attach watch --events --cursor "$PROCESSED_CURSOR" --topics '["message"]'
 tendril --session ./application.mjs signal progress '{"complete":3}' --ttl 2000
 tendril --session ./application.mjs recovery inspect
 tendril --session ./application.mjs recovery takeover --transition recover-on-device-b

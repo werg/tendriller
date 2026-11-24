@@ -12,6 +12,7 @@ function invocationFailure(error, signal) {
     code: reason?.code ?? 'invocation_interrupted',
     ...(error?.operation ? { operation: error.operation } : {}),
     ...(error?.publication ? { publication: error.publication } : {}),
+    ...(error?.watch ? { watch: error.watch } : {}),
   });
 }
 
@@ -206,7 +207,52 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   throw Error(`Unknown application command: ${command}`);
 }
 
-/** Pulling the next change is backpressure. The caller owns its processed cursor. */
-export async function watchSession(owned, emit, { signal } = {}) {
-  for await (const change of owned.session.changes({ signal })) await emit(change);
+/** Pulling the next change is backpressure. Emitted cursors are not processing receipts. */
+export async function watchSession(owned, emit, { signal, events = false, cursor, topics, limit } = {}) {
+  const session = owned.session;
+  let lastCursor = cursor ?? null, lastRevision = null, emitting = false;
+  const progress = () => ({ mode: events ? 'events' : 'changes', cursor: lastCursor, revision: lastRevision });
+  const emitDelivered = async value => {
+    emitting = true;
+    await emit(value);
+    emitting = false;
+    lastRevision = value.revision ?? null;
+    if (events) lastCursor = value.cursor;
+  };
+  try {
+    signal?.throwIfAborted();
+    for await (const change of session.changes({ signal })) {
+      signal?.throwIfAborted();
+      if (!events) { await emitDelivered(change); continue; }
+      const view = await session.readView();
+      try {
+        for (;;) {
+          signal?.throwIfAborted();
+          const batch = await view.readEvents({ ...(lastCursor === null ? {} : { cursor: lastCursor }),
+            ...(topics === undefined ? {} : { topics }), ...(limit === undefined ? {} : { limit }) });
+          if (batch.hasMore && batch.cursor === lastCursor)
+            throw Object.assign(Error('Event cursor did not advance; inspect the retained history before restarting'), { code: 'EVENT_CURSOR_STALLED' });
+          if (batch.cursor !== lastCursor) await emitDelivered(batch);
+          if (!batch.hasMore) break;
+        }
+      } finally { await view.release(); }
+    }
+    if (!signal?.aborted) throw session.signal?.reason ?? Object.assign(
+      Error('Session change stream ended unexpectedly; restart the listener after checking the session.'), { code: 'SESSION_WATCH_ENDED' });
+  } catch (error) {
+    // An intentional deadline/interrupt can close reads and iterators in different
+    // ways. Output failures remain failures, even when cancellation races a write.
+    if (!signal?.aborted || (emitting && error !== signal.reason && error?.name !== 'AbortError')) {
+      let failure = error instanceof Error && Object.isExtensible(error) ? error : new Error('Session watch failed', { cause: error });
+      if (!emitting && owned.mode === 'attach' && session.signal?.aborted) {
+        const cause = session.signal.reason ?? failure;
+        failure = Object.assign(new Error(`Owner connection lost: ${cause?.message ?? 'OWNER_UNREACHABLE'}. Restart this attachment after the owner is available.`, { cause }), {
+          code: cause?.code ?? 'OWNER_UNREACHABLE', ...(Number.isInteger(cause?.status) ? { status: cause.status } : {}),
+        });
+      }
+      failure.watch = progress();
+      throw failure;
+    }
+  }
+  return { ...progress(), reason: signal?.reason?.code === 'invocation_timeout' ? 'timeout' : 'interrupted' };
 }
