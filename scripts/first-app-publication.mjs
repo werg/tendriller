@@ -48,9 +48,25 @@ export async function qualifyFirstAppPublication({ page, pageUrl, peer, expect, 
     assert.equal(consumerExit, undefined, 'The independent event consumer exited: ' + stderr);
   };
   const observed = text => batches.some(batch => batch.events.some(event => event.payload?.text === text));
-  let result, primaryFailure, diagnosticsAfter;
+  let result, primaryFailure, diagnosticsAfter, heldDocument;
   try {
     await expect.poll(() => { alive(); return batches.length; }, { timeout: 30_000 }).toBeGreaterThan(0);
+    heldDocument = await page.evaluate(() => {
+      const publication = window.tendril.publication, releaseHold = publication.hold();
+      let offUpdate = () => {};
+      const state = { id: crypto.randomUUID(), released: false, versions: [] };
+      const release = () => {
+        if (state.released) return;
+        state.released = true;
+        window.removeEventListener('pagehide', release);
+        offUpdate(); releaseHold();
+      };
+      state.release = release;
+      window.__firstAppPublicationHold = state;
+      window.addEventListener('pagehide', release, { once: true });
+      offUpdate = publication.onUpdate(({ version }) => state.versions.push(version));
+      return state.id;
+    });
     await writeFile(indexPath, firstHtml);
     await writeFile(proofPath, proof);
     const browserText = 'Browser work while the resident owner publishes';
@@ -82,8 +98,10 @@ export async function qualifyFirstAppPublication({ page, pageUrl, peer, expect, 
     await writeFile(indexPath, firstHtml);
     assert.deepEqual(await attached(['publish', pageDirectory, '--operation', 'resident-publication-one']), first,
       'A stale exact retry returns its retained receipt.');
-    assert.equal((await attached(['publication'])).publication.id, second.publication.id,
+    const selected = await attached(['publication']);
+    assert.equal(selected.publication.id, second.publication.id,
       'A stale retry must not move the selected signed head backwards.');
+    assert.ok(Number.isSafeInteger(selected.version) && selected.version > 0);
     await writeFile(indexPath, secondHtml);
     assert.equal(new URL(pageUrl).origin, new URL(page.url()).origin,
       'Use the canonical browser origin; the loopback transport port is not an application origin.');
@@ -108,14 +126,50 @@ export async function qualifyFirstAppPublication({ page, pageUrl, peer, expect, 
     assert.equal(ownerAfter.deviceId, ownerBefore.deviceId);
     diagnosticsAfter = await peer.request('diagnostics');
     assert.equal(diagnosticsAfter.participation.connectionRevision, diagnosticsBefore.participation.connectionRevision,
-      'Signed publication must leave the browser transport connected.');
+      'Signed publication must leave the held browser transport connected.');
+    await expect.poll(() => page.evaluate(() => window.__firstAppPublicationHold?.versions.at(-1)),
+      { timeout: 30_000 }).toBe(selected.version);
+    const held = await page.evaluate(() => ({ id: window.__firstAppPublicationHold.id,
+      released: window.__firstAppPublicationHold.released, versions: window.__firstAppPublicationHold.versions,
+      updateAvailable: window.tendril.publication.updateAvailable }));
+    assert.equal(held.id, heldDocument, 'The explicitly held document must survive publication.');
+    assert.equal(held.released, false); assert.equal(held.updateAvailable, true);
+    assert.equal(await page.locator('#device-key').inputValue(), browserDevice);
+    alive();
+    const [, holdReleased] = await Promise.all([
+      page.waitForEvent('domcontentloaded', { timeout: 30_000 }),
+      page.evaluate(() => {
+        const held = window.__firstAppPublicationHold;
+        if (!held || held.released) throw Error('Publication hold must stay active until the explicit switch.');
+        // update() marks switching before release() rechecks automatic safety.
+        window.tendril.publication.update();
+        held.release();
+        return held.released;
+      }),
+    ]);
+    assert.equal(holdReleased, true);
+    assert.equal(await page.evaluate(() => {
+      const comments = document.createTreeWalker(document, NodeFilter.SHOW_COMMENT);
+      while (comments.nextNode()) if (comments.currentNode.textContent.trim() === 'resident-owner-publication-two') return true;
+      return false;
+    }), true, 'The explicit switch must load the selected signed document.');
+    await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
+    await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
+    await expect(page.locator('#peer-status')).toContainText('Connection: following', { timeout: 60_000 });
+    await expect.poll(async () => (await peer.request('participation-log')).current.peers,
+      { timeout: 30_000 }).toContain(browserDevice);
+    await expect(page.locator('#notes')).toContainText(nativeText, { timeout: 30_000 });
+    assert.equal((await attached(['self'])).endpoint.ownerInstanceId, ownerBefore.endpoint.ownerInstanceId);
     alive();
     result = { passed: true, ownerInstanceId: ownerBefore.endpoint.ownerInstanceId,
       publications: [first.publication.id, second.publication.id], selectedPublication: second.publication.id,
       stagedAssetBytes: proof.length, stagedAssetHash: proofHash, exactRetry: true, changedBytesRejected: true,
       staleRetryPreservedHead: true, consumerProcessStayedAlive: true, consumerBatches: batches.length,
       browserCommandObserved: true, nativeCommandObservedAfterPublisherDetach: true,
-      unchangedConnectionRevision: diagnosticsAfter.participation.connectionRevision };
+      unchangedConnectionRevision: diagnosticsAfter.participation.connectionRevision,
+      browserUpdatePolicy: { hold: 'public publication.hold()', observedVersions: held.versions,
+        connectionCheckedWhileHeld: true, switch: 'explicit public publication.update()', holdReleased,
+        selectedVersion: selected.version, selectedDocumentObserved: true, authenticatedSessionAfterUpdate: true } };
   } catch (error) {
     primaryFailure = error;
     error.publicationQualification = { status: 'failed',
@@ -124,6 +178,11 @@ export async function qualifyFirstAppPublication({ page, pageUrl, peer, expect, 
       consumerBatches: batches.length, consumerExit: consumerExit ?? null };
   }
   finally {
+    try {
+      if (!page.isClosed()) await page.evaluate(() => window.__firstAppPublicationHold?.release());
+    } catch (error) {
+      primaryFailure = primaryFailure ? new AggregateError([primaryFailure, error], primaryFailure.message + '; publication hold cleanup failed') : error;
+    }
     let timer;
     try {
       if (!consumerExit) child.kill('SIGTERM');
