@@ -92,6 +92,68 @@ manifest also suppresses host icon defaults, so update that authored branding
 when it is present. Before the first publication, the holding page retains the
 Tendriller icon.
 
+## Page options placement
+
+The hosted utility sits at the bottom right. Its collapsed **Page options**
+button has a 44 px minimum touch target inside a bar with 4 px padding and a
+1 px border (54 px high without wrapped sensor controls). The width depends on
+the font and active controls. Active/pending sensors can make the bar wider or
+wrap it onto more lines. Menus, installation suggestions and update notices
+temporarily expand above that persistent bar.
+
+Apps can declare clearance for bottom tabs, floating actions or a side rail
+with CSS custom properties on `:root`. These work in the authored stylesheet
+before the runtime mounts, and update responsively without a JavaScript call.
+
+| Property | Direction | Meaning |
+| --- | --- | --- |
+| `--tendril-utility-inset-bottom` | App input | Minimum distance from the viewport bottom; a CSS length or `calc(...)` |
+| `--tendril-utility-inset-right` | App input | Minimum distance from the viewport right |
+| `--tendril-utility-width` | Runtime output | Measured outer width of the persistent control bar, in CSS pixels |
+| `--tendril-utility-height` | Runtime output | Measured outer height of that bar, including wrapped sensor controls |
+
+Each actual inset is the maximum of the requested value, 12 px, and that
+edge's safe-area inset. An omitted input requests no additional clearance.
+The measured outputs appear after the first layout and track size changes
+using `ResizeObserver`; use a fallback for the initial render. They exclude
+the temporary menus above the bar. Do not set the output properties yourself.
+The runtime restores prior inline values when the utility is disposed.
+
+For a 64 px bottom tab bar:
+
+```css
+:root {
+  --app-tabs-height: 64px;
+  --tendril-utility-inset-bottom:
+    calc(var(--app-tabs-height) + env(safe-area-inset-bottom) + 8px);
+}
+.app-tabs {
+  position: fixed;
+  inset: auto 0 0;
+  height: calc(var(--app-tabs-height) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+}
+main {
+  padding-bottom: calc(
+    var(--tendril-utility-inset-bottom) +
+    var(--tendril-utility-height, 54px) + 12px
+  );
+}
+```
+
+The optional floating voice controls use the same right/bottom clearances and
+sit 10 px above the measured utility bar. They follow changes in sensor-control
+height without a separate hard-coded app offset. Supplying a voice
+`container` still places those controls inline. Both floating panels keep their
+content scrollable within the remaining viewport. Keep enough room for the
+controls and verify your chosen clearances at narrow and landscape sizes;
+moving the utility preserves its installation, management and sensor-stop
+actions.
+
+Existing publications acquire this layout contract only when republished with
+the updated pinned runtime. Changing host code alone does not modify the
+runtime of an already signed publication.
+
 ## Home Screen setup
 
 Open **Page options** to add the page to the Home Screen or read the current platform's setup steps. A native **Add to Home Screen** button appears only after the browser supplies a `beforeinstallprompt` event. Android otherwise uses the browser menu's **Add to Home Screen** or **Install app**. On iPhone and iPad, use **Share → Add to Home Screen**, leave **Open as Web App** enabled if shown, then tap **Add**. Share may be inside the page menu. If the option is missing, try Safari and **Share → Edit Actions**. Supporting third-party iOS browsers can also add web apps; Safari is a fallback, not a requirement. See [Chrome's custom install guidance](https://web.dev/articles/customize-install) and [Apple's Home Screen instructions](https://support.apple.com/guide/iphone/open-as-web-app-iphea86e5236/ios).
