@@ -29,3 +29,41 @@ export function observeUtilityBar(bar: HTMLElement): () => void {
     });
   };
 }
+
+/** Track window.visualViewport so mobile keyboards never cover chat composers or Stop buttons. */
+export function observeVisualViewport(onChange?: (metrics: { viewportHeight: number; keyboardHeight: number }) => void): () => void {
+  const vv = window.visualViewport;
+  if (!vv) return () => {};
+  const style = document.documentElement.style;
+  const names = ["--tendril-viewport-height", "--tendril-keyboard-height"] as const;
+  const previous = names.map(name => ({ value: style.getPropertyValue(name), priority: style.getPropertyPriority(name) }));
+  let published: string[] = [];
+  let frame = 0;
+  const update = () => {
+    frame = 0;
+    const viewportHeight = Math.max(0, Math.round(vv.height));
+    const keyboardHeight = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+    published = [`${viewportHeight}px`, `${keyboardHeight}px`];
+    names.forEach((name, index) => style.setProperty(name, published[index]!));
+    onChange?.({ viewportHeight, keyboardHeight });
+  };
+  const schedule = () => {
+    if (frame) return;
+    if (typeof requestAnimationFrame === "function") frame = requestAnimationFrame(update);
+    else update();
+  };
+  vv.addEventListener("resize", schedule);
+  vv.addEventListener("scroll", schedule);
+  update();
+  return () => {
+    if (frame && typeof cancelAnimationFrame === "function") cancelAnimationFrame(frame);
+    vv.removeEventListener("resize", schedule);
+    vv.removeEventListener("scroll", schedule);
+    names.forEach((name, index) => {
+      if (style.getPropertyValue(name) !== published[index]) return;
+      const saved = previous[index]!;
+      if (saved.value) style.setProperty(name, saved.value, saved.priority);
+      else style.removeProperty(name);
+    });
+  };
+}

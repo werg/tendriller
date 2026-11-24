@@ -6,7 +6,7 @@ import { safeEqual, sha256Hex } from "./ids";
 import { SETUP_SCOPES, setupCredentialActive, type SetupCredentialBinding } from './setup-credential';
 import { publicBase } from './urls';
 
-export const AGENT_SCOPES = ['host:read', 'host:manage', 'agents:delegate', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'] as const;
+export const AGENT_SCOPES = ['host:read', 'host:manage', 'agents:delegate', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage', 'notifications:send'] as const;
 export type AgentScope = typeof AGENT_SCOPES[number];
 export interface AgentBinding { id: string; scopes: AgentScope[]; revision: number }
 export interface AgentPrincipal { kind: "agent"; name: string; credentialHash: string; binding?: AgentBinding }

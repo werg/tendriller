@@ -1,5 +1,7 @@
 import { RESOURCE_LIMITS } from "../../contract/limits.mjs";
 export const MB = 1024 * 1024;
+/** Resident pages per account; mirrored by the account_tendril_cap triggers in 0001_accounts.sql. */
+export const RESIDENT_LIMIT = 5;
 export const MAX_FILES_PER_VERSION = RESOURCE_LIMITS.files_per_publication;
 export const HOUR = 60 * 60 * 1000;
 export const DAY = 24 * HOUR;

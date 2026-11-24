@@ -175,7 +175,8 @@ for (const width of [1280, 320]) {
       const w = window as any; w.disposeUtility(); w.mount();
     });
     await page.getByRole('button', { name: 'Page options', exact: true }).click();
-    await page.getByText('Invite others & manage share links', { exact: true }).click();
+    await page.getByRole('tab', { name: 'A person', exact: true }).click();
+    await page.getByText('Manage existing links', { exact: true }).click();
     await expect(page.getByText('Old tablet', { exact: true })).toBeVisible();
     await expect(page.getByText('Expired', { exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Copy', exact: true })).toBeDisabled();
@@ -186,7 +187,35 @@ for (const width of [1280, 320]) {
     await page.getByRole('button', { name: 'Invite person', exact: true }).click();
     await expect(page.getByText('Tablet visitor', { exact: true })).toBeVisible();
     expect(createdBody).toEqual({ role: 'guest', label: 'Tablet visitor', expires_in: 86400 });
-    await expect(page.getByText('Link copied to clipboard.', { exact: true })).toBeVisible();
+    await expect(page.getByText('Link created and copied to clipboard.', { exact: true })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('share-invite-created.png') });
+  });
+
+  test(`the nav button opens add people & devices and issues a paste-ready agent invitation at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 800 }); await fixture(page);
+    let agentBody: unknown;
+    await page.route('https://layout.test/_tendril/links**', route => route.fulfill({ json: { name: 'Test page', links: [] } }));
+    await page.route('https://layout.test/_tendril/agents', async route => {
+      agentBody = route.request().postDataJSON();
+      await route.fulfill({ status: 201, json: { name: 'reviewer', blurb: 'Please join my Tendriller page "Test page" as the agent "reviewer".\nPOST https://tendriller.dev/api/adopt', link_blurb: 'Please join: https://tendriller.dev/join/agent?code=x' } });
+    });
+    let copied = '';
+    await page.exposeFunction('recordCopy', (text: string) => { copied = text; });
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => (window as any).recordCopy(text) } });
+      const w = window as any; w.disposeUtility(); w.mount();
+    });
+    await page.getByRole('button', { name: 'Add people & devices', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'My device', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('img', { name: 'Scan to open this page on another device' })).toBeVisible();
+    await page.getByRole('tab', { name: 'An agent', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Agent name', exact: true }).fill('reviewer');
+    await page.getByRole('button', { name: 'Create agent invitation', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'Agent invitation to paste' })).toHaveValue(/api\/adopt/);
+    expect(agentBody).toEqual({ name: 'reviewer', scopes: ['host:read', 'participants:connect'] });
+    await page.getByRole('button', { name: 'Copy invitation', exact: true }).click();
+    await expect.poll(() => copied).toContain('as the agent "reviewer"');
+    await page.screenshot({ path: testInfo.outputPath('agent-invite-created.png') });
   });
 }

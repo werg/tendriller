@@ -9,6 +9,10 @@ const SCOPE = sw.registration.scope;
 const META_CACHE = "tendril-metadata";
 const META_KEY = SCOPE + "_tendril/publications";
 const PREFIX = "tendril-publication:" + encodeURIComponent(SCOPE) + ":";
+const SHARE_INBOX_CACHE = "tendril-share-inbox:" + encodeURIComponent(SCOPE);
+const SHARE_TTL_MS = 5 * 60 * 1000;
+const SHARE_MAX_FILES = 4;
+const SHARE_MAX_TOTAL_BYTES = 10 * 1024 * 1024;
 const NETWORK_TIMEOUT_MS = 6000;
 interface Registry {
   latest?: string;
@@ -286,8 +290,63 @@ async function staticAsset(event: FetchEvent): Promise<Response> {
   return fetch(event.request);
 }
 
+async function sweepShareInbox(): Promise<void> {
+  try {
+    const cache = await caches.open(SHARE_INBOX_CACHE);
+    const keys = await cache.keys();
+    const now = Date.now();
+    for (const req of keys) {
+      if (!req.url.endsWith("/meta.json")) continue;
+      const res = await cache.match(req);
+      if (!res) continue;
+      try {
+        const meta = await res.json() as { expiresAt?: number; files?: Array<{ index: number }> };
+        if (typeof meta.expiresAt === "number" && meta.expiresAt < now) {
+          const base = req.url.slice(0, -"/meta.json".length);
+          await cache.delete(req);
+          for (const f of meta.files ?? []) await cache.delete(`${base}/file-${f.index}`);
+        }
+      } catch {
+        await cache.delete(req);
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+async function handleShareTarget(request: Request): Promise<Response> {
+  try {
+    const form = await request.formData();
+    const title = String(form.get("title") ?? "").slice(0, 500);
+    const text = String(form.get("text") ?? "").slice(0, 8000);
+    const sharedUrl = String(form.get("url") ?? "").slice(0, 2048);
+    const rawFiles = form.getAll("files").filter((v): v is File => typeof File !== "undefined" && v instanceof File && v.size > 0);
+    const idBytes = crypto.getRandomValues(new Uint8Array(12));
+    const shareId = [...idBytes].map(b => b.toString(16).padStart(2, "0")).join("");
+    const base = `${SCOPE}_tendril/share-inbox/${shareId}`;
+    const cache = await caches.open(SHARE_INBOX_CACHE);
+    const savedFiles: Array<{ name: string; type: string; index: number }> = [];
+    let totalBytes = 0;
+    for (const file of rawFiles) {
+      if (savedFiles.length >= SHARE_MAX_FILES) break;
+      if (totalBytes + file.size > SHARE_MAX_TOTAL_BYTES) continue;
+      totalBytes += file.size;
+      const idx = savedFiles.length;
+      savedFiles.push({ name: file.name || `shared-${idx}`, type: file.type || "application/octet-stream", index: idx });
+      await cache.put(`${base}/file-${idx}`, new Response(file, { headers: { "Content-Type": file.type || "application/octet-stream" } }));
+    }
+    await cache.put(`${base}/meta.json`, new Response(JSON.stringify({
+      title, text, url: sharedUrl, files: savedFiles, expiresAt: Date.now() + SHARE_TTL_MS,
+    }), { headers: { "Content-Type": "application/json" } }));
+    const dest = new URL(SCOPE);
+    dest.searchParams.set("_shared", shareId);
+    return Response.redirect(dest.href, 303);
+  } catch {
+    return Response.redirect(SCOPE, 303);
+  }
+}
+
 sw.addEventListener("install", event => { sw.skipWaiting(); event.waitUntil(queued(update).catch(() => {})); });
-sw.addEventListener("activate", event => { event.waitUntil(sw.clients.claim().then(() => queued(update)).catch(() => {})); });
+sw.addEventListener("activate", event => { event.waitUntil(sw.clients.claim().then(() => Promise.all([queued(update), sweepShareInbox()])).catch(() => {})); });
 sw.addEventListener("message", event => {
   const data = event.data, client = event.source as Client | null;
   if (data?.t !== "publication") return;
@@ -313,9 +372,79 @@ sw.addEventListener("message", event => {
 });
 sw.addEventListener("fetch", event => {
   const request = event.request;
-  if (request.method !== "GET" || request.headers.has("range")) return;
   const url = new URL(request.url);
   if (url.origin !== new URL(SCOPE).origin) return;
+  if (request.method === "POST" && url.href === `${SCOPE}_tendril/share-target`) {
+    event.respondWith(handleShareTarget(request));
+    return;
+  }
+  if (request.method !== "GET" || request.headers.has("range")) return;
   if (request.mode === "navigate" && url.href.startsWith(SCOPE)) event.respondWith(navigate(event));
   else if (!url.search && !url.hash && (/\/_publications\/[A-Za-z0-9_-]+\//.test(url.pathname) || /\/_tendril\/(runtime|assets)\/[a-f0-9]{64}\//.test(url.pathname))) event.respondWith(staticAsset(event));
+});
+
+interface PushEventLike extends ExtendableEvent {
+  data?: { json(): unknown; text(): string } | null;
+}
+interface NotificationEventLike extends ExtendableEvent {
+  notification: Notification & { data?: { url?: string } };
+}
+sw.addEventListener("push", rawEvent => {
+  const event = rawEvent as PushEventLike;
+  let payload: { title?: string; body?: string; tag?: string; url?: string; badge?: number } = {};
+  try {
+    if (event.data) payload = event.data.json() as typeof payload;
+  } catch {
+    try { payload = { body: event.data?.text() }; } catch { /* ignore */ }
+  }
+  const title = typeof payload.title === "string" && payload.title.trim() ? payload.title.trim().slice(0, 120) : "Tendriller";
+  const body = typeof payload.body === "string" ? payload.body.slice(0, 500) : "";
+  const tag = typeof payload.tag === "string" && payload.tag.trim() ? payload.tag.trim().slice(0, 64) : undefined;
+  let targetUrl = SCOPE;
+  if (typeof payload.url === "string" && payload.url) {
+    try {
+      const resolved = new URL(payload.url, SCOPE);
+      if (resolved.origin === new URL(SCOPE).origin && resolved.href.startsWith(SCOPE)) targetUrl = resolved.href;
+    } catch { /* fallback to SCOPE */ }
+  }
+  const nav = sw.navigator as Navigator & { setAppBadge?: (count?: number) => Promise<void> };
+  const tasks: Promise<unknown>[] = [
+    sw.registration.showNotification(title, {
+      body,
+      icon: `${SCOPE}_tendril/icon.svg`,
+      ...(tag ? { tag } : {}),
+      data: { url: targetUrl },
+    }),
+  ];
+  if (typeof payload.badge === "number" && Number.isFinite(payload.badge) && payload.badge > 0 && typeof nav?.setAppBadge === "function") {
+    tasks.push(nav.setAppBadge(Math.min(999, Math.floor(payload.badge))).catch(() => {}));
+  }
+  event.waitUntil(Promise.all(tasks));
+});
+
+sw.addEventListener("notificationclick", rawEvent => {
+  const event = rawEvent as NotificationEventLike;
+  event.notification.close();
+  let targetUrl = SCOPE;
+  const rawUrl = event.notification.data?.url;
+  if (typeof rawUrl === "string" && rawUrl) {
+    try {
+      const resolved = new URL(rawUrl, SCOPE);
+      if (resolved.origin === new URL(SCOPE).origin && resolved.href.startsWith(SCOPE)) targetUrl = resolved.href;
+    } catch { /* fallback to SCOPE */ }
+  }
+  const nav = sw.navigator as Navigator & { clearAppBadge?: () => Promise<void> };
+  event.waitUntil((async () => {
+    try { await nav?.clearAppBadge?.(); } catch { /* ignore */ }
+    const clients = await sw.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of clients) {
+      if (client.url.startsWith(SCOPE)) {
+        if ("navigate" in client && client.url !== targetUrl) {
+          try { await (client as WindowClient).navigate(targetUrl); } catch { /* ignore */ }
+        }
+        return (client as WindowClient).focus();
+      }
+    }
+    return sw.clients.openWindow(targetUrl);
+  })());
 });

@@ -31,9 +31,10 @@ import { admitPageTraffic } from './traffic-budget';
 import { Transactions, type CommitEffect } from './transactions';
 import { deleteUnreferencedContent } from './files';
 import { HttpError, json, readJson, toErrorResponse } from './http';
+import { agentInviteResponse, issueAgentInvite, parseShareExpiry } from './sharing';
 import { newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from './ids';
 import type { Features } from './inject';
-import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, MB, HOUR } from './limits';
+import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, MB, HOUR, RESIDENT_LIMIT } from './limits';
 import { handlePage, pageAccessDenied } from './page';
 import { apiUrl, pageUrl, publicBase } from './urls';
 import { AGENT_SCOPES, authenticateAgent, authenticateAgentToken, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession, type AgentScope } from './access';
@@ -206,6 +207,30 @@ export class Tendril extends DurableObject<Env> {
           stored_files: this.db.all("SELECT hash, size FROM stored_files ORDER BY hash"),
         });
         if (url.pathname === "/account/delete" && req.method === "POST") { await this.destroy(); return json({ ok: true }); }
+        if ((url.pathname === "/account/invite" || url.pathname === "/account/agent-invite") && req.method === "POST") {
+          await requireWritesOpen(this.env);
+          if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled", "This page is unavailable");
+          const accountId = req.headers.get("x-account-id")!;
+          const owns = () => {
+            if (this.db.get<string | null>("owner_account", null) !== accountId) throw new HttpError(403, "forbidden");
+          };
+          const body = await readJson(req, 4096);
+          const pageName = this.db.get("name", "Tendril");
+          if (url.pathname === "/account/agent-invite") {
+            const invite = await issueAgentInvite(this, accountId, body.name, body.scopes, owns);
+            return json(agentInviteResponse(invite, pageName), 201);
+          }
+          if (body.role !== "guest" && body.role !== "display") throw new HttpError(400, "bad_request", "role must be guest or display");
+          const label = typeof body.label === "string" ? body.label.trim().slice(0, 100) || null : null;
+          const email = validOptionalEmail(body.email);
+          const link = await this.createLink(body.role, label, parseShareExpiry(body.expires_in), false, () => {
+            owns();
+            const total = this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links")?.n ?? 0;
+            if (total >= 50) throw new HttpError(429, "link_limit", "At most 50 links are allowed per page");
+          }, email);
+          addActivity(this, { kind: "link", summary: `Created ${body.role} link${label ? ` (${label})` : ""}${email ? ` for ${email}` : ""}`, by: `owner:${accountId}` });
+          return json(this.renderLink(link), 201);
+        }
       }
       if (kind === "agent") {
         if (req.method !== "GET" && req.method !== "HEAD") await requireWritesOpen(this.env);
@@ -552,7 +577,7 @@ export class Tendril extends DurableObject<Env> {
             WHERE a.id=? AND lower(e.email)=? AND a.suspended_at IS NULL AND a.deleting_at IS NULL)) RETURNING id`)
           .bind(accountId, this.now(), lifetime, this.tid, accountId, intendedAccount, intendedAccount, expected).first();
       } catch (err) {
-        if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: 3 });
+        if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: RESIDENT_LIMIT });
         if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
         if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
         throw err;

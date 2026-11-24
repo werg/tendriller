@@ -110,6 +110,8 @@ export function mountDashboardShell(container, {
   title = 'Dashboard',
   subtitle = '',
   session = null,
+  runtime = null,
+  keepAwakeToggle = false,
   onRefresh = null,
 } = {}) {
   ensureStyles();
@@ -141,6 +143,35 @@ export function mountDashboardShell(container, {
     refreshBtn.type = 'button';
     refreshBtn.addEventListener('click', () => { void onRefresh(); });
     pills.append(refreshBtn);
+  }
+  let wakeLease = null;
+  let offWakeStop = () => {};
+  if (keepAwakeToggle && runtime?.sensors?.wakeLock) {
+    const awakeBtn = el('button', 'td-btn', 'Keep awake');
+    awakeBtn.type = 'button';
+    awakeBtn.setAttribute('aria-pressed', 'false');
+    const setPressed = active => {
+      awakeBtn.setAttribute('aria-pressed', String(active));
+      awakeBtn.classList.toggle('primary', active);
+      awakeBtn.textContent = active ? 'Awake: On' : 'Keep awake';
+    };
+    offWakeStop = runtime.on?.('sensors_stopped', () => { wakeLease = null; setPressed(false); }) ?? (() => {});
+    awakeBtn.addEventListener('click', () => {
+      if (wakeLease) {
+        const prev = wakeLease;
+        wakeLease = null;
+        setPressed(false);
+        void prev.release();
+        return;
+      }
+      // Call synchronously inside click handler to preserve user gesture.
+      void runtime.sensors.wakeLock({ label: 'Keep dashboard awake', autoReacquire: true }).then(lease => {
+        if (!lease.supported) { setPressed(false); return; }
+        wakeLease = lease;
+        setPressed(true);
+      }).catch(() => setPressed(false));
+    });
+    pills.append(awakeBtn);
   }
   header.append(titleWrap, pills);
 
@@ -179,7 +210,7 @@ export function mountDashboardShell(container, {
     setAgentStatus,
     setFreshness,
     addCard(node) { grid.append(node); return node; },
-    close() { offParticipation(); shell.remove(); },
+    close() { offParticipation(); offWakeStop(); void wakeLease?.release(); wakeLease = null; shell.remove(); },
   });
 }
 

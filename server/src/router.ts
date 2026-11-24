@@ -1,3 +1,4 @@
+import { RESIDENT_LIMIT } from "./limits";
 import { routeAccountSetup } from './account-setup';
 import { ADAPTER_KEY, ASSISTANT_PROTOCOL } from './assistant-shared';
 import { parseActivityTicket } from './assistant-activity';
@@ -20,6 +21,7 @@ import { redeemPageCode, routePageAuth } from "./accounts/page";
 import { CORS_HEADERS, errorResponse, HttpError, isPlainObject, json, readBody, toErrorResponse, withCors } from "./http";
 import { AGENT_TOKEN_RE, newTendrilId, sha256Hex, TENDRIL_ID_RE } from "./ids";
 import { landingPage } from "./inject";
+import { agentJoinDocument } from "./sharing";
 import { serviceDescriptor } from "./descriptor";
 import { onboardingDescriptor, onboardingLinks } from "./onboarding";
 import { capabilityCatalog } from "./capability-catalog";
@@ -37,7 +39,7 @@ function forward(env: Env, id: string, kind: string, req: Request, url: URL, hea
   const h = new Headers(req.headers);
   h.set("x-tendril-id", id);
   for (const [k, v] of Object.entries(headers)) h.set(k, v);
-  const init: RequestInit = { method: req.method, headers: h, signal: req.signal, ...(kind === "assistant" ? { redirect: "manual" } : {}) };
+  const init: RequestInit = { method: req.method, headers: h, signal: req.signal, ...(kind === "assistant" || kind === "page" ? { redirect: "manual" } : {}) };
   if (req.method !== "GET" && req.method !== "HEAD") init.body = req.body;
   return stub(env, id).fetch(new Request(`https://tendril.internal/${kind}${url.search}`, init));
 }
@@ -102,7 +104,8 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   // Pages: P and everything under it.
   const page = parsePageRoute(url, env);
   if (page) {
-    if (((req.method !== "GET" && req.method !== "HEAD") || req.headers.get("Upgrade")?.toLowerCase() === "websocket") &&
+    const shareTargetFallback = page.rest === "_tendril/share-target" && req.method === "POST";
+    if (!shareTargetFallback && ((req.method !== "GET" && req.method !== "HEAD") || req.headers.get("Upgrade")?.toLowerCase() === "websocket") &&
       req.headers.get("Origin") !== url.origin) {
       return errorResponse(403, "bad_origin", "Request must originate from this tendril");
     }
@@ -195,6 +198,11 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     if (req.method === "HEAD") { await response.body?.cancel(); return new Response(null, response); }
     return response;
   }
+  if (path === "/join/agent" && publicRead) {
+    if (url.origin !== publicBase(env)) return errorResponse(404, "not_found");
+    const response = agentJoinDocument(url, publicBase(env));
+    return req.method === "HEAD" ? new Response(null, response) : response;
+  }
   if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
   if (path === "/health") {
@@ -204,7 +212,10 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   }
   if (path === "/status") {
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
-    return servicePage("Status", `<h1>Tendriller status</h1><p>${state?.mode === "open" ? "Operational" : state?.mode === "creation_paused" ? "New page creation paused" : "Read-only or unavailable"}</p>`);
+    const mode = state?.mode === "open" ? ["ok", "All systems operational", "Pages, sign-in and new page creation are available."]
+      : state?.mode === "creation_paused" ? ["warn", "New page creation paused", "Existing pages keep working. New pages cannot be created right now."]
+      : ["danger", "Read-only or unavailable", "Existing pages may be read-only. Changes are paused until service resumes."];
+    return servicePage("Status", `<section class="hero"><span class="eyebrow">Service</span><h1>Tendriller status</h1><p class="lead">${mode[2]}</p><div class="actions"><span class="badge ${mode[0]}">${mode[1]}</span></div></section>`);
   }
   if (path === "/agent.md" || path === "/AGENTS.md" || path === "/llms.txt" || path === "/llms-full.txt" || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(path)) {
     if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation is read-only");
@@ -299,7 +310,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
             } catch (err) {
               const message = String(err);
               if (message.includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
-              if (message.includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: 3 });
+              if (message.includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: RESIDENT_LIMIT });
               throw err;
             }
             indexed = true;
