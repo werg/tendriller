@@ -894,13 +894,15 @@ export async function closeLocalTransport() {
     const retainedInitialization = await readFile(join(project, '.tendriller/initialized.json'));
     const management = await context.newPage();
     await management.goto(new URL('_tendril/manage', handle.page_url).href);
-    await management.getByText('Add another agent', { exact: true }).click();
+    await management.locator('label[for="tab-agent"]').click();
+    await expect(management.locator('#tab-agent')).toBeChecked();
     const delegation = management.locator('form:has(input[name="action"][value="delegate-agent"])');
     await delegation.locator('input[name="name"]').fill('native-continuation');
+    await delegation.getByText('Host permissions', { exact: true }).click();
     for (const scope of ['host:read', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'])
       await delegation.locator(`input[name="scopes"][value="${scope}"]`).check();
     await delegation.getByRole('button', { name: 'Add agent', exact: true }).click();
-    const notice = await management.locator('[role="status"]').textContent();
+    const notice = await management.locator('.notice[role="status"]').textContent();
     const code = notice?.match(new RegExp(`\\b${handle.id}-[0-9]{6}\\b`))?.[0];
     assert.ok(code, 'The actual owner review must return a one-use code for the retained page.');
     await writeFile(join(project, '.tendriller/delegation-code.txt'), code + '\n', { mode: 0o600, flag: 'wx', flush: true });
@@ -914,7 +916,7 @@ export async function closeLocalTransport() {
     assert.equal(resumedAdoption.attemptId, adopted.attemptId);
     assert.equal(resumedAdoption.resumed, true, 'A retained response is reused without redeeming the code twice.');
     await management.locator('form:has(input[name="agent"][value="setup"])').getByRole('button', { name: 'Disconnect', exact: true }).click();
-    await expect(management.locator('[role="status"]')).toContainText('Disconnected setup.');
+    await expect(management.locator('.notice[role="status"]')).toContainText('Disconnected setup.');
     await management.close();
     const rejectedSetup = await fetch(handle.api, { headers: { Authorization: 'Bearer ' + handle.token }, redirect: 'error' });
     assert.equal(rejectedSetup.status, 401, 'The old setup credential must no longer authorize host access.');
