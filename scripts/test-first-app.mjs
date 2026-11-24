@@ -904,6 +904,7 @@ export async function closeLocalTransport() {
     const retainedInitialization = await readFile(join(project, '.tendriller/initialized.json'));
     const management = await context.newPage();
     await management.goto(new URL('_tendril/manage', handle.page_url).href);
+    await management.getByText('Add another agent', { exact: true }).click();
     const delegation = management.locator('form:has(input[name="action"][value="delegate-agent"])');
     await delegation.locator('input[name="name"]').fill('native-continuation');
     for (const scope of ['host:read', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'])
