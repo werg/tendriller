@@ -215,6 +215,14 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
       headers: { "Content-Type": path.endsWith(".txt") ? "text/plain; charset=utf-8" : "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Link: onboardingLinks(publicBase(env)) },
     });
   }
+  if (/^\/docs\/assets\/app-patterns-(desktop|phone|states)\.png$/.test(path)) {
+    if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation images are read-only");
+    const response = await asset(env, url, path, {
+      "Content-Type": "image/png", "X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache",
+    });
+    if (req.method === "HEAD") { await response.body?.cancel(); return new Response(null, response); }
+    return response;
+  }
   if (path === "/contract/v3.json") return json(schemaDocument);
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {
     return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });

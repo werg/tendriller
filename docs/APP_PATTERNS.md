@@ -86,6 +86,64 @@ with review and undo, timelines and conversations, tables with named links,
 and explicit empty and loading states. Walk the flows on a phone-sized viewport
 and desktop before delivery ([acceptance bar](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)).
 
+## Domain views you can import
+
+The first-app archive includes `ui/patterns.mjs` and a complete, dependency-free
+`ui/showcase.html` / `ui/showcase.mjs` example. Serve the extracted starter over
+local HTTP and open `/ui/showcase.html`; it uses synthetic training episodes to
+show useful actions before long system context, named related links and reviewed
+inline changes. It is a UI specimen, not a connected or persistent application.
+
+```js
+import {
+  mountListDetail, mountInspector, mountComparison, mountInlineReview, mountViewState,
+} from './ui/patterns.mjs';
+```
+
+| Pattern | Interface | Behavior and application responsibility |
+| --- | --- | --- |
+| Searchable list/detail | `mountListDetail(container, { records, filters, renderDetail, routeKey?, searchLabel? })` | Records contain `id`, `title`, optional `subtitle`, `status` and `searchText`. Filters are `[value, label]` pairs. Search, filter and selected record are URL-addressable; Back and reload restore them. `setRecords(records)` accepts the next coherent query value; `close()` disposes listeners and the active detail. Filtering is over that authorized value, not a second backend query. |
+| Inspector | `mountInspector(container, { onClose })` | `show(title, { focus })`, `content`, `hide()` and `close()` support a desktop side panel and narrow detail view. The list/detail composition provides Back to list and restores focus. A standalone inspector supplies its own navigation callback. |
+| Compare | `mountComparison(container, { before, after, label? })` | Readable before/after text with explicit headings. Authored values are inserted as text. `close()` removes it. Adapt the presentation for domain fields or line-level code diffs. |
+| Inline edit, review and undo | `mountInlineReview(container, { label, value, onSave, onUndo? })` | Keeps an editable draft, previews exact before/after values, saves only reviewed text and offers undo only with an injected callback. The callbacks receive `{ before, after }`; confirm an accepted applied result before returning `{ confirmed: true, value }`. Failure or uncertainty locks the editor until explicit `reconcile(confirmedValue)`; it does not resubmit or pretend a failed write was cancelled. `close()` stops rendering, not a dispatched command. |
+| Empty/loading/error | `mountViewState(container)` then `render({ phase, title, detail?, action? })` | `loading` exposes busy status, `error` exposes an alert, `empty` explains the next action, and `ready` hides the card. An optional action is `{ label, run }`; wire it to a real operation. `close()` removes the view. |
+| Connection | `mountConnectionView(container)` from `connect-view.mjs` | Use the real `createOwnerConnection` state and action. The specimen renders the same component; [the complete connection route](#connect-the-browser) stays authoritative. |
+
+`renderDetail(record, container)` renders the domain view and may return a cleanup
+function. Search/filter/navigation retain that view while its record object is
+unchanged; replacing a record in `setRecords` disposes and rebuilds it. Keep edited
+and uncertain work in the app's draft/submission controller when live snapshots
+replace objects. Do not use an inspector rerender as a command cancellation.
+Give independent list/detail instances distinct `routeKey` values. The helper
+preserves unrelated URL parameters.
+
+A connected app feeds one declared query through `createLiveView`, adapts those
+records for the list, and injects existing command handlers into the editor. Capture
+the coherent revision and original operation ID before dispatch. Save and undo
+must both use guarded domain commands; an undo is new reviewed work, not deletion
+of a journal event. Use the operation/submission helpers below for uncertainty and
+recovery. Application content never becomes `innerHTML` in these components.
+
+### Desktop: search, inspector and reviewed comparison
+
+![Episode list, inspector, model actions and before/after review on desktop](assets/app-patterns-desktop.png)
+
+### Phone: a focused detail with a route back
+
+![Phone-sized episode detail with folded long context and reviewed edit](assets/app-patterns-phone.png)
+
+### Empty, loading, error and connection states
+
+![Importable loading, empty, error and approval connection components](assets/app-patterns-states.png)
+
+These are real Chromium captures of the supplied specimen, at 1200×1100 and
+390×844 viewports. Reproduce the behavior check with
+`node --test scripts/test/browser/ui-patterns.test.mjs` in the source repository;
+set `UPDATE_PATTERN_SCREENSHOTS=1` to refresh the images after reviewing a change.
+The check covers fresh contexts, search/filter, named links, deep links, Back,
+reload, keyboard focus, review/save/undo, uncertainty locking and narrow overflow.
+It does not establish live pairing, replication or physical-phone behavior.
+
 ## 1. A coherent live query
 
 This function mounts the first-app `notes` query into its existing HTML elements.

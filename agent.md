@@ -144,7 +144,12 @@ guide's native-tool or manual-handoff fallback and name the exact prerequisite.
   request is a "full-featured" or "rich" experience.
 - **UX pass before delivery:** walk every main flow on a phone-sized viewport and
   desktop from a fresh profile, fix friction, and report before/after
-  screenshots ([acceptance bar](docs/AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)).
+  screenshots per flow, with actual viewports, tested release and observed fixes.
+  Use the dedicated second-pass prompt and matrix in the
+  [acceptance bar](docs/AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable),
+  including Back/deep links, keyboard, long content and failure states. The
+  [importable domain views](docs/APP_PATTERNS.md#domain-views-you-can-import) include
+  runnable desktop/phone examples.
 - **Live answers:** use `helpers/signal-request.mjs` for on-demand answers over
   signals: it waits for the answering peer, retries with the same ID and
   reassembles multi-piece replies.

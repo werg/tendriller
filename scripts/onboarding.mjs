@@ -14,11 +14,15 @@ export const ONBOARDING_DOCS = Object.freeze([
   'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md', 'docs/DEPLOYMENT_GUIDE.md', 'docs/SERVERLESS_HOST.md',
   'docs/MIGRATION_RC16_RC17.md', 'docs/LOCAL_HOST.md',
 ]);
+export const ONBOARDING_IMAGES = Object.freeze([
+  'docs/assets/app-patterns-desktop.png', 'docs/assets/app-patterns-phone.png', 'docs/assets/app-patterns-states.png',
+]);
 export const TUTORIAL_FILES = Object.freeze([
   '.gitignore', 'README.md', 'package.json', 'domain.mjs', 'setup.mjs', 'account-setup.mjs', 'host-adoption.mjs',
   'session.mjs', 'assistant.mjs', 'local.mjs', 'build.mjs', 'index.html', 'page.mjs', 'worker.mjs',
   'pairing-browser.mjs', 'pairing-worker.mjs', 'pairing-native.mjs', 'connection.mjs', 'connect-view.mjs',
   'helpers/cli-lifetime.mjs', 'helpers/browser-profile.mjs', 'helpers/participant-lifecycle.mjs', 'helpers/submission-state.mjs',
+  'ui/patterns.mjs', 'ui/showcase.html', 'ui/showcase.mjs',
   'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs', 'helpers/signal-request.mjs', 'helpers/diagnostics-panel.mjs',
   'media/panel.mjs', 'media/camera.mjs', 'media/voice.mjs', 'media/inference-client.mjs',
   'media/inference-service.mjs', 'media/inference-protocol.mjs',
@@ -63,6 +67,10 @@ export function combinedOnboarding(root) {
 
 export function buildOnboardingAssets(root, out) {
   writeFileSync(join(out, 'llms-full.txt'), combinedOnboarding(root));
+  for (const path of ONBOARDING_IMAGES) {
+    mkdirSync(dirname(join(out, path)), { recursive: true });
+    copyFileSync(join(root, path), join(out, path));
+  }
   mkdirSync(join(out, 'downloads'), { recursive: true });
   // Explicit inputs prevent accidental publication of local devices, handles,
   // keys, node_modules or generated UI from a developer's tutorial checkout.

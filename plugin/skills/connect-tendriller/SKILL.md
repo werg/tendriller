@@ -48,6 +48,15 @@ runtime is unavailable, read `topic: "deployment"` for measured hosting and hand
 coding-agent/runtime with the same origin and guide. MCP alone does not host a
 new app's executable participant.
 
+A full-featured or rich request requires domain views: conversations, timelines,
+searchable list/detail, named related links and reviewed edits. A JSON editor or
+field-by-field record form is only a diagnostic fallback. Reuse the importable
+patterns in the build guide. After the first working version, run the dedicated
+second-pass prompt in `topic: "delivery"`: walk every main flow in real desktop
+and phone-sized browsers from fresh profiles, check Back/deep links, keyboard,
+long content and loading/empty/error states, fix friction and report before/after
+screenshots per flow. Transport and persistence checks do not establish usability.
+
 Keep the starter's P2P-first participation helpers for both native and browser
 owners. They share one direct-WebRTC/relay-fallback policy and include the native
 RTC capability and browser provider. Do not construct another transport selector,

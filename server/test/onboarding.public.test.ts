@@ -221,6 +221,22 @@ describe('public application onboarding', () => {
     }
   });
 
+  it.each(['desktop', 'phone', 'states'])('serves the %s pattern screenshot with a read-only bounded route', async name => {
+    const path = `/docs/assets/app-patterns-${name}.png`;
+    const response = await req(path, { anonymous: true });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('Content-Type')).toBe('image/png');
+    expect(response.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    expect(Array.from(bytes.slice(0, 8))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    const head = await req(path, { method: 'HEAD', anonymous: true });
+    expect(head.status).toBe(200); expect(await head.text()).toBe('');
+    const post = await req(path, { method: 'POST', anonymous: true, body: 'replace' });
+    expect(post.status).toBe(405); await post.text();
+    const unknown = await req('/docs/assets/app-patterns-private.png', { anonymous: true });
+    expect(unknown.status).toBe(404); await unknown.text();
+  });
+
   it('downloads the starter as an attachment without serving its HTML or source on the service origin', async () => {
     const response = await req(downloadPath, { anonymous: true });
     expect(response.status).toBe(200);
@@ -236,7 +252,7 @@ describe('public application onboarding', () => {
     expect(head.headers.get('Content-Disposition')).toBe(response.headers.get('Content-Disposition'));
     expect(await head.arrayBuffer()).toHaveProperty('byteLength', 0);
     for (const path of ['/docs/tutorial/index.html', '/docs/tutorial/page.mjs', '/docs/tutorial/worker.mjs', '/docs/tutorial/setup.mjs',
-      '/docs/tutorial/helpers/browser-profile.mjs', '/docs/tutorial/media/inference-client.mjs',
+      '/docs/tutorial/helpers/browser-profile.mjs', '/docs/tutorial/ui/showcase.html', '/docs/tutorial/ui/patterns.mjs', '/docs/tutorial/media/inference-client.mjs',
       '/docs/tutorial/media/provider-openai.mjs', '/docs/tutorial/media/.env',
       '/docs/tutorial/sql/setup.mjs', '/docs/tutorial/sql/worker.mjs', '/docs/tutorial/sql/.tendriller/handle.json']) {
       const source = await req(path, { anonymous: true });

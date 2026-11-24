@@ -147,6 +147,42 @@ version:
    "full-featured" or "rich" experience.
 5. Report before/after screenshots and what changed.
 
+### Run a separate second pass
+
+After the implementation works, use this prompt as a new review task:
+
+> Act as the person using this app for the first time. List their main goals and
+> walk each one from arrival through its visible outcome on desktop and phone.
+> Start with fresh browser profiles, then check later visits. For each flow,
+> inspect hierarchy, density, the next action, keyboard focus, Back/deep links,
+> long content, loading, empty data and recoverable errors. Compare the screen to
+> the domain task, including named relationships and the most useful content
+> first. Capture a before screenshot, fix the friction you find, repeat the flow,
+> and capture the after screenshot. Verify that review, save, cancellation and
+> undo have their stated effects and preserve uncertain operations. Report the
+> evidence per flow and any checks still blocked. Do not declare completion
+> from transport checks or a generic record editor.
+
+Use a flow matrix in the handoff, with one row per main user goal and additional
+rows for failure states that change the next action:
+
+| Flow | Desktop and phone evidence | Required observations |
+| --- | --- | --- |
+| First visit / return | Fresh profiles, then reload and a second tab | One meaningful connection state, correct next action, retained work |
+| Find / inspect | Search, filter, select, direct URL, reload, Back | Named links, useful detail first, preserved navigation and focus |
+| Change / review | Edit, compare, save, cancel, undo if supported | Visible draft vs. saved result, error recovery, no duplicate uncertain command |
+| Long / missing / unavailable data | Realistic long content, zero records, slow read, failed read | Readable density, folded context, useful empty states, honest progress and retry |
+| Keyboard / narrow screen | Tab, Shift-Tab, Enter, visible focus; phone-width tap targets | Reachable controls, no trapped focus, no obscured controls or accidental horizontal scroll |
+
+For each row record the actual viewport (for example 1440×900 and 390×844),
+browser, tested page/publication, steps, outcome, before/after image links and
+what changed. An unchanged flow may reference the same image with an explicit
+“no change needed” finding; never invent a before screenshot. Screenshots are
+review evidence, while the steps establish behavior. A phone-sized desktop
+browser verifies responsive layout, not physical-device permissions or durability.
+If a real browser or approval is unavailable, state the exact remaining check
+and complete the accessible flows without calling the whole app verified.
+
 Supply editable source alongside this evidence when useful. Do not describe source
 delivery as a deployed or connected application. The
 [fresh-agent acceptance procedure](AGENT_ONBOARDING_TEST.md) scores the live result
