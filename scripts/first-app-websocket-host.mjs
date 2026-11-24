@@ -62,8 +62,65 @@ export function createFirstAppRequestActivity() {
   };
 }
 
+/** Test-only pause at the real publication request, before the packed host receives it. */
+export function createFirstAppPublicationGate({ timeoutMs = 40_000 } = {}) {
+  let current;
+  const snapshot = () => current ? { id: current.id, phase: current.phase, matched: current.matched,
+    operationId: current.operationId ?? null }
+    : { phase: 'idle', matched: 0 };
+  return {
+    async control(request) {
+      if (request.method !== 'POST') return new Response('POST required', { status: 405 });
+      const input = await request.json();
+      if (input.action === 'arm') {
+        if (current && ['armed', 'held'].includes(current.phase)) return new Response('Gate already active', { status: 409 });
+        if (typeof input.id !== 'string' || !/^[a-f0-9-]{36}$/.test(input.id) ||
+          ![input.author, input.previous, input.proofHash].every(value => /^[a-f0-9]{64}$/.test(value ?? '')))
+          return new Response('Invalid publication gate', { status: 400 });
+        current = { id: input.id, author: input.author, previous: input.previous,
+          proofHash: input.proofHash, phase: 'armed', matched: 0 };
+      } else {
+        if (!current || current.id !== input.id) return new Response('Unknown publication gate', { status: 409 });
+        if (input.action === 'release') {
+          if (current.phase === 'held') current.finish('released');
+          else if (current.phase === 'armed') current.phase = 'released';
+        } else if (input.action === 'reset') {
+          if (current.phase === 'held') current.finish('reset');
+          current = undefined;
+        } else if (input.action !== 'status') return new Response('Unknown gate action', { status: 400 });
+      }
+      return Response.json(snapshot(), { headers: { 'Cache-Control': 'no-store' } });
+    },
+    async before(request) {
+      const gate = current;
+      if (!gate || gate.phase !== 'armed' || request.method !== 'POST' ||
+        !new URL(request.url).pathname.endsWith('/peers/participant')) return;
+      let message;
+      try { message = await request.clone().json(); } catch { return; }
+      const publication = message?.payload?.publication?.payload;
+      if (current !== gate || gate.phase !== 'armed' || message?.protocol !== 'chronolog-participant-v1' ||
+        message.facet !== 'publication' || message.action !== 'publish' ||
+        publication?.author !== gate.author || publication.previous !== gate.previous ||
+        !Array.isArray(publication.files) || !publication.files.some(file =>
+          file?.path === 'resident-publication-proof.txt' && file.hash === gate.proofHash)) return;
+      // Observe the scoped signed identity; do not reconstruct private attachment namespaces.
+      gate.operationId = publication.operationId;
+      gate.phase = 'held'; gate.matched++;
+      const outcome = await new Promise(resolve => {
+        const timer = setTimeout(() => gate.finish('expired'), timeoutMs);
+        gate.finish = phase => {
+          if (gate.phase !== 'held') return;
+          clearTimeout(timer); gate.phase = phase; resolve(phase);
+        };
+      });
+      if (outcome !== 'released') return new Response('Publication fixture gate ' + outcome, { status: 504 });
+    },
+  };
+}
+
 export const FIRST_APP_WEBSOCKET_PROXY_WORKER = `
 const requests = (${createFirstAppRequestActivity.toString()})();
+const publicationGate = (${createFirstAppPublicationGate.toString()})();
 const traffic = { instance: null, httpRequests: 0, relayUpgrades: 0,
   relayBinaryFrames: 0, relayBinaryBytes: 0 };
 export default {
@@ -71,8 +128,11 @@ export default {
     traffic.instance ??= crypto.randomUUID();
     if (new URL(request.url).pathname === '/__first_app_transport')
       return Response.json({ ...traffic, requestActivity: requests.snapshot() }, { headers: { 'Cache-Control': 'no-store' } });
+    if (new URL(request.url).pathname === '/__first_app_publication') return publicationGate.control(request);
     traffic.httpRequests++;
     requests.record(request);
+    const held = await publicationGate.before(request);
+    if (held) return held;
     const relay = new URL(request.url).pathname.endsWith('/peers/relay');
     const response = await env.PACKED_HOST.fetch(request);
     if (!response.webSocket) return response;

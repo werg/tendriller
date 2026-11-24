@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 /** The actual packed CLI attaches while another CLI consumer and browser stay live. */
-export async function qualifyFirstAppPublication({ page, pageUrl, peer, expect, app, project, preload, cli, node }) {
+export async function qualifyFirstAppPublication({ page, pageUrl, publicationGateUrl, peer, expect, app, project, preload, cli, node }) {
   const args = ['--session', join(project, 'session.mjs'), '--mode', 'attach'];
   const attached = async command => JSON.parse(await node([cli, ...args, ...command]));
   const ownerBefore = await attached(['self']);
@@ -48,7 +48,22 @@ export async function qualifyFirstAppPublication({ page, pageUrl, peer, expect, 
     assert.equal(consumerExit, undefined, 'The independent event consumer exited: ' + stderr);
   };
   const observed = text => batches.some(batch => batch.events.some(event => event.payload?.text === text));
-  let result, primaryFailure, diagnosticsAfter, heldDocument;
+  let result, primaryFailure, primaryEvidence, diagnosticsAfter, heldDocument, gateStarted = false, progress;
+  const cleanupErrors = [], gateId = crypto.randomUUID();
+  const gate = async action => {
+    const response = await fetch(publicationGateUrl, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, id: gateId, author: ownerBefore.deviceId,
+        previous: publicationBefore.publication.id, proofHash }),
+      signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw Error('Publication gate ' + action + ' failed: ' + response.status);
+    return response.json();
+  };
+  const evidence = () => ({ status: 'failed',
+    connectionRevisionBefore: diagnosticsBefore.participation.connectionRevision,
+    connectionRevisionAfter: diagnosticsAfter?.participation.connectionRevision ?? null,
+    consumerBatches: batches.length, consumerExit: consumerExit ?? null,
+    publicationProgress: progress ?? null });
   try {
     await expect.poll(() => { alive(); return batches.length; }, { timeout: 30_000 }).toBeGreaterThan(0);
     heldDocument = await page.evaluate(() => {
@@ -70,13 +85,48 @@ export async function qualifyFirstAppPublication({ page, pageUrl, peer, expect, 
     await writeFile(indexPath, firstHtml);
     await writeFile(proofPath, proof);
     const browserText = 'Browser work while the resident owner publishes';
-    const publish = attached(['publish', pageDirectory, '--operation', 'resident-publication-one']);
+    gateStarted = true;
+    assert.equal((await gate('arm')).phase, 'armed');
+    let publicationSettled = false, firstFailure;
+    const failures = [];
+    const retain = error => { firstFailure ??= error; if (!failures.includes(error)) failures.push(error); };
+    const publish = attached(['publish', pageDirectory, '--operation', 'resident-publication-one'])
+      .then(value => { publicationSettled = true; return value; },
+        error => { publicationSettled = true; retain(error); throw error; });
     const browserCommand = (async () => {
-      await page.locator('#note').fill(browserText);
-      await page.locator('#submit').click();
-      await expect(page.locator('#notes')).toContainText(browserText, { timeout: 30_000 });
+      try {
+        await expect.poll(async () => {
+          if (publicationSettled) throw firstFailure ?? Error('Publication finished before browser progress.');
+          progress = await gate('status');
+          return progress.phase;
+        }, { timeout: 30_000 }).toBe('held');
+        assert.equal(progress.id, gateId); assert.equal(progress.matched, 1);
+        await page.locator('#note').fill(browserText);
+        await page.locator('#submit').click();
+        await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
+        await expect(page.locator('#notes')).toContainText(browserText, { timeout: 30_000 });
+        await expect.poll(() => { alive(); return observed(browserText); }, { timeout: 30_000 }).toBe(true);
+        progress = await gate('status');
+        assert.equal(progress.phase, 'held', 'Browser work must finish while the publication request is held.');
+        assert.equal(publicationSettled, false, 'The resident publication must still be pending.');
+        progress.browserCommandObservedWhileHeld = true;
+      } catch (error) { retain(error); }
+      finally {
+        // Release even on browser failure, before joining the publisher behind this gate.
+        try {
+          const released = await gate('release');
+          assert.equal(released.phase, 'released', 'The publication gate expired before release.');
+        } catch (error) { retain(error); }
+      }
+      if (firstFailure) throw firstFailure;
     })();
-    const [first] = await Promise.all([publish, browserCommand]);
+    // Install both rejection handlers immediately; neither operation may outlive restoration.
+    const settled = await Promise.allSettled([publish, browserCommand]);
+    if (failures.length) throw failures.length === 1 ? failures[0]
+      : new AggregateError(failures, firstFailure.message, { cause: firstFailure });
+    const first = settled[0].value;
+    assert.equal(progress.operationId, first.publication.payload.operationId,
+      'The held request must be this exact signed publication operation.');
     assert.notEqual(first.publication.id, publicationBefore.publication.id);
     assert.equal(first.publication.payload.author, ownerBefore.deviceId);
     const signedProof = first.publication.payload.files.find(file => file.path === 'resident-publication-proof.txt');
@@ -165,38 +215,42 @@ export async function qualifyFirstAppPublication({ page, pageUrl, peer, expect, 
       publications: [first.publication.id, second.publication.id], selectedPublication: second.publication.id,
       stagedAssetBytes: proof.length, stagedAssetHash: proofHash, exactRetry: true, changedBytesRejected: true,
       staleRetryPreservedHead: true, consumerProcessStayedAlive: true, consumerBatches: batches.length,
-      browserCommandObserved: true, nativeCommandObservedAfterPublisherDetach: true,
+      browserCommandObserved: true, publicationProgress: progress, nativeCommandObservedAfterPublisherDetach: true,
       unchangedConnectionRevision: diagnosticsAfter.participation.connectionRevision,
       browserUpdatePolicy: { hold: 'public publication.hold()', observedVersions: held.versions,
         connectionCheckedWhileHeld: true, switch: 'explicit public publication.update()', holdReleased,
         selectedVersion: selected.version, selectedDocumentObserved: true, authenticatedSessionAfterUpdate: true } };
   } catch (error) {
     primaryFailure = error;
-    error.publicationQualification = { status: 'failed',
-      connectionRevisionBefore: diagnosticsBefore.participation.connectionRevision,
-      connectionRevisionAfter: diagnosticsAfter?.participation.connectionRevision ?? null,
-      consumerBatches: batches.length, consumerExit: consumerExit ?? null };
-  }
-  finally {
-    try {
+    primaryEvidence = error.publicationQualification ?? evidence();
+    error.publicationQualification = primaryEvidence;
+  } finally {
+    const clean = async action => { try { await action(); } catch (error) { cleanupErrors.push(error); } };
+    if (gateStarted) await clean(() => gate('reset'));
+    await clean(async () => {
       if (!page.isClosed()) await page.evaluate(() => window.__firstAppPublicationHold?.release());
-    } catch (error) {
-      primaryFailure = primaryFailure ? new AggregateError([primaryFailure, error], primaryFailure.message + '; publication hold cleanup failed') : error;
-    }
-    let timer;
-    try {
-      if (!consumerExit) child.kill('SIGTERM');
-      const exit = await Promise.race([closed, new Promise((_resolve, reject) => {
-        timer = setTimeout(() => { child.kill('SIGKILL'); reject(Error('Event consumer did not detach within five seconds.')); }, 5_000);
-      })]);
-      assert.deepEqual(exit, { code: 0, signal: null }, 'Event consumer must detach gracefully: ' + stderr);
-    } catch (error) {
-      primaryFailure = primaryFailure ? new AggregateError([primaryFailure, error], primaryFailure.message + '; event consumer cleanup failed') : error;
-    } finally {
-      clearTimeout(timer); lines.close();
-      await writeFile(indexPath, original); await rm(proofPath, { force: true });
-    }
+    });
+    await clean(async () => {
+      let timer;
+      try {
+        if (!consumerExit) child.kill('SIGTERM');
+        const exit = await Promise.race([closed, new Promise((_resolve, reject) => {
+          timer = setTimeout(() => { child.kill('SIGKILL'); reject(Error('Event consumer did not detach within five seconds.')); }, 5_000);
+        })]);
+        assert.deepEqual(exit, { code: 0, signal: null }, 'Event consumer must detach gracefully: ' + stderr);
+      } finally { clearTimeout(timer); }
+    });
+    await clean(() => lines.close());
+    await clean(() => writeFile(indexPath, original));
+    await clean(() => rm(proofPath, { force: true }));
   }
-  if (primaryFailure) throw primaryFailure;
+  const failures = [...(primaryFailure ? [primaryFailure] : []), ...cleanupErrors];
+  if (failures.length) {
+    const error = failures.length === 1 ? failures[0] : new AggregateError(failures,
+      (primaryFailure?.message ?? 'Publication cleanup failed') + '; additional cleanup failures',
+      { cause: primaryFailure ?? failures[0] });
+    error.publicationQualification = primaryEvidence ?? evidence();
+    throw error;
+  }
   return result;
 }
