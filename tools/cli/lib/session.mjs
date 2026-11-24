@@ -212,7 +212,9 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
 /** Pulling the next change is backpressure. Emitted cursors are not processing receipts. */
 export async function watchSession(owned, emit, { signal, events = false, cursor, topics, limit } = {}) {
   const session = owned.session;
-  let lastCursor = cursor ?? null, lastRevision = null, emitting = false, releaseFailed = false;
+  let lastCursor = cursor ?? null, lastRevision = null, emitting = false, releaseFailed = false, cancelledFailure;
+  const isInvocationCancellation = error => Boolean(signal?.aborted && (error === signal.reason ||
+    (error?.name === 'AbortError' && (error.cause === undefined || error.cause === signal.reason))));
   const progress = () => ({ mode: events ? 'events' : 'changes', cursor: lastCursor, revision: lastRevision });
   const emitDelivered = async value => {
     emitting = true;
@@ -238,7 +240,13 @@ export async function watchSession(owned, emit, { signal, events = false, cursor
           if (batch.cursor !== lastCursor) await emitDelivered(batch);
           if (!batch.hasMore) break;
         }
-      } catch (error) { viewFailed = true; viewFailure = error; throw error; }
+      } catch (error) {
+        viewFailed = true; viewFailure = error;
+        // Classify the original failure now. A later timeout during asynchronous
+        // release must not turn a failed read into a successful cancellation.
+        cancelledFailure = isInvocationCancellation(error);
+        throw error;
+      }
       finally {
         try { await view.release(); }
         catch (cleanupError) {
@@ -254,9 +262,10 @@ export async function watchSession(owned, emit, { signal, events = false, cursor
     if (!signal?.aborted) throw session.signal?.reason ?? Object.assign(
       Error('Session change stream ended unexpectedly; restart the listener after checking the session.'), { code: 'SESSION_WATCH_ENDED' });
   } catch (error) {
-    // An intentional deadline/interrupt can close reads and iterators in different
-    // ways. Output failures remain failures, even when cancellation races a write.
-    if (releaseFailed || !signal?.aborted || (emitting && error !== signal.reason && error?.name !== 'AbortError')) {
+    // Only failures caused by this invocation's cancellation are normal stops.
+    // Cleanup and independent read/output failures remain failures even if an
+    // interruption arrives while those failures are being cleaned up.
+    if (releaseFailed || !(cancelledFailure ?? isInvocationCancellation(error))) {
       let failure = error instanceof Error && Object.isExtensible(error) ? error : new Error('Session watch failed', { cause: error });
       if (!emitting && owned.mode === 'attach' && session.signal?.aborted && error === session.signal.reason) {
         const cause = session.signal.reason ?? failure;

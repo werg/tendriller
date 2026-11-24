@@ -198,3 +198,85 @@ export async function attachSession({signal}) {
     });
   }
 });
+
+test('interruption during deferred view release does not hide an earlier genuine read failure', async () => {
+  for (const primary of [
+    Object.assign(Error('read failed'), { code: 'READ_FAILED' }),
+    Object.assign(Error('cursor recovered'), { code: 'CURSOR_RECOVERED' }),
+    new DOMException('unrelated abort before invocation interruption', 'AbortError'),
+  ]) {
+    const stop = new AbortController(), releasing = Promise.withResolvers(), released = Promise.withResolvers();
+    const session = { async *changes() { yield change; }, readView: async () => ({
+      readEvents() { throw primary; },
+      async release() { releasing.resolve(); await released.promise; },
+    }) };
+    const rejected = assert.rejects(watchSession({ session }, () => assert.fail('must not emit'), {
+      signal: stop.signal, events: true, cursor: 'previous',
+    }), error => {
+      assert.equal(error, primary);
+      assert.deepEqual(error.watch, { mode: 'events', cursor: 'previous', revision: null });
+      return true;
+    });
+    await releasing.promise;
+    stop.abort(Object.assign(Error('interrupted during cleanup'), { code: 'invocation_interrupted' }));
+    released.resolve();
+    await rejected;
+  }
+});
+
+test('an AbortError from the active invocation still stops normally after deferred release', async () => {
+  const stop = new AbortController(), releasing = Promise.withResolvers(), released = Promise.withResolvers();
+  const reason = Object.assign(Error('deadline'), { code: 'invocation_timeout' });
+  const session = { async *changes() { yield change; }, readView: async () => ({
+    readEvents() {
+      stop.abort(reason);
+      throw Object.assign(new Error('The operation was aborted', { cause: reason }), { name: 'AbortError', code: 'ABORT_ERR' });
+    },
+    async release() { releasing.resolve(); await released.promise; },
+  }) };
+  const result = watchSession({ session }, () => assert.fail('must not emit'), {
+    signal: stop.signal, events: true, cursor: 'previous',
+  });
+  await releasing.promise; released.resolve();
+  assert.deepEqual(await result, { mode: 'events', cursor: 'previous', revision: null, reason: 'timeout' });
+});
+
+test('watch CLI preserves a read error when its deadline expires during successful cleanup', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'tendril-watch-cancel-race-')), module = join(directory, 'session.mjs');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(module, `
+export async function attachSession({signal}) {
+  return {session:{async *changes(){yield {kind:'applied',revision:{generation:'one'},recovery:null};},
+    readView:async()=>({
+      readEvents(){throw Object.assign(Error('cursor recovered before the deadline'),{code:'CURSOR_RECOVERED'});},
+      release:()=>new Promise(resolve=>{if(signal.aborted)resolve();else signal.addEventListener('abort',resolve,{once:true});})
+    })},detach(){}};
+}`);
+  await assert.rejects(run(process.execPath, [cli, 'watch', '--events', '--cursor', 'previous',
+    '--session', module, '--mode', 'attach', '--timeout', '1']), error => {
+    const result = JSON.parse(error.stderr);
+    assert.equal(error.code, 1); assert.equal(result.error.code, 'CURSOR_RECOVERED');
+    assert.deepEqual(result.watch, { mode: 'events', cursor: 'previous', revision: null });
+    assert.equal(error.stdout, '');
+    return true;
+  });
+});
+
+test('an already-aborted signal cannot turn an unrelated read error or AbortError cause into cancellation', async () => {
+  for (const primary of [
+    Object.assign(Error('independent read failure'), { code: 'READ_FAILED' }),
+    Object.assign(new Error('another request was aborted', { cause: Error('other controller') }), { name: 'AbortError', code: 'ABORT_ERR' }),
+  ]) {
+    const stop = new AbortController();
+    const session = { async *changes() { yield change; }, readView: async () => ({
+      readEvents() {
+        stop.abort(Object.assign(Error('invocation interrupted'), { code: 'invocation_interrupted' }));
+        throw primary;
+      },
+      release() {},
+    }) };
+    await assert.rejects(watchSession({ session }, () => assert.fail('must not emit'), {
+      signal: stop.signal, events: true, cursor: 'previous',
+    }), error => error === primary && error.watch.cursor === 'previous');
+  }
+});
