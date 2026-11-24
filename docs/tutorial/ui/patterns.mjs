@@ -128,7 +128,8 @@ export function mountListDetail(container, {
     (link ?? search).focus();
   };
   const inspector = mountInspector(root, { onClose: () => navigate({ item:null }, false, true) });
-  function render(focus = false) {
+  // Only setRecords supplies observations, including equal-valued publications.
+  function render(focus = false, recordsPublished = false) {
     if (closed) return;
     // Capture ownership before replacing nodes. Background snapshots must not
     // steal focus from another control or another list/detail instance.
@@ -167,7 +168,7 @@ export function mountListDetail(container, {
     if (selected) {
       inspector.show(selected.title, { focus:focus || (replacingDetail && focusedContent) });
       if (replacingDetail) detail = renderDetail?.(selected, inspector.content);
-      else if (canUpdate) detail.update(selected);
+      else if (canUpdate && recordsPublished) detail.update(selected);
     } else if (route.id) {
       inspector.show('Record unavailable', { focus:focus || focusedContent });
       inspector.content.append(element('p', 'This record is no longer in the current view. Return to the list.'));
@@ -186,7 +187,7 @@ export function mountListDetail(container, {
   window.addEventListener('popstate', historyChange); render();
   return {
     element:root,
-    setRecords(value) { current = value; render(); },
+    setRecords(value) { current = value; render(false, true); },
     close() {
       if (closed) return;
       closed = true;

@@ -347,22 +347,33 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
       } finally { await context.close(); }
     });
 
-    await t.test(name + ' equal-valued snapshots during save and undo retain concurrent observations', async () => {
+    await t.test(name + ' navigation is separate from record observations during save and undo', async () => {
       const context = await browser.newContext({ viewport }), page = await context.newPage(), errors = [];
       page.setDefaultTimeout(5000); page.on('pageerror', error => errors.push(error.message));
       try {
-        await page.goto(base);
+        await page.goto(base + '?states=1&item=first');
         await page.evaluate(async () => {
-          const { mountInlineReview } = await import('./patterns.mjs');
-          const root = document.querySelector('#workspace'); root.replaceChildren();
+          const { mountListDetail, mountInlineReview } = await import('./patterns.mjs');
+          const root = document.querySelector('#workspace'); root.replaceChildren(); root.className = '';
           window.calls = [];
+          window.records = [{ id:'first', title:'First record', status:'open', summary:'original' }];
           const dispatch = change => {
             window.calls.push(change);
             return new Promise(resolve => { window.confirm = resolve; });
           };
-          window.editor = mountInlineReview(root, {
-            label:'Concurrent summary', value:'original', onSave:dispatch, onUndo:dispatch,
+          window.collection = mountListDetail(root, {
+            records:window.records, filters:[['open', 'Open']],
+            renderDetail(record, container) {
+              const editor = mountInlineReview(container, {
+                label:'Concurrent summary', value:record.summary, onSave:dispatch, onUndo:dispatch,
+              });
+              return { update(next) { editor.observe(next.summary); }, close() { editor.close(); } };
+            },
           });
+          window.snapshot = summary => {
+            window.records = window.records.map(record => ({ ...record, summary }));
+            window.collection.setRecords(window.records);
+          };
         });
         const input = page.getByLabel('Concurrent summary');
         const review = page.getByRole('button', { name:'Review changes', exact:true });
@@ -371,10 +382,48 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         const discard = page.getByRole('button', { name:'Discard draft' });
         const conflict = page.getByText('The saved value changed. Review your draft against the latest value or discard it.', { exact:true });
 
+        const navigateSameRecord = async (query, status) => {
+          // The collection is hidden beside the selected inspector on a phone.
+          // Exercise its real input/change handlers, then actual browser history.
+          await page.getByLabel('Search records').evaluate((input, value) => {
+            input.value = value; input.dispatchEvent(new Event('input', { bubbles:true }));
+          }, query);
+          await page.getByLabel('Status', { exact:true }).evaluate((select, value) => {
+            select.value = value; select.dispatchEvent(new Event('change', { bubbles:true }));
+          }, status);
+          await page.goBack(); await page.goForward();
+          const url = new URL(page.url());
+          assert.equal(url.searchParams.get('item'), 'first');
+          assert.equal(url.searchParams.get('item-search'), query);
+          assert.equal(url.searchParams.get('item-status'), status || null);
+          assert.equal(await input.isDisabled(), true);
+        };
+
+        // Route-only renders must not turn the pre-save record into a new
+        // observation, or a successful confirmation falsely conflicts with it.
+        await input.fill('navigation edit'); await review.click(); await save.click();
+        await navigateSameRecord('First', 'open');
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'navigation edit' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        assert.equal(await conflict.isVisible(), false);
+        assert.equal(await undo.isEnabled(), true);
+        await input.fill('discard this draft'); await discard.click();
+        assert.equal(await input.inputValue(), 'navigation edit');
+        await page.evaluate(() => window.snapshot('navigation edit'));
+
+        // An Undo waiting for confirmation is equally unaffected by navigation.
+        await undo.click();
+        await navigateSameRecord('record', '');
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'original' }));
+        await page.getByText('Saved change undone.', { exact:true }).waitFor();
+        assert.equal(await conflict.isVisible(), false);
+        assert.equal(await input.inputValue(), 'original');
+        await page.evaluate(() => window.snapshot('original'));
+
         // A coalesced query can observe a concurrent restoration of the old
         // value without ever observing our accepted intermediate write.
         await input.fill('saved edit'); await review.click(); await save.click();
-        await page.evaluate(() => window.editor.observe('original'));
+        await page.evaluate(() => window.collection.setRecords(window.records));
         assert.equal(await input.isDisabled(), true);
         await page.evaluate(() => window.confirm({ confirmed:true, value:'saved edit' }));
         await page.getByText('Change saved.', { exact:true }).waitFor();
@@ -390,7 +439,7 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         await input.fill('saved edit'); await review.click(); await save.click();
         await page.evaluate(() => window.confirm({ confirmed:true, value:'saved edit' }));
         await page.getByText('Change saved.', { exact:true }).waitFor();
-        await page.evaluate(() => { window.editor.observe('saved edit'); window.editor.observe('saved edit'); });
+        await page.evaluate(() => { window.snapshot('saved edit'); window.collection.setRecords(window.records); });
         assert.equal(await input.inputValue(), 'saved edit');
         assert.equal(await conflict.isVisible(), false);
         assert.equal(await undo.isEnabled(), true);
@@ -398,7 +447,7 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         // The same rule applies to Undo: a concurrent restoration of the saved
         // edit must survive an older confirmation of the undo operation.
         await undo.click();
-        await page.evaluate(() => window.editor.observe('saved edit'));
+        await page.evaluate(() => window.collection.setRecords(window.records));
         await page.evaluate(() => window.confirm({ confirmed:true, value:'original' }));
         await page.getByText('Saved change undone.', { exact:true }).waitFor();
         assert.equal(await input.inputValue(), 'original');
@@ -408,6 +457,8 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         assert.equal(await input.inputValue(), 'saved edit');
         assert.equal(await conflict.isVisible(), false);
         assert.deepEqual(await page.evaluate(() => window.calls), [
+          { before:'original', after:'navigation edit' },
+          { before:'navigation edit', after:'original' },
           { before:'original', after:'saved edit' },
           { before:'original', after:'saved edit' },
           { before:'saved edit', after:'original' },
