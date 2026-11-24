@@ -20,12 +20,13 @@ With account-linked MCP, use the starter's `setup:prepare`, call
 `prepare_tendril_setup` with its public arguments, and use `setup:finish` with
 the exact ready result. Retain the original private intent and use
 `inspect_tendril_setup` after a lost reply; the host derives the verified owner.
-For browser pairing, run the existing native participant before review. Its
-bounded helper durably pauses ordering and stages the exact signed proposal;
-the owner then reviews the fingerprint, rights and retained prefix on the
-service origin. Preserve the same browser key, native records and ordering
-pause through uncertain replies or restart. A committed review still requires
-a real connected session and cross-device verification.
+For browser pairing, keep the existing native participant running. Its
+bounded helper durably pauses ordering and stages the exact signed member-only
+proposal; the host approves it automatically for the signed-in owner or an
+admitted guest — there is no approval screen. Preserve the same browser key,
+native records and ordering pause through uncertain replies or restart. A
+committed enrollment still requires a real connected session and cross-device
+verification.
 
 The intended route is **create → define state → configure authority and initial generation → publish signed UI → owner sign-in → connect devices → verify**. A created
 page is only the host handle. Host credentials, device grants and publication

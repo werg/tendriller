@@ -19,9 +19,10 @@ function fixture(t, overrides={}) {
   const controller=createOwnerConnection({configuration:{applicationId:'app',page_url:'https://page.example/'},storage:{getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)},navigate:url=>navigations.push(url),onState:s=>states.push(s),connect:async()=>{throw Object.assign(Error('new'),{code:'DEVICE_NOT_ENROLLED'});},...overrides});
   return {controller,navigations,states,events};
 }
-test('long return addresses fall back to a valid bounded app URL',async t=>{
-  const f=fixture(t,{here:()=>`https://page.example/path?draft=${'x'.repeat(2200)}`,pairing:{read:()=>({pairingId:'id'}),refresh:async()=>({state:'pending',pairingId:'id',preparedDigest:'digest',reviewUrl:'https://service.example/pairings/page/id'})}});
-  await f.controller.start();assert.equal(new URL(f.navigations[0]).searchParams.get('return_to'),'https://page.example/path');
+test('a prepared request never sends the browser to an approval page',async t=>{
+  const f=fixture(t,{pairing:{read:()=>({pairingId:'id'}),refresh:async()=>({state:'pending',pairingId:'id',preparedDigest:'digest',reviewUrl:'https://service.example/pairings/page/id'})}});
+  const run=f.controller.start();await wait(()=>f.states.some(s=>s.phase==='enrolling'));f.controller.close();await run;
+  assert.equal(f.navigations.length,0);assert.equal(f.states.some(s=>s.phase==='approve'),false);
 });
 test('closing during the initial read prevents retries and connected UI',async t=>{
   let reject,attempts=0;const f=fixture(t,{connect:()=>{attempts++;return new Promise((_,r)=>{reject=r;});}});
@@ -32,8 +33,9 @@ test('Ask again inspects a retained uncertain renewal and recovers without repla
   let state='denied',renews=0,inspections=0;
   const pairing={read:()=>({pairingId:'id'}),refresh:async()=>{inspections++;return {state,pairingId:'id',preparedDigest:'digest',reviewUrl:'https://service.example/pairings/page/id'};},request:async()=>{renews++;state='pending';throw new TypeError('lost response');}};
   const f=fixture(t,{pairing});await f.controller.start();const run=f.controller.state.action.run();
-  await wait(()=>renews===1);f.events.dispatchEvent(new Event('focus'));await run;
-  assert.equal(renews,1);assert.ok(inspections>=3);assert.equal(f.navigations.length,1);
+  await wait(()=>renews===1);f.events.dispatchEvent(new Event('focus'));
+  await wait(()=>inspections>=3);f.controller.close();await run;
+  assert.equal(renews,1);assert.ok(inspections>=3);assert.equal(f.navigations.length,0);
 });
 test('retained inspection receives a finite abort scope and close cancels it',async t=>{
   let scope;const f=fixture(t,{pairing:{read:()=>({pairingId:'id'}),refresh:({signal})=>{scope=signal;return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));}}});

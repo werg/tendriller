@@ -108,17 +108,13 @@ It retains its intent, calls the public durable `session.pauseOrdering(id)`, and
 prepares the usual `reason: 'control-change'` transition with the exact drained
 prefix, next control revision and proved account binding. All existing grants
 and key commitments remain intact. The complete signed request and full control
-update are saved and staged with `client.prepare` **before** the service-origin
-owner review. The page then opens the service-origin review once with
-`?return_to=` set to itself; the host accepts only that request's page origin
-(also in the CSP `form-action`), keeps it through sign-in, and redirects back
-after **Approve** or **Reject**. The owner approves that exact proposal (the
-fingerprint, narrow rights, origins and proposal digest are on the same page,
-folded under technical details). The normal serialized host selector rechecks
+update are saved and staged with `client.prepare`. Staging approves that exact
+member-only proposal automatically for the signed-in owner or an admitted guest;
+there is no approval screen. (Older kits that still open a `/pairings/...`
+review link are returned to their own page origin.) The normal serialized host selector rechecks
 current authority and account access when committing it. The page waits for the
 commit and connects; it also connects when it later finds a request the native
-owner committed while it was away. Approval never happens in author-controlled
-page HTML, and the review page cannot be framed.
+owner committed while it was away.
 
 The native participant subscribes to authenticated setup notifications over a
 hibernating WebSocket. Later devices can pair without restarting it. Idle setup

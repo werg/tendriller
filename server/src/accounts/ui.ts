@@ -170,6 +170,9 @@ details.disclosure.danger summary{color:var(--danger)}
 .stat strong{display:block;font-size:1.5rem;line-height:1.1;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .stat span{font-size:.8rem;color:var(--hero-muted)}
 .avatar{display:grid;place-items:center;flex:none;width:2.75rem;height:2.75rem;border-radius:13px;font-weight:760;font-size:1.15rem;color:#fff;background:linear-gradient(135deg,var(--av1,#1f8c5e),var(--av2,#17694a));box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 4px 10px -4px rgba(0,0,0,.35)}
+.avatar.favicon{background:var(--surface-2);overflow:hidden;padding:0;box-shadow:0 0 0 1px var(--border)}
+.avatar.favicon svg,.avatar.favicon img{display:block;width:100%;height:100%;object-fit:cover}
+.avatar.favicon.emoji svg{padding:5px}
 .page-card{display:flex;flex-direction:column;gap:.9rem}
 .page-card-top{display:flex;align-items:flex-start;gap:.85rem}
 .page-card-top>div{min-width:0;flex:1}
@@ -315,11 +318,11 @@ export function avatar(name: string, seed = name): string {
   return `<span class="avatar" style="--av1:${a};--av2:${b}" aria-hidden="true">${letter || 'T'}</span>`;
 }
 
-export function servicePage(title: string, body: string, script = "", status = 200, options?: { wide?: boolean; nav?: string }): Response {
+export function servicePage(title: string, body: string, script = "", status = 200, options?: { wide?: boolean; nav?: string; remoteImages?: boolean }): Response {
   // Keep Origin on same-origin navigation POSTs without sending a referrer
   // on cross-origin requests. The forms still require the expected Origin.
   const nav = options?.nav ?? `<a class="nav-link" href="/dashboard">Dashboard</a>`;
   const mainClass = options?.wide ? ' class="wide"' : '';
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>${title} · Tendriller</title>${brandHead()}${serviceStyle}${brandStyle}</head><body><main${mainClass}><header>${brandLink}${nav}</header>${body}<footer><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/status">Status</a></footer></main>${script}</body></html>`;
-  return new Response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin", "Content-Security-Policy": `default-src 'none'; script-src ${script ? "'unsafe-inline'" : "'none'"}; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'` } });
+  return new Response(html, { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin", "Content-Security-Policy": `default-src 'none'; script-src ${script ? "'unsafe-inline'" : "'none'"}; style-src 'unsafe-inline'; img-src 'self'${options?.remoteImages ? " https:" : ""}; connect-src 'self'; form-action 'self'; base-uri 'none'` } });
 }

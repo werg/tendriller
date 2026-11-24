@@ -609,22 +609,18 @@ Opening the page is the whole flow; agents keep it when adapting the UI:
    application, service/page origins, exact read/write rights, current authority
    and expiry. The private key stays in Worker storage.
 3. The host wakes the native owner. It saves the pairing intent, **durably pauses
-   command ordering**, and stages the exact signed control proposal before
-   review. The pause freezes the selected prefix; the proposal preserves all
+   command ordering**, and stages the exact signed control proposal. The pause freezes the selected prefix; the proposal preserves all
    existing grants, epoch/key commitments and recovery floor and adds only the
    proved account/key with the narrow browser rights.
-4. The page then opens the service-origin approval once, with `return_to` set to
-   itself. The signed-in owner sees **Add this browser to APP?** and taps
-   **Approve this device**: the single confirmation, with same-origin and CSRF
-   checks, on a page that cannot be framed. Technical details (fingerprint,
-   origins, generation, retained prefix, proposal digest) are folded below it.
-   The service returns to the page, and only to that page's origin.
+4. The host verifies the staged member-only proposal against the proved key,
+   account and current authority and approves it automatically for the
+   signed-in owner or an admitted guest. There is no approval screen; the page
+   stays put and shows **Setting up this browser…**.
 5. The page shows **Finishing setup…** while the native owner saves the exact
-   commit attempt and submits the reviewed transition (the server rechecks
+   commit attempt and submits the approved transition (the server rechecks
    account access and authority), then connects by itself.
 
-If the owner leaves the approval without deciding, the page offers one
-**Approve this browser** action. Expired or stale requests are renewed for the
+Expired or stale requests are renewed for the
 same device once automatically per visit; further expiry waits for **Request another review**, so an unattended tab cannot exhaust its retained history. A denied request waits for an explicit **Ask again**. A request that
 the participant committed while the page was away is found on the next open.
 Errors are shown in user words (`describeConnectionError`), with the code folded
@@ -814,7 +810,7 @@ mobile suspension.
 | Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
 | `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Native CLI and `npm run peer` cannot share one open writer. |
-| Browser is not enrolled | Request access from its retained browser device, keep the native peer running to stage the exact proposal, and complete the service-origin owner review. Check committed status before connecting. Account login and device grants are separate. |
+| Browser is not enrolled | Request access from its retained browser device, and keep the native peer running to stage the exact proposal; the host approves it automatically. Check committed status before connecting. Account login and device grants are separate. |
 | Pairing is pending or ordering is paused | Inspect the original request and retained native proposal. Keep the native owner running for setup notifications; after a process stop, reopen the same owner and reconcile uncertain commitment before resuming ordering. Never delete the pause or silently rebase the review. |
 | `awaiting-keys`, connecting, or locally saved work | Keep the authorized native donor/coordinator running and inspect participation status and host access. Never paste the epoch key into the page. |
 | Publication forbidden | Inspect the current explicit publisher grant and submitting account authorization. Administration is a separate right. |
