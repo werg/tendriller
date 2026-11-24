@@ -293,8 +293,9 @@ npx tendril --session ./session.mjs --mode attach publication-operation notes-re
 Replace `notes-review-1` with the original attached operation ID; do not invent
 one after a timeout. For an initial publication made with standalone
 `--mode own`, inspect with that same ownership path while the peer is stopped.
-Changing attachment binding or switching from an unscoped standalone ID to a
-new binding is not an exact retry.
+Changing an ordinary attachment binding or switching an unscoped standalone ID
+to a new ordinary binding is not an exact retry. For an older saved unscoped
+intent, use the explicit recovery path below.
 
 The second command reads the same device/binding's saved signed intent and any retained
 host acknowledgement; it sends no publication. It requires the qualified
@@ -308,6 +309,65 @@ receipt was observed, or `not_submitted` when preparation failed. A known receip
 survives failure of the subsequent selected-head read or local cleanup. Preserve
 the authored bytes and original operation; inspect before an exact retry. Never
 change the operation ID merely because the invocation failed.
+
+#### Recover a saved unscoped publication after an upgrade
+
+An intent created with standalone `--mode own`, or an older attachment that did
+not scope publication IDs, retains its original unscoped signed ID. Upgrading
+does not rewrite that signature. An ordinary binding now looks in its own scoped
+namespace; a missing lookup there does not prove the legacy intent is absent.
+Rotating its credential keeps the same policy and does not expose legacy IDs.
+
+The trusted owner can recover it while the resident peer keeps running. Use the
+same retained device and journal, the original unscoped operation ID, and the
+original content-addressed asset bytes. Provision a temporary recovery binding
+through the supervisor already owned by that process:
+
+```js
+const recoveryId = 'legacy-publication-recovery';
+const recoveryBinding = await supervisor.createBinding({
+  id: recoveryId,
+  policy: { capabilities: ['publish'], preserveOperationId: true, maxRequests: 1 },
+});
+let recovery;
+try {
+  recovery = await attachNativeSession({
+    directory, token: recoveryBinding.token, applicationId,
+    definitionId: definition.id, definitionVersion: definition.version,
+    connect: connectApplicationOwner,
+  });
+  const saved = await recovery.control.publicationOperation(originalOperationId);
+  if (!saved) throw Error('Original publication is not in this retained journal.');
+  const selectedBefore = await recovery.control.publication();
+  // Review saved.receipt and selectedBefore before deciding to retry.
+  if (retryOriginal) {
+    const receipt = await recovery.control.publish(saved.publication, originalAssets);
+    // Retain this acknowledgement privately with the original signed intent.
+  }
+  const selectedAfter = await recovery.control.publication();
+  // Retain the selected-head observation separately from acknowledgement.
+} finally {
+  try { await recovery?.detach(); }
+  finally { await supervisor.revokeBinding(recoveryId); }
+}
+```
+
+Here `originalAssets` is the retained array of `{hash, bytes}` uploads, with
+base64 bytes matching the saved signed file manifest; `retryOriginal` is the
+owner's explicit decision after inspection. This path sends the saved signed
+object directly, preserving its ID, author, payload and signature. It does not
+prepare another publication. The current signed publisher grant and host
+permissions still apply. If either denies the retry, keep the original intent
+and resolve that authority requirement explicitly.
+
+The exception is restricted to publication capability, but `preserveOperationId`
+allows that trusted client to address the signer's publication namespace; it is
+not an allowlist for one legacy ID. Keep its token in the trusted recovery
+process and revoke it even after an uncertain reply. Revocation disconnects the
+client without erasing the saved intent or receipt. A later recovery uses a new
+owner-provisioned binding ID. Ordinary new publications continue through the
+normal scoped binding. An acknowledgement for an old publication does not make
+it the selected head or authorize replacing a newer release.
 
 A reviewed reapplication names the old operation, a new identity, current input
 and the current captured revision:

@@ -414,6 +414,76 @@ test('attached publication retains one signed intent through a lost reply, recon
   assert.equal(f.opened(), 1, 'publishing never opens another signing owner');
 });
 
+test('explicit recovery preserves legacy unscoped publication intents without relaxing ordinary bindings', { timeout: 30_000 }, async t => {
+  for (const lostReply of [false, true]) await t.test(lostReply ? 'lost host acknowledgement' : 'retained host acknowledgement', async t => {
+    const f = await fixture(t, { publisher: true });
+    const publications = await p.createPublicationRegistry({ store: new p.MemoryBytesStore(), authority: async () => f.authority });
+    let dropReply = lostReply;
+    const exchange = async request => {
+      let result;
+      if (request.facet === 'control' && request.action === 'read') result = f.authority;
+      else if (request.facet === 'publication' && request.action === 'read') {
+        const records = await publications.read(), id = request.payload.id;
+        const publication = id === undefined ? records.at(-1) : records.find(value => value.id === id);
+        result = publication ? { publication, version: publication.payload.revision + 1 } : null;
+      } else if (request.facet === 'publication' && request.action === 'publish') {
+        const publication = await publications.publish(request.payload.publication);
+        if (dropReply) { dropReply = false; throw Error('LOST_LEGACY_PUBLICATION_REPLY'); }
+        result = { publication, version: publication.payload.revision + 1 };
+      } else throw Error('UNEXPECTED_HOST_REQUEST');
+      return p.createParticipantResponse(request, result);
+    };
+    const bytes = Buffer.from('<main>Saved before publication scoping</main>'), hash = await p.bytesDigest(bytes);
+    const input = { operationId: 'legacy-release', entry: 'index.html', files: [{ path: 'index.html', hash, size: bytes.length, type: 'text/html' }] };
+    const assets = [{ hash, bytes: bytes.toString('base64') }];
+    // The previous standalone ownership path saves a real signature under the
+    // original ID, before any scoped attachment or current supervisor exists.
+    const previousOwner = await f.openOwner();
+    t.after(() => previousOwner.close());
+    const previousControl = previousOwner.session.connectControlParticipant({ exchange });
+    const original = await previousControl.preparePublication(input);
+    assert.equal(original.payload.operationId, input.operationId);
+    let originalReceipt = null;
+    if (lostReply) await assert.rejects(previousControl.publish(original, assets),
+      error => error.code === 'APPLICATION_PUBLICATION_OUTCOME_UNKNOWN' && error.outcome === 'unknown');
+    else originalReceipt = await previousControl.publish(original, assets);
+    await previousOwner.close();
+
+    const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main',
+      openOwner: async () => {
+        const owner = await f.openOwner();
+        return Object.assign(owner, { control: owner.session.connectControlParticipant({ exchange }) });
+      },
+    });
+    t.after(() => supervisor.close());
+    const ordinaryBinding = await supervisor.createBinding({ id: 'ordinary', policy: { capabilities: ['publish'] } });
+    const ordinary = await f.attach(ordinaryBinding.token); t.after(() => ordinary.detach());
+    assert.equal(await ordinary.control.publicationOperation(input.operationId), null);
+    await assert.rejects(ordinary.control.publish(original, assets), { code: 'OPERATION_BINDING_MISMATCH' });
+
+    const recoveryBinding = await supervisor.createBinding({ id: 'legacy-recovery',
+      policy: { capabilities: ['publish'], preserveOperationId: true, maxRequests: 1 } });
+    const recovery = await f.attach(recoveryBinding.token); t.after(() => recovery.detach());
+    const saved = await recovery.control.publicationOperation(input.operationId);
+    assert.deepEqual(saved, { publication: original, receipt: originalReceipt });
+    const receipt = await recovery.control.publish(saved.publication, assets);
+    assert.deepEqual(receipt.publication, original, 'Recovery must preserve the exact signed payload and signature.');
+    if (originalReceipt) assert.deepEqual(receipt, originalReceipt);
+    assert.deepEqual(await recovery.control.publicationOperation(input.operationId), { publication: original, receipt });
+    assert.equal((await publications.read()).length, 1, 'An exact legacy retry cannot add a second publication.');
+    await recovery.detach(); await supervisor.revokeBinding('legacy-recovery');
+    await assert.rejects(f.attach(recoveryBinding.token));
+
+    assert.equal(await ordinary.control.publicationOperation(input.operationId), null,
+      'Explicit recovery must not expose unscoped journal records to the ordinary binding.');
+    const next = await ordinary.control.preparePublication(input);
+    assert.match(next.payload.operationId, /^nativepub_[a-f0-9]{32}_[a-f0-9]{64}$/u);
+    assert.notEqual(next.payload.operationId, original.payload.operationId);
+    await assert.rejects(ordinary.control.publish(original, assets), { code: 'OPERATION_BINDING_MISMATCH' });
+    assert.equal(f.opened(), 2, 'Recovery attaches to one resumed owner after the old standalone owner closes.');
+  });
+});
+
 test('local publication capability cannot supply a missing signed publisher grant', async t => {
   const f = await fixture(t), token = createNativeAttachmentKey();
   const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main',
