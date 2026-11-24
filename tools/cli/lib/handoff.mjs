@@ -127,6 +127,23 @@ const nonConflicting = paths => {
   if (new Set(values).size !== values.length) throw fail('CHECKPOINT_PATH_CONFLICT', 'Checkpoint, device and SQL files must use distinct paths.');
 };
 
+// Run every cleanup without replacing the operational failure or losing its
+// retained evidence. Preserve the first distinct cleanup error for diagnostics.
+async function cleanupCheckpoint(failure, callbacks) {
+  for (const cleanup of callbacks) {
+    try { await cleanup(); }
+    catch (error) {
+      if (!failure) failure = error;
+      else if (error !== failure) {
+        if (!(failure instanceof Error) || !Object.isExtensible(failure))
+          failure = new Error('Checkpoint action failed', { cause: failure });
+        failure.cleanupError ??= error;
+      }
+    }
+  }
+  return failure;
+}
+
 /** Transfer a stopped retained device using the canonical checkpoint codec. */
 export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
   applicationId = null, deviceId = null, retireSource = true, projectDir = process.cwd() }) {
@@ -153,6 +170,7 @@ export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
   let device;
   try { device = await native.openNativeDevice({ path: source }); }
   catch (error) { throw checkpointOpenError(error); }
+  let result, failure;
   try {
     if (deviceId !== null && deviceId !== device.identity.publicKey)
       throw fail('CHECKPOINT_IDENTITY_MISMATCH', 'Requested device identity does not match the retained signer.');
@@ -164,10 +182,26 @@ export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
       retireSource: true,
       persist: ({ bytes }) => writeNewPrivate(destination, bytes),
     });
-    await device.store.checkpointWal();
-    return { output: destination, size: checkpoint.bytes.byteLength,
+    // The durable checkpoint and source retirement are already committed.
+    // Retain that receipt before any later maintenance or close can fail.
+    result = { output: destination, size: checkpoint.bytes.byteLength,
       retiredSource: checkpoint.retiredSource, metadata: checkpoint.metadata };
-  } finally { await device.close(); }
+    await device.store.checkpointWal();
+  } catch (error) {
+    failure = error;
+  } finally {
+    failure = await cleanupCheckpoint(failure, [() => device.close()]);
+  }
+  if (failure) {
+    if (result) {
+      if (!(failure instanceof Error) || !Object.isExtensible(failure))
+        failure = new Error('Checkpoint export failed', { cause: failure });
+      failure.checkpoint = { ...result,
+        nextAction: 'Restore the retained checkpoint into a fresh private directory; its source device has already been retired.' };
+    }
+    throw failure;
+  }
+  return result;
 }
 
 /** Publish a fully verified handoff as one fresh private directory. */
@@ -180,7 +214,7 @@ export async function restoreNativeCheckpoint({ inputPath, devicePath, secret, p
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
   const staging = mkdtempSync(join(dirname(target), '.checkpoint-restore-'));
   const stagedDevice = join(staging, basename(destination));
-  let store, verification, published = false;
+  let store, verification, result, failure, published = false;
   try {
     store = new native.NativeBytesStore(stagedDevice);
     const restored = await kernel.restoreDeviceCheckpoint(store, new Uint8Array(readFileSync(input)), { secret: secretValue(kernel, secret) });
@@ -195,12 +229,17 @@ export async function restoreNativeCheckpoint({ inputPath, devicePath, secret, p
     syncDirectory(staging);
     if (existsSync(target)) throw fail('CHECKPOINT_TARGET_NOT_EMPTY', 'The target appeared during restore; no existing state was replaced.');
     renameSync(staging, target); published = true; syncDirectory(dirname(target));
-    return { devicePath: destination, materialization: 'rebuild-on-open',
+    result = { devicePath: destination, materialization: 'rebuild-on-open',
       restoredEntries: restored.restoredEntries, metadata: restored.metadata };
+  } catch (error) {
+    failure = error;
   } finally {
-    try { await verification?.close(); } finally {
-      try { await store?.close(); }
-      finally { if (!published) rmSync(staging, { recursive: true, force: true }); }
-    }
+    failure = await cleanupCheckpoint(failure, [
+      () => verification?.close(),
+      () => store?.close(),
+      () => { if (!published) rmSync(staging, { recursive: true, force: true }); },
+    ]);
   }
+  if (failure) throw failure;
+  return result;
 }

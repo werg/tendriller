@@ -246,6 +246,7 @@ main().catch(error => {
     diagnostic: diagnosticFinding(error, { scope: error.scope ?? {} }),
     ...(Number.isInteger(error.status) ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}),
     ...(error.publication ? { publication: error.publication } : {}),
+    ...(error.checkpoint ? { checkpoint: error.checkpoint } : {}),
     ...(error.watch ? { watch: error.watch } : {}),
     ...(error.revision !== undefined ? { revision: error.revision } : {}),
     ...(error.recovery !== undefined ? { recovery: error.recovery } : {}),
