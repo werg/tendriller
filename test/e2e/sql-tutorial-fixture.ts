@@ -78,7 +78,8 @@ export async function prepareSqlTutorial(handle: Handle, consumer: string, engin
     // at their installed public-package paths (including native binary assets).
     const nativeFile = join(project, 'native-fixture.mjs');
     await build({ stdin: { contents: `export { initializeProject, enrollBrowser } from './setup.mjs';
-      export { openSession } from './session.mjs'; export { readPrivate } from './local.mjs';`, resolveDir: project },
+      export { openSession } from './session.mjs'; export { readPrivate } from './local.mjs';
+      export { definition } from './domain.mjs';`, resolveDir: project },
       outfile: nativeFile, bundle: true, platform: 'node', format: 'esm', target: 'node24', plugins: [imports(true)] });
     const tutorial = await import(pathToFileURL(nativeFile).href);
     const log = await load('@chronolog/peer-session'), native = await load('@chronolog/peer-session/native');
@@ -89,7 +90,7 @@ export async function prepareSqlTutorial(handle: Handle, consumer: string, engin
     await mkdir(join(project, 'engine'));
     for (const name of ['manifest.json', 'sqlite3.mjs', 'sqlite3.wasm', 'sqlite3-opfs-async-proxy.js'])
       await copyFile(resolve(engineDirectory, name), join(project, 'engine', name));
-    await buildPage({ root: pathToFileURL(project + '/'), readPrivate: tutorial.readPrivate,
+    await buildPage({ root: pathToFileURL(project + '/'), readPrivate: tutorial.readPrivate, definition: tutorial.definition,
       verifyWasmBuild: browserSql.verifyWasmBuild,
       bundle: (options: any) => build({ ...options, plugins: [imports(false)] }) });
 
