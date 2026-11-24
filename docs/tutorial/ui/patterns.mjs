@@ -100,7 +100,7 @@ export function mountListDetail(container, {
   const items = element('ul', undefined, 'tp-items'); items.setAttribute('aria-label', 'Records');
   const state = mountViewState(list); state.element.remove();
   list.append(toolbar, count, items, state.element); root.append(list); container.append(root);
-  let current = records, cleanup, renderedRecord, closed = false;
+  let current = records, cleanup, renderedRecord, renderedRoute, closed = false;
   const keys = { item:routeKey, search:routeKey + '-search', filter:routeKey + '-status' };
   const locationState = () => {
     const params = new URL(location.href).searchParams;
@@ -117,13 +117,20 @@ export function mountListDetail(container, {
     history[replace ? 'replaceState' : 'pushState'](null, '', urlFor(updates));
     render(focus);
   };
-  const inspector = mountInspector(root, { onClose() {
-    const selected = locationState().id; navigate({ item:null });
-    const link = [...items.querySelectorAll('a')].find(node => node.dataset.id === selected);
+  const focusListRecord = id => {
+    const link = [...items.querySelectorAll('a')].find(node => node.dataset.id === id);
     (link ?? search).focus();
-  } });
+  };
+  const inspector = mountInspector(root, { onClose: () => navigate({ item:null }, false, true) });
   function render(focus = false) {
     if (closed) return;
+    // Capture ownership before replacing nodes. Background snapshots must not
+    // steal focus from another control or another list/detail instance.
+    const active = document.activeElement;
+    const focusedItem = items.contains(active) ? active.closest('a[data-id]')?.dataset.id : undefined;
+    const focusedDetail = inspector.element.contains(active);
+    const focusedContent = inspector.content.contains(active);
+    const previousId = renderedRoute?.id;
     const route = locationState(); search.value = route.search; filter.value = route.filter;
     const query = route.search.toLocaleLowerCase();
     const visible = current.filter(record => (!route.filter || record.status === route.filter)
@@ -144,24 +151,28 @@ export function mountListDetail(container, {
       ...(current.length && { action:{ label:'Clear filters', run:() => navigate({ search:'', filter:'' }, true) } }),
     });
     const selected = current.find(record => record.id === route.id);
-    if (selected !== renderedRecord || !selected) {
+    const replacingDetail = selected !== renderedRecord || !selected;
+    if (replacingDetail) {
       cleanup?.(); cleanup = undefined; inspector.content.replaceChildren();
     }
     root.dataset.selected = String(Boolean(route.id));
     if (selected) {
-      inspector.show(selected.title, { focus });
+      inspector.show(selected.title, { focus:focus || (replacingDetail && focusedContent) });
       if (selected !== renderedRecord) cleanup = renderDetail?.(selected, inspector.content);
     } else if (route.id) {
-      inspector.show('Record unavailable', { focus });
+      inspector.show('Record unavailable', { focus:focus || focusedContent });
       inspector.content.append(element('p', 'This record is no longer in the current view. Return to the list.'));
     } else {
       inspector.hide(); root.dataset.selected = 'false';
     }
-    renderedRecord = selected;
+    if (!route.id && (focus || focusedDetail)) focusListRecord(previousId);
+    else if (!focus && focusedItem !== undefined) focusListRecord(focusedItem);
+    else if (!focus && root.contains(active) && !active.getClientRects().length) search.focus();
+    renderedRecord = selected; renderedRoute = route;
   }
   const searchChange = () => navigate({ search:search.value }, true);
   const filterChange = () => navigate({ filter:filter.value }, false);
-  const historyChange = () => render(true);
+  const historyChange = () => render(renderedRoute !== undefined && locationState().id !== renderedRoute.id);
   search.addEventListener('input', searchChange); filter.addEventListener('change', filterChange);
   window.addEventListener('popstate', historyChange); render();
   return {

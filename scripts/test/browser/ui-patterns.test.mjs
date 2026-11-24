@@ -59,6 +59,15 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         assert.equal(await page.getByRole('link', { name:'Customer support training run' }).isVisible(), true);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         assert.equal(await page.locator('h2').evaluate(element => document.activeElement === element), true);
+        // Browser history must restore focus in both directions, including
+        // detail -> list on the narrow layout where the list was hidden.
+        await page.goBack();
+        await page.waitForFunction(() => document.querySelector('.tp-workspace').dataset.selected === 'false');
+        assert.equal(await episode.isVisible(), true);
+        assert.equal(await episode.evaluate(element => document.activeElement === element), true);
+        await page.goForward();
+        await page.waitForFunction(() => document.querySelector('.tp-workspace').dataset.selected === 'true');
+        assert.equal(await page.locator('h2').evaluate(element => document.activeElement === element), true);
         const editor = page.getByLabel('Reviewer summary');
         const original = await editor.inputValue();
         await editor.fill('Verified the order and prepared a carrier message for review.');
@@ -91,6 +100,48 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
       } finally { await context.close(); }
     });
   }
+  await t.test('coherent list updates retain owned focus without moving unrelated focus', async () => {
+    const page = await browser.newPage(); page.setDefaultTimeout(5000);
+    try {
+      await page.goto(base + '?states=1');
+      await page.evaluate(async () => {
+        const { mountListDetail } = await import('./patterns.mjs');
+        const root = document.querySelector('#workspace'); root.replaceChildren();
+        window.records = [{id:'first',title:'First record'}, {id:'second',title:'Second record'}];
+        window.collection = mountListDetail(root, {
+          records:window.records, renderDetail(record, container) {
+            const input = document.createElement('textarea'); input.setAttribute('aria-label', 'Detail notes'); container.append(input);
+          },
+        });
+        const outside = document.createElement('button'); outside.id = 'outside'; outside.textContent = 'Other action';
+        document.querySelector('main').append(outside);
+      });
+      const second = page.getByRole('link', { name:'Second record', exact:true });
+      await second.focus();
+      await page.evaluate(() => window.collection.setRecords(window.records));
+      assert.equal(await second.evaluate(element => document.activeElement === element), true);
+      await page.evaluate(() => window.collection.setRecords(window.records.map(record => ({...record}))));
+      assert.equal(await second.evaluate(element => document.activeElement === element), true);
+      await page.getByRole('button', { name:'Other action' }).focus();
+      await page.evaluate(() => window.collection.setRecords(window.records));
+      assert.equal(await page.locator('#outside').evaluate(element => document.activeElement === element), true);
+      await second.click(); await page.getByLabel('Detail notes').focus();
+      await page.evaluate(() => window.collection.setRecords(window.records.map(record => ({...record}))));
+      assert.equal(await page.getByRole('heading', { name:'Second record' }).evaluate(element => document.activeElement === element), true);
+      await page.getByRole('button', { name:'Other action' }).focus();
+      await page.evaluate(() => {
+        const url = new URL(location.href); url.searchParams.set('unrelated', 'changed'); history.pushState(null, '', url);
+      });
+      await page.goBack();
+      assert.equal(await page.locator('#outside').evaluate(element => document.activeElement === element), true);
+      await page.goBack();
+      await page.waitForFunction(() => document.querySelector('.tp-workspace').dataset.selected === 'false');
+      assert.equal(await second.evaluate(element => document.activeElement === element), true);
+      await page.evaluate(() => window.collection.setRecords(window.records.filter(record => record.id !== 'second')));
+      assert.equal(await page.getByLabel('Search records').evaluate(element => document.activeElement === element), true);
+    } finally { await page.close(); }
+  });
+
   await t.test('uncertain mutations stay locked and authored text stays text', async () => {
     const page = await browser.newPage();
     try {
