@@ -144,6 +144,16 @@ The check covers fresh contexts, search/filter, named links, deep links, Back,
 reload, keyboard focus, review/save/undo, uncertainty locking and narrow overflow.
 It does not establish live pairing, replication or physical-phone behavior.
 
+## Durable agent requests and listener status
+
+For work a native agent must consume, use the executable
+[request, receipt, answer and heartbeat pattern](AGENT_REQUESTS.md). It retains
+full operation references, author timestamps and last-seen consumer records for
+late-joining pages. Show saved/applied journal state separately from seen/answered
+work, and keep stale listener status visible on the request. An attached peer is
+not evidence of a running consumer. After a release or owner replacement, follow
+the [consumer restart checklist](AGENT_RESTART.md).
+
 ## 1. A coherent live query
 
 This function mounts the first-app `notes` query into its existing HTML elements.

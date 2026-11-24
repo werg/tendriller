@@ -187,3 +187,14 @@ Supply editable source alongside this evidence when useful. Do not describe sour
 delivery as a deployed or connected application. The
 [fresh-agent acceptance procedure](AGENT_ONBOARDING_TEST.md) scores the live result
 and records whether the agent actually attempted provisioning.
+
+## Verify consumers after a release or restart
+
+Follow the [re-arm checklist](AGENT_RESTART.md) after republishing or replacing the
+native participant. State which owner and consumer processes must remain alive,
+and preserve their retained profiles, exact operations and handled cursors.
+An attach client does not survive owner replacement automatically. Verify a
+consumer's recent check-in and an actual request/receipt/answer on the page;
+`applied` and peer connectivity alone do not establish that work was read.
+Use the supplied [request lifecycle pattern](AGENT_REQUESTS.md) when the app
+needs durable listener presence and addressed answers.

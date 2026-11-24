@@ -142,3 +142,9 @@ pairing process; new consent reconnects that component. Individual browser
 reviews expire after ten minutes and retain uncertain attempts. After a deliberate
 process stop, resume the same project and device store. Idle adapter sockets
 hibernate. Neither subscription promises a future ChatGPT model turn.
+
+After a republish or owner restart, follow the [consumer re-arm checklist](AGENT_RESTART.md).
+Attach clients must reconnect to a replacement owner. Preserve handled cursors,
+exact operation inputs and pending work; verify the actual consumer heartbeat
+and a request/receipt/answer round trip. The [request lifecycle pattern](AGENT_REQUESTS.md)
+keeps applied commands distinct from work an agent has seen or answered.

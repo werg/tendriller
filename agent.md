@@ -309,3 +309,13 @@ Prefer direct WebRTC and the existing hibernating hosted fallback. A capability
 probe, installed template, or successful extraction does not establish a running
 participant or future conversation wake. Verify the actual applied command,
 other-participant read, reload/reopen, and exact published version.
+
+## Keep request consumers alive
+
+After republishing or restarting a participant, follow the
+[consumer re-arm checklist](docs/AGENT_RESTART.md). Restart attach clients against
+the retained owner, resume from handled cursors and verify a fresh consumer
+heartbeat plus a request/receipt/answer round trip. Use the
+[request lifecycle pattern](docs/AGENT_REQUESTS.md) for full references, author
+timestamps and late-joinable listener state. Applied journal work does not mean
+an agent has seen or answered it.

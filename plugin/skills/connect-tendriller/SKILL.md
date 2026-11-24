@@ -108,6 +108,13 @@ device store. Use `read_application_events` to catch up and keep its cursor.
 Verify a supported subscription before promising future background delivery;
 a page or mounted card does not guarantee a future wake of this conversation.
 
+After a republish or participant restart, read the returned service origin's
+`/docs/AGENT_RESTART.md`. Reconnect attach clients to the retained owner, preserve
+handled cursors and exact pending inputs, and verify the actual consumer's
+heartbeat plus a request/receipt/answer round trip. Use `/docs/AGENT_REQUESTS.md`
+for durable listener presence and addressed answers; applied journal state does
+not establish that an agent has read the request.
+
 For sign-in and linking recovery, use the returned service origin's
 `/docs/CHATGPT_INTEGRATION.md`. Users can revoke account access at
 `/oauth/connections` or app capabilities at `/connections` on that same origin.

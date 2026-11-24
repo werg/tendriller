@@ -24,6 +24,8 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Build an app](docs/BUILD_AN_APP.md) — complete first-app walkthrough and checkpoints
 - [Capabilities](docs/CAPABILITIES.md) — task map to existing Chronolog, session, UI, sensor, media, and preview APIs
 - [Application patterns](docs/APP_PATTERNS.md) — reactive views (`createLiveView`), operation status, and reviewed input
+- [Agent requests](docs/AGENT_REQUESTS.md) — durable listener presence, full request references, receipts and answers
+- [Restart consumers](docs/AGENT_RESTART.md) — republish/restart checklist and removed CLI migration
 - [Reviewed media and AI](docs/AI_INPUT.md) — camera, voice, credential-owning native inference, and explicit review
 - [Events or SQL](docs/STATE_MODELS.md) — choosing events vs. guarded SQL transactions
 - [Session bootstrap](docs/SESSION_BOOTSTRAP.md) — native/browser identity, authority setup, enrollment, and safe resume

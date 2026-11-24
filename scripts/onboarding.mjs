@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 
 export const ONBOARDING_DOCS = Object.freeze([
   'agent.md', 'docs/MCP_AGENT_GUIDE.md', 'docs/CAPABILITIES.md', 'docs/SENSORS.md', 'docs/OBSERVATION_REFERENCE.md', 'docs/AGENT_DELIVERY.md',
-  'docs/BUILD_AN_APP.md', 'docs/APP_PATTERNS.md', 'docs/AI_INPUT.md',
+  'docs/BUILD_AN_APP.md', 'docs/APP_PATTERNS.md', 'docs/AGENT_REQUESTS.md', 'docs/AGENT_RESTART.md', 'docs/AI_INPUT.md',
   'docs/STATE_MODELS.md', 'docs/SESSION_BOOTSTRAP.md',
   'docs/MULTIPARTICIPANT.md', 'docs/TRANSPORT_DIAGNOSTICS.md', 'docs/AGENT_BINDINGS.md', 'docs/APPLICATION_SIGNALS.md',
   'docs/CHATGPT_INTEGRATION.md', 'docs/CLOUDFLARE_ASSISTANT.md',
@@ -24,6 +24,7 @@ export const TUTORIAL_FILES = Object.freeze([
   'helpers/cli-lifetime.mjs', 'helpers/browser-profile.mjs', 'helpers/participant-lifecycle.mjs', 'helpers/submission-state.mjs',
   'ui/patterns.mjs', 'ui/showcase.html', 'ui/showcase.mjs',
   'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs', 'helpers/signal-request.mjs', 'helpers/diagnostics-panel.mjs',
+  'helpers/agent-requests.mjs',
   'media/panel.mjs', 'media/camera.mjs', 'media/voice.mjs', 'media/inference-client.mjs',
   'media/inference-service.mjs', 'media/inference-protocol.mjs',
   'media/inference-peer.mjs', 'media/provider-openai.mjs',
