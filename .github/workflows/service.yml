@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Push and PR events for the same source branch qualify one graph.
-  # Keep forks independent, and never interrupt a master promotion.
-  group: public-service-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  # Qualify both branch and PR refs without cancelling checks at the same commit.
+  # Newer runs supersede their own ref; master push/manual promotions stay serialized.
+  group: public-service-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 permissions:

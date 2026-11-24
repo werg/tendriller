@@ -147,7 +147,12 @@ Commit and push incremental changes before publishing clean artifacts. A source 
 The Public service workflow builds/checks once on Node 24, seals a deployment
 bundle into the manifest, then qualifies those same bytes in browser, exact-kit
 and native jobs. Browser qualification runs the exact first-app kit with both the shared owner and the elected fallback (SharedWorker disabled). Both reports gate promotion. Node 22 retains a separate compatibility check. PR and branch
-jobs have read-only permissions and never publish or deploy. Only trusted master
+jobs have read-only permissions and never publish or deploy. Push and PR events
+both qualify, in separate full-ref concurrency groups, so one cannot cancel the
+other's checks at the same source commit. Newer runs supersede older runs for the
+same branch or PR; master push and manual promotion runs remain serialized without
+cancelling an active promotion. Trusted branch qualification also supplies the
+successful push/dispatch evidence required by branch previews. Only trusted master
 publishes, using `source-<full commit SHA>` release tags, with the manifest uploaded
 last. Package versions may stay unchanged across source checkpoints; the existing
 `v0.3.0-rc.17` release is never overwritten. Missing or different published bytes
