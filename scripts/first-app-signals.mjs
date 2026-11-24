@@ -121,7 +121,7 @@ export async function qualifyFirstAppSignals({ page, peer, expect, transportCoun
   await expect.poll(async () => (await snapshot()).transport.connections.length, { timeout: 30_000 }).toBe(1);
   const before = await snapshot(), baseline = counts(before), wireBefore = await transportCounters();
   const base = Date.now() + 500, lastClock = base + 3102;
-  let checked;
+  let checked, qualificationFailure;
   try {
     await clockNative(base);
     await send('inside-tolerance', base + 1999);
@@ -156,12 +156,32 @@ export async function qualifyFirstAppSignals({ page, peer, expect, transportCoun
     assert.equal(checked.aborted, false);
     assert.equal(checked.transport.connectionRevision, before.transport.connectionRevision);
     assert.deepEqual(checked.revisions, before.revisions, 'Freshness rejects must not replace the healthy peer connection.');
+  } catch (error) {
+    qualificationFailure = { error };
+    throw error;
   } finally {
-    // Restore even after assertion failure; give the channel's documented
-    // monotone time guard time to catch up before later independent scenarios.
-    await Promise.all([clockNative(null), browserClock(page, null, true)]);
+    // Join both restorations even when one rejects or throws synchronously.
+    const restored = await Promise.allSettled([
+      Promise.resolve().then(() => clockNative(null)),
+      Promise.resolve().then(() => browserClock(page, null, true)),
+    ]);
+    // Give the channel's documented monotone time guard time to catch up before
+    // later independent scenarios, including after an assertion failure.
     const remaining = lastClock - Date.now();
     if (remaining > 0) await delay(Math.min(remaining + 5, 5000));
+    const failures = restored.flatMap((result, index) => result.status === 'rejected'
+      ? [{ clock: index === 0 ? 'native' : 'browser', error: result.reason }] : []);
+    if (failures.length) {
+      const errors = failures.map(failure => failure.error);
+      const primary = qualificationFailure ? qualificationFailure.error : errors[0];
+      const describe = error => error?.message ?? String(error);
+      const detail = failures.map(failure => failure.clock + ': ' + describe(failure.error)).join('; ');
+      const combined = new AggregateError(qualificationFailure ? [primary, ...errors] : errors,
+        (qualificationFailure ? describe(primary) + '; ' : '') + 'Signal clock restoration failed: ' + detail,
+        { cause: primary });
+      if (primary?.code !== undefined) combined.code = primary.code;
+      throw combined;
+    }
   }
   await page.evaluate(async topic => {
     window.__firstAppSignalReply = { stop: new AbortController(), value: null, error: null };
