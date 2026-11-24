@@ -144,7 +144,12 @@ guide's native-tool or manual-handoff fallback and name the exact prerequisite.
   request is a "full-featured" or "rich" experience.
 - **UX pass before delivery:** walk every main flow on a phone-sized viewport and
   desktop from a fresh profile, fix friction, and report before/after
-  screenshots ([acceptance bar](docs/AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)).
+  screenshots per flow, with actual viewports, tested release and observed fixes.
+  Use the dedicated second-pass prompt and matrix in the
+  [acceptance bar](docs/AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable),
+  including Back/deep links, keyboard, long content and failure states. The
+  [importable domain views](docs/APP_PATTERNS.md#domain-views-you-can-import) include
+  runnable desktop/phone examples.
 - **Live answers:** use `helpers/signal-request.mjs` for on-demand answers over
   signals: it waits for the answering peer, retries with the same ID and
   reassembles multi-piece replies.
@@ -304,3 +309,15 @@ Prefer direct WebRTC and the existing hibernating hosted fallback. A capability
 probe, installed template, or successful extraction does not establish a running
 participant or future conversation wake. Verify the actual applied command,
 other-participant read, reload/reopen, and exact published version.
+
+## Keep request consumers alive
+
+After republishing or restarting a participant, follow the
+[consumer re-arm checklist](docs/AGENT_RESTART.md). Restart attach clients against
+the retained owner and resume from handled cursors. For apps with a request
+consumer, verify its heartbeat and request/receipt/answer flow where those
+capabilities are declared; report missing support explicitly. Otherwise verify
+the app's ordinary domain command/read and reload behavior. Use the
+[request lifecycle pattern](docs/AGENT_REQUESTS.md) for full references, author
+timestamps and late-joinable listener state. Applied journal work does not mean
+an agent has seen or answered it.

@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readSessionPin } from '../session-pin.mjs';
 import { ASSISTANT_GUIDES, onboardingDescriptor } from '../../contract/onboarding.mjs';
-import { buildOnboardingAssets, combinedOnboarding, ONBOARDING_DOCS, TUTORIAL_FILES, TUTORIAL_DOWNLOAD, TUTORIAL_SOURCES, tutorialSource } from '../onboarding.mjs';
+import { buildOnboardingAssets, combinedOnboarding, ONBOARDING_DOCS, ONBOARDING_IMAGES, TUTORIAL_FILES, TUTORIAL_DOWNLOAD, TUTORIAL_SOURCES, tutorialSource } from '../onboarding.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const publicRoot = join(root, 'server/public');
@@ -61,6 +61,7 @@ test('the domain-only onboarding graph points to shipped public documents and th
       if (url.origin !== source.origin || dynamicPaths.has(url.pathname)) continue;
       assert(existsSync(join(publicRoot, url.pathname)), `${path} links to an unshipped document: ${target}`);
       assert(url.pathname === TUTORIAL_DOWNLOAD || ['/agent.md', '/AGENTS.md', '/llms.txt', '/llms-full.txt'].includes(url.pathname)
+        || ONBOARDING_IMAGES.includes(url.pathname.slice(1))
         || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(url.pathname),
       `${path} links to an asset without a public documentation route: ${target}`);
     }
@@ -68,6 +69,16 @@ test('the domain-only onboarding graph points to shipped public documents and th
   const index = readFileSync(join(root, 'llms.txt'), 'utf8');
   assert.equal(new URL(links(index)[0]).pathname, '/docs/BUILD_AN_APP.md');
   assert(links(index).some(link => new URL(link).pathname === TUTORIAL_DOWNLOAD));
+});
+
+test('the documented visual patterns ship their executable source and actual screenshots', () => {
+  for (const path of ['ui/patterns.mjs', 'ui/showcase.html', 'ui/showcase.mjs'])
+    assert(TUTORIAL_FILES.includes(path), `Missing UI specimen: ${path}`);
+  for (const path of ONBOARDING_IMAGES) {
+    const source = readFileSync(join(root, path));
+    assert.equal(source.subarray(0, 8).toString('hex'), '89504e470d0a1a0a', `Not a PNG screenshot: ${path}`);
+    assert.equal(digest(readFileSync(join(publicRoot, path))), digest(source), `Stale screenshot: ${path}`);
+  }
 });
 
 test('the combined guide is current and relative links retain their document context', () => {
@@ -107,7 +118,7 @@ test('building a starter excludes nested private state, provider secrets, genera
   const secret = 'NEVER_PUBLISH_THIS_PRIVATE_RECORD';
   const providerKey = process.env.OPENAI_API_KEY;
   try {
-    for (const path of [...ONBOARDING_DOCS, ...Object.values(TUTORIAL_SOURCES)]) {
+    for (const path of [...ONBOARDING_DOCS, ...ONBOARDING_IMAGES, ...Object.values(TUTORIAL_SOURCES)]) {
       mkdirSync(dirname(join(directory, path)), { recursive: true });
       cpSync(join(root, path), join(directory, path));
     }

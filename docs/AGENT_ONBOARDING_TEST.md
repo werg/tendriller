@@ -59,6 +59,7 @@ useful evidence but is not an unassisted completion.
 | Browser to agent | Add an item through the published page's UI. Observe the command outcome and the same item through a coherent native session query. A DOM change or local draft alone does not pass. |
 | Agent to browser | Submit a native checklist command and observe the browser update through its normal session path. Do not inject state or a fabricated receipt into the page. |
 | Resume | Reload the browser and reopen the existing native device store. Confirm stable device identities and retained checklist content. Separate local reopen evidence from independent peer-retention evidence. |
+| User experience | The app uses domain views appropriate to its main tasks. A separate second pass walks every main flow in fresh desktop and phone-sized profiles, checks navigation/keyboard/long content and empty/loading/error states, and records before/after screenshots and fixes using the [delivery matrix](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable). |
 | Explain | The final report gives the working page, what was exercised, how to resume, which peer/process must remain available, and material unverified limits. It distinguishes published code from a connected application. |
 
 Keep the native session alive for the part of the evaluation that requires it.
@@ -106,6 +107,7 @@ lossy recovery merely to obtain a green onboarding score.
 | A failed reopen silently creates an empty device, swaps storage backends or resets authority. | The apparent recovery loses identity/history instead of resuming it. |
 | Changed input/files are submitted under an already-used operation identity. | This violates exact retry and conceals uncertainty. |
 | `saved`, `applied`, `shared`, adapter readiness or offline code saving are presented as equivalent guarantees. | The user cannot assess persistence, connectivity, replication or recovery correctly. |
+| A full-featured request produces only a JSON/field editor, or the agent skips the separate browser UX pass. | Working plumbing does not establish that the person can complete the intended tasks; record missing flows and evidence. |
 | The result promises ongoing agent responses after its only consuming process exits. | The demonstrated runtime does not support the promised interaction. |
 | Production, mobile or Internet reliability is claimed from only local mocks or a desktop preview. | The evidence does not cover the reported environment. |
 
@@ -122,6 +124,7 @@ Keep a concise redacted report with these fields:
 | Progress | First successful checkpoint, time to first observed shared command, total active work, and each unresolved stage. Record wall time separately from owner sign-in wait. |
 | First action and reuse | Time to the actual page creation/owner claim URL; the step at which a connected process was started; supplied modules imported/adapted; duplicated features and their stated reason. |
 | Behavior | Public application/device identities, command operation IDs and outcomes, coherent read evidence, same-device reopen, selected transport and publication receipt identity. Redact credentials and sensitive content. |
+| UX review | Main-flow matrix, actual desktop/phone viewports and browser, before/after image links, observed friction and fixes, and explicitly unverified checks. |
 | Artifacts | Authored application files and private build-record location, plus public-package provenance. Keep private bootstrap material out of any public report. |
 | Outcome | `complete`, `blocked`, `failed`, or `assisted`; exact reasons, first failing step, and whether the critical failure modes occurred. |
 

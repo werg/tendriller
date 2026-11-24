@@ -1,5 +1,6 @@
 import { mountTransportInspector } from "./transport-view";
 import { encodePublicationPath } from "./paths";
+import { observeUtilityBar, utilityBottom, utilityMaxWidth, utilityRight, utilityTop } from "./utility-layout";
 import type { RuntimeApi, SensorStatus } from "../../contract/index.mjs";
 
 const labels: Record<string, string> = { camera: "Camera", microphone: "Microphone", screen: "Screen sharing", location: "Location", motion: "Motion" };
@@ -32,7 +33,7 @@ export function sensorSummary(status: SensorStatus) {
 /** Page installation, explicit offline saving and always-reachable sensor cancellation. */
 export function mountUtility(api: RuntimeApi): () => void {
   const host = document.createElement("tendril-utility");
-  host.style.cssText = "position:fixed!important;inset:auto max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) auto!important;z-index:2147483647!important;display:flex!important;flex-direction:column!important;align-items:flex-end!important;max-width:calc(100vw - 24px)!important;max-height:calc(100vh - 24px)!important;max-height:calc(100dvh - 24px - env(safe-area-inset-bottom))!important;contain:layout style!important;";
+  host.style.cssText = `position:fixed!important;inset:auto ${utilityRight} ${utilityBottom} auto!important;z-index:2147483647!important;display:flex!important;flex-direction:column!important;align-items:flex-end!important;max-width:${utilityMaxWidth}!important;max-height:calc(100vh - ${utilityTop} - ${utilityBottom})!important;max-height:calc(100dvh - ${utilityTop} - ${utilityBottom})!important;contain:layout style!important;`;
   const root = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = `
@@ -45,7 +46,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     button:hover,a:hover{background:#8882}button:disabled{opacity:.65;cursor:default}
     .stop{background:#a32020;color:white}.stop:hover{background:#8e1717}
     .sensors{padding:0 8px;max-width:min(54vw,260px);font-size:12px;overflow-wrap:anywhere}
-    .options{font-weight:650}.card{flex-shrink:1;min-height:0;width:min(360px,calc(100vw - 24px));border-radius:16px;padding:18px;margin:0 0 10px auto;overflow:auto;max-height:calc(100vh - 112px);max-height:calc(100dvh - 112px - env(safe-area-inset-bottom))}
+    .options{font-weight:650}.card{flex-shrink:1;min-height:0;width:min(360px,calc(100vw - 24px));max-width:100%;border-radius:16px;padding:18px;margin:0 0 10px auto;overflow:auto;max-height:calc(100vh - var(--tendril-utility-height,54px) - 10px - ${utilityTop} - ${utilityBottom});max-height:calc(100dvh - var(--tendril-utility-height,54px) - 10px - ${utilityTop} - ${utilityBottom})}
     .heading{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
     h2{font-size:18px;line-height:1.3;margin:3px 0 10px;font-weight:700;letter-spacing:-.02em}h2:focus{outline:none}
     h3{font-size:14px;margin:0 0 6px}p{margin:0 0 12px}ol{margin:0 0 12px;padding-left:22px}li+li{margin-top:7px}
@@ -295,8 +296,9 @@ export function mountUtility(api: RuntimeApi): () => void {
   const observer = new MutationObserver(attach);
   const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
   renderInstallation(); renderSensors(); attach(); observer.observe(document, { childList: true, subtree: true });
+  const offGeometry = observeUtilityBar(nav);
   return () => {
-    disposed = true; voiceControls?.dispose(); transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offSensors(); offInstallation();
+    disposed = true; voiceControls?.dispose(); transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offGeometry(); offSensors(); offInstallation();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();
   };

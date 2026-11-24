@@ -46,6 +46,19 @@ does not establish a working connected application.
 Report the actual native process lifetime. Page residency and MCP do not establish
 a supported handoff to, or future wake of, an existing ChatGPT conversation.
 
+## Verify the user experience
+
+A request for a full-featured or rich application requires domain views, not a
+JSON editor or a form that merely mirrors stored fields. Use the importable
+list/detail, inspector, comparison, reviewed edit and view-state examples in
+[application patterns](docs/APP_PATTERNS.md#domain-views-you-can-import).
+After the first working version, run the dedicated second-pass prompt and flow
+matrix in [delivery](docs/AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable).
+Exercise every main flow in a real browser at desktop and phone widths, starting
+with fresh profiles; fix observed friction and retain before/after screenshots.
+Check deep links, Back, keyboard access, long content, loading, empty and error
+states. Passing transport and persistence checks alone does not complete the UX.
+
 ## Contribute to this repository
 
 Use Node 22.15 or newer for core; the native tutorial uses Node 24. Read

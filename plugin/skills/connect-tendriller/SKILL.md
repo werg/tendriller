@@ -48,6 +48,15 @@ runtime is unavailable, read `topic: "deployment"` for measured hosting and hand
 coding-agent/runtime with the same origin and guide. MCP alone does not host a
 new app's executable participant.
 
+A full-featured or rich request requires domain views: conversations, timelines,
+searchable list/detail, named related links and reviewed edits. A JSON editor or
+field-by-field record form is only a diagnostic fallback. Reuse the importable
+patterns in the build guide. After the first working version, run the dedicated
+second-pass prompt in `topic: "delivery"`: walk every main flow in real desktop
+and phone-sized browsers from fresh profiles, check Back/deep links, keyboard,
+long content and loading/empty/error states, fix friction and report before/after
+screenshots per flow. Transport and persistence checks do not establish usability.
+
 Keep the starter's P2P-first participation helpers for both native and browser
 owners. They share one direct-WebRTC/relay-fallback policy and include the native
 RTC capability and browser provider. Do not construct another transport selector,
@@ -98,6 +107,15 @@ retries. If the app is offline, resume its enrolled participant from the existin
 device store. Use `read_application_events` to catch up and keep its cursor.
 Verify a supported subscription before promising future background delivery;
 a page or mounted card does not guarantee a future wake of this conversation.
+
+After a republish or participant restart, read the returned service origin's
+`/docs/AGENT_RESTART.md`. Reconnect attach clients to the retained owner, preserve
+handled cursors and exact pending inputs. For apps with a request consumer, verify
+heartbeat and request/receipt/answer behavior only through its declared capabilities;
+report missing support instead of inventing commands. For other apps, verify a
+domain command/read and reload. Use `/docs/AGENT_REQUESTS.md` for durable listener
+presence and addressed answers; applied journal state does not establish that an
+agent has read the request.
 
 For sign-in and linking recovery, use the returned service origin's
 `/docs/CHATGPT_INTEGRATION.md`. Users can revoke account access at

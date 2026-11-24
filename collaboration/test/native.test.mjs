@@ -247,3 +247,66 @@ test('private directory and immutable profile identity are enforced before expos
   await assert.rejects(createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main', openOwner: f.openOwner }),
     error => error.code === 'SUPERVISOR_PROFILE_CHANGED');
 });
+
+test('CLI watch reports a crashed owner and its event cursor resumes the retained history', { timeout: 20_000 }, async t => {
+  const f = await fixture(t), token = createNativeAttachmentKey();
+  const source = `import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
+import {openRetainedOwner} from ${JSON.stringify(new URL('./native-fixture.mjs', import.meta.url).href)};
+const data=JSON.parse(process.env.TENDRILLER_NATIVE_TEST);
+const supervisor=await createNativeSessionSupervisor({directory:data.ownerDirectory,profileId:'retained-main',
+openOwner:()=>openRetainedOwner(data),bindings:[{id:'listener',token:data.token}]});
+console.log(JSON.stringify({ready:true}));`;
+  const owner = child(t, source, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, authority: f.authority, key: [...f.key], token });
+  await owner.ready();
+  const writer = await f.attach(token); t.after(() => writer.detach());
+  await (await writer.session.command('add', 'before crash', { operationId: 'before-crash' })).applied();
+  const bootstrap = join(f.root, 'watch-attachment.mjs');
+  await writeFile(bootstrap, `import {attachNativeSession} from ${JSON.stringify(nativeModule)};
+import {connectApplicationOwner} from ${JSON.stringify(peerModule('browser'))};
+export function openSession(){throw Error('WATCH_MUST_NOT_OPEN_ANOTHER_SIGNER');}
+export function attachSession({signal}){return attachNativeSession({directory:${JSON.stringify(f.ownerDirectory)},
+token:process.env.TENDRILLER_NATIVE_ATTACHMENT_KEY,connect:connectApplicationOwner,signal,
+applicationId:${JSON.stringify(f.authority.descriptor.payload.applicationId)},definitionId:${JSON.stringify(definition.id)},
+definitionVersion:${JSON.stringify(definition.version)}});}`);
+  const cli = process.env.TENDRILLER_TOOLS_TEST_CLI ?? fileURLToPath(new URL('../../tools/cli/bin/tendril.mjs', import.meta.url));
+  const invoke = args => {
+    const process = spawn(globalThis.process.execPath, [cli, '--session', bootstrap, '--mode', 'attach', ...args], {
+      env: { ...globalThis.process.env, TENDRILLER_NATIVE_ATTACHMENT_KEY: token }, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    t.after(() => { if (process.exitCode === null && process.signalCode === null) process.kill('SIGKILL'); });
+    let stdout = '', stderr = '';
+    process.stdout.on('data', bytes => { stdout += bytes; }); process.stderr.on('data', bytes => { stderr += bytes; });
+    const closed = once(process, 'close').then(([code, signal]) => ({ code, signal, stdout, stderr }));
+    return { process, closed, async ready() {
+      while (!stdout.includes('\n')) await Promise.race([
+        once(process.stdout, 'data'),
+        closed.then(result => { throw Error('Watch exited before first item: ' + result.stderr); }),
+      ]);
+      return JSON.parse(stdout.split('\n')[0]);
+    } };
+  };
+  const changes = invoke(['watch']), events = invoke(['watch', '--events', '--topics', '["note"]', '--limit', '1']);
+  const [firstChange, firstBatch] = await Promise.all([changes.ready(), events.ready()]);
+  assert.equal(firstChange.kind, 'applied');
+  assert.deepEqual(firstBatch.events.map(event => event.payload), [{ text: 'before crash' }]);
+  owner.process.kill('SIGKILL'); assert.equal((await owner.closed).signal, 'SIGKILL');
+  for (const [mode, invocation] of [['changes', changes], ['events', events]]) {
+    const result = await invocation.closed;
+    assert.equal(result.code, 1, result.stderr); assert.equal(result.signal, null);
+    const failure = result.stderr.split('\n').filter(line => line.startsWith('{')).map(JSON.parse).at(-1);
+    assert(['OWNER_UNREACHABLE', 'ECONNRESET'].includes(failure.error.code), result.stderr);
+    assert.match(failure.error.message, /Owner connection lost/);
+    assert.equal(failure.watch.mode, mode);
+    assert.equal(failure.watch.cursor, mode === 'events' ? firstBatch.cursor : null);
+    assert.doesNotMatch(JSON.stringify(failure), /before crash/);
+  }
+  const missing = await invoke(['watch']).closed;
+  assert.equal(missing.code, 1, 'a missing owner fails instead of retrying indefinitely');
+  const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main', openOwner: f.openOwner });
+  t.after(() => supervisor.close());
+  const resumed = await f.attach(token); t.after(() => resumed.detach());
+  await (await resumed.session.command('add', 'after crash', { operationId: 'after-crash' })).applied();
+  const replay = await invoke(['events', '--cursor', firstBatch.cursor, '--topics', '["note"]']).closed;
+  assert.equal(replay.code, 0, replay.stderr);
+  assert.deepEqual(JSON.parse(replay.stdout).events.map(event => event.payload), [{ text: 'after crash' }]);
+});

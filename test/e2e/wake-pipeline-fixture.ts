@@ -53,7 +53,11 @@ export async function serveWakePipeline(realModel: boolean) {
       const NativeWorker=window.Worker;
       window.Worker=class extends NativeWorker{constructor(...args){super(...args);this.addEventListener('message',event=>{if(event.data.fixtureStats)fixture.stats.push(event.data.fixtureStats);});}};
       let audio, destination, buffer, silence;
-      Object.defineProperty(navigator.mediaDevices,'getUserMedia',{configurable:true,value:async()=>{
+      // Retain the DOM wrapper for the fixture lifetime. WebKit can otherwise
+      // collect it and recreate navigator.mediaDevices without our instance
+      // override, causing the test to request a real microphone after GC.
+      fixture.mediaDevices=navigator.mediaDevices;
+      Object.defineProperty(fixture.mediaDevices,'getUserMedia',{configurable:true,value:async()=>{
         fixture.starts++;const stream=destination.stream.clone();fixture.streams.push(stream);return stream;
       }});
       const runtime={identity:{page:'speech-pipeline',base:location.origin+'/'},assetUrl:path=>new URL('/runtime/'+path,location.origin).href,on:()=>()=>{}};

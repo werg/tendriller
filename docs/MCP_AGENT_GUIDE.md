@@ -83,7 +83,11 @@ email, account credentials or application keys.
    Design views that fit the data; a JSON or field-by-field record editor is a
    fallback, never the deliverable for a "full-featured" request. After the first
    working version, run the UX pass in the delivery guide (phone and desktop,
-   fresh profile, screenshots). Give the app a recognizable emoji favicon during
+   fresh profile, screenshots per flow). Use its dedicated second-pass prompt,
+   exercise Back/deep links, keyboard, long content and error recovery, and fix
+   observed friction. Adapt the [importable domain views](APP_PATTERNS.md#domain-views-you-can-import)
+   and record before/after evidence; transport checks alone do not finish the UX.
+   Give the app a recognizable emoji favicon during
    preparation: set `icon` to an emoji such as `🌱` through the host metadata API;
    the [build guide](BUILD_AN_APP.md#give-the-app-a-recognizable-favicon) has a runnable example.
 7. To use the app from this MCP connection, read `topic: "connect"`. Attach
@@ -138,3 +142,11 @@ pairing process; new consent reconnects that component. Individual browser
 reviews expire after ten minutes and retain uncertain attempts. After a deliberate
 process stop, resume the same project and device store. Idle adapter sockets
 hibernate. Neither subscription promises a future ChatGPT model turn.
+
+After a republish or owner restart, follow the [consumer re-arm checklist](AGENT_RESTART.md).
+Attach clients must reconnect to a replacement owner. Preserve handled cursors,
+exact operation inputs and pending work. For apps with a request consumer, verify
+its heartbeat and request/receipt/answer flow only through declared capabilities;
+report unsupported evidence. For other apps, verify an ordinary domain command/read
+and reload. The [request lifecycle pattern](AGENT_REQUESTS.md) keeps applied
+commands distinct from work an agent has seen or answered.

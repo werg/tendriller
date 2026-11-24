@@ -2,6 +2,7 @@ import type { RuntimeApi } from "../../../contract/index.mjs";
 import { createVoice } from "./index";
 import { SPEECH_DOWNLOAD_BYTES, SPEECH_MODEL_BYTES } from "./resources";
 import { MAX_WAKE_SESSION_MS } from "./microphone";
+import { utilityBottom, utilityMaxWidth, utilityRight, utilityTop } from "../utility-layout";
 
 /** Optional, shared presentation for explicit local voice input. No application command is submitted. */
 export interface VoiceControlsOptions {
@@ -28,7 +29,7 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
   const host = document.createElement("tendril-voice-controls");
   host.style.cssText = options.container
     ? "display:block;max-width:100%;"
-    : "position:fixed;right:max(12px,env(safe-area-inset-right));bottom:calc(76px + env(safe-area-inset-bottom));z-index:2147483646;max-width:calc(100vw - 24px);";
+    : `position:fixed;right:${utilityRight};bottom:calc(${utilityBottom} + var(--tendril-utility-height,54px) + 10px);z-index:2147483646;display:flex;flex-direction:column;align-items:flex-end;max-width:${utilityMaxWidth};max-height:calc(100vh - ${utilityTop} - ${utilityBottom} - var(--tendril-utility-height,54px) - 10px);max-height:calc(100dvh - ${utilityTop} - ${utilityBottom} - var(--tendril-utility-height,54px) - 10px);`;
   const root = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = `
@@ -38,12 +39,12 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
     button:hover{background:color-mix(in srgb,Canvas 88%,CanvasText)}button:disabled{opacity:.6;cursor:default}
     button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid Highlight;outline-offset:2px}
     .dock,.panel{background:Canvas;color:CanvasText;border:1px solid #8886;box-shadow:0 4px 24px #0002}
-    .dock{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px;padding:5px;border-radius:14px;width:fit-content;max-width:100%;margin-left:auto}
+    .dock{display:flex;flex-shrink:0;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px;padding:5px;border-radius:14px;width:fit-content;max-width:100%;margin-left:auto}
     .indicator{display:flex;align-items:center;gap:7px;font-size:12px;padding:0 7px;overflow-wrap:anywhere}
     .dot{display:inline-block;width:9px;height:9px;border:1px solid currentColor;border-radius:50%;background:transparent;flex:none}
     .indicator[data-active=true] .dot{background:#b72222;border-color:#b72222}.indicator[data-active=true]{font-weight:700}
     .stop{background:#a32020;color:white;border-color:#a32020}.stop:hover{background:#861919}
-    .panel{width:min(390px,calc(100vw - 24px));max-width:100%;max-height:calc(100dvh - 224px - env(safe-area-inset-bottom));overflow:auto;overscroll-behavior:contain;border-radius:16px;padding:18px;margin:0 0 9px auto}
+    .panel{flex-shrink:1;min-height:0;width:min(390px,calc(100vw - 24px));max-width:100%;max-height:calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom));overflow:auto;overscroll-behavior:contain;border-radius:16px;padding:18px;margin:0 0 9px auto}
     .heading,.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.heading{justify-content:space-between;align-items:flex-start}
     h2{font-size:18px;line-height:1.3;margin:3px 0 12px}h3{font-size:15px;margin:0 0 8px}h2:focus,h3:focus{outline:none}
     .close{font-size:22px;line-height:1;min-width:44px;padding:8px;margin:-8px -8px 0 0;border:0}

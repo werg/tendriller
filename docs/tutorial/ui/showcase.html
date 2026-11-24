@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Episode review · Application patterns</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f1f5f1;color:#18352a;font:16px/1.5 system-ui,sans-serif}main{max-width:1180px;margin:auto;padding:36px 28px 60px}h1{font-size:clamp(1.8rem,4vw,2.5rem);letter-spacing:-.04em;margin:0}header.intro{margin-bottom:26px}.eyebrow{text-transform:uppercase;letter-spacing:.12em;color:#5d7568;font-size:.75rem;font-weight:700}header.intro p{max-width:48rem;margin:.5rem 0}.tag{display:inline-block;background:#e1ece4;border-radius:2rem;font-size:.8rem;padding:.25rem .7rem;margin:.3rem .4rem .3rem 0}.timeline{padding-left:1.2rem}.timeline li{padding:.5rem 0}.timeline strong{display:block}.context{padding:.8rem;background:#f3f6f3;border-radius:.5rem}.context p{white-space:pre-wrap;overflow-wrap:anywhere;max-height:12rem;overflow:auto}.view-links{display:flex;gap:1rem;flex-wrap:wrap;margin-top:1rem}a{color:#1d6247}summary{cursor:pointer;font-weight:600}.state-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.state-grid>.sample{min-width:0}footer{color:#5d7568;font-size:.85rem;margin-top:1.5rem}.tc-action{font:inherit;padding:.65rem .9rem;border-radius:.5rem;background:#1d6247;color:white;border:0}@media(max-width:640px){main{padding:22px 14px 40px}.state-grid{grid-template-columns:1fr}header.intro{margin-bottom:20px}}
+</style>
+<main>
+<header class="intro">
+<div class="eyebrow">Training data / Review workspace</div>
+<h1>Episode review</h1>
+<p>Find an episode, inspect the model’s actions, and review a change before saving.</p>
+<nav class="view-links" aria-label="Examples"><a href="./showcase.html">Review workspace</a><a href="./showcase.html?states=1">Loading, empty &amp; connection states</a></nav>
+</header>
+<div id="workspace"></div>
+<footer>Local UI demonstration with synthetic records. Session connection, commands and persistence must be supplied by your application.</footer>
+</main>
+<script type="module" src="./showcase.mjs"></script>
+</html>

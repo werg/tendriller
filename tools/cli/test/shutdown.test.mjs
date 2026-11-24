@@ -129,7 +129,7 @@ test('watch stays alive beyond the disposal budget, then awaits cleanup and exit
   while (!invocation.output().stdout.includes('started')) { assert.equal(invocation.child.exitCode, null); await delay(10); }
   await delay(1200); assert.equal(invocation.child.exitCode, null); assert.equal(invocation.child.signalCode, null);
   invocation.child.kill('SIGTERM'); const result = await invocation.result();
-  assert.equal(result.code, 1); assert.equal(JSON.parse(result.stderr).error.code, 'invocation_interrupted');
+  assert.equal(result.code, 0); assert.equal(JSON.parse(result.stderr).watch.reason, 'interrupted');
   assert.deepEqual(JSON.parse(await readFile(f.cleanup)), { finished: true, readyState: 2 });
 });
 

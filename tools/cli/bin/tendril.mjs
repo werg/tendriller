@@ -29,7 +29,8 @@ Application session (--session /absolute/application.mjs):
   command-batch <json-array> [--saved]
   operation <id> | retry <id> [--saved]
   reapply <old-id> <name> <json> --operation NEW_ID --based-on JSON
-  events [--cursor CURSOR] [--topics JSON] [--limit N] | watch
+  events [--cursor CURSOR] [--topics JSON] [--limit N]
+  watch [--events [--cursor CURSOR] [--topics JSON] [--limit N]]
   signal <topic> <json> [--ttl MILLISECONDS]
   recovery inspect | takeover --transition ID | handover <device> --transition ID
   definition | publication | publication-operation <id>
@@ -43,6 +44,8 @@ Host lifecycle (--tendril NAME, or TENDRIL_API and TENDRIL_TOKEN):
   activity [--after N] | remove --yes
 
 --timeout SECONDS bounds an invocation (default 30; watch waits until interrupted).
+watch --events emits retained batches with replay cursors. Owner loss exits nonzero;
+a running watch's timeout or interrupt exits 0 with progress on stderr.
 --pretty formats JSON. The session module may export attachSession({signal,profile,
 context}) returning {session,detach}; it is the default when available. Otherwise
 openSession({signal,mode,profile}) owns the retained profile and returns
@@ -59,7 +62,7 @@ const applicationCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 
 const flagsByCommand = {
   self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'based-on', 'saved', 'shared'],
   'command-batch': ['saved'], 'mcp-stdio': [], operation: [],
-  retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: [],
+  retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: ['events', 'cursor', 'topics', 'limit'],
   signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['device', 'secret-env', 'project'],
@@ -163,6 +166,15 @@ async function main() {
   if (application && flags.mode === 'independent' && !flags.profile) throw invalid('--mode independent requires --profile');
   if (cmd === 'token' && flags.scopes !== undefined && args[0] !== 'create') throw invalid('--scopes applies only to token create');
   if (cmd === 'reapply' && flags['based-on'] === undefined) throw invalid('reapply requires --based-on with the reviewed current revision');
+  if (cmd === 'watch' && !flags.events && ['cursor', 'topics', 'limit'].some(name => flags[name] !== undefined))
+    throw invalid('watch --cursor, --topics and --limit require --events');
+  const watchOptions = cmd === 'watch' ? { events: Boolean(flags.events),
+    ...(flags.cursor === undefined ? {} : { cursor: flags.cursor }),
+    ...(flags.topics === undefined ? {} : { topics: jsonInput(flags.topics, 'topic array JSON') }),
+    ...(flags.limit === undefined ? {} : { limit: intFlag(flags.limit, 'limit') }) } : undefined;
+  if (watchOptions?.topics !== undefined && (!Array.isArray(watchOptions.topics) || watchOptions.topics.length > 128 ||
+      watchOptions.topics.some(topic => typeof topic !== 'string' || topic.length > 128))) throw invalid('Use --topics with an array of at most 128 bounded topic names');
+  if (watchOptions?.limit !== undefined && (watchOptions.limit < 1 || watchOptions.limit > 1024)) throw invalid('--limit must be between 1 and 1024');
   const seconds = intFlag(flags.timeout, 'timeout', (cmd === 'watch' || cmd === 'mcp-stdio') ? 0 : 30);
   if (seconds < 0 || seconds > 3600) throw invalid('--timeout must be between 0 and 3600 seconds');
   const lifetime = new AbortController();
@@ -176,14 +188,19 @@ async function main() {
   try {
     if (application) {
       await withSession(flags.session, async owned => {
-        if (cmd === 'watch') await watchSession(owned, emit, { signal: lifetime.signal });
+        if (cmd === 'watch') completedResult = await watchSession(owned, emit, { ...watchOptions, signal: lifetime.signal });
         else if (cmd === 'mcp-stdio') await serveStdioMcp(owned, { signal: lifetime.signal });
         else completedResult = await runSessionCommand(owned, cmd, args, flags, { signal: lifetime.signal });
       }, { signal: lifetime.signal, mode: flags.mode, profile: flags.profile, runId: flags.run });
-      if (cmd !== 'watch' && cmd !== 'mcp-stdio') await emit(completedResult);
+      if (cmd === 'watch') console.error(JSON.stringify({ watch: completedResult }));
+      else if (cmd !== 'mcp-stdio') await emit(completedResult);
     }
     else await emit(await hostCommand(cmd, args, flags, lifetime.signal));
   } catch (error) {
+    if (cmd === 'watch') {
+      if (!(error instanceof Error) || !Object.isExtensible(error)) error = new Error('Session watch failed', { cause: error });
+      error.watch ??= completedResult ?? { mode: watchOptions.events ? 'events' : 'changes', cursor: watchOptions.cursor ?? null, revision: null };
+    }
     if (cmd === 'publish' && completedResult?.publication?.id && Number.isSafeInteger(completedResult.version)) {
       error.publication = { operationId: flags.operation, publicationId: completedResult.publication.id,
         outcome: 'committed', phase: 'cleanup',
@@ -222,6 +239,7 @@ main().catch(error => {
     diagnostic: diagnosticFinding(error, { scope: error.scope ?? {} }),
     ...(Number.isInteger(error.status) ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}),
     ...(error.publication ? { publication: error.publication } : {}),
+    ...(error.watch ? { watch: error.watch } : {}),
     ...(error.cleanupError ? { cleanup: { code: error.cleanupError.code ?? 'cleanup_failed', message: error.cleanupError.message } } : {}) }));
 }).finally(async () => {
   const flushed = await Promise.all([process.stdout, process.stderr].map(flushOutput));

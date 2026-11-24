@@ -9,6 +9,24 @@ and kit, as described in [Build an app](docs/BUILD_AN_APP.md).
 
 ## Unreleased
 
+- Require a separate, evidenced domain-UX review on desktop and phone viewports.
+  The starter ships importable list/detail, inspector, compare, reviewed edit/undo
+  and view-state patterns with a browser-tested specimen and screenshots. Fixes #71.
+- `tendril watch` fails nonzero when its owner or stream is lost, preserving the
+  original cause and last progress. `watch --events` emits retained batches and
+  replay cursors; explicit timeout/interrupt remains normal completion. Fixes #88.
+- Added an executable [agent request pattern](docs/AGENT_REQUESTS.md) with durable
+  last-seen consumer heartbeats, full request references, authenticated receipts,
+  answers and author timestamps. Applied journal state remains distinct from
+  seen/answered application work. Fixes #89 and #90.
+- Added the [republish/restart checklist](docs/AGENT_RESTART.md), explicitly stating
+  that attach clients must reconnect after an owner restart. It documents every
+  retired bridge binary and its current route. Fixes #91; supersedes #87 through
+  migration to current fail-fast tooling, without modifying the historical rc.8 archive.
+- Hosted Page options now supports safe-area-aware bottom/right clearance and
+  publishes its live bar dimensions as CSS properties. The voice dock follows
+  those dimensions, allowing apps to keep mobile bottom tabs reachable. Fixes #92.
+
 - Client invitation and setup WebSockets use a client-permitted close code while
   retaining the local failure reason, preventing `InvalidAccessError` on invalid
   frames, transport errors and failed invitation acknowledgements. Fixes #81.

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 const workflow = name => readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), 'utf8');
 function jobs(text) {
@@ -9,6 +10,53 @@ function jobs(text) {
 }
 const service = workflow('service'), graph = jobs(service);
 const needs = job => graph[job].match(/^    needs: \[([^\]]+)\]/m)[1].split(',').map(value => value.trim());
+
+// Evaluate the actual workflow's string paths, comparisons and || expressions.
+// Empty optional properties model GitHub's missing-property fallback for pushes.
+function concurrency(name, github) {
+  const block = workflow(name).match(/^concurrency:\n((?:  .*\n)+)/m)?.[1];
+  assert(block, `${name} must declare workflow concurrency`);
+  return Object.fromEntries([...block.matchAll(/^  (group|cancel-in-progress): (.+)$/gm)]
+    .map(([, key, value]) => [key, value.replace(/\$\{\{(.+?)\}\}/g,
+      (_, expression) => String(runInNewContext(expression, { github })))]));
+}
+function trigger({ event = 'push', branch = 'preview/example', number = 93,
+  sourceRepo = 'werg/tendriller', sha = 'a'.repeat(40) } = {}) {
+  const pull = event === 'pull_request';
+  return {
+    repository: 'werg/tendriller', event_name: event, sha,
+    ref: pull ? `refs/pull/${number}/merge` : `refs/heads/${branch}`,
+    ref_name: pull ? `${number}/merge` : branch, head_ref: pull ? branch : '',
+    event: { pull_request: { head: { sha, repo: { full_name: pull ? sourceRepo : '' } } } },
+  };
+}
+
+test('branch and PR qualification cannot cancel each other at the same source commit', () => {
+  assert.match(service, /on:\n  push:\n    branches: \['\*\*'\]\n  pull_request:\n  workflow_dispatch:/);
+  const push = trigger(), pull = trigger({ event: 'pull_request' });
+  for (const name of ['service', 'agent-onboarding']) {
+    const branch = concurrency(name, push), pr = concurrency(name, pull);
+    assert.notEqual(branch.group, pr.group, `${name}: branch qualification must survive its PR event`);
+    assert.equal(branch['cancel-in-progress'], 'true');
+    assert.equal(pr['cancel-in-progress'], 'true');
+    assert.equal(concurrency(name, trigger({ sha: 'b'.repeat(40) })).group, branch.group);
+    assert.equal(concurrency(name, trigger({ event: 'pull_request', sha: 'b'.repeat(40) })).group, pr.group);
+    assert.notEqual(concurrency(name, trigger({ event: 'pull_request', number: 94 })).group, pr.group);
+    assert.notEqual(concurrency(name, trigger({ event: 'pull_request', number: 95, sourceRepo: 'other/tendriller' })).group, pr.group);
+  }
+  assert.notEqual(concurrency('service', push).group, concurrency('agent-onboarding', push).group);
+  for (const name of ['check', 'artifacts', 'browser', 'native-owner', 'sql-starter', 'network-qualification'])
+    assert.doesNotMatch(graph[name], /^    if:/m, `${name} must qualify both event contexts`);
+});
+
+test('master push and manual promotion stay serialized without PR cancellation', () => {
+  const master = concurrency('service', trigger({ branch: 'master' }));
+  assert.equal(master['cancel-in-progress'], 'false');
+  assert.deepEqual(concurrency('service', trigger({ branch: 'master', event: 'workflow_dispatch' })), master);
+  const pull = concurrency('service', trigger({ branch: 'master', event: 'pull_request' }));
+  assert.notEqual(pull.group, master.group, 'a PR from master must not cancel a trusted promotion');
+  assert.equal(pull['cancel-in-progress'], 'true');
+});
 
 test('trusted publication joins every qualification, and staging/production depend on publication', () => {
   assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'native-owner', 'sql-starter', 'network-qualification', 'artifacts'].sort());

@@ -698,6 +698,31 @@ Call the app complete only after checking the actual hosted behavior:
    `notes-release-2`. Confirm the selected receipt and page content. Changing
    HTML/CSS does not require replacing application authority or data.
 
+7. Run the **user experience acceptance pass** below. The transport checks above
+   are necessary; the app must also support the person's actual tasks.
+
+### User experience acceptance pass
+
+Before implementation, name the app's main user flows and the appropriate domain
+views: conversations for episodes, timelines for activity, named links for related
+records, and reviewed inline changes for edits. A JSON editor or a form that
+mirrors every stored field is a diagnostic fallback, never the finished result
+for a full-featured or rich request. Adapt the [importable UI patterns](APP_PATTERNS.md#domain-views-you-can-import).
+
+After the first working version, use the [dedicated second-pass prompt and flow
+matrix](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable). In fresh
+browser profiles at desktop and phone widths, walk every main flow from arrival
+to its visible result. Test search/filter and detail deep links, reload and Back,
+keyboard focus, review/save/undo where supported, long content, empty data,
+loading and failures. Keep normal content behind the state-aware connection card
+until the app is usable. Fix confusing hierarchy, raw URL labels, hidden actions,
+horizontal overflow and lost drafts before the final pass.
+
+Record each flow's tested URL/release, viewport, steps, outcome, and linked
+before/after screenshots. Re-run the changed flow after each fix. A blocked
+browser check stays explicitly unverified; it cannot be replaced by a build or
+an attractive screenshot of another state.
+
 Report which of these ran, the exact source/package hashes, publication receipt,
 target host, browser, and any unverified boundary. A static screenshot or build
 does not establish enrollment, retained state, deployed OAuth, mobile durability
