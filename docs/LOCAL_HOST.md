@@ -130,6 +130,10 @@ Add a note in the browser. From another terminal in the same application
 directory, verify the native participant can read it:
 
 ```sh
+TENDRILLER_DEV_STATE=/absolute/path/to/tendriller/.tendriller-dev-host/FULL_SOURCE_SHA
+TENDRILLER_APP=/absolute/path/to/local-shared-notes
+TENDRILLER_LOCAL_PRELOAD="$TENDRILLER_DEV_STATE/local-network.mjs"
+cd "$TENDRILLER_APP"
 node --import "$TENDRILLER_LOCAL_PRELOAD" \
   node_modules/@tendriller/tools/bin/tendril.mjs \
   --session ./session.mjs --mode attach query notes null
@@ -152,6 +156,10 @@ Seed data through the real domain commands while the native participant runs.
 For the unmodified Shared Notes kit, one retained example is:
 
 ```sh
+TENDRILLER_DEV_STATE=/absolute/path/to/tendriller/.tendriller-dev-host/FULL_SOURCE_SHA
+TENDRILLER_APP=/absolute/path/to/local-shared-notes
+TENDRILLER_LOCAL_PRELOAD="$TENDRILLER_DEV_STATE/local-network.mjs"
+cd "$TENDRILLER_APP"
 node --import "$TENDRILLER_LOCAL_PRELOAD" \
   node_modules/@tendriller/tools/bin/tendril.mjs \
   --session ./session.mjs --mode attach command addNote \
