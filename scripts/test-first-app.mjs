@@ -906,15 +906,16 @@ export async function closeLocalTransport() {
     const retainedInitialization = await readFile(join(project, '.tendriller/initialized.json'));
     const management = await context.newPage();
     await management.goto(new URL('_tendril/manage', handle.page_url).href);
-    await management.locator('label[for="tab-agent"]').click();
+    await management.getByText('An agent', { exact: true }).click();
+    await expect(management.locator('#tab-agent')).toBeChecked();
     const delegation = management.locator('form:has(input[name="action"][value="delegate-agent"])');
-    await delegation.locator('input[name="name"]').fill('native-continuation');
+    await delegation.getByLabel('Agent name', { exact: true }).fill('native-continuation');
     await delegation.getByText('Host permissions', { exact: true }).click();
     for (const scope of ['host:read', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'])
       await delegation.locator(`input[name="scopes"][value="${scope}"]`).check();
     await delegation.getByRole('button', { name: 'Add agent', exact: true }).click();
-    const notice = await management.locator('#panel-agent [role="status"]').textContent();
-    const code = notice?.match(new RegExp(`\\b${handle.id}-[0-9]{6}\\b`))?.[0];
+    const invitation = await management.getByLabel('Full invitation (includes the one-time code)', { exact: true }).inputValue();
+    const code = invitation.match(new RegExp(`\\b${handle.id}-[0-9]{6}\\b`))?.[0];
     assert.ok(code, 'The actual owner review must return a one-use code for the retained page.');
     await writeFile(join(project, '.tendriller/delegation-code.txt'), code + '\n', { mode: 0o600, flag: 'wx', flush: true });
     // Retain a private checkpoint but make the original handle unavailable to
