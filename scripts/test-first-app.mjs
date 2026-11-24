@@ -1034,7 +1034,8 @@ export async function closeLocalTransport() {
     if (feedbackQualification) {
       checkpoint('publish signed UI while the native owner, event consumer and browser stay active');
       report.publication_qualification = await qualifyFirstAppPublication({
-        page, pageUrl: handle.page_url, peer, expect, app, project, preload, cli, node });
+        page, pageUrl: handle.page_url, peer, expect, app, project, preload, cli, node,
+        publicationGateUrl: new URL('/__first_app_publication', SERVICE).href });
       passed('attached signed publication, staged assets, exact retry and selected-head preservation with uninterrupted work');
       checkpoint('contain authentic stale signals on the live browser/native connection');
       report.signal_qualification = await qualifyFirstAppSignals({
