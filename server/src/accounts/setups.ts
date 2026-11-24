@@ -23,11 +23,11 @@ function recordedState(row: OwnerSetup, account: string): string {
   return row.expires_at <= Date.now() ? 'expired' : row.state;
 }
 function identity(row: OwnerSetup): string {
-  return `<dl><dt>Page reference</dt><dd><code>${escape(row.page_id)}</code></dd>
+  return `<dl class="meta-grid"><dt>Page reference</dt><dd><code>${escape(row.page_id)}</code></dd>
     <dt>Setup operation</dt><dd><code>${escape(row.operation_id)}</code></dd>
     <dt>Connector client</dt><dd><code>${escape(row.client_id)}</code></dd>
     <dt>Started</dt><dd>${escape(date(row.created_at))}</dd>
-    <dt>Setup credential deadline</dt><dd>${escape(date(row.expires_at))}</dd></dl>`;
+    <dt>Deadline</dt><dd>${escape(date(row.expires_at))}</dd></dl>`;
 }
 function signIn(path: string): Response {
   return new Response(null,{status:302,headers:{Location:'/auth?return_to='+encodeURIComponent(path),'Cache-Control':'no-store'}});
@@ -47,12 +47,10 @@ export async function setupDashboard(req: Request, env: Env, url: URL): Promise<
   if (!detail) {
     const rows = await env.ACCOUNTS.prepare(selection+' ORDER BY a.created_at DESC,a.page_id LIMIT 100').bind(...args).all<OwnerSetup>();
     if (!await currentOwner()) return signIn(url.pathname);
-    const cards = rows.results.map(row => `<article class="card"><span class="eyebrow">Recorded setup: ${escape(recordedState(row,session.accountId).replaceAll('_',' '))}</span>
-      <h2>${escape(row.page_id)}</h2>${identity(row)}<a href="/dashboard/setups/${escape(row.page_id)}">Inspect this setup</a></article>`).join('');
-    return servicePage('Page setups',`<p><a href="/dashboard">Back to dashboard</a></p><h1>Your page setups</h1>
-      <p>Find the original setup operation and inspect its existing page. This view includes retained setups from your connector clients, even after a connector is disconnected.</p>
-      <p>The latest 100 retained records are shown. Listing them does not contact or restart their pages. A recorded ready setup is a host allocation; it does not prove that the application is prepared or connected.</p>
-      <div class="grid">${cards || '<p>No retained page setups for this account.</p>'}</div>`);
+    const cards = rows.results.map(row => `<article class="card"><div class="card-head"><div><span class="eyebrow">Recorded setup</span><h2><code>${escape(row.page_id)}</code></h2></div><span class="badge">${escape(recordedState(row,session.accountId).replaceAll('_',' '))}</span></div>${identity(row)}<div class="actions"><a class="button sm secondary" href="/dashboard/setups/${escape(row.page_id)}">Inspect setup</a></div></article>`).join('');
+    return servicePage('Page setups',`<a class="back-link" href="/dashboard">← Back to dashboard</a><div class="page-head"><span class="eyebrow">Recovery</span><h1>Your page setups</h1>
+      <p class="lead">Inspect retained page allocations from your connector clients, even after a connector is disconnected.</p></div>
+      <div class="grid">${cards || '<p class="empty">No retained page setups for this account.</p>'}</div>`, "", 200, { wide: true });
   }
   const record = await env.ACCOUNTS.prepare(selection+' AND a.page_id=? LIMIT 1').bind(...args,detail[1]).first<OwnerSetup>();
   if (!record) return errorResponse(404,'not_found');
@@ -88,8 +86,7 @@ export async function setupDashboard(req: Request, env: Env, url: URL): Promise<
   }
   // No reference or page link is disclosed from an earlier, now-revoked session.
   if (!await currentOwner()) return signIn(url.pathname);
-  return servicePage('Page setup',`<p><a href="/dashboard/setups">Back to page setups</a></p><h1>Page setup</h1>
-    <p class="notice">${escape(state.replaceAll('_',' '))}</p>${identity(record)}<p>${escape(message)}</p>
-    ${pageUrl ? `<p><a class="button" href="${escape(pageUrl)}">Open existing page</a></p>` : ''}
-    <h2>If the local setup file was lost</h2><p>The service cannot reconstruct its private credential. Keep the operation and page references above. If the page exists, its intended owner can open it and use the existing reviewed access controls; a disconnected connector does not gain new authority here. Missing or damaged records require operator reconciliation.</p>`);
+  return servicePage('Page setup',`<a class="back-link" href="/dashboard/setups">← Back to page setups</a><div class="stack"><section class="card"><div class="card-head"><div><span class="eyebrow">Setup record</span><h1>Page setup</h1></div><span class="badge">${escape(state.replaceAll('_',' '))}</span></div>${identity(record)}<p style="margin-top:1rem">${escape(message)}</p>
+    ${pageUrl ? `<div class="actions"><a class="button" href="${escape(pageUrl)}">Open existing page</a></div>` : ''}</section>
+    <details class="disclosure"><summary>If the local setup file was lost</summary><div class="disclosure-body"><p class="muted">The service cannot reconstruct its private credential. Keep the operation and page references above. If the page exists, its intended owner can open it and use the existing access controls; a disconnected connector does not gain new authority here. Missing or damaged records require operator reconciliation.</p></div></details></div>`);
 }

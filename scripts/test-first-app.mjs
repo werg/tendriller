@@ -642,7 +642,7 @@ export async function closeLocalTransport() {
       'The approval must fit a phone without horizontal overflow.');
     await page.screenshot({ path: join(dirname(reportPath), 'first-app-pairing-review-mobile.png'), fullPage: true });
     report.screenshots.pairing_review_narrow_viewport = 'first-app-pairing-review-mobile.png';
-    await expect(page.getByRole('button', { name: 'Approve this device', exact: true })).toBeEnabled({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: 'Approve device', exact: true })).toBeEnabled({ timeout: 30_000 });
     await page.locator('#pairing-approve').focus();
     await expect(page.locator('#pairing-approve')).toBeFocused();
     // The one confirmation tap. The service returns to the page, which finishes and connects.

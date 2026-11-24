@@ -52,12 +52,11 @@ export async function authorize(req: Request, env: Env, config: OAuthConfig, url
       return authorizationRedirect(config, uri!, state, { error: error.code, error_description: error.message });
     }
     const token = await intent(env, browser, 'authorize', { clientId, uri, state, scope, challenge, resource: config.resource, policy: await policy(config, client!) });
-    return authorizationPage('Connect an integration', `<h1>Connect ${escapeHtml(client!.name)}</h1>
-      <p>Continue as ${escapeHtml(browser.email ?? browser.id)}. This client is requesting access to <code>${escapeHtml(config.resource)}</code>.</p>
-      <ul>${scope! ? scope!.split(' ').map(name => `<li>${escapeHtml(descriptions[name])} <small>(${escapeHtml(name)})</small></li>`).join('') : '<li>Identify your linked account</li>'}</ul>
-      <p>${client!.allowRefresh ? `Access tokens expire after ${config.accessTokenTtlSeconds} seconds. This authorization can renew access for up to ${lifetime(config.grantTtlSeconds)}, until you revoke it.` : `This authorization expires after ${config.accessTokenTtlSeconds} seconds and cannot renew itself.`}</p>
-      <p>Individual applications still need explicit connection permission. Your browser login, device signing identity and page-owner privileges are never given to this client.</p>
-      ${decisionForm(token, 'Allow these permissions')}<p><a href="/oauth/connections">Review existing authorizations</a></p>`, new URL(uri!).origin);
+    return authorizationPage('Connect an integration', `<section class="card"><span class="eyebrow">Integration access</span><h1>Connect ${escapeHtml(client!.name)}</h1>
+      <p class="lead">Continue as <strong>${escapeHtml(browser.email ?? browser.id)}</strong> for <code>${escapeHtml(config.resource)}</code>.</p>
+      <ul class="list" style="margin:1rem 0">${scope! ? scope!.split(' ').map(name => `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(descriptions[name])}</div><p class="list-item-sub"><code>${escapeHtml(name)}</code></p></div></li>`).join('') : '<li class="list-item"><div class="list-item-main">Identify your linked account</div></li>'}</ul>
+      <p class="muted" style="font-size:.88rem">${client!.allowRefresh ? `Access tokens expire after ${config.accessTokenTtlSeconds} seconds and can renew for up to ${lifetime(config.grantTtlSeconds)} until revoked.` : `This authorization expires after ${config.accessTokenTtlSeconds} seconds and cannot renew.`} Individual apps keep their own permissions.</p>
+      ${decisionForm(token, 'Allow access')}</section><p style="margin-top:1rem"><a href="/oauth/connections">Review existing authorizations</a></p>`, new URL(uri!).origin);
   }
   sameOrigin(req, config);
   const browser = await browserIdentity(req, env);

@@ -48,7 +48,7 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
   if (path === '/auth/test') return routeTestAccess(req, env);
   if (path === "/auth" && req.method === "GET") {
     const back = encodeURIComponent(safeReturn(url.searchParams.get("return_to")));
-    return servicePage("Sign in", `<h1>Sign in to Tendriller</h1><p>Choose an account to open your tendrils.</p><div class="actions"><a class="button" href="/auth/github?return_to=${back}">Continue with GitHub</a><a class="button secondary" href="/auth/google?return_to=${back}">Continue with Google</a></div>`);
+    return servicePage("Sign in", `<section class="card"><span class="eyebrow">Account</span><h1>Sign in to Tendriller</h1><p class="lead">Sign in to open your apps and manage connected agents.</p><div class="actions"><a class="button lg" href="/auth/github?return_to=${back}">Continue with GitHub</a><a class="button secondary lg" href="/auth/google?return_to=${back}">Continue with Google</a></div></section>`);
   }
   const begin = /^\/auth\/(link\/)?(github|google)$/.exec(path);
   if (begin && req.method === "GET") {

@@ -188,6 +188,8 @@ it('prepares assistant permissions before claim and activates their review only 
     expect(review.status).toBe(200);
     const text = await review.text();
     expect(text).toContain('Prepared notes');
+    expect(text).toContain('name="queries" value="notes" checked');
+    expect(text).toContain('name="commands" value="addNote" checked');
     expect(await env.ACCOUNTS.prepare('SELECT enabled,owner_account FROM assistant_connections WHERE page_id=?').bind(h.id).first())
       .toEqual({ enabled: 0, owner_account: f.subject });
     expect(await inDO(h.id, t => t.db.get('assistant_connection', null))).toBeNull();
@@ -313,7 +315,7 @@ async function authorization(f: Awaited<ReturnType<typeof hostFixture>>, overrid
   const response = await request('/oauth/authorize?' + params, f.settings, { headers: { Cookie: f.cookie } });
   expect(response.status).toBe(200);
   const html = await response.text(), token = /name="intent" value="([^"]+)"/u.exec(html)![1];
-  expect(html).toContain('Allow these permissions'); expect(html).toContain('Individual applications still need explicit connection permission');
+  expect(html).toContain('Allow access'); expect(html).toContain('Individual apps keep their own permissions');
   const result = await formPost('/oauth/authorize', { intent: token, decision }, f.settings, f.cookie);
   expect(result.status).toBe(303);
   const location = new URL(result.headers.get('Location')!);

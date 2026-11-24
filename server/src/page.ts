@@ -10,6 +10,9 @@ import { emojiIconSvg, iconSvg } from "./inject";
 import { serviceDescriptor } from "./descriptor";
 import { accountActive, allows, authenticateLocalPage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
+import { addActivity } from "./activity";
+import { brandHead, brandMark, brandStyle } from "./brand";
+import { serviceStyle } from "./accounts/ui";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
 import { DEFAULT_THEME_COLOR, isEmojiIcon, pageIcons } from "./pwa";
@@ -85,7 +88,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "report" && m === "GET") {
-    return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>Report page · Tendriller</title><link rel="icon" href="${base}_tendril/brand/icon-64.png"><style>body{font:16px/1.6 system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1.25rem}img{vertical-align:middle;margin-right:.5rem}textarea{display:block;width:100%;min-height:8rem;font:inherit}button{margin-top:1rem;padding:.7rem 1rem;background:#17654b;color:white;border:0;border-radius:.6rem;font:inherit}a{color:#17654b}</style></head><body><main><p><img src="${base}_tendril/brand/icon-64.png" alt="" width="32" height="32">Tendriller</p><h1>Report this page</h1><p>Tell us what is wrong with this tendril.</p><form method="post"><textarea name="reason" required maxlength="2000"></textarea><button type="submit">Send report</button></form></main></body></html>`,
+    return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>Report page · Tendriller</title>${brandHead(base + "_tendril/brand/")}${serviceStyle}${brandStyle}</head><body><main><header>${brandMark(base + "_tendril/brand/", base)}<a class="nav-link" href="${base}">Return to page</a></header><section class="card"><span class="eyebrow">Safety</span><h1>Report this page</h1><p class="lead">Tell us what is wrong with this page.</p><form method="post"><div class="field"><label class="field-label" for="report-reason">Details</label><textarea id="report-reason" name="reason" required maxlength="2000" placeholder="Describe the issue…"></textarea></div><div class="actions"><button type="submit">Send report</button></div></form></section></main></body></html>`,
       { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin",
         "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }
@@ -99,6 +102,44 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (!reason || !reason.trim() || reason.length > 2000) throw new HttpError(400, "bad_request", "Reason must be 1–2000 characters");
     await t.recordReport("page", session?.account_id ?? null, reason.trim());
     return new Response("Report received. Thank you.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+  }
+
+  if (sub === "links" && m === "GET") {
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
+    return json({ name: t.db.get("name", "Tendril"), links: t.listLinks() });
+  }
+  if (sub === "links" && m === "POST") {
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
+    const b = await readJson(req, 4096);
+    if (b.role !== "guest" && b.role !== "display") throw new HttpError(400, "bad_request", "role must be guest or display");
+    const total = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links")?.n ?? 0;
+    if (total >= 50) throw new HttpError(429, "link_limit", "At most 50 links are allowed per page");
+    const expiresIn = b.expires_in === undefined || b.expires_in === null ? null : Number(b.expires_in);
+    if (expiresIn !== null && (!Number.isFinite(expiresIn) || expiresIn <= 0 || expiresIn > 365 * 86400)) {
+      throw new HttpError(400, "bad_request", "expires_in must be between 1 second and 365 days");
+    }
+    const rawLabel = typeof b.label === "string" ? b.label.trim().slice(0, 100) : "";
+    const label = rawLabel || null;
+    const link = await t.createLink(b.role, label, expiresIn, false, () => {
+      if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized");
+      const total = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links")?.n ?? 0;
+      if (total >= 50) throw new HttpError(429, "link_limit", "At most 50 links are allowed per page");
+    });
+    addActivity(t, { kind: "link", summary: `Created ${b.role} link${label ? ` (${label})` : ""}`, by: `owner:${principal.accountId ?? "unknown"}` });
+    return json(t.renderLink(link), 201);
+  }
+  const deleteLink = /^links\/([A-Za-z0-9_-]{1,64})$/.exec(sub);
+  if (deleteLink && m === "DELETE") {
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
+    const id = deleteLink[1];
+    if (id === "l_main") throw new HttpError(400, "cannot_delete", "The main owner link cannot be deleted");
+    const existing = t.db.one<{ role: string; label: string | null }>("SELECT role, label FROM links WHERE id = ?", id);
+    if (!existing) throw new HttpError(404, "not_found", "No such link");
+    t.db.run("DELETE FROM links WHERE id = ?", id);
+    t.db.run("DELETE FROM guest_accounts WHERE link_id = ?", id);
+    t.closeLinkSockets(id);
+    addActivity(t, { kind: "link", summary: `Revoked ${existing.role} link${existing.label ? ` (${existing.label})` : ""}`, by: `owner:${principal.accountId ?? "unknown"}` });
+    return new Response(null, { status: 204 });
   }
 
   if (sub === "agents" && m === "GET") {

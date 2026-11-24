@@ -136,3 +136,57 @@ test('disposing geometry restores authored values and does not overwrite newer a
   expect(restored).toEqual({ width: '201px', priority: 'important', height: '303px' });
   await expect(page.locator('tendril-utility')).toHaveCount(0);
 });
+
+for (const width of [1280, 320]) {
+  test(`sharing retains a selectable link when clipboard is denied at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 800 }); await fixture(page);
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw Error('denied'); } } });
+      const w = window as any; w.disposeUtility(); w.mount();
+    });
+    await page.getByRole('button', { name: 'Page options', exact: true }).click();
+    await page.getByRole('button', { name: 'Copy page link', exact: true }).click();
+    const fallback = page.getByRole('textbox', { name: 'Link to copy', exact: true });
+    await expect(fallback).toHaveValue('https://layout.test/');
+    await expect(fallback).toBeFocused();
+    expect(await fallback.evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd])).toEqual([0, 'https://layout.test/'.length]);
+    await page.screenshot({ path: testInfo.outputPath('share-clipboard-fallback.png') });
+  });
+
+  test(`sharing can revoke expired links and create labelled invites at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 800 }); await fixture(page);
+    const links = [{ id: 'expired', url: 'https://layout.test/old/', role: 'display', label: 'Old tablet', expires_at: 1 }];
+    let createdBody: unknown;
+    await page.route('https://layout.test/_tendril/links**', async route => {
+      const request = route.request();
+      if (request.method() === 'DELETE') { links.splice(0); await route.fulfill({ status: 204 }); return; }
+      if (request.method() === 'POST') {
+        createdBody = request.postDataJSON();
+        const link = { id: 'new', url: 'https://layout.test/guest/', ...request.postDataJSON(), expires_at: null };
+        links.push(link); await route.fulfill({ status: 201, json: link }); return;
+      }
+      await route.fulfill({ json: { name: 'Test page', links } });
+    });
+    await page.route('https://layout.test/_tendril/guests', route => route.fulfill({ json: { guests: [] } }));
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
+      const w = window as any; w.disposeUtility(); w.mount();
+    });
+    await page.getByRole('button', { name: 'Page options', exact: true }).click();
+    await page.getByText('Invite others & manage share links', { exact: true }).click();
+    await expect(page.getByText('Old tablet', { exact: true })).toBeVisible();
+    await expect(page.getByText('Expired', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Copy', exact: true })).toBeDisabled();
+    await page.getByRole('button', { name: 'Revoke', exact: true }).click();
+    await expect(page.getByText('Old tablet', { exact: true })).toHaveCount(0);
+    await page.getByRole('textbox', { name: 'Invite label (optional)', exact: true }).fill('Tablet visitor');
+    await page.getByRole('combobox', { name: 'Link expiry', exact: true }).selectOption('86400');
+    await page.getByRole('button', { name: 'Invite person', exact: true }).click();
+    await expect(page.getByText('Tablet visitor', { exact: true })).toBeVisible();
+    expect(createdBody).toEqual({ role: 'guest', label: 'Tablet visitor', expires_in: 86400 });
+    await expect(page.getByText('Link copied to clipboard.', { exact: true })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath('share-invite-created.png') });
+  });
+}

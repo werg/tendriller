@@ -84,10 +84,28 @@ export async function adoptPreparedAssistant(t: Tendril, accountId: string): Pro
   });
 }
 
-function options(group: string, entries: Array<{ name: string; description: string }>, previous: Array<{ name: string }> = []) {
+const GROUP_LABELS: Record<string, string> = {
+  queries: 'Read data',
+  commands: 'Actions',
+  events: 'Notifications',
+};
+
+function options(group: string, entries: Array<{ name: string; description: string }>, previous: Array<{ name: string }> | null) {
   if (!entries.length) return '';
-  return `<fieldset><legend>${group}</legend>${entries.map(item =>
-    `<p><label><input type="checkbox" name="${group}" value="${escapeHtml(item.name)}"${previous.some(entry => entry.name === item.name) ? " checked" : ""}> <strong>${escapeHtml(item.name)}</strong></label><br>${escapeHtml(item.description)}</p>`).join('')}</fieldset>`;
+  return `<div class="group-label">${GROUP_LABELS[group] ?? escapeHtml(group)} (${entries.length})</div><div class="check-list">${entries.map(item => {
+    const checked = previous === null || previous.some(entry => entry.name === item.name);
+    return `<label class="check-item"><input type="checkbox" name="${group}" value="${escapeHtml(item.name)}"${checked ? ' checked' : ''}><span class="check-copy"><span class="check-title">${escapeHtml(item.name)}</span><span class="check-desc">${escapeHtml(item.description)}</span></span></label>`;
+  }).join('')}</div>`;
+}
+
+function summarizeCapabilities(item: Proposal): string {
+  const parts: string[] = [];
+  if (item.queries.length) parts.push(`read ${item.queries.length} ${item.queries.length === 1 ? 'view' : 'views'}`);
+  if (item.commands.length) parts.push(`run ${item.commands.length} ${item.commands.length === 1 ? 'action' : 'actions'}`);
+  if (item.events.length) parts.push(`receive ${item.events.length} ${item.events.length === 1 ? 'notification' : 'notifications'}`);
+  if (!parts.length) return 'Review the permissions below.';
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
+  return `Allow your connected assistant to ${list} in ${item.label}.`;
 }
 
 export async function reviewAssistant(t: Tendril, req: Request) {
@@ -102,30 +120,41 @@ export async function reviewAssistant(t: Tendril, req: Request) {
   if (req.method === 'GET') {
     const selection = current?.id === item.id ? current : null;
     const consumers = t.db.all<ConsumerRow>('SELECT * FROM assistant_consumers ORDER BY created_at');
-    const consumerForms = consumers.map(agent => `<li><strong>${escapeHtml(agent.label)}</strong> · ${escapeHtml(agent.status)} · ${escapeHtml(agent.route)}
-      <p>OAuth client: ${escapeHtml(agent.client_id)}. Queries: ${escapeHtml(JSON.parse(agent.queries).join(', ') || 'none')}.
-      Commands: ${escapeHtml(JSON.parse(agent.commands).join(', ') || 'none')}. Events: ${escapeHtml(JSON.parse(agent.events).join(', ') || 'none')}.</p>
-      <form method="post"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="binding" value="${escapeHtml(agent.id)}">
-      <input type="hidden" name="revision" value="${agent.revision}">${agent.status === 'pending' ? '<button name="action" value="approve-agent">Approve this agent</button>' : ''}
-      ${agent.status !== 'revoked' ? '<button name="action" value="revoke-agent">Revoke this agent</button>' : ''}</form></li>`).join('');
+    const pendingConsumers = consumers.filter(agent => agent.status === 'pending');
+    const renderConsumer = (agent: ConsumerRow) => {
+      const badgeClass = agent.status === 'active' ? 'ok' : agent.status === 'pending' ? 'warn' : 'danger';
+      const perms = [
+        `Queries: ${JSON.parse(agent.queries).join(', ') || 'none'}`,
+        `Commands: ${JSON.parse(agent.commands).join(', ') || 'none'}`,
+        `Events: ${JSON.parse(agent.events).join(', ') || 'none'}`,
+      ].join(' · ');
+      return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(agent.label)} <span class="badge ${badgeClass}">${escapeHtml(agent.status)}</span></div><p class="list-item-sub">OAuth client <code>${escapeHtml(agent.client_id)}</code> · ${escapeHtml(agent.route)}<br>${escapeHtml(perms)}</p></div><form class="inline-form" method="post"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="binding" value="${escapeHtml(agent.id)}"><input type="hidden" name="revision" value="${agent.revision}"><div class="actions tight">${agent.status === 'pending' ? '<button class="sm" name="action" value="approve-agent">Approve</button>' : ''}${agent.status !== 'revoked' ? '<button class="sm danger" name="action" value="revoke-agent">Revoke</button>' : ''}</div></form></li>`;
+    };
+    const consumerForms = consumers.map(renderConsumer).join('');
     const provider = selectedProvider(t);
     const providerForms = current ? (await freshAdapters(t)).map(hash => {
       const device = t.db.one<{ device_id: string }>('SELECT device_id FROM assistant_devices WHERE adapter_hash=?', hash)?.device_id;
-      return `<li>Provider key <code>${escapeHtml(hash.slice(0, 12))}</code> · ${hash === provider?.adapterHash ? 'Selected executor' : 'Read replica'}
-        <p>${device ? 'Enrolled signer: <code>' + escapeHtml(device) + '</code>' : 'No enrolled process has connected.'}</p>
-        ${device && hash !== provider?.adapterHash ? `<form method="post"><input type="hidden" name="csrf" value="${csrf}">
-        <input type="hidden" name="provider" value="${hash}"><input type="hidden" name="epoch" value="${provider?.selectionEpoch ?? 0}">
-        <button name="action" value="select-provider">Use for new commands</button></form>` : ''}</li>`;
+      const isSelected = hash === provider?.adapterHash;
+      return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">Provider <code>${escapeHtml(hash.slice(0, 12))}</code> <span class="badge${isSelected ? ' ok' : ''}">${isSelected ? 'Selected executor' : 'Read replica'}</span></div><p class="list-item-sub">${device ? 'Enrolled signer: <code>' + escapeHtml(device) + '</code>' : 'No enrolled process has connected yet.'}</p></div>${device && !isSelected ? `<form class="inline-form" method="post"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="provider" value="${hash}"><input type="hidden" name="epoch" value="${provider?.selectionEpoch ?? 0}"><button class="sm secondary" name="action" value="select-provider">Use for new commands</button></form>` : ''}</li>`;
     }).join('') : '';
+    const statusBadge = current && selection
+      ? '<span class="badge ok">Connected</span>'
+      : current ? '<span class="badge warn">Updated permissions</span>'
+      : '<span class="badge">Not connected</span>';
+    const primaryLabel = current && selection ? 'Save permissions' : 'Connect assistant';
+    const techDetails = `<details class="disclosure"${pendingConsumers.length ? ' open' : ''}><summary>Technical details &amp; connected providers</summary><div class="disclosure-body stack"><dl class="meta-grid"><dt>Participant keys</dt><dd>${item.adapterHashes.map(hash => '<code>' + hash.slice(0, 12) + '</code>').join(' ')}</dd></dl>${current ? `<div><h3>Application tool provider</h3><p class="muted" style="margin-bottom:.65rem;font-size:.86rem">One selected provider executes new commands. Existing operations stay bound to their original signer.</p><ul class="list">${providerForms}</ul></div><div><h3>Independent agents</h3><p class="muted" style="margin-bottom:.65rem;font-size:.86rem">Each approved agent has its own credentials and delivery progress.</p>${consumerForms ? `<ul class="list">${consumerForms}</ul>` : '<p class="empty">No independently registered agents.</p>'}</div>` : ''}</div></details>`;
     const page = servicePage('Assistant connection',
-    `<h1>${escapeHtml(item.label)}</h1><p>${current ? 'Removing an event stops its subscriptions and removes that event from the inbox.' : 'Choose what the assistant may access.'}</p>
-    <p>Participant keys ${item.adapterHashes.map(hash => '<code>' + hash.slice(0, 12) + '</code>').join(', ')}</p>
-    <form method="post"><input type="hidden" name="csrf" value="${csrf}">
-    ${options('queries', item.queries, selection?.queries)}${options('commands', item.commands, selection?.commands)}${options('events', item.events, selection?.events)}
-    <button name="action" value="approve">Approve selected permissions</button>
-    ${current ? '<button name="action" value="revoke">Disconnect application</button>' : ''}</form>
-    ${current ? `<section><h2>Application tool provider</h2><p>One selected provider executes new commands. Existing operations remain bound to their original signer.</p><ul>${providerForms}</ul></section>
-    <section><h2>Independent agents</h2><p>Each approved agent has a separate proof, operation namespace and delivery progress. Revoking one agent leaves the others connected.</p><ul>${consumerForms || '<li>No independently registered agents.</li>'}</ul></section>` : ''}`);
+      `<a class="back-link" href="/connections">← Assistant connections</a>
+      <form class="stack" method="post"><input type="hidden" name="csrf" value="${csrf}">
+      <section class="card">
+        <div class="card-head"><div><span class="eyebrow">Assistant access</span><h1>${escapeHtml(item.label)}</h1><p>${escapeHtml(current && selection ? 'All checked permissions are active. Removing an event stops its subscriptions and clears its inbox.' : summarizeCapabilities(item))}</p></div>${statusBadge}</div>
+        <div class="actions tight"><button class="lg" name="action" value="approve">${primaryLabel}</button>${current ? '<button class="danger" name="action" value="revoke">Disconnect</button>' : ''}</div>
+      </section>
+      <section class="card">
+        <div class="card-head"><div><h2>Permissions</h2><p>${selection ? 'Adjust which views, actions and notifications this assistant may use.' : 'All proposed permissions are pre-selected. Uncheck anything you want to keep private.'}</p></div></div>
+        ${options('queries', item.queries, selection ? selection.queries : null)}${options('commands', item.commands, selection ? selection.commands : null)}${options('events', item.events, selection ? selection.events : null)}
+      </section></form>
+      ${techDetails}`);
     const headers = new Headers(page.headers);
     headers.set('Content-Security-Policy', headers.get('Content-Security-Policy') + "; frame-ancestors 'none'");
     return new Response(page.body, { status: page.status, headers });
