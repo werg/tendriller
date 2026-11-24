@@ -247,6 +247,8 @@ main().catch(error => {
     ...(Number.isInteger(error.status) ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}),
     ...(error.publication ? { publication: error.publication } : {}),
     ...(error.watch ? { watch: error.watch } : {}),
+    ...(error.revision !== undefined ? { revision: error.revision } : {}),
+    ...(error.recovery !== undefined ? { recovery: error.recovery } : {}),
     ...(error.cleanupError ? { cleanup: { code: error.cleanupError.code ?? 'cleanup_failed', message: error.cleanupError.message } } : {}) }));
 }).finally(async () => {
   const flushed = await Promise.all([process.stdout, process.stderr].map(flushOutput));

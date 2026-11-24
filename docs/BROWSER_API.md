@@ -57,6 +57,51 @@ Safari device-qualification guarantee.
 
 The hosted `tendril.js` entry opens one receive-only publication metadata WebSocket during construction, including on holding and explicitly pinned pages. The bare `startRuntime()` kernel opens it only when passed `watchPublication: true`; otherwise construction starts no host connection or fetch. A healthy publication watch sends no heartbeat or periodic HTTP request; transport failure can trigger bounded recovery reads and reconnects. This watch does not install an application transport. Construction creates no IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
 
+## Published-page security policy
+
+The ordinary authored-page response from `servePageFile` currently adds no host
+`Content-Security-Policy` header. This differs from host-owned sign-in,
+permission-review, management and report documents, which carry their own
+restrictive policies. Those documents' policies do not describe the authored
+application page. The implementation is in
+[page file serving](https://github.com/werg/tendriller/blob/458082873371daeb890336a997897ba6a06c3584/server/src/files.ts),
+[service pages](https://github.com/werg/tendriller/blob/458082873371daeb890336a997897ba6a06c3584/server/src/accounts/ui.ts)
+and [page routes](https://github.com/werg/tendriller/blob/458082873371daeb890336a997897ba6a06c3584/server/src/page.ts).
+
+Check the release and route actually loaded before diagnosing a blocked asset:
+
+1. Open the selected authored publication in an authorized browser. In Network,
+   inspect the final **200 document response**, its publication/version headers
+   and any `Content-Security-Policy` or `Content-Security-Policy-Report-Only`
+   headers. A report-only policy reports violations without enforcing them.
+2. Inspect the authored HTML for
+   `<meta http-equiv="Content-Security-Policy" ...>`. A page author or another
+   hosting layer can supply a policy even when this host route does not.
+3. Use the console and failed resource request to identify the actual rule.
+   An unauthenticated `HEAD` or sign-in/review redirect is not evidence about
+   the selected authored document's policy.
+
+Absence of a host CSP does not waive browser resource rules:
+
+| Resource | Checks that still apply |
+| --- | --- |
+| External API requests | The target's CORS response and credential rules, any effective `connect-src` policy, and mixed-content rules |
+| JavaScript modules | CORS for cross-origin modules and a valid JavaScript MIME type |
+| Worker entry points and imports | Worker origin/type requirements, module import rules and any effective `worker-src` policy |
+| Fonts, images and other external assets | The resource's browser rules, any effective policy and HTTPS/mixed-content handling |
+
+Prefer bundling dependencies, fonts, Worker code and required assets into the
+signed publication graph so their exact bytes travel with that release. This
+also keeps the normal page path independent of a CDN's availability or headers.
+External data requests remain an explicit application choice; test them from the
+actual page origin. There is no generic host CSP allowlist/configuration API or
+implicit cross-origin proxy to enable.
+
+See MDN's [CSP guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP),
+[CORS guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS),
+[mixed-content rules](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Mixed_content)
+and [Worker constructor requirements](https://developer.mozilla.org/en-US/docs/Web/API/Worker/Worker).
+
 ## Favicons and page branding
 
 Give every published app a recognizable favicon so people can find its tab among

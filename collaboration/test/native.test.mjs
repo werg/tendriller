@@ -9,11 +9,12 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '../../session/native.mjs';
 import { createCollaborationClient } from '../client.mjs';
+import { createNativeFrames } from '../../session/native-transport.mjs';
 import { operationReference } from '../protocol.mjs';
 import { createViewStore } from '../local.mjs';
 import { p, native, browser, definition, peerModule, openRetainedOwner } from './native-fixture.mjs';
 
-async function fixture(t) {
+async function fixture(t, { publisher = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'native-owner-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const devicePath = join(root, 'device.sqlite'), ownerDirectory = join(root, 'owner');
@@ -25,7 +26,7 @@ async function fixture(t) {
     executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), definitionDigest: await p.applicationDefinitionDigest(definition), schemaDigest: null }, host);
   const control = await p.signControlRevision({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
     policy: descriptor.payload.policy, revision: 0, previous: null, epoch: 0, keyDigest: await p.bytesDigest(key), recoveryFloor: null,
-    grants: [p.participantGrant(deviceId, { administrator: true })] }, host);
+    grants: [p.participantGrant(deviceId, { administrator: true, publisher })] }, host);
   const registry = await p.createGenerationRegistry({ store: new p.MemoryBytesStore(), descriptor, controls: [control], signer: host });
   await registry.select(await p.signTransitionRequest({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
     policy: descriptor.payload.policy, transitionId: 'initial', expectedGeneration: null, requester: deviceId, coordinator: deviceId,
@@ -50,6 +51,7 @@ test('publication-only supervisor capability composes with Chronolog and bounds 
     openOwner: async () => Object.assign(await f.openOwner(), { control: {
       definition: () => new Promise(resolve => { release = resolve; }),
       publication: async () => null,
+      preparePublication: async input => ({ id: 'publication', payload: { operationId: input.operationId } }),
       publish: async (publication, assets) => { receivedAssets = assets; return { publication }; },
     } }),
   });
@@ -63,13 +65,19 @@ test('publication-only supervisor capability composes with Chronolog and bounds 
   release({ id: 'definition' });
   assert.deepEqual(await first, { id: 'definition' });
   assert.equal(await attached.control.publication(), null);
-  const assets = [{ hash: 'a'.repeat(64), bytes: 'eA=='.repeat(300_000) }];
-  assert.deepEqual(await attached.control.publish({ id: 'publication' }, assets), { publication: { id: 'publication' } });
+  const assets = [{ hash: 'a'.repeat(64), bytes: Buffer.alloc(900_000, 'x').toString('base64') }];
+  const publication = await attached.control.preparePublication({ operationId: 'release' });
+  assert.deepEqual(await attached.control.publish(publication, assets), { publication });
   assert.deepEqual(receivedAssets, assets, 'large attached publication keeps exact staged bytes');
   const observer = await supervisor.createBinding({ id: 'observer', policy: { capabilities: ['queries'] } });
   const observed = await f.attach(observer.token);
   t.after(() => observed.detach());
   await assert.rejects(observed.control.publication(), { code: 'APPLICATION_ATTACHMENT_CAPABILITY_REQUIRED' });
+  const defaultBinding = await supervisor.createBinding({ id: 'default' });
+  const defaultClient = await f.attach(defaultBinding.token);
+  t.after(() => defaultClient.detach());
+  await assert.rejects(defaultClient.control.publication(), { code: 'APPLICATION_ATTACHMENT_CAPABILITY_REQUIRED' });
+  assert.equal((await defaultClient.session.query('notes', null)).value.length, 0);
 });
 
 test('two authenticated native clients share one signer, isolate identical local operation IDs, detach and reopen', async t => {
@@ -339,4 +347,134 @@ definitionVersion:${JSON.stringify(definition.version)}});}`);
   const replay = await invoke(['events', '--cursor', firstBatch.cursor, '--topics', '["note"]']).closed;
   assert.equal(replay.code, 0, replay.stderr);
   assert.deepEqual(JSON.parse(replay.stdout).events.map(event => event.payload), [{ text: 'after crash' }]);
+});
+
+
+test('attached publication retains one signed intent through a lost reply, reconnect and binding rotation', { timeout: 20_000 }, async t => {
+  const f = await fixture(t, { publisher: true });
+  const publications = await p.createPublicationRegistry({ store: new p.MemoryBytesStore(), authority: async () => f.authority });
+  let loseReply = true;
+  const exchange = async request => {
+    let result;
+    if (request.facet === 'control' && request.action === 'read') result = f.authority;
+    else if (request.facet === 'publication' && request.action === 'read') {
+      const records = await publications.read(), id = request.payload.id;
+      const publication = id === undefined ? records.at(-1) : records.find(value => value.id === id);
+      result = publication ? { publication, version: publication.payload.revision + 1 } : null;
+    } else if (request.facet === 'publication' && request.action === 'publish') {
+      const publication = await publications.publish(request.payload.publication);
+      if (loseReply) { loseReply = false; throw Error('LOST_PUBLICATION_REPLY'); }
+      result = { publication, version: publication.payload.revision + 1 };
+    } else throw Error('UNEXPECTED_HOST_REQUEST');
+    return p.createParticipantResponse(request, result);
+  };
+  const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main',
+    openOwner: async () => {
+      const owner = await f.openOwner();
+      return Object.assign(owner, { control: owner.session.connectControlParticipant({ exchange }) });
+    },
+  });
+  t.after(() => supervisor.close());
+  const publisher = await supervisor.createBinding({ id: 'publisher', policy: { capabilities: ['publish'] } });
+  const sibling = await supervisor.createBinding({ id: 'sibling', policy: { capabilities: ['publish', 'queries', 'commands', 'operations'] } });
+  const first = await f.attach(publisher.token), other = await f.attach(sibling.token);
+  t.after(() => Promise.allSettled([first.detach(), other.detach()]));
+  const bytes = Buffer.from('<main>Live release</main>'), hash = await p.bytesDigest(bytes);
+  const input = { operationId: 'release-one', entry: 'index.html', files: [{ path: 'index.html', hash, size: bytes.length, type: 'text/html' }] };
+  const publication = await first.control.preparePublication(input);
+  assert.match(publication.payload.operationId, /^nativepub_[a-f0-9]{32}_[a-f0-9]{64}$/u);
+  assert.equal(publication.payload.author, f.deviceId);
+  await assert.rejects(first.control.publish(publication, [{ hash, bytes: bytes.toString('base64') }]),
+    error => error.code === 'APPLICATION_PUBLICATION_OUTCOME_UNKNOWN' && error.outcome === 'unknown');
+  const retained = await first.control.publicationOperation(input.operationId);
+  assert.equal(retained.publication.id, publication.id);
+  assert.equal(retained.receipt, null);
+  assert.deepEqual(await first.control.preparePublication(input), publication);
+  await assert.rejects(first.control.preparePublication({ ...input, files: [{ ...input.files[0], size: 1 }] }),
+    /PEER_PUBLICATION_OPERATION_REUSED/);
+  await assert.rejects(other.control.publicationOperation(publication.payload.operationId), { code: 'OPERATION_BINDING_MISMATCH' });
+  await assert.rejects(other.control.publish(publication, []), { code: 'OPERATION_BINDING_MISMATCH' });
+  const distinct = await other.control.preparePublication(input);
+  assert.notEqual(distinct.payload.operationId, publication.payload.operationId);
+  await (await other.session.command('add', 'work continues', { operationId: 'during-publication' })).applied();
+  const rotated = await supervisor.rotateBinding('publisher');
+  await assert.rejects(f.attach(publisher.token));
+  const resumed = await f.attach(rotated.token);
+  t.after(() => resumed.detach());
+  const retry = await resumed.control.preparePublication(input);
+  assert.deepEqual(retry, publication);
+  const receipt = await resumed.control.publish(retry, [{ hash, bytes: bytes.toString('base64') }]);
+  assert.equal(receipt.version, 1);
+  assert.equal((await resumed.control.publicationOperation(publication.payload.operationId)).receipt.version, 1);
+  assert.equal((await publications.read()).length, 1);
+  assert.equal((await other.session.query('notes', null)).value[0].text, 'work continues');
+  await supervisor.revokeBinding('publisher');
+  await assert.rejects(f.attach(rotated.token));
+  assert.equal((await other.session.query('notes', null)).value.length, 1);
+  assert.equal(f.opened(), 1, 'publishing never opens another signing owner');
+});
+
+test('local publication capability cannot supply a missing signed publisher grant', async t => {
+  const f = await fixture(t), token = createNativeAttachmentKey();
+  const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main',
+    bindings: [{ id: 'local-admin', token, policy: { capabilities: ['ownerAdmin'] } }],
+    openOwner: async () => {
+      const owner = await f.openOwner();
+      return Object.assign(owner, { control: owner.session.connectControlParticipant({ exchange: async request =>
+        p.createParticipantResponse(request, request.facet === 'control' ? f.authority : null) }) });
+    },
+  });
+  t.after(() => supervisor.close());
+  const attached = await f.attach(token); t.after(() => attached.detach());
+  await assert.rejects(attached.control.preparePublication({ operationId: 'no-publisher', entry: 'index.html',
+    files: [{ path: 'index.html', hash: 'ab'.repeat(32), size: 1, type: 'text/html' }] }), /PEER_PUBLICATION_FORBIDDEN/);
+});
+
+test('raw authenticated publication uploads bound fragments, files and aggregate bytes and discard failed stages', { timeout: 20_000 }, async t => {
+  const f = await fixture(t), token = createNativeAttachmentKey();
+  let published = 0;
+  const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main',
+    bindings: [{ id: 'publisher', token, policy: { capabilities: ['publish', 'queries'] } }],
+    openOwner: async () => Object.assign(await f.openOwner(), { control: { publish: async () => { published++; } } }),
+  });
+  const socket = createConnection(supervisor.socketPath);
+  await once(socket, 'connect');
+  const waiting = new Map(); let sequence = 0, port;
+  const transport = createNativeFrames(socket, frame => {
+    if (frame.type === 'control-reply') {
+      const waiter = waiting.get(frame.id); waiting.delete(frame.id);
+      if (frame.error) waiter.reject(Object.assign(Error(frame.error.message), frame.error));
+      else waiter.resolve(frame.value);
+    } else if (frame.type === 'frame') port.postMessage(frame.value);
+  }, error => { for (const waiter of waiting.values()) waiter.reject(error); });
+  const session = await browser.connectApplicationOwner({
+    addEventListener() {}, removeEventListener() {},
+    postMessage(frame) {
+      port = frame.port;
+      port.addEventListener('message', event => { try { transport.send({ type: 'frame', value: event.data }); } catch {} });
+      port.start();
+      transport.send({ type: 'attach', protocol: 'tendriller.native-owner.v1', token, ownerProtocol: frame.protocol, handshake: frame.handshake });
+    },
+  }, { applicationId: f.authority.descriptor.payload.applicationId, definitionId: definition.id, definitionVersion: definition.version });
+  t.after(async () => { try { await session.detach(); } finally { port.close(); transport.close(); socket.destroy(); await supervisor.close(); } });
+  const call = (method, args) => new Promise((resolve, reject) => {
+    const id = ++sequence; waiting.set(id, { resolve, reject }); transport.send({ type: 'control', id, method, args });
+  });
+  const hash = 'aa'.repeat(32), slice = 'A'.repeat(512 * 1024);
+  await assert.rejects(call('publishStage', ['invalid', hash, '', false]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
+  await assert.rejects(call('publishCommit', ['invalid', {}]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
+  for (let i = 0; i < 128; i++) await call('publishStage', ['files', i.toString(16).padStart(64, '0'), '', true]);
+  await assert.rejects(call('publishStage', ['files', hash, '', true]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
+  await assert.rejects(call('publishCommit', ['files', {}]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
+  await call('publishStage', ['incomplete', hash, slice, false]);
+  await assert.rejects(call('publishCommit', ['incomplete', {}]), { code: 'SUPERVISOR_PROTOCOL_INVALID' });
+  for (let i = 0; i < 4; i++) await call('publishStage', ['slot-' + i, hash, '', true]);
+  await assert.rejects(call('publishStage', ['slot-4', hash, '', true]), { code: 'APPLICATION_ATTACHMENT_REQUEST_LIMIT' });
+  for (let i = 0; i < 4; i++) await call('publishAbort', ['slot-' + i]);
+  for (let i = 0; i < 11; i++) await call('publishStage', ['one', hash, slice, false]);
+  for (let i = 0; i < 11; i++) await call('publishStage', ['two', hash, slice, false]);
+  await assert.rejects(call('publishStage', ['two', hash, slice, false]), { code: 'PEER_PUBLICATION_TOO_LARGE' });
+  await call('publishAbort', ['one']);
+  assert.equal((await session.query('notes', null)).value.length, 0, 'upload rejection leaves the authenticated data facade usable');
+  assert.equal(published, 0);
 });

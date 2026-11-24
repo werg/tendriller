@@ -93,8 +93,28 @@ installed SQL package's supported manifest, copies all four engine files, and
 removes stale/partial output on any failure. It never falls back to a static
 preview. Runtime still verifies the signed authority and execution-manifest
 binding before opening SQL. Keep `.tendriller/`, keys, stores and signed attempts
-outside published assets. On an uncertain publication reply, preserve the exact
-output and operation ID and inspect/retry the original publication.
+outside published assets.
+
+For later UI updates, keep the SQL peer running and publish through its explicit
+publication binding:
+
+```sh
+npm run build
+npx tendril --session ./session.mjs --mode attach --timeout 120 publish ./page --operation inventory-review-1
+npx tendril --session ./session.mjs --mode attach publication
+```
+
+Fresh CLI bindings include `publish`. Retained bindings keep their old policy;
+the owner can deliberately provision a narrow publication credential using
+[the existing supervisor](https://tendriller.dev/docs/tools/CLI.md#publication-capability-and-retained-bindings).
+The signing device's publisher grant remains a separate requirement.
+
+On an uncertain reply, preserve the exact output and operation ID. Inspect an
+attached operation through the same retained profile and binding using
+`publication-operation inventory-review-1`, and compare its receipt with the
+selected head before an exact retry. The initial `inventory-release-1` above
+used `--mode own`; inspect it through that same standalone ownership path while
+the peer is stopped. A timeout does not cancel a saved owner publication.
 
 A new browser deliberately chooses **Create or resume browser device**. It shows
 its own stored public key without exporting its signing identity. Verify that

@@ -1,9 +1,10 @@
 # Preview authored files and verify the real application
 
-**Use file preview for layout; use an authorized hosted page for this starter's
-live session.** The [first-app guide](../BUILD_AN_APP.md) supplies a complete
-native/browser composition. Its connected page uses real authority, enrollment,
-keys and peer transports; a localhost tab does not inherit those things.
+Use file preview for immediate layout review. Use the supported
+[isolated local host](../LOCAL_HOST.md) for connected UX review with synthetic
+owner access and development data. Its matching release kit runs the real
+application session, commands, queries, enrollment and peer transports before
+production sign-in. Review production state through its own authorized page.
 
 ## Choose the check you need
 
@@ -12,14 +13,15 @@ keys and peer transports; a localhost tab does not inherit those things.
 | Inspect the authored UI immediately | `npx tendril-preview ./page` | Local rendering of the exact authored asset graph |
 | Capture the layout in a browser | `npx tendril-preview ./page --headless --desktop --out preview.png` | A screenshot and browser errors from that graph |
 | Exercise the starter's real app/session | Signed publication on its authorized Tendriller page, with `npm run peer` running | Real commands, queries, operation journal, key acquisition and peer synchronization |
-| Test a separate development environment | Create/init/publish/claim/enroll a development page using the same source | The same application implementation with an explicit separate identity and data |
+| Review connected UX before production sign-in | `npm run dev:host -- --release FULL_SOURCE_SHA --state /absolute/isolated-state --open`, then use its matching kit | The selected sealed host release, synthetic owner, real application implementation and separate development identity/data |
 | Validate the local host integration from the core checkout | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | An isolated packed host, synthetic local account, real application sessions and scripted browser checks |
 | Integrate an already implemented local session bootstrap | `--bootstrap` naming an existing authored `openPreview` module | Exactly the real backend and cleanup supplied by that module |
 
-The local integration command is an acceptance harness, not a persistent
-production proxy or a promise of live OAuth behavior. It tears down its isolated
-environment after checking it. See [development verification](../DEVELOPMENT.md)
-for prerequisites and recorded limits.
+The `test:first-app` integration command is an acceptance harness that tears down
+its isolated environment after checking it. The supported `dev:host` runner
+retains its own development state for interactive work. See
+[local host setup](../LOCAL_HOST.md) and [development verification](../DEVELOPMENT.md)
+for their prerequisites and recorded limits.
 
 ## File preview is immediately runnable
 
@@ -41,39 +43,65 @@ early feedback; it does not establish retained state, a connected agent, SQL
 execution, or working inference. Those use the real session and optional
 capabilities described in [the capability map](../CAPABILITIES.md).
 
-## The runnable live-review path
+## Connected UX review before production sign-in
 
-For the same actual application and retained data, use its actual authorized
-page origin. Once the first-app create/claim/init steps are complete, stop the
-native peer if it owns the device and run:
+Follow [the local-host procedure](../LOCAL_HOST.md) using the full source SHA of
+the release you intend to qualify. The runner verifies its sealed manifest,
+packed host, public assets and matching first-app kit. Use a fresh local app
+directory and the generated local network preload. Initialize and publish the
+same application source, keep its native participant running, then claim and
+enroll its browser through the synthetic test account in the runner's Chromium
+profile. This is a separate development application with its own keys and data.
+
+Seed realistic examples through the domain's real commands, including empty
+and long-content cases. Do not substitute a mock state provider for connected
+review. Walk each main flow at **1440×900** and **390×844**: create or edit, inspect
+the applied result from another participant, navigate Back/deep links, reload,
+and check loading, unavailable and uncertain-operation states. Capture
+before/after screenshots and fix the observed friction before final delivery.
+[Agent delivery](../AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)
+defines the flow evidence.
+
+Production OAuth and owner sign-in are not prerequisites for this local UX pass.
+Record the release source/composition, selected publication, development-data
+scope, browser and viewports. Production authorization, real owner enrollment,
+remote providers and physical-device behavior still require their own checks;
+local results do not claim those observations.
+
+The runner supplies the real host and browser setup already supported by the
+project. It requires no new app backend, proxy, preview authentication route or
+custom bootstrap. Use its Playwright installation; an existing Chromium can be
+selected with `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` as documented in
+[Local host](../LOCAL_HOST.md#1-start-the-selected-release). File preview can use
+an existing Playwright module through `--playwright-path`.
+
+## Review a running hosted application
+
+For the application's actual retained data, use its authorized page origin.
+Keep the native peer running and publish through an explicitly authorized
+attachment:
 
 ```sh
 npm run build
-npx tendril --session ./session.mjs publish ./page --operation notes-review-1
-npx tendril --session ./session.mjs publication
-npm run peer
+npx tendril --session ./session.mjs --mode attach publish ./page --operation notes-review-1
+npx tendril --session ./session.mjs --mode attach publication
 ```
 
-Open the saved page URL and the selected release while signed in. If this
-browser is new, follow the supplied [enrollment step](../BUILD_AN_APP.md#6-enroll-and-connect-the-owners-browser),
-then connect it. Verify a browser command natively, a native command in the
-browser, and same-device reopening. Stop the peer before a CLI command needs
-the same native store, then resume it. The native peer must remain available
-for the starter's coordinator and key-donor role.
+The [publication capability](CLI.md#publication-capability-and-retained-bindings)
+is explicit; an older retained binding is never elevated automatically. Initial
+publication before the owner starts can still use `--mode own`.
 
-The publication operation ID identifies this exact authored graph. If its reply
-is uncertain, retry the same ID with unchanged files. A changed graph needs a
-deliberate new publication ID. Opening an existing immutable release URL keeps
-that release; use the page's **Open latest version** control to review the
-newly selected publication.
+Open the saved page URL and selected release while signed in. A new browser uses
+the supplied [enrollment step](../BUILD_AN_APP.md#6-enroll-and-connect-the-owners-browser).
+Verify a browser command natively, a native command in the browser, and
+same-device reopening. The native peer remains available for the starter's
+coordinator and key-donor role; attached publication does not replace it.
 
-For development data, create a separate development project/page and run those
-same steps with its own private handle, descriptor and enrolled devices. Reuse
-the same domain, session/Worker implementation, helpers and runtime backend.
-The environment configuration selects the intended application. This verifies
-the same implementation, but it is not the production application's session
-identity or retained history. Review production data only through its own
-authorized page and session.
+The publication operation ID identifies the exact authored graph. After an
+uncertain reply, inspect its retained receipt and the current selected head,
+then retry the same identity with unchanged files when appropriate. A changed
+graph needs a deliberate new operation. An immutable release URL stays on its
+selected bytes; use **Open latest version** to review the current publication.
 
 ## What the optional bootstrap hook actually provides
 

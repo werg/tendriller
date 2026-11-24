@@ -171,11 +171,29 @@ Resume a saved production application only against its matching production
 connector; use a separate directory for staging. Never copy private signing
 state to make an origin mismatch disappear.
 
+Keep the native participant running for UI updates and use the explicitly scoped
+publication attachment:
+
+```sh
+npm run build
+npx tendril --session ./session.mjs --mode attach --timeout 120 publish ./page --operation notes-review-1
+npx tendril --session ./session.mjs --mode attach publication
+```
+
+Fresh CLI bindings include `publish`; an older retained binding may need a
+deliberately provisioned publication credential. Follow
+[publication capability and retained bindings](https://tendriller.dev/docs/tools/CLI.md#publication-capability-and-retained-bindings)
+without editing retained supervisor records or resetting the signer.
+
 If publishing times out, retain `page/`, `.tendriller/` and the original
-`notes-release-1` identity. With the owner stopped, inspect `publication` and
-`publication-operation notes-release-1` using `--mode own`; compare the signed
-graph before an exact retry. A retained host receipt and a verified current head
-are separate observations. `--timeout 120` means 120 seconds.
+operation. For an attached update, inspect `publication` and
+`publication-operation notes-review-1` through the same `--mode attach` binding.
+The initial `notes-release-1` above was published with `--mode own`; inspect that
+standalone operation using the same ownership path while the peer is stopped.
+Compare the exact signed graph before retrying, without changing its operation ID
+or bytes. A retained host receipt and a verified current head are separate
+observations. `--timeout 120` means 120 seconds; a timeout does not cancel an
+owner publication already in progress.
 
 The browser can read/write notes but cannot administer, publish, coordinate or
 recover. Keep the native peer running for applied writes. This first-app policy

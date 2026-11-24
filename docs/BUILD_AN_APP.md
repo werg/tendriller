@@ -583,8 +583,9 @@ explicit authorized bootstrap as described in [Preview](tools/PREVIEW.md).
 
 ## 5. Publish signed code
 
-Stop the standalone native peer with Ctrl-C and await its exit before opening
-the same store. Standalone tutorial CLIs close their owner/components, flush
+For initial publication, use standalone ownership before starting the native
+peer. If the peer is already running, use the attached update route below.
+Standalone tutorial CLIs close their owner/components, flush
 output and dispose their dedicated Node process; cleanup or output failure stays
 nonzero. Imported runners leave process lifetime to their caller. See
 [owned shutdown and uncertain operations](SESSION_BOOTSTRAP.md#own-shutdown-and-uncertain-operations).
@@ -602,16 +603,32 @@ creator has an explicit publisher grant. Host login, administration and data
 access alone do not confer publication rights.
 
 Record the publication receipt's ID and version, then open the original page
-URL. The rendered release is pinned to its immutable authored graph. If the
-publish reply is uncertain, repeat the **same** command and operation ID with
-unchanged files; Chronolog recovers the saved intent. A changed graph requires a
-new release operation ID. A stale predecessor requires inspection of the
-selected publication before making a deliberate new release.
+URL. The rendered release is pinned to its immutable authored graph. If this
+initial publish reply is uncertain, retain the exact files and operation ID.
+With the owner stopped, use the same `--mode own` path to inspect
+`publication-operation notes-release-1` and `publication` before an exact retry.
+A changed graph requires a new release operation ID; inspect a stale predecessor
+before deliberately publishing against the current selected head.
 
-After `npm run peer` starts, ordinary CLI reads and commands use the default
-attachment mode; for example `npx tendril --session ./session.mjs self`. They do
-not open or close the signer store. Publication and setup administration use the
-explicit `--mode own` commands above while the resident owner is stopped.
+After `npm run peer` starts, ordinary CLI reads, commands and UI publication
+attach to that same owner. Keep it running while building and publishing an update:
+
+```sh
+npm run build
+npx tendril --session ./session.mjs --mode attach publish ./page --operation notes-review-1
+npx tendril --session ./session.mjs --mode attach publication
+```
+
+Fresh CLI bindings explicitly permit publication. An older retained binding keeps
+its policy; follow [publication capability and retained bindings](tools/CLI.md#publication-capability-and-retained-bindings)
+to provision an authorized attachment deliberately. The device still needs its
+independent signed publisher grant.
+
+For an uncertain attached update, inspect `publication-operation notes-review-1`
+through the same profile and binding, then retry only the original operation and
+unchanged bytes. Reusing a short standalone ID through a different mode or binding
+does not identify the same saved publication. Setup administration uses deliberate standalone ownership with the resident
+owner stopped.
 
 Publishing code does not enroll the browser's future device. The page's
 connection component does that the first time each browser opens it.
@@ -720,7 +737,7 @@ Call the app complete only after checking the actual hosted behavior:
    distinction between local saving and waiting for applied execution. Restart
    the same native device and inspect/retry the original identity. A short UI
    timeout cancels observation; it does not cancel the saved operation.
-5. Stop the native peer before a CLI invocation, then query through
+5. To verify native reopening, stop the peer and query the retained profile through
    `npx tendril --session ./session.mjs --mode own query notes null`. Confirm the same
    retained data and original operation IDs. Start `npm run peer` again when done.
 6. Rebuild a visible UI change and publish with a new operation, such as
@@ -842,7 +859,7 @@ mobile suspension.
 | `PEER_NO_SELECTED_GENERATION` | Complete the saved first `create` transition before opening the session. |
 | Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
-| `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Native CLI and `npm run peer` cannot share one open writer. |
+| `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Use `--mode attach` for CLI work against the running peer; standalone `--mode own` requires that peer to be stopped. |
 | Browser is not enrolled | Request access from its retained browser device, keep the native peer running to stage the exact proposal, and complete the service-origin owner review. Check committed status before connecting. Account login and device grants are separate. |
 | Pairing is pending or ordering is paused | Inspect the original request and retained native proposal. Keep the native owner running for setup notifications; after a process stop, reopen the same owner and reconcile uncertain commitment before resuming ordering. Never delete the pause or silently rebase the review. |
 | `awaiting-keys`, connecting, or locally saved work | Keep the authorized native donor/coordinator running and inspect participation status and host access. Never paste the epoch key into the page. |

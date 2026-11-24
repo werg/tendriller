@@ -39,6 +39,11 @@ declared commands/queries when they must survive absence.
 
 ## After a republish or participant restart
 
+For a UI-only publication, keep an already-running compatible native owner and
+consumer alive. Reload and verify the new page as below. Perform the stop/start
+and cursor-resume steps only for processes that are actually being restarted or
+replaced; publishing UI code alone does not require a new owner incarnation.
+
 1. Record the intended application ID, service origin, retained native/browser
    profile, signed publication and exact package composition. Determine whether
    this is a UI-only release, owner restart or intentionally new application.
@@ -71,6 +76,40 @@ declared commands/queries when they must survive absence.
    private checkpoints live, how to restart them, and the verified publication.
    Do not claim future wake of a conversation unless that host explicitly
    supports and has established it.
+
+## Review a recovered cursor before resuming
+
+Pairing or another control transition can select a new generation even when
+the visible records appear unchanged. A generation-bound cursor can then fail
+with `APPLICATION_VIEW_RECOVERED`. A live event forwarder halts with
+`EVENT_FORWARDER_REVIEW_RECOVERY`; starting one with a stale checkpoint can
+surface the reader's `APPLICATION_VIEW_RECOVERED` instead. Neither the CLI nor
+the forwarder rewrites the cursor or silently skips to the newest event.
+
+The error carries the current `revision` and, when verified evidence is
+available, `recovery: { reason, adopted, unknownLoss }`.
+`adopted` is the verified history point; `reason` can be `null` for an older
+notice. The entire `recovery` can also be `null`. Missing evidence is not
+proof of continuity, and `reason: 'control-change'` alone does not establish
+that every previously observed event was adopted.
+
+1. Stop work from the superseded view. Retain the old **handled** cursor, pending
+   signed operations and durable effect receipts. Record the error evidence.
+2. Inspect the selected revision and recovery. Rebuild the application's
+   declared inbox query, or deliberately open a fresh coherent view and rescan
+   its selected history using the same topic filters. Keep this rescan separate
+   from claiming the old cursor translated safely.
+3. Reconcile work by the application's stable request/operation references.
+   Commit a new handled checkpoint only with durable results. For external
+   effects, reuse the original provider idempotency reference or inspect its
+   existing receipt; an uncertain result is not permission to repeat the effect.
+
+Use the application's durable inbox/result records or an existing bounded
+checkpoint/effect journal for this reconciliation. A process-local set of
+every event ID is neither durable recovery evidence nor a bounded solution.
+If the selected history lost work, represent that loss explicitly rather than
+claiming a complete replay. Automatic cross-generation continuation requires
+separate verified prefix-continuity proof and is not supplied by this recipe.
 
 ## Supervise the current CLI
 

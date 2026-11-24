@@ -67,8 +67,9 @@ const session = await openNativeApplication({
 });
 ```
 
-Those variables are all supplied in the runnable tutorial. The initial native
-query activates durable storage and saves the initial keyring. Normal opens use
+Those variables are all supplied in the runnable tutorial. Initialization
+activates durable storage and saves the initial keyring with `session.readView()`,
+then releases the view in `finally`. Normal opens use
 the existing device and keyring without `create: true`. A missing signer,
 inconsistent binding or missing retained store is an explicit failure.
 

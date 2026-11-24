@@ -141,6 +141,39 @@ the same CLI's `publication` command. These checks exercise real host setup,
 publication, browser enrollment and connected application state. A successful
 server startup alone does not establish application connectivity.
 
+## Review connected UX with realistic development data
+
+Use this environment for the connected UX pass before asking the production
+owner to sign in. Keep the selected sealed release and matching SDK/tools/session
+archives together. The same application source runs with a separate local
+handle, signer, browser profile and data; record that scope in the review.
+
+Seed data through the real domain commands while the native participant runs.
+For the unmodified Shared Notes kit, one retained example is:
+
+```sh
+node --import "$TENDRILLER_LOCAL_PRELOAD" \
+  node_modules/@tendriller/tools/bin/tendril.mjs \
+  --session ./session.mjs --mode attach command addNote \
+  '{"text":"A realistic local review note"}' --operation local-ux-note-1
+```
+
+Use stable operation IDs for exact retries. For an adapted domain, use its
+declared commands and input rather than writing a fixture directly into storage.
+Include long content, several records and an empty-data case. Confirm browser
+and native reads observe the same applied changes.
+
+In the runner's correctly configured Chromium profile, review the main flows
+at **1440×900** and **390×844**. Capture before/after screenshots of arrival,
+navigation, reading, editing and saved results; exercise keyboard focus, Back,
+reload, loading and unavailable states. Preserve uncertain operations when
+testing recovery. The [delivery flow matrix](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)
+records the steps, selected publication and what changed.
+
+This pass needs synthetic local account access, not production OAuth. It does
+not verify the production account, Internet transports, optional providers or
+physical phones. Complete and identify those remaining checks separately.
+
 ## Restart, offline release input and limits
 
 Stop the participant first, then stop the host with Ctrl-C. Restart the host

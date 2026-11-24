@@ -50,6 +50,11 @@ it('projects signed page code atomically, retains exact old releases, and resume
   const first = await release(authority, a, 'release-one');
   const initial = await (await page.exchange('publication/publish', first)).json() as { publication: SignedPublication; version: number };
   expect(initial.publication).toEqual(first.publication); expect(initial.version).toBe(1);
+  const authoredPage = await page.asset('');
+  expect(authoredPage.status).toBe(200);
+  expect(authoredPage.headers.get('Content-Type')).toContain('text/html');
+  expect(authoredPage.headers.get('Content-Security-Policy')).toBeNull();
+  expect(await authoredPage.text()).toContain('version one');
   expect(await (await page.asset('page.mjs')).text()).toBe('export const release = "version one";');
   const second = await release(authority, a, 'release-two', first.publication, 'version two');
   expect((await page.exchange('publication/publish', second)).status).toBe(200);

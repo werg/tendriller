@@ -54,6 +54,37 @@ Cloudflare billing, Internet interface totals, or proof that a command was saved
 applied, retained by a peer or preserved across recovery. An old sample does not
 establish continuous connectivity.
 
+## Live-signal rejection counters
+
+Each current authenticated link may expose a `signalRejections` object with
+exactly these payload-free counters:
+
+| Field | Meaning |
+| --- | --- |
+| `total` | All live signals rejected by this link's gate |
+| `clockSkew` | Signed, authorized signals rejected for exceeding clock tolerance |
+| `expired` | Signed, authorized signals whose lifetime has elapsed |
+| `unauthorized` | Signals rejected by the gate's signal authorization checks |
+| `duplicate` | Already-seen signals rejected by the gate |
+| `capacity` | Signals rejected by bounded gate capacity |
+
+The whole field is `null` when the source package does not expose these
+diagnostics. Missing or malformed individual counters remain `null`; neither
+case is reported as zero. These counters belong to the current link and reset
+when it is replaced. They contain no topic, payload, sender identity or
+unbounded error text, and are sampled through the existing explicit refresh.
+
+A valid signed and authorized signal with excessive clock skew or an expired
+lifetime is dropped without closing the authenticated link. Invalid signatures
+and malformed protocol input still fail the link. A drop does not append durable
+history or create an automatic retry. Reliable commands keep their existing
+journal and outcome semantics.
+
+A local signal callback or send/echo is not a remote acknowledgement. Establish
+remote observation through the receiving participant when a workflow requires
+it; do not interpret zero rejection counters, an active link or local echo as
+delivery proof.
+
 ## Native and SDK consumers
 
 Keep the resident native owner running. These tutorial commands attach to it,
