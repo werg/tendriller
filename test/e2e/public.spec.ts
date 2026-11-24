@@ -90,7 +90,7 @@ test('ChatGPT client can link and revoke its account through the live OAuth issu
   });
   await page.route(redirectUri, route => route.fulfill({ contentType: 'text/plain', body: 'Staging OAuth callback captured' }));
   const returned = page.waitForURL(redirectUri);
-  await page.getByRole('button', { name: 'Allow these permissions' }).click();
+  await page.getByRole('button', { name: 'Allow access' }).click();
   await returned;
   const callback = new URL(redirect);
   expect(callback.origin + callback.pathname).toBe(redirectUri);
@@ -109,7 +109,7 @@ test('ChatGPT client can link and revoke its account through the live OAuth issu
   expect((await linked.json()).result.structuredContent.id).toBeTruthy();
 
   await page.goto(`${staging}/oauth/connections`);
-  await page.getByRole('button', { name: 'Revoke this authorization' }).click();
+  await page.getByRole('button', { name: 'Revoke authorization' }).click();
   await expect(page.getByText(/Revoked or expired/)).toBeVisible();
   expect((await profile()).status()).toBe(401);
 });

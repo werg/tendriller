@@ -91,7 +91,7 @@ try {
       assert.equal((await readWithAdmissionRetry(() => host.peers.publication())).publication.id, publication.publication.id);
       diagnostics.step('open-permission-review'); await page.goto(proposal.reviewUrl);
       diagnostics.step('select-permissions'); for (const checkbox of await page.getByRole('checkbox').all()) await checkbox.check();
-      diagnostics.step('approve-permissions'); await page.getByRole('button', { name: 'Approve selected permissions' }).click();
+      diagnostics.step('approve-permissions'); await page.getByRole('button', { name: /^(Connect assistant|Save permissions)$/ }).click();
       diagnostics.step('wait-native-signer');
       await waitForReviewProvider({ request: context.request, url: proposal.reviewUrl, observe: value => {
         diagnostics.provider(value); diagnostics.response(proposal.reviewUrl, value.status);

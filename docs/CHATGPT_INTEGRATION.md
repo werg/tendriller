@@ -81,7 +81,7 @@ connection and approves what to share for each application.
    **Tendriller**. Ask “List my connected Tendriller apps.” When ChatGPT asks
    you to connect, follow it to Tendriller. Sign in with your usual GitHub or
    Google account and review the **Connect ChatGPT** permissions. Select
-   **Allow these permissions** if you agree. You should return to ChatGPT.
+   **Allow access** if you agree. You should return to ChatGPT.
    [Tendriller sign-in](https://tendriller.dev/auth)
 2. If your app is missing, ask the agent that runs it for its application
    review link. Open that link and approve the capabilities you want to share.

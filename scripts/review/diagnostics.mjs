@@ -72,7 +72,7 @@ export function createReviewDiagnostics({ origin, pageUrl, reviewUrl, apiUrl, no
       surface = { route: route(page.url()), closed: page.isClosed(),
         loginForm: await count(page.locator('input[name=token]')),
         signedHeading: await count(page.getByRole('heading', { name: 'Review checklist', exact: true })),
-        approvalButton: await count(page.getByRole('button', { name: 'Approve selected permissions', exact: true })),
+        approvalButton: await count(page.getByRole('button', { name: /^(Connect assistant|Save permissions)$/ })),
         checkboxes: await count(page.getByRole('checkbox')),
         enrolledSigner: await count(page.getByText('Enrolled signer:', { exact: false })) };
     },

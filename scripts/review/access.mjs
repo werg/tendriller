@@ -39,7 +39,7 @@ export async function authorizeReview(context, access) {
   });
   await page.route(url => url.origin + url.pathname === callbackUri, route => route.fulfill({ contentType: 'text/plain', body: 'OAuth consent completed. Preparing the live MCP walkthrough.' }));
   await page.goto(origin + '/oauth/authorize?' + params);
-  await page.getByRole('button', { name: 'Allow these permissions' }).click();
+  await page.getByRole('button', { name: 'Allow access' }).click();
   await page.waitForURL(callbackUri);
   const callback = new URL(redirect);
   if (callback.origin + callback.pathname !== callbackUri || callback.searchParams.get('state') !== state || callback.searchParams.get('iss') !== origin)
