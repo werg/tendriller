@@ -12,6 +12,7 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `node scripts/test-dev-host.mjs --artifacts /absolute/release-assets` | After sealing a release: verify local-host startup, synthetic browser sign-in, owner claim, assets and retained state across restart |
 | `npm run test:onboarding` | After a build: validate the discovery documentation graph, generated combined guide and safe tutorial archive |
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
+| `npm run test:first-app:feedback -- --first-app-archive /absolute/tendriller-first-app-VERSION.tgz` | Qualify resident signed publication, explicit enrollment recovery and signal freshness on the selected public composition |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
 | `npm run test:e2e:voice-controls` | Chromium, Firefox, desktop WebKit and mobile WebKit controls plus real AudioWorklet fixtures; deterministic inference |
@@ -226,7 +227,21 @@ For a local release candidate, commit a clean checkpoint, run
 `npm run build:artifacts` and `npm run release:artifacts`, then pass
 `--first-app-archive /absolute/tendriller-first-app-VERSION.tgz` to `test:first-app`.
 That mode verifies and installs the packages carried by the kit; the release
-workflow requires it before publication. `--session-archive` remains available
+workflow requires it before publication.
+
+The separate `test:first-app:feedback` gate uses that same package composition
+with private fixture clock controls in the downloaded browser Worker and native
+test participant. It exercises attached signed publication while an independent
+event consumer and browser stay active, exact and stale publication retries, the
+2000 ms signal-freshness boundary over the real connection, and enrollment while
+direct, attached and forwarding consumers hold work. Recovery checks require
+verified evidence and deliberate rescans with durable handled-work receipts.
+The fixture controls do not enter shipped source or packages. This gate records
+its own limits and evidence in `.results/first-app-feedback.json` and gates
+publication alongside the unmodified-kit and native/browser checks.
+For a local offline run, set `FIRST_APP_NPM_CACHE` to an existing npm download
+cache and `npm_config_offline=true`; the application install is still isolated,
+artifact hashes are verified, and missing cached packages fail the run. `--session-archive` remains available
 for deliberate alternate-source and SQL qualification, without claiming that it
 is the released first-app composition. Use Playwright's installed Chromium,
 or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an existing Chromium executable.

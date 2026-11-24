@@ -113,6 +113,45 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
+  feedback-qualification:
+    name: Resident publication, recovery and signal freshness
+    needs: [artifacts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install native build tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends build-essential python3
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: public-packages
+          path: dist
+      - run: node scripts/deployment-bundle.mjs
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+      - run: npm --prefix tools ci
+      - name: Qualify live owner workflows with the selected public composition
+        run: npm run test:first-app:feedback -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz" --report .results/first-app-feedback.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: feedback-qualification
+          path: .results/first-app*
+          include-hidden-files: true
+          if-no-files-found: ignore
+
   native-owner:
     needs: [artifacts]
     name: Native owner attachment and crash recovery
@@ -211,7 +250,7 @@ jobs:
 
   publish:
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
-    needs: [check, browser, native-owner, sql-starter, network-qualification, artifacts]
+    needs: [check, browser, feedback-qualification, native-owner, sql-starter, network-qualification, artifacts]
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
