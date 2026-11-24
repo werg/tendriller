@@ -175,63 +175,49 @@ const request = { ...event.payload,
 Use this mapping only for `agent/request` events from the intended history;
 filter by recipient and implemented topic before accepting work.
 
-## Listener presence survives a late page join
+## Live presence and streaming previews (preferred, zero durable writes)
 
-Peer connectivity only says an enrolled participant is reachable. It cannot tell
-whether its agent loop is consuming `analysis` requests. Announce the consumer
-with a declared durable command **after a successful inbox read**:
+Peer connectivity only says an enrolled participant is reachable. It does not say
+whether its agent loop is actively handling requests or currently thinking.
+**Do not write periodic durable `agentHeartbeat` records every 30 seconds**—that
+adds ~120 signed journal entries per hour and burns through history quotas even
+while idle.
 
-```js
-const consumerId = 'analysis-worker'; // Stable logical role; one supervised loop.
-const runId = crypto.randomUUID();   // New for this actual consumer process.
-const startedAtMs = Date.now();
-const heartbeat = {
-  consumerId, runId, role: 'Analysis assistant', topics: ['analysis'],
-  startedAtMs, state: 'listening',
-};
-await session.query('agentInbox', null); // The loop really can read its queue.
-await accepted('agentHeartbeat', heartbeat, `heartbeat:${crypto.randomUUID()}`);
-```
-
-Renew every 30 seconds while that consumer successfully reads its queue and can
-accept work. Give each pulse its own operation ID; after an uncertain pulse retry
-its original input/ID before admitting another. Tie renewal to successful consumer
-progress, not to the participant's independent keep-alive timer or the page being
-open. Stop renewal on consumer failure, owner loss or shutdown. A graceful stop
-can submit a final announcement with `state: 'stopped'`; a crash is handled by
-expiry. The supervisor owns that loop and reports failures nonzero.
-
-The example query retains the latest announcement per `(author, consumerId)`,
-including `startedAtMs`, `runId`, topics and the signed `lastSeenAtMs`. A later
-run replaces that role's announcement. Do not run two independent loops under
-one consumer ID; give concurrent workers separate IDs. The data is retained in
-the selected journal, so a late-joining page can query it without having received
-the original live signal. An optional signal may accelerate rendering but is
-never the only source of the last heartbeat.
+Instead, use the ephemeral signal helpers in `helpers/agent-requests.mjs`:
 
 ```js
-import { consumerPresence } from './helpers/agent-requests.mjs';
-const listener = inbox.consumers.find(item => item.author === nativeDeviceId
-  && item.consumerId === 'analysis-worker' && item.topics.includes('analysis'));
-const presence = consumerPresence(listener, {
-  now: Date.now(), staleAfterMs: 90_000,
-  observationCurrent: connectionUsable && !queryError && !recovering,
+// Native agent process: broadcasts presence ONLY while a peer is connected and
+// responds immediately to on-demand pings. Writes zero durable Chronolog records.
+import { announceAgentPresence, streamAgentReply } from './helpers/agent-requests.mjs';
+
+const presence = announceAgentPresence(session, {
+  consumerId: 'ops-agent', role: 'Operations assistant', topics: ['chat'],
 });
+// While generating an answer, mark busy and stream live previews:
+presence.setState('busy');
+await streamAgentReply(session, {
+  requestAuthor: req.requestAuthor, requestOperationId: req.requestOperationId,
+  text: partialReply,
+});
+// Then commit the final durable agentAnswer and clear the stream:
+await streamAgentReply(session, {
+  requestAuthor: req.requestAuthor, requestOperationId: req.requestOperationId,
+  text: '', done: true,
+});
+presence.setState('listening');
 ```
 
-Recompute this every second in the view and on visibility/resume, even without
-new events; clear the timer on view teardown. `available` means a recent successful
-check-in, not a guarantee that the next request will be handled. Show `stale` as
-“Listener last checked in [time]; your request is saved and waiting.” It is not
-proof the process is dead: a blocked or long-running job also misses check-ins.
-Keep the existing receipt and answer state visible independently. For `unknown`,
-show that current listener status could not be established; do not infer online
-from a cached query while disconnected. A future/invalid author timestamp or
-start time yields `clock-skew` instead of remaining green indefinitely.
+On the browser side, `watchAgentPresence(session, { peer, onChange })` subscribes
+with `mode: 'latest', includeLatest: true` and sends an immediate ping on connect,
+so late-joining pages see live availability (`available`, `busy`, `stale`, `stopped`)
+right away without any durable writes. `watchAgentStream` feeds live thinking
+previews directly into `mountAgentChat.setStreamingReply(...)`.
 
-This small event-backed specimen scans retained facts on each query. For a large
-or high-frequency inbox, maintain an indexed SQL read model or a bounded public
-Chronolog projection; apply retention deliberately and preserve outstanding
-requests and idempotency records. Heartbeats add durable events, so select a
-frequency and stale window appropriate to the application instead of signing
-one per animation frame. See [events or SQL](STATE_MODELS.md).
+## Optional durable listener checkpoints
+
+If an application specifically requires an auditable durable record of when a
+consumer started or stopped (not a periodic timer), `agentHeartbeat` remains
+available as an occasional lifecycle command (`state: 'listening'` on startup,
+`state: 'stopped'` on shutdown). Avoid sub-minute polling intervals so the journal
+stays lean; use `consumerPresence` with explicit wall-clock expiry when displaying
+durable checkpoints.

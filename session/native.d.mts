@@ -1,5 +1,5 @@
 export interface NativeAttachmentPolicy {
-  capabilities?: readonly ('commands' | 'queries' | 'events' | 'content' | 'signals' | 'operations' | 'diagnostics' | 'ownerAdmin')[];
+  capabilities?: readonly ('commands' | 'queries' | 'events' | 'content' | 'signals' | 'operations' | 'diagnostics' | 'ownerAdmin' | 'publish')[];
   commands?: readonly string[];
   queries?: readonly string[];
   identity?: { principalId?: string; agentBindingId?: string; deviceProfileId?: string };
@@ -14,9 +14,17 @@ export interface NativeEndpoint {
   postMessage(value: unknown, transfer?: Transferable[]): void;
   start?(): void;
 }
+export interface NativeControlProxy {
+  definition(): Promise<unknown>;
+  publication(): Promise<unknown>;
+  publicationOperation(operationId: string): Promise<unknown>;
+  preparePublication(input: unknown): Promise<unknown>;
+  publish(publication: unknown, assets: readonly { hash: string; bytes: string }[]): Promise<unknown>;
+}
 export interface NativeSessionOwner {
   readonly ownerInstanceId: string;
   readonly session: { readonly applicationId: string; readonly deviceId: string; readonly signal?: AbortSignal; describe(): { id: string; version: string } };
+  readonly control?: NativeControlProxy;
   attach(endpoint: NativeEndpoint, policy?: NativeAttachmentPolicy): () => void;
   endpoints(): readonly unknown[];
   close(): Promise<void>;
@@ -52,7 +60,7 @@ export function attachNativeSession<Session extends NativeAttachedSession>(optio
     context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal }): Promise<Session>;
   applicationId: string; definitionId: string; definitionVersion: string;
   context?: NativeAttachmentPolicy['context']; preserveOperationId?: boolean; timeoutMs?: number; signal?: AbortSignal;
-}): Promise<{ session: Session&NativeOperationScope; mode: 'attach'; transport: string; detach(): Promise<void> }>;
+}): Promise<{ session: Session&NativeOperationScope; control: NativeControlProxy; mode: 'attach'; transport: string; detach(): Promise<void> }>;
 export function connectOrStartNativeSession<Session extends NativeAttachedSession>(options: {
   directory: string; profileId: string;
   openOwner(options: { signal?: AbortSignal; profileId: string }): NativeSessionOwner | Promise<NativeSessionOwner>;

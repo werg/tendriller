@@ -65,7 +65,7 @@ function checkedPolicy(value = {}) {
   if (Object.keys(value).some(key => !['capabilities', 'commands', 'queries', 'context', 'contextEvidence', 'identity', 'maxRequests', 'maxStreams', 'maxViews', 'preserveOperationId'].includes(key)))
     throw failure('SUPERVISOR_POLICY_INVALID');
   if (serialize(value).length > 16384) throw failure('SUPERVISOR_POLICY_LIMIT');
-  const capabilities = ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'ownerAdmin'];
+  const capabilities = ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'ownerAdmin', 'publish'];
   if (value.capabilities !== undefined && (!Array.isArray(value.capabilities) || value.capabilities.some(item => !capabilities.includes(item))) ||
       [value.commands, value.queries].some(items => items !== undefined && (!Array.isArray(items) || items.length > 128 ||
         items.some(item => typeof item !== 'string' || !item.length || item.length > 128))) ||
@@ -182,9 +182,63 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
     if (!previous) await writePrivateJsonAtomic(root, 'profile.json', profile);
     const onConnection = socket => {
       if (stopped || clients.size >= maxClients) { socket.destroy(); return; }
-      const client = { socket, bindingId: null, revision: null, detach: undefined, port: undefined, snapshot: null, failed: false };
+      const client = { socket, bindingId: null, revision: null, detach: undefined, port: undefined, snapshot: null, failed: false, stagedAssets: new Map(), controlRequests: 0 };
       clients.add(client);
       const timer = setTimeout(() => terminateClient(client), handshakeTimeoutMs);
+      const controlAllowed = binding => binding.policy.capabilities === undefined ||
+        binding.policy.capabilities.includes('publish') || binding.policy.capabilities.includes('ownerAdmin');
+      const handleControl = async (frame, binding) => {
+        const sendReply = reply => {
+          if (!client.failed && !socket.destroyed) {
+            try { transport.send({ type: 'control-reply', id: frame.id, ...reply }); }
+            catch { terminateClient(client); }
+          }
+        };
+        if (client.controlRequests >= (binding.policy.maxRequests ?? 16)) {
+          sendReply({ error: { code: 'APPLICATION_ATTACHMENT_REQUEST_LIMIT', message: 'Too many outstanding control requests' } });
+          return;
+        }
+        ++client.controlRequests;
+        try {
+          if (!controlAllowed(binding)) throw failure('APPLICATION_ATTACHMENT_CAPABILITY_REQUIRED', 'This native binding is not authorized for control/publication operations.');
+          const control = owner.control;
+          if (!control) throw failure('CONTROL_PARTICIPANT_UNAVAILABLE', 'This running owner did not expose a control participant for attached publishing.');
+          const { method, args = [] } = frame;
+          let value;
+          if (method === 'definition') value = await control.definition();
+          else if (method === 'publication') value = await control.publication();
+          else if (method === 'publicationOperation') value = typeof control.publicationOperation === 'function' ? await control.publicationOperation(args[0]) : (() => { throw failure('publication_inspection_unsupported', 'The installed Chronolog package cannot inspect retained publication receipts.'); })();
+          else if (method === 'preparePublication') value = await control.preparePublication(args[0]);
+          else if (method === 'publish') value = await control.publish(args[0], args[1]);
+          else if (method === 'publishStage') {
+            const [stageId, hash, slice, done] = args;
+            if (typeof stageId !== 'string' || typeof hash !== 'string' || typeof slice !== 'string') throw failure('SUPERVISOR_PROTOCOL_INVALID');
+            let stage = client.stagedAssets.get(stageId);
+            if (!stage) {
+              if (client.stagedAssets.size >= 4) throw failure('SUPERVISOR_PROTOCOL_INVALID');
+              client.stagedAssets.set(stageId, stage = { assets: new Map(), bytes: 0 });
+            }
+            stage.bytes += slice.length;
+            if (stage.bytes > 12_000_000) { client.stagedAssets.delete(stageId); throw failure('PEER_PUBLICATION_TOO_LARGE'); }
+            const parts = stage.assets.get(hash) ?? [];
+            parts.push(slice);
+            stage.assets.set(hash, parts);
+            value = { staged: true, done: Boolean(done) };
+          } else if (method === 'publishCommit') {
+            const [stageId, publication] = args;
+            const stage = client.stagedAssets.get(stageId);
+            client.stagedAssets.delete(stageId);
+            const assets = stage ? [...stage.assets.entries()].map(([hash, parts]) => ({ hash, bytes: parts.join('') })) : [];
+            value = await control.publish(publication, assets);
+          } else throw failure('SUPERVISOR_CONTROL_METHOD_UNKNOWN');
+          sendReply({ value });
+        } catch (error) {
+          sendReply({ error: {
+            name: error?.name ?? 'Error', message: error?.message ?? String(error),
+            code: error?.code, status: error?.status, outcome: error?.outcome, phase: error?.phase, receipt: error?.receipt,
+          } });
+        } finally { --client.controlRequests; }
+      };
       const transport = frames(socket, frame => {
         if (!frame || typeof frame !== 'object') throw failure('SUPERVISOR_PROTOCOL_INVALID');
         if (!client.bindingId) {
@@ -206,13 +260,20 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
           });
           channel.port2.addEventListener('close', () => { if (!client.failed) socket.end(); });
           channel.port2.start();
-          client.detach = owner.attach(endpoint, { ...binding.policy, identity: {
+          // Publication is a supervisor-owned capability, not a Chronolog owner RPC.
+          const applicationPolicy = { ...binding.policy,
+            ...(binding.policy.capabilities ? { capabilities: binding.policy.capabilities.filter(value => value !== 'publish') } : {}) };
+          client.detach = owner.attach(endpoint, { ...applicationPolicy, identity: {
             ...binding.policy.identity, deviceProfileId: profileId, agentBindingId: binding.id,
           } });
           endpoint.dispatchEvent(new MessageEvent('message', { data: { protocol: frame.ownerProtocol, handshake: frame.handshake, port: channel.port1 } }));
         } else {
           const current = records.get(client.bindingId);
           if (!current?.active || current.revision !== client.revision) throw failure('SUPERVISOR_BINDING_REVOKED');
+          if (frame.type === 'control') {
+            if (!Number.isSafeInteger(frame.id) || frame.id < 1 || typeof frame.method !== 'string' || !Array.isArray(frame.args)) throw failure('SUPERVISOR_PROTOCOL_INVALID');
+            void handleControl(frame, current); return;
+          }
           if (frame.type !== 'frame') throw failure('SUPERVISOR_PROTOCOL_INVALID');
           let scoped;
           try { scoped = scopedOperations(frame.value, profile.applicationId, current.id, profile.deviceId, current.policy); }
@@ -273,18 +334,66 @@ export async function attachNativeSession({ directory: path, token, connect, app
   if (typeof connect !== 'function') throw failure('SUPERVISOR_CONNECT_REQUIRED', 'Supply connectApplicationOwner from the public Chronolog browser facade.');
   signal?.throwIfAborted();
   const { socket, descriptor } = await connectLocalIpc(path), lifetime = new AbortController();
-  let port, session, closed = false;
+  let port, session, closed = false, controlSeq = 0;
+  const controlWaiters = new Map();
   const end = cause => {
     if (closed) return; closed = true;
-    lifetime.abort(cause ?? failure('OWNER_UNREACHABLE'));
-    try { port?.postMessage({ ended: { name: 'Error', message: cause?.message ?? 'OWNER_UNREACHABLE', code: cause?.code ?? 'OWNER_UNREACHABLE' } }); } catch {}
+    const reason = cause ?? failure('OWNER_UNREACHABLE');
+    lifetime.abort(reason);
+    for (const waiter of controlWaiters.values()) waiter.reject(reason);
+    controlWaiters.clear();
+    try { port?.postMessage({ ended: { name: 'Error', message: reason?.message ?? 'OWNER_UNREACHABLE', code: reason?.code ?? 'OWNER_UNREACHABLE' } }); } catch {}
     port?.close(); socket.destroy();
   };
   const transport = frames(socket, frame => {
     if (frame?.type === 'error') { end(failure(frame.code)); return; }
+    if (frame?.type === 'control-reply') {
+      const waiter = controlWaiters.get(frame.id);
+      if (!waiter) return;
+      controlWaiters.delete(frame.id);
+      if (frame.error) {
+        const err = Object.assign(new Error(frame.error.message ?? 'Control request failed'), {
+          name: frame.error.name ?? 'Error',
+          ...(frame.error.code ? { code: frame.error.code } : {}),
+          ...(frame.error.status !== undefined ? { status: frame.error.status } : {}),
+          ...(frame.error.outcome !== undefined ? { outcome: frame.error.outcome } : {}),
+          ...(frame.error.phase !== undefined ? { phase: frame.error.phase } : {}),
+          ...(frame.error.receipt !== undefined ? { receipt: frame.error.receipt } : {}),
+        });
+        waiter.reject(err);
+      } else waiter.resolve(frame.value);
+      return;
+    }
     if (frame?.type !== 'frame' || !port) throw failure('SUPERVISOR_PROTOCOL_INVALID');
     port.postMessage(frame.value);
   }, end);
+  const callControl = (method, args = []) => new Promise((resolve, reject) => {
+    if (closed) { reject(failure('OWNER_UNREACHABLE')); return; }
+    const id = ++controlSeq;
+    controlWaiters.set(id, { resolve, reject });
+    try { transport.send({ type: 'control', id, method, args }); }
+    catch (error) { controlWaiters.delete(id); reject(error); }
+  });
+  const control = Object.freeze({
+    definition: () => callControl('definition'),
+    publication: () => callControl('publication'),
+    publicationOperation: operationId => callControl('publicationOperation', [operationId]),
+    preparePublication: input => callControl('preparePublication', [input]),
+    async publish(publication, assets) {
+      const payloadBytes = assets.reduce((sum, item) => sum + item.bytes.length, 0);
+      if (payloadBytes <= 650_000) return callControl('publish', [publication, assets]);
+      const stageId = randomUUID();
+      const SLICE = 512 * 1024;
+      for (const asset of assets) {
+        for (let offset = 0; offset < asset.bytes.length || (offset === 0 && asset.bytes.length === 0); offset += SLICE) {
+          const slice = asset.bytes.slice(offset, offset + SLICE);
+          const done = offset + SLICE >= asset.bytes.length;
+          await callControl('publishStage', [stageId, asset.hash, slice, done]);
+        }
+      }
+      return callControl('publishCommit', [stageId, publication]);
+    },
+  });
   socket.once('close', () => end());
   const abort = () => end(signal.reason);
   signal?.addEventListener('abort', abort, { once: true });
@@ -322,7 +431,7 @@ export async function attachNativeSession({ directory: path, token, connect, app
       try { await session.detach(); } finally { signal?.removeEventListener('abort', abort); transport.close(); port?.close(); socket.end(); }
     };
     session.signal.addEventListener('abort', () => { signal?.removeEventListener('abort', abort); transport.close(); port?.close(); socket.end(); }, { once: true });
-    return { session, mode: 'attach', transport: descriptor.transport, detach };
+    return { session, control, mode: 'attach', transport: descriptor.transport, detach };
   } catch (error) { signal?.removeEventListener('abort', abort); end(error); throw error; }
 }
 

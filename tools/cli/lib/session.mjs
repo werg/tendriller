@@ -1,5 +1,6 @@
 // Operational commands use the application's public session composition. This module
 // has no transport, signer, delivery queue, event checkpoint or data store.
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { pack } from './pack.mjs';
@@ -181,14 +182,39 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
     return control.publicationOperation(required(args[0], 'the original publication operation identity'));
   }
   if (command === 'publish') {
-    const control = controlOf(owned), operationId = required(options.operation, '--operation with a stable publication identity');
+    const control = controlOf(owned);
     const source = pack(required(args[0], 'the complete authored directory'), { entry: options.entry });
+    const manifestFiles = source.files.map(file => ({ path: file.path, type: file.type, size: file.size, hash: file.sha256 }));
+    let currentHead = null;
+    try { currentHead = await control.publication(); }
+    catch (error) {
+      // Automatic identities depend on a verified head. A failed read is not an empty history.
+      if (options.operation === undefined) throw error;
+      // An explicitly retained identity can still retry with the complete original bytes.
+    }
+    const knownHashes = new Set((currentHead?.publication?.payload?.files ?? []).map(file => `${file.hash}:${file.size}`));
+    const operationId = options.operation ?? (() => {
+      const digest = createHash('sha256').update(JSON.stringify({
+        previous: currentHead?.publication?.id ?? null, entry: source.entry, files: manifestFiles,
+      })).digest('hex').slice(0, 16);
+      return `pub-${(currentHead?.publication?.payload?.revision ?? -1) + 1}-${digest}`;
+    })();
     let publication;
     try {
-      publication = await control.preparePublication({ operationId,
-        entry: source.entry, files: source.files.map(file => ({ path: file.path, type: file.type, size: file.size, hash: file.sha256 })) });
-      const assets = [...new Map(source.files.map(file => [file.sha256, { hash: file.sha256, bytes: file.bytes.toString('base64') }])).values()];
-      return await control.publish(publication, assets);
+      publication = await control.preparePublication({ operationId, entry: source.entry, files: manifestFiles });
+      const uniqueFiles = [...new Map(source.files.map(file => [file.sha256, file])).values()];
+      const deltaAssets = uniqueFiles
+        .filter(file => !knownHashes.has(`${file.sha256}:${file.size}`))
+        .map(file => ({ hash: file.sha256, bytes: file.bytes.toString('base64') }));
+      try {
+        return await control.publish(publication, deltaAssets);
+      } catch (error) {
+        const missing = error?.code === 'peer_publication_content_missing' || error?.cause?.code === 'peer_publication_content_missing' ||
+          /peer_publication_content_missing/u.test(error?.message ?? '');
+        if (!missing || deltaAssets.length === uniqueFiles.length) throw error;
+        const fullAssets = uniqueFiles.map(file => ({ hash: file.sha256, bytes: file.bytes.toString('base64') }));
+        return await control.publish(publication, fullAssets);
+      }
     } catch (error) {
       const committed = error.outcome === 'committed' && error.receipt?.publication?.id === publication?.id;
       error.publication = { operationId, publicationId: publication?.id ?? null,
@@ -207,6 +233,29 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
     return { sent: true, durable: false };
   }
   throw Error(`Unknown application command: ${command}`);
+}
+
+/** Stream disposable live signals (e.g. page dev/telemetry errors and diagnostics) as NDJSON. */
+export async function watchSignals(owned, emit, { signal, topics = ['dev/telemetry', 'dev/error', 'dev/health'], mode = 'all' } = {}) {
+  const session = owned.session;
+  let count = 0;
+  try {
+    signal?.throwIfAborted();
+    for await (const item of session.signals.subscribe({ topics, mode, signal })) {
+      signal?.throwIfAborted();
+      await emit({
+        topic: item.topic,
+        authorId: item.authorId,
+        issuedAtMs: item.issuedAtMs,
+        ...(item.stream ? { stream: item.stream } : {}),
+        payload: item.payload,
+      });
+      count++;
+    }
+  } catch (error) {
+    if (!(signal?.aborted && (error === signal.reason || error?.name === 'AbortError'))) throw error;
+  }
+  return { mode: 'signals', topics, count, reason: signal?.reason?.code === 'invocation_timeout' ? 'timeout' : 'interrupted' };
 }
 
 /** Pulling the next change is backpressure. Emitted cursors are not processing receipts. */

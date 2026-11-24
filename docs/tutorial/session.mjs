@@ -69,7 +69,7 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
         control = session.connectControlParticipant(controlHost);
         participateNativeApplication(session, { peers: host.peers, control });
         signal?.throwIfAborted();
-        return createApplicationOwner(session, { host: control });
+        return Object.assign(createApplicationOwner(session, { host: control }), { control });
       } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
     } });
   return { session, control, supervisor, pairing, processPairings,

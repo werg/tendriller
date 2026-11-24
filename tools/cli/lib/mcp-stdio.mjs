@@ -72,6 +72,20 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'signal_send',
+    description: 'Send a bounded live JSON signal (e.g. dashboard feed update, presence, typing, or observation request) without writing to the durable journal.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topic: { type: 'string', minLength: 1, maxLength: 128 },
+        payload: {},
+        ttlMs: { type: 'integer', minimum: 100, maximum: 60000 },
+      },
+      required: ['topic', 'payload'],
+      additionalProperties: false,
+    },
+  },
 ];
 
 function lifecycleOf(operationId, state) {
@@ -108,6 +122,10 @@ function validateArguments(name, args) {
   if (name === 'operation_inspect' && (typeof args.operationId !== 'string' || !args.operationId.trim() || args.operationId.length > 512))
     throw invalid('Supply the original operationId');
   if (name === 'state_query' && (typeof args.query !== 'string' || !args.query.trim() || args.query.length > 128)) throw invalid('Supply a query name');
+  if (name === 'signal_send') {
+    if (typeof args.topic !== 'string' || !args.topic.trim() || args.topic.length > 128) throw invalid('Supply a signal topic');
+    if (args.ttlMs !== undefined && (!Number.isSafeInteger(args.ttlMs) || args.ttlMs < 100 || args.ttlMs > 60_000)) throw invalid('ttlMs must be 100..60000');
+  }
   if (args.wait !== undefined && !['recorded', 'applied'].includes(args.wait)) throw invalid('wait must be recorded or applied');
   if (args.stopOnError !== undefined && typeof args.stopOnError !== 'boolean') throw invalid('stopOnError must be boolean');
 }
@@ -160,6 +178,10 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
       }
       if (name === 'state_query') {
         return toolOk(await session.query(args.query, args.input ?? null));
+      }
+      if (name === 'signal_send') {
+        await session.signals.send(args.topic, args.payload, args.ttlMs === undefined ? {} : { ttlMs: args.ttlMs });
+        return toolOk({ sent: true, topic: args.topic, durable: false });
       }
       if (name === 'operation_inspect') {
         const state = await session.operations.get(args.operationId);

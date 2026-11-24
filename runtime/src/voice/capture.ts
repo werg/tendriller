@@ -9,6 +9,7 @@ export interface CaptureHandlers {
   onFinal(text: string): void;
   onState(listening: boolean): void;
   onError(message: string): void;
+  onLevel?(level: number): void;
 }
 
 export class SpeechCapture {
@@ -36,6 +37,8 @@ export class SpeechCapture {
   private consented = false;
   private disposed = false;
   private offTracks: (() => void) | null = null;
+  private meterTimer: ReturnType<typeof setInterval> | null = null;
+  private meterContext: AudioContext | null = null;
 
   constructor(private h: CaptureHandlers, private lang: () => string,
     private base: string, private speech: RuntimeArtifactFeatures["speech"]) {
@@ -167,6 +170,7 @@ export class SpeechCapture {
           rec.onstop = () => { void this.finish(new Blob(chunks, { type: rec.mimeType }), session, rec, stream); };
           rec.start(1000);
           this.listening = true;
+          this.startMeter(stream);
           this.h.onState(true);
           this.h.onInterim("");
           this.maxTimer = setTimeout(() => this.stop(), 30_000);
@@ -202,7 +206,43 @@ export class SpeechCapture {
     this.maxTimer = null; this.finishTimer = null;
   }
 
+  private startMeter(stream: MediaStream): void {
+    this.stopMeter();
+    if (!this.h.onLevel || typeof AudioContext === "undefined") return;
+    try {
+      const ctx = new AudioContext();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const samples = new Uint8Array(analyser.fftSize);
+      this.meterContext = ctx;
+      this.meterTimer = setInterval(() => {
+        if (!this.listening) return;
+        analyser.getByteTimeDomainData(samples);
+        let sum = 0;
+        for (let i = 0; i < samples.length; i++) {
+          const v = (samples[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / samples.length);
+        // Scale conversational speech (~0.02..0.28 RMS) smoothly onto 0..1.
+        const level = Math.min(1, Math.max(0, (rms - 0.01) * 4));
+        try { this.h.onLevel?.(level); } catch { /* ignore meter listener errors */ }
+      }, 65);
+    } catch {
+      this.stopMeter();
+    }
+  }
+
+  private stopMeter(): void {
+    if (this.meterTimer !== null) { clearInterval(this.meterTimer); this.meterTimer = null; }
+    if (this.meterContext) { void this.meterContext.close().catch(() => {}); this.meterContext = null; }
+    try { this.h.onLevel?.(0); } catch { /* ignore */ }
+  }
+
   private releaseStream(): void {
+    this.stopMeter();
     this.offTracks?.(); this.offTracks = null;
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = null;
     if (this.listening) { this.listening = false; this.h.onState(false); }

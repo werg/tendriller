@@ -111,11 +111,28 @@ original error. A ready observation is not a remote delivery, model turn or
 external effect guarantee; retry safety never authorizes replacing an uncertain
 operation ID. Presence remains separate from authorization.
 
-Initial publication before starting the peer uses `--mode own`. Administrative
-setup and enrollment still need exclusive ownership or a deliberately granted
-owner-administration attachment. Ordinary queries, commands, retries, events and
-signals work while the native peer runs. `--mode own` against a running supervisor
-returns `OWNER_BUSY` before opening its signing store.
+Initial publication before starting the peer uses `--mode own`. Once the native
+peer is running, you can **hot-publish UI updates without stopping the peer**
+using `--mode attach` (or `npm run deploy` in the starter):
+
+```sh
+# Fast hot publish through the running peer (delta uploads + automatic operationId):
+npm run deploy
+# Equivalent explicit command:
+npx tendril --session ./session.mjs --mode attach publish ./page
+
+# Tail live browser errors & page health telemetry streamed via helpers/dev-telemetry.mjs:
+npm run logs
+# Equivalent explicit command:
+npx tendril --session ./session.mjs --mode attach logs
+```
+
+`publish` inspects the current signed publication head, derives a deterministic
+content-addressed `operationId` when `--operation` is omitted, and skips uploading
+asset hashes that the host already stores (falling back to a full upload if the
+host reports missing bytes). Administrative setup and enrollment still need
+exclusive ownership (`--mode own`) or an owner-administration attachment. `--mode own`
+against a running supervisor returns `OWNER_BUSY` before opening its signing store.
 
 ## Compose a native supervisor
 

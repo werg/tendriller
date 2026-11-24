@@ -150,9 +150,9 @@ guide's native-tool or manual-handoff fallback and name the exact prerequisite.
   including Back/deep links, keyboard, long content and failure states. The
   [importable domain views](docs/APP_PATTERNS.md#domain-views-you-can-import) include
   runnable desktop/phone examples.
-- **Live answers:** use `helpers/signal-request.mjs` for on-demand answers over
-  signals: it waits for the answering peer, retries with the same ID and
-  reassembles multi-piece replies.
+- **Live answers & private API feeds:** use `helpers/data-feed.mjs` (`serveDataFeeds` / `useDataFeed`) to expose private or local APIs run by the native agent directly to browser dashboards with zero durable Chronolog writes (secrets stay native). Use `helpers/signal-request.mjs` for arbitrary on-demand chunked answers.
+- **Full-duplex dashboards & voice/text chat:** import `ui/dashboard.mjs` for responsive KPI/sparkline/feedback cards and `ui/chat-session.mjs` (wrapping `@tendriller/runtime/voice`'s `mountAgentChat`) for 1-tap voice + text chat with built-in TTS, barge-in, streaming previews and automatic or once-per-session voice consent.
+- **Fast hot updates & live page error logs:** keep `npm run peer` running and ship UI updates with `npm run deploy` (`tendril --session ./session.mjs --mode attach publish ./page`, which skips unchanged assets). Wire `helpers/dev-telemetry.mjs` (`mountDevTelemetry`) and tail real browser errors from your terminal with `npm run logs` (`tendril --mode attach logs`).
 
 Use [troubleshooting](docs/TROUBLESHOOTING.md) at the failing stage. In particular,
 `peer_application_unconfigured` means configuration is missing; an unavailable

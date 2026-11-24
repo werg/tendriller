@@ -31,7 +31,8 @@ export function mountReviewedMedia({ container, session, runtime, nativeDeviceId
     },
   });
   const voice = createVoiceController({ runtime,
-    consent: request => $('#voice-consent').checked && window.confirm(request.description),
+    consentMode: 'session',
+    consent: () => Boolean($('#voice-consent').checked),
     onDraft({ text }) {
       if (closed) return;
       $('#voice-draft').value = text; $('#voice-use').disabled = !text.trim();
@@ -176,6 +177,7 @@ export function mountReviewedMedia({ container, session, runtime, nativeDeviceId
     if (blocked || !(resolved || review.snapshot.result?.status === 'applied')) throw Error('Inspect the original operation before starting another observation.');
     freshReview();
   });
+  bind('#voice-consent', 'change', () => { if (!$('#voice-consent').checked) voice.revokeConsent(); });
   bind('#voice-prepare', 'click', event => {
     if (!allowed('microphone')) throw Error(capabilityHint('microphone'));
     return voice.prepare(event);

@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { parseArgs, intFlag } from '../lib/args.mjs';
 import { resolveConfig, saveConfig, removeConfig, serverBase } from '../lib/config.mjs';
 import { request, client } from '../lib/api.mjs';
-import { jsonInput, runSessionCommand, watchSession, withSession } from '../lib/session.mjs';
+import { jsonInput, runSessionCommand, watchSession, watchSignals, withSession } from '../lib/session.mjs';
 import { onboardingGuide, publicServiceOrigin } from '../lib/guide.mjs';
 import { diagnosticFinding } from '@tendriller/core/diagnostics';
 import { describeReadiness, requireCreationReady, createPage } from '@tendriller/core';
@@ -31,10 +31,11 @@ Application session (--session /absolute/application.mjs):
   reapply <old-id> <name> <json> --operation NEW_ID --based-on JSON
   events [--cursor CURSOR] [--topics JSON] [--limit N]
   watch [--events [--cursor CURSOR] [--topics JSON] [--limit N]]
+  logs [--topics JSON] [--latest]
   signal <topic> <json> [--ttl MILLISECONDS]
   recovery inspect | takeover --transition ID | handover <device> --transition ID
   definition | publication | publication-operation <id>
-  publish <directory> --operation ID [--entry index.html]
+  publish <directory> [--operation ID] [--entry index.html]
 
 Host lifecycle (--tendril NAME, or TENDRIL_API and TENDRIL_TOKEN):
   new [name] --owner VERIFIED_EMAIL --server URL [--as NAME]
@@ -58,11 +59,12 @@ Chronolog owns signing, exact retry, durable identity and recovery. No host data
 API or extra delivery queue is installed. A timed out waiter leaves its saved
 operation available under the original identity.`;
 const applicationCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'status', 'query', 'command', 'command-batch', 'operation', 'retry', 'reapply',
-  'events', 'watch', 'signal', 'recovery', 'definition', 'publication', 'publication-operation', 'publish', 'mcp-stdio']);
+  'events', 'watch', 'logs', 'signal', 'recovery', 'definition', 'publication', 'publication-operation', 'publish', 'mcp-stdio']);
 const flagsByCommand = {
   self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'based-on', 'saved', 'shared'],
   'command-batch': ['saved'], 'mcp-stdio': [], operation: [],
   retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: ['events', 'cursor', 'topics', 'limit'],
+  logs: ['topics', 'latest'],
   signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['device', 'secret-env', 'project'],
@@ -71,7 +73,7 @@ const flagsByCommand = {
 };
 const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2],
   'command-batch': [1, 1], 'mcp-stdio': [0, 0], operation: [1, 1], retry: [1, 1],
-  reapply: [3, 3], events: [0, 0], watch: [0, 0], signal: [2, 2], recovery: [1, 2], definition: [0, 0], publication: [0, 0],
+  reapply: [3, 3], events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], recovery: [1, 2], definition: [0, 0], publication: [0, 0],
   'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
   readiness: [0, 0], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
   link: [1, 2], token: [1, 2], activity: [0, 0], remove: [0, 0] };
@@ -175,7 +177,7 @@ async function main() {
   if (watchOptions?.topics !== undefined && (!Array.isArray(watchOptions.topics) || watchOptions.topics.length > 128 ||
       watchOptions.topics.some(topic => typeof topic !== 'string' || topic.length > 128))) throw invalid('Use --topics with an array of at most 128 bounded topic names');
   if (watchOptions?.limit !== undefined && (watchOptions.limit < 1 || watchOptions.limit > 1024)) throw invalid('--limit must be between 1 and 1024');
-  const seconds = intFlag(flags.timeout, 'timeout', (cmd === 'watch' || cmd === 'mcp-stdio') ? 0 : 30);
+  const seconds = intFlag(flags.timeout, 'timeout', (cmd === 'watch' || cmd === 'logs' || cmd === 'mcp-stdio') ? 0 : 30);
   if (seconds < 0 || seconds > 3600) throw invalid('--timeout must be between 0 and 3600 seconds');
   const lifetime = new AbortController();
   const abort = () => lifetime.abort(Object.assign(Error('Invocation interrupted; inspect the original operation before retrying'), { code: 'invocation_interrupted' }));
@@ -189,10 +191,15 @@ async function main() {
     if (application) {
       await withSession(flags.session, async owned => {
         if (cmd === 'watch') completedResult = await watchSession(owned, emit, { ...watchOptions, signal: lifetime.signal });
+        else if (cmd === 'logs') completedResult = await watchSignals(owned, emit, {
+          ...(flags.topics === undefined ? {} : { topics: jsonInput(flags.topics, 'topic array JSON') }),
+          mode: flags.latest ? 'latest' : 'all', signal: lifetime.signal,
+        });
         else if (cmd === 'mcp-stdio') await serveStdioMcp(owned, { signal: lifetime.signal });
         else completedResult = await runSessionCommand(owned, cmd, args, flags, { signal: lifetime.signal });
       }, { signal: lifetime.signal, mode: flags.mode, profile: flags.profile, runId: flags.run });
       if (cmd === 'watch') console.error(JSON.stringify({ watch: completedResult }));
+      else if (cmd === 'logs') console.error(JSON.stringify({ logs: completedResult }));
       else if (cmd !== 'mcp-stdio') await emit(completedResult);
     }
     else await emit(await hostCommand(cmd, args, flags, lifetime.signal));

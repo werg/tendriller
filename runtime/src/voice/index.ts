@@ -8,6 +8,7 @@ import { LocalWakeCapture } from "./local-wake";
 import { acquireMicrophoneSession, type MicrophoneSession } from "./microphone";
 import { loadSpeechResources, SPEECH_DOWNLOAD_BYTES, SPEECH_LANGUAGES } from "./resources";
 
+export type VoiceConsentMode = "auto" | "session" | "prompt";
 export interface VoiceConsent {
   purpose: "output" | "transcription" | "wake";
   engine: string;
@@ -22,24 +23,48 @@ export interface VoiceStatus {
   state: string;
   message?: string;
   microphone?: boolean;
+  speaking?: boolean;
+  /** True only when spoken playback ended naturally, never on Stop, mute or errors. */
+  completed?: boolean;
 }
 export interface VoiceOptions {
-  consent(request: Readonly<VoiceConsent>): boolean | Promise<boolean>;
+  /**
+   * "auto": immediate consent (browser permission prompt is consent; default when `consent` is omitted).
+   * "session": ask once per purpose/engine per visible session (default when `consent` is provided).
+   * "prompt": call `consent` before every start.
+   */
+  consentMode?: VoiceConsentMode;
+  consent?(request: Readonly<VoiceConsent>): boolean | Promise<boolean>;
   transcript(text: string): void;
   status?(status: VoiceStatus): void;
+  /** Normalized 0..1 live microphone RMS level while recording. */
+  level?(level: number): void;
+  /** Automatically enable spoken output ("browser" | "neural" | true for "browser") when consent allows. */
+  autoOutput?: boolean | "browser" | "neural";
 }
 export { matchWakePhrase } from "./wakeword";
 export type { WakeMode, WakeState } from "./wakeword";
 export { mountVoiceControls } from "./controls";
 export type { VoiceControlsOptions } from "./controls";
+export { mountAgentChat } from "./chat";
+export type { AgentChatOptions, AgentChatMessage, AgentChatHandle, AgentChatPresence } from "./chat";
 export { SPEECH_DOWNLOAD_BYTES, SPEECH_MODEL_BYTES, SPEECH_LANGUAGES } from "./resources";
 
 type InputSession = { kind: "capture" | WakeMode; epoch: number; abort: AbortController; lease?: MicrophoneSession; released: boolean };
 const terminal = (state: WakeState) => state === "off" || state === "paused" || state === "error";
 const messageOf = (error: unknown) => error instanceof Error ? error.message : "Voice input could not start. You can type instead.";
 
-/** Creation is inert. Every microphone start requires a fresh local consent decision. */
+/**
+ * Voice input & output adapter.
+ * Creation is inert unless `autoOutput` is requested. Consent follows `consentMode`:
+ * "auto" grants immediately (relying on the browser's own permission prompt),
+ * "session" remembers approval per purpose/engine for the session, and
+ * "prompt" calls `consent` on every start.
+ */
 export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
+  const consentMode: VoiceConsentMode = options.consentMode ?? (options.consent ? "session" : "auto");
+  if (consentMode !== "auto" && typeof options.consent !== "function") throw new TypeError("Session and prompt consent require a consent callback");
+  const sessionGrants = new Set<string>();
   const preferences = createPreferences(runtime.identity.page);
   preferences.update({ audio: false });
   let disposed = false, operation = 0;
@@ -101,8 +126,9 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
     try { options.transcript(text); }
     catch { stopInput("error", "The page could not accept the transcript. Stop listening and use typed input."); }
   };
-  const output = createSpeechOutput(new URL(".", runtime.assetUrl("voice.mjs")).href, { on: () => () => {}, emit(type, value: SpeechStatus) {
-    if (type === "tts") notify({ kind: "output", state: value.state, message: value.message });
+  const output = createSpeechOutput(new URL(".", runtime.assetUrl("voice.mjs")).href, { on: () => () => {}, emit(type, value: any) {
+    if (type === "tts") notify({ kind: "output", state: value.state, message: value.message, speaking: output.speaking });
+    else if (type === "tts_speaking") notify({ kind: "output", state: value.speaking ? "speaking" : output.status.state, message: output.status.message, speaking: Boolean(value.speaking), completed: value.completed === true });
   } }, preferences);
   const wake = new WakeWordCapture({
     onState: (state, message) => handleWake("recognizer", state, message),
@@ -125,9 +151,22 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
     else reportWake(state, detail);
   }
   const stop = () => { stopInput(); output.stop(); };
-  const consent = (request: VoiceConsent) => {
+  const consent = (request: VoiceConsent): boolean | Promise<boolean> => {
     if (disposed) throw new Error("Voice adapter is disposed");
-    return options.consent(Object.freeze(request));
+    if (consentMode === "auto" || !options.consent) return true;
+    const grantKey = `${request.purpose}:${request.engine}`;
+    if (consentMode === "session" && sessionGrants.has(grantKey)) return true;
+    const op = operation;
+    const decision = options.consent(Object.freeze(request));
+    if (decision === true) {
+      if (consentMode === "session" && op === operation && !disposed) sessionGrants.add(grantKey);
+      return true;
+    }
+    if (decision === false) return false;
+    return Promise.resolve(decision).then(ok => {
+      if (ok === true && consentMode === "session" && op === operation && !disposed) sessionGrants.add(grantKey);
+      return ok === true;
+    });
   };
   const begin = (kind: InputSession["kind"]) => {
     stop();
@@ -188,6 +227,7 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
           if (input?.kind === "capture") end(input);
           reportCapture("error", message);
         },
+        onLevel: options.level ? level => { if (!disposed) try { options.level?.(level); } catch { /* ignore */ } } : undefined,
       }, language, new URL(".", runtime.assetUrl("voice-worker.js")).href, selected);
     }
     const selected = capture;
@@ -198,13 +238,14 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
   const captureDisclosure = (): VoiceConsent => ({ purpose: "transcription", engine: "cactus-whistle",
     description: `Prepare ${SPEECH_DOWNLOAD_BYTES.toLocaleString("en-US")} bytes of verified speech assets and record at most 30 seconds. Audio is transcribed on this device and never uploaded.`,
     language: language(), downloadBytes: SPEECH_DOWNLOAD_BYTES, maxSessionMs: 30_000 });
-  const offSensors = runtime.on("sensors_stopped", () => { stopInput("paused", "Microphone stopped with Stop sensors. Tap Start to listen again."); output.stop(); });
+  const offSensors = runtime.on("sensors_stopped", () => { sessionGrants.clear(); stopInput("paused", "Microphone stopped with Stop sensors. Tap Start to listen again."); output.stop(); });
   const visibility = () => { if (document.visibilityState !== "visible") { stopInput("paused", "Microphone stopped because the page is hidden. Tap Start to listen again."); output.stop(); } };
   const pagehide = () => { stopInput("paused", "Microphone stopped because you left the page."); output.stop(); };
   document.addEventListener("visibilitychange", visibility);
   document.addEventListener("freeze", pagehide);
   window.addEventListener("pagehide", pagehide);
-  return {
+  const adapter = {
+    get consentMode() { return consentMode; },
     get outputStatus() { const { enabled, ...status } = output.status; return { engine: enabled ? "neural" as const : "browser" as const, ...status }; },
     get muted() { return !preferences.get().audio; },
     get speaking() { return output.speaking; },
@@ -314,10 +355,18 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
       if (await consent({ purpose: "wake", engine: "local", language: lang, description: "Install the browser language pack for on-device speech recognition. This does not start a microphone." }) !== true || disposed || epoch !== operation) return false;
       return WakeWordCapture.installLocal(lang);
     },
+    revokeConsent() { sessionGrants.clear(); stop(); },
     dispose() {
       if (disposed) return;
+      sessionGrants.clear();
       stop(); disposed = true; capture?.dispose(); output.dispose(); preferences.dispose(); offSensors();
       document.removeEventListener("visibilitychange", visibility); document.removeEventListener("freeze", pagehide); window.removeEventListener("pagehide", pagehide);
     },
   };
+  if (options.autoOutput && consentMode === "auto") {
+    const engine = options.autoOutput === "neural" ? "neural" : "browser";
+    preferences.update({ audio: true, voice: engine });
+    if (engine === "neural") void output.enable().catch(() => {});
+  }
+  return adapter;
 }

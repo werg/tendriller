@@ -20,9 +20,10 @@ function abortable(task, signal) {
  * the types-only @tendriller/core/voice entry.
  * onDraft receives a candidate; let the person edit/review it before a command.
  */
-export function createVoiceController({ runtime, consent, onDraft, onStatus = () => {},
+export function createVoiceController({ runtime, consent, consentMode = consent ? 'session' : 'auto', onDraft, onStatus = () => {},
   loadVoice = () => import(runtime.assetUrl('voice.mjs')) }) {
-  if (typeof consent !== 'function' || typeof onDraft !== 'function') throw Error('Supply explicit voice consent and transcript draft callbacks.');
+  if (typeof onDraft !== 'function') throw Error('Supply a transcript draft callback.');
+  if (consentMode !== 'auto' && typeof consent !== 'function') throw Error('Supply a voice consent callback or use consentMode: "auto".');
   let voice = null, loading = null, owner = null, attempt = null, phase = 'idle', error = null, disposed = false;
   let detail = null;
   const snapshot = () => ({ phase, error, detail: detail && { ...detail }, listening: voice?.listening ?? false,
@@ -47,6 +48,7 @@ export function createVoiceController({ runtime, consent, onDraft, onStatus = ()
       const module = await abortable(loading, signal);
       signal.throwIfAborted();
       if (!voice) voice = module.createVoice(runtime, {
+        consentMode,
         consent,
         transcript(text) {
           // Core invalidates old capture results. Keep application context
@@ -105,6 +107,7 @@ export function createVoiceController({ runtime, consent, onDraft, onStatus = ()
       phase = 'transcribing'; voice.finishCapture(); notify();
     },
     cancel,
+    revokeConsent() { cancel(); voice?.revokeConsent(); },
     stopAll() { cancel(); return runtime.sensors.stopAll(); },
     async enableOutput(event, engine = 'browser') {
       const current = begin(event);

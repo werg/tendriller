@@ -15,6 +15,7 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
 | `npm run test:e2e:voice-controls` | Chromium, Firefox, desktop WebKit and mobile WebKit controls plus real AudioWorklet fixtures; deterministic inference |
+| `npx playwright test --config runtime/test/app-helpers.playwright.config.ts` | Desktop and 320px phone chat/dashboard flows, draft reload, reviewed voice input, feedback and lifecycle regressions; deterministic voice adapter |
 | `npm run test:e2e:speech-real` | Verified speech assets and real WASM/model inference, including wake-phrase and command fixtures |
 | `npm run test:agent:acceptance -- --help` | Maintained fresh-agent domain/MCP evaluation with private owner controls and independent observations |
 | `npm run test:idle:soak -- --config PRIVATE_JSON --state PRIVATE_DIRECTORY` | Actual 24/48h isolated staging residency and idle measurement; see [idle soak](IDLE_SOAK.md) |

@@ -115,3 +115,199 @@ export function requestDelivery(request) {
   if (!request) return 'unknown';
   return request.answers.length ? 'answered' : request.receipts.length ? 'seen' : 'awaiting-receipt';
 }
+
+// Ephemeral live presence & streaming reply previews over session.signals.
+// Writes ZERO durable Chronolog records so idle agents never consume journal history.
+
+const PRESENCE_TOPIC = 'agent/presence';
+const PRESENCE_PING_TOPIC = 'agent/presence/ping';
+const STREAM_TOPIC = 'agent/stream';
+
+/**
+ * Native side: announces agent presence ephemerally over session.signals ONLY while
+ * at least one peer is connected, and responds immediately to on-demand presence pings.
+ */
+export function announceAgentPresence(session, {
+  consumerId,
+  runId = crypto.randomUUID(),
+  role = 'agent',
+  topics = ['chat'],
+  state = 'listening',
+  intervalMs = 15_000,
+  ttlMs = 45_000,
+  topic = PRESENCE_TOPIC,
+  pingTopic = PRESENCE_PING_TOPIC,
+  signal,
+} = {}) {
+  if (!session?.signals) throw Error('AGENT_PRESENCE_SESSION_REQUIRED');
+  const stop = new AbortController();
+  const lifetime = AbortSignal.any([stop.signal, signal, session.signal].filter(Boolean));
+  const startedAtMs = Date.now();
+  let currentState = state;
+
+  const hasPeer = () => {
+    const peers = session.participation?.status?.connectedPeers;
+    return Array.isArray(peers) ? peers.length > 0 : true;
+  };
+
+  const publish = async (overrideState = currentState) => {
+    if (lifetime.aborted) return;
+    if (overrideState !== 'stopped' && !hasPeer()) return;
+    try {
+      await session.signals.send(topic, {
+        consumerId: consumerId || session.deviceId,
+        runId,
+        role,
+        topics,
+        state: overrideState,
+        startedAtMs,
+        atMs: Date.now(),
+      }, { ttlMs, signal: lifetime });
+    } catch { /* Ephemeral presence drops cleanly when offline. */ }
+  };
+
+  const timer = setInterval(() => { void publish(); }, intervalMs);
+  const offStatus = session.participation?.onStatus?.(status => {
+    if ((status?.connectedPeers?.length ?? 0) > 0) void publish();
+  }) ?? (() => {});
+
+  const pingLoop = (async () => {
+    try {
+      for await (const frame of session.signals.subscribe({ topics: [pingTopic], mode: 'all', signal: lifetime })) {
+        if (frame.authorId === session.deviceId) continue;
+        void publish();
+      }
+    } catch { /* closed */ }
+  })();
+
+  lifetime.addEventListener('abort', () => { clearInterval(timer); offStatus(); }, { once: true });
+  void publish();
+
+  return Object.freeze({
+    setState(next) { currentState = next; void publish(next); },
+    ping: () => publish(),
+    done: pingLoop,
+    async close() {
+      currentState = 'stopped';
+      await publish('stopped');
+      stop.abort();
+    },
+  });
+}
+
+/**
+ * Browser side: watches ephemeral agent presence signals (with `includeLatest: true`
+ * plus an immediate ping on connect) so the UI reflects live agent availability with
+ * zero durable Chronolog reads or writes.
+ */
+export function watchAgentPresence(session, {
+  peer,
+  topic = PRESENCE_TOPIC,
+  pingTopic = PRESENCE_PING_TOPIC,
+  staleAfterMs = 45_000,
+  onChange,
+  signal,
+} = {}) {
+  if (!session?.signals) throw Error('AGENT_PRESENCE_SESSION_REQUIRED');
+  const stop = new AbortController();
+  const lifetime = AbortSignal.any([stop.signal, signal, session.signal].filter(Boolean));
+  let latest = null;
+  let lastReceivedAtMs = 0;
+
+  const snapshot = (now = Date.now()) => {
+    if (!latest) return { status: 'unknown', consumer: null, ageMs: null };
+    if (latest.state === 'stopped') return { status: 'stopped', consumer: latest, ageMs: now - lastReceivedAtMs };
+    const ageMs = Math.max(0, now - lastReceivedAtMs);
+    const peers = session.participation?.status?.connectedPeers;
+    if (Array.isArray(peers) && !peers.includes(peer ?? latest.author)) return { status: 'stale', consumer: latest, ageMs };
+    if (ageMs >= staleAfterMs) return { status: 'stale', consumer: latest, ageMs };
+    return { status: latest.state === 'busy' ? 'busy' : 'available', consumer: latest, ageMs };
+  };
+  const emitChange = () => { try { onChange?.(snapshot()); } catch { /* ignore */ } };
+
+  const requestPing = () => {
+    if (lifetime.aborted) return;
+    const peers = session.participation?.status?.connectedPeers;
+    if (Array.isArray(peers) && peer && !peers.includes(peer)) return;
+    void session.signals.send(pingTopic, { for: peer ?? null, atMs: Date.now() }, { ttlMs: 10_000, signal: lifetime }).catch(() => {});
+  };
+
+  const offStatus = session.participation?.onStatus?.(status => {
+    const peers = status?.connectedPeers ?? [];
+    if (!peer || peers.includes(peer)) requestPing();
+    else emitChange();
+  }) ?? (() => {});
+
+  const staleTimer = setInterval(emitChange, Math.max(2_000, Math.min(10_000, Math.floor(staleAfterMs / 3))));
+  lifetime.addEventListener('abort', () => { clearInterval(staleTimer); offStatus(); }, { once: true });
+
+  const loop = (async () => {
+    try {
+      for await (const frame of session.signals.subscribe({ topics: [topic], mode: 'latest', includeLatest: true, signal: lifetime })) {
+        if (peer && frame.authorId !== peer) continue;
+        if (!frame.payload || typeof frame.payload !== 'object') continue;
+        latest = { author: frame.authorId, ...frame.payload };
+        lastReceivedAtMs = Date.now();
+        emitChange();
+      }
+    } catch { /* closed */ }
+  })();
+
+  requestPing();
+
+  return Object.freeze({
+    snapshot,
+    ping: requestPing,
+    done: loop,
+    close() { stop.abort(); },
+  });
+}
+
+/** Native side: send an ephemeral streaming preview for an in-progress reply. */
+export async function streamAgentReply(session, {
+  requestAuthor,
+  requestOperationId,
+  text,
+  done = false,
+  topic = STREAM_TOPIC,
+  signal,
+}) {
+  if (!session?.signals) throw Error('AGENT_STREAM_SESSION_REQUIRED');
+  const payload = {
+    requestAuthor,
+    requestOperationId,
+    text: String(text ?? '').slice(0, 8000),
+    done: Boolean(done),
+    atMs: Date.now(),
+  };
+  // The complete signed frame has a 16 KiB ceiling; escaped JSON and Unicode
+  // can make an 8,000-character preview much larger than that.
+  const encoder = new TextEncoder();
+  while (encoder.encode(JSON.stringify(payload)).length > 12 * 1024) {
+    if (!payload.text.length) throw Error('AGENT_STREAM_TOO_LARGE');
+    payload.text = Array.from(payload.text).slice(0, Math.floor(Array.from(payload.text).length * .8)).join('');
+  }
+  await session.signals.send(topic, payload, { ttlMs: 20_000, signal });
+}
+
+/** Browser side: subscribe to ephemeral streaming previews from a peer. */
+export function watchAgentStream(session, {
+  peer,
+  topic = STREAM_TOPIC,
+  onChunk,
+  signal,
+} = {}) {
+  if (!session?.signals) throw Error('AGENT_STREAM_SESSION_REQUIRED');
+  const stop = new AbortController();
+  const lifetime = AbortSignal.any([stop.signal, signal, session.signal].filter(Boolean));
+  const loop = (async () => {
+    try {
+      for await (const frame of session.signals.subscribe({ topics: [topic], mode: 'latest', signal: lifetime })) {
+        if (peer && frame.authorId !== peer) continue;
+        if (!frame.payload || typeof frame.payload !== 'object') continue;
+        try { onChunk?.({ author: frame.authorId, ...frame.payload }); } catch { /* ignore */ }
+      }
+    } catch { /* closed */ }
+  })();
+  return Object.freeze({ done: loop, close() { stop.abort(); } });
+}

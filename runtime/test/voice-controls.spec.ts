@@ -47,7 +47,7 @@ export function createVoice(runtime, handlers) {
     startWake(settings){return start('wake',settings);}, startCapture(){return start('capture');},
     language(tag){stop();fixture.language=tag;}, stop, stopWake:stop,
     finishCapture(){fixture.report('capture','working','Transcribing on this device',false);},
-    cancelCapture:stop,
+    cancelCapture:stop, revokeConsent:stop,
     dispose(){stop();fixture.disposed=true;},
   };
 }`;

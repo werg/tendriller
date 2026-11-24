@@ -86,6 +86,46 @@ with review and undo, timelines and conversations, tables with named links,
 and explicit empty and loading states. Walk the flows on a phone-sized viewport
 and desktop before delivery ([acceptance bar](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)).
 
+## Full-duplex dashboards and data feeds
+
+For dashboards where an agent runs on a cloud server or home server and the user
+opens the page on a phone, tablet or laptop, compose `ui/dashboard.mjs`,
+`helpers/data-feed.mjs`, `ui/chat-session.mjs`, and `helpers/dev-telemetry.mjs`:
+
+```js
+// Native agent process (secrets & local API access stay strictly native):
+import { serveDataFeeds } from './helpers/data-feed.mjs';
+const feeds = serveDataFeeds(session, {
+  cpu: { pollMs: 5_000, fetch: async () => readHostMetrics() },
+  orders: { maxAgeMs: 10_000, fetch: async (query) => fetchPrivateApi(query) },
+});
+
+// Browser page:
+import { useDataFeed } from './helpers/data-feed.mjs';
+import { mountDashboardShell, mountMetricCard, mountFeedbackCard } from './ui/dashboard.mjs';
+import { mountDevTelemetry } from './helpers/dev-telemetry.mjs';
+
+const shell = mountDashboardShell(document.querySelector('#app'), {
+  title: 'Home Server', session,
+  onRefresh: () => cpuFeed.refresh(),
+});
+const cpuCard = mountMetricCard(shell.grid, {
+  title: 'CPU Load', unit: '%',
+  onAskAgent: ({ title, latest }) => { chat.setContext({ label: title, data: latest }); chat.open(); },
+});
+const cpuFeed = useDataFeed(session, {
+  peer: configuration.nativeDeviceId, feed: 'cpu',
+  onUpdate: state => state.data && cpuCard.update({ value: state.data.pct, fetchedAtMs: state.fetchedAtMs }),
+});
+const telemetry = mountDevTelemetry({ session, runtime: window.tendril });
+```
+
+`serveDataFeeds` polls only while a peer is connected, skips unchanged snapshots,
+caches in RAM, broadcasts deltas over `session.signals` (`feed/<name>`), and serves
+on-demand or large (>10 KiB, up to 4 MiB) pulls via `helpers/signal-request.mjs`—all
+with **zero durable Chronolog writes**. Reserve Chronolog commands for durable user
+decisions, chat turns, and retained observations.
+
 ## Domain views you can import
 
 The first-app archive includes `ui/patterns.mjs` and a complete, dependency-free

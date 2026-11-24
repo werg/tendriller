@@ -11,6 +11,7 @@ import { createInstallation } from "./installation";
 import type { TendrilConfig } from "./types";
 import type { RuntimeApi, RuntimeServices } from "../../contract/index.mjs";
 import { createTransportBinding } from "./transport";
+import { createErrorTracker } from "./errors";
 import { createSignalBinding } from "../../contract/signals.mjs";
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<boolean> {
@@ -59,6 +60,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   const tracker = installSensorWrappers();
   const installation = createInstallation();
   const transport = createTransportBinding();
+  const errors = createErrorTracker(cfg.id, entry => core.bus.emit("error", entry));
   const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null, documentPath: cfg.documentPath,
     base: new URL(cfg.base, location.href).href, managementUrl: new URL(cfg.base + "_tendril/manage", location.href).href });
   const observe = () => observeCapabilities(() => tracker.status().active, report => core.bus.emit("capabilities", report));
@@ -90,7 +92,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     sensorChanged();
   });
   const shared: RuntimeServices = {
-    host: core.host, application: core.application, transport: transport.api,
+    host: core.host, application: core.application, transport: transport.api, errors: errors.api,
     signals: createSignalBinding(options.signals),
     on: (type, listener) => core.bus.on(type, listener),
     ready: () => core.ready(),

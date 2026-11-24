@@ -1,15 +1,27 @@
 import type { RuntimeApi } from "../../../contract/index.mjs";
-import { createVoice } from "./index";
+import { createVoice, type VoiceConsentMode } from "./index";
 import { SPEECH_DOWNLOAD_BYTES, SPEECH_MODEL_BYTES } from "./resources";
 import { MAX_WAKE_SESSION_MS } from "./microphone";
 import { utilityBottom, utilityMaxWidth, utilityRight, utilityTop } from "../utility-layout";
 
-/** Optional, shared presentation for explicit local voice input. No application command is submitted. */
+/** Optional, shared presentation for local voice input and spoken output. */
 export interface VoiceControlsOptions {
   container?: HTMLElement;
   transcript?(text: string): void | Promise<void>;
   language?: string;
   phrase?: string;
+  /**
+   * "auto": immediate 1-tap recording (browser permission is consent).
+   * "session": confirm once per session per purpose (default; zero per-utterance popups).
+   * "prompt": confirm every time before starting.
+   */
+  consentMode?: VoiceConsentMode;
+  /** When true and `transcript` is provided, sends recognized speech directly instead of holding in draft. */
+  autoSend?: boolean;
+  /** Expose spoken reply controls (browser/neural TTS + Stop speaking). Defaults to true. */
+  output?: boolean;
+  /** Automatically enable spoken replies ("browser" | "neural" | true). */
+  autoOutput?: boolean | "browser" | "neural";
 }
 
 const LANGUAGES = [
@@ -105,8 +117,32 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
   const captureSection = element("section", undefined, "section"); captureSection.setAttribute("aria-labelledby", "capture-heading");
   const captureHeading = element("h3", "Tap to talk"); captureHeading.id = "capture-heading";
   const reviewCapture = button("Record a message");
-  captureSection.append(captureHeading, element("p", "Record one message, then finish to transcribe it locally. Recording stops after 30 seconds.", "note"), reviewCapture);
-  panel.append(wakeSection, captureSection);
+  const autoSendWrap = element("label", undefined, "note");
+  autoSendWrap.style.cssText = "display:flex;align-items:center;gap:6px;margin:0 0 10px;font-weight:500;";
+  const autoSendBox = element("input"); autoSendBox.type = "checkbox";
+  autoSendBox.style.cssText = "width:auto;min-height:auto;margin:0;";
+  autoSendBox.checked = Boolean(options.autoSend && options.transcript);
+  autoSendWrap.append(autoSendBox, document.createTextNode("Send recognized speech immediately"));
+  autoSendWrap.hidden = !options.transcript;
+  captureSection.append(captureHeading, element("p", "Record a message, then finish to transcribe it locally. Recording stops after 30 seconds.", "note"), autoSendWrap, reviewCapture);
+
+  const outputSection = element("section", undefined, "section"); outputSection.setAttribute("aria-labelledby", "output-heading");
+  outputSection.hidden = options.output === false;
+  const outputHeading = element("h3", "Spoken replies"); outputHeading.id = "output-heading";
+  const outputActions = element("div", undefined, "actions");
+  const toggleOutput = button("Enable voice output");
+  const outputEngineSelect = element("select"); outputEngineSelect.setAttribute("aria-label", "Voice output engine");
+  outputEngineSelect.style.marginBottom = "8px";
+  const optBrowser = element("option", "Browser voice (instant)"); optBrowser.value = "browser";
+  const optNeural = element("option", "Neural voice (~65 MB cached)"); optNeural.value = "neural";
+  outputEngineSelect.append(optBrowser, optNeural);
+  if (options.autoOutput === "neural") outputEngineSelect.value = "neural";
+  const stopSpeakingBtn = button("Stop speaking", "stop"); stopSpeakingBtn.hidden = true;
+  outputActions.append(toggleOutput, stopSpeakingBtn);
+  const outputMessage = element("p", "Spoken replies are muted.", "note");
+  outputSection.append(outputHeading, outputEngineSelect, outputActions, outputMessage);
+
+  panel.append(wakeSection, captureSection, outputSection);
 
   const consent = element("section", undefined, "consent"); consent.hidden = true;
   consent.setAttribute("aria-labelledby", "voice-consent-heading");
@@ -136,15 +172,18 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
   const indicator = element("span", undefined, "indicator"); indicator.setAttribute("role", "status"); indicator.setAttribute("aria-live", "polite"); indicator.setAttribute("aria-atomic", "true");
   const dot = element("span", undefined, "dot"); dot.setAttribute("aria-hidden", "true");
   const indicatorText = element("span", "Microphone off"); indicator.append(dot, indicatorText);
+  const dockStopSpeak = button("Stop speaking", "stop"); dockStopSpeak.hidden = true;
   const stop = button("Stop microphone", "stop"); stop.hidden = true;
   const expand = button("Voice"); expand.setAttribute("aria-expanded", String(!panel.hidden)); expand.setAttribute("aria-controls", "voice-panel");
-  dock.append(indicator, stop, expand); root.append(style, panel, dock);
+  dock.append(indicator, dockStopSpeak, stop, expand); root.append(style, panel, dock);
 
-  let disposed = false, pendingStart = false, sharing = false, draftRevision = 0;
+  const consentMode: VoiceConsentMode = options.consentMode ?? "session";
+  const grantedPurposes = new Set<string>();
+  let disposed = false, pendingStart = false, sharing = false, draftRevision = 0, speaking = false;
   let wake = { state: "off", message: "" }, capture = { state: "idle", message: "" };
   let voice: ReturnType<typeof createVoice> | null = null;
   let review: { kind: "wake" | "capture"; phrase: string; language: string } | null = null;
-  let oneShotConsent: "wake" | "transcription" | null = null;
+  let oneShotConsent: "wake" | "transcription" | "output" | null = null;
   let reviewButton: HTMLButtonElement = reviewWake;
   let startGeneration = 0;
   const trusted = (event: Event) => !disposed && event.isTrusted;
@@ -180,17 +219,33 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
     reviewCapture.textContent = capture.state === "recording" ? "Finish recording" : "Record a message";
     reviewCapture.disabled = !!review || (busy && capture.state !== "recording");
     useText.disabled = sharing || !draft.value.trim();
+    const muted = voice?.muted ?? true;
+    toggleOutput.textContent = muted ? "Enable voice output" : "Mute voice output";
+    stopSpeakingBtn.hidden = dockStopSpeak.hidden = !speaking;
+    outputMessage.textContent = speaking ? "Speaking reply…" : muted ? "Spoken replies are muted." : (voice?.outputStatus.message || "Spoken replies enabled.");
     const message = activeWake ? wake.message : activeCapture || capture.state === "error" ? capture.message : wake.message || capture.message;
     progress.textContent = message; progress.hidden = !message;
   };
   voice = createVoice(runtime, {
+    consentMode,
+    autoOutput: options.autoOutput,
     consent(request) {
-      if (disposed || oneShotConsent !== request.purpose) return false;
+      if (disposed) return false;
+      if (consentMode === "auto") return true;
+      if (consentMode === "session" && grantedPurposes.has(request.purpose)) return true;
+      if (oneShotConsent !== request.purpose) return false;
       oneShotConsent = null;
+      if (consentMode === "session") grantedPurposes.add(request.purpose);
       return true;
     },
     transcript(text) {
       if (disposed || !text.trim()) return;
+      if (options.transcript && autoSendBox.checked) {
+        void Promise.resolve().then(() => options.transcript?.(text.trim())).catch(cause => {
+          if (!disposed) sayError(cause instanceof Error ? cause.message : "The page could not receive the text.");
+        });
+        return;
+      }
       const combined = [draft.value.trim(), text.trim()].filter(Boolean).join("\n");
       if (combined.length > draft.maxLength) {
         sayError("Your draft is full. Copy or use the current text, then clear it before recording more.");
@@ -201,15 +256,25 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
       draftMessage.textContent = `Text is ready to review. Edit it, then choose ${deliveryLabel}.`;
       openPanel(false); render();
     },
+    level(level) {
+      if (!disposed) dot.style.boxShadow = level > 0.05 ? `0 0 0 ${Math.round(level * 6)}px color-mix(in srgb,#b72222 35%,transparent)` : "";
+    },
     status(status) {
       if (disposed) return;
       if (status.kind === "wake") wake = { state: status.state, message: status.message || "" };
       if (status.kind === "capture") capture = { state: status.state, message: status.message || "" };
+      if (status.kind === "output") speaking = Boolean(status.speaking);
       if (status.state === "error" && status.kind !== "output") sayError(status.message || "Voice input could not start. You can type instead.");
       render();
     },
   });
   const selectedVoice = voice;
+  const revokeAdapterConsent = selectedVoice.revokeConsent;
+  selectedVoice.revokeConsent = () => { grantedPurposes.clear(); revokeAdapterConsent(); };
+  const offSensorsStopped = runtime.on?.("sensors_stopped", () => {
+    selectedVoice.revokeConsent();
+    ++startGeneration; pendingStart = false; cancelReview(false);
+  }) ?? (() => {});
   if (options.phrase === undefined) phrase.value = selectedVoice.settings.wakePhrase;
   if (options.language === undefined) chooseLanguage(selectedVoice.settings.language);
   const cancelReview = (focus = true) => {
@@ -219,33 +284,7 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
     ++startGeneration; oneShotConsent = null; pendingStart = false; selectedVoice.stop();
     wake = { state: "off", message: "" }; capture = { state: "idle", message: "" }; render();
   };
-  const beginReview = (kind: "wake" | "capture", event: Event) => {
-    if (!trusted(event)) return;
-    const value = phrase.value.trim().replace(/\s+/g, " ");
-    if (kind === "wake" && (value.length < 3 || value.length > 64 || !/^[\p{L}\p{N}]+(?:[ '-][\p{L}\p{N}]+)*$/u.test(value) || value.split(" ").length < 2)) {
-      sayError("Choose a wake phrase with at least two words, using 3–64 letters, numbers, spaces, apostrophes or hyphens."); phrase.focus(); return;
-    }
-    stopInput(); sayError("");
-    reviewButton = kind === "wake" ? reviewWake : reviewCapture;
-    review = { kind, phrase: value, language: language.value };
-    consentHeading.textContent = kind === "wake" ? "Enable on-device wake word?" : "Enable on-device recording?";
-    selected.textContent = kind === "wake" ? `Wake phrase: “${value}”. Language: ${language.selectedOptions[0]?.textContent || language.value}.`
-      : `One recorded message. Language: ${language.selectedOptions[0]?.textContent || language.value}.`;
-    consentPurpose.textContent = kind === "wake"
-      ? `This uses local speech recognition, not a low-power always-on detector. Listening stops after ${MAX_WAKE_SESSION_MS / 60_000} minutes and may stop sooner on battery or performance limits. Recognized commands become a draft; they are never submitted automatically.`
-      : "Recording is limited to 30 seconds. Only its transcription is placed in the draft below; nothing is submitted automatically.";
-    consent.hidden = false; openPanel(false); render(); consentHeading.focus();
-  };
-  reviewWake.addEventListener("click", event => beginReview("wake", event));
-  reviewCapture.addEventListener("click", event => {
-    if (!trusted(event)) return;
-    if (capture.state === "recording") { selectedVoice.finishCapture(); render(); }
-    else beginReview("capture", event);
-  });
-  accept.addEventListener("click", async event => {
-    if (!trusted(event) || !review || pendingStart) return;
-    const chosen = review;
-    cancelReview(false); sayError("");
+  const startChosen = async (chosen: { kind: "wake" | "capture"; phrase: string; language: string }) => {
     const generation = ++startGeneration;
     pendingStart = true;
     try {
@@ -266,14 +305,71 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
       oneShotConsent = null;
       if (!disposed && generation === startGeneration) { pendingStart = false; render(); }
     }
+  };
+  const beginReview = (kind: "wake" | "capture", event: Event) => {
+    if (!trusted(event)) return;
+    const value = phrase.value.trim().replace(/\s+/g, " ");
+    if (kind === "wake" && (value.length < 3 || value.length > 64 || !/^[\p{L}\p{N}]+(?:[ '-][\p{L}\p{N}]+)*$/u.test(value) || value.split(" ").length < 2)) {
+      sayError("Choose a wake phrase with at least two words, using 3–64 letters, numbers, spaces, apostrophes or hyphens."); phrase.focus(); return;
+    }
+    stopInput(); sayError("");
+    const purpose = kind === "wake" ? "wake" : "transcription";
+    // Automatic consent OR already granted in this session: start immediately without nagging again.
+    if (consentMode === "auto" || (consentMode === "session" && grantedPurposes.has(purpose))) {
+      void startChosen({ kind, phrase: value, language: language.value });
+      return;
+    }
+    reviewButton = kind === "wake" ? reviewWake : reviewCapture;
+    review = { kind, phrase: value, language: language.value };
+    consentHeading.textContent = kind === "wake" ? "Enable on-device wake word?" : "Enable on-device recording?";
+    selected.textContent = kind === "wake" ? `Wake phrase: “${value}”. Language: ${language.selectedOptions[0]?.textContent || language.value}.`
+      : `One recorded message. Language: ${language.selectedOptions[0]?.textContent || language.value}.`;
+    consentPurpose.textContent = kind === "wake"
+      ? `This uses local speech recognition, not a low-power always-on detector. Listening stops after ${MAX_WAKE_SESSION_MS / 60_000} minutes and may stop sooner on battery or performance limits.`
+      : "Recording is limited to 30 seconds on this device. Approval is remembered for this session until you stop sensors or leave the page.";
+    consent.hidden = false; openPanel(false); render(); consentHeading.focus();
+  };
+  reviewWake.addEventListener("click", event => beginReview("wake", event));
+  reviewCapture.addEventListener("click", event => {
+    if (!trusted(event)) return;
+    if (capture.state === "recording") { selectedVoice.finishCapture(); render(); }
+    else beginReview("capture", event);
   });
+  accept.addEventListener("click", async event => {
+    if (!trusted(event) || !review || pendingStart) return;
+    const chosen = review;
+    cancelReview(false); sayError("");
+    await startChosen(chosen);
+  });
+  toggleOutput.addEventListener("click", async event => {
+    if (!trusted(event)) return;
+    if (!selectedVoice.muted) {
+      selectedVoice.mute();
+      speaking = false;
+      render();
+      return;
+    }
+    oneShotConsent = "output";
+    const engine = outputEngineSelect.value === "neural" ? "neural" : "browser";
+    try { await selectedVoice.enableOutput(engine); }
+    catch (cause) { if (!disposed) sayError(cause instanceof Error ? cause.message : "Voice output could not start."); }
+    finally { oneShotConsent = null; render(); }
+  });
+  const stopSpeaking = (event: Event) => {
+    if (!trusted(event)) return;
+    selectedVoice.stop();
+    speaking = false;
+    render();
+  };
+  stopSpeakingBtn.addEventListener("click", stopSpeaking);
+  dockStopSpeak.addEventListener("click", stopSpeaking);
   decline.addEventListener("click", event => { if (trusted(event)) cancelReview(); });
   expand.addEventListener("click", event => {
     if (!trusted(event)) return;
     if (panel.hidden) openPanel(); else { cancelReview(false); closePanel(); }
   });
   close.addEventListener("click", event => { if (trusted(event)) { cancelReview(false); closePanel(); } });
-  stop.addEventListener("click", event => { if (trusted(event)) { stopInput(); cancelReview(false); expand.focus(); } });
+  stop.addEventListener("click", event => { if (trusted(event)) { selectedVoice.revokeConsent(); stopInput(); cancelReview(false); expand.focus(); } });
   root.addEventListener("keydown", event => {
     if (!(event instanceof KeyboardEvent) || !trusted(event) || event.key !== "Escape") return;
     event.preventDefault(); event.stopPropagation();
@@ -308,9 +404,12 @@ export function mountVoiceControls(runtime: RuntimeApi, options: VoiceControlsOp
   return {
     voice: selectedVoice,
     element: host,
+    speak(text: string) { selectedVoice.speak(text); },
+    mute() { selectedVoice.mute(); speaking = false; render(); },
     dispose() {
       if (disposed) return;
-      disposed = true; ++startGeneration; oneShotConsent = null; review = null;
+      disposed = true; ++startGeneration; oneShotConsent = null; review = null; grantedPurposes.clear();
+      offSensorsStopped();
       document.removeEventListener("visibilitychange", abandonReview);
       selectedVoice.dispose(); host.remove();
     },

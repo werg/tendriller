@@ -1,0 +1,719 @@
+import type { RuntimeApi } from "../../../contract/index.mjs";
+import { createVoice, type VoiceConsentMode, type VoiceStatus } from "./index";
+import { utilityBottom, utilityRight } from "../utility-layout";
+
+export interface AgentChatMessage {
+  id: string;
+  role: "user" | "agent" | "system";
+  text: string;
+  at?: number;
+  status?: "sending" | "delivered" | "seen" | "thinking" | "answered" | "error";
+  contextLabel?: string;
+  actions?: Array<{ id: string; label: string; primary?: boolean }>;
+}
+
+export interface AgentChatPresence {
+  status: "online" | "busy" | "offline" | "unknown";
+  label?: string;
+}
+
+export interface AgentChatContext {
+  label: string;
+  data?: unknown;
+}
+
+export interface AgentChatOptions {
+  container?: HTMLElement;
+  title?: string;
+  placeholder?: string;
+  messages?: AgentChatMessage[];
+  onSend(input: { text: string; via: "text" | "voice"; context?: unknown }): void | Promise<void>;
+  onAction?(action: { messageId: string; actionId: string; label: string }): void | Promise<void>;
+  onAttach?(file: File): void | Promise<void>;
+  /** Defaults to "auto" so 1-tap mic & speaker work immediately (browser permission is consent). */
+  consentMode?: VoiceConsentMode;
+  /** Send voice transcripts immediately (default true; user can toggle "Review voice"). */
+  autoSendVoice?: boolean;
+  /** Spoken reply engine ("browser" | "neural" | false). Defaults to "browser". */
+  voiceOutput?: "browser" | "neural" | false;
+  /** Automatically speak newly arriving agent replies. Defaults to false. */
+  autoSpeak?: boolean;
+  /** Re-open microphone after a spoken agent reply finishes (toggleable). Defaults to false. */
+  handsFreeLoop?: boolean;
+  language?: string;
+  /** "embedded" fills container; "drawer" is a collapsible side/bottom sheet; "dock" adds a floating button. */
+  layout?: "embedded" | "drawer" | "dock";
+  open?: boolean;
+  presence?: AgentChatPresence;
+}
+
+export interface AgentChatHandle {
+  readonly voice: ReturnType<typeof createVoice>;
+  readonly element: HTMLElement;
+  setMessages(messages: AgentChatMessage[]): void;
+  setStreamingReply(text: string | null): void;
+  setPresence(presence: AgentChatPresence): void;
+  setContext(context: AgentChatContext | null): void;
+  speak(text: string): void;
+  stopSpeaking(): void;
+  open(): void;
+  close(): void;
+  toggle(): void;
+  focus(): void;
+  dispose(): void;
+}
+
+const STATUS_LABELS: Record<NonNullable<AgentChatMessage["status"]>, string> = {
+  sending: "Sending…",
+  delivered: "Delivered",
+  seen: "Seen",
+  thinking: "Thinking…",
+  answered: "Answered",
+  error: "Failed",
+};
+
+const HOLD_THRESHOLD_MS = 350;
+
+export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): AgentChatHandle {
+  if (typeof options?.onSend !== "function") throw new TypeError("mountAgentChat requires an onSend callback");
+
+  const layout = options.layout ?? (options.container ? "embedded" : "dock");
+  const consentMode: VoiceConsentMode = options.consentMode ?? "auto";
+  const outputEngine: "browser" | "neural" | false = options.voiceOutput === false ? false : (options.voiceOutput ?? "browser");
+  const draftKey = `tendril:chat-draft:${runtime.identity.page}`;
+
+  const host = document.createElement("tendril-agent-chat");
+  if (layout === "embedded") {
+    host.style.cssText = "display:flex;flex-direction:column;width:100%;height:100%;min-height:320px;max-width:100%;";
+  } else {
+    host.style.cssText = `position:fixed;right:${utilityRight};bottom:calc(${utilityBottom} + var(--tendril-utility-height,54px) + 10px);z-index:2147483645;display:flex;flex-direction:column;align-items:flex-end;pointer-events:none;`;
+  }
+
+  const root = host.attachShadow({ mode: "open" });
+  const style = document.createElement("style");
+  style.textContent = `
+    :host{all:initial;color-scheme:light dark;font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:CanvasText}
+    *{box-sizing:border-box}[hidden]{display:none!important}
+    button,textarea,input{font:inherit;color:inherit}
+    button{cursor:pointer;touch-action:manipulation;border:1px solid color-mix(in srgb,CanvasText 16%,transparent);border-radius:10px;background:Canvas;min-height:38px;padding:6px 11px;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:background .12s,border-color .12s,transform .1s}
+    button:hover:not(:disabled){background:color-mix(in srgb,Canvas 90%,CanvasText)}
+    button:disabled{opacity:.55;cursor:default}
+    button:focus-visible,textarea:focus-visible{outline:2px solid Highlight;outline-offset:2px}
+    .launcher{pointer-events:auto;min-height:46px;padding:0 16px;border-radius:999px;background:#1e644a;color:#fff;border-color:#1e644a;font-weight:650;box-shadow:0 6px 24px #0003}
+    .launcher:hover:not(:disabled){background:#174d39}
+    .shell{pointer-events:auto;display:flex;flex-direction:column;background:Canvas;color:CanvasText;border:1px solid color-mix(in srgb,CanvasText 16%,transparent);border-radius:16px;overflow:hidden;min-height:0}
+    .shell.embedded{width:100%;height:100%;flex:1}
+    .shell.drawer{width:min(420px,calc(100vw - 20px));height:min(640px,calc(100dvh - 110px));box-shadow:0 10px 36px #0003;margin-bottom:8px}
+    .header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid color-mix(in srgb,CanvasText 12%,transparent);background:color-mix(in srgb,Canvas 96%,CanvasText)}
+    .title-group{display:flex;flex-direction:column;min-width:0}
+    .title{font-weight:700;font-size:15px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .presence{display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.8}
+    .pdot{width:8px;height:8px;border-radius:50%;background:#888;flex:none}
+    .pdot[data-status="online"]{background:#1f8b4c}
+    .pdot[data-status="busy"]{background:#d9822b}
+    .pdot[data-status="offline"]{background:#b72222}
+    .header-actions{display:flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end}
+    .pill{min-height:32px;padding:4px 9px;font-size:12px;border-radius:999px;font-weight:600}
+    .pill[aria-pressed="true"]{background:#1e644a;color:#fff;border-color:#1e644a}
+    .stop-speak{background:#a32020;color:#fff;border-color:#a32020}
+    .stop-speak:hover:not(:disabled){background:#881818}
+    .close-btn{min-width:34px;min-height:34px;padding:0;border:0;font-size:20px;line-height:1}
+    .feed{flex:1;min-height:140px;overflow-y:auto;overscroll-behavior:contain;padding:12px;display:flex;flex-direction:column;gap:10px}
+    .empty{margin:auto;text-align:center;max-width:280px;opacity:.75;font-size:13px;padding:18px 8px}
+    .msg{display:flex;flex-direction:column;max-width:88%;gap:3px}
+    .msg.user{align-self:flex-end;align-items:flex-end}
+    .msg.agent{align-self:flex-start;align-items:flex-start}
+    .msg.system{align-self:center;align-items:center;max-width:96%}
+    .bubble{padding:9px 12px;border-radius:14px;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+    .msg.user .bubble{background:#1e644a;color:#fff;border-bottom-right-radius:4px}
+    .msg.agent .bubble{background:color-mix(in srgb,Canvas 91%,CanvasText);border:1px solid color-mix(in srgb,CanvasText 10%,transparent);border-bottom-left-radius:4px}
+    .msg.system .bubble{background:transparent;font-size:12px;opacity:.75;padding:3px 8px}
+    .msg.streaming .bubble{border-style:dashed}
+    .ctx-badge{font-size:11px;opacity:.85;margin-bottom:2px;padding:1px 7px;border-radius:999px;background:color-mix(in srgb,CanvasText 10%,transparent)}
+    .meta{font-size:11px;opacity:.7;display:flex;gap:6px;align-items:center}
+    .msg-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+    .msg-actions button{min-height:32px;padding:4px 10px;font-size:12px;border-radius:999px}
+    .msg-actions button.primary{background:#1e644a;color:#fff;border-color:#1e644a}
+    .status-strip{padding:6px 12px;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:8px;background:color-mix(in srgb,Canvas 93%,CanvasText);border-top:1px solid color-mix(in srgb,CanvasText 10%,transparent)}
+    .status-strip.error{color:#b72222;font-weight:600}
+    .ctx-bar{padding:6px 12px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;background:color-mix(in srgb,#1e644a 12%,Canvas);border-top:1px solid color-mix(in srgb,CanvasText 10%,transparent)}
+    .ctx-bar button{min-height:26px;padding:2px 8px;font-size:12px;border-radius:999px}
+    .consent-bar{padding:10px 12px;background:color-mix(in srgb,Highlight 10%,Canvas);border-top:1px solid Highlight;display:flex;flex-direction:column;gap:8px;font-size:12px}
+    .consent-actions{display:flex;gap:6px}
+    .consent-actions .primary{background:#1e644a;color:#fff;border-color:#1e644a}
+    .composer{padding:8px 10px calc(8px + env(safe-area-inset-bottom,0px));border-top:1px solid color-mix(in srgb,CanvasText 12%,transparent);display:flex;flex-direction:column;gap:6px;background:Canvas}
+    .composer-row{display:flex;align-items:flex-end;gap:6px}
+    textarea{flex:1;min-width:0;min-height:42px;max-height:140px;padding:9px 11px;border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:12px;background:Canvas;resize:none;line-height:1.35}
+    .icon-btn{min-width:42px;min-height:42px;padding:0;border-radius:12px;flex:none;position:relative}
+    .mic-btn{--level:0;background:color-mix(in srgb,Canvas 92%,CanvasText);font-weight:700}
+    .mic-btn[data-state="recording"]{background:#b72222;color:#fff;border-color:#b72222;box-shadow:0 0 0 calc(3px + var(--level) * 9px) color-mix(in srgb,#b72222 30%,transparent)}
+    .mic-btn[data-state="working"]{background:#d9822b;color:#fff;border-color:#d9822b}
+    .send-btn{min-height:42px;padding:0 14px;border-radius:12px;background:#1e644a;color:#fff;border-color:#1e644a;font-weight:650;flex:none}
+    .send-btn:hover:not(:disabled){background:#174d39}
+    .composer-foot{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;opacity:.75;padding:0 2px}
+    .check-label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+    .check-label input{margin:0}
+    @media(prefers-color-scheme:dark){
+      .launcher,.send-btn,.pill[aria-pressed="true"],.msg.user .bubble,.msg-actions button.primary,.consent-actions .primary{background:#2d8a67;border-color:#2d8a67;color:#fff}
+      .launcher:hover:not(:disabled),.send-btn:hover:not(:disabled){background:#37a078}
+    }
+    @media(max-width:600px){
+      .shell.drawer{width:calc(100vw - 16px);height:min(76dvh,calc(100dvh - 88px))}
+    }
+    @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+  `;
+
+  const el = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const btn = (text: string, className?: string) => {
+    const node = el("button", className, text);
+    node.type = "button";
+    return node;
+  };
+
+  let disposed = false;
+  let isOpen = options.open ?? (layout === "embedded");
+  let messages: AgentChatMessage[] = [...(options.messages ?? [])];
+  let streamingText: string | null = null;
+  let activeContext: AgentChatContext | null = null;
+  let autoSendVoice = options.autoSendVoice ?? true;
+  let autoSpeak = options.autoSpeak ?? false;
+  let handsFreeLoop = options.handsFreeLoop ?? false;
+  let captureState = "idle";
+  let voiceError = "";
+  let voiceDetail = "";
+  let speaking = false;
+  let sending = false;
+  let holdTimer: ReturnType<typeof setTimeout> | null = null;
+  let holding = false;
+  let suppressPointerClick = false;
+  let handsFreeTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingConsentResolve: ((ok: boolean) => void) | null = null;
+  const spokenIds = new Set<string>(messages.filter(m => m.role === "agent").map(m => m.id));
+
+  // Header
+  const shell = el("section", `shell ${layout === "embedded" ? "embedded" : "drawer"}`);
+  shell.setAttribute("aria-label", options.title || "Assistant chat");
+  shell.hidden = !isOpen;
+
+  const header = el("header", "header");
+  const titleGroup = el("div", "title-group");
+  const titleNode = el("span", "title", options.title || "Assistant");
+  const presenceRow = el("span", "presence");
+  const presenceDot = el("span", "pdot");
+  const presenceLabel = el("span", undefined, options.presence?.label || "Ready");
+  presenceDot.dataset.status = options.presence?.status || "unknown";
+  presenceRow.append(presenceDot, presenceLabel);
+  titleGroup.append(titleNode, presenceRow);
+
+  const headerActions = el("div", "header-actions");
+  const stopSpeakBtn = btn("Stop speaking", "pill stop-speak");
+  stopSpeakBtn.hidden = true;
+  const speakerBtn = btn(autoSpeak ? "Voice: On" : "Voice: Off", "pill");
+  speakerBtn.setAttribute("aria-pressed", String(autoSpeak));
+  speakerBtn.hidden = outputEngine === false;
+  const loopBtn = btn("Hands-free", "pill");
+  loopBtn.setAttribute("aria-pressed", String(handsFreeLoop));
+  loopBtn.title = "Listen again automatically after each spoken reply";
+  loopBtn.hidden = outputEngine === false;
+  const closeBtn = btn("×", "close-btn");
+  closeBtn.setAttribute("aria-label", "Close chat");
+  closeBtn.hidden = layout === "embedded";
+  headerActions.append(stopSpeakBtn, speakerBtn, loopBtn, closeBtn);
+  header.append(titleGroup, headerActions);
+
+  // Feed
+  const feed = el("div", "feed");
+  feed.setAttribute("role", "log");
+  feed.setAttribute("aria-live", "polite");
+
+  // Status / Error / Hands-free countdown strip
+  const statusStrip = el("div", "status-strip");
+  statusStrip.hidden = true;
+  const statusText = el("span");
+  const statusCancel = btn("Cancel", "pill");
+  statusCancel.hidden = true;
+  statusStrip.append(statusText, statusCancel);
+
+  // Inline consent banner (used only when consentMode is "session" or "prompt")
+  const consentBar = el("div", "consent-bar");
+  consentBar.hidden = true;
+  const consentDesc = el("div");
+  const consentActions = el("div", "consent-actions");
+  const consentAccept = btn("Allow voice", "primary");
+  const consentDecline = btn("Not now");
+  consentActions.append(consentAccept, consentDecline);
+  consentBar.append(consentDesc, consentActions);
+
+  // Context chip bar
+  const ctxBar = el("div", "ctx-bar");
+  ctxBar.hidden = true;
+  const ctxText = el("span");
+  const ctxClear = btn("Clear");
+  ctxBar.append(ctxText, ctxClear);
+
+  // Composer
+  const composer = el("div", "composer");
+  const composerRow = el("div", "composer-row");
+  const fileInput = el("input");
+  fileInput.type = "file";
+  fileInput.hidden = true;
+  const attachBtn = btn("+", "icon-btn");
+  attachBtn.setAttribute("aria-label", "Attach photo or file");
+  attachBtn.title = "Attach photo or file";
+  attachBtn.hidden = !options.onAttach;
+
+  const textarea = el("textarea");
+  textarea.rows = 1;
+  textarea.maxLength = 8000;
+  textarea.placeholder = options.placeholder || "Message or tap mic to speak…";
+  textarea.setAttribute("aria-label", "Message input");
+  try {
+    const saved = sessionStorage.getItem(draftKey);
+    if (saved) textarea.value = saved;
+  } catch { /* ignore */ }
+
+  const micBtn = btn("Mic", "icon-btn mic-btn");
+  micBtn.setAttribute("aria-label", "Tap to speak or hold to talk");
+  micBtn.title = "Tap to talk (or press and hold)";
+
+  const sendBtn = btn("Send", "send-btn");
+  composerRow.append(fileInput, attachBtn, textarea, micBtn, sendBtn);
+
+  const composerFoot = el("div", "composer-foot");
+  const autoSendLabel = el("label", "check-label");
+  const autoSendInput = el("input");
+  autoSendInput.type = "checkbox";
+  autoSendInput.checked = autoSendVoice;
+  autoSendLabel.append(autoSendInput, document.createTextNode("Send voice immediately"));
+  const hint = el("span", undefined, "Enter to send · Tap or hold Mic");
+  composerFoot.append(autoSendLabel, hint);
+  composer.append(composerRow, composerFoot);
+
+  shell.append(header, feed, statusStrip, consentBar, ctxBar, composer);
+
+  const launcher = btn(options.title || "Chat & Voice", "launcher");
+  launcher.hidden = layout !== "dock" || isOpen;
+
+  root.append(style, shell, launcher);
+
+  const autoResize = () => {
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(140, Math.max(42, textarea.scrollHeight))}px`;
+  };
+
+  const clearHandsFreeTimer = () => {
+    if (handsFreeTimer !== null) {
+      clearTimeout(handsFreeTimer);
+      handsFreeTimer = null;
+    }
+  };
+
+  const updateStatusStrip = () => {
+    if (voiceError) {
+      statusStrip.hidden = false;
+      statusStrip.className = "status-strip error";
+      statusText.textContent = voiceError;
+      statusCancel.hidden = true;
+      return;
+    }
+    if (handsFreeTimer !== null) {
+      statusStrip.hidden = false;
+      statusStrip.className = "status-strip";
+      statusText.textContent = "Listening for follow-up…";
+      statusCancel.hidden = false;
+      return;
+    }
+    if (voiceDetail && (captureState === "recording" || captureState === "working")) {
+      statusStrip.hidden = false;
+      statusStrip.className = "status-strip";
+      statusText.textContent = voiceDetail;
+      statusCancel.hidden = false;
+      return;
+    }
+    statusStrip.hidden = true;
+  };
+
+  const renderControls = () => {
+    if (disposed) return;
+    stopSpeakBtn.hidden = !speaking;
+    speakerBtn.textContent = autoSpeak ? "Voice: On" : "Voice: Off";
+    speakerBtn.setAttribute("aria-pressed", String(autoSpeak));
+    loopBtn.setAttribute("aria-pressed", String(handsFreeLoop));
+    micBtn.dataset.state = captureState;
+    micBtn.textContent = captureState === "recording" ? "Stop" : captureState === "working" ? "…" : "Mic";
+    micBtn.setAttribute("aria-label", captureState === "recording" ? "Finish recording" : "Tap to speak or hold to talk");
+    sendBtn.disabled = sending || !textarea.value.trim();
+    ctxBar.hidden = !activeContext;
+    if (activeContext) ctxText.textContent = `About: ${activeContext.label}`;
+    updateStatusStrip();
+  };
+
+  const renderMessages = () => {
+    if (disposed) return;
+    const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 64;
+    while (feed.firstChild) feed.firstChild.remove();
+    if (messages.length === 0 && !streamingText) {
+      feed.append(el("div", "empty", "Ask a question by typing below or tapping Mic. Your replies and live updates appear here."));
+      return;
+    }
+    for (const msg of messages) {
+      const row = el("article", `msg ${msg.role}`);
+      if (msg.contextLabel) row.append(el("span", "ctx-badge", `About: ${msg.contextLabel}`));
+      const bubble = el("div", "bubble", msg.text);
+      row.append(bubble);
+      if (msg.actions?.length) {
+        const actionsRow = el("div", "msg-actions");
+        for (const action of msg.actions) {
+          const ab = btn(action.label, action.primary ? "primary" : undefined);
+          ab.addEventListener("click", () => {
+            void Promise.resolve().then(() => options.onAction?.({ messageId: msg.id, actionId: action.id, label: action.label })).catch(err => {
+              voiceError = err instanceof Error ? err.message : String(err);
+              renderControls();
+            });
+          });
+          actionsRow.append(ab);
+        }
+        row.append(actionsRow);
+      }
+      const metaParts: string[] = [];
+      if (msg.at) metaParts.push(new Date(msg.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      if (msg.status && STATUS_LABELS[msg.status]) metaParts.push(STATUS_LABELS[msg.status]);
+      if (metaParts.length) row.append(el("span", "meta", metaParts.join(" · ")));
+      feed.append(row);
+    }
+    if (streamingText) {
+      const row = el("article", "msg agent streaming");
+      row.append(el("div", "bubble", streamingText), el("span", "meta", "Thinking…"));
+      feed.append(row);
+    }
+    if (nearBottom) feed.scrollTop = feed.scrollHeight;
+  };
+
+  const requestInlineConsent = (description: string): Promise<boolean> => {
+    if (pendingConsentResolve) { pendingConsentResolve(false); pendingConsentResolve = null; }
+    consentDesc.textContent = description;
+    consentBar.hidden = false;
+    return new Promise<boolean>(resolve => {
+      pendingConsentResolve = ok => {
+        pendingConsentResolve = null;
+        consentBar.hidden = true;
+        resolve(ok);
+      };
+    });
+  };
+  consentAccept.addEventListener("click", () => pendingConsentResolve?.(true));
+  consentDecline.addEventListener("click", () => pendingConsentResolve?.(false));
+
+  const submitText = async (text: string, via: "text" | "voice") => {
+    const trimmed = text.trim();
+    if (!trimmed || sending || disposed) return;
+    sending = true;
+    voiceError = "";
+    const ctx = activeContext;
+    if (via === "text") {
+      textarea.value = "";
+      autoResize();
+      try { sessionStorage.removeItem(draftKey); } catch { /* ignore */ }
+    }
+    renderControls();
+    try {
+      await options.onSend({ text: trimmed, via, ...(ctx ? { context: ctx.data ?? ctx.label } : {}) });
+      if (!disposed && ctx === activeContext) activeContext = null;
+    } catch (err) {
+      if (!disposed) {
+        voiceError = err instanceof Error ? err.message : "Could not send message.";
+        if (via === "text" && !textarea.value) {
+          textarea.value = trimmed;
+          autoResize();
+          try { sessionStorage.setItem(draftKey, trimmed); } catch { /* ignore */ }
+        }
+      }
+    } finally {
+      sending = false;
+      renderControls();
+    }
+  };
+
+  const voice = createVoice(runtime, {
+    consentMode,
+    consent: consentMode === "auto" ? undefined : request => requestInlineConsent(request.description),
+    autoOutput: autoSpeak && outputEngine ? outputEngine : false,
+    transcript(text) {
+      if (disposed || !text.trim()) return;
+      voiceError = "";
+      if (autoSendVoice) {
+        void submitText(text, "voice");
+      } else {
+        textarea.value = [textarea.value.trim(), text.trim()].filter(Boolean).join(" ");
+        autoResize();
+        textarea.focus();
+        try { sessionStorage.setItem(draftKey, textarea.value); } catch { /* ignore */ }
+        renderControls();
+      }
+    },
+    level(level) {
+      if (!disposed) micBtn.style.setProperty("--level", level.toFixed(3));
+    },
+    status(status: VoiceStatus) {
+      if (disposed) return;
+      if (status.kind === "capture") {
+        captureState = status.state;
+        voiceDetail = status.message || (status.state === "recording" ? "Listening… tap Stop when done" : "");
+        if (status.state === "error") voiceError = status.message || "Voice input failed. You can type instead.";
+      } else if (status.kind === "output") {
+        const wasSpeaking = speaking;
+        speaking = Boolean(status.speaking);
+        if (speaking) clearHandsFreeTimer();
+        if (wasSpeaking && !speaking && status.completed === true && handsFreeLoop && isOpen && document.visibilityState === "visible") {
+          clearHandsFreeTimer();
+          handsFreeTimer = setTimeout(() => {
+            handsFreeTimer = null;
+            if (!disposed && handsFreeLoop && isOpen && !voice.listening && document.visibilityState === "visible") {
+              void voice.startCapture();
+            }
+            renderControls();
+          }, 550);
+        }
+      }
+      renderControls();
+    },
+  });
+  if (options.language) voice.language(options.language);
+
+  const ensureOutputEnabled = async () => {
+    if (outputEngine === false) return false;
+    if (!voice.muted) return true;
+    return voice.enableOutput(outputEngine);
+  };
+
+  // Tap or press-and-hold Mic interaction (with automatic barge-in over TTS)
+  const beginMic = () => {
+    clearHandsFreeTimer();
+    voiceError = "";
+    if (voice.speaking) voice.stop();
+    if (captureState === "recording") {
+      voice.finishCapture();
+      return;
+    }
+    if (captureState === "working") {
+      voice.cancelCapture();
+      return;
+    }
+    void voice.startCapture();
+  };
+
+  micBtn.addEventListener("pointerdown", event => {
+    if (event.button !== 0 && event.pointerType === "mouse") return;
+    holding = false;
+    suppressPointerClick = false;
+    try { micBtn.setPointerCapture(event.pointerId); } catch { /* unsupported pointer capture */ }
+    if (captureState === "idle" || captureState === "error") {
+      holdTimer = setTimeout(() => {
+        holdTimer = null;
+        holding = true;
+        suppressPointerClick = true;
+        beginMic();
+      }, HOLD_THRESHOLD_MS);
+    }
+  });
+  const endPointer = (event: PointerEvent) => {
+    if (holdTimer !== null) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+    if (holding) {
+      holding = false;
+      if (event.type === "pointercancel") voice.cancelCapture();
+      else if (captureState === "recording") voice.finishCapture();
+      else voice.cancelCapture(); // Do not start recording after a released hold finishes preparing.
+    }
+  };
+  micBtn.addEventListener("pointerup", endPointer);
+  micBtn.addEventListener("pointercancel", endPointer);
+  micBtn.addEventListener("click", event => {
+    if (suppressPointerClick && event.detail !== 0) { suppressPointerClick = false; return; }
+    suppressPointerClick = false;
+    beginMic();
+  });
+
+  speakerBtn.addEventListener("click", async () => {
+    if (outputEngine === false) return;
+    if (autoSpeak) {
+      autoSpeak = false;
+      handsFreeLoop = false;
+      clearHandsFreeTimer();
+      voice.mute();
+    } else {
+      const ok = await ensureOutputEnabled();
+      autoSpeak = ok;
+    }
+    renderControls();
+  });
+
+  loopBtn.addEventListener("click", async () => {
+    if (handsFreeLoop) {
+      handsFreeLoop = false;
+      clearHandsFreeTimer();
+    } else {
+      handsFreeLoop = true;
+      if (!autoSpeak && outputEngine !== false) {
+        autoSpeak = await ensureOutputEnabled();
+      }
+    }
+    renderControls();
+  });
+
+  stopSpeakBtn.addEventListener("click", () => {
+    clearHandsFreeTimer();
+    voice.stop();
+    speaking = false;
+    renderControls();
+  });
+
+  statusCancel.addEventListener("click", () => {
+    clearHandsFreeTimer();
+    voice.cancelCapture();
+    renderControls();
+  });
+
+  ctxClear.addEventListener("click", () => {
+    activeContext = null;
+    renderControls();
+  });
+
+  autoSendInput.addEventListener("change", () => {
+    autoSendVoice = autoSendInput.checked;
+  });
+
+  textarea.addEventListener("input", () => {
+    autoResize();
+    try {
+      if (textarea.value) sessionStorage.setItem(draftKey, textarea.value);
+      else sessionStorage.removeItem(draftKey);
+    } catch { /* ignore */ }
+    renderControls();
+  });
+  textarea.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void submitText(textarea.value, "text");
+    }
+  });
+  sendBtn.addEventListener("click", () => { void submitText(textarea.value, "text"); });
+
+  attachBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    fileInput.value = "";
+    if (!file || !options.onAttach) return;
+    void Promise.resolve().then(() => options.onAttach?.(file)).catch(err => {
+      voiceError = err instanceof Error ? err.message : String(err);
+      renderControls();
+    });
+  });
+
+  const suspendConversation = () => {
+    clearHandsFreeTimer();
+    if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; }
+    holding = false;
+    pendingConsentResolve?.(false);
+  };
+  const offSensorsStopped = runtime.on("sensors_stopped", suspendConversation);
+  const onHidden = () => { if (document.visibilityState !== "visible") suspendConversation(); };
+  document.addEventListener("visibilitychange", onHidden);
+  window.addEventListener("pagehide", suspendConversation);
+
+  const setOpen = (next: boolean) => {
+    isOpen = next;
+    shell.hidden = !isOpen;
+    launcher.hidden = layout !== "dock" || isOpen;
+    if (!isOpen) {
+      suspendConversation(); voice.stop();
+      if (layout === "dock") launcher.focus();
+    }
+    if (isOpen) {
+      feed.scrollTop = feed.scrollHeight;
+      textarea.focus();
+    }
+  };
+  launcher.addEventListener("click", () => setOpen(true));
+  closeBtn.addEventListener("click", () => setOpen(false));
+  root.addEventListener("keydown", event => {
+    if (!(event instanceof KeyboardEvent) || event.key !== "Escape") return;
+    event.preventDefault(); event.stopPropagation();
+    if (layout === "embedded") { suspendConversation(); voice.stop(); textarea.focus(); }
+    else setOpen(false);
+  });
+
+  (options.container || document.body).append(host);
+  renderMessages();
+  renderControls();
+  autoResize();
+
+  return {
+    voice,
+    element: host,
+    setMessages(next) {
+      messages = [...next];
+      renderMessages();
+      if (autoSpeak && !disposed) {
+        const newlyArrived = messages.filter(m => m.role === "agent" && !spokenIds.has(m.id));
+        for (const m of newlyArrived) spokenIds.add(m.id);
+        const latest = newlyArrived.at(-1);
+        if (latest?.text) {
+          void ensureOutputEnabled().then(ok => {
+            if (ok && !disposed && autoSpeak) voice.speak(latest.text);
+          });
+        }
+      } else {
+        for (const m of messages) if (m.role === "agent") spokenIds.add(m.id);
+      }
+    },
+    setStreamingReply(text) {
+      streamingText = text && text.trim() ? text : null;
+      renderMessages();
+    },
+    setPresence(presence) {
+      presenceDot.dataset.status = presence.status;
+      presenceLabel.textContent = presence.label
+        ?? (presence.status === "online" ? "Online"
+          : presence.status === "busy" ? "Thinking…"
+          : presence.status === "offline" ? "Offline" : "Ready");
+    },
+    setContext(context) {
+      activeContext = context ? { ...context } : null;
+      renderControls();
+    },
+    speak(text) {
+      if (!text?.trim() || outputEngine === false) return;
+      void ensureOutputEnabled().then(ok => { if (ok && !disposed) voice.speak(text); });
+    },
+    stopSpeaking() {
+      clearHandsFreeTimer();
+      voice.stop();
+      speaking = false;
+      renderControls();
+    },
+    open: () => setOpen(true),
+    close: () => setOpen(false),
+    toggle: () => setOpen(!isOpen),
+    focus: () => { if (!isOpen) setOpen(true); textarea.focus(); },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearHandsFreeTimer();
+      if (holdTimer !== null) clearTimeout(holdTimer);
+      pendingConsentResolve?.(false);
+      offSensorsStopped();
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("pagehide", suspendConversation);
+      voice.dispose();
+      host.remove();
+    },
+  };
+}

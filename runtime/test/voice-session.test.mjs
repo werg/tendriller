@@ -105,12 +105,13 @@ async function finish(env, text) {
   env.workers.at(-1).respond('transcribe', { text }); await tick();
 }
 
-test('each recording requires fresh consent even when the verified model is prepared', async () => {
+test('session consent reuses approval across recordings while prompt mode requests fresh consent each time', async () => {
   const env = environment(); assert.equal(env.fetches.length, 0); assert.equal(env.prompts, 0);
   await env.voice.startCapture(); assert.equal(env.prompts, 1); assert.equal(env.voice.microphoneActive, true);
   assert.equal(env.consents.length, 1); assert.equal(Object.isFrozen(env.consents[0]), true); assert.equal(env.consents[0].downloadBytes, 18224260);
   await finish(env, 'first words'); assert.deepEqual(env.transcripts, ['first words']); assert.equal(env.voice.microphoneActive, false);
-  await env.voice.startCapture(); assert.equal(env.prompts, 2); assert.equal(env.consents.length, 2); assert.equal(env.workers.length, 1);
+  // Session mode reuses consent on subsequent recordings without nagging per utterance.
+  await env.voice.startCapture(); assert.equal(env.prompts, 2); assert.equal(env.consents.length, 1); assert.equal(env.workers.length, 1);
   env.voice.stop(); await tick(); env.voice.dispose(); assert.equal(env.locks.held, false);
 });
 

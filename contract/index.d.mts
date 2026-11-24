@@ -7,7 +7,24 @@ export type ErrorResponse = WireContracts['errorResponse'];
 export type Role = 'owner' | 'guest' | 'display';
 export type CreateRequest = WireContracts['create'];
 export type ServiceDescriptor = WireContracts['serviceDescriptor'];
-export interface RuntimeLocalEventMap { ready: void; application_ready: void; capabilities: CapabilityReport; sensors: SensorStatus; sensors_stopped: { count: number } }
+export interface RuntimeErrorEntry {
+  readonly id: string;
+  readonly at: number;
+  readonly kind: "error" | "unhandledrejection" | "report";
+  readonly message: string;
+  readonly source?: string;
+  readonly line?: number;
+  readonly column?: number;
+  readonly stack?: string;
+  readonly context?: string;
+}
+export interface RuntimeErrors {
+  list(): RuntimeErrorEntry[];
+  on(listener: (entry: RuntimeErrorEntry) => void): () => void;
+  report(error: unknown, context?: string): RuntimeErrorEntry;
+  clear(): void;
+}
+export interface RuntimeLocalEventMap { ready: void; application_ready: void; capabilities: CapabilityReport; sensors: SensorStatus; sensors_stopped: { count: number }; error: RuntimeErrorEntry }
 export interface PublicationAsset { path: string; sha256: string; type: string }
 export interface RuntimeArtifactFeatures {
   speech: { model: string; url: string; sha256: string; size?: number; total_size?: number; languages?: string[];
@@ -90,6 +107,8 @@ export interface RuntimeServices {
   readonly application: import("./application.mjs").ApplicationBinding;
   /** Local authenticated-link observation; explicit refresh never opens network work. */
   readonly transport: import("./transport-diagnostics.mjs").RuntimeTransport;
+  /** Bounded boot-to-runtime error ring buffer; zero network work. */
+  readonly errors: RuntimeErrors;
   on<K extends keyof RuntimeLocalEventMap>(type: K, fn: (payload: RuntimeLocalEventMap[K]) => void): () => void;
   /** Page UI readiness, independent of application synchronization. */
   ready(): void;

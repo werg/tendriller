@@ -9,10 +9,24 @@ It describes software capabilities; `tendril.capabilities()` separately inspects
 the current browser without requesting permissions. Browser API detection does
 not establish working hardware, successful acquisition or fresh readings.
 
+## Starter archetypes (pick one first)
+
+| If you are building… | Compose these starter modules | State & transport pattern |
+| --- | --- | --- |
+| **Full-duplex live dashboard** (cloud/home-server agent + phone/tablet UI) | `ui/dashboard.mjs` + `helpers/data-feed.mjs` + `ui/chat-session.mjs` + `helpers/dev-telemetry.mjs` | Ephemeral `serveDataFeeds`/`useDataFeed` for private APIs (zero durable writes); Chronolog commands for user actions & chat; `npm run deploy` for hot UI updates |
+| **Voice & text agent companion** (eyes & ears on the go) | `ui/chat-session.mjs` (`mountAgentChat` from `@tendriller/runtime/voice`) + `helpers/agent-requests.mjs` + `media/panel.mjs` | Durable `agentRequest`/`agentAnswer`, ephemeral `announceAgentPresence` + `streamAgentReply`, `consentMode: 'auto'` or `'session'`, built-in TTS + barge-in |
+| **Sensor & observation console** (camera, screen, GPS, motion, hardware) | `media/` + `helpers/reviewed-input.mjs` + `helpers/signal-request.mjs` + `tendril.sensors` | Live signals for fresh observations; immutable `session.content` + reviewed declared command for retained evidence |
+| **Collaborative workspace / CRUD** (notes, checklists, inventory, multi-view) | `ui/patterns.mjs` + `domain.mjs` (or `sql/`) + `helpers/operation-view.mjs` | Chronolog events or SQL queries via `createLiveView`; optional `session.compact()` to keep history lean |
+
 ## Task to implementation
 
 | When the task needs… | Start with… | Executable source / next guide |
 | --- | --- | --- |
+| Responsive dashboard shell, KPI sparkline cards, live activity & 1-tap feedback | `mountDashboardShell`, `mountMetricCard`, `mountFeedListCard`, `mountFeedbackCard` | `ui/dashboard.mjs`; [application patterns](APP_PATTERNS.md#full-duplex-dashboards-and-data-feeds) |
+| Private or local API data fed from the native agent to the browser (secrets stay native) | `serveDataFeeds` (native) and `useDataFeed` (browser) over live signals | `helpers/data-feed.mjs`, `helpers/signal-request.mjs`; [application patterns](APP_PATTERNS.md#full-duplex-dashboards-and-data-feeds) |
+| Full-duplex voice + text chat with TTS, barge-in, streaming replies and zero per-utterance consent | `mountAgentChat` from `@tendriller/runtime/voice` + `mountConnectedAgentChat` | `ui/chat-session.mjs`, `helpers/agent-requests.mjs`; [voice and chat guide](HANDS_FREE.md) |
+| Live browser error feedback, diagnostics and agent log tailing | `tendril.errors`, `mountDevTelemetry`, `collectDevTelemetry`, `tendril logs` | `helpers/dev-telemetry.mjs`; `npm run logs`; [CLI diagnostics](tools/CLI.md) |
+| Fast UI iteration without restarting the running native peer | `npm run deploy` or `tendril --session ./session.mjs --mode attach publish ./page` | Delta asset uploads + auto operationId; [CLI publishing](tools/CLI.md) |
 | Shared notes, checklists, retained facts, ordinary CRUD | One Chronolog definition with declared commands and `session.query` | `domain.mjs`, `setup.mjs`, `session.mjs`, `worker.mjs` in the [starter](/downloads/tendriller-first-app.tgz); [state choice](STATE_MODELS.md) |
 | Atomic stock deduction, multiple related rows, relational guards | The optional SQL capability and a signed schema/engine manifest | `sql/` in the starter; [events versus SQL](STATE_MODELS.md) |
 | Several tabs or documents using one signing profile | `openBrowserOwner` / `serveBrowserOwner` with bounded attachments | `@tendriller/core/browser-owner` and `/worker-owner`; [multi-participant composition](MULTIPARTICIPANT.md) |
@@ -36,7 +50,7 @@ not establish working hardware, successful acquisition or fresh readings.
 | Agent asks for a fresh observation | A local request card, trusted Start, correlated signals and explicit retention | [Observation flow](SENSORS.md#agent-requested-observation-eyes-and-ears-loop); [runnable browser/native reference](OBSERVATION_REFERENCE.md) |
 | Motion, orientation, tilt and shake | Page-owned motion/orientation APIs with permission handling and listener cleanup | [Motion cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/interpret-motion/COOKBOOK.md); [tracking coverage](BROWSER_API.md#sensors-and-voice) |
 | Local perception from camera, audio or other sensor input | An application-selected browser library or local engine over acquired samples | [Local perception cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/select-local-perception/COOKBOOK.md); [reviewed media](AI_INPUT.md) |
-| Speech recognition, transcription, audio output or wake modes | Hosted **Page options → Set up voice input**; `createVoice` / `mountVoiceControls` from `@tendriller/runtime/voice` | `media/voice.mjs`; [voice lifecycle](HANDS_FREE.md), [wake-word qualification](WAKE_WORD_QUALIFICATION.md) |
+| Speech recognition, transcription, spoken TTS replies, chat or wake modes | `mountAgentChat`, `mountVoiceControls` or `createVoice` from `@tendriller/runtime/voice` (`consentMode: 'auto' \| 'session' \| 'prompt'`); hosted **Page options → Set up voice input** | `ui/chat-session.mjs`, `media/voice.mjs`; [voice and chat guide](HANDS_FREE.md), [wake-word qualification](WAKE_WORD_QUALIFICATION.md) |
 | UI preview and headless browser interaction | `tendril-preview ./page`; add a real bootstrap for session execution | [Preview](tools/PREVIEW.md) |
 | Inference using a protected provider credential | An explicitly enabled native participant with an allowed-device list and request budget | `media/inference-client.mjs`, `media/inference-service.mjs`; [reviewed AI input](AI_INPUT.md) |
 | Agent-side tools and a connected process | The same owned session plus `createApplicationTools` / `serveApplicationToolLines` | [Delivery and process lifetime](AGENT_DELIVERY.md) |

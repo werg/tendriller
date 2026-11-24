@@ -42,6 +42,36 @@ async function fixture(t) {
   return { root, ownerDirectory, devicePath, deviceId, authority, key, openOwner, attach, opened: () => opened };
 }
 
+test('publication-only supervisor capability composes with Chronolog and bounds concurrent control calls', async t => {
+  const f = await fixture(t), token = createNativeAttachmentKey();
+  let release, receivedAssets;
+  const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main',
+    bindings: [{ id: 'publisher', token, policy: { capabilities: ['publish', 'queries'], maxRequests: 1 } }],
+    openOwner: async () => Object.assign(await f.openOwner(), { control: {
+      definition: () => new Promise(resolve => { release = resolve; }),
+      publication: async () => null,
+      publish: async (publication, assets) => { receivedAssets = assets; return { publication }; },
+    } }),
+  });
+  t.after(() => supervisor.close());
+  const attached = await f.attach(token);
+  t.after(() => attached.detach());
+  assert.equal((await attached.session.query('notes', null)).value.length, 0);
+  const first = attached.control.definition();
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  await assert.rejects(attached.control.publication(), { code: 'APPLICATION_ATTACHMENT_REQUEST_LIMIT' });
+  release({ id: 'definition' });
+  assert.deepEqual(await first, { id: 'definition' });
+  assert.equal(await attached.control.publication(), null);
+  const assets = [{ hash: 'a'.repeat(64), bytes: 'eA=='.repeat(300_000) }];
+  assert.deepEqual(await attached.control.publish({ id: 'publication' }, assets), { publication: { id: 'publication' } });
+  assert.deepEqual(receivedAssets, assets, 'large attached publication keeps exact staged bytes');
+  const observer = await supervisor.createBinding({ id: 'observer', policy: { capabilities: ['queries'] } });
+  const observed = await f.attach(observer.token);
+  t.after(() => observed.detach());
+  await assert.rejects(observed.control.publication(), { code: 'APPLICATION_ATTACHMENT_CAPABILITY_REQUIRED' });
+});
+
 test('two authenticated native clients share one signer, isolate identical local operation IDs, detach and reopen', async t => {
   const f = await fixture(t), firstKey = createNativeAttachmentKey(), secondKey = createNativeAttachmentKey();
   let supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main', openOwner: f.openOwner,

@@ -10,6 +10,7 @@ import { createBrowserPairing } from './pairing-browser.mjs';
 import { createOwnerConnection, reloadOnOwnerReplaced } from './connection.mjs';
 import { mountConnectionView } from './connect-view.mjs';
 import { mountDiagnosticsPanel, registerLifecycleFlush } from './helpers/diagnostics-panel.mjs';
+import { mountDevTelemetry } from './helpers/dev-telemetry.mjs';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => response.json());
@@ -29,7 +30,7 @@ function retainedPending() {
 }
 const diagnostics = mountDiagnosticsPanel($('#app-content') ?? document.body, { appName: 'Shared notes' });
 registerLifecycleFlush(() => { /* Persist local draft/pending operation state before tab suspension. */ });
-let attachment, session, liveView, operationView, observedOperation, media;
+let attachment, session, liveView, operationView, observedOperation, media, telemetry;
 const submission = createSubmissionState(renderSubmission);
 function renderSubmission(state) {
   $('#submit').disabled = !state.canSubmit;
@@ -201,10 +202,11 @@ async function connectSession({ signal } = {}) {
     window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
     window.tendril.signals.install(session.signals);
     window.tendril.transport.install(session.participation);
+    telemetry = mountDevTelemetry({ session, runtime: window.tendril });
     installed = true;
   } catch (error) {
     if (!installed) {
-      liveView?.close(); operationView?.close(); media?.close(); window.appRequests?.close();
+      liveView?.close(); operationView?.close(); media?.close(); telemetry?.close(); telemetry = undefined; window.appRequests?.close();
       operationView = undefined; observedOperation = undefined;
       try { await attachment?.detach(); } catch { /* Preserve the setup failure. */ }
       session = attachment = liveView = undefined;
@@ -350,7 +352,7 @@ async function close() {
   connection.close();
   window.appRequests?.close();
   submission.update({ attached: false, connected: false, coherent: false });
-  liveView?.close(); operationView?.close(); media?.close();
+  liveView?.close(); operationView?.close(); media?.close(); telemetry?.close(); telemetry = undefined;
   try { await attachment?.detach(); }
   finally { $('#close').disabled = true;
     $('#app-content').hidden = true; view.render({ phase: 'failed', title: 'Connection closed', detail: 'Reload to reconnect this browser.',

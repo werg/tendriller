@@ -42,6 +42,9 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
     status = { enabled, state, message };
     bus.emit("tts", { ...status });
   };
+  const emitSpeaking = (speaking: boolean, completed = false) => {
+    bus.emit("tts_speaking", { speaking, completed });
+  };
   const audioContext = () => {
     if (!context || context.state === "closed") context = new AudioContext({ sampleRate: 24000 });
     return context;
@@ -106,6 +109,7 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
   };
 
   const stop = () => {
+    const wasSpeaking = neuralSpeaking || browserUtterances.size > 0;
     ++epoch;
     neuralSpeaking = false;
     browserUtterances.clear();
@@ -114,19 +118,28 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
     for (const source of sources) { try { source.stop(); } catch { /* already ended */ } }
     sources.clear();
     try { window.speechSynthesis?.cancel(); } catch { /* unavailable */ }
+    if (wasSpeaking) emitSpeaking(false);
   };
   const browserSpeak = (text: string) => {
     try {
       if (prefs().audio === false || !window.speechSynthesis || typeof SpeechSynthesisUtterance === "undefined") return;
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = language();
+      const token = epoch;
       browserUtterances.add(utterance);
-      utterance.onend = utterance.onerror = () => { browserUtterances.delete(utterance); };
+      utterance.onstart = () => { if (token === epoch && browserUtterances.has(utterance)) emitSpeaking(true); };
+      const finish = (completed: boolean) => {
+        if (token !== epoch || !browserUtterances.delete(utterance)) return;
+        if (browserUtterances.size === 0 && !neuralSpeaking) emitSpeaking(false, completed);
+      };
+      utterance.onend = () => finish(true);
+      utterance.onerror = () => finish(false);
+      emitSpeaking(true);
       window.speechSynthesis.speak(utterance);
-    } catch { browserUtterances.clear(); /* the transcript still contains the reply */ }
+    } catch { browserUtterances.clear(); emitSpeaking(false); /* the transcript still contains the reply */ }
   };
   const play = async (text: string, token: number) => {
-    let played = false;
+    let played = false, completed = false;
     const active = () => token === epoch && prefs().audio !== false;
     if (!active()) return;
     if (!enabled || !/^en(?:-|$)/i.test(language()) || status.state === "error") { browserSpeak(text); return; }
@@ -174,12 +187,13 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
           source.onended = () => { sources.delete(source); source.disconnect(); };
           at = Math.max(at, ctx.currentTime + .02);
           source.start(at);
-          neuralSpeaking = true;
+          if (!neuralSpeaking) { neuralSpeaking = true; emitSpeaking(true); }
           at += buffer.duration;
           played = true;
         }
         if (active() && !played) throw new Error("No neural audio was produced");
         while (active() && ctx.currentTime < at && ctx.state === "running") await pause(25);
+        completed = active() && played && ctx.currentTime >= at;
       } finally {
         abort.abort();
         // Keep the queue ordered until cancellation settles. An unresponsive
@@ -201,7 +215,12 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
       // Do not repeat a partially played reply in a second voice.
       if (!played) browserSpeak(text);
     } finally {
-      if (generation === abort) { neuralSpeaking = false; generation = null; }
+      if (generation === abort) {
+        const was = neuralSpeaking;
+        neuralSpeaking = false;
+        generation = null;
+        if (was && browserUtterances.size === 0) emitSpeaking(false, completed);
+      }
     }
   };
   const api: SpeechOutput = {

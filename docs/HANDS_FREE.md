@@ -1,33 +1,63 @@
-# On-device voice and wake phrases
+# Voice, spoken replies and full-duplex chat
 
-Every hosted published page exposes **Page options → Set up voice input**. Opening
-those controls loads the optional voice module; it does not download a speech
-model, request microphone permission, or start listening. The controls offer
-**Tap to talk**, an optional **Wake word** section, and an editable text fallback.
-The headless kernel still has no voice engine or microphone acquisition in its
-eager import graph.
+`@tendriller/runtime/voice` provides three layers for voice and chat, all
+lazy-loaded so the headless kernel stays tiny and never acquires a microphone on
+page load:
 
-Choose a phrase and language, review the explanation, then press **Start
-microphone**. The explanation names the phrase, the model and total download
-sizes, local processing, and session limits. A browser permission prompt may
-follow. The shared controls accept only trusted local pointer or keyboard actions
-for this decision. Opening a page, restoring preferences, receiving an agent
-message, or invoking a control method cannot grant their consent. Each subsequent
-start needs another local decision.
+1. **`mountAgentChat(runtime, options)`** — a complete, mobile-first voice + text
+   chat drawer/panel with 1-tap or press-and-hold mic, live RMS audio level ring,
+   optional immediate voice send or draft review, browser/neural TTS spoken
+   replies, instant **Stop speaking** & barge-in, hands-free conversation loop,
+   live streaming reply bubble, context chips (e.g. *"About: CPU card"*), and
+   file/photo attach hooks. Pair with `ui/chat-session.mjs` (`mountConnectedAgentChat`)
+   to connect directly to a Chronolog session.
+2. **`mountVoiceControls(runtime, options)`** — standalone voice dock or inline
+   panel with tap-to-talk, wake word, direct-send toggle, and spoken TTS controls.
+   Also accessible on every hosted page via **Page options → Set up voice input**.
+3. **`createVoice(runtime, options)`** — low-level voice input, output, wake-word
+   and audio-level adapter for custom UIs.
 
-The active microphone indicator includes text and a polite screen-reader status;
-color is additional information. It distinguishes preparation with the microphone
-off, listening, a detected phrase, command capture, local processing, and failures.
-**Stop microphone** remains reachable when the voice panel is collapsed. Escape
-cancels a consent review or stops an active voice session and closes the panel.
-Standard buttons support keyboard activation, fields have accessible labels, and
-the controls preserve typed input when voice fails.
+## Consent modes (no per-utterance popups)
 
-The generic hosted controls put recognized commands into a draft. The person can
-edit the draft and choose **Copy text**. They never infer or submit an application
-command. An authored page can provide the same controls with a callback: then the
-button is **Use text**, and the callback runs only after that separate local
-action. Raw audio and unrelated ambient transcripts do not enter that callback.
+Choose the `consentMode` that fits the application:
+
+| `consentMode` | Behavior | Best for |
+| --- | --- | --- |
+| **`"auto"`** | Grants immediately with no extra Tendriller modal—the browser's own native microphone permission prompt is the consent. `autoOutput` activates spoken replies right away on the first user gesture. | Voice-first apps and agent chat (`mountAgentChat` default) where voice access is expected immediately |
+| **`"session"`** | Asks once per purpose/engine per visible session and reuses that approval across utterances until **Stop sensors**, `revokeConsent()`, or page unload. | Standalone `mountVoiceControls` (default) and optional dictation panels |
+| **`"prompt"`** | Calls `consent(request)` before every start. | High-scrutiny flows that require explicit confirmation per recording |
+
+## Mount the packaged voice + text chat
+
+```js
+import { mountConnectedAgentChat } from './ui/chat-session.mjs';
+
+const chat = await mountConnectedAgentChat({
+  runtime: window.tendril,
+  session,
+  peer: configuration.nativeDeviceId,
+  title: 'Home Server Agent',
+  layout: 'dock',         // 'embedded' | 'drawer' | 'dock'
+  consentMode: 'auto',    // Immediate 1-tap mic; browser permission is consent
+  autoSendVoice: true,    // User can toggle "Send voice immediately" in the composer
+  voiceOutput: 'browser', // 'browser' (instant) | 'neural' (~65 MB cached) | false
+  autoSpeak: false,       // User can toggle "Voice: On" & "Hands-free" in the header
+});
+
+// Hand a dashboard card's context straight to the next voice or text message:
+chat.setContext({ label: 'Server CPU (92%)', data: latestCpu });
+chat.open();
+```
+
+Or mount the pure UI directly with `const { mountAgentChat } = await import(runtime.assetUrl('voice.mjs'))`
+and supply your own `onSend`, `onAction`, and `onAttach` callbacks.
+
+## Standalone controls and keyboard access
+
+The active microphone indicator includes text, a live audio level indicator, and
+a polite screen-reader status. **Stop microphone** and **Stop speaking** remain
+reachable while collapsed. Escape cancels a consent review or stops active voice
+input. Typed input is always preserved if voice fails.
 
 ## Add controls to an authored experience
 

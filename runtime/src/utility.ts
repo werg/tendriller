@@ -54,6 +54,8 @@ export function mountUtility(api: RuntimeApi): () => void {
     .primary{display:block;background:#1e644a;color:white;font-weight:650;width:100%;margin-bottom:10px}.primary:hover{background:#174d39}
     .secondary{border:1px solid #8888;width:100%;font-weight:600}.note{font-size:12px;opacity:.8}
     .section{border-top:1px solid #8885;padding-top:14px;margin-top:14px}.links{display:flex;flex-wrap:wrap;gap:2px;margin:12px -8px -8px;border-top:1px solid #8885;padding-top:6px}.links a{font-size:12px}
+    .diag-list{list-style:none;margin:0 0 10px;padding:0;display:grid;gap:6px}.diag-item{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 8px;border-radius:8px;background:#8881;overflow-wrap:anywhere}
+    .diag-actions{display:flex;gap:6px;flex-wrap:wrap}.diag-actions .secondary{width:auto;flex:1}
     .message{font-size:13px;margin:10px 0 0}.suggestion p{margin:0 0 8px}.suggestion strong{font-size:16px}.actions{display:flex;align-items:center;gap:6px}.actions .primary{width:auto;margin:0;flex:1}.actions button{white-space:nowrap}
     @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}}
   `;
@@ -136,6 +138,50 @@ export function mountUtility(api: RuntimeApi): () => void {
     }
   });
   const transportInspector = mountTransportInspector(api.transport); panel.append(transportInspector.element);
+  const diagnostics = element("section", undefined, "section"); diagnostics.hidden = true;
+  const diagHeading = element("h3", "Diagnostics");
+  const diagList = element("ul", undefined, "diag-list");
+  const diagCopy = button("Copy diagnostic report", "secondary");
+  const diagClear = button("Clear");
+  const diagActions = element("div", undefined, "diag-actions"); diagActions.append(diagCopy, diagClear);
+  const diagMessage = element("p", undefined, "message"); diagMessage.hidden = true; diagMessage.setAttribute("role", "status");
+  diagnostics.append(diagHeading, diagList, diagActions, diagMessage);
+  panel.append(diagnostics);
+  const renderDiagnostics = () => {
+    const entries = api.errors?.list?.() ?? [];
+    diagnostics.hidden = entries.length === 0;
+    diagHeading.textContent = `Diagnostics (${entries.length})`;
+    while (diagList.firstChild) diagList.firstChild.remove();
+    for (const entry of entries.slice(-3).reverse()) {
+      const time = new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      diagList.append(element("li", `[${time}] ${entry.kind}: ${entry.message}`, "diag-item"));
+    }
+  };
+  diagCopy.addEventListener("click", async () => {
+    const entries = api.errors?.list?.() ?? [];
+    const report = JSON.stringify({
+      page: api.identity.page,
+      version: api.identity.version,
+      publication: api.identity.publication,
+      documentPath: api.identity.documentPath,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      userAgent: navigator.userAgent,
+      transport: api.transport?.status?.() ?? null,
+      errors: entries,
+    }, null, 2);
+    diagMessage.hidden = false;
+    try {
+      await navigator.clipboard.writeText(report);
+      diagMessage.textContent = "Diagnostic report copied.";
+    } catch {
+      diagMessage.textContent = "Could not access clipboard on this device.";
+    }
+  });
+  diagClear.addEventListener("click", () => {
+    api.errors?.clear?.();
+    diagMessage.hidden = true;
+    renderDiagnostics();
+  });
   const links = element("div", undefined, "links");
   const latest = element("a", "Open latest version"); latest.href = api.identity.base;
   latest.title = "Open the currently selected publication";
@@ -184,7 +230,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   };
   const openPanel = () => {
     suggested = true; suggestion.hidden = true; cancelSuggestion(); panel.hidden = false;
-    options.setAttribute("aria-expanded", "true"); heading.focus(); transportInspector.open();
+    options.setAttribute("aria-expanded", "true"); heading.focus(); transportInspector.open(); renderDiagnostics();
   };
   const closePanel = () => {
     panel.hidden = true; options.setAttribute("aria-expanded", "false"); options.focus();
@@ -295,10 +341,11 @@ export function mountUtility(api: RuntimeApi): () => void {
   const attach = () => { const parent = document.body || document.documentElement; if (host.parentNode !== parent) parent.append(host); };
   const observer = new MutationObserver(attach);
   const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
-  renderInstallation(); renderSensors(); attach(); observer.observe(document, { childList: true, subtree: true });
+  const offErrors = api.errors?.on?.(renderDiagnostics) ?? (() => {});
+  renderInstallation(); renderSensors(); renderDiagnostics(); attach(); observer.observe(document, { childList: true, subtree: true });
   const offGeometry = observeUtilityBar(nav);
   return () => {
-    disposed = true; voiceControls?.dispose(); transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offGeometry(); offSensors(); offInstallation();
+    disposed = true; voiceControls?.dispose(); transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offGeometry(); offSensors(); offInstallation(); offErrors();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();
   };
