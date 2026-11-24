@@ -126,3 +126,8 @@ it('owners can delete a resident page from the dashboard or page settings, freei
   expect(await gone.text()).toContain('This page was deleted');
   expect(await env.ACCOUNTS!.prepare('SELECT 1 FROM tendrils WHERE id = ?').bind(other.id).first()).toBeNull();
 });
+
+it('the status page keeps the labels the deployment smoke check reads', async () => {
+  const html = await (await req('/status', { anonymous: true })).text();
+  expect(html).toMatch(/Operational|New page creation paused|Read-only or unavailable/);
+});

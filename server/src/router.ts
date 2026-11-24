@@ -212,7 +212,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   }
   if (path === "/status") {
     const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
-    const mode = state?.mode === "open" ? ["ok", "All systems operational", "Pages, sign-in and new page creation are available."]
+    const mode = state?.mode === "open" ? ["ok", "Operational", "Pages, sign-in and new page creation are available."]
       : state?.mode === "creation_paused" ? ["warn", "New page creation paused", "Existing pages keep working. New pages cannot be created right now."]
       : ["danger", "Read-only or unavailable", "Existing pages may be read-only. Changes are paused until service resumes."];
     return servicePage("Status", `<section class="hero"><span class="eyebrow">Service</span><h1>Tendriller status</h1><p class="lead">${mode[2]}</p><div class="actions"><span class="badge ${mode[0]}">${mode[1]}</span></div></section>`);
