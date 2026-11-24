@@ -183,6 +183,7 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     await page.reload();
     const favicon = page.locator('link[rel="icon"]');
     const generatedIcon = `${new URL(base).pathname}_tendril/icon.svg`;
+    const maskableIcon = { src: `${new URL(base).pathname}_tendril/icon-maskable.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' };
     await expect(favicon).toHaveAttribute('href', generatedIcon);
     await expect(favicon).toHaveAttribute('type', 'image/svg+xml');
     const rendered = await page.evaluate(async () => {
@@ -205,6 +206,7 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     expect(emojiManifest.errors).toEqual([]);
     expect(JSON.parse(emojiManifest.data!).icons).toEqual([
       { src: generatedIcon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+      maskableIcon,
     ]);
     expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
     expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
@@ -239,6 +241,7 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       const branded = await cdp.send('Page.getAppManifest');
       expect(JSON.parse(branded.data!).icons).toEqual([
         { src: customIcon, sizes: 'any', type: `image/${format}`, purpose: 'any' },
+        maskableIcon,
       ]);
       expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
       expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
