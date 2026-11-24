@@ -235,8 +235,8 @@ export function mountInlineReview(container, { label, value, onSave, onUndo }) {
       if (disposed) return;
       previous = revert ? undefined : before; baseline = result.value; field.value = baseline;
       // The callback can confirm before the live view observes this write. Do not
-      // treat the pre-dispatch snapshot as a concurrent edit. A changed value
-      // observed during the callback remains visible if it differs from its result.
+      // treat the pre-dispatch snapshot as a concurrent edit. A snapshot received
+      // during the callback remains visible if it differs from its result.
       if (observation === startedObservation) observed = baseline;
       reviewed = undefined; comparison.replaceChildren(); message.textContent = revert ? 'Saved change undone.' : 'Change saved.';
     } catch {
@@ -263,7 +263,13 @@ export function mountInlineReview(container, { label, value, onSave, onUndo }) {
   return {
     element:root,
     observe(currentValue) {
-      if (disposed || currentValue === observed) return;
+      if (disposed) return;
+      if (currentValue === observed) {
+        // A coalesced snapshot can restore the old value without observing the
+        // intermediate write. Its arrival still fences a pending confirmation.
+        if (busy) observation++;
+        return;
+      }
       if (typeof currentValue !== 'string') throw TypeError('Expected a coherent string value.');
       observed = currentValue; observation++;
       if (!busy && !blocked) {

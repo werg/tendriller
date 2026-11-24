@@ -345,5 +345,74 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         assert.deepEqual(errors, []);
       } finally { await context.close(); }
     });
+
+    await t.test(name + ' equal-valued snapshots during save and undo retain concurrent observations', async () => {
+      const context = await browser.newContext({ viewport }), page = await context.newPage(), errors = [];
+      page.setDefaultTimeout(5000); page.on('pageerror', error => errors.push(error.message));
+      try {
+        await page.goto(base);
+        await page.evaluate(async () => {
+          const { mountInlineReview } = await import('./patterns.mjs');
+          const root = document.querySelector('#workspace'); root.replaceChildren();
+          window.calls = [];
+          const dispatch = change => {
+            window.calls.push(change);
+            return new Promise(resolve => { window.confirm = resolve; });
+          };
+          window.editor = mountInlineReview(root, {
+            label:'Concurrent summary', value:'original', onSave:dispatch, onUndo:dispatch,
+          });
+        });
+        const input = page.getByLabel('Concurrent summary');
+        const review = page.getByRole('button', { name:'Review changes', exact:true });
+        const save = page.getByRole('button', { name:'Save reviewed change' });
+        const undo = page.getByRole('button', { name:'Undo saved change' });
+        const discard = page.getByRole('button', { name:'Discard draft' });
+        const conflict = page.getByText('The saved value changed. Review your draft against the latest value or discard it.', { exact:true });
+
+        // A coalesced query can observe a concurrent restoration of the old
+        // value without ever observing our accepted intermediate write.
+        await input.fill('saved edit'); await review.click(); await save.click();
+        await page.evaluate(() => window.editor.observe('original'));
+        assert.equal(await input.isDisabled(), true);
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'saved edit' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        assert.equal(await input.inputValue(), 'saved edit');
+        assert.equal(await conflict.isVisible(), true);
+        assert.equal(await undo.isDisabled(), true, 'Undo must not be offered against the restored stored value.');
+        await discard.click();
+        assert.equal(await input.inputValue(), 'original');
+        assert.equal(await conflict.isVisible(), false);
+
+        // With no observation during confirmation, retain the original behavior.
+        // Idle repetitions of that confirmed value must also remain harmless.
+        await input.fill('saved edit'); await review.click(); await save.click();
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'saved edit' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        await page.evaluate(() => { window.editor.observe('saved edit'); window.editor.observe('saved edit'); });
+        assert.equal(await input.inputValue(), 'saved edit');
+        assert.equal(await conflict.isVisible(), false);
+        assert.equal(await undo.isEnabled(), true);
+
+        // The same rule applies to Undo: a concurrent restoration of the saved
+        // edit must survive an older confirmation of the undo operation.
+        await undo.click();
+        await page.evaluate(() => window.editor.observe('saved edit'));
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'original' }));
+        await page.getByText('Saved change undone.', { exact:true }).waitFor();
+        assert.equal(await input.inputValue(), 'original');
+        assert.equal(await conflict.isVisible(), true);
+        assert.equal(await undo.isVisible(), false);
+        await discard.click();
+        assert.equal(await input.inputValue(), 'saved edit');
+        assert.equal(await conflict.isVisible(), false);
+        assert.deepEqual(await page.evaluate(() => window.calls), [
+          { before:'original', after:'saved edit' },
+          { before:'original', after:'saved edit' },
+          { before:'saved edit', after:'original' },
+        ]);
+        assert.deepEqual(errors, []);
+      } finally { await context.close(); }
+    });
   }
 });
