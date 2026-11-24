@@ -5,6 +5,8 @@ import { publicBase } from "../urls";
 import { serviceSession } from "./auth";
 import { renderQrSvg } from "../qr";
 import { requireWritesOpen } from "../service-state";
+import { emojiIconSvg, iconSvg } from "../inject";
+import { DEFAULT_THEME_COLOR, isEmojiIcon } from "../pwa";
 import { avatar, icon, servicePage } from "./ui";
 
 function escape(s: string): string { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
@@ -89,7 +91,7 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
     const tendrils = await db.prepare("SELECT id, lifetime, state, created_at FROM tendrils WHERE owner_account = ? ORDER BY created_at DESC")
       .bind(session.accountId).all<{ id: string; lifetime: string; state: string; created_at: number }>();
     const dbMs = performance.now() - started - sessionMs;
-    type Summary = { name: string; page_url: string; version: number; held: boolean; bytes: number; agents: number; guests_waiting: number; last_activity: { ts: number; summary: string } | null };
+    type Summary = { name: string; page_url: string; icon?: string | null; theme_color?: string | null; version: number; held: boolean; bytes: number; agents: number; guests_waiting: number; last_activity: { ts: number; summary: string } | null };
     const summaries = await Promise.all(tendrils.results.map(async t => {
       try {
         const response = await pageFetch(t.id, "summary", { signal: AbortSignal.timeout(3000) });
@@ -104,13 +106,21 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
       if (minutes < 1440) return `${Math.round(minutes / 60)} h ago`;
       return `${Math.round(minutes / 1440)} d ago`;
     };
+    // The same icon the page shows as its favicon: authored image, emoji, or its themed initial.
+    const favicon = (info: Summary | null, name: string, id: string) => {
+      if (!info) return avatar(name, id);
+      if (info.icon && isEmojiIcon(info.icon)) return `<span class="avatar favicon emoji" aria-hidden="true">${emojiIconSvg(info.icon)}</span>`;
+      if (info.icon && /^https:\/\//.test(info.icon))
+        return `<span class="avatar favicon" aria-hidden="true"><img src="${escape(info.icon)}" alt="" width="44" height="44" loading="lazy" referrerpolicy="no-referrer"></span>`;
+      return `<span class="avatar favicon" aria-hidden="true">${iconSvg(name, info.theme_color ?? DEFAULT_THEME_COLOR)}</span>`;
+    };
     const cards = tendrils.results.map((t, index) => {
       const info = summaries[index];
       const name = info?.name ?? t.id;
       const stateBadge = info?.held || t.state === "held" ? '<span class="badge danger">Held</span>' : t.state === 'active' ? '<span class="badge ok">Active</span>' : `<span class="badge">${escape(t.state)}</span>`;
       const meta = info ? `<span>${icon("layers")} ${info.version ? `v${info.version}` : "Not published"}</span><span>${icon("bot")} ${info.agents} ${info.agents === 1 ? "agent" : "agents"}</span><span>${icon("database")} ${(info.bytes / 1048576).toFixed(1)} MB</span><span>${icon("clock")} ${t.lifetime === "resident" ? "Resident" : "Temporary"}</span>` : `<span>Details unavailable right now</span>`;
       const openable = info?.page_url && !info.held;
-      return `<article class="card interactive page-card"><div class="page-card-top">${avatar(name, t.id)}<div><h3>${escape(name)}</h3><div class="page-meta">${meta}</div></div>${stateBadge}</div>${info?.last_activity ? `<p class="activity">${escape(info.last_activity.summary)} · <span title="${escape(new Date(info.last_activity.ts).toISOString())}">${relative(info.last_activity.ts)}</span></p>` : ""}${info?.guests_waiting ? `<p class="notice warn" style="margin:0">${icon("users")}<span>${info.guests_waiting} guest ${info.guests_waiting === 1 ? "request" : "requests"} waiting · <a href="${escape(info.page_url)}_tendril/manage">Review</a></span></p>` : ""}<div class="actions">${openable ? `<a class="button sm" href="${escape(info!.page_url)}">${icon("external")} Open</a><button class="secondary sm" type="button" data-add="${escape(t.id)}" data-name="${escape(name)}" data-url="${escape(info!.page_url)}">${icon("user-plus")} Add people &amp; devices</button><button class="ghost sm icon-button" data-copy="${escape(info!.page_url)}" type="button" title="Copy page link" aria-label="Copy link to ${escape(name)}">${icon("copy")}</button><a class="button ghost sm icon-button" href="${escape(info!.page_url)}_tendril/manage" title="Page settings" aria-label="Settings for ${escape(name)}">${icon("settings")}</a>` : ""}<a class="button ghost sm icon-button" href="/dashboard/t/${escape(t.id)}" title="Activity" aria-label="Activity for ${escape(name)}">${icon("activity")}</a>${t.state === "held" ? `<a class="button sm danger" href="/appeal?tendril=${escape(t.id)}">Appeal hold</a>` : ""}<button class="ghost sm icon-button" type="button" data-delete="${escape(t.id)}" data-name="${escape(name)}" data-resident="${t.lifetime === "resident" ? "1" : ""}" title="Delete page" aria-label="Delete ${escape(name)}">${icon("trash")}</button></div></article>`;
+      return `<article class="card interactive page-card"><div class="page-card-top">${favicon(info, name, t.id)}<div><h3>${escape(name)}</h3><div class="page-meta">${meta}</div></div>${stateBadge}</div>${info?.last_activity ? `<p class="activity">${escape(info.last_activity.summary)} · <span title="${escape(new Date(info.last_activity.ts).toISOString())}">${relative(info.last_activity.ts)}</span></p>` : ""}${info?.guests_waiting ? `<p class="notice warn" style="margin:0">${icon("users")}<span>${info.guests_waiting} guest ${info.guests_waiting === 1 ? "request" : "requests"} waiting · <a href="${escape(info.page_url)}_tendril/manage">Review</a></span></p>` : ""}<div class="actions">${openable ? `<a class="button sm" href="${escape(info!.page_url)}">${icon("external")} Open</a><button class="secondary sm" type="button" data-add="${escape(t.id)}" data-name="${escape(name)}" data-url="${escape(info!.page_url)}">${icon("user-plus")} Add people &amp; devices</button><button class="ghost sm icon-button" data-copy="${escape(info!.page_url)}" type="button" title="Copy page link" aria-label="Copy link to ${escape(name)}">${icon("copy")}</button><a class="button ghost sm icon-button" href="${escape(info!.page_url)}_tendril/manage" title="Page settings" aria-label="Settings for ${escape(name)}">${icon("settings")}</a>` : ""}<a class="button ghost sm icon-button" href="/dashboard/t/${escape(t.id)}" title="Activity" aria-label="Activity for ${escape(name)}">${icon("activity")}</a>${t.state === "held" ? `<a class="button sm danger" href="/appeal?tendril=${escape(t.id)}">Appeal hold</a>` : ""}<button class="ghost sm icon-button" type="button" data-delete="${escape(t.id)}" data-name="${escape(name)}" data-resident="${t.lifetime === "resident" ? "1" : ""}" title="Delete page" aria-label="Delete ${escape(name)}">${icon("trash")}</button></div></article>`;
     });
     const residents = tendrils.results.filter(t => t.lifetime === "resident" && t.state === "active").length;
     const totals = summaries.reduce((acc, info) => ({ agents: acc.agents + (info?.agents ?? 0), guests: acc.guests + (info?.guests_waiting ?? 0), published: acc.published + (info?.version ? 1 : 0) }), { agents: 0, guests: 0, published: 0 });
@@ -178,7 +188,7 @@ $('person-form').addEventListener('submit',async e=>{e.preventDefault();const f=
 $('agent-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.target,scopes=[...f.querySelectorAll('input[name=scopes]:checked')].map(i=>i.value);
  const invite=await post(f,'agent',{name:$('agent-name').value.trim(),scopes});if(!invite)return;$('agent-blurb').value=invite.blurb;$('agent-link').value=invite.link_blurb;$('agent-result').hidden=false;$('agent-name').value='';$('agent-blurb').focus();$('agent-blurb').select()});
 })()</script>`;
-    const response = servicePage("Dashboard", body, script, 200, { wide: true });
+    const response = servicePage("Dashboard", body, script, 200, { wide: true, remoteImages: true });
     response.headers.set("Server-Timing", `session;dur=${sessionMs.toFixed(1)}, account-db;dur=${dbMs.toFixed(1)}, page-summaries;dur=${(performance.now() - started - sessionMs - dbMs).toFixed(1)}, total;dur=${(performance.now() - started).toFixed(1)}`);
     return response;
   }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setTimeout as delay, setImmediate as nextTurn } from 'node:timers/promises';
 import { defineApplication, describeApplication, PEER_GENERATION_CAPABILITIES } from '@chronolog/peer-session';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { openBrowserOwner } from '../../session/browser.mjs';
@@ -14,7 +14,12 @@ async function until(check) {
 }
 async function fixture(t, { deadFirst = true, releaseOnHello = true } = {}) {
   const saved = new Map(['navigator', 'location', 'Worker', 'RTCPeerConnection'].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-  const locks = new FixtureLocks(), traffic = [], workers = [], stop = new AbortController();
+  const locks = new FixtureLocks(), traffic = [], workers = [], routes = [], stop = new AbortController();
+  const request = locks.request.bind(locks), prefix = 'tendriller:root-lifetime:retained:';
+  locks.request = (name, options, run) => {
+    if (name.startsWith(prefix)) routes.push(name.slice(prefix.length));
+    return request(name, options, run);
+  };
   let releaseOld, opened = 0, service, attachment; const siblings = [];
   const oldLease = locks.request('chronolog-owner:retained', { mode: 'exclusive' }, () => new Promise(resolve => { releaseOld = resolve; }));
   await until(() => releaseOld);
@@ -47,7 +52,7 @@ async function fixture(t, { deadFirst = true, releaseOnHello = true } = {}) {
     await attachment?.detach(); for(const sibling of siblings){await sibling.client.detach();await sibling.transport.close();sibling.channel.close();} releaseOld(); await oldLease; await service.close(); channel.close();
     for (const [name, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name]; }
   });
-  return { locks, ghost, channel, traffic, workers, service, session, get opened() { return opened; },
+  return { locks, ghost, channel, traffic, workers, routes, service, session, get opened() { return opened; },
     async sibling() {
       const active = traffic.find(frame=>frame.type==='ready'&&frame.ownerInstanceId===service.owner.ownerInstanceId);
       const siblingChannel=new BroadcastChannel(ownerChannelName('retained'));
@@ -91,8 +96,62 @@ test('one overall deadline bounds a silent provisional owner and cleans its witn
   });
   assert(performance.now() - started < 4200);
   await until(() => f.locks.held.size === 1 && f.locks.pending.size === 0);
-  assert.equal(new Set(f.traffic.filter(frame=>frame.type==='hello').map(frame=>frame.route)).size,attempts,'each attempt has one distinct route under the original deadline');
+  // Count routes at their local lifetime acquisition, not a remote BroadcastChannel
+  // observer: a final attempt can expire during async crypto before its first hello.
+  assert.equal(f.routes.length, attempts);
+  assert.equal(new Set(f.routes).size, attempts, 'each attempt has one distinct route under the original deadline');
+  const helloRoutes = new Set(f.traffic.filter(frame => frame.type === 'hello').map(frame => frame.route));
+  assert(helloRoutes.has(f.routes[0]), 'the provisional owner received a real attachment attempt');
+  for (const route of helloRoutes) assert(f.routes.includes(route), 'hello belongs to an allocated attempt');
   assert(f.locks.held.has('chronolog-owner:retained')); assert.equal(f.opened, 0); assert.equal(f.workers[0].terminated, false);
+});
+
+test('the overall deadline cancels a final route before async key generation can send its first hello', { timeout: 5000 }, async t => {
+  const f = await fixture(t, { releaseOnHello: false });
+  const generateKey = crypto.subtle.generateKey.bind(crypto.subtle), deriveKey = crypto.subtle.deriveKey.bind(crypto.subtle);
+  const postMessage = BroadcastChannel.prototype.postMessage, sentHellos = [];
+  let generation = 0, releaseKey, finishCrypto, now = 0;
+  const heldKey = new Promise(resolve => { releaseKey = resolve; });
+  const finishedCrypto = new Promise(resolve => { finishCrypto = resolve; });
+  t.mock.method(BroadcastChannel.prototype, 'postMessage', function (frame) {
+    if (frame.type === 'hello') sentHellos.push(frame.route);
+    return postMessage.call(this, frame);
+  });
+  t.mock.method(crypto.subtle, 'deriveKey', async (...args) => {
+    const key = await deriveKey(...args);
+    if (generation === 2) finishCrypto();
+    return key;
+  });
+  t.mock.method(crypto.subtle, 'generateKey', async (...args) => {
+    if (++generation === 2) await heldKey;
+    return generateKey(...args);
+  });
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const opening = f.open({ timeoutMs: 3200 });
+    const rejected = assert.rejects(opening, error => {
+      assert.equal(error.code, 'OWNER_UNREACHABLE');
+      assert.equal(error.startup.attempts, 2);
+      assert.equal(error.startup.phase, 'attachment');
+      return true;
+    });
+    await until(() => f.traffic.some(frame => frame.type === 'hello'));
+    now = 3000; t.mock.timers.tick(3000);
+    await until(() => generation === 2);
+    assert.equal(new Set(f.routes).size, 2, 'the retry already owns a distinct local witness');
+    now = 3200; t.mock.timers.tick(200);
+    await rejected;
+    await until(() => f.locks.held.size === 1 && f.locks.pending.size === 0);
+    releaseKey();
+    // Drain the final real derivation and its continuation, not an arbitrary delay.
+    await finishedCrypto; await nextTurn();
+    assert(sentHellos.every(route => route === f.routes[0]), 'canceled route cannot send a late hello');
+    assert.equal(new Set(f.traffic.filter(frame => frame.type === 'hello').map(frame => frame.route)).size, 1);
+    assert.equal(f.routes.length, 2, 'late crypto cannot start another attempt');
+    assert(f.locks.held.has('chronolog-owner:retained'));
+    assert.equal(f.opened, 0); assert.equal(f.workers[0].terminated, false);
+  } finally { releaseKey(); t.mock.timers.reset(); t.mock.restoreAll(); }
 });
 
 test('caller abort is terminal during provisional authentication and releases its route', async t => {

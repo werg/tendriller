@@ -62,6 +62,15 @@ it('the dashboard adds people, devices and agents for owned pages only', async (
   const html = await page.text();
   expect(html).toContain('Add people &amp; devices');
   expect(html).toContain(`data-add="${h.id}"`);
+  expect(html).toContain('class="avatar favicon"');
+  await api(h, 'PATCH', '', { icon: '🥕' });
+  const withEmoji = await (await req('/dashboard', { headers: { Cookie: cookie } })).text();
+  expect(withEmoji).toContain('class="avatar favicon emoji"');
+  expect(withEmoji).toContain('🥕');
+  await api(h, 'PATCH', '', { icon: 'https://cdn.example/icon.png' });
+  const remote = await req('/dashboard', { headers: { Cookie: cookie } });
+  expect(remote.headers.get('content-security-policy')).toContain("img-src 'self' https:");
+  expect(await remote.text()).toContain('src="https://cdn.example/icon.png"');
 
   const qr = await req(`/dashboard/t/${h.id}/qr.svg`, { headers: { Cookie: cookie } });
   expect(qr.status).toBe(200);

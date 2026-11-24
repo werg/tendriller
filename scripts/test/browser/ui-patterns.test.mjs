@@ -104,7 +104,8 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         await page.getByRole('button', { name:'Back to list' }).click();
         assert.equal(await search.isVisible(), true);
         await page.goto(base + '?states=1');
-        assert.equal(await page.getByRole('button', { name:'Approve this browser' }).count(), 1);
+        assert.equal(await page.getByText('Setting up this browser…').isVisible(), true);
+        assert.equal(await page.getByRole('button', { name:'Approve this browser' }).count(), 0);
         assert.equal(await page.getByRole('alert').getByText('Episodes could not be loaded').isVisible(), true);
         assert.equal(await page.locator('[aria-busy=true]').count(), 1);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);

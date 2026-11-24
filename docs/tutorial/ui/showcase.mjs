@@ -19,8 +19,7 @@ if (new URL(location.href).searchParams.has('states')) {
   }
   const slot = document.createElement('div'); root.append(slot);
   mountConnectionView(slot).render({
-    phase:'approve', title:'Approve this browser', detail:'Continue on the service to connect this browser to your app.',
-    action:{ label:'Approve this browser', run() {} },
+    phase:'enrolling', title:'Setting up this browser…', detail:'Your app is preparing this browser. This takes a few seconds.',
   });
 } else {
   let records = [

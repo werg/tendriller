@@ -105,7 +105,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     identity,
     installation: installation.api,
     publication: { async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, cfg.publication); },
-      get pinned() { return updates.pinned; }, get updateAvailable() { return updates.updateAvailable; },
+      get pinned() { return updates.pinned; }, get policy() { return updates.policy; }, get updateAvailable() { return updates.updateAvailable; },
       onUpdate: listener => updates.onUpdate(listener), hold: () => updates.hold(), update: () => updates.update() },
     documentUrl(reference) { return resolveDocumentUrl(cfg, reference, updates.pinned); },
     assetUrl(path) {
