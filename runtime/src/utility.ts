@@ -126,7 +126,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const canNativeShare = () => typeof navigator.share === "function";
   const shareSection = element("section", undefined, "section");
   const shareHeading = element("h3", "Share & invite");
-  const shareIntro = element("p", "Share this page or create guest invites. Page-only links share files, not application data or device access.", "note");
+  const shareIntro = element("p", "Share this page or create an invite link — anyone with an invite link can sign in and join directly.", "note");
   const shareMessage = element("p", undefined, "message"); shareMessage.hidden = true; shareMessage.setAttribute("role", "status");
   const shareCurrentBtn = button(canNativeShare() ? "Share this page" : "Copy page link", "primary");
   const inviteDetails = element("details", undefined, "share-opts");

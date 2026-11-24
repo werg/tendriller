@@ -143,12 +143,12 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
 
   const ownerSections = `<div class="stack">
     <section class="card">
-      <div class="card-head"><div><h2>Share &amp; invite</h2><p>Create guest invite links (requires sign-in and your approval) or page-only links (up to 3). Shares page files only; does not grant access to application data or connect a device.</p></div>${shareLinks.length ? `<span class="badge">${shareLinks.length} retained</span>` : ''}</div>
+      <div class="card-head"><div><h2>Share &amp; invite</h2><p>Anyone with a guest invite link can sign in and join this app directly. Page-only links (up to 3) open page files without sign-in or private data access.</p></div>${shareLinks.length ? `<span class="badge">${shareLinks.length} retained</span>` : ''}</div>
       ${shareRows ? `<ul class="list">${shareRows}</ul>` : '<p class="empty">No active invite or page-only links yet.</p>'}
       <details class="disclosure"><summary>Create an invite or page-only link</summary><div class="disclosure-body">
         <form action="${actionURL}" method="post">
           <input type="hidden" name="action" value="create-link">
-          <div class="field"><label class="field-label" for="link-role">Access type</label><select id="link-role" name="role"><option value="guest">Guest invite (sign-in + owner approval)</option><option value="display">Page-only link (page files only, no sign-in)</option></select></div>
+          <div class="field"><label class="field-label" for="link-role">Access type</label><select id="link-role" name="role"><option value="guest">Guest invite (anyone with link signs in and joins)</option><option value="display">Page-only link (page files only, no sign-in)</option></select></div>
           <div class="field"><label class="field-label" for="link-label">Label (optional)</label><input id="link-label" name="label" maxlength="100" placeholder="e.g. Alex or Living room tablet"></div>
           <div class="field"><label class="field-label" for="link-expiry">Expires</label><select id="link-expiry" name="expires_in"><option value="604800">In 7 days</option><option value="86400">In 24 hours</option><option value="2592000">In 30 days</option><option value="">Never</option></select></div>
           <div class="actions"><button>Create share link</button></div>

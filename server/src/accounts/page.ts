@@ -69,7 +69,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
   if (!TENDRIL_ID_RE.test(id) || !PAGE_KEY_RE.test(key)) return errorResponse(400, "bad_request", "Invalid page link");
   const infoRes = await stub(env, id).fetch(claimRequest(id, key, "info"));
   if (!infoRes.ok) return infoRes;
-  const info = await infoRes.json() as { claimed: boolean; expected: string | null; role: string };
+  const info = await infoRes.json() as { claimed: boolean; expected: string | null; role: string; direct?: boolean };
   if (info.role !== "owner" && info.role !== "guest") return errorResponse(403, "forbidden", "This link cannot be opened");
   const session = await serviceSession(req, env);
   const returnTo = `/auth/page?tendril=${id}&key=${key}`;
@@ -102,6 +102,18 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     if (status === "approved") return issuePageCode(env, id, key, session.accountId, "guest");
     if (status === "pending") return waitingPage();
     if (status === "declined") return html("<section class=\"hero\"><h1>Invitation declined</h1><p>The owner did not approve this request.</p></section>", 403);
+    if (info.direct) {
+      // Owner-created invite link: join directly in one go after sign-in.
+      const identities = await verifiedIdentities(env, session.accountId);
+      const claim = await stub(env, id).fetch(claimRequest(id, key, "guest", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account_id: session.accountId, identities }),
+      }));
+      if (!claim.ok) return claim;
+      if ((await claim.json() as { approved: boolean }).approved) {
+        return issuePageCode(env, id, key, session.accountId, "guest");
+      }
+      return waitingPage();
+    }
   }
   if (info.role === "guest" && req.method === "GET") {
     const nonce = randomToken();

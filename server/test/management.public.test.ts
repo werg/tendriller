@@ -248,7 +248,7 @@ it('keeps expired page-only links visible and revocable so their slots can be re
     return rows;
   });
   const html = await (await req(manageUrl)).text();
-  expect(html).toContain('Shares page files only; does not grant access to application data or connect a device.');
+  expect(html).toContain('open page files without sign-in or private data access.');
   expect(html).toContain('Expired tablet 0');
   expect(html).toContain('Expired');
   expect(html).toContain(`name="link_id" value="${links[0].id}"`);
@@ -293,4 +293,26 @@ it('enforces the display quota atomically across parallel link preparation', asy
       count: t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links WHERE role='display'")!.n };
   });
   expect(result).toEqual({ fulfilled: 1, count: 3 });
+});
+
+it('lets a signed-in visitor join an owner-created guest invite link in one go without a Request access screen', async () => {
+  const h = await create();
+  const guestRes = await req(h.page_url + '_tendril/links', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'guest', label: 'Friend' }),
+  });
+  expect(guestRes.status).toBe(201);
+  const { url: inviteUrl } = await guestRes.json() as { url: string };
+  const key = new URL(inviteUrl).pathname.split('/')[2];
+  const friendId = crypto.randomUUID(), rawSession = 'friend-' + crypto.randomUUID();
+  await env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(friendId, Date.now(), 'friend@example.test').run();
+  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
+    .bind(await sha256Hex(rawSession), friendId, Date.now(), Date.now() + 86_400_000).run();
+
+  const auth = await req(`https://tendriller.dev/auth/page?tendril=${h.id}&key=${key}`, {
+    anonymous: true, redirect: 'manual', headers: { Cookie: `__Host-tendriller=${rawSession}` },
+  });
+  expect(auth.status).toBe(303);
+  expect(auth.headers.get('Location')).toContain('_tendril/auth/session?code=');
+  expect(await inDO(h.id, t => t.db.one('SELECT approved FROM guest_accounts WHERE account_id=?', friendId))).toEqual({ approved: 1 });
 });

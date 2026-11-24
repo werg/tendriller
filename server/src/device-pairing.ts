@@ -245,7 +245,7 @@ async function prepare(t: Tendril, req: Request, principal: Principal, input: Re
   let retained: PairingRecord | undefined, retainedJson: string | undefined;
   const guard = () => {
     const record = read(t, id);
-    if (!record || record.state !== 'pending' || record.preparedDigest !== preparedDigest ||
+    if (!record || !['pending', 'approved'].includes(record.state) || record.preparedDigest !== preparedDigest ||
       JSON.stringify(record.prepared) !== retainedJson || record.challenge.expiresAt <= t.now())
       throw new HttpError(409, 'pairing_proposal_changed');
     account(t, principal); admitted(t, record.challenge.accountId);
@@ -258,10 +258,21 @@ async function prepare(t: Tendril, req: Request, principal: Principal, input: Re
       if (!record.proof || !await verifyDevicePairingProof(record.challenge, record.proof)) throw new HttpError(403, 'pairing_proof_required');
       if (record.preparedDigest && record.preparedDigest !== preparedDigest) throw new HttpError(409, 'pairing_transition_conflict');
       await validateProposal(record, authority, request, rawControl);
+      const owner = t.db.get<string | null>('owner_account', null);
+      if (!owner) throw new HttpError(403, 'pairing_account_required');
       record.prepared = prepared; record.preparedDigest = preparedDigest; delete record.csrf;
+      // Every admitted account (the signed-in owner or an admitted guest) pairs in
+      // one go once the native administrator stages the verified member-only grant.
+      record.state = 'approved';
+      record.reviewedAccount = owner;
+      record.reviewedDigest = await reviewDigest(record);
       await fresh(t, principal);
       if (!await accountActive(t, record.challenge.accountId)) throw new HttpError(403, 'pairing_account_revoked');
-      t.transaction(() => { account(t, principal); admitted(t, record.challenge.accountId); save(t, record); });
+      t.transaction(() => {
+        account(t, principal); admitted(t, record.challenge.accountId);
+        if (owner !== t.db.get('owner_account', null)) throw new HttpError(403, 'pairing_owner_required');
+        save(t, record); notifySetupChanged(t);
+      });
       retained = record; retainedJson = JSON.stringify(record.prepared); guard();
     },
     async check() {
