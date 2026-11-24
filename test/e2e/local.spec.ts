@@ -90,7 +90,7 @@ test('the page shows the latest release: open tabs switch when idle, wait for un
 
 test('publication switching preserves hidden form drafts, checkedness, selects and open-shadow input until reset', async ({ page, context }) => {
   const handle = await createPage();
-  const form = '<form><input id="checked" type="checkbox" value="yes"><select id="selection"><option>A</option><option>B</option></select><textarea id="preview">original</textarea></form><div id="editor"></div>';
+  const form = '<meta name="tendriller-updates" content="careful"><form><input id="checked" type="checkbox" value="yes"><select id="selection"><option>A</option><option>B</option></select><textarea id="preview">original</textarea></form><div id="editor"></div>';
   try {
     await signInFixture(context); await claim(context, handle);
     await publish(handle, '<h1 id="release">draft release</h1>' + form);
@@ -390,7 +390,7 @@ test('broken unpaired publication gets an explicit update and retains browser pa
     ` }, alias: { '@tendriller/core/pairing': join(process.cwd(), 'dist/sdk/pairing.mjs') }, bundle: true,
       format: 'esm', platform: 'browser', write: false });
     const assets = (version: string) => ({
-      'index.html': { type: 'text/html', body: '<!doctype html><title>Unpaired publication</title><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="pairing">Not paired</p><script type="module" src="./page.mjs"></script>' },
+      'index.html': { type: 'text/html', body: '<!doctype html><title>Unpaired publication</title><meta name="tendriller-updates" content="careful"><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="pairing">Not paired</p><script type="module" src="./page.mjs"></script>' },
       'page.mjs': { type: 'text/javascript', body: fixture.outputFiles[0].text },
     });
     const first=await publishFiles(handle,assets('Broken unpaired v1'));
