@@ -162,6 +162,8 @@ export interface RuntimeServices {
     saveOffline(): Promise<{ id: string; status: "ready" }>;
     /** True only when this document was opened at its immutable /_publications/ID/ URL. */
     readonly pinned: boolean;
+    /** "live" (default) switches as soon as no typed text is pending; "careful" (<meta name="tendriller-updates" content="careful">) also waits for any focused or changed control and shows an update prompt. */
+    readonly policy: "live" | "careful";
     /** A newer release is selected; the page switches at its next safe point. */
     readonly updateAvailable: boolean;
     /** Called with the selected version when it differs from this document's release; version null when the selection returns to it. */

@@ -390,7 +390,7 @@ test('broken unpaired publication gets an explicit update and retains browser pa
     ` }, alias: { '@tendriller/core/pairing': join(process.cwd(), 'dist/sdk/pairing.mjs') }, bundle: true,
       format: 'esm', platform: 'browser', write: false });
     const assets = (version: string) => ({
-      'index.html': { type: 'text/html', body: '<!doctype html><title>Unpaired publication</title><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="pairing">Not paired</p><script type="module" src="./page.mjs"></script>' },
+      'index.html': { type: 'text/html', body: '<!doctype html><title>Unpaired publication</title><meta name="tendriller-updates" content="careful"><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="pairing">Not paired</p><script type="module" src="./page.mjs"></script>' },
       'page.mjs': { type: 'text/javascript', body: fixture.outputFiles[0].text },
     });
     const first=await publishFiles(handle,assets('Broken unpaired v1'));

@@ -53,7 +53,7 @@ Safari device-qualification guarantee.
 | `documentUrl(reference)` | Build a document or fragment URL in this page’s current live or explicitly pinned context; performs no navigation |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
 | `transport.install(participation)`, `status()`, `onChange()`, `refresh()` | Bounded local authenticated-link diagnostics; no polling, probes or host queries. See [transport diagnostics](TRANSPORT_DIAGNOSTICS.md) |
-| `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
+| `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned`, `policy` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
 
 The hosted `tendril.js` entry opens one receive-only publication metadata WebSocket during construction, including on holding and explicitly pinned pages. The bare `startRuntime()` kernel opens it only when passed `watchPublication: true`; otherwise construction starts no host connection or fetch. A healthy publication watch sends no heartbeat or periodic HTTP request; transport failure can trigger bounded recovery reads and reconnects. This watch does not install an application transport. Construction creates no IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
 
@@ -334,8 +334,21 @@ its injected `<base>`, which names the immutable publication graph. So:
 - an open tab holds the page's one hibernating publication watch
   (`contract/publication-watch.mjs`, opened by the hosted `tendril.js` entry; the
   bare `startRuntime` kernel opens it only with `watchPublication: true`) and learns
-  of every change of the selected release, rollbacks included. It switches once no editable field is focused, no inspectable form control differs from its initial HTML defaults, and no `tendril.publication.hold()` is active. These protections also apply while hidden or resumed. The check includes open shadow roots, checkbox/radio checkedness, selected options, and changed disabled or read-only controls. Clean, unfocused pages can switch immediately. While a switch waits, Page options shows **New version
-  published** with an **Open update** link to the page's own address;
+  of every change of the selected release, rollbacks included. What happens next
+  depends on the page's update policy (`publication.policy`):
+  - **`live` (default):** the page is replaced as soon as the agent publishes,
+    with no prompt. Only an active `tendril.publication.hold()` or text the person
+    actually typed (trusted input) and has not yet sent or cleared defers it; it
+    switches the moment that field is sent or emptied. Focus alone, values the app
+    sets itself, sliders and selects never block.
+  - **`careful` (opt in):** add `<meta name="tendriller-updates" content="careful">`
+    for edit-heavy pages. The page also waits while any editable field is focused or
+    any inspectable form control differs from its initial HTML defaults (open shadow
+    roots, checkbox/radio checkedness, selected options, changed disabled or
+    read-only controls included), and Page options shows **New version published**
+    with an **Open update** link to the page's own address.
+
+  Both policies also apply while hidden or resumed;
 - pinning is explicit: a document opened at its immutable
   `…/_publications/ID/` URL stays on that release (for a review or a comparison),
   and `publication.pinned` is `true`.

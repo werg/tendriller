@@ -11,7 +11,7 @@ const compiled = await build({ stdin: {
 let mock: MockServer;
 test.beforeAll(async () => { mock = new MockServer(); await mock.start(); });
 test.afterAll(async () => { await mock.stop(); });
-async function policy(page: Page, html = '<button id="outside">Outside</button>', pinned = false) {
+async function policy(page: Page, html = '<button id="outside">Outside</button>', pinned = false, mode: 'live' | 'careful' | null = 'careful') {
   let stream!: WebSocketRoute;
   await page.clock.install();
   await page.routeWebSocket('**/_tendril/publication-ready', route => {
@@ -20,13 +20,13 @@ async function policy(page: Page, html = '<button id="outside">Outside</button>'
   await page.goto(mock.origin);
   await page.setContent(html);
   await page.addScriptTag({ content: compiled.outputFiles[0].text });
-  await page.evaluate(({ origin, pinned }) => {
+  await page.evaluate(({ origin, pinned, mode }) => {
     const w = window as any;
     w.reloads = 0; w.notices = [];
     w.cfg = { base: origin + '/t/example/', version: 1, publication: {}, documentPath: 'index.html' };
-    w.updates = w.UpdatePolicy.watchPublicationUpdates(w.cfg, { pinned, watch: true, reload: () => w.reloads++ });
+    w.updates = w.UpdatePolicy.watchPublicationUpdates(w.cfg, { pinned, watch: true, reload: () => w.reloads++, ...(mode ? { policy: mode } : {}) });
     w.updates.onUpdate((notice: unknown) => w.notices.push(notice));
-  }, { origin: mock.origin, pinned });
+  }, { origin: mock.origin, pinned, mode });
   await expect.poll(() => !!stream).toBe(true);
   return async (current: number) => {
     stream.send(JSON.stringify({ type: 'publication', version: 1, current }));
@@ -228,4 +228,35 @@ for (const held of [false,true]) test(`open-shadow native form reset waits for $
  await page.clock.runFor(60_000);expect(await reloads(page)).toBe(0);
  await page.evaluate(held=>{if(held)(window as any).release();else document.dispatchEvent(new Event('visibilitychange'));},held);
  expect(await reloads(page)).toBe(1);
+});
+
+test('live is the default: focus and app-set values never block, and no prompt is shown', async ({ page }) => {
+  const notice = await policy(page, '<input id="search" value=""><textarea id="settings">saved</textarea><input id="slider" type="range" value="3">', false, null);
+  expect(await page.evaluate(() => (window as any).updates.policy)).toBe('live');
+  await mountUtility(page);
+  await page.evaluate(() => {
+    (document.querySelector('#settings') as HTMLTextAreaElement).value = 'loaded from app data';
+    (document.querySelector('#slider') as HTMLInputElement).value = '9';
+    (document.querySelector('#search') as HTMLInputElement).focus();
+  });
+  await notice(2);
+  await expect.poll(() => reloads(page)).toBe(1);
+  expect(await page.locator('tendril-utility').evaluate(host => (host.shadowRoot!.querySelector('[aria-label="Publication update"]') as HTMLElement).hidden)).toBe(true);
+});
+
+test('live waits only for text the person typed, then switches once it is sent or cleared', async ({ page }) => {
+  const notice = await policy(page, '<textarea id="composer"></textarea>', false, 'live');
+  await page.locator('#composer').pressSequentially('half a message');
+  await notice(2); await page.clock.runFor(5000);
+  expect(await reloads(page)).toBe(0);
+  await page.locator('#composer').fill('');
+  await expect.poll(() => reloads(page)).toBe(1);
+});
+
+test('the careful policy is chosen by authored metadata read after the head is parsed', async ({ page }) => {
+  const notice = await policy(page, '<meta name="tendriller-updates" content="careful"><textarea id="settings">saved</textarea>', false, null);
+  expect(await page.evaluate(() => (window as any).updates.policy)).toBe('careful');
+  await page.evaluate(() => { (document.querySelector('#settings') as HTMLTextAreaElement).value = 'app value'; });
+  await notice(2); await page.clock.runFor(5000);
+  expect(await reloads(page)).toBe(0);
 });
