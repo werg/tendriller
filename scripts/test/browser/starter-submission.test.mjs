@@ -29,7 +29,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
           const participationStatus = {phase:'following',connectedPeers:[],connectionRevision:0};
           window.transportReads = 0;
           const revision = {generation:'e'.repeat(64)};
-          let resolveRead, fail = false, hold = true, lose = true, beforeSave = false;
+          let resolveRead, fail = false, hold = true, lose = true, beforeSave = false, cancelApplied = false;
           const saved = JSON.parse(localStorage.getItem('fixture-saved') || '{}');
           const calls = [];
           const session = { applicationId:'c'.repeat(64), historyId:'history', deviceId:'b'.repeat(64), endpoint:{context},
@@ -45,7 +45,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
               saved[options.operationId] = {operationId:options.operationId,status:lose?'saved':'applied',outcome:lose?undefined:'accepted',attemptId:'a'.repeat(64),generation:'e'.repeat(64),author:'b'.repeat(64),historyId:'history'};
               localStorage.setItem('fixture-saved',JSON.stringify(saved));
               if(lose) throw Error('Reply lost');
-              return {operationId:options.operationId, applied: async () => saved[options.operationId], shared:async()=>[]};
+              return {operationId:options.operationId, applied: async () => {if(cancelApplied) throw Error('TEST_APPLIED_WAITER_CANCELLED'); return saved[options.operationId];}, shared:async()=>[]};
             },
             async reapply(original,name,input,options) {calls.push({reapplies:original}); return this.command(name,input,options);},
             async retry(id) {calls.push({retry:id}); saved[id] = {...saved[id],status:'applied',outcome:'rejected',rejectionCode:'STALE'};},
@@ -54,7 +54,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
           window.fixture = {calls, release() {hold=false; resolveRead?.();}, fail(value) {fail=value;},
             connection(phase) {participationStatus.phase=phase;participation.forEach(fn=>fn({...participationStatus}));},
             recovery() {recoveries.forEach(fn=>fn({abandoned:[],unknownLoss:false}));},
-            abandon(id) {saved[id] = {...saved[id],status:'needsReapply'};}, hold() {hold=true;}, beforeSave(value) {beforeSave=value;}, responseLoss(value) {lose=value;}, session};
+            abandon(id) {saved[id] = {...saved[id],status:'needsReapply'};}, hold() {hold=true;}, beforeSave(value) {beforeSave=value;}, responseLoss(value) {lose=value;}, cancelApplied(value) {cancelApplied=value;}, session};
           return {session,detach:async()=>{},suspend:async()=>{},resume:async()=>{}};
         }
       ` }));
@@ -136,6 +136,20 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   assert.equal(await page.locator('#note').inputValue(), 'A newer editable draft');
   await page.locator('#submit').click(); await page.waitForFunction(() => document.querySelector('#note').value === '');
   assert.match(await page.locator('#result').textContent(), /accepted/);
+  // A cancelled applied waiter does not revoke an independently observed
+  // applied result. This is the fast-observer race on elected browser owners.
+  await page.locator('#note').fill('Observed despite waiter cancellation');
+  await page.evaluate(() => fixture.cancelApplied(true));
+  await page.locator('#submit').click();
+  await page.waitForFunction(() => document.querySelector('#result').textContent.includes('TEST_APPLIED_WAITER_CANCELLED'));
+  const cancelledId = await page.locator('#operation-id').inputValue();
+  await page.waitForFunction(id => document.querySelector('#operation-status').textContent.includes(id + ': Applied: accepted.'), cancelledId);
+  assert.equal(await enabled('#submit'), true);
+  assert.equal(await enabled('#retry'), false);
+  const remaining = await page.evaluate(id => Object.entries(localStorage).filter(([key, value]) =>
+    key.includes(':operation:') && JSON.parse(value).reference.operationId === id), cancelledId);
+  assert.deepEqual(remaining, [], 'A verified applied result resolves the retained reference, even when its waiter was cancelled.');
+  await page.evaluate(() => fixture.cancelApplied(false));
   await page.evaluate(() => {fixture.hold(); fixture.connection('recovering');});
   assert.equal(await enabled('#submit'), false); assert.equal(await enabled('#media-file'), false);
   await page.evaluate(() => fixture.connection('following'));

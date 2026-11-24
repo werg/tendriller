@@ -860,7 +860,19 @@ export async function closeLocalTransport() {
     await page.locator('#note').fill('Preserve this uncertain operation'); await page.locator('#submit').click();
     await expect(page.locator('#result')).toContainText('TEST_APPLIED_WAITER_CANCELLED', { timeout: 30_000 });
     const operation = await page.locator('#operation-id').inputValue();
-    await expect(page.locator('#submit')).toBeDisabled();
+    // Cancelling this waiter does not cancel execution or journal observation.
+    // In particular, the elected owner may already report the applied result.
+    // Snapshot both controls atomically: an uncertain attempt must stay locked;
+    // an unlocked form is safe only with the exact operation's applied proof.
+    const cancellation = await page.evaluate(id => ({
+      operationId: document.querySelector('#operation-id').value,
+      blocked: document.querySelector('#submit').disabled,
+      applied: document.querySelector('#operation-status').textContent.includes(`${id}: Applied: accepted.`),
+    }), operation);
+    assert.equal(cancellation.operationId, operation);
+    assert.ok(cancellation.blocked || cancellation.applied,
+      'A cancelled waiter must retain the submission lock unless its exact operation is known applied.');
+    report.cancelled_waiter_before_reload = cancellation;
     await page.reload();
     await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
     await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
