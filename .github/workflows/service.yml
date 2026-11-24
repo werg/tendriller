@@ -55,6 +55,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Install native build and browser audio tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends build-essential python3 pulseaudio pulseaudio-utils
       - run: npm ci
       - uses: actions/download-artifact@v4
         with:
@@ -71,10 +75,7 @@ jobs:
       - name: Match temporary home ownership to the container user
         run: chown "$(id -u):$(id -g)" "$HOME"
       - name: Start Linux audio output for real Web Audio tests
-        run: |
-          apt-get update
-          apt-get install --yes --no-install-recommends pulseaudio pulseaudio-utils
-          bash scripts/start-ci-audio.sh
+        run: bash scripts/start-ci-audio.sh
       - run: node scripts/test-browser.mjs
       - name: Qualify the exact immutable first-app kit
         run: npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz"
