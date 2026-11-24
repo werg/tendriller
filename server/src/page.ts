@@ -3,6 +3,7 @@ import { PEER_ROUTE, handlePeers } from "./peers";
 import { handleApplication, selectedApplication } from "./application";
 // Page routes under P (PROTOCOL section 2.1), executed inside the Tendril Durable Object.
 import type { Tendril } from "./tendril";
+import { validOptionalEmail } from "./tendril";
 import { tendrilMeta } from "./agent";
 import { servePageFile, servedVersion, versionFiles, publicationManifest } from "./files";
 import { HttpError, json, readBody, readJson } from "./http";
@@ -120,12 +121,14 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     }
     const rawLabel = typeof b.label === "string" ? b.label.trim().slice(0, 100) : "";
     const label = rawLabel || null;
+    const email = validOptionalEmail(b.email);
+    if (email !== null && b.role !== "guest") throw new HttpError(400, "bad_request", "Email restriction is only supported on guest invite links");
     const link = await t.createLink(b.role, label, expiresIn, false, () => {
       if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized");
       const total = t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links")?.n ?? 0;
       if (total >= 50) throw new HttpError(429, "link_limit", "At most 50 links are allowed per page");
-    });
-    addActivity(t, { kind: "link", summary: `Created ${b.role} link${label ? ` (${label})` : ""}`, by: `owner:${principal.accountId ?? "unknown"}` });
+    }, email);
+    addActivity(t, { kind: "link", summary: `Created ${b.role} link${label ? ` (${label})` : ""}${email ? ` for ${email}` : ""}`, by: `owner:${principal.accountId ?? "unknown"}` });
     return json(t.renderLink(link), 201);
   }
   const deleteLink = /^links\/([A-Za-z0-9_-]{1,64})$/.exec(sub);
@@ -136,6 +139,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     const existing = t.db.one<{ role: string; label: string | null }>("SELECT role, label FROM links WHERE id = ?", id);
     if (!existing) throw new HttpError(404, "not_found", "No such link");
     t.db.run("DELETE FROM links WHERE id = ?", id);
+    t.db.del(`link_email:${id}`);
     t.db.run("DELETE FROM guest_accounts WHERE link_id = ?", id);
     t.closeLinkSockets(id);
     addActivity(t, { kind: "link", summary: `Revoked ${existing.role} link${existing.label ? ` (${existing.label})` : ""}`, by: `owner:${principal.accountId ?? "unknown"}` });

@@ -1,7 +1,7 @@
 import type { Env } from "../env";
-import { errorResponse, readBody } from "../http";
+import { errorResponse } from "../http";
 import { PAGE_KEY_RE, sha256Hex, TENDRIL_ID_RE } from "../ids";
-import { pageUrl, publicBase } from "../urls";
+import { pageUrl } from "../urls";
 import { serviceSession } from "./auth";
 import { servicePage } from "./ui";
 
@@ -23,10 +23,6 @@ function redirect(location: string, cookie?: string): Response {
 function html(body: string, status = 200, script = ""): Response {
   const response = servicePage("Open page", body, script);
   return status === 200 ? response : new Response(response.body, { status, headers: response.headers });
-}
-function waitingPage(): Response {
-  return html(`<section class="hero"><span class="eyebrow">Invitation requested</span><h1>Waiting for the owner</h1><p>Your request is in the page owner's control panel. This page will open automatically when they approve it.</p><p id="claim-status" class="notice" role="status">Checking for approval…</p></section><p class="muted">You can leave this tab open, or return to this invitation link later.</p>`, 200,
-    `<script>const target=new URL(location.href);target.searchParams.set('status','1');async function check(){try{const r=await fetch(target,{cache:'no-store'});if(r.status===401){location.reload();return}if(!r.ok)throw Error();const d=await r.json();if(d.status==='approved'){location.href=location.pathname+location.search.replace(/([?&])status=1(&|$)/,'$1').replace(/[?&]$/,'');return}if(d.status==='declined'){document.querySelector('#claim-status').textContent='The owner declined this invitation.';return}document.querySelector('#claim-status').textContent='Still waiting for approval.'}catch{document.querySelector('#claim-status').textContent='Could not check right now. Retrying…'}setTimeout(check,4000)}check()</script>`);
 }
 
 /** A browser claim must explain a capacity stop, rather than displaying an API error as a sign-in failure. */
@@ -69,13 +65,16 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
   if (!TENDRIL_ID_RE.test(id) || !PAGE_KEY_RE.test(key)) return errorResponse(400, "bad_request", "Invalid page link");
   const infoRes = await stub(env, id).fetch(claimRequest(id, key, "info"));
   if (!infoRes.ok) return infoRes;
-  const info = await infoRes.json() as { claimed: boolean; expected: string | null; role: string; direct?: boolean };
+  const info = await infoRes.json() as { claimed: boolean; expected: string | null; role: string };
   if (info.role !== "owner" && info.role !== "guest") return errorResponse(403, "forbidden", "This link cannot be opened");
   const session = await serviceSession(req, env);
   const returnTo = `/auth/page?tendril=${id}&key=${key}`;
   if (!session) {
     if (req.method !== "GET") return errorResponse(401, "unauthorized", "Sign in first");
-    return html(`<section class="hero"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "A page made for you"}</span><h1>${info.role === "guest" ? "You're invited in." : "Your agent made a page for you."}</h1><p>Sign in to open it. Your page lives on its own address, and you can control connected agents once it opens.</p><p class="muted">${info.expected ? `Intended owner: ${escape(info.expected)}` : "Keep this invitation link private."}</p><div class="actions"><a class="button" href="/auth/github?return_to=${encodeURIComponent(returnTo)}">Continue with GitHub</a><a class="button secondary" href="/auth/google?return_to=${encodeURIComponent(returnTo)}">Continue with Google</a></div></section><p class="muted">Signing in lets Tendriller recognize you. Your agent never receives your sign-in credentials. By continuing, you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`);
+    const expectedLine = info.expected
+      ? `${info.role === "guest" ? "Invited email" : "Intended owner"}: ${escape(info.expected)}`
+      : "Keep this invitation link private.";
+    return html(`<section class="card"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "A page made for you"}</span><h1>${info.role === "guest" ? "You're invited in." : "Your agent made a page for you."}</h1><p class="lead">Sign in to open it.</p><p class="muted">${expectedLine}</p><div class="actions"><a class="button lg" href="/auth/github?return_to=${encodeURIComponent(returnTo)}">Continue with GitHub</a><a class="button secondary lg" href="/auth/google?return_to=${encodeURIComponent(returnTo)}">Continue with Google</a></div></section><p class="muted" style="margin-top:1rem;font-size:.86rem">Signing in lets Tendriller recognize you. Your agent never receives your sign-in credentials. By continuing, you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`);
   }
   const deleting = await env.ACCOUNTS.prepare("SELECT deleting_at FROM accounts WHERE id = ?").bind(session.accountId)
     .first<{ deleting_at: number | null }>();
@@ -83,9 +82,10 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
   const owner = await env.ACCOUNTS.prepare("SELECT owner_account FROM tendrils WHERE id = ?").bind(id).first<{ owner_account: string | null }>();
   if (!owner) return errorResponse(404, "not_found", "No such tendril");
   if (info.role === "owner" && owner.owner_account === session.accountId) return issuePageCode(env, id, key, session.accountId);
-  if (info.role === "owner" && owner.owner_account) return html("<h1>This page belongs to another account</h1>", 403);
-  if (info.role === "guest" && !owner.owner_account) return html("<h1>Waiting for the owner to claim this page</h1>", 403);
-  if (info.role === "owner" && req.method === "GET") {
+  if (info.role === "owner" && owner.owner_account) return html("<section class=\"card\"><h1>This page belongs to another account</h1></section>", 403);
+  if (info.role === "guest" && !owner.owner_account) return html("<section class=\"card\"><h1>Waiting for the owner to claim this page</h1></section>", 403);
+  if (req.method !== "GET") return errorResponse(405, "method_not_allowed", "Use GET");
+  if (info.role === "owner") {
     const identities = await verifiedIdentities(env, session.accountId);
     const claim = await stub(env, id).fetch(claimRequest(id, key, "owner", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -94,49 +94,21 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     if (!claim.ok) return claimFailure(req, claim);
     return issuePageCode(env, id, key, session.accountId);
   }
-  if (info.role === "guest" && req.method === "GET") {
-    const statusRes = await stub(env, id).fetch(claimRequest(id, key, "guest-status", { headers: { "x-account-id": session.accountId } }));
-    if (!statusRes.ok) return statusRes;
-    const { status } = await statusRes.json() as { status: string };
-    if (url.searchParams.get("status") === "1") return new Response(JSON.stringify({ status }), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
-    if (status === "approved") return issuePageCode(env, id, key, session.accountId, "guest");
-    if (status === "pending") return waitingPage();
-    if (status === "declined") return html("<section class=\"hero\"><h1>Invitation declined</h1><p>The owner did not approve this request.</p></section>", 403);
-    if (info.direct) {
-      // Owner-created invite link: join directly in one go after sign-in.
-      const identities = await verifiedIdentities(env, session.accountId);
-      const claim = await stub(env, id).fetch(claimRequest(id, key, "guest", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account_id: session.accountId, identities }),
-      }));
-      if (!claim.ok) return claim;
-      if ((await claim.json() as { approved: boolean }).approved) {
-        return issuePageCode(env, id, key, session.accountId, "guest");
-      }
-      return waitingPage();
-    }
-  }
-  if (info.role === "guest" && req.method === "GET") {
-    const nonce = randomToken();
-    await env.ACCOUNTS.prepare("INSERT INTO claim_intents (hash, tendril_id, key_hash, account_id, expires_at) VALUES (?, ?, ?, ?, ?)")
-      .bind(await sha256Hex(nonce), id, await sha256Hex(key), session.accountId, Date.now() + 10 * 60_000).run();
-    return html(`<section class="hero"><span class="eyebrow">Guest invitation</span><h1>Join this page</h1><p>The owner may need to approve your request. This screen will update when they do.</p><form method="post"><input type="hidden" name="nonce" value="${nonce}"><button type="submit">Request access</button></form></section><p class="muted">By continuing, you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`);
-  }
-  if (info.role !== "guest" || req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use GET");
-  if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) return errorResponse(403, "bad_origin", "Invalid claim origin");
-  const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
-  const nonce = form.get("nonce");
-  if (typeof nonce !== "string") return errorResponse(400, "bad_request", "Missing claim token");
-  const intent = await env.ACCOUNTS.prepare(`DELETE FROM claim_intents WHERE hash = ? AND tendril_id = ? AND key_hash = ?
-    AND account_id = ? AND expires_at > ? RETURNING hash`)
-    .bind(await sha256Hex(nonce), id, await sha256Hex(key), session.accountId, Date.now()).first();
-  if (!intent) return errorResponse(403, "invalid_claim", "Claim expired or already used");
   const identities = await verifiedIdentities(env, session.accountId);
   const claim = await stub(env, id).fetch(claimRequest(id, key, "guest", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ account_id: session.accountId, identities }),
   }));
-  if (!claim.ok) return claim;
-  if (!(await claim.json() as { approved: boolean }).approved) {
-    return waitingPage();
+  if (!claim.ok) {
+    if (claim.status === 403) {
+      const err = await claim.clone().json().catch(() => null) as { error?: { code?: string } } | null;
+      if (err?.error?.code === "wrong_guest_email") {
+        return html(`<section class="card"><span class="eyebrow">Guest invitation</span><h1>This invitation is for another email address</h1><p class="lead">${info.expected ? `This link is restricted to <code>${escape(info.expected)}</code>.` : "Your signed-in account does not match the invited email address."} Sign in with a matching GitHub or Google account to join.</p><div class="actions"><a class="button" href="/auth/github?return_to=${encodeURIComponent(returnTo)}">Sign in with GitHub</a><a class="button secondary" href="/auth/google?return_to=${encodeURIComponent(returnTo)}">Sign in with Google</a></div></section>`, 403);
+      }
+      if (err?.error?.code === "declined") {
+        return html(`<section class="card"><span class="eyebrow">Guest invitation</span><h1>Invitation unavailable</h1><p class="lead">This invitation was revoked.</p></section>`, 403);
+      }
+    }
+    return claim;
   }
   return issuePageCode(env, id, key, session.accountId, "guest");
 }

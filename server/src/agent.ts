@@ -6,7 +6,7 @@ import { PEER_ROUTE, handlePeers } from './peers';
 import { withUnconfiguredPeerApplication } from './peer-generations';
 import { handleApplication, selectedApplication } from './application';
 import type { Tendril } from './tendril';
-import { validName } from './tendril';
+import { validName, validOptionalEmail } from './tendril';
 import { addActivity, listActivity } from './activity';
 import { pointers } from './files';
 import { HttpError, intParam, json, readJson } from './http';
@@ -194,7 +194,8 @@ route("POST", /^links$/, async (t, req) => {
   const expiresIn = b.expires_in === undefined || b.expires_in === null ? null : Number(b.expires_in);
   if (expiresIn !== null && !(expiresIn > 0)) throw new HttpError(400, "bad_request", "expires_in must be a positive number of seconds");
   const label = typeof b.label === "string" ? b.label.slice(0, 100) : null;
-  return json(t.renderLink(await t.createLink(b.role, label, expiresIn, true)), 201);
+  const email = validOptionalEmail(b.email);
+  return json(t.renderLink(await t.createLink(b.role, label, expiresIn, true, undefined, email)), 201);
 });
 
 route("GET", /^links$/, (t) => json({ links: t.listLinks().filter((l) => l.role !== "display") }));
@@ -205,6 +206,7 @@ route("DELETE", /^links\/([^/]+)$/, (t, req, url, by, [id]) => {
   if (!link) throw new HttpError(404, "not_found", "No such link");
   if (link.role === "display") throw new HttpError(403, "forbidden", "Only the owner can manage display links");
   t.db.run("DELETE FROM links WHERE id = ?", id);
+  t.db.del(`link_email:${id}`);
   t.db.run("DELETE FROM guest_accounts WHERE link_id = ?", id);
   t.closeLinkSockets(id);
   return new Response(null, { status: 204 });

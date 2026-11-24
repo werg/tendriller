@@ -57,14 +57,6 @@ for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
       expect(invitation.status).toBe(201);
       await signInFixture(guest, OTHER_TOKEN);
       const second = await guest.newPage(), guestHandle = { ...handle, page_url: invitation.data.url };
-      await second.goto(localPageUrl(guestHandle));
-      await second.getByRole('button', { name: 'Request access' }).click();
-      const management = await context.newPage();
-      try {
-        await management.goto(new URL('_tendril/manage', localPageUrl(handle)).href);
-        await management.getByRole('button', { name: 'Approve', exact: true }).click();
-        await expect(management.getByRole('status')).toHaveText('Guest access approved.');
-      } finally { await management.close(); }
       // The local fixture helper retains port 8790 across auth redemption.
       await claim(guest, guestHandle); await second.goto(localPageUrl(guestHandle));
       await expect(second.getByRole('heading')).toHaveText(/is getting ready/);
