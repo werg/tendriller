@@ -301,7 +301,9 @@ session event consumers.
 After upgrading or restarting a participant, follow the [re-arm checklist](AGENT_RESTART.md).
 An attach client does not survive owner replacement automatically. Retain its
 profile and signed attempts, reconnect using the current binding, resume from
-the handled event cursor, and verify an actual request/receipt/answer on the page.
+the handled event cursor, and verify the app's declared domain command/read after
+reload. Apps with request consumers also verify heartbeat/receipt/answer behavior
+where their definition supports it; report absent support without inventing APIs.
 The [agent request pattern](AGENT_REQUESTS.md) supplies durable listener check-ins
 and request state for late-joining pages.
 

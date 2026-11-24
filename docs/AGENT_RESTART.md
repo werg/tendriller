@@ -5,6 +5,13 @@ separate lifetimes. Publishing a page does not start an agent, migrate a listene
 to a new application, or wake an existing conversation. Include this checklist in
 the application's handoff and supervisor runbook.
 
+Apply listener-specific steps only when the application has a request consumer.
+Inspect its declared commands and queries before invoking heartbeat, receipt or
+answer checks. For an app without those capabilities, verify an ordinary declared
+domain command/read and the participant's lifetime instead; report unavailable
+consumer-liveness or receipt evidence explicitly. Do not add or change a signed
+definition merely to satisfy this restart checklist.
+
 ## What survives, and what must start again
 
 | Change | Retained evidence | Work to re-arm |
@@ -51,13 +58,15 @@ declared commands/queries when they must survive absence.
    filters, or rebuild the declared inbox query. Inspect a rejected/stale cursor
    or recovery notice instead of silently starting at the end. Work can be
    delivered again after a crash; use stable request references and idempotency.
-6. Announce the actual consumer's new run, after its first successful read. Stop
-   heartbeats on consumer failure. Verify that the page shows its role, topics,
-   start time and recent check-in; peer connectivity alone is insufficient.
-7. Load the intended signed UI with the retained browser profile. Send a small
-   real request and observe its receipt and answer on the originating item.
-   Reload to verify those facts remain. Confirm a stopped listener becomes stale
-   and a stopped owner produces a supervisor-visible failure.
+6. For a request consumer with declared liveness support, announce its new run
+   after its first successful read. Stop heartbeats on consumer failure. Verify
+   its role, topics, start time and recent check-in; peer connectivity alone is
+   insufficient. Report missing liveness support instead of inventing a command.
+7. Load the intended signed UI with the retained browser profile. Verify a small
+   declared domain command/read and persistence after reload. For apps with a
+   request consumer and receipt/answer support, also send a real request and
+   observe those facts on the originating item. Where heartbeat support exists,
+   confirm a stopped listener becomes stale. Confirm owner loss fails its watch.
 8. Report which owner and consumer processes must remain running, where their
    private checkpoints live, how to restart them, and the verified publication.
    Do not claim future wake of a conversation unless that host explicitly

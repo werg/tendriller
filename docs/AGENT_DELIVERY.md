@@ -193,8 +193,10 @@ and records whether the agent actually attempted provisioning.
 Follow the [re-arm checklist](AGENT_RESTART.md) after republishing or replacing the
 native participant. State which owner and consumer processes must remain alive,
 and preserve their retained profiles, exact operations and handled cursors.
-An attach client does not survive owner replacement automatically. Verify a
-consumer's recent check-in and an actual request/receipt/answer on the page;
-`applied` and peer connectivity alone do not establish that work was read.
-Use the supplied [request lifecycle pattern](AGENT_REQUESTS.md) when the app
-needs durable listener presence and addressed answers.
+An attach client does not survive owner replacement automatically. For apps with
+a request consumer, verify its recent check-in and request/receipt/answer flow
+using its declared capabilities; report missing liveness/receipt support rather
+than inventing commands. Other apps retain the ordinary domain command/read and
+reload checks. `applied` and peer connectivity alone do not establish that an
+agent read work. Use the [request lifecycle pattern](AGENT_REQUESTS.md) when a
+new domain needs durable listener presence and addressed answers.

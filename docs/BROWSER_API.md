@@ -128,6 +128,7 @@ For a 64 px bottom tab bar:
     calc(var(--app-tabs-height) + env(safe-area-inset-bottom) + 8px);
 }
 .app-tabs {
+  box-sizing: border-box;
   position: fixed;
   inset: auto 0 0;
   height: calc(var(--app-tabs-height) + env(safe-area-inset-bottom));

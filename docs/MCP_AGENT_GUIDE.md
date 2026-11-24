@@ -145,6 +145,8 @@ hibernate. Neither subscription promises a future ChatGPT model turn.
 
 After a republish or owner restart, follow the [consumer re-arm checklist](AGENT_RESTART.md).
 Attach clients must reconnect to a replacement owner. Preserve handled cursors,
-exact operation inputs and pending work; verify the actual consumer heartbeat
-and a request/receipt/answer round trip. The [request lifecycle pattern](AGENT_REQUESTS.md)
-keeps applied commands distinct from work an agent has seen or answered.
+exact operation inputs and pending work. For apps with a request consumer, verify
+its heartbeat and request/receipt/answer flow only through declared capabilities;
+report unsupported evidence. For other apps, verify an ordinary domain command/read
+and reload. The [request lifecycle pattern](AGENT_REQUESTS.md) keeps applied
+commands distinct from work an agent has seen or answered.

@@ -110,10 +110,12 @@ a page or mounted card does not guarantee a future wake of this conversation.
 
 After a republish or participant restart, read the returned service origin's
 `/docs/AGENT_RESTART.md`. Reconnect attach clients to the retained owner, preserve
-handled cursors and exact pending inputs, and verify the actual consumer's
-heartbeat plus a request/receipt/answer round trip. Use `/docs/AGENT_REQUESTS.md`
-for durable listener presence and addressed answers; applied journal state does
-not establish that an agent has read the request.
+handled cursors and exact pending inputs. For apps with a request consumer, verify
+heartbeat and request/receipt/answer behavior only through its declared capabilities;
+report missing support instead of inventing commands. For other apps, verify a
+domain command/read and reload. Use `/docs/AGENT_REQUESTS.md` for durable listener
+presence and addressed answers; applied journal state does not establish that an
+agent has read the request.
 
 For sign-in and linking recovery, use the returned service origin's
 `/docs/CHATGPT_INTEGRATION.md`. Users can revoke account access at

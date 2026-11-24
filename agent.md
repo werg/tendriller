@@ -314,8 +314,10 @@ other-participant read, reload/reopen, and exact published version.
 
 After republishing or restarting a participant, follow the
 [consumer re-arm checklist](docs/AGENT_RESTART.md). Restart attach clients against
-the retained owner, resume from handled cursors and verify a fresh consumer
-heartbeat plus a request/receipt/answer round trip. Use the
+the retained owner and resume from handled cursors. For apps with a request
+consumer, verify its heartbeat and request/receipt/answer flow where those
+capabilities are declared; report missing support explicitly. Otherwise verify
+the app's ordinary domain command/read and reload behavior. Use the
 [request lifecycle pattern](docs/AGENT_REQUESTS.md) for full references, author
 timestamps and late-joinable listener state. Applied journal work does not mean
 an agent has seen or answered it.
