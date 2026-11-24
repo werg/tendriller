@@ -136,3 +136,65 @@ export async function attachSession({signal}) {
     });
   }
 });
+
+test('failed view release preserves a primary recovery or output failure and its previous cursor', async () => {
+  for (const code of ['CURSOR_RECOVERED', 'EPIPE']) {
+    const primary = Object.assign(Error(code), { code });
+    const cleanup = Object.assign(Error('view release failed'), { code: 'VIEW_RELEASE_FAILED' });
+    const owner = new AbortController();
+    const session = { signal: owner.signal, async *changes() { yield change; }, readView: async () => ({
+      readEvents() {
+        if (code === 'CURSOR_RECOVERED') throw primary;
+        return { revision, events: [{ id: 'not-delivered' }], cursor: 'next', hasMore: false };
+      },
+      release() { owner.abort(Object.assign(Error('owner closed'), { code: 'OWNER_UNREACHABLE' })); throw cleanup; },
+    }) };
+    await assert.rejects(watchSession({ mode: 'attach', session }, () => { throw primary; }, {
+      events: true, cursor: 'previous',
+    }), error => {
+      assert.equal(error, primary); assert.equal(error.cleanupError, cleanup);
+      assert.deepEqual(error.watch, { mode: 'events', cursor: 'previous', revision: null });
+      return true;
+    });
+  }
+});
+
+test('a failed view release during cancellation remains a failure with both causes', async () => {
+  const stop = new AbortController(), interrupted = Object.assign(Error('interrupted'), { code: 'invocation_interrupted' });
+  const cleanup = Object.assign(Error('view release failed'), { code: 'VIEW_RELEASE_FAILED' });
+  const session = { async *changes() { yield change; }, readView: async () => ({
+    readEvents() { stop.abort(interrupted); throw interrupted; },
+    release() { throw cleanup; },
+  }) };
+  await assert.rejects(watchSession({ session }, () => assert.fail('must not emit'), {
+    signal: stop.signal, events: true, cursor: 'previous',
+  }), error => error === interrupted && error.cleanupError === cleanup && error.watch.cursor === 'previous');
+});
+
+test('event watch CLI timeout cannot hide failed view cleanup or its primary read failure', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'tendril-watch-release-')), module = join(directory, 'session.mjs');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(module, `
+export async function attachSession({signal}) {
+  return {session:{async *changes(){yield {kind:'applied',revision:{generation:'one'},recovery:null};},
+    readView:async()=>({
+      readEvents:()=>new Promise((resolve,reject)=>{
+        const aborted=()=>process.env.FIXTURE_ABORT_READ_FAILURE ? reject(signal.reason)
+          : resolve({revision:{generation:'one'},events:[],cursor:'next',hasMore:false});
+        if(signal.aborted)aborted();else signal.addEventListener('abort',aborted,{once:true});
+      }),
+      release(){throw Object.assign(Error('view release failed'),{code:'VIEW_RELEASE_FAILED'});}
+    })},detach(){}};
+}`);
+  const args = [cli, 'watch', '--events', '--cursor', 'previous', '--session', module, '--mode', 'attach', '--timeout', '1'];
+  for (const readFails of [false, true]) {
+    await assert.rejects(run(process.execPath, args, { env: { ...process.env, FIXTURE_ABORT_READ_FAILURE: readFails ? '1' : '' } }), error => {
+      const result = JSON.parse(error.stderr);
+      assert.equal(error.code, 1);
+      assert.equal(result.error.code, readFails ? 'invocation_timeout' : 'VIEW_RELEASE_FAILED');
+      assert.equal(result.watch.cursor, readFails ? 'previous' : 'next');
+      if (readFails) assert.equal(result.cleanup.code, 'VIEW_RELEASE_FAILED');
+      return true;
+    });
+  }
+});

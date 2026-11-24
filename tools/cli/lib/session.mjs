@@ -6,7 +6,9 @@ import { pack } from './pack.mjs';
 import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
 
 function invocationFailure(error, signal) {
-  if (!signal?.aborted || signal.reason === error) return error;
+  // A watch classifies intentional cancellation itself; its remaining failures
+  // carry primary read/output and cleanup evidence that must not be relabeled.
+  if (!signal?.aborted || signal.reason === error || error?.watch) return error;
   const reason = signal.reason;
   return Object.assign(new Error(reason?.message ?? 'Invocation interrupted', { cause: error }), {
     code: reason?.code ?? 'invocation_interrupted',
@@ -210,7 +212,7 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
 /** Pulling the next change is backpressure. Emitted cursors are not processing receipts. */
 export async function watchSession(owned, emit, { signal, events = false, cursor, topics, limit } = {}) {
   const session = owned.session;
-  let lastCursor = cursor ?? null, lastRevision = null, emitting = false;
+  let lastCursor = cursor ?? null, lastRevision = null, emitting = false, releaseFailed = false;
   const progress = () => ({ mode: events ? 'events' : 'changes', cursor: lastCursor, revision: lastRevision });
   const emitDelivered = async value => {
     emitting = true;
@@ -225,6 +227,7 @@ export async function watchSession(owned, emit, { signal, events = false, cursor
       signal?.throwIfAborted();
       if (!events) { await emitDelivered(change); continue; }
       const view = await session.readView();
+      let viewFailure, viewFailed = false;
       try {
         for (;;) {
           signal?.throwIfAborted();
@@ -235,19 +238,31 @@ export async function watchSession(owned, emit, { signal, events = false, cursor
           if (batch.cursor !== lastCursor) await emitDelivered(batch);
           if (!batch.hasMore) break;
         }
-      } finally { await view.release(); }
+      } catch (error) { viewFailed = true; viewFailure = error; throw error; }
+      finally {
+        try { await view.release(); }
+        catch (cleanupError) {
+          releaseFailed = true;
+          if (!viewFailed) throw cleanupError;
+          if (!(viewFailure instanceof Error) || !Object.isExtensible(viewFailure))
+            viewFailure = new Error('Event watch failed', { cause: viewFailure });
+          viewFailure.cleanupError = cleanupError;
+          throw viewFailure;
+        }
+      }
     }
     if (!signal?.aborted) throw session.signal?.reason ?? Object.assign(
       Error('Session change stream ended unexpectedly; restart the listener after checking the session.'), { code: 'SESSION_WATCH_ENDED' });
   } catch (error) {
     // An intentional deadline/interrupt can close reads and iterators in different
     // ways. Output failures remain failures, even when cancellation races a write.
-    if (!signal?.aborted || (emitting && error !== signal.reason && error?.name !== 'AbortError')) {
+    if (releaseFailed || !signal?.aborted || (emitting && error !== signal.reason && error?.name !== 'AbortError')) {
       let failure = error instanceof Error && Object.isExtensible(error) ? error : new Error('Session watch failed', { cause: error });
-      if (!emitting && owned.mode === 'attach' && session.signal?.aborted) {
+      if (!emitting && owned.mode === 'attach' && session.signal?.aborted && error === session.signal.reason) {
         const cause = session.signal.reason ?? failure;
         failure = Object.assign(new Error(`Owner connection lost: ${cause?.message ?? 'OWNER_UNREACHABLE'}. Restart this attachment after the owner is available.`, { cause }), {
           code: cause?.code ?? 'OWNER_UNREACHABLE', ...(Number.isInteger(cause?.status) ? { status: cause.status } : {}),
+          ...(failure.cleanupError ? { cleanupError: failure.cleanupError } : {}),
         });
       }
       failure.watch = progress();
