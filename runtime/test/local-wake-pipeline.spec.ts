@@ -15,6 +15,9 @@ test("real browser AudioWorklet segments microphone PCM, sends one bounded utter
     await page.goto(fixture.origin);
     await expect(page.locator("#start")).toBeEnabled();
     expect(await page.evaluate(() => (window as any).wakePipeline.starts)).toBe(0);
+    // WebKit may collect a DOM wrapper between setup and the user gesture. The
+    // synthetic microphone must survive that collection without using real input.
+    await page.requestGC();
     await page.locator("#start").click();
     await page.waitForFunction(() => (window as any).wakePipeline.started || (window as any).wakePipeline.error);
     const supported = await page.evaluate(() => (window as any).wakePipeline.supported);
@@ -25,6 +28,7 @@ test("real browser AudioWorklet segments microphone PCM, sends one bounded utter
       return;
     }
     expect(await page.evaluate(() => (window as any).wakePipeline.error)).toBeNull();
+    expect(await page.evaluate(() => (window as any).wakePipeline.starts)).toBe(1);
     await page.waitForFunction(() => (window as any).wakePipeline.readyToPlay);
     await page.evaluate(() => (window as any).wakePipeline.play());
     await expect.poll(() => page.evaluate(() => (window as any).wakePipeline.commands), { timeout: 15_000 }).toEqual(["measured acoustic pipeline"]);
@@ -35,5 +39,17 @@ test("real browser AudioWorklet segments microphone PCM, sends one bounded utter
     expect(await page.evaluate(() => (window as any).wakePipeline.voice.microphoneActive)).toBe(false);
     expect(fixture.requests.every(request => request.method === "GET")).toBe(true);
     await evidence("pcm-evidence", { fixture_sha256: fixture.fixture.sha256, stats, environment: info.project.name, inference: "deterministic fixture; actual browser audio capture graph and AudioWorklet", physical_microphone: false });
+  } catch (error) {
+    const state = await page.evaluate(() => {
+      const pipeline = (window as any).wakePipeline;
+      return {
+        started: pipeline?.started, error: pipeline?.error, requests: pipeline?.starts,
+        states: pipeline?.states, stats: pipeline?.stats,
+        syntheticMicrophone: Object.prototype.hasOwnProperty.call(navigator.mediaDevices, "getUserMedia"),
+        tracks: pipeline?.streams.flatMap((stream: MediaStream) => stream.getAudioTracks().map(track => ({ readyState: track.readyState, muted: track.muted }))),
+      };
+    }).catch(captureError => ({ captureError: String(captureError) }));
+    await evidence("pcm-failure", { environment: info.project.name, state, requests: fixture.requests });
+    throw error;
   } finally { await page.evaluate(() => (window as any).wakePipeline?.close()).catch(() => {}); await fixture.close(); }
 });
