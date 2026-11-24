@@ -33,6 +33,7 @@ async function policy(page: Page, html = '<button id="outside">Outside</button>'
 const reloads = (page: Page) => page.evaluate(() => (window as any).reloads);
 const dirtyControls = [
   { name: 'checkbox checkedness (constant value=yes)', html: '<input id="editor" type="checkbox" value="yes">', kind: 'checkbox' },
+  { name: 'default-on checkbox checkedness', html: '<input id="editor" type="checkbox" value="yes" checked>', kind: 'checkbox' },
   { name: 'radio group default checkedness', html: '<input type="radio" name="r" checked><input id="editor" name="r" type="radio">', kind: 'checkbox' },
   { name: 'range value', html: '<input id="editor" type="range" value="3" min="0" max="10">', kind: 'value' },
   { name: 'disabled textarea draft', html: '<textarea id="editor">original</textarea>', kind: 'disabled' },
@@ -46,7 +47,7 @@ for (const control of dirtyControls) test(`automatic switching preserves ${contr
   const notice = await policy(page, control.html);
   await page.evaluate(kind => {
     const editor = document.querySelector('#editor') as HTMLInputElement;
-    if (kind === 'checkbox') editor.checked = true;
+    if (kind === 'checkbox') editor.checked = !editor.defaultChecked;
     else if (kind === 'select') (editor as unknown as HTMLSelectElement).options[1].selected = true;
     else { editor.value = '7'; if (kind === 'disabled') editor.disabled = true; if (kind === 'readonly') editor.readOnly = true; }
     editor.blur(); Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
