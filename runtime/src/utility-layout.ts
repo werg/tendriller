@@ -3,6 +3,7 @@
 export const utilityRight = "max(12px,env(safe-area-inset-right),var(--tendril-utility-inset-right,0px))";
 export const utilityBottom = "max(12px,env(safe-area-inset-bottom),var(--tendril-utility-inset-bottom,0px))";
 export const utilityTop = "max(12px,env(safe-area-inset-top))";
+export const utilityLeft = "max(12px,env(safe-area-inset-left))";
 export const utilityMaxWidth = `calc(100vw - max(12px,env(safe-area-inset-left)) - ${utilityRight})`;
 
 /** Publish the persistent control bar's actual box, including wrapped sensor controls. */
