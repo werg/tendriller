@@ -16,6 +16,8 @@ function invocationFailure(error, signal) {
     ...(error?.operation ? { operation: error.operation } : {}),
     ...(error?.publication ? { publication: error.publication } : {}),
     ...(error?.watch ? { watch: error.watch } : {}),
+    ...(error?.revision !== undefined ? { revision: error.revision } : {}),
+    ...(error?.recovery !== undefined ? { recovery: error.recovery } : {}),
   });
 }
 
@@ -217,7 +219,9 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       }
     } catch (error) {
       const committed = error.outcome === 'committed' && error.receipt?.publication?.id === publication?.id;
-      error.publication = { operationId, publicationId: publication?.id ?? null,
+      error.publication = { operationId: publication?.payload?.operationId ?? operationId,
+        ...(publication?.payload?.operationId && publication.payload.operationId !== operationId ? { localOperationId: operationId } : {}),
+        publicationId: publication?.id ?? null,
         outcome: committed ? 'committed' : publication ? 'unknown' : 'not_submitted',
         phase: error.phase ?? (publication ? 'submission' : 'preparation'),
         receipt: committed ? { publicationId: error.receipt.publication.id, version: error.receipt.version } : null,

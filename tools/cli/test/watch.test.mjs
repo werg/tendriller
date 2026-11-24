@@ -280,3 +280,30 @@ test('an already-aborted signal cannot turn an unrelated read error or AbortErro
     }), error => error === primary && error.watch.cursor === 'previous');
   }
 });
+
+
+test('watch CLI preserves verified recovery evidence and the old emitted cursor', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'tendril-recovery-')), module = join(directory, 'session.mjs');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const nextRevision = { historyId: 'history', generation: 'next', index: 2 };
+  const recovery = { reason: 'control-change', adopted: { generation: 'previous', sequence: 1, root: 'ab'.repeat(32) }, unknownLoss: false };
+  await writeFile(module, 'export async function attachSession() { return { session: {'
+    + 'async *changes() { yield { kind:"recovery", revision:' + JSON.stringify(nextRevision)
+    + ', recovery:' + JSON.stringify(recovery) + '}; },'
+    + 'async readView() { return { readEvents() { throw Object.assign(Error("cursor belongs to the earlier generation"), {'
+    + 'code:process.env.RECOVERY_CODE,revision:' + JSON.stringify(nextRevision) + ',recovery:' + JSON.stringify(recovery)
+    + '}); }, release() {} }; } }, detach() {} }; }');
+  for (const code of ['APPLICATION_VIEW_RECOVERED', 'EVENT_FORWARDER_REVIEW_RECOVERY']) {
+    await assert.rejects(run(process.execPath, [cli, 'watch', '--session', module, '--events', '--cursor', 'handled-old'],
+      { env: { ...process.env, RECOVERY_CODE: code } }), error => {
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, '');
+        const result = JSON.parse(error.stderr);
+        assert.equal(result.error.code, code);
+        assert.deepEqual(result.revision, nextRevision);
+        assert.deepEqual(result.recovery, recovery);
+        assert.equal(result.watch.cursor, 'handled-old');
+        return true;
+      });
+  }
+});

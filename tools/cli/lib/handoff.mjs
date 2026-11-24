@@ -120,10 +120,29 @@ function writeNewPrivate(path, bytes) {
 }
 const secretValue = (kernel, secret) => typeof secret === 'string' && /^[a-f0-9]{64}$/iu.test(secret)
   ? kernel.decodeCheckpointKeyHex(secret) : secret;
+const checkpointOpenError = error => error?.code === 'BYTES_STORE_IN_USE' || error?.message === 'BYTES_STORE_IN_USE' || /locked|busy/iu.test(error?.message ?? '')
+  ? fail('BYTES_STORE_IN_USE', 'Stop the original participant before moving its retained device.') : error;
 const nonConflicting = paths => {
   const values = paths.filter(Boolean).map(path => resolve(path));
   if (new Set(values).size !== values.length) throw fail('CHECKPOINT_PATH_CONFLICT', 'Checkpoint, device and SQL files must use distinct paths.');
 };
+
+// Run every cleanup without replacing the operational failure or losing its
+// retained evidence. Preserve the first distinct cleanup error for diagnostics.
+async function cleanupCheckpoint(failure, callbacks) {
+  for (const cleanup of callbacks) {
+    try { await cleanup(); }
+    catch (error) {
+      if (!failure) failure = error;
+      else if (error !== failure) {
+        if (!(failure instanceof Error) || !Object.isExtensible(failure))
+          failure = new Error('Checkpoint action failed', { cause: failure });
+        failure.cleanupError ??= error;
+      }
+    }
+  }
+  return failure;
+}
 
 /** Transfer a stopped retained device using the canonical checkpoint codec. */
 export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
@@ -143,13 +162,15 @@ export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
     if (!probe.prepare('SELECT 1 FROM stored_bytes WHERE key=?').get('peer-session/device/v1'))
       throw fail('CHECKPOINT_IDENTITY_MISSING', 'The selected file contains no retained Chronolog signing identity.');
   } catch (error) {
-    if (/locked|busy/iu.test(error.message)) throw fail('BYTES_STORE_IN_USE', 'Stop the original participant before moving its retained device.');
-    throw error;
+    throw checkpointOpenError(error);
   } finally { probe?.close(); }
   const { kernel, native } = await loadCheckpointLibrary(projectDir);
   // The public native device verifies its key/binding and holds the same
   // cross-process SQLite writer fence as the application participant.
-  const device = await native.openNativeDevice({ path: source });
+  let device;
+  try { device = await native.openNativeDevice({ path: source }); }
+  catch (error) { throw checkpointOpenError(error); }
+  let result, failure;
   try {
     if (deviceId !== null && deviceId !== device.identity.publicKey)
       throw fail('CHECKPOINT_IDENTITY_MISMATCH', 'Requested device identity does not match the retained signer.');
@@ -161,10 +182,26 @@ export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
       retireSource: true,
       persist: ({ bytes }) => writeNewPrivate(destination, bytes),
     });
-    device.store.checkpointWal();
-    return { output: destination, size: checkpoint.bytes.byteLength,
+    // The durable checkpoint and source retirement are already committed.
+    // Retain that receipt before any later maintenance or close can fail.
+    result = { output: destination, size: checkpoint.bytes.byteLength,
       retiredSource: checkpoint.retiredSource, metadata: checkpoint.metadata };
-  } finally { await device.close(); }
+    await device.store.checkpointWal();
+  } catch (error) {
+    failure = error;
+  } finally {
+    failure = await cleanupCheckpoint(failure, [() => device.close()]);
+  }
+  if (failure) {
+    if (result) {
+      if (!(failure instanceof Error) || !Object.isExtensible(failure))
+        failure = new Error('Checkpoint export failed', { cause: failure });
+      failure.checkpoint = { ...result,
+        nextAction: 'Restore the retained checkpoint into a fresh private directory; its source device has already been retired.' };
+    }
+    throw failure;
+  }
+  return result;
 }
 
 /** Publish a fully verified handoff as one fresh private directory. */
@@ -177,14 +214,14 @@ export async function restoreNativeCheckpoint({ inputPath, devicePath, secret, p
   mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
   const staging = mkdtempSync(join(dirname(target), '.checkpoint-restore-'));
   const stagedDevice = join(staging, basename(destination));
-  let store, verification, published = false;
+  let store, verification, result, failure, published = false;
   try {
     store = new native.NativeBytesStore(stagedDevice);
     const restored = await kernel.restoreDeviceCheckpoint(store, new Uint8Array(readFileSync(input)), { secret: secretValue(kernel, secret) });
     if (restored.outbox.length) throw fail('CHECKPOINT_EXTERNAL_OUTBOX', 'Restore the application-owned outbox through its own verified host adapter.');
     if (restored.sqlDatabaseBytes !== null)
       throw fail('CHECKPOINT_APP_RESTORE_REQUIRED', 'This checkpoint includes external SQL bytes. Use its application-owned restore adapter; the CLI restores canonical device history and rebuilds derived materialization.');
-    store.checkpointWal(); store.close(); store = undefined;
+    await store.checkpointWal(); await store.close(); store = undefined;
     verification = await native.openNativeDevice({ path: stagedDevice });
     if (restored.metadata.deviceId !== null && verification.identity.publicKey !== restored.metadata.deviceId)
       throw fail('CHECKPOINT_IDENTITY_MISMATCH', 'Restored signing identity does not match the authenticated checkpoint metadata.');
@@ -192,12 +229,17 @@ export async function restoreNativeCheckpoint({ inputPath, devicePath, secret, p
     syncDirectory(staging);
     if (existsSync(target)) throw fail('CHECKPOINT_TARGET_NOT_EMPTY', 'The target appeared during restore; no existing state was replaced.');
     renameSync(staging, target); published = true; syncDirectory(dirname(target));
-    return { devicePath: destination, materialization: 'rebuild-on-open',
+    result = { devicePath: destination, materialization: 'rebuild-on-open',
       restoredEntries: restored.restoredEntries, metadata: restored.metadata };
+  } catch (error) {
+    failure = error;
   } finally {
-    try { await verification?.close(); } finally {
-      store?.close();
-      if (!published) rmSync(staging, { recursive: true, force: true });
-    }
+    failure = await cleanupCheckpoint(failure, [
+      () => verification?.close(),
+      () => store?.close(),
+      () => { if (!published) rmSync(staging, { recursive: true, force: true }); },
+    ]);
   }
+  if (failure) throw failure;
+  return result;
 }

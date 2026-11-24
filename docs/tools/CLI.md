@@ -71,7 +71,7 @@ An unavailable owner never causes it to open a second signer.
 | `own` | `openSession({signal, mode, profile})` | Acquires exclusive ownership of the retained profile and closes that ownership after the command |
 | `independent` | `openSession({signal, mode, profile})` | Requires an explicit `--profile` with a separately provisioned and enrolled device |
 
-`attachSession` returns `{session, detach?}`. Either that return object or the
+`attachSession` returns `{session, control?, detach?}`. Either that return object or the
 session must expose a local `detach()` method. `openSession` returns
 `{session, control?, close?}`; the optional `close()` also releases the owner's
 profile fence. The CLI calls the appropriate cleanup exactly once, including an
@@ -113,7 +113,8 @@ operation ID. Presence remains separate from authorization.
 
 Initial publication before starting the peer uses `--mode own`. Once the native
 peer is running, you can **hot-publish UI updates without stopping the peer**
-using `--mode attach` (or `npm run deploy` in the starter):
+using `--mode attach` (or `npm run deploy` in the starter). The binding needs
+explicit [publication authority](#publication-capability-and-retained-bindings):
 
 ```sh
 # Fast hot publish through the running peer (delta uploads + automatic operationId):
@@ -197,6 +198,59 @@ profile name does not enroll an independent participant. Normal invocations neve
 use `create: true`, replace a missing identity or merge two profiles' signing
 rights. Keep all credentials and native stores outside the publishable page.
 
+### Publication capability and retained bindings
+
+Attached publication uses the resident owner's existing control participant and
+signer. The owner composition must expose that control participant; the first-app
+bootstrap already does. A local binding must explicitly include `publish` or
+`ownerAdmin` in its capabilities. An omitted capability list does not authorize
+publication. Query/command access remains separate.
+
+The signing device also needs a **publisher grant in the current signed
+application authority**. A local `publish` or `ownerAdmin` capability does not
+create that grant or replace the host credential's own permissions.
+
+Fresh first-app CLI bindings include `publish` explicitly. An existing retained
+binding keeps its exact policy across resume, restart and credential rotation.
+If it lacks publication authority, the owner can deliberately add a separate
+binding through the existing supervisor:
+
+```js
+// In the trusted owner process that already holds this supervisor:
+const publicationBinding = await supervisor.createBinding({
+  id: 'page-publisher',
+  policy: { capabilities: ['publish'] },
+});
+// Retain publicationBinding.token privately and configure the existing
+// attachSession bootstrap to read that credential for publication calls.
+```
+
+Use the existing private credential persistence and attachment path; do not put
+this token in page assets or print it in shared logs. Do not edit supervisor
+records, replace retained policies or revive a revoked binding to make a publish
+succeed. Creating this binding leaves sibling bindings and signer state intact.
+
+Publication operation IDs are scoped to the application and authenticated
+binding, as command IDs are, but use a distinct `nativepub_` namespace
+(107 characters). Treat that full ID as opaque. For inspection or an exact retry,
+keep the original short caller ID and binding, or the returned signed
+`publication.payload.operationId`. The command helper
+`session.scopeOperationId()` does not construct publication IDs. Another
+binding cannot inspect or submit the first binding's publication journal entry;
+credential rotation preserves the binding's namespace. An owner-established
+`preserveOperationId` policy remains an explicit exception, not an automatic
+migration or a permission granted to ordinary callers.
+
+Large attached publications use bounded staging: at most four stages and
+12,000,000 encoded bytes in total per client, up to 128 files per stage, and
+base64 fragments no larger than 512 KiB. Incomplete or malformed stages cannot
+commit; abort or attachment close clears temporary staged bytes. The existing
+1.1 MB frame limit remains unchanged. The client bounds pending control calls
+to 64 and gives each reply a 30-second deadline. A deadline or client detach does
+not cancel an owner publication already in progress or erase its retained
+intent/receipt; inspect the same operation and selected head before retrying.
+The CLI's outer `--timeout` does not extend that per-call reply deadline.
+
 ## Inspect and submit domain work
 
 ```sh
@@ -228,14 +282,22 @@ timeout/action cause separately from local cleanup failures.
 
 ### Reconcile a publication after an uncertain response
 
-Stop the native owner before using its standalone publication control:
+Keep the native owner running when reconciling a publication made through its
+authorized attachment. Use the same retained profile and binding:
 
 ```sh
-npx tendril --session ./session.mjs --mode own --timeout 120 publication
-npx tendril --session ./session.mjs --mode own publication-operation notes-release-1
+npx tendril --session ./session.mjs --mode attach --timeout 120 publication
+npx tendril --session ./session.mjs --mode attach publication-operation notes-review-1
 ```
 
-The second command reads the same device's saved signed intent and any retained
+Replace `notes-review-1` with the original attached operation ID; do not invent
+one after a timeout. For an initial publication made with standalone
+`--mode own`, inspect with that same ownership path while the peer is stopped.
+Changing an ordinary attachment binding or switching an unscoped standalone ID
+to a new ordinary binding is not an exact retry. For an older saved unscoped
+intent, use the explicit recovery path below.
+
+The second command reads the same device/binding's saved signed intent and any retained
 host acknowledgement; it sends no publication. It requires the qualified
 Chronolog package with publication receipt inspection. Acknowledgement proves
 the host accepted that signed graph, not that it remains the current selected
@@ -247,6 +309,65 @@ receipt was observed, or `not_submitted` when preparation failed. A known receip
 survives failure of the subsequent selected-head read or local cleanup. Preserve
 the authored bytes and original operation; inspect before an exact retry. Never
 change the operation ID merely because the invocation failed.
+
+#### Recover a saved unscoped publication after an upgrade
+
+An intent created with standalone `--mode own`, or an older attachment that did
+not scope publication IDs, retains its original unscoped signed ID. Upgrading
+does not rewrite that signature. An ordinary binding now looks in its own scoped
+namespace; a missing lookup there does not prove the legacy intent is absent.
+Rotating its credential keeps the same policy and does not expose legacy IDs.
+
+The trusted owner can recover it while the resident peer keeps running. Use the
+same retained device and journal, the original unscoped operation ID, and the
+original content-addressed asset bytes. Provision a temporary recovery binding
+through the supervisor already owned by that process:
+
+```js
+const recoveryId = 'legacy-publication-recovery';
+const recoveryBinding = await supervisor.createBinding({
+  id: recoveryId,
+  policy: { capabilities: ['publish'], preserveOperationId: true, maxRequests: 1 },
+});
+let recovery;
+try {
+  recovery = await attachNativeSession({
+    directory, token: recoveryBinding.token, applicationId,
+    definitionId: definition.id, definitionVersion: definition.version,
+    connect: connectApplicationOwner,
+  });
+  const saved = await recovery.control.publicationOperation(originalOperationId);
+  if (!saved) throw Error('Original publication is not in this retained journal.');
+  const selectedBefore = await recovery.control.publication();
+  // Review saved.receipt and selectedBefore before deciding to retry.
+  if (retryOriginal) {
+    const receipt = await recovery.control.publish(saved.publication, originalAssets);
+    // Retain this acknowledgement privately with the original signed intent.
+  }
+  const selectedAfter = await recovery.control.publication();
+  // Retain the selected-head observation separately from acknowledgement.
+} finally {
+  try { await recovery?.detach(); }
+  finally { await supervisor.revokeBinding(recoveryId); }
+}
+```
+
+Here `originalAssets` is the retained array of `{hash, bytes}` uploads, with
+base64 bytes matching the saved signed file manifest; `retryOriginal` is the
+owner's explicit decision after inspection. This path sends the saved signed
+object directly, preserving its ID, author, payload and signature. It does not
+prepare another publication. The current signed publisher grant and host
+permissions still apply. If either denies the retry, keep the original intent
+and resolve that authority requirement explicitly.
+
+The exception is restricted to publication capability, but `preserveOperationId`
+allows that trusted client to address the signer's publication namespace; it is
+not an allowlist for one legacy ID. Keep its token in the trusted recovery
+process and revoke it even after an uncertain reply. Revocation disconnects the
+client without erasing the saved intent or receipt. A later recovery uses a new
+owner-provisioned binding ID. Ordinary new publications continue through the
+normal scoped binding. An acknowledgement for an old publication does not make
+it the selected head or authorize replacing a newer release.
 
 A reviewed reapplication names the old operation, a new identity, current input
 and the current captured revision:
@@ -322,8 +443,12 @@ and do not append application history.
 ```sh
 tendril --session ./application.mjs definition
 tendril --session ./application.mjs publication
-tendril --session ./application.mjs --mode own publish ./page --operation release-2026-11-17
+# With the existing native owner running and an explicit publication binding:
+tendril --session ./application.mjs --mode attach publish ./page --operation release-2026-11-17
 ```
+
+Initial publication before starting the native owner can use `--mode own`.
+For attached updates, retain the [publication binding](#publication-capability-and-retained-bindings).
 
 The complete authored graph is hashed and passed to the session's
 `preparePublication`. `publish` sends that saved signature and content addressed

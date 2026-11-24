@@ -41,11 +41,12 @@
     "test:plugin:live": "node scripts/review/qualify-live.mjs",
     "test:agent:acceptance": "node scripts/agent-acceptance/cli.mjs",
     "test:idle:soak": "node scripts/idle-soak/run.mjs",
-    "test:idle:metrics": "node scripts/idle-soak/metrics.mjs"
+    "test:idle:metrics": "node scripts/idle-soak/metrics.mjs",
+    "test:first-app:feedback": "node scripts/test-first-app.mjs --feedback-qualification"
   },
   "devDependencies": {
-    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-6f8b00fb.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-6f8b00fb.tgz",
+    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-13b88606.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-13b88606.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",

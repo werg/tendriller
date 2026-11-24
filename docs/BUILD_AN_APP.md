@@ -56,7 +56,7 @@ handle; the service origin and the published page origin serve different roles.
 | Build the UI | Bundle the page and owning Worker | `page/` contains the complete authored graph and public configuration |
 | Publish | Use the creator session's saved signed publication | A receipt and selected immutable release ready for the owner’s first signed-in visit |
 | Owner sign-in | Give the person the already-published page and any prepared permission-review URL | Existing authority, keys and code retained; no new publication needed |
-| Connect the browser | Request access with its own device, let the native peer stage an exact proposal, review it, then connect | The reviewed signed grant is committed; the session acquires keys and reads real application state |
+| Connect the browser | Request access with its own device and let the native peer stage an exact member-only proposal; the host approves it automatically | The approved signed grant is committed; the session connects, acquires keys and reads real application state |
 | Verify | Submit, reload, read, inspect and retry | Retained notes and the same device/operation identities survive reopening |
 
 The owner sign-in and enrollment decision are real authority boundaries. Prepare
@@ -91,12 +91,20 @@ Worker source change. The separate `/api/service` contract remains unchanged.
 
 ## 1. Get the starter and matching public packages
 
-Use **Node 24**, npm, curl, tar and a SHA-256 checker. The released first-app
+Use **Node 24**, npm, curl, tar and a SHA-256 checker. Node 24 is the qualified
+first-app runtime and both starters require at least 24; core's separate minimum
+remains Node 22.15. The released first-app
 archive contains the maintained starter and its exact public SDK, tools and
 Chronolog events packages. Ordinary setup does not need a second repository
 checkout or a Chronolog build. SQL, native RTC and WASM engines are separate
 optional capabilities. For relational guards and multi-entity transactions, use
 the concrete [SQL alternative](STATE_MODELS.md) before configuring authority.
+
+For machine-readable setup output, use `npm run --silent create -- ...` and
+`npm run --silent init`, or invoke `node setup.mjs create ...` / `node setup.mjs init`
+directly. Parse stdout and check the exit status. Node diagnostics, including
+SQLite experimental warnings, stay on stderr; keep them visible and separate
+from JSON. Node 24 does not promise warning-free stderr.
 
 Set the origin to the domain supplied by the user or selected connector. Keep it
 for readiness, package matching, creation, owner sign-in and assistant setup.
@@ -201,6 +209,10 @@ through initialization, building and publication before asking for sign-in.
 Then give the owner the ready page URL. Never stop to request a "claimed" reply.
 Once `page/` exists, `npx tendril-preview ./page` checks layout immediately;
 [static versus real-session preview](tools/PREVIEW.md) explains what it establishes.
+To exercise connected domain flows with development data before production sign-in,
+use the [existing local-host UX review path](tools/PREVIEW.md#connected-ux-review-before-production-sign-in).
+Complete the full UX pass before final delivery; production owner sign-in is not
+blocked on a synthetic preview.
 Keep the published page as the verification target for the actual account,
 device enrollment and session. Enrollment requires `owner_account_id` in the
 host's authenticated agent `info()` response; absence is a host upgrade boundary.
@@ -503,11 +515,28 @@ npm run build
 
 The build produces a complete `page/` graph containing `index.html`, bundled
 page and Worker modules, their shared chunks, and `configuration.json`.
-Configuration contains only the application ID, page URL, initialized native
-device public key (`nativeDeviceId`) and pinned public descriptor. The native
+Configuration contains only public application/definition IDs and versions,
+page/service addresses, the initialized native device public key (`nativeDeviceId`)
+and the pinned public descriptor. The native
 public key identifies the optional inference participant; it is not a credential.
 The build never copies the private handle, native database or
 initial epoch key into `page/`.
+
+The build derives `definitionId` and `definitionVersion` from `domain.mjs` and
+checks its public definition digest against the retained initialized descriptor.
+A mismatch fails the build and removes `page/`; restore the initialized definition
+or use a fresh project for a different domain. Rebuilding UI does not authorize
+replacement of a signer, definition or history. Initialization and generic peer
+logging need no domain-specific query.
+
+When adapting the starter, deliberately edit the domain, rendered views and
+handlers, display name, and assistant command/query allowlists and event
+projection. New declared commands are not automatically granted to the assistant.
+Keep executable domain and optional SQL initialization in the native/Worker
+composition; the page needs only the generated public identity.
+
+Before choosing external APIs or assets, read the [published-page security policy](BROWSER_API.md#published-page-security-policy).
+The sign-in redirect is not evidence of the authenticated authored page's policy.
 
 The implementation is deliberately ordinary:
 
@@ -554,8 +583,9 @@ explicit authorized bootstrap as described in [Preview](tools/PREVIEW.md).
 
 ## 5. Publish signed code
 
-Stop the standalone native peer with Ctrl-C and await its exit before opening
-the same store. Standalone tutorial CLIs close their owner/components, flush
+For initial publication, use standalone ownership before starting the native
+peer. If the peer is already running, use the attached update route below.
+Standalone tutorial CLIs close their owner/components, flush
 output and dispose their dedicated Node process; cleanup or output failure stays
 nonzero. Imported runners leave process lifetime to their caller. See
 [owned shutdown and uncertain operations](SESSION_BOOTSTRAP.md#own-shutdown-and-uncertain-operations).
@@ -573,16 +603,32 @@ creator has an explicit publisher grant. Host login, administration and data
 access alone do not confer publication rights.
 
 Record the publication receipt's ID and version, then open the original page
-URL. The rendered release is pinned to its immutable authored graph. If the
-publish reply is uncertain, repeat the **same** command and operation ID with
-unchanged files; Chronolog recovers the saved intent. A changed graph requires a
-new release operation ID. A stale predecessor requires inspection of the
-selected publication before making a deliberate new release.
+URL. The rendered release is pinned to its immutable authored graph. If this
+initial publish reply is uncertain, retain the exact files and operation ID.
+With the owner stopped, use the same `--mode own` path to inspect
+`publication-operation notes-release-1` and `publication` before an exact retry.
+A changed graph requires a new release operation ID; inspect a stale predecessor
+before deliberately publishing against the current selected head.
 
-After `npm run peer` starts, ordinary CLI reads and commands use the default
-attachment mode; for example `npx tendril --session ./session.mjs self`. They do
-not open or close the signer store. Publication and setup administration use the
-explicit `--mode own` commands above while the resident owner is stopped.
+After `npm run peer` starts, ordinary CLI reads, commands and UI publication
+attach to that same owner. Keep it running while building and publishing an update:
+
+```sh
+npm run build
+npx tendril --session ./session.mjs --mode attach publish ./page --operation notes-review-1
+npx tendril --session ./session.mjs --mode attach publication
+```
+
+Fresh CLI bindings explicitly permit publication. An older retained binding keeps
+its policy; follow [publication capability and retained bindings](tools/CLI.md#publication-capability-and-retained-bindings)
+to provision an authorized attachment deliberately. The device still needs its
+independent signed publisher grant.
+
+For an uncertain attached update, inspect `publication-operation notes-review-1`
+through the same profile and binding, then retry only the original operation and
+unchanged bytes. Reusing a short standalone ID through a different mode or binding
+does not identify the same saved publication. Setup administration uses deliberate standalone ownership with the resident
+owner stopped.
 
 Publishing code does not enroll the browser's future device. The page's
 connection component does that the first time each browser opens it.
@@ -646,7 +692,7 @@ For a deliberate inspection/retry step with the resident owner stopped,
 `npm run pair` performs one prepare/inspect/commit pass. It does not wait for human
 approval. `npm run enroll -- PUBLIC_KEY` remains a deliberate manual
 administration route; the ordinary browser flow uses its own signed proof and the
-service-origin approval above.
+automatic host approval described above.
 
 This first app grants the browser **read and write**, with **no publication,
 administration, coordination or recovery authority**. This keeps the first
@@ -687,7 +733,7 @@ Call the app complete only after checking the actual hosted behavior:
    distinction between local saving and waiting for applied execution. Restart
    the same native device and inspect/retry the original identity. A short UI
    timeout cancels observation; it does not cancel the saved operation.
-5. Stop the native peer before a CLI invocation, then query through
+5. To verify native reopening, stop the peer and query the retained profile through
    `npx tendril --session ./session.mjs --mode own query notes null`. Confirm the same
    retained data and original operation IDs. Start `npm run peer` again when done.
 6. Rebuild a visible UI change and publish with a new operation, such as
@@ -809,7 +855,7 @@ mobile suspension.
 | `PEER_NO_SELECTED_GENERATION` | Complete the saved first `create` transition before opening the session. |
 | Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
-| `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Native CLI and `npm run peer` cannot share one open writer. |
+| `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. Use `--mode attach` for CLI work against the running peer; standalone `--mode own` requires that peer to be stopped. |
 | Browser is not enrolled | Request access from its retained browser device, and keep the native peer running to stage the exact proposal; the host approves it automatically. Check committed status before connecting. Account login and device grants are separate. |
 | Pairing is pending or ordering is paused | Inspect the original request and retained native proposal. Keep the native owner running for setup notifications; after a process stop, reopen the same owner and reconcile uncertain commitment before resuming ordering. Never delete the pause or silently rebase the review. |
 | `awaiting-keys`, connecting, or locally saved work | Keep the authorized native donor/coordinator running and inspect participation status and host access. Never paste the epoch key into the page. |
@@ -855,5 +901,6 @@ the real permission-review URL even before claim. Give the owner the ready page
 and that URL together; sign-in adopts the prepared application and makes the
 permission review available. It does not approve MCP data access automatically.
 Use a finite setup-status check if needed, without requiring a chat acknowledgement.
-The owner still explicitly enrolls their browser and approves assistant capabilities.
+The browser completes proved-device enrollment automatically; assistant
+capabilities still require explicit owner approval.
 A source ZIP or temporary process is not durable hosting for the native participant.

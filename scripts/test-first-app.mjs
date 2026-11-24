@@ -21,13 +21,16 @@ import { readBrowserRtcEvidence, observeRtcTraffic, hasNonTurnTraffic } from './
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
 import { CONTRACT_VERSION } from '../contract/index.mjs';
+import { qualifyFirstAppPublication } from './first-app-publication.mjs';
+import { prepareSignalQualification, createSignalQualification, qualifyFirstAppSignals } from './first-app-signals.mjs';
+import { createRecoveryQualification, qualifyFirstAppRecovery } from './first-app-recovery.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { values } = parseArgs({ options: {
   'session-archive': { type: 'string' }, 'first-app-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
   'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' }, transport: {type:'string', default:'direct'},
-  'network-lab-profile': { type: 'string' },
+  'network-lab-profile': { type: 'string' }, 'feedback-qualification': { type: 'boolean' },
 } });
 if (!values['session-archive'] && !values['first-app-archive'])
   throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only] [--report FILE] [--keep]; or --session-archive FILE for an explicit source/SQL composition.');
@@ -38,21 +41,31 @@ if (!['direct','relay'].includes(values.transport)) throw Error('Choose --transp
 if (values['network-lab-profile'] && (process.env.TENDRILLER_NETWORK_LAB !== '1' || values.transport !== 'direct' || !values['first-app-archive']))
   throw Error('Network lab requires its isolated container, real RTC and an immutable first-app kit.');
 const sqlOnly = Boolean(values['sql-native-only']);
+const feedbackQualification = Boolean(values['feedback-qualification']);
+if (feedbackQualification && (sqlOnly || values['native-only'] || values['network-lab-profile']))
+  throw Error('Feedback qualification requires the ordinary events browser/native composition.');
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
-const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
+const defaultReportPath = feedbackQualification
+  ? join(root, '.results/first-app-feedback/first-app-feedback.json')
+  : join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`);
+const reportPath = resolve(values.report ?? defaultReportPath);
 const directory = await mkdtemp(join(tmpdir(), 'tfa-'));
+// A local cache can be reused without sharing the independent consumer install.
+const npmCache = process.env.FIRST_APP_NPM_CACHE ? resolve(process.env.FIRST_APP_NPM_CACHE) : join(directory, 'npm-cache');
 const app = join(directory, 'application');
 const SERVICE = 'https://service.localhost:8790';
 const execute = promisify(execFile);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const jsonFile = async path => JSON.parse(await readFile(path, 'utf8'));
-const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql-tutorial' : 'isolated-local-tutorial',
+const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql-tutorial'
+  : feedbackQualification ? 'isolated-local-feedback-acceptance' : 'isolated-local-tutorial',
   native_checks: 'running', browser_checks: 'not-run',
   limits: ['Synthetic local owner session; no OAuth provider tested.',
     sqlOnly ? 'Native SQL only; no browser SQL, publication, cross-device transport, Internet or mobile qualification.'
       : 'Local Chromium and real native/browser RTC, with forced-failure relay qualification; no Internet NAT or physical mobile qualification.',
     'Scripted tutorial execution; not an unassisted fresh-agent usability result.',
     'An ordinary test-host WebSocket forwarding boundary isolates workerd issue #8185; the packed host is unchanged. Direct production TCP closure is not qualified.'], steps: [] };
+if (feedbackQualification) report.limits.push('Private fixture clock controls are added to the downloaded browser Worker; shipped package bytes and freshness defaults are unchanged.');
 let host, peer, browser, labBrowser, page, stage = 'preflight';
 
 // Every request, including a followed redirect or literal IP, is restricted to
@@ -118,7 +131,7 @@ async function files(directory) {
 async function packDependency(name) {
   const path = dirname(require.resolve(`${name}/package.json`));
   const result = JSON.parse(await run('npm', ['pack', '--ignore-scripts', '--offline', '--json',
-    '--cache', join(directory, 'npm-cache'), '--pack-destination', directory, path]));
+    '--cache', npmCache, '--pack-destination', directory, path]));
   return join(directory, result[0].filename);
 }
 
@@ -281,7 +294,7 @@ try {
   const buildDependencies = sqlOnly ? [] : [await packDependency('esbuild'),
     await packDependency(`@esbuild/${process.platform}-${process.arch}`)];
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
-    '--cache', join(directory, 'npm-cache'), archives.sdk, archives.tools, sessionArchive, ...buildDependencies]);
+    '--cache', npmCache, archives.sdk, archives.tools, sessionArchive, ...buildDependencies]);
   const sessionProof = await jsonFile(join(app, 'node_modules/@chronolog/peer-session/provenance.json'));
   assert.equal(sessionProof.dirty, false, 'Use a clean, explicitly selected public Chronolog archive.');
   report.chronolog = { source: sessionProof.source, dirty: sessionProof.dirty, sha256: sha256(await readFile(sessionArchive)) };
@@ -369,6 +382,7 @@ export async function closeLocalTransport() {
   assert.equal(beforeClaim.initialized, true);
   let preparedPublication;
   if (!sqlOnly) {
+    if (feedbackQualification) await prepareSignalQualification(app);
     await node(['build.mjs']);
     const preparedSizes = await Promise.all((await files(join(app, 'page'))).map(async path => (await readFile(path)).byteLength));
     report.preclaim_code = { totalBytes: preparedSizes.reduce((sum, n) => sum + n, 0), largestFileBytes: Math.max(...preparedSizes) };
@@ -576,6 +590,7 @@ export async function closeLocalTransport() {
     await writeFile(join(app, 'test-peer.mjs'), nativeTestPeerSource({
       evidenceBase64: evidencePng.toString('base64'), browserDeviceId: browserDevice, transportModule: pathToFileURL(preload).href,
       networkQualification: Boolean(values['network-lab-profile']),
+      qualificationSources: feedbackQualification ? [createSignalQualification.toString(), createRecoveryQualification.toString()] : [],
     }));
     async function startPeer() {
       const child = spawn(process.execPath, ['--import', preload, join(app, 'test-peer.mjs')], { cwd: app, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -894,16 +909,16 @@ export async function closeLocalTransport() {
     const retainedInitialization = await readFile(join(project, '.tendriller/initialized.json'));
     const management = await context.newPage();
     await management.goto(new URL('_tendril/manage', handle.page_url).href);
-    await management.locator('label[for="tab-agent"]').click();
+    await management.getByText('An agent', { exact: true }).click();
     await expect(management.locator('#tab-agent')).toBeChecked();
     const delegation = management.locator('form:has(input[name="action"][value="delegate-agent"])');
-    await delegation.locator('input[name="name"]').fill('native-continuation');
+    await delegation.getByLabel('Agent name', { exact: true }).fill('native-continuation');
     await delegation.getByText('Host permissions', { exact: true }).click();
     for (const scope of ['host:read', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'])
       await delegation.locator(`input[name="scopes"][value="${scope}"]`).check();
     await delegation.getByRole('button', { name: 'Add agent', exact: true }).click();
-    const notice = await management.locator('.notice[role="status"]').textContent();
-    const code = notice?.match(new RegExp(`\\b${handle.id}-[0-9]{6}\\b`))?.[0];
+    const invitation = await management.getByLabel('Full invitation (includes the one-time code)', { exact: true }).inputValue();
+    const code = invitation.match(new RegExp(`\\b${handle.id}-[0-9]{6}\\b`))?.[0];
     assert.ok(code, 'The actual owner review must return a one-use code for the retained page.');
     await writeFile(join(project, '.tendriller/delegation-code.txt'), code + '\n', { mode: 0o600, flag: 'wx', flush: true });
     // Retain a private checkpoint but make the original handle unavailable to
@@ -1016,14 +1031,31 @@ export async function closeLocalTransport() {
         throw error;
       }
     }
+    if (feedbackQualification) {
+      checkpoint('publish signed UI while the native owner, event consumer and browser stay active');
+      report.publication_qualification = await qualifyFirstAppPublication({
+        page, pageUrl: handle.page_url, peer, expect, app, project, preload, cli, node,
+        publicationGateUrl: new URL('/__first_app_publication', SERVICE).href });
+      passed('attached signed publication, staged assets, exact retry and selected-head preservation with uninterrupted work');
+      checkpoint('contain authentic stale signals on the live browser/native connection');
+      report.signal_qualification = await qualifyFirstAppSignals({
+        page, peer, expect, transportCounters, transport: values.transport });
+      passed('exact signal freshness boundaries and bounded rejection counters preserve live transport and durable work');
+      checkpoint('enroll a new browser while direct, attached and forwarding consumers are active');
+      report.recovery_qualification = await qualifyFirstAppRecovery({
+        browser, page, pageUrl: handle.page_url, peer, expect });
+      passed('browser enrollment returns consistent recovery evidence and explicit durable work reconciliation');
+    }
+    report.note_count = (await peer.request('query')).value.length;
     await closeTestPeer(peer); peer = undefined;
     passed('native supervisor cleanup and natural child exit without forced termination');
-    report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = reviewedNotes.length;
+    report.status = 'passed'; report.browser_checks = 'passed';
     console.log('First-app native/browser integration passed. Synthetic local claim, selected transport and byte-measurement limits are recorded in the report.');
   }
   }
 } catch (error) {
   report.status = 'failed'; report.failed_stage = stage; report.error = error.message;
+  if (error.publicationQualification) report.publication_qualification = error.publicationQualification;
   if (report.native_checks === 'running') report.native_checks = 'failed';
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
   if (page && !page.isClosed()) {

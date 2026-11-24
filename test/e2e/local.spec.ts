@@ -90,7 +90,7 @@ test('the page shows the latest release: open tabs switch when idle, wait for un
 
 test('publication switching preserves hidden form drafts, checkedness, selects and open-shadow input until reset', async ({ page, context }) => {
   const handle = await createPage();
-  const form = '<form><input id="checked" type="checkbox" value="yes"><select id="selection"><option>A</option><option>B</option></select><textarea id="preview">original</textarea></form><div id="editor"></div>';
+  const form = '<meta name="tendriller-updates" content="careful"><form><input id="checked" type="checkbox" value="yes"><select id="selection"><option>A</option><option>B</option></select><textarea id="preview">original</textarea></form><div id="editor"></div>';
   try {
     await signInFixture(context); await claim(context, handle);
     await publish(handle, '<h1 id="release">draft release</h1>' + form);

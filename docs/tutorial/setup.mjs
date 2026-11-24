@@ -79,9 +79,12 @@ export async function initializeProject() {
     authority = await host.peers.application();
     await verifyAuthorityBundle(authority, await readPrivate('descriptor.json'));
     session = await openNativeApplication({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
-    const first = await session.query('notes', null); // Activates storage and persists the creator's keyring.
-    await savePrivate('initialized.json', { applicationId: handle.application.id, deviceId: session.deviceId });
-    return { initialized: true, applicationId: handle.application.id, notes: first.value.length, next: 'npm run build' };
+    // Activate durable storage and persist the creator's keyring without a domain query.
+    const view = await session.readView();
+    try {
+      await savePrivate('initialized.json', { applicationId: handle.application.id, deviceId: session.deviceId });
+      return { initialized: true, applicationId: handle.application.id, revision: view.revision, next: 'npm run build' };
+    } finally { view.release(); }
   } finally { if (session) await session.close(); else await device.close(); }
 }
 

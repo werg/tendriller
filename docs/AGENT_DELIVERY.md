@@ -47,8 +47,13 @@ device store must survive future
 invocations. Start it in the supported execution environment and retain enough
 process information to monitor, stop and restart it. The CLI and this process
 cannot simultaneously own the same native store. Ordinary CLI queries and
-commands use `--mode attach` while the supervisor runs. Stop the peer before
-standalone publication/enrollment with `--mode own`, then reopen the same profile.
+commands use `--mode attach` while the supervisor runs. UI publication also
+attaches through an explicitly authorized
+[publication binding](tools/CLI.md#publication-capability-and-retained-bindings),
+keeping that owner and its journals alive. Initial publication before startup
+can use `--mode own`. Deliberate standalone administration/enrollment still
+requires the owner to be stopped unless an owner-administration attachment
+supplies that operation.
 
 For an agent integration, connect the session's public application tools and
 changes to the agent's actual execution loop. `createApplicationTools` and
@@ -92,9 +97,10 @@ states. A successful sign-in in the person's browser does not authenticate an
 agent's independent browser. Keep that page at the owner sign-in handoff until
 its own session is authenticated, then verify the displayed device public key.
 Do not report a proposed review URL or an open socket alone as a completed
-browser/MCP connection. A preview relay is optional; when unavailable, use the
-actual published page for supported browser verification and state any remaining
-browser execution limit explicitly.
+browser/MCP connection. Use the supported
+[isolated local host](LOCAL_HOST.md) and synthetic owner for connected UX review
+before production sign-in. Verify the actual production page with its own
+authorized account separately, and state any remaining browser execution limit.
 
 These routes do not provide or qualify a universal ChatGPT conversation wake
 adapter. OAuth ownership alone does not subscribe a conversation. Establish
@@ -130,10 +136,15 @@ to return to the application:
 
 Plumbing evidence (receipts, commands both ways, reload) does not show that the
 app is usable. Before delivery, run a dedicated UX pass after the first working
-version:
+version. The supported [local host](LOCAL_HOST.md) runs an exact sealed release
+with its matching packages, synthetic owner and separate development identity.
+Use the same application source and seed representative data through its real
+commands. Production OAuth and owner sign-in do not block this connected UX
+pass. Record the tested release/publication and distinguish that development
+evidence from later production authorization and connectivity checks.
 
 1. Walk every main user flow end to end in a real browser, from a fresh profile,
-   on a phone-sized viewport and on desktop. Take screenshots.
+   at 1440×900 and 390×844. Take screenshots.
 2. Judge each screen and fix friction before delivering: visual hierarchy and the
    one obvious next action, density, empty, loading and error states, long content
    (truncate or fold, never a wall of raw text), named links instead of raw URLs,

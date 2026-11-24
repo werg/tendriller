@@ -12,15 +12,25 @@ export interface BytesStoreEntry {
 export interface BytesStore {
 	get(key: string): Promise<Uint8Array | null>;
 	put(key: string, bytes: Uint8Array): Promise<void>;
+	/** Optional durable, idempotent local eviction. Owners must fence concurrent writers. */
+	delete?(key: string): Promise<void>;
+	/** Optional bounded atomic multi-key write, committing all entries together. */
+	putMany?(entries: readonly BytesStoreEntry[]): Promise<void>;
+	/** Optional bounded-key batch, preserving input order. */
+	getMany?(keys: readonly string[]): Promise<readonly (Uint8Array | null)[]>;
 	/** Optional deterministic snapshot enumeration for atomic encrypted device checkpoints. */
 	entries?(): Promise<readonly BytesStoreEntry[]>;
+	/** Bounded-memory, deterministic snapshot under the single storage owner. Release the iterator when abandoning a read. */
+	iterateEntries?(): AsyncIterable<BytesStoreEntry>;
+	/** Stage a stream and atomically publish only after it completes; false leaves an existing store untouched. */
+	putStreamIfEmpty?(entries: AsyncIterable<BytesStoreEntry>): Promise<boolean>;
 	/** Atomically initialize an empty store; false leaves an existing store untouched. */
 	putAllIfEmpty?(entries: readonly BytesStoreEntry[]): Promise<boolean>;
 }
 export declare const PEER_GENERATION_PROFILE: "peer-generation-v1";
 export declare const PEER_GENERATION_POLICY: "eligible-members-v1";
-/** Initial qualified envelope shared by indexed storage, recovery, and transfer. */
-export declare const PEER_MAX_RECORDS = 4096;
+/** Qualified envelope shared by indexed storage, recovery, and transfer. */
+export declare const PEER_MAX_RECORDS = 16384;
 export declare const PEER_MAX_HISTORY_BYTES: number;
 export declare const PEER_GENERATION_CAPABILITIES: Readonly<{
 	readonly ordering: "generation-sequence";
@@ -69,6 +79,8 @@ export interface PeerGrant {
 	readonly administrator: boolean;
 	/** May sign code/page releases; independent of controls, data access and sequencing. */
 	readonly publisher: boolean;
+	/** May carry independently signed attempts from current writers. */
+	readonly relay?: true;
 	/** Membership of the durable application data collective, independent of coordination. */
 	readonly dataRole: "member" | "admin" | null;
 }
@@ -87,6 +99,8 @@ export interface ControlRevision {
 	readonly keyDigest: string;
 	readonly grants: readonly PeerGrant[];
 	readonly recoveryFloor: HistoryPoint | null;
+	/** Optional signed definition evolution digest; inherits prior revision or descriptor when omitted. */
+	readonly definitionDigest?: string;
 }
 export type SignedControlRevision = Signed<ControlRevision>;
 /** The host verifies these headers without receiving any application body. */
@@ -383,6 +397,8 @@ export interface ApplicationEntryDescription {
 export declare function validateApplicationDescription(value: ApplicationDescription): ApplicationDescription;
 /** Authenticates published schemas and semantic version without executable application code. */
 export declare function applicationDescriptionDigest(value: ApplicationDescription): Promise<string>;
+/** Verify a monotonic definition evolution preserves application identity and storage profile. */
+export declare function assertCompatibleDefinitionEvolution(previous: ApplicationDescription, next: ApplicationDescription): void;
 export declare function signApplicationSchema(payload: ApplicationSchema, signer: PeerIdentity): Promise<SignedApplicationSchema>;
 /** A trusted schema authority signs genesis state, independently of the control host. */
 export declare function verifyApplicationSchema(schema: SignedApplicationSchema, descriptor: ApplicationDescriptor): Promise<ChangeProgram>;
@@ -520,6 +536,7 @@ export declare function signApplicationDescriptor(payload: ApplicationDescriptor
 export declare function participantGrant(publicKey: string, options?: {
 	readonly administrator?: boolean;
 	readonly publisher?: boolean;
+	readonly relay?: true;
 	readonly dataRole?: "member" | "admin" | null;
 }): PeerGrant;
 /** Explicit control-only host role, enabling account ownership recovery without a creator device. */
@@ -536,12 +553,20 @@ export interface SelectedSegment {
 export declare class PeerAuthority {
 	#private;
 	private constructor();
+	get signedDescriptor(): SignedApplicationDescriptor;
+	get generationCount(): number;
+	get controlCount(): number;
+	generationAt(index: number): SignedGeneration | null;
+	suffix(controls: number, generations: number): Pick<AuthorityBundle, "controls" | "generations">;
+	transition(id: string): SignedGeneration | null;
 	get bundle(): AuthorityBundle;
 	get descriptor(): ApplicationDescriptor;
 	get current(): SignedGeneration | null;
 	get control(): SignedControlRevision;
 	generation(id: string): SignedGeneration;
 	controlAt(revision: number): SignedControlRevision;
+	definitionDigestAt(revision?: number): string;
+	get currentDefinitionDigest(): string;
 	grant(publicKey: string, revision?: number): PeerGrant | null;
 	selectedSegments(): readonly SelectedSegment[];
 	/** Structural inclusion; a complete replica additionally checks the local retained root. */
@@ -550,6 +575,8 @@ export declare class PeerAuthority {
 	/** Compare points on the selected history after their roots have been authenticated. */
 	atOrAfter(point: HistoryPoint, floor: HistoryPoint): boolean;
 	authorizeTransition(request: SignedTransitionRequest, nextControl?: SignedControlRevision): Promise<void>;
+	/** Verify only new signed suffix records, preserving the verified prefix by reference. */
+	extend(inputControls: readonly SignedControlRevision[], inputGenerations: readonly SignedGeneration[]): Promise<PeerAuthority>;
 	static verify(input: AuthorityBundle, pinned?: SignedApplicationDescriptor): Promise<PeerAuthority>;
 }
 export declare function verifyAuthorityBundle(bundle: AuthorityBundle, pinned?: SignedApplicationDescriptor): Promise<PeerAuthority>;
@@ -559,7 +586,7 @@ export interface GenerationRegistry {
 		readonly control?: SignedControlRevision;
 	}): Promise<SignedGeneration>;
 }
-/** The host owns an exclusive durable store; no command body is accepted by this service. */
+/** Append signed records before atomically publishing a small head. Legacy bundles migrate on selection. */
 export declare function createGenerationRegistry(options: {
 	readonly store: BytesStore;
 	readonly descriptor: SignedApplicationDescriptor;

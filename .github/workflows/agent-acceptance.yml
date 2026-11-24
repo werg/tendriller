@@ -26,6 +26,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - name: Install native build tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends build-essential python3
       - run: npm ci
       - name: Protocol and real local owner regression (no model or live account)
         run: node --test scripts/test/agent-acceptance-*.test.mjs

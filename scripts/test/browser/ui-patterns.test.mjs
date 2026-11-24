@@ -104,8 +104,8 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
         await page.getByRole('button', { name:'Back to list' }).click();
         assert.equal(await search.isVisible(), true);
         await page.goto(base + '?states=1');
-        assert.equal(await page.getByText('Setting up this browser…').isVisible(), true);
-        assert.equal(await page.getByRole('button', { name:'Approve this browser' }).count(), 0);
+        assert.equal(await page.getByText('Setting up this browser…', { exact:true }).isVisible(), true);
+        assert.equal(await page.locator('#connection-card').getByRole('button').count(), 0);
         assert.equal(await page.getByRole('alert').getByText('Episodes could not be loaded').isVisible(), true);
         assert.equal(await page.locator('[aria-busy=true]').count(), 1);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
@@ -183,4 +183,288 @@ test('domain patterns support search, deep links, keyboard, review, undo and hon
       assert.equal(await input.inputValue(), 'confirmed authoritative value');
     } finally { await page.close(); }
   });
+
+  for (const [name, viewport] of [
+    ['desktop', { width:1200, height:1100 }], ['phone', { width:390, height:844 }],
+  ]) {
+    await t.test(name + ' immutable snapshots preserve edits, confirmations and owned focus', async () => {
+      const context = await browser.newContext({ viewport }), page = await context.newPage(), errors = [];
+      page.setDefaultTimeout(5000); page.on('pageerror', error => errors.push(error.message));
+      try {
+        await page.goto(base + '?states=1&item=first&unrelated=kept');
+        await page.evaluate(async () => {
+          const { mountListDetail, mountInlineReview } = await import('./patterns.mjs');
+          const root = document.querySelector('#workspace'); root.replaceChildren(); root.className = '';
+          window.records = [
+            { id:'first', title:'A very long record heading that must wrap while Back to list remains legible on a narrow phone screen',
+              summary:'original', subtitle:'Initial metadata' },
+            { id:'second', title:'Second record', summary:'another', subtitle:'Other metadata' },
+          ];
+          window.mounts = []; window.disposals = []; window.calls = [];
+          window.collection = mountListDetail(root, {
+            records:window.records,
+            renderDetail(record, container) {
+              window.mounts.push(record.id);
+              const summary = document.createElement('p'), metadata = document.createElement('p');
+              summary.className = 'live-summary'; metadata.className = 'live-metadata';
+              summary.textContent = record.summary; metadata.textContent = record.subtitle;
+              container.append(summary, metadata);
+              const dispatch = change => {
+                // The application, not the renderer, retains this exact guard/ID.
+                window.calls.push({ ...change, operationId:'operation-' + (window.calls.length + 1) });
+                return new Promise((resolve, reject) => { window.pending = { resolve, reject }; });
+              };
+              const editor = mountInlineReview(container, {
+                label:'Live summary', value:record.summary, onSave:dispatch, onUndo:dispatch,
+              });
+              window.editor = editor;
+              return {
+                update(next) {
+                  record = next; summary.textContent = next.summary; metadata.textContent = next.subtitle;
+                  editor.observe(next.summary);
+                },
+                close() { window.disposals.push(record.id); editor.close(); },
+              };
+            },
+          });
+          window.snapshot = updates => {
+            window.records = window.records.map(record => ({ ...record, ...(record.id === 'first' ? updates : {}) }));
+            window.collection.setRecords(window.records);
+          };
+        });
+        const input = page.getByLabel('Live summary');
+        const review = page.getByRole('button', { name:'Review changes', exact:true });
+        const save = page.getByRole('button', { name:'Save reviewed change' });
+        const undo = page.getByRole('button', { name:'Undo saved change' });
+        const discard = page.getByRole('button', { name:'Discard draft' });
+        const back = page.getByRole('button', { name:'Back to list' });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+        assert.equal(await back.evaluate(button => {
+          const range = document.createRange(); range.selectNodeContents(button);
+          return new Set([...range.getClientRects()].map(rect => rect.top)).size;
+        }), 1, 'Back text stays on one visual line beside a long title');
+        await input.fill('my draft');
+        await input.evaluate(field => field.setSelectionRange(2, 5));
+        await page.evaluate(() => window.snapshot({ subtitle:'Fresh metadata' }));
+        assert.equal(await input.inputValue(), 'my draft');
+        assert.equal(await input.evaluate(field => document.activeElement === field), true);
+        assert.deepEqual(await input.evaluate(field => [field.selectionStart, field.selectionEnd]), [2, 5]);
+        assert.equal(await page.locator('.live-metadata').textContent(), 'Fresh metadata');
+        await review.click();
+        await page.evaluate(() => window.snapshot({ subtitle:'Another coherent snapshot' }));
+        assert.equal(await page.locator('.tp-compare ins').textContent(), 'my draft');
+
+        // The accepted value reaches the live query before the callback resolves.
+        await save.click();
+        await page.evaluate(() => window.snapshot({ summary:'my draft' }));
+        assert.equal(await input.isDisabled(), true);
+        assert.deepEqual(await page.evaluate(() => window.calls), [
+          { before:'original', after:'my draft', operationId:'operation-1' },
+        ]);
+        await page.evaluate(() => window.pending.resolve({ confirmed:true, value:'my draft' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        assert.equal(await undo.isEnabled(), true);
+        await page.evaluate(() => window.snapshot({ subtitle:'After confirmation' }));
+        assert.equal(await page.getByText('Change saved.', { exact:true }).isVisible(), true);
+        assert.equal(await undo.isEnabled(), true);
+        assert.deepEqual(await page.evaluate(() => window.mounts), ['first']);
+        assert.deepEqual(await page.evaluate(() => window.disposals), []);
+
+        // Undo keeps the confirmed old value, and its later query snapshot agrees.
+        await undo.click();
+        await page.evaluate(() => window.pending.resolve({ confirmed:true, value:'original' }));
+        await page.getByText('Saved change undone.', { exact:true }).waitFor();
+        await page.evaluate(() => window.snapshot({ summary:'original' }));
+        assert.equal(await input.inputValue(), 'original');
+
+        // Also cover a save confirmation arriving before its query snapshot.
+        await input.fill('second edit'); await review.click(); await save.click();
+        await page.evaluate(() => window.pending.resolve({ confirmed:true, value:'second edit' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        assert.equal(await undo.isEnabled(), true);
+        await page.evaluate(() => window.snapshot({ summary:'second edit' }));
+        assert.equal(await input.inputValue(), 'second edit');
+        assert.equal(await page.getByText('Change saved.', { exact:true }).isVisible(), true);
+        assert.equal(await undo.isEnabled(), true);
+
+        // Remote changes never silently rebase a dirty/reviewed draft.
+        await input.fill('next local draft'); await review.click();
+        await page.evaluate(() => window.snapshot({ summary:'remote edit' }));
+        assert.equal(await input.inputValue(), 'next local draft');
+        assert.equal(await page.locator('.live-summary').textContent(), 'remote edit');
+        assert.equal(await save.isVisible(), false);
+        assert.equal(await undo.isDisabled(), true);
+        assert.equal(await page.getByText('The saved value changed. Review your draft against the latest value or discard it.', { exact:true }).isVisible(), true);
+        await review.click();
+        assert.equal(await page.locator('.tp-compare del').textContent(), 'remote edit');
+        assert.equal(await page.locator('.tp-compare ins').textContent(), 'next local draft');
+        assert.equal(await page.evaluate(() => window.calls.length), 3);
+        await discard.click();
+        assert.equal(await input.inputValue(), 'remote edit');
+
+        // A foreign value can follow our accepted write before its callback.
+        await input.fill('accepted local edit'); await review.click(); await save.click();
+        await page.evaluate(() => window.snapshot({ summary:'later remote edit' }));
+        assert.deepEqual(await page.evaluate(() => window.calls.at(-1)), {
+          before:'remote edit', after:'accepted local edit', operationId:'operation-4',
+        });
+        await page.evaluate(() => window.pending.resolve({ confirmed:true, value:'accepted local edit' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        assert.equal(await input.inputValue(), 'accepted local edit');
+        assert.equal(await undo.isDisabled(), true);
+        assert.equal(await page.locator('.live-summary').textContent(), 'later remote edit');
+        await discard.click();
+        assert.equal(await input.inputValue(), 'later remote edit');
+
+        // Matching data is not proof that an uncertain operation was accepted.
+        await input.fill('uncertain draft'); await review.click(); await save.click();
+        await page.evaluate(() => window.snapshot({ summary:'uncertain draft' }));
+        await page.evaluate(() => window.pending.reject(Error('reply lost')));
+        await page.getByText('Change not confirmed. Inspect the original operation before continuing.', { exact:true }).waitFor();
+        await page.evaluate(() => window.snapshot({ summary:'uncertain draft' }));
+        assert.equal(await input.isDisabled(), true);
+        assert.equal(await review.isDisabled(), true);
+        assert.equal(await page.evaluate(() => window.calls.length), 5);
+        await page.evaluate(() => window.editor.reconcile('uncertain draft'));
+        assert.equal(await input.isEnabled(), true);
+
+        // Actual navigation/removal disposes once; repeated close is harmless.
+        await back.click();
+        assert.deepEqual(await page.evaluate(() => window.disposals), ['first']);
+        assert.equal(new URL(page.url()).searchParams.get('unrelated'), 'kept');
+        await page.getByRole('link', { name:'Second record', exact:false }).click();
+        await page.evaluate(() => {
+          window.records = window.records.filter(record => record.id !== 'second');
+          window.collection.setRecords(window.records);
+          window.collection.setRecords(window.records.map(record => ({ ...record })));
+        });
+        assert.equal(await page.getByRole('heading', { name:'Record unavailable' }).isVisible(), true);
+        assert.equal(await page.getByText('This record is no longer in the current view. Return to the list.', { exact:true }).count(), 1);
+        await page.evaluate(() => { window.collection.close(); window.collection.close(); });
+        assert.deepEqual(await page.evaluate(() => window.disposals), ['first', 'second']);
+        assert.deepEqual(await page.evaluate(() => window.mounts), ['first', 'second']);
+        assert.deepEqual(errors, []);
+      } finally { await context.close(); }
+    });
+
+    await t.test(name + ' navigation is separate from record observations during save and undo', async () => {
+      const context = await browser.newContext({ viewport }), page = await context.newPage(), errors = [];
+      page.setDefaultTimeout(5000); page.on('pageerror', error => errors.push(error.message));
+      try {
+        await page.goto(base + '?states=1&item=first');
+        await page.evaluate(async () => {
+          const { mountListDetail, mountInlineReview } = await import('./patterns.mjs');
+          const root = document.querySelector('#workspace'); root.replaceChildren(); root.className = '';
+          window.calls = [];
+          window.records = [{ id:'first', title:'First record', status:'open', summary:'original' }];
+          const dispatch = change => {
+            window.calls.push(change);
+            return new Promise(resolve => { window.confirm = resolve; });
+          };
+          window.collection = mountListDetail(root, {
+            records:window.records, filters:[['open', 'Open']],
+            renderDetail(record, container) {
+              const editor = mountInlineReview(container, {
+                label:'Concurrent summary', value:record.summary, onSave:dispatch, onUndo:dispatch,
+              });
+              return { update(next) { editor.observe(next.summary); }, close() { editor.close(); } };
+            },
+          });
+          window.snapshot = summary => {
+            window.records = window.records.map(record => ({ ...record, summary }));
+            window.collection.setRecords(window.records);
+          };
+        });
+        const input = page.getByLabel('Concurrent summary');
+        const review = page.getByRole('button', { name:'Review changes', exact:true });
+        const save = page.getByRole('button', { name:'Save reviewed change' });
+        const undo = page.getByRole('button', { name:'Undo saved change' });
+        const discard = page.getByRole('button', { name:'Discard draft' });
+        const conflict = page.getByText('The saved value changed. Review your draft against the latest value or discard it.', { exact:true });
+
+        const navigateSameRecord = async (query, status) => {
+          // The collection is hidden beside the selected inspector on a phone.
+          // Exercise its real input/change handlers, then actual browser history.
+          await page.getByLabel('Search records').evaluate((input, value) => {
+            input.value = value; input.dispatchEvent(new Event('input', { bubbles:true }));
+          }, query);
+          await page.getByLabel('Status', { exact:true }).evaluate((select, value) => {
+            select.value = value; select.dispatchEvent(new Event('change', { bubbles:true }));
+          }, status);
+          await page.goBack(); await page.goForward();
+          const url = new URL(page.url());
+          assert.equal(url.searchParams.get('item'), 'first');
+          assert.equal(url.searchParams.get('item-search'), query);
+          assert.equal(url.searchParams.get('item-status'), status || null);
+          assert.equal(await input.isDisabled(), true);
+        };
+
+        // Route-only renders must not turn the pre-save record into a new
+        // observation, or a successful confirmation falsely conflicts with it.
+        await input.fill('navigation edit'); await review.click(); await save.click();
+        await navigateSameRecord('First', 'open');
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'navigation edit' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        assert.equal(await conflict.isVisible(), false);
+        assert.equal(await undo.isEnabled(), true);
+        await input.fill('discard this draft'); await discard.click();
+        assert.equal(await input.inputValue(), 'navigation edit');
+        await page.evaluate(() => window.snapshot('navigation edit'));
+
+        // An Undo waiting for confirmation is equally unaffected by navigation.
+        await undo.click();
+        await navigateSameRecord('record', '');
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'original' }));
+        await page.getByText('Saved change undone.', { exact:true }).waitFor();
+        assert.equal(await conflict.isVisible(), false);
+        assert.equal(await input.inputValue(), 'original');
+        await page.evaluate(() => window.snapshot('original'));
+
+        // A coalesced query can observe a concurrent restoration of the old
+        // value without ever observing our accepted intermediate write.
+        await input.fill('saved edit'); await review.click(); await save.click();
+        await page.evaluate(() => window.collection.setRecords(window.records));
+        assert.equal(await input.isDisabled(), true);
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'saved edit' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        assert.equal(await input.inputValue(), 'saved edit');
+        assert.equal(await conflict.isVisible(), true);
+        assert.equal(await undo.isDisabled(), true, 'Undo must not be offered against the restored stored value.');
+        await discard.click();
+        assert.equal(await input.inputValue(), 'original');
+        assert.equal(await conflict.isVisible(), false);
+
+        // With no observation during confirmation, retain the original behavior.
+        // Idle repetitions of that confirmed value must also remain harmless.
+        await input.fill('saved edit'); await review.click(); await save.click();
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'saved edit' }));
+        await page.getByText('Change saved.', { exact:true }).waitFor();
+        await page.evaluate(() => { window.snapshot('saved edit'); window.collection.setRecords(window.records); });
+        assert.equal(await input.inputValue(), 'saved edit');
+        assert.equal(await conflict.isVisible(), false);
+        assert.equal(await undo.isEnabled(), true);
+
+        // The same rule applies to Undo: a concurrent restoration of the saved
+        // edit must survive an older confirmation of the undo operation.
+        await undo.click();
+        await page.evaluate(() => window.collection.setRecords(window.records));
+        await page.evaluate(() => window.confirm({ confirmed:true, value:'original' }));
+        await page.getByText('Saved change undone.', { exact:true }).waitFor();
+        assert.equal(await input.inputValue(), 'original');
+        assert.equal(await conflict.isVisible(), true);
+        assert.equal(await undo.isVisible(), false);
+        await discard.click();
+        assert.equal(await input.inputValue(), 'saved edit');
+        assert.equal(await conflict.isVisible(), false);
+        assert.deepEqual(await page.evaluate(() => window.calls), [
+          { before:'original', after:'navigation edit' },
+          { before:'navigation edit', after:'original' },
+          { before:'original', after:'saved edit' },
+          { before:'original', after:'saved edit' },
+          { before:'saved edit', after:'original' },
+        ]);
+        assert.deepEqual(errors, []);
+      } finally { await context.close(); }
+    });
+  }
 });

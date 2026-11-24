@@ -19,7 +19,10 @@ test("pinned model detects a wake phrase through the actual voice adapter and Au
     await page.evaluate(() => (window as any).wakePipeline.play());
     await expect.poll(() => page.evaluate(() => (window as any).wakePipeline.commands.length), { timeout: 20_000 }).toBe(1);
     const result = await page.evaluate(() => ({ commands: (window as any).wakePipeline.commands, states: (window as any).wakePipeline.states, microphone: (window as any).wakePipeline.voice.microphoneActive }));
-    expect(result.commands[0]).toMatch(/sensor.*temperature/i); expect(result.commands[0]).not.toMatch(/listen.? computer/i);
+    // The streamed fixture may spell the homophone "sensor" as "censor".
+    // The separate manifest-bound WER test continues to qualify model accuracy.
+    expect(result.commands[0]).toMatch(/\b(?:sensor|censor)\b.*\btemperature\b/i);
+    expect(result.commands[0]).not.toMatch(/listen.? computer/i);
     expect(result.states.some((state: any) => state.state === "detected")).toBe(true);
     expect(fixture.requests.length).toBe(downloaded);
     expect(fixture.requests.every(request => request.method === "GET")).toBe(true);

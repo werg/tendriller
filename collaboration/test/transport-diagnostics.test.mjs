@@ -106,3 +106,25 @@ test('status and sample limitations remain independent',async()=>{
  const view=createTransportDiagnostics(f.source);assert.equal((await view.refresh()).limited,true);
  f.change({connectedPeers:f.source.status.connectedPeers.slice(0,64)});assert.equal(view.status().limited,false);assert.equal(f.calls,1);view.close();
 });
+
+
+test('signal rejection diagnostics retain only fixed bounded counters and distinguish old sources', async () => {
+ const secret = 'SECRET_REJECTED_FRAME';
+ const f = fixture(async () => [row({ signalRejections: { total: 7, clockSkew: 2, expired: 1,
+  unauthorized: 1, duplicate: 1, capacity: 2, payload: secret, peer: id, reasons: { [secret]: 3 } } })]);
+ const view = createTransportDiagnostics(f.source), sample = await view.refresh();
+ assert.deepEqual(sample.connections[0].signalRejections, { total: 7, clockSkew: 2, expired: 1, unauthorized: 1, duplicate: 1, capacity: 2 });
+ assert(Object.isFrozen(sample.connections[0].signalRejections));
+ assert.equal(JSON.stringify(sample).includes(secret), false);
+ assert.equal(JSON.stringify(sample).includes(id), false);
+ view.close();
+ const old = createTransportDiagnostics(fixture().source);
+ assert.equal((await old.refresh()).connections[0].signalRejections, null);
+ old.close();
+ const invalid = createTransportDiagnostics(fixture(async () => [row({signalRejections: {
+  total: Number.MAX_SAFE_INTEGER, clockSkew: -1, expired: NaN, unauthorized: Infinity, duplicate: 0, capacity: Number.MAX_SAFE_INTEGER + 1,
+ }})]).source);
+ assert.deepEqual((await invalid.refresh()).connections[0].signalRejections,
+  {total:Number.MAX_SAFE_INTEGER, clockSkew:null, expired:null, unauthorized:null, duplicate:0, capacity:null});
+ invalid.close();
+});

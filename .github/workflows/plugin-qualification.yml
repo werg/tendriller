@@ -56,6 +56,10 @@ jobs:
           cache: npm
       - name: Check selected host source and readiness before package acquisition
         run: node scripts/review/preflight.mjs --source-only --origin "$REVIEW_ORIGIN"
+      - name: Install native build tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends build-essential python3
       - run: npm ci
       - uses: actions/download-artifact@v4
         if: inputs.manifest_sha256 != '' || github.event_name == 'workflow_run'

@@ -26,6 +26,7 @@ interface Configuration {
 }
 interface AccountBinding { publicKey: string; accountId: string }
 interface VerifiedSnapshot {
+  registry?: GenerationRegistry;
   bundle?: AuthorityBundle;
   authority?: PeerAuthority;
   definition?: { descriptor: SignedApplicationDescriptor; definition: ApplicationDescription; schema: SignedApplicationSchema | null };
@@ -33,7 +34,7 @@ interface VerifiedSnapshot {
 const snapshot = (t: Tendril): VerifiedSnapshot => t.db.cached('peer-generation:verified', () => ({}));
 interface HostState {
   pending: Promise<unknown>; store: BytesStore; guard?: () => void; check?: () => Promise<void>; pendingAccounts?: AccountBinding[]; pendingFingerprint?: { key: string; value: string };
-  registry?: GenerationRegistry; signer?: PeerIdentity; assistantGeneration?: string | null; assistantGrants?: Map<string, PeerGrant | null>;
+  signer?: PeerIdentity; assistantGeneration?: string | null; assistantGrants?: Map<string, PeerGrant | null>;
 }
 const hosts = new WeakMap<Tendril, HostState>();
 /** Private page-scoped enrollment binding, never an OAuth account or browser identity. */
@@ -116,11 +117,16 @@ async function registry(t: Tendril, state: HostState): Promise<GenerationRegistr
   if (!signer) throw new HttpError(503, 'peer_control_state_missing', 'The pinned control identity is unavailable; recovery must preserve its original trust state');
   state.signer = signer;
   if (state.signer.publicKey !== configuration.descriptor.payload.controlPublicKey) throw new HttpError(503, 'peer_control_state_mismatch');
-  if (!state.registry) {
-    state.registry = await createGenerationRegistry({ store: state.store, descriptor: configuration.descriptor,
-      controls: [configuration.control], signer: state.signer, requireExisting: true });
-  }
-  return state.registry;
+  const cached = snapshot(t);
+  if (cached.registry) return cached.registry;
+  // Chronolog retains verified append-only records by store identity. A fresh
+  // adapter keeps that verification within the host's SQL/rollback cache boundary;
+  // the stable HostState.pending queue still serializes every control operation.
+  const registry = await createGenerationRegistry({
+    store: { get: key => state.store.get(key), put: (key, value) => state.store.put(key, value) },
+    descriptor: configuration.descriptor, controls: [configuration.control], signer: state.signer, requireExisting: true });
+  if (cached === snapshot(t)) cached.registry = registry;
+  return registry;
 }
 async function readControl(t: Tendril, state: HostState): Promise<AuthorityBundle> {
   const cached = snapshot(t);

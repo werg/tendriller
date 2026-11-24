@@ -63,7 +63,7 @@ export async function installStateSignalObservers() {
 }
 
 /** The test participant owns the complete bootstrap, including its supervisor. */
-export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transportModule, networkQualification = false }) {
+export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transportModule, networkQualification = false, qualificationSources = [] }) {
   return `import assert from 'node:assert/strict';
 import {createInterface} from 'node:readline';
 import {openSession} from './session.mjs';
@@ -72,6 +72,7 @@ import {servePeerInference} from './media/inference-service.mjs';
 import {serveSignalRequests, sendPieces} from './helpers/signal-request.mjs';
 ${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transportModule)};` : 'const closeLocalTransport = async () => {};'}
 const owned = await openSession(), {session,supervisor} = owned;
+const qualifications = [], qualificationActions = Object.create(null);
 const setupReadiness = (${observeSetupReadiness.toString()})(owned);
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
 const lifecycleLog = [];
@@ -80,6 +81,9 @@ const requestsStopped = new AbortController();
 const close = () => closing ??= (async () => {
   const errors = [];
   requestsStopped.abort();
+  for (const qualification of qualifications.toReversed()) {
+    try { await qualification.close?.(); } catch (error) { errors.push(error); }
+  }
   await requestTask;
   if(requestFailure) errors.push(requestFailure);
   try { await pairings?.close(); } catch (error) { errors.push(error); }
@@ -91,6 +95,12 @@ const close = () => closing ??= (async () => {
   if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed: ' + errors.map(error => error.message).join('; '));
 })();
 try {
+  for (const create of [${qualificationSources.map(source => '(' + source + ')').join(',')}]) {
+    const qualification = await create(owned); qualifications.push(qualification);
+    for (const [action, handler] of Object.entries(qualification.actions)) {
+      assert.ok(!Object.hasOwn(qualificationActions, action)); qualificationActions[action] = handler;
+    }
+  }
   pairings = superviseParticipant({owned:{...owned,processPairings:options=>setupReadiness.processPairings(options)},watch:callbacks=>setupReadiness.watch(callbacks),
     report:(value) => { if(value.pairing) pairingStatus={state:value.pairing.state,code:value.pairing.code ?? null};
       if (lifecycleLog.length < 200) lifecycleLog.push({at:Date.now(),...(value.pairing ? {pairing:value.pairing.state,pairingId:value.pairing.pairingId ?? null} : {state:value.state ?? null,setup:value.setup ?? null})}); }});
@@ -121,7 +131,8 @@ try {
     const request=JSON.parse(line);
     try {
       let result;
-      if(request.action==='query') result=await session.query('notes',null);
+      if(Object.hasOwn(qualificationActions, request.action)) result=await qualificationActions[request.action](request);
+      else if(request.action==='query') result=await session.query('notes',null);
       ${networkQualification ? `else if(request.action==='transport-snapshot' || request.action==='transport-wait') {
         const snapshot=()=>(${authenticatedTransportSnapshot.toString()})(session.participation,${JSON.stringify(browserDeviceId)});
         if(request.action==='transport-snapshot') result=await snapshot();

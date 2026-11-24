@@ -34,7 +34,9 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   if (mode === 'independent' && profile === 'main') throw Error('Independent mode requires a separately provisioned and enrolled profile.');
   const selected = paths(profile);
   let binding = await readPrivate(selected.credential, true);
-  if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey() });
+  if (!binding) binding = await savePrivate(selected.credential, { id: 'local-terminal', token: createNativeAttachmentKey(),
+    policy: { capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'publish'] } });
+  // Reuse retained binding policy verbatim; resuming never broadens its authority.
   let session, control;
   const supervisor = await createNativeSessionSupervisor({ directory: selected.directory, profileId: profile, signal,
     bindings: [binding], openOwner: async () => {
@@ -55,17 +57,15 @@ export async function openSession({ signal, mode = 'own', profile = 'main' } = {
   return { session, control, supervisor, close: () => supervisor.close() };
 }
 
-export async function runPeer({ signal, profile = 'main' } = {}, { onOwned, onClosed } = {}) {
+export async function runPeer({ signal, profile = 'main' } = {}, { onOwned, onClosed, report = value => console.log(JSON.stringify(value)) } = {}) {
   let owned;
   try {
     owned = await openSession({ signal, profile }); onOwned?.();
     const { session, supervisor } = owned;
-    console.log(JSON.stringify({ running: true, deviceId: session.deviceId, ownerInstanceId: supervisor.ownerInstanceId }));
-    session.participation.onStatus(status => console.log(JSON.stringify({ connection: status.phase, error: status.error })));
-    for await (const change of session.changes({ signal })) {
-      const snapshot = await session.query('inventory', null);
-      console.log(JSON.stringify({ stock: snapshot.value.stock, revision: snapshot.revision, change: change.kind }));
-    }
+    report({ running: true, deviceId: session.deviceId, ownerInstanceId: supervisor.ownerInstanceId });
+    session.participation.onStatus(status => report({ connection: status.phase, error: status.error }));
+    for await (const change of session.changes({ signal }))
+      report({ revision: change.revision, change: change.kind });
   } finally { await owned?.close(); if (owned) onClosed?.(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

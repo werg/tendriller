@@ -74,7 +74,7 @@ async function boot() {
   };
   loadStore();
   options = { workerUrl: new URL('./worker.mjs', import.meta.url), profileId,
-    applicationId: configuration.applicationId, definitionId: 'shared-inventory', definitionVersion: '1',
+    applicationId: configuration.applicationId, definitionId: configuration.definitionId, definitionVersion: configuration.definitionVersion,
     requiresDedicatedWorker: true, context: { viewId, documentPath: location.pathname } };
   $('#create-device').disabled = false;
   attachment = await openBrowserOwner(options); session = attachment.session;

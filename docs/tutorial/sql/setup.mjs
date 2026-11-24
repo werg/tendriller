@@ -79,9 +79,12 @@ export async function initializeProject() {
     await verifyAuthorityBundle(authority, await readPrivate('descriptor.json'));
     session = await openSqlApplication({ device, definition, authority, schema: prepared.schema, databasePath,
       createEngine: () => engine, epochKeys: new Map([[0, epochKey]]) });
-    const first = await session.query('inventory', null); // Activates storage and persists the creator's keyring.
-    await savePrivate('initialized.json', { applicationId: handle.application.id, deviceId: session.deviceId });
-    return { initialized: true, applicationId: handle.application.id, bins: first.value.stock.length, next: 'npm run demo' };
+    // Activate durable storage and persist the creator's keyring without a domain query.
+    const view = await session.readView();
+    try {
+      await savePrivate('initialized.json', { applicationId: handle.application.id, deviceId: session.deviceId });
+      return { initialized: true, applicationId: handle.application.id, revision: view.revision, next: 'npm run demo' };
+    } finally { view.release(); }
   } finally { if (session) await session.close(); else await device.close(); }
 }
 
