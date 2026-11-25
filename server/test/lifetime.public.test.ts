@@ -2,7 +2,6 @@ import { expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { evictDurableObject } from 'cloudflare:test';
 import type { Tendril } from '../src/tendril';
-import { authenticateAgentToken } from '../src/access';
 import { changeLifetime, lifetimeChangePending } from '../src/lifetime';
 import { advance, api, apiJson, create, inDO, runAlarm, signInAsOwner, stub } from './helpers';
 import { AD_HOC_IDLE, HOUR } from '../src/limits';

@@ -281,7 +281,7 @@ describe('onboarding after page creation', () => {
     expect(await apiJson(h, 'GET', '')).toMatchObject({ owner_account_id: null, configured: false, application: h.application });
     const account = crypto.randomUUID();
     await env.ACCOUNTS.prepare('INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)').bind(account, Date.now(), email).run();
-    const cookie = await signInAsOwner(h, account, email);
+    const { cookie } = await signInAsOwner(h, account, email);
     const info = await apiJson(h, 'GET', '');
     expect(info).toMatchObject({ owner_account_id: account, configured: false, application: h.application });
 

@@ -3,10 +3,9 @@ import { env } from 'cloudflare:workers';
 import { createPeerIdentity, signTransitionRequest, generationStartRoot, participantGrant, verifyAuthorityBundle, peerDigest,
   type PeerIdentity, type AuthorityBundle, type SignedGeneration } from '@chronolog/peer-generation/control';
 import { DEVICE_PAIRING_LIMITS, pairingProofBytes, signDevicePairingChallenge, type DevicePairingStatus, type DevicePairingPrepared } from '../../contract/pairing.mjs';
-import { api, apiJson, create, req, inDO, advance, type Handle } from './helpers';
+import { agentPrincipal, api, apiJson, create, req, inDO, advance, type Handle } from './helpers';
 import { peerApiJson } from './peer-exchange';
 import { sha256Hex } from '../src/ids';
-import { authenticateAgentToken } from '../src/access';
 import { handleDevicePairing } from '../src/device-pairing';
 
 async function fixture() {
@@ -305,7 +304,7 @@ it('rechecks guest admission at the atomic control write and resumes the same pr
       } };
     } } as D1Database;
     try {
-      const principal = await authenticateAgentToken(t, h.token), request = new Request('https://tendril.internal/agent', { method: 'POST',
+      const principal = agentPrincipal(t, h), request = new Request('https://tendril.internal/agent', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'commit', pairingId: c.pairingId, ...prepared }) });
       try { await handleDevicePairing(t, request, new URL(request.url), principal); return { revoked, code: 'unexpected-success' }; }
       catch (error) { return { revoked, code: (error as { code: string }).code }; }
@@ -353,7 +352,7 @@ it('refuses suspension after an active account read without consuming the approv
       };
     } });
     try {
-      const principal = await authenticateAgentToken(t, h.token), request = new Request('https://tendril.internal/agent', { method: 'POST',
+      const principal = agentPrincipal(t, h), request = new Request('https://tendril.internal/agent', { method: 'POST',
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'commit', pairingId: c.pairingId, ...prepared }) });
       try { await handleDevicePairing(t, request, new URL(request.url), principal); return { suspended, code: 'unexpected-success' }; }
       catch (error) { return { suspended, code: (error as { code: string }).code }; }

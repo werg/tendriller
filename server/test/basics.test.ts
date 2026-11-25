@@ -34,7 +34,7 @@ describe("public routes", () => {
   });
 
   it("answers CORS preflight and adds CORS headers on /api", async () => {
-    const pre = await req("/api/tendrils", { method: "OPTIONS" });
+    const pre = await req("/api/agent/pages", { method: "OPTIONS" });
     expect(pre.status).toBe(204);
     expect(pre.headers.get("Access-Control-Allow-Origin")).toBe("*");
     expect(pre.headers.get("Access-Control-Allow-Headers")).toContain("Authorization");
@@ -57,10 +57,10 @@ describe("create", () => {
     const none = await req(h.api);
     expect(none.status).toBe(401);
     expect(await none.json()).toMatchObject({ error: { code: "unauthorized" } });
-    const wrong = await api(h, "GET", "", undefined, {}, "tk_" + "a".repeat(32));
+    const wrong = await api(h, "GET", "", undefined, {}, "ta_" + "a".repeat(32));
     expect(wrong.status).toBe(401);
     await wrong.text();
-    const missing = await req(`${BASE}/api/t/aaaaaaaaaaaa`, { headers: { Authorization: `Bearer ${h.token}` } });
+    const missing = await req(`${BASE}/api/agent/pages/aaaaaaaaaaaa`, { headers: { Authorization: `Bearer ${h.token}` } });
     expect(missing.status).toBe(404);
     await missing.text();
   });

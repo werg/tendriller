@@ -176,7 +176,7 @@ it('bounds pending sessions per principal and expires unpaired and stalled relay
 
 it('fences local revocation on every packet and rechecks account policy before expired traffic', async () => {
   const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'revoked');
-  await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
+  await inDO(h.id, t => t.db.run('DELETE FROM agent_grants'));
   p.a.reliable.socket.send(packet(1)); expect(await p.a.live.closed).toBe(1008);
   expect(p.b.reliable.messages.length).toBe(1); p.close();
   const second = await create({ mode: 'dashboard', listener: false }), q = await pair(second, 'account');
@@ -288,7 +288,7 @@ it.each(['local revocation', 'owner change', 'authorization window', 'disconnect
         return t.webSocketMessage(sender, packet(1));
       });
       await started.promise;
-      if (reason === 'local revocation') await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
+      if (reason === 'local revocation') await inDO(h.id, t => t.db.run('DELETE FROM agent_grants'));
       if (reason === 'owner change') await inDO(h.id, t => t.db.set('owner_account', 'replacement-owner'));
       if (reason === 'authorization window') await advance(h.id, LIMITS.authorizationMs);
       if (reason === 'disconnect') {
@@ -449,7 +449,7 @@ it('reconstructs expired admission from hibernation attachments and reauthorizes
     try {
       p.a.reliable.socket.send(packet(1)); await expect.poll(() => p.b.reliable.messages.length).toBe(2);
       expect(checks).toBe(1);
-      await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
+      await inDO(h.id, t => t.db.run('DELETE FROM agent_grants'));
       p.a.reliable.socket.send(packet(2));
       expect(await p.b.reliable.closed).toBe(1008);
       expect(p.b.reliable.messages.length).toBe(2);

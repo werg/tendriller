@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { evictDurableObject } from 'cloudflare:test';
-import { advance, apiJson, create, inDO, stub } from './helpers';
+import { advance, agentPrincipal, apiJson, create, inDO, stub } from './helpers';
 import { ACCESS_WRITE_INTERVAL, DAY, HOUR } from '../src/limits';
 
 it('avoids per-request expiry writes for resident and unclaimed pages while retaining ad-hoc expiry', async () => {
@@ -19,7 +19,7 @@ it('avoids per-request expiry writes for resident and unclaimed pages while reta
         for (let i = 0; i < 20; i++) {
           t.skew += 1_000;
           const response = await t.fetch(new Request('https://tendril.internal/agent', {
-            headers: { Authorization: `Bearer ${page.token}`, 'x-tendril-rest': '' },
+            headers: { 'x-tendril-agent': page.agent.id, 'x-tendril-agent-scopes': agentPrincipal(t, page).scopes.join(' '), 'x-tendril-rest': '' },
           }));
           expect(response.status).toBe(200);
         }
@@ -54,18 +54,16 @@ it('keeps the full inactivity window after bucketed activity and actual eviction
   expect(await inDO(page.id, t => t.expiresAt())).toBeGreaterThan(saved.expires);
 });
 
-it('does not spend activity writes or extend retention for invalid agent and MCP credentials', async () => {
+it('does not spend activity writes or extend retention for unknown or ungranted agents', async () => {
   const page = await create({ listener: false });
   await advance(page.id, 2 * ACCESS_WRITE_INTERVAL);
   await inDO(page.id, async t => {
     const before = t.db.get('last_access', 0), expires = t.expiresAt();
-    for (const rest of ['', 'mcp', 'mcp/invalid-token']) {
+    for (const [agent, status] of [['', 401], ['invalid-agent', 401], ['ag_' + 'z'.repeat(26), 404]] as const) {
       const response = await t.fetch(new Request('https://tendril.internal/agent', {
-        method: rest ? 'POST' : 'GET',
-        headers: { Authorization: 'Bearer invalid-token', 'x-tendril-rest': rest },
-        ...(rest ? { body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) } : {}),
+        headers: { 'x-tendril-agent': agent, 'x-tendril-agent-scopes': 'host:read', 'x-tendril-rest': '' },
       }));
-      expect(response.status).toBe(401);
+      expect(response.status).toBe(status);
     }
     expect(t.db.get('last_access', 0)).toBe(before);
     expect(t.expiresAt()).toBe(expires);

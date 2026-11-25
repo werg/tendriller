@@ -3,6 +3,7 @@ import { expect, it } from 'vitest';
 import { CORE_RELEASE } from '../../contract/index.mjs';
 import type { Env } from '../src/env';
 import { route } from '../src/router';
+import { createAgent, testPublicKey } from './helpers';
 import { BASE } from './helpers';
 
 const read = (settings: Env = env, method = 'GET') => route(new Request(new URL('/api/readiness', settings.PUBLIC_BASE), { method }), settings);
@@ -80,13 +81,19 @@ it.each([
 
 it('rechecks service state at creation after a previously successful preflight', async () => {
   expect((await (await read()).json() as any).creation.available).toBe(true);
+  const agent = await createAgent('readiness-owner@example.com');
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
   try {
-    const response = await route(new Request(BASE + '/api/tendrils', { method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.18.11.23' },
-      body: JSON.stringify({ owner: 'readiness-test@example.com' }),
-    }), env);
-    expect(response.status).toBe(503);
-    expect(await response.json()).toMatchObject({ error: { code: 'creation_paused' } });
+    for (const [path, body, headers] of [
+      ['/api/agents', { owner: 'readiness-test@example.com', name: 'readiness', publicKey: testPublicKey() }, {}],
+      ['/api/agent/pages', {}, { Authorization: `Bearer ${agent.token}` }],
+    ] as const) {
+      const response = await route(new Request(BASE + path, { method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.18.11.23', ...headers },
+        body: JSON.stringify(body),
+      }), env);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ error: { code: 'creation_paused' } });
+    }
   } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
 });
