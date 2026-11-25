@@ -46,8 +46,8 @@
     "test:chaos": "node scripts/test-chaos.mjs"
   },
   "devDependencies": {
-    "@chronolog/authority": "file:test/artifacts/chronolog-authority-ad52b02a.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-ad52b02a.tgz",
+    "@chronolog/authority": "file:test/artifacts/chronolog-authority-c3a3ea5d.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-c3a3ea5d.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",

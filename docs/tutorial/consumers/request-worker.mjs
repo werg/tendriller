@@ -18,6 +18,7 @@ const CHANNELS = new Set(['chat', 'agents']);
 const messageOf = event => ({ author: event.author, operationId: event.operationId,
   channel: event.payload?.channel === 'agents' ? 'agents' : 'chat',
   to: Array.isArray(event.payload?.to) ? [...event.payload.to] : [], text: String(event.payload?.text ?? ''),
+  ...(typeof event.payload?.data === 'string' ? { data: event.payload.data } : {}),
   hopCount: Number.isSafeInteger(event.payload?.hopCount) ? event.payload.hopCount : 0,
   expectReply: event.payload?.expectReply !== false });
 const isReply = (candidate, self, message) => candidate.author === self

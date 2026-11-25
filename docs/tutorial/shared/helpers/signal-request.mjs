@@ -151,7 +151,10 @@ export async function sendPieces(session, topic, parts, { signal, ttlMs = 30_000
       if (bytes(part) > MAX_FRAME) throw fail('SIGNAL_FRAME_TOO_LARGE');
       for (let attempt = 0;; attempt++) {
         scope.signal.throwIfAborted();
-        try { await owned(session.signals.send(topic, part, { ttlMs, signal: scope.signal }), scope.signal); break; }
+        // The deadline bounds this wait only. Delivery follows the caller's lifetime:
+        // a session may resolve after local delivery while remote delivery continues,
+        // and closing the per-call deadline must not cancel that in-flight frame.
+        try { await owned(session.signals.send(topic, part, { ttlMs, signal: base }), scope.signal); break; }
         catch (error) {
           if (!TRANSIENT.has(error.code) || scope.signal.aborted) throw error;
           retries++; await sleep(250 * 2 ** Math.min(attempt, 4), scope.signal);

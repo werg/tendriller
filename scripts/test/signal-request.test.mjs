@@ -346,3 +346,15 @@ test('generated replies fit the actual public session signed signal encoder', as
     } finally { stop.abort(); await service; }
   } finally { await session?.close(); await device.close(); }
 });
+
+test('a finished send never cancels delivery the session is still completing', async () => {
+  const { sendPieces } = await import('../../docs/tutorial/shared/helpers/signal-request.mjs');
+  const owner = new AbortController(), handed = [];
+  // Sessions may resolve send() after local delivery while remote delivery continues on the given signal.
+  const session = { signal: owner.signal, signals: { async send(_topic, _part, options) { handed.push(options.signal); return {}; } } };
+  await sendPieces(session, 'reply', [{ piece: 1 }, { piece: 2 }]);
+  assert.equal(handed.length, 2);
+  assert.ok(handed.every(signal => !signal.aborted), 'closing the per-call deadline must not abort in-flight delivery');
+  owner.abort();
+  assert.ok(handed.every(signal => signal.aborted), 'delivery still ends with the session');
+});

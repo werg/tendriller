@@ -183,8 +183,11 @@ test('evaluateFailover suppresses offline/no-backup cases and triggers on stoppe
   assert.equal(offline?.reason, 'offline');
 });
 
-test('a stalled retained-event cursor fails rather than spinning forever', () => {
-  assert.throws(() => readAgentFeed({ readEvents: () => ({ events: [], hasMore: true, cursor: 'same' }) }),
+test('a stalled retained-event cursor fails rather than spinning forever', async () => {
+  // Browser views read asynchronously; the helper awaits both sync and async readers.
+  await assert.rejects(readAgentFeed({ readEvents: async () => ({ events: [], hasMore: true, cursor: 'same' }) }),
+    /AGENT_FEED_CURSOR_STALLED/);
+  await assert.rejects(readAgentFeed({ readEvents: () => ({ events: [], hasMore: true, cursor: 'same' }) }),
     /AGENT_FEED_CURSOR_STALLED/);
 });
 

@@ -92,13 +92,13 @@ function parseTimestamp(value) {
 }
 
 /** One coherent materialized snapshot of chat messages, agent backchannel activity, and receipts. */
-export function readAgentFeed(view) {
+export async function readAgentFeed(view) {
   const messages = [];
   const activity = [];
   const receipts = {};
   let cursor;
   for (;;) {
-    const batch = view.readEvents({
+    const batch = await view.readEvents({
       topics: agentRequestTopics,
       limit: 128,
       ...(cursor === undefined ? {} : { cursor }),
