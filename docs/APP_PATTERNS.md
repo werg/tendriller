@@ -490,8 +490,12 @@ read restores it. Continue to acquire `release = submission.begin()` inside the
 handler's `try`, retain the signed-operation reference, await its applied result,
 and finish the coherent refresh before calling `release?.()` exactly once in
 `finally`. That final callback re-enables all eligible controls without another
-query or data notification. An uncertain pending operation, failed refresh,
-disconnection or recovery keeps them blocked even after `working` is released.
+query or data notification. An uncertain pending operation, failed refresh or
+recovery keeps them blocked even after `working` is released. Disconnection does
+not block **Save**: with no peer reachable, the signed attempt is saved in the
+local journal (`status: 'saved'`) and applied when the agent program or another
+peer returns, so do not await `applied()` with a deadline then. Retry and
+reapply stay blocked until a peer is connected.
 
 Do not move release ahead of refresh to force a data render. The current release
 closure is not an operation token: an early call followed by a second call in

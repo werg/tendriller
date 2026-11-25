@@ -653,18 +653,32 @@ globalThis.WebSocket = class extends WebSocket {
       passed('real packet faults, lifecycle changes and recovery on the notes page owner inside the agent program');
     }
 
-    checkpoint('local data and drafts survive while the agent program is stopped; agent work converges on reopen');
+    checkpoint('local data, drafts and Save work while the agent program is stopped; both sides converge on reopen');
     const stopped = await agentProgram.stop(); agentProgram = undefined;
     assert.deepEqual(stopped, { code: 0, signal: null }, 'SIGTERM closes every page owner, the hub and the attach socket.');
-    await page.locator('#note').fill('Draft kept while the agent is away');
+    const offlineText = 'Saved while the agent is away';
+    await page.locator('#note').fill(offlineText);
     await page.reload();
     await expect(page.locator('#notes')).toContainText('Created by the agent', { timeout: 60_000 });
     await expect(page.locator('#device-key')).toHaveValue(browserDevice);
-    await expect(page.locator('#note')).toHaveValue('Draft kept while the agent is away');
-    // The notes template saves through a connected coordinator; with the only
-    // coordinator stopped, Save stays disabled and the draft stays on the device.
-    report.browser_without_agent = { submitEnabled: await page.locator('#submit').isEnabled(),
+    await expect(page.locator('#note')).toHaveValue(offlineText);
+    // Local-first Save: no peer is reachable, yet the signed attempt is saved on this device.
+    await expect(page.locator('#submit')).toBeEnabled({ timeout: 30_000 });
+    await page.locator('#submit').click();
+    await expect(page.locator('#result')).toContainText('Saved on this device as', { timeout: 30_000 });
+    const offlineOperation = await page.locator('#operation-id').inputValue();
+    assert.match(offlineOperation, /^[0-9a-f-]{36}$/);
+    await expect(page.locator('#note')).toHaveValue('');
+    await expect(page.locator('#operation-status')).toContainText(`${offlineOperation}: Saved on this device`, { timeout: 30_000 });
+    await expect(page.locator('#submit')).toBeEnabled();
+    await page.reload();
+    await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
+    await expect(page.locator('#operation-id')).toHaveValue(offlineOperation);
+    await expect(page.locator('#operation-status')).toContainText(`${offlineOperation}: Saved on this device`, { timeout: 30_000 });
+    report.browser_without_agent = { submitEnabled: await page.locator('#submit').isEnabled(), savedOperation: offlineOperation,
       submission: await page.locator('#submission-status').textContent(), peer: await page.locator('#peer-status').textContent() };
+    assert.equal(report.browser_without_agent.submitEnabled, true, 'A saved (not uncertain) attempt must not block the next Save.');
+    await page.locator('#note').fill('Draft kept while the agent is away');
     // Leave the app in this tab; its per-tab view state (the draft) stays with the tab.
     await page.goto('about:blank');
     agentProgram = startAgent();
@@ -677,12 +691,17 @@ globalThis.WebSocket = class extends WebSocket {
     await expect(page.locator('#app-content')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('#device-key')).toHaveValue(browserDevice);
     await expect(page.locator('#notes')).toContainText('Written while the browser was closed', { timeout: 60_000 });
+    // The offline attempt converges without any user action once the agent is reachable.
+    await expect(page.locator('#notes')).toContainText(offlineText, { timeout: 60_000 });
+    await expect(page.locator('#operation-status')).toContainText(`${offlineOperation}: Applied: accepted`, { timeout: 30_000 });
+    await expect.poll(async () => (await tendril(['--page', 'notes', 'query', 'notes', 'null'])).value
+      .filter(note => note.text === offlineText).map(note => note.author), { timeout: 30_000 }).toEqual([browserDevice]);
     await expect(page.locator('#note')).toHaveValue('Draft kept while the agent is away');
     await page.locator('#submit').click();
     await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
     await expect.poll(async () => (await tendril(['--page', 'notes', 'query', 'notes', 'null'])).value.map(note => note.text),
       { timeout: 30_000 }).toContain('Draft kept while the agent is away');
-    passed('persistence across reload with the agent stopped, retained draft, and convergence of work done while the browser was closed');
+    passed('Save with the agent stopped keeps a signed local attempt across reload that applies by itself on reconnect; drafts persist; work done while the browser was closed converges');
 
     checkpoint('a second page of the same workspace in another tab');
     const second = await context.newPage(); watchPage(second);

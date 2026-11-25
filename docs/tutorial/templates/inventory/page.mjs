@@ -17,7 +17,9 @@ const submission = createSubmissionState(state => {
   $('#op-id').disabled = state.working;
   for (const id of ['from-loc', 'to-loc', 'qty']) $('#' + id).disabled = Boolean(state.pending) || state.working;
   $('#operation-status').textContent = state.pending ? `Retained ${state.pending.id}. Inspect or retry the original reviewed transfer.`
-    : state.canSubmit ? 'Ready to review and transfer units.' : 'Waiting for connection and a coherent inventory read.';
+    : !state.canSubmit ? 'Waiting for a coherent inventory read.'
+    : state.connected ? 'Ready to review and transfer units.'
+    : 'Transfers are saved on this device and applied (or rejected by their guards) when the agent program is reachable.';
 });
 function retain(intent) {
   const reference = { applicationId: session.applicationId, historyId: session.historyId,
@@ -124,6 +126,8 @@ $('#transfer-form').addEventListener('submit', event => {
     const intent = transferIntent(liveView.snapshot, { from: $('#from-loc').value, to: $('#to-loc').value, units: Number($('#qty').value) }, crypto.randomUUID());
     retain(intent);
     const handle = await session.command(intent.command, intent.input, { operationId: intent.id, basedOn: intent.basedOn });
+    // Disconnected: the signed transfer is saved locally; its guarded outcome arrives later.
+    if (!submission.snapshot.connected) { showState(await handle.get()); return; }
     showState(await handle.applied({ signal: AbortSignal.timeout(15_000) })); await liveView.refresh();
   });
 });

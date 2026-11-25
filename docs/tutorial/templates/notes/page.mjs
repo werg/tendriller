@@ -40,7 +40,8 @@ function renderSubmission(state) {
   $('#refresh').disabled = !state.attached || state.working;
   $('#submission-status').textContent = state.message;
   $('#form').setAttribute('aria-busy', String(state.working));
-  media?.setBlocked(!state.canSubmit);
+  // Photo evidence is staged for and analyzed by the connected agent; notes save locally.
+  media?.setBlocked(!state.canSubmit || !state.available);
 }
 let pending = retainedPending();
 const report = error => { $('#result').textContent = error.message ?? String(error); };
@@ -225,7 +226,7 @@ $('#form').addEventListener('submit', async event => {
     if (!text) throw Error('Write a note first.');
     if (text.length > 2000) throw Error('Edit the note to 2,000 characters or fewer before saving. Nothing was submitted.');
     const before = await refresh();
-    if (!submission.snapshot.available) throw Error('Connection changed while reading notes.');
+    if (!submission.snapshot.local) throw Error('This device’s notes changed while reading them.');
     const operationId = crypto.randomUUID();
     // Save the reference before submitting. This is a UI reference, not a
     // second delivery queue; Chronolog owns and retries the signed attempt.
@@ -234,6 +235,13 @@ $('#form').addEventListener('submit', async event => {
     original = pending;
     const operation = await session.command('addNote', { text }, { operationId, basedOn: before.revision });
     observeOperation(operationId, operation);
+    if (!submission.snapshot.connected) {
+      // Local-first: the signed attempt is in this device's journal. Chronolog applies
+      // and shares it when the agent program is reachable; the operation view reports it.
+      if ($('#note').value.trim() === text) { $('#note').value = ''; writeLocal('draft', ''); }
+      $('#result').textContent = `Saved on this device as ${operationId}. It is applied and shared when the agent program is reachable; keep or reopen this page.`;
+      return;
+    }
     $('#result').textContent = `Saved locally as ${operationId}. Waiting for applied execution…`;
     const result = await operation.applied({ signal: AbortSignal.timeout(15_000) });
     if (result.outcome === 'accepted') diagnostics.update({ lastAppliedOperationId: operationId });
