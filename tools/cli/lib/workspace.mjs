@@ -4,6 +4,7 @@
 //   pages/<slug>/            per-page source (agent.mjs, domain.mjs, page.mjs, ...)
 //   .tendriller/agent/       identity.sqlite (shared signer), credential.json, attach.json, owner/ (attach socket)
 //   .tendriller/pages/<id>/  page.json, device.sqlite, descriptor and setup records
+//   .tendriller/checkpoint-retired.json  present once `tendril checkpoint export` moved this workspace away
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
@@ -59,6 +60,7 @@ export function workspacePaths(root) {
     agent: join(secret, 'agent'), identity: join(secret, 'agent', 'identity.sqlite'),
     credential: join(secret, 'agent', 'credential.json'), attach: join(secret, 'agent', 'attach.json'),
     owner: join(secret, 'agent', 'owner'), pages: join(secret, 'pages'),
+    retired: join(secret, 'checkpoint-retired.json'),
   });
 }
 
@@ -171,6 +173,7 @@ export async function adoptWorkspace(root, { service, credential: file, kit, sig
 export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, WebSocket } = {}) {
   if (!root) throw failure('workspace_required', 'No tendriller.json found here or in a parent folder. Run tendril workspace init --service ORIGIN --owner EMAIL in an empty folder, or cd into the workspace.', 64);
   const paths = workspacePaths(root);
+  if (existsSync(paths.retired)) throw failure('workspace_retired_by_checkpoint', `This workspace was moved to a checkpoint (${paths.retired}). Restore that checkpoint with tendril checkpoint restore in an empty folder and use that copy; this one never resumes.`);
   const config = await readJson(paths.config);
   if (config?.schemaVersion !== 1 || typeof config.service !== 'string' || !config.agent?.id)
     throw failure('workspace_state_invalid', `${paths.config} is not a Tendriller workspace file.`);

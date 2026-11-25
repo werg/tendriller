@@ -327,10 +327,16 @@ default. Authored icon tags or a manifest retain control when supplied. See
 
 ### Continue after a lost credential or device
 
-`.tendriller/agent/` (credential and shared signer) and
+`.tendriller/agent/` (credential and shared signer), `tendriller.json` and
 `.tendriller/pages/PAGE_ID/` (device store, descriptor, setup and pairing records)
-are the workspace's private checkpoint. Restore them from a verified checkpoint;
-there is no reissue of a lost key. If only the token is lost or revoked, the owner can add the agent again
+are the workspace's private state. There is no reissue of a lost key, so keep a
+way to move it: stop `tendril agent run`, then `tendril checkpoint export FILE`
+writes all of it as one encrypted file and retires this copy (a move, not a
+backup); `tendril checkpoint restore FILE` recreates it in an empty folder and
+verifies every page device against the restored signer. Page source moves
+separately with `tendril handoff source`. See
+[the CLI reference](tools/CLI.md#move-a-workspace-with-a-checkpoint).
+If only the token is lost or revoked, the owner can add the agent again
 from the dashboard and `workspace join` a fresh folder; the page's signed
 application grants belong to the key, so a new key also needs explicit signed
 enrollment or recovery with surviving authorized devices.
