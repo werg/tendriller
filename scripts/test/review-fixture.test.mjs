@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { cleanupFixturePage, restoreFixtureCreationMode } from '../review/fixture.mjs';
 
 const origin = 'https://selected.example';
-const handle = { id: 'aaaaaaaaaaaa', api: origin + '/api/t/aaaaaaaaaaaa', token: 'synthetic-only-token' };
+const handle = { id: 'aaaaaaaaaaaa', api: origin + '/api/agent/pages/aaaaaaaaaaaa', token: 'ta_' + 'a'.repeat(32) };
 function project(t, saved) {
   const path = mkdtempSync(join(tmpdir(), 'review-cleanup-'));
   t.after(() => rmSync(path, { recursive: true, force: true }));
@@ -19,9 +19,11 @@ test('failed create child cleanup recovers its already-saved handle without crea
   const calls = [];
   const errors = await cleanupFixturePage({ project: project(t, handle), origin, creationAttempted: true,
     fetch: async (url, options) => { calls.push({ url, options }); return Response.json({ deleted: true }); } });
-  assert.deepEqual(errors, []); assert.equal(calls.length, 1);
+  assert.deepEqual(errors, []); assert.equal(calls.length, 2);
   assert.equal(calls[0].url, handle.api); assert.equal(calls[0].options.method, 'DELETE');
   assert.equal(calls[0].options.redirect, 'error');
+  // The fixture's own agent is revoked after its only page.
+  assert.equal(calls[1].url, origin + '/api/agent'); assert.equal(calls[1].options.method, 'DELETE');
 });
 
 test('unknown creation and cross-origin saved handles preserve recovery state without network cleanup', async t => {
@@ -29,7 +31,7 @@ test('unknown creation and cross-origin saved handles preserve recovery state wi
   const fetch = async () => { requests++; throw Error('must not send'); };
   const unknown = await cleanupFixturePage({ project: project(t), origin, creationAttempted: true, fetch });
   assert.match(unknown[0], /outcome is unknown/);
-  const wrong = await cleanupFixturePage({ project: project(t, { ...handle, api: 'https://another.example/api/t/aaaaaaaaaaaa' }),
+  const wrong = await cleanupFixturePage({ project: project(t, { ...handle, api: 'https://another.example/api/agent/pages/aaaaaaaaaaaa' }),
     origin, creationAttempted: true, fetch });
   assert.match(wrong[0], /no cleanup request/); assert.equal(requests, 0);
   assert(!JSON.stringify([...unknown, ...wrong]).includes(handle.token));

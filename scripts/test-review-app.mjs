@@ -5,7 +5,7 @@ import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { readReviewAccess } from './review/access.mjs';
 import { chromium } from '@playwright/test';
-import { createClient } from '../dist/sdk/client.mjs';
+import { createAgentClient } from '../dist/sdk/client.mjs';
 import { verifyAuthorityBundle, verifyPublicationManifest } from '@chronolog/peer-session';
 
 const project = resolve(process.argv[2]), access = readReviewAccess(process.argv[3]);
@@ -68,7 +68,7 @@ try {
   report.checks.push('Read the initial incomplete Check labels item');
   const display = await context.newPage(); await display.goto(handle.page_url);
   await display.getByRole('heading', { name: 'Review checklist' }).waitFor();
-  const host = createClient(handle, { applicationId: app.applicationId });
+  const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: app.applicationId });
   const beforePublication = (await host.peers.publication()).publication.id;
   const operationRecord = resolve(project, '.private/acceptance-operation.json');
   let operationId;

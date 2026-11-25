@@ -1,8 +1,8 @@
 // Run this public-package consumer from its own private working directory.
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { createClient, createPage } from '@tendriller/core';
+import { createAgentClient, registerAgent } from '@tendriller/core';
 import { participateNativeApplication } from '@tendriller/core/native-rtc';
 import { createNativeSessionSupervisor } from '@tendriller/core/native-owner';
 import { connectApplicationAssistant, createAssistantKey, createAssistantEventDelivery, proposeApplicationAssistant } from '@tendriller/core/assistant';
@@ -29,15 +29,19 @@ async function save(name, value) {
 const mode = process.argv[2];
 if (mode === 'create') {
   const access = JSON.parse(await readFile(process.argv[3], 'utf8'));
-  const handle = await read('handle.json') ?? await save('handle.json', await createPage(access.origin,
-    { owner: `${access.accountId}@example.invalid`, name: process.argv[4] ?? 'Review checklist' }));
+  // One synthetic agent owns this fixture page; the owner claims both by signing in.
+  const agent = await read('agent.json') ?? await save('agent.json', await registerAgent(access.origin, {
+    owner: `${access.accountId}@example.invalid`, name: 'review-fixture',
+    publicKey: generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x }));
+  const handle = await read('handle.json') ?? await save('handle.json', { ...await createAgentClient({ service: access.origin, token: agent.token })
+    .pages.create({ name: process.argv[4] ?? 'Review checklist' }), service: access.origin, token: agent.token });
   console.log(JSON.stringify({ pageUrl: handle.page_url }));
   process.exit(0);
 }
 const handle = await read('handle.json');
 if (!handle) throw Error('Run create first');
-const host = createClient(handle, { applicationId: handle.application.id });
-const options = { api: handle.api, token: handle.token,
+const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: handle.application.id });
+const options = { page: host,
   key: await read('assistant-key.json') ?? await save('assistant-key.json', createAssistantKey()),
   label: handle.name, queries: ['checklist'], commands: ['completeItem'],
   events: [{ name: 'item.completed', description: 'The synthetic checklist item ID that was completed.' }] };
@@ -95,7 +99,7 @@ try {
     process.once('SIGINT', () => stop.abort()); process.once('SIGTERM', () => stop.abort());
     const expectedProposalId = retainedReviewProposal(await read('assistant-proposal.json'), options.key);
     const lifecycle = superviseReviewAssistant({ session, signal: stop.signal, expectedProposalId,
-      watch: callbacks => watchApplicationSetup({ api: handle.api, token: handle.token, ...callbacks }),
+      watch: callbacks => watchApplicationSetup({ page: host, ...callbacks }),
       startAdapter: callbacks => connectApplicationAssistant({ ...options, session, tools: createScopedApplicationTools(session, options), ...callbacks }),
       onOnline: (assistant, signal) => forwardSessionEvents({ session, topics: ['completed'], signal,
         deliver: createAssistantEventDelivery({ assistant }),
