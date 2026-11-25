@@ -8,7 +8,8 @@ import { pathToFileURL } from 'node:url';
 import { ARCHIVE_METADATA } from './archive-metadata.mjs';
 import { verifyReleaseArtifacts } from './release-composition.mjs';
 
-const paths = ['dist/engine', 'dist/runtime', 'dist/sdk', 'dist/tools', 'server/public'];
+// runtime-release.json is a gitignored build output that source-bundled Workers import.
+const paths = ['dist/engine', 'dist/runtime', 'dist/sdk', 'dist/tools', 'server/public', 'server/src/runtime-release.json'];
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const pack = (root, file, exclude = []) => execFileSync('tar', [...ARCHIVE_METADATA,
   ...exclude.map(path => '--exclude=' + path), '-czf', file, '-C', root, ...paths]);

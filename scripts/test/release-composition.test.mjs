@@ -19,7 +19,7 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const directory of ['dist', '.build', 'server/public/downloads', 'docs/tutorial']) mkdirSync(join(root, directory), { recursive: true });
   const version = '1.2.3', contract = 3;
-  writeFileSync(join(root, '.gitignore'), 'dist/\n.build/\nserver/public/\n');
+  writeFileSync(join(root, '.gitignore'), 'dist/\n.build/\nserver/public/\nserver/src/runtime-release.json\n');
   writeJson(join(root, 'package.json'), { version, devDependencies: { '@chronolog/peer-session': 'file:session.tgz' } });
   for (const file of TUTORIAL_FILES) {
     mkdirSync(dirname(tutorialSource(root, file)), { recursive: true });
@@ -181,6 +181,8 @@ test('deployment sealing restores all qualified bytes and rejects tampering and 
     mkdirSync(join(f.root, path), { recursive: true });
     writeFileSync(join(f.root, path, 'qualified.mjs'), `exact ${path} bytes`);
   }
+  mkdirSync(join(f.root, 'server/src'), { recursive: true });
+  writeFileSync(join(f.root, 'server/src/runtime-release.json'), '{"id":"exact runtime"}');
   const manifest = sealDeployment(f.root);
   const expectedHash = digest(readFileSync(join(f.root, 'dist/manifest.json')));
   assert.equal(manifest.artifacts.at(-1).role, 'deployment');
@@ -188,7 +190,10 @@ test('deployment sealing restores all qualified bytes and rejects tampering and 
   writeFileSync(join(f.root, 'server/public/stale.html'), 'unqualified');
   assert.throws(() => verifyRestoredDeployment(f.root, expectedHash), /differ from the qualified bundle/);
   rmSync(join(f.root, 'dist/engine'), { recursive: true });
+  rmSync(join(f.root, 'server/src/runtime-release.json'));
   restoreDeployment(f.root, expectedHash);
+  // Source-bundled Workers import this gitignored build output after a restore without a build.
+  assert.equal(readFileSync(join(f.root, 'server/src/runtime-release.json'), 'utf8'), '{"id":"exact runtime"}');
   verifyRestoredDeployment(f.root, expectedHash);
   assert.equal(readFileSync(join(f.root, 'dist/engine/qualified.mjs'), 'utf8'), 'exact dist/engine bytes');
   assert.throws(() => readFileSync(join(f.root, 'server/public/stale.html')), /ENOENT/);
@@ -238,6 +243,7 @@ test('sealing omits development runtime residue while restored-graph checks reje
   const { sealDeployment, restoreDeployment, verifyRestoredDeployment } = await import('../deployment-bundle.mjs');
   const f=fixture(t);f.prepare();
   for(const path of ['dist/engine','dist/runtime','dist/sdk','dist/tools']) {mkdirSync(join(f.root,path),{recursive:true});writeFileSync(join(f.root,path,'bytes.mjs'),'qualified');}
+  mkdirSync(join(f.root,'server/src'),{recursive:true});writeFileSync(join(f.root,'server/src/runtime-release.json'),'{}');
   const old='f'.repeat(64), oldPath=join(f.root,'server/public/_tendril/runtime',old);
   mkdirSync(oldPath,{recursive:true});writeFileSync(join(oldPath,'stale.mjs'),'previous immutable runtime');
   const manifest=sealDeployment(f.root), expectedHash=digest(readFileSync(join(f.root,'dist/manifest.json')));
