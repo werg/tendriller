@@ -357,3 +357,13 @@ error text, console text, tokens and bodies. Provider enrollment retains a 25-se
 uses at most one ordinary read per second and backs off on 429; owner consent is
 submitted once. The native app/publication is independent of optional MCP
 connectivity; setup notifications start only the exactly approved component.
+
+## Isolated end-to-end ports
+
+The maintained local browser suite defaults to port 8790. For concurrent local
+fixtures, set `TENDRILLER_E2E_PORT` to an unused port, for example
+`TENDRILLER_E2E_PORT=18891 node node_modules/@playwright/test/cli.js test --config test/e2e/playwright.config.ts`.
+The Worker, readiness check, page origins and claim redirects use that same port.
+Do not reuse or stop another session's fixture to make a test pass. Full Chrome
+installability tests keep their temporary data inside the selected scratch directory;
+on Linux a short directory-descriptor alias avoids Unix socket path limits.

@@ -1,11 +1,12 @@
 import { test, expect, request, chromium } from '@playwright/test';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { build } from 'esbuild';
+import { encodeRecord, signParticipantRequest } from '@chronolog/authority';
+import { authorityRecord } from '../../dist/sdk/authority.mjs';
 import { LOCAL_WORKER_HOST_RULES } from '../../scripts/e2e-network.mjs';
+import { shortScratch } from './short-scratch';
 import { agent, claim, client, createPage, deletePage, localPageUrl, openClaimed, publish, publishFiles,
-  requester, signInFixture, OWNER_TOKEN, OTHER_TOKEN, LOGOUT_TOKEN } from './local-helpers';
+  requester, selectedPublication, signInFixture, SERVICE, OWNER, OWNER_TOKEN, OTHER_TOKEN, LOGOUT_TOKEN } from './local-helpers';
 
 test('verified owner claims a page and executes its signed authored module', async ({ page, context }) => {
   const handle = await createPage();
@@ -30,7 +31,7 @@ test('verified owner claims a page and executes its signed authored module', asy
     await expect(page.locator('#welcome')).toHaveText('Hello, owner', { timeout: 25_000 });
     expect(await page.evaluate(() => (window as any).tendril.identity.page)).toBe(handle.id);
     expect(await page.evaluate(() => (window as any).__TENDRIL__.application)).toEqual(handle.application);
-    expect((await client(handle).peers.publication())?.publication.id).toBe(release.publication.id);
+    expect((await selectedPublication(handle))?.publication.id).toBe(release.publication.id);
     expect(page.url(), 'The address stays canonical, so a reload opens the latest release.').not.toContain('/_publications/');
     expect(page.url()).not.toContain('/auth/page');
   } finally { await deletePage(handle); }
@@ -84,7 +85,7 @@ test('the page shows the latest release: open tabs switch when idle, wait for un
     await publish(handle, '<h1 id="release">four</h1><input id="draft">');
     await page.waitForTimeout(3000);
     await expect(page.locator('#release')).toHaveText('one');
-    expect((await client(handle).peers.publication(first.publication.id))?.publication).toEqual(first.publication);
+    expect((await selectedPublication(handle, first.publication.id))?.publication).toEqual(first.publication);
   } finally { await deletePage(handle); }
 });
 
@@ -149,13 +150,15 @@ test('nested live documents containing _publications stay live and pinned docume
 
 test('Chromium reads authenticated per-page install metadata and launches the latest release', async () => {
   const handle = await createPage();
-  const directory = await mkdtemp(join(tmpdir(), 'tendriller-install-'));
+  const scratch = await shortScratch('tendriller-install-');
   let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
   try {
     // Use full Chrome's installability evaluator, not headless-shell's stub.
-    // A dedicated persistent profile also avoids the intentional incognito error.
-    context = await chromium.launchPersistentContext(directory, {
+    // A dedicated persistent profile also avoids the intentional incognito error. Chrome's singleton socket
+    // path must stay short, so the profile and TMPDIR use a short alias of the real scratch directory.
+    context = await chromium.launchPersistentContext(scratch.profile, {
       channel: 'chromium', headless: true, ignoreHTTPSErrors: true,
+      env: { ...process.env, TMPDIR: scratch.tmp } as Record<string, string>,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
       args: [`--host-resolver-rules=${LOCAL_WORKER_HOST_RULES}`],
     });
@@ -275,13 +278,15 @@ test('Chromium reads authenticated per-page install metadata and launches the la
     await cdp.detach();
   } finally {
     await context?.close();
-    await rm(directory, { recursive: true, force: true });
+    await scratch.close();
     await deletePage(handle);
   }
 });
 
-test('sibling page origins isolate storage and cannot mutate each other through participant transport', async ({ context }) => {
-  const a = await createPage(), b = await createPage();
+test('sibling page origins of one agent isolate storage and cannot mutate each other through participant transport', async ({ context }) => {
+  // One agent, one credential and one shared signing key, granted automatically to both pages it creates.
+  const a = await createPage(), b = await createPage(OWNER, a);
+  expect(b.agent.id).toBe(a.agent.id); expect(b.signer).toBe(a.signer);
   try {
     await signInFixture(context); await claim(context, a); await claim(context, b);
     await publish(a, '<h1>Origin A</h1>'); await publish(b, '<h1>Origin B</h1>');
@@ -298,24 +303,25 @@ test('sibling page origins isolate storage and cannot mutate each other through 
       }) }).catch(() => {});
     }, { endpoint, applicationId: b.application.id });
     expect((await blocked).status()).toBe(403);
-  } finally { await Promise.all([deletePage(a), deletePage(b)]); }
+  } finally { await deletePage(b, { revokeAgent: false }); await deletePage(a); }
 });
 
-test('host transport requires a token and rejects ordinary data facets', async () => {
+test('host transport requires a token and rejects ordinary data actions in genuine signed participant requests', async () => {
   const handle = await createPage();
   try {
-    const request = { protocol: 'chronolog-participant-v1', applicationId: handle.application.id,
-      requestId: 'filtered', facet: 'database', action: 'submit', payload: {} };
-    const denied = await (await requester()).post(`${handle.api}/peers/participant`, { data: request });
+    // The current wire body is one canonical signed record (hex), signed by the agent's shared key.
+    // Only authority.read, publication.read/publish and finality.read/publish are control actions.
+    const signed = async (action: string) => authorityRecord(encodeRecord(await signParticipantRequest(
+      { applicationId: handle.application.id, requestId: `filtered-${action}`, action: action as any }, handle.signer)));
+    const denied = await (await requester()).post(`${handle.api}/peers/participant`, { data: await signed('authority.read') });
     expect(denied.status()).toBe(401);
-    for (const [facet, action] of [['database', 'submit'], ['content', 'chunk'], ['ephemeral', 'signal']]) {
-      const result = await agent(handle, '/peers/participant', 'POST', { ...request, facet, action });
-      expect(result.status).toBe(403);
-      expect(result.data.error.code).toBe('peer_participant_facet_forbidden');
+    for (const action of ['database.submit', 'content.chunk', 'ephemeral.signal']) {
+      const result = await agent(handle, '/peers/participant', 'POST', await signed(action));
+      expect(result.status, action).toBe(403);
+      expect(result.data.error.code, action).toBe('participant_action_forbidden');
     }
   } finally { await deletePage(handle); }
 });
-
 
 test('signed publication HTTP delivery preserves authored bytes and exact retry identity', async () => {
   const handle = await createPage();
@@ -355,9 +361,9 @@ test('browser forms join guest invites directly, report a page, and sign out', a
     await page.locator('textarea').fill('Synthetic browser form check');
     await page.getByRole('button', { name: 'Send report' }).click();
     await expect(page.locator('body')).toHaveText('Report received. Thank you.');
-    await page.goto('https://service.localhost:8790/dashboard');
+    await page.goto(`${SERVICE}/dashboard`);
     await page.getByRole('button', { name: 'Sign out' }).click();
-    await expect(page).toHaveURL('https://service.localhost:8790/');
+    await expect(page).toHaveURL(`${SERVICE}/`);
     expect((await context.cookies()).some(cookie => cookie.name === '__Host-tendriller')).toBe(false);
   } finally {
     await guest.close();
@@ -383,48 +389,69 @@ test('two browsers can open the same unclaimed page as its intended owner', asyn
 });
 
 
-test('broken unpaired publication gets an explicit update and retains browser pairing intent and local draft', async ({ page, context }) => {
+test('a publication whose app cannot enroll this browser gets an explicit update and retains its original bootstrap key and local draft', async ({ page, context }) => {
   const handle = await createPage();
   try {
     await signInFixture(context); await claim(context, handle);
-    // Exercise the maintained public profile, pairing-intent and draft consumers.
-    // The broken Worker models a released app that cannot enroll this browser.
+    // Exercise the maintained public browser bootstrap, profile and draft consumers. The host receives the
+    // real challenge request, but the enrollment reply is lost (the request is aborted before it leaves the
+    // browser), so the released app cannot finish initializing this device.
     const fixture = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'publication-notice-fixture.mjs', contents: `
       import { browserProfileId } from './docs/tutorial/shared/helpers/browser-profile.mjs';
-      import { createBrowserPairing } from './docs/tutorial/shared/pairing-browser.mjs';
+      import { bootstrapBrowser } from './docs/tutorial/shared/helpers/browser-bootstrap.mjs';
       import { createViewStore } from '@chronolog/peer-session/browser';
+      import { createSigningIdentity, exportSigningIdentity, importSigningIdentity, decodeRecord } from '@chronolog/authority';
       const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
-      const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view';
+      const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view', identityKey=profileId+':identity', storeKey=profileId+':store:';
       const viewId=sessionStorage.getItem(viewKey)||crypto.randomUUID();sessionStorage.setItem(viewKey,viewId);
-      const store=createViewStore({storage:localStorage,applicationId:configuration.applicationId,profileId,viewId});
-      const pairing=createBrowserPairing({configuration,profileId,workerUrl:new URL('./pairing-worker.mjs',location.href),
-        createWorker(){throw Error('BROKEN_V1_WORKER');}});
-      const input=document.querySelector('textarea');input.value=store.readDraft('draft')||'';
-      input.addEventListener('input',()=>store.writeDraft(input.value,'draft'));
-      document.querySelector('button').onclick=async()=>{try{await pairing.request();}catch{document.querySelector('#pairing').textContent='Worker unavailable; original request retained';}};
-      window.fixture={snapshot:()=>({profileId,viewId,request:pairing.read(),draft:store.readDraft('draft')})};
-    ` }, alias: { '@tendriller/core/pairing': join(process.cwd(), 'dist/sdk/pairing.mjs') }, bundle: true,
+      const view=createViewStore({storage:localStorage,applicationId:configuration.applicationId,profileId,viewId});
+      // One retained device: a resumed document reuses its identity and stored bootstrap record, never a new key.
+      const saved=localStorage.getItem(identityKey);
+      const identity=saved?await importSigningIdentity(JSON.parse(saved)):await createSigningIdentity();
+      if(!saved)localStorage.setItem(identityKey,JSON.stringify(await exportSigningIdentity(identity)));
+      const store={
+        async get(key){const value=localStorage.getItem(storeKey+key);return value===null?null:Uint8Array.from(atob(value),c=>c.charCodeAt(0));},
+        async put(key,bytes){localStorage.setItem(storeKey+key,btoa(String.fromCharCode(...bytes)));},
+      };
+      const input=document.querySelector('textarea');input.value=view.readDraft('draft')||'';
+      input.addEventListener('input',()=>view.writeDraft(input.value,'draft'));
+      document.querySelector('button').onclick=async()=>{
+        try{await bootstrapBrowser({configuration,device:{identity,store},signal:AbortSignal.timeout(20_000)});}
+        catch{document.querySelector('#enrollment').textContent='Enrollment unavailable; original bootstrap retained';}
+      };
+      window.fixture={async snapshot(){
+        const raw=await store.get('starter/bootstrap/'+configuration.applicationId),intent=raw&&decodeRecord(raw);
+        return {profileId,viewId,device:identity.publicKey,draft:view.readDraft('draft'),
+          bootstrap:intent&&{publicKey:intent.publicKey,epochKey:Array.from(intent.epochKey)}};
+      }};
+    ` }, alias: { '@tendriller/core/peers': join(process.cwd(), 'dist/sdk/peers.mjs'),
+      '@tendriller/core/authority': join(process.cwd(), 'dist/sdk/authority.mjs') }, bundle: true,
       format: 'esm', platform: 'browser', write: false });
     const assets = (version: string) => ({
-      'index.html': { type: 'text/html', body: '<!doctype html><title>Unpaired publication</title><meta name="tendriller-updates" content="careful"><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="pairing">Not paired</p><script type="module" src="./page.mjs"></script>' },
+      'index.html': { type: 'text/html', body: '<!doctype html><title>Unenrolled publication</title><meta name="tendriller-updates" content="careful"><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="enrollment">Not enrolled</p><script type="module" src="./page.mjs"></script>' },
       'page.mjs': { type: 'text/javascript', body: fixture.outputFiles[0].text },
     });
-    const first=await publishFiles(handle,assets('Broken unpaired v1'));
+    const first=await publishFiles(handle,assets('Unenrollable v1'));
     const requests: string[]=[];let sentFrames=0;
     page.on('request',request=>{if(request.url().includes('/_tendril/'))requests.push(request.method()+' '+new URL(request.url()).pathname);});
     page.on('websocket',socket=>{if(socket.url().endsWith('/_tendril/publication-ready'))socket.on('framesent',()=>sentFrames++);});
+    await page.route('**/_tendril/peers/enrollment',route=>route.request().postDataJSON()?.action==='enroll'?route.abort('failed'):route.continue());
     const initial=page.waitForEvent('websocket',socket=>socket.url().endsWith('/_tendril/publication-ready'))
       .then(socket=>socket.waitForEvent('framereceived',frame=>JSON.parse(String(frame.payload)).current===first.version));
     await openClaimed(page,handle);await initial;
-    await expect(page.getByRole('heading',{name:'Broken unpaired v1'})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'Unenrollable v1'})).toBeVisible();
     await page.getByRole('textbox',{name:'Local draft'}).fill('Retain this unresolved local draft');
     await page.getByRole('button',{name:'Connect this device'}).click();
-    await expect(page.locator('#pairing')).toHaveText('Worker unavailable; original request retained');
+    await expect(page.locator('#enrollment')).toHaveText('Enrollment unavailable; original bootstrap retained');
     const before=await page.evaluate(()=>(window as any).fixture.snapshot());
-    expect(before.request.requestId).toBeTruthy();expect(before.request.pairingId).toBeUndefined();
+    // The bootstrap key was durably retained before the first enrollment proof, and is this device's own key.
+    expect(before.bootstrap.publicKey).toBe(before.device);expect(before.bootstrap.epochKey).toHaveLength(32);
+    expect(before.draft).toBe('Retain this unresolved local draft');
     expect(await page.evaluate(()=>(window as any).tendril.application.available)).toBe(false);
+    const enrollmentRequests=()=>requests.filter(value=>value.includes('/peers/enrollment')).length;
+    const enrollmentBefore=enrollmentRequests();expect(enrollmentBefore).toBeGreaterThan(0);
     const pinned=page.url();const quietBaseline=requests.length;
-    await publishFiles(handle,assets('Repaired unpaired v2'));
+    await publishFiles(handle,assets('Repaired v2'));
     const notice=page.getByRole('status',{name:'Publication update'});
     await expect(notice).toBeVisible();await expect(notice).toContainText('New version published');
     await expect(page.getByRole('textbox')).toHaveValue(before.draft);expect(page.url()).toBe(pinned);
@@ -432,10 +459,11 @@ test('broken unpaired publication gets an explicit update and retains browser pa
     expect(requests.slice(quietBaseline)).toEqual([]);expect(sentFrames).toBe(0);
     const update=page.getByRole('link',{name:'Open update',exact:true});
     await expect(update).toHaveAttribute('href',localPageUrl(handle));
-    await update.click();await expect(page.getByRole('heading',{name:'Repaired unpaired v2'})).toBeVisible();
+    await update.click();await expect(page.getByRole('heading',{name:'Repaired v2'})).toBeVisible();
     await expect(page.getByRole('textbox')).toHaveValue(before.draft);
+    // The resumed document keeps the same device and original bootstrap key; no update retries enrollment or replaces it.
     expect(await page.evaluate(()=>(window as any).fixture.snapshot())).toEqual(before);
+    expect(enrollmentRequests()).toBe(enrollmentBefore);
     await expect(page.getByRole('status',{name:'Publication update'})).toBeHidden();
-    expect(requests.some(value=>value.includes('/peers/pairing'))).toBe(false);
   } finally { await deletePage(handle); }
 });

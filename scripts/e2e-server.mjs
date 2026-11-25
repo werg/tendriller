@@ -1,5 +1,6 @@
 // Isolated, credential-free local Worker for Playwright. All state lives in a temp directory.
 import { spawn } from "node:child_process";
+import { LOCAL_WORKER_PORT, LOCAL_WORKER_SERVICE } from "./e2e-network.mjs";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -42,8 +43,8 @@ async function main() {
     `INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES ('${otherHash}', 'e2e-other', ${now}, ${now + 86_400_000})`,
   ].join("; ") + ";";
   await run(["d1", "execute", "ACCOUNTS", "--local", "--config", config, "--persist-to", state, "--command", sql]);
-  worker = spawn("npx", ["wrangler", "dev", ...entry, ...bundle, "--config", config, "--ip", "127.0.0.1", "--port", "8790",
-    "--local-protocol", "https", "--persist-to", state, "--var", "PUBLIC_BASE:https://service.localhost:8790",
+  worker = spawn("npx", ["wrangler", "dev", ...entry, ...bundle, "--config", config, "--ip", "127.0.0.1", "--port", String(LOCAL_WORKER_PORT),
+    "--local-protocol", "https", "--persist-to", state, "--var", `PUBLIC_BASE:${LOCAL_WORKER_SERVICE}`,
     "--var", "PAGE_BASE_DOMAIN:pages.localhost"], { stdio: "inherit" });
   worker.once("exit", code => { console.error(`local Worker exited ${code}`); cleanup(); process.exit(code ?? 1); });
 }

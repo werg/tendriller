@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { Agent, WebSocket, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { TUTORIAL_FILES } from '../../scripts/onboarding.mjs';
-import { SERVICE, OWNER, localPageUrl, type Handle } from './local-helpers';
+import { SERVICE, OWNER, localPageUrl, type PageHandle } from './local-helpers';
 
 const SLUG = 'stock';
 
@@ -96,7 +96,7 @@ export async function prepareSqlTutorial(consumer: string, engineDirectory: stri
     const pageModule = (name: string) => load(`pages/${SLUG}/${name}`);
     const context = await pageContext(SLUG);
     const credential = JSON.parse(await readFile(join(workspaceRoot, '.tendriller/agent/credential.json'), 'utf8'));
-    const handle: Handle = { id: created.id, page_url: created.page_url, api: `${SERVICE}/api/agent/pages/${created.id}`,
+    const handle: PageHandle = { id: created.id, page_url: created.page_url, api: `${SERVICE}/api/agent/pages/${created.id}`,
       token: credential.token, agent: credential.agent, application: saved.application };
     // Host preparation is metadata only: no page device, schema, data root or epoch key is created. It also places
     // the package's exact browser engine assets in pages/stock/engine/; they must be the verified ones under test.

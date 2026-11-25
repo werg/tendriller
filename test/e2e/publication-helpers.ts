@@ -1,51 +1,55 @@
-import { createPeerIdentity, participantGrant, bytesDigest, signPublicationManifest, verifyAuthorityBundle,
-  verifyPublicationManifest, type PeerIdentity, type AuthorityBundle } from '@chronolog/peer-generation/control';
-import type { PeerControlsClient } from '../../dist/sdk/peer-controls.mjs';
+import { createHash } from 'node:crypto';
+import { createSigningIdentity, signPublicationManifest, verifyPublicationManifest,
+  type SigningIdentity, type SignedPublication } from '@chronolog/authority';
+import type { PeersClient } from '../../dist/sdk/peers.mjs';
 
-const authors = new WeakMap<PeerControlsClient, Promise<{ author: PeerIdentity; authority: AuthorityBundle }>>();
+/** The agent's one shared signing key. It signs publications for every page the agent created. */
+export type AgentSigner = SigningIdentity;
+export type PublicationReceipt = { publication: SignedPublication; version: number };
+export type PublishedAssets = Record<string, { body: string | Uint8Array; type: string }>;
 
-/** Code-only test application: no alternate database, application executor or publication protocol. */
-async function publisher(peers: PeerControlsClient) {
-  let pending = authors.get(peers);
-  if (!pending) {
-    pending = (async () => {
-      const author = await createPeerIdentity();
-      const authority = await peers.configureApplication({ historyId: 'browser-publication-check',
-        executionManifestDigest: await bytesDigest(new TextEncoder().encode('code-only-browser-fixture')),
-        definition: { id: 'authored-page-check', version: '1', schema: null, commands: [], queries: [] },
-        schemaAdministrator: author.publicKey, epoch: 0,
-        keyDigest: await bytesDigest(crypto.getRandomValues(new Uint8Array(32))),
-        members: [{ grant: participantGrant(author.publicKey, { publisher: true }) }],
-      });
-      await verifyAuthorityBundle(authority);
-      return { author, authority };
-    })();
-    authors.set(peers, pending);
-  }
-  return pending;
+export const newAgentSigner = (): Promise<AgentSigner> => createSigningIdentity();
+/** Chronolog Ed25519 public keys are hex; the host registers an agent's key as base64url. */
+export const registrationKey = (signer: AgentSigner): string => Buffer.from(signer.publicKey, 'hex').toString('base64url');
+
+/** Code-only fixture: it has no database, so the execution graph is a fixed label, never a schema. */
+const executionManifestDigest = createHash('sha256').update('tendriller-e2e-code-only-publication').digest('hex');
+const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+
+/** Prepare the independent publication grant for this agent's key. Idempotent for the same signer and graph. */
+async function publicationScope(peers: PeersClient, signer: AgentSigner) {
+  let metadata = await peers.application();
+  if (metadata.publicationAuthority === null)
+    metadata = await peers.prepare({ executionManifestDigest, executionProfile: 'events', publisherKeys: [signer.publicKey] });
+  const scope = metadata.publicationAuthority;
+  if (!scope || !scope.publisherKeys.includes(signer.publicKey) || scope.executionManifestDigest !== executionManifestDigest)
+    throw new Error('The host publication grant does not name this agent signer and fixture execution graph');
+  return scope;
 }
 
-/** Complete signed authored graph, delivered through the public participant transport. */
-export async function publishAssetGraph(peers: PeerControlsClient,
-  assets: Record<string, { body: string | Uint8Array; type: string }>, entry = 'index.html') {
-  const { author, authority } = await publisher(peers);
-  const previous = await peers.publication(), descriptor = authority.descriptor.payload;
-  const files = [], chunks = new Map<string, { hash: string; bytes: string }>();
+/**
+ * Sign a complete authored graph with the agent's shared key and deliver the raw SignedPublication JSON
+ * through the public authority client. The manifest names the publication grant revision the host
+ * returned, so the host independently re-verifies publisher, application, execution graph and head.
+ */
+export async function publishAssetGraph(peers: PeersClient, signer: AgentSigner, assets: PublishedAssets,
+  entry = 'index.html'): Promise<PublicationReceipt> {
+  const scope = await publicationScope(peers, signer);
+  const previous = await peers.publication() as PublicationReceipt | null;
+  const files: { path: string; hash: string; size: number; type: string }[] = [], chunks = new Map<string, { hash: string; bytes: string }>();
   for (const path of Object.keys(assets).sort()) {
     const asset = assets[path];
     const bytes = typeof asset.body === 'string' ? new TextEncoder().encode(asset.body) : asset.body;
-    const hash = await bytesDigest(bytes);
+    const hash = sha256(bytes);
     files.push({ path, hash, size: bytes.byteLength, type: asset.type });
     chunks.set(hash, { hash, bytes: Buffer.from(bytes).toString('base64') });
   }
-  const publication = await signPublicationManifest({ applicationId: descriptor.applicationId,
-    historyId: descriptor.historyId, profile: descriptor.profile,
-    controlRevision: authority.controls.at(-1)!.payload.revision, author: author.publicKey,
-    operationId: crypto.randomUUID(), revision: previous ? previous.publication.payload.revision + 1 : 0,
-    previous: previous?.publication.id ?? null, definitionDigest: descriptor.definitionDigest,
-    executionManifestDigest: descriptor.executionManifestDigest, entry, files }, author);
-  await verifyPublicationManifest(publication, await verifyAuthorityBundle(authority));
-  const result = await peers.publish(publication, [...chunks.values()]);
-  if (result.publication.id !== publication.id) throw new Error('Publication response changed the signed release');
-  return result;
+  const publication = await signPublicationManifest({ applicationId: scope.applicationId, membershipId: scope.grantId,
+    author: signer.publicKey, operationId: crypto.randomUUID(),
+    revision: previous ? previous.publication.payload.revision + 1 : 0, previous: previous?.publication.id ?? null,
+    executionManifestDigest: scope.executionManifestDigest, entry, files }, signer);
+  await verifyPublicationManifest(publication, scope);
+  const receipt = await peers.publish(publication, [...chunks.values()]) as PublicationReceipt;
+  if (receipt.publication.id !== publication.id) throw new Error('Publication response changed the signed release');
+  return receipt;
 }

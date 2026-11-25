@@ -2,7 +2,7 @@ import { voicePage } from "./authored-pages";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { test, expect } from "@playwright/test";
-import { claim, createPage, deletePage, openClaimed, publish, signInFixture } from "./local-helpers";
+import { claim, createPage, deletePage, openClaimed, publish, signInFixture, SERVICE } from "./local-helpers";
 
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -11,7 +11,7 @@ test("speech Worker passes model length as bigint to an i64 WASM export", async 
   const wasm = new Uint8Array([1, 2, 3]);
   const model = new Uint8Array([4, 5, 6, 7]);
   const engineScript = new TextEncoder().encode("/* verified fixture script */");
-  await page.goto("https://service.localhost:8790/health");
+  await page.goto(`${SERVICE}/health`);
   const result = await page.evaluate(async ({ script, scriptBytes, scriptHash, wasmBytes, wasmHash, modelBytes, modelHash }) => {
     const preamble = `
       var createCactus = async () => ({

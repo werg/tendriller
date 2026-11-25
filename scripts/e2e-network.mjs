@@ -1,5 +1,9 @@
 import dns from 'node:dns';
 
+export const LOCAL_WORKER_PORT = Number(process.env.TENDRILLER_E2E_PORT ?? 8790);
+if (!Number.isSafeInteger(LOCAL_WORKER_PORT) || LOCAL_WORKER_PORT < 1 || LOCAL_WORKER_PORT > 65535) throw Error('TENDRILLER_E2E_PORT must be an integer port from 1 to 65535');
+export const LOCAL_WORKER_SERVICE = `https://service.localhost:${LOCAL_WORKER_PORT}`;
+
 // The browser and Playwright's Node health/API clients must reach the same
 // isolated Worker while retaining the service and per-page HTTP/TLS origins.
 // Container DNS is not required to resolve subdomains of localhost.

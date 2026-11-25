@@ -1,12 +1,12 @@
 import { devices, expect, test, webkit, type Page } from '@playwright/test';
-import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAgentClient } from '../../dist/sdk/client.mjs';
-import { publishAssetGraph } from './publication-helpers';
+import { newAgentSigner, publishAssetGraph, registrationKey, type AgentSigner } from './publication-helpers';
 import { staging, stagingSession } from './staging-session';
 
-/** A page plus the token of the one synthetic agent that created it. */
-type Handle = { id: string; page_url: string; api: string; token: string; application: { id: string } };
+/** A page plus the token and shared signing key of the one synthetic agent that created it. */
+type Handle = { id: string; page_url: string; api: string; token: string; application: { id: string }; signer: AgentSigner };
 const client = (handle: Handle) => createAgentClient({ service: staging, token: handle.token }).page(handle.id, { applicationId: handle.application.id });
 const handles: Handle[] = [];
 const createAttempts: number[] = [];
@@ -55,7 +55,7 @@ async function createPage(name: string, intendedOwner = owner.email): Promise<Ha
     const reason = body?.error?.message;
     return new Error(`${step} returned HTTP ${response.status}${typeof reason === 'string' ? ` (${reason})` : ''}`);
   };
-  const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
+  const signer = await newAgentSigner(), publicKey = registrationKey(signer);
   const registered = await fetch(`${staging}/api/agents`, { method: 'POST',
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: intendedOwner, name: 'staging-acceptance', publicKey }) });
   if (registered.status !== 201) throw await failure('Agent registration', registered);
@@ -67,7 +67,7 @@ async function createPage(name: string, intendedOwner = owner.email): Promise<Ha
     await fetch(`${staging}/api/agent`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
     throw error;
   }
-  const handle = { ...await response.json(), token } as Handle;
+  const handle = { ...await response.json(), token, signer } as Handle;
   handles.push(handle);
   expect(new URL(handle.api).origin).toBe(staging);
   return handle;
@@ -79,8 +79,8 @@ async function openHoldingPage(page: Page, handle: Handle) {
   expect(new URL(page.url()).origin).toBe(new URL(handle.page_url).origin);
 }
 
-function publish(peers: ReturnType<typeof client>['peers'], name: string) {
-  return publishAssetGraph(peers, {
+function publish(handle: Handle, name: string) {
+  return publishAssetGraph(client(handle).peers, handle.signer, {
     'index.html': { type: 'text/html', body: `<!doctype html><html lang="en"><meta charset="utf-8"><title>Staging test</title><main><h1>${name}</h1></main></html>` },
   });
 }
@@ -160,7 +160,7 @@ test('owner claim, reconnect for pushed first publication and live invitations',
   await failure;
   await expect.poll(() => connections).toBe(2);
   const peers = client(handle).peers;
-  const release = await publish(peers, 'First signed release');
+  const release = await publish(handle, 'First signed release');
   await expect(page.getByRole('heading', { name: 'First signed release' })).toBeVisible({ timeout: 10_000 });
   expect(messages.map(value => JSON.parse(String(value)).current)).toContain(1);
   expect(messages.every(value => JSON.parse(String(value)).type === 'publication')).toBe(true);
@@ -187,7 +187,7 @@ test('owner claim, reconnect for pushed first publication and live invitations',
   }
 
   const canonicalBase = await page.evaluate(() => (window as any).tendril.identity.base);
-  await publish(peers, 'Second signed release');
+  await publish(handle, 'Second signed release');
   await expect(page.getByRole('heading')).toHaveText('Second signed release', { timeout: 15_000 });
   await page.reload();
   await expect(page.getByRole('heading')).toHaveText('Second signed release');
@@ -210,8 +210,8 @@ test('signed page origins isolate storage and reject sibling participant request
   const other = await context.newPage();
   await openHoldingPage(page, a);
   await openHoldingPage(other, b);
-  await publish(client(a).peers, 'Origin one');
-  await publish(client(b).peers, 'Origin two');
+  await publish(a, 'Origin one');
+  await publish(b, 'Origin two');
   await expect(page.getByRole('heading', { name: 'Origin one', exact: true })).toBeVisible({ timeout: 25_000 });
   await expect(other.getByRole('heading', { name: 'Origin two', exact: true })).toBeVisible({ timeout: 25_000 });
   expect(new URL(page.url()).origin).not.toBe(new URL(other.url()).origin);
@@ -246,7 +246,7 @@ test('field inspection keeps a photo and notes through offline reload and reconn
   });
   const handle = await createPage('Field inspection');
   await openHoldingPage(page, handle);
-  await publishAssetGraph(client(handle).peers, {
+  await publishAssetGraph(client(handle).peers, handle.signer, {
     'index.html': { type: 'text/html', body: await readFile('test/e2e/specimens/inspection.html', 'utf8') },
     'inspection.mjs': { type: 'text/javascript', body: await readFile('test/e2e/specimens/inspection.mjs', 'utf8') },
   });
@@ -322,7 +322,7 @@ test('private intake permits corrections and releases only a reviewed aggregate 
     const shared = await createPage('Reviewed intake summary', outsider.email);
     const display = await context.newPage();
     await openHoldingPage(display, shared);
-    await publishAssetGraph(client(shared).peers, {
+    await publishAssetGraph(client(shared).peers, shared.signer, {
       'index.html': { type: 'text/html', body: '<!doctype html><html lang="en"><head><title>Reviewed results</title></head><body><h1>Reviewed results</h1><p id="count"></p><script type="module" src="./results.mjs"></script></body></html>' },
       'results.mjs': { type: 'text/javascript', body: `const summary = ${JSON.stringify(summary)}; document.querySelector("#count").textContent = \`Responses received: \${summary.count} · Reviewed revision \${summary.revision}\`;` },
     });
@@ -357,7 +357,7 @@ test('mobile inspection keeps drafts across connectivity loss and offers camera 
       }
       const pages = await Promise.all([android.newPage(), iphone.newPage()]);
       await Promise.all(pages.map(page => openHoldingPage(page, handle)));
-      await publishAssetGraph(client(handle).peers, {
+      await publishAssetGraph(client(handle).peers, handle.signer, {
         'index.html': { type: 'text/html', body: await readFile('test/e2e/specimens/inspection.html', 'utf8') },
         'inspection.mjs': { type: 'text/javascript', body: await readFile('test/e2e/specimens/inspection.mjs', 'utf8') },
       });

@@ -1,9 +1,10 @@
+import { LOCAL_WORKER_SERVICE } from '../../scripts/e2e-network.mjs';
 import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 
 test('the mounted inbox shows socket activity and prompts its host only after a click', async ({ page }) => {
   const bundle = await readFile('server/public/application-inbox.html', 'utf8');
-  const origin = 'https://service.localhost:8790';
+  const origin = LOCAL_WORKER_SERVICE;
   const appId = 'a'.repeat(64);
   const grant = { proof: 'sample.' + 'a'.repeat(43), exp: Date.now() + 60_000 };
   await page.route(origin + '/inbox-test', route => route.fulfill({
@@ -51,7 +52,7 @@ test('the mounted inbox shows socket activity and prompts its host only after a 
     transport.socket.dispatchEvent(new MessageEvent('message', { data: '{"type":"changed"}' }));
     return transport.url as string;
   });
-  expect(url).toBe('wss://service.localhost:8790/api/assistant/pages/aaaaaaaaaaaa/activity');
+  expect(url).toBe(`${origin.replace('https:', 'wss:')}/api/assistant/pages/aaaaaaaaaaaa/activity`);
   await expect(card.getByRole('status')).toHaveText(/New application activity/);
   expect(await page.evaluate(() => (window as any).prompts)).toEqual([]);
   await card.getByRole('button', { name: 'Check inbox in this chat' }).click();

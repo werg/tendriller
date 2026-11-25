@@ -1,11 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+test('local Worker port is explicit, consistent and rejects invalid values', () => {
+  const moduleUrl = new URL('../e2e-network.mjs', import.meta.url).href;
+  for (const [port, expected] of [[undefined, 8790], ['18891', 18891], ['0', null], ['65536', null], ['not-a-port', null]]) {
+    const env = { ...process.env };
+    if (port === undefined) delete env.TENDRILLER_E2E_PORT;
+    else env.TENDRILLER_E2E_PORT = port;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', `import {LOCAL_WORKER_PORT, LOCAL_WORKER_SERVICE} from ${JSON.stringify(moduleUrl)}; console.log(JSON.stringify({port:LOCAL_WORKER_PORT,service:LOCAL_WORKER_SERVICE}));`], { env, encoding: 'utf8' });
+    if (expected === null) {
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /TENDRILLER_E2E_PORT must be an integer port/);
+    } else {
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), { port: expected, service: `https://service.localhost:${expected}` });
+    }
+  }
+});
 
 test('local Worker DNS retains host routing for Playwright readiness and API clients', { timeout: 45_000 }, async t => {
   // Process/compiler startup can compete with the full Node suite. The actual
