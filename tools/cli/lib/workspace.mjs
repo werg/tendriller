@@ -74,15 +74,12 @@ export async function openSharedSigner(path, { create = false } = {}) {
   try { return device.identity; } finally { await device.close(); }
 }
 
-/** One page device: its own native store, always signed by the shared agent key. */
+/** One page device: its own native store, always signed by the shared agent key.
+ * Every store is served by Chronolog's one pooled SQLite worker for this process. */
 export async function openPageDevice({ path, signer, create = false }) {
-  const [{ NativeBytesStore }, { openApplicationDevice }] = await Promise.all([
-    import('@chronolog/peer-session/native'), import('@chronolog/peer-session')]);
+  const { openNativeDevice } = await import('@chronolog/peer-session/native');
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const store = await NativeBytesStore.open(path);
-  try {
-    return await openApplicationDevice({ store, managedSigner: signer, ...(create ? { create: true } : {}), close: () => store.close() });
-  } catch (error) { await store.close(); throw error; }
+  return openNativeDevice({ path, managedSigner: signer, ...(create ? { create: true } : {}) });
 }
 
 const agentName = value => {
