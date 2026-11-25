@@ -51,7 +51,7 @@ test('the mounted inbox shows socket activity and prompts its host only after a 
     transport.socket.dispatchEvent(new MessageEvent('message', { data: '{"type":"changed"}' }));
     return transport.url as string;
   });
-  expect(url).toBe('wss://service.localhost:8790/api/t/aaaaaaaaaaaa/assistant/activity');
+  expect(url).toBe('wss://service.localhost:8790/api/assistant/pages/aaaaaaaaaaaa/activity');
   await expect(card.getByRole('status')).toHaveText(/New application activity/);
   expect(await page.evaluate(() => (window as any).prompts)).toEqual([]);
   await card.getByRole('button', { name: 'Check inbox in this chat' }).click();

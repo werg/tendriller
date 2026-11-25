@@ -11,7 +11,7 @@ test('verified owner claims a page and executes its signed authored module', asy
   const handle = await createPage();
   try {
     expect(handle.application.id).toMatch(/^[a-f0-9]{64}$/);
-    expect(handle.token).toMatch(/^tk_/);
+    expect(handle.token).toMatch(/^ta_/);
     await signInFixture(context); await claim(context, handle);
     const notified = page.waitForEvent('websocket', socket => socket.url().endsWith('/_tendril/publication-ready'))
       .then(socket => socket.waitForEvent('framereceived', frame => JSON.parse(String(frame.payload)).current === 1));
