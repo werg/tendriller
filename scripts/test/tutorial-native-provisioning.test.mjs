@@ -54,20 +54,25 @@ async function ownerAuthority(nativeKey, rootPublicKey, forApplication = applica
 async function harness(t, { hostAuthority = null } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'page-provisioning-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const store = memoryStore(), counts = { devices: 0, deviceCloses: 0 };
+  const store = memoryStore(), counts = { devices: 0, deviceCloses: 0 }, events = [], control = { inUse: false, failMarkerOnce: false, failClose: false };
   const probe = await peer.openApplicationDevice({ store, create: true }), { publicKey, privateKey } = probe.identity; await probe.close();
   const state = { hostAuthority }, privateState = new Map();
   const context = { page: { applicationId, slug: 'notes' }, signer: { publicKey, privateKey }, signal: undefined,
     host: { peers: { application: async () => ({ selection: { id: applicationId },
       authority: state.hostAuthority ? { record: hex(authority.encodeRecord(state.hostAuthority)) } : null, publicationAuthority: null }) } },
     readPrivate: async (name, optional) => { if (privateState.has(name)) return structuredClone(privateState.get(name)); if (optional) return null; throw Object.assign(Error('missing ' + name), { code: 'ENOENT' }); },
-    savePrivate: async (name, value) => { privateState.set(name, structuredClone(value)); return value; },
+    savePrivate: async (name, value) => {
+      if (name === 'initialized.json' && control.failMarkerOnce) { control.failMarkerOnce = false; throw Error('marker write reply uncertain'); }
+      events.push('save:' + name); privateState.set(name, structuredClone(value)); return value;
+    },
     openDevice: async ({ create = false } = {}) => {
-      counts.devices++; const device = await peer.openApplicationDevice({ store, ...(create ? { create: true } : {}) });
-      return { ...device, async close() { counts.deviceCloses++; return device.close?.(); } };
+      // An owner that holds the page store (the running agent program) refuses a second opener, like the real device lease.
+      if (control.inUse) throw Object.assign(Error('BYTES_STORE_IN_USE'), { code: 'BYTES_STORE_IN_USE' });
+      counts.devices++; events.push('device-open'); const device = await peer.openApplicationDevice({ store, ...(create ? { create: true } : {}) });
+      return { ...device, async close() { counts.deviceCloses++; events.push('device-close'); if (control.failClose) throw Error('device close failed'); return device.close?.(); } };
     } };
   const file = async (name, value) => { const path = join(directory, name); await writeFile(path, JSON.stringify(value)); return path; };
-  return { context, state, counts, store, privateState, file, publicKey, provision: (action, argument) => provisionPage(context, action, argument) };
+  return { context, state, counts, store, privateState, file, publicKey, events, control, privateStateKeys: async () => [...privateState.keys()], provision: (action, argument) => provisionPage(context, action, argument) };
 }
 
 test('sign-enrollment signs only an exact challenge for this page and shared signer, retains the original proof and exposes no private key', async t => {
@@ -156,4 +161,119 @@ test('the native page owner opens only a provisioned page from cached state and 
   // A marker for another signer is refused rather than adopted.
   await h.context.savePrivate('initialized.json', { applicationId, publicKey: 'ab'.repeat(32), executionManifestDigest, provisioned: true });
   await assert.rejects(openNativePage(h.context, { definition }), error => error.code === 'native_page_provisioning_required');
+});
+
+/** A request, the owner's wrapped package for it and the page's provisioning harness, ready to import. */
+async function readyToImport(t) {
+  const h = await harness(t), ownerDevice = await peer.openApplicationDevice({ store: memoryStore(), create: true });
+  const owner = await ownerAuthority(h.publicKey, ownerDevice.identity.publicKey);
+  h.state.hostAuthority = owner.bundle;
+  const signedRequest = authority.decodeRecord(unhex((await h.provision('provisioning-request')).record));
+  const ownerSession = await peer.createApplicationSession({ device: ownerDevice, definition, authority: owner.bundle, epochKeys: new Map([[0, owner.key]]) });
+  let packageText;
+  try { packageText = hex(authority.encodeRecord(await ownerSession.provisioning.exportProvisioning(signedRequest))); } finally { await ownerSession.close(); }
+  return { h, owner, packagePath: await h.file('package.json', { record: packageText }) };
+}
+
+test('the provisioned marker follows the verified import, the awaited device close and a durable release proof', async t => {
+  const { h, packagePath } = await readyToImport(t);
+  h.events.length = 0;
+  const first = await h.provision('import-provisioning', packagePath);
+  const at = name => h.events.findIndex(event => event === name || event.startsWith(name));
+  assert.ok(at('save:provisioning-receipt-') >= 0, 'the verified import leaves a durable import receipt');
+  assert.ok(at('save:provisioning-receipt-') < at('device-close'), 'the import is proven before the lease is released');
+  assert.ok(at('save:provisioning-released-') > at('device-close'), 'the release proof is written only after the awaited close');
+  assert.ok(at('save:initialized.json') > at('save:provisioning-released-'), 'the marker the agent watches follows the release proof');
+  const names = await h.privateStateKeys();
+  const imported = await h.context.readPrivate(names.find(name => name.startsWith('provisioning-receipt-')));
+  assert.deepEqual(Object.keys(imported).sort(), ['applicationId', 'epoch', 'executionManifestDigest', 'kind', 'packageDigest', 'publicKey', 'schemaVersion']);
+  assert.equal(imported.kind, 'imported'); assert.equal(imported.applicationId, applicationId); assert.equal(imported.publicKey, h.publicKey); assert.equal(imported.schemaVersion, 1);
+  assert.match(imported.packageDigest, /^[a-f0-9]{64}$/);
+  const released = await h.context.readPrivate(names.find(name => name.startsWith('provisioning-released-')));
+  assert.equal(released.kind, 'released'); assert.equal(released.packageDigest, imported.packageDigest);
+  assert.equal(JSON.stringify([imported, released]).includes('privateKey'), false);
+  assert.deepEqual(await h.context.readPrivate('initialized.json'), { applicationId, publicKey: h.publicKey, executionManifestDigest, provisioned: true });
+  assert.equal(first.provisioned, true);
+});
+
+test('an exact repeat while the agent owns the page store returns the receipt without opening the store; a different package fails explicitly', async t => {
+  const { h, packagePath } = await readyToImport(t);
+  const first = await h.provision('import-provisioning', packagePath);
+  const opened = h.counts.devices, marker = structuredClone(await h.context.readPrivate('initialized.json'));
+  h.control.inUse = true; // the agent program now owns the store and publishes nothing from here
+  assert.deepEqual(await h.provision('import-provisioning', packagePath), first, 'the exact repeat returns the same successful result');
+  assert.equal(h.counts.devices, opened, 'the exact repeat opened no page store');
+  // A fresh, different package never steals the active owner's store and changes nothing.
+  const keys = (await h.privateStateKeys()).slice();
+  await assert.rejects(h.provision('import-provisioning', await h.file('other.json', { record: 'ab'.repeat(16) })),
+    error => error.code === 'page_store_in_use' && /nothing was changed/.test(error.message) && error.cause?.code === 'BYTES_STORE_IN_USE');
+  assert.deepEqual(await h.context.readPrivate('initialized.json'), marker);
+  assert.equal((await h.privateStateKeys()).filter(name => name.startsWith('provisioning-receipt-') || name.startsWith('provisioning-released-')).length, 2, 'no receipt exists for the refused package');
+  assert.deepEqual((await h.privateStateKeys()).filter(name => !keys.includes(name)).filter(name => name.startsWith('provisioning-receipt-')), []);
+});
+
+test('a receipt persisted before an uncertain marker write completes the marker from the receipt without a second import', async t => {
+  const { h, packagePath } = await readyToImport(t);
+  h.control.failMarkerOnce = true;
+  await assert.rejects(h.provision('import-provisioning', packagePath), /marker write reply uncertain/);
+  assert.equal(await h.context.readPrivate('initialized.json', true), null);
+  assert.equal((await h.privateStateKeys()).filter(name => name.startsWith('provisioning-released-')).length, 1, 'the release proof was already durable, so the marker needs no reopen');
+  const opened = h.counts.devices; h.control.inUse = true; // even with the store now owned elsewhere
+  const retried = await h.provision('import-provisioning', packagePath);
+  assert.equal(retried.provisioned, true); assert.equal(h.counts.devices, opened, 'no import and no store open');
+  assert.deepEqual(await h.context.readPrivate('initialized.json'), { applicationId, publicKey: h.publicKey, executionManifestDigest, provisioned: true });
+});
+
+test('an import receipt is not release proof: after a failed close nothing is claimed while the store is held, and recovery follows the actual release', async t => {
+  const { h, packagePath } = await readyToImport(t);
+  h.control.failClose = true;
+  await assert.rejects(h.provision('import-provisioning', packagePath), /device close failed/);
+  const proofs = async prefix => (await h.privateStateKeys()).filter(name => name.startsWith(prefix));
+  assert.equal((await proofs('provisioning-receipt-')).length, 1, 'the import itself is durably proven');
+  assert.equal((await proofs('provisioning-released-')).length, 0, 'no release proof exists for a close that failed');
+  assert.equal(await h.context.readPrivate('initialized.json', true), null, 'the marker never precedes a proven release');
+  // The importer (or the agent) may still hold the store: the exact retry fails closed and claims nothing.
+  h.control.failClose = false; h.control.inUse = true;
+  await assert.rejects(h.provision('import-provisioning', packagePath), error => error.code === 'provisioning_release_uncertain' && /release[\s\S]*not proven/.test(error.message) && error.cause?.code === 'BYTES_STORE_IN_USE');
+  assert.equal((await proofs('provisioning-released-')).length, 0);
+  assert.equal(await h.context.readPrivate('initialized.json', true), null, 'no result or marker claim while the lease may be held');
+  // After the actual release, one exclusive cached-device acquisition validates cached authority and keys and closes: no reimport.
+  h.control.inUse = false; h.events.length = 0; const opened = h.counts.devices;
+  const recovered = await h.provision('import-provisioning', packagePath);
+  assert.equal(recovered.provisioned, true);
+  assert.equal(h.counts.devices, opened + 1, 'exactly one cached-device acquisition');
+  assert.deepEqual(h.events.map(event => event.replace(/-[a-f0-9]{64}\.json$/, '-<digest>.json')), ['device-open', 'device-close', 'save:provisioning-released-<digest>.json', 'save:initialized.json'],
+    'validate-and-close, then the release proof, then the marker: no import and no new receipt');
+  assert.deepEqual(await h.context.readPrivate('initialized.json'), { applicationId, publicKey: h.publicKey, executionManifestDigest, provisioned: true });
+  // With the release now proven, an exact repeat while the agent owns the store opens nothing.
+  h.control.inUse = true; const settled = h.counts.devices;
+  assert.deepEqual(await h.provision('import-provisioning', packagePath), recovered);
+  assert.equal(h.counts.devices, settled);
+});
+
+test('recovery refuses a cached device that does not match the import receipt and a failing recovery close publishes nothing', async t => {
+  const { h, packagePath } = await readyToImport(t);
+  h.control.failClose = true;
+  await assert.rejects(h.provision('import-provisioning', packagePath), /device close failed/);
+  // A recovery close that fails again proves nothing.
+  await assert.rejects(h.provision('import-provisioning', packagePath), /device close failed/);
+  assert.equal((await h.privateStateKeys()).filter(name => name.startsWith('provisioning-released-')).length, 0);
+  assert.equal(await h.context.readPrivate('initialized.json', true), null);
+  h.control.failClose = false;
+  const name = (await h.privateStateKeys()).find(key => key.startsWith('provisioning-receipt-'));
+  h.privateState.set(name, { ...h.privateState.get(name), executionManifestDigest: 'ee'.repeat(32) });
+  await assert.rejects(h.provision('import-provisioning', packagePath), /does not match the verified import receipt/);
+  assert.equal((await h.privateStateKeys()).filter(key => key.startsWith('provisioning-released-')).length, 0);
+  assert.equal(await h.context.readPrivate('initialized.json', true), null);
+});
+
+test('a receipt for another signer or a conflicting marker is refused rather than trusted', async t => {
+  const { h, packagePath } = await readyToImport(t);
+  await h.provision('import-provisioning', packagePath);
+  const name = (await h.privateStateKeys()).find(key => key.startsWith('provisioning-released-'));
+  h.privateState.set(name, { ...h.privateState.get(name), publicKey: 'ab'.repeat(32) });
+  await assert.rejects(h.provision('import-provisioning', packagePath), /another page, shared signer or package/);
+  h.privateState.set(name, { ...h.privateState.get(name), publicKey: h.publicKey });
+  h.privateState.set('initialized.json', { applicationId, publicKey: 'cd'.repeat(32), executionManifestDigest, provisioned: true });
+  await assert.rejects(h.provision('import-provisioning', packagePath), /Retained initialized marker belongs to another/);
 });
