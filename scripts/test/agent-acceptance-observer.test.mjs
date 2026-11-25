@@ -36,13 +36,13 @@ async function fixture(t) {
     definitionDigest: descriptor.payload.definitionDigest, executionManifestDigest: descriptor.payload.executionManifestDigest, entry: 'index.html',
     files: [{ path: 'index.html', hash: await p.bytesDigest(new TextEncoder().encode('<p>Fixture</p>')), size: 14, type: 'text/html' }] }, device.identity);
   const receipt = { publication, version: 1 };
-  const handle = { id: 'a'.repeat(12), api: 'https://staging.example/api/t/' + 'a'.repeat(12), token: 'PRIVATE_HANDLE',
-    application: { id: session.applicationId }, page_url: 'https://' + 'a'.repeat(12) + '.staging.example/s/' + 'a'.repeat(26) + '/' };
-  for (const [name, value] of Object.entries({ 'descriptor.json': descriptor, 'handle.json': handle, 'device.json': { deviceId: session.deviceId }, 'authority.json': authority }))
+  const handle = { id: 'a'.repeat(12), application: { id: session.applicationId }, page_url: 'https://' + 'a'.repeat(12) + '.staging.example/s/' + 'a'.repeat(26) + '/' };
+  const credential = { service: 'https://staging.example', agent: { id: 'ag_' + 'a'.repeat(26), name: 'fixture' }, token: 'ta_' + 'p'.repeat(32) };
+  for (const [name, value] of Object.entries({ 'descriptor.json': descriptor, 'handle.json': handle, 'credential.json': credential, 'device.json': { deviceId: session.deviceId }, 'authority.json': authority }))
     writeFileSync(join(project, name), JSON.stringify(value), { mode: 0o600 });
   writeFileSync(join(project, 'session.mjs'), 'export const fixture = true;');
   const config = { protocol: 'tendriller-starter-observer-v1', origin: 'https://staging.example', applicationId: session.applicationId, historyId: session.historyId, ownerAccountId: 'fixture-owner',
-    native: { project, module: 'session.mjs', handle: { file: 'handle.json' }, descriptor: { file: 'descriptor.json' }, deviceId: { file: 'device.json', pointer: '/deviceId' }, deviceStore: 'device.sqlite' },
+    native: { project, module: 'session.mjs', handle: { file: 'handle.json' }, credential: { file: 'credential.json' }, descriptor: { file: 'descriptor.json' }, deviceId: { file: 'device.json', pointer: '/deviceId' }, deviceStore: 'device.sqlite' },
     query: { name: 'notes', rows: '/value', marker: '/text', author: '/author', operationId: '/operationId' },
     browser: { device: { selector: '#device', read: 'value' }, rows: '#rows li' },
     publication: { operationId: 'stable-publish-op' }, commands: { 'browser-to-agent': { name: 'addNote' },
@@ -55,8 +55,8 @@ async function fixture(t) {
     locator: selector => ({ count: async () => 1, inputValue: async () => browserSigner.publicKey, innerText: async () => 'Connected',
       allInnerTexts: async () => ['Observer marker · operation stable-observer-op'] }) };
   const lifecycle = { owner: null };
-  const packages = async () => ({ session: p, core: { createClient: () => ({ peers: { application: async () => authority, publication: async () => structuredClone(receipt) },
-    info: async () => ({ id: handle.id, application: handle.application, page_url: handle.page_url, owner_account_id: lifecycle.owner }) }) } });
+  const packages = async () => ({ session: p, core: { createAgentClient: () => ({ page: () => ({ peers: { application: async () => authority, publication: async () => structuredClone(receipt) },
+    info: async () => ({ id: handle.id, application: handle.application, page_url: handle.page_url, owner_account_id: lifecycle.owner }) }) }) } });
   return { directory, runDirectory, project, config, configPath, request, loaded, session, snapshot, browserSigner, publication, receipt, authority, handle, page, packages, save, lifecycle, signer: device.identity };
 }
 
@@ -83,7 +83,7 @@ test('maintained observer proves native-to-browser from measured rows and signed
   const wrongRow = await observer.observe({ check: 'agent-to-browser' }); assert.equal(wrongRow.status, 'failed');
   assert(wrongRow.evidence.mismatches.includes('browser-operation-row'));
   evidence.finish(); assert.equal(evidence.data.outcome, 'blocked');
-  assert(!readFileSync(join(f.runDirectory, 'report.json'), 'utf8').includes('PRIVATE_HANDLE'));
+  assert(!readFileSync(join(f.runDirectory, 'report.json'), 'utf8').includes('ta_' + 'p'.repeat(32)));
 });
 
 test('colon-derived row identity binds the actual signed event, native projection and browser row', async t => {
@@ -195,8 +195,8 @@ test('lost publication acknowledgement retries only saved signed bytes and the o
   const f = await fixture(t); writeFileSync(join(f.project, 'publication.json'), JSON.stringify({ publication: f.publication, assets: [] }));
   f.config.publication.intent = { file: 'publication.json', pointer: '/publication' };
   f.config.publication.assets = { file: 'publication.json', pointer: '/assets' }; f.save();
-  const packages = async () => { const result = await f.packages(); const createClient = result.core.createClient;
-    result.core.createClient = () => { const host = createClient(); host.peers.publish = async () => f.receipt; return host; }; return result; };
+  const packages = async () => { const result = await f.packages(); const createAgentClient = result.core.createAgentClient;
+    result.core.createAgentClient = () => ({ page: () => { const host = createAgentClient().page(); host.peers.publish = async () => f.receipt; return host; } }); return result; };
   const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, packages });
   assert.equal((await observer.observe({ check: 'lost-publication-response', options: { action: 'drop' } })).status, 'blocked');
   const retried = await observer.observe({ check: 'lost-publication-response', options: { action: 'retry' } });
@@ -222,9 +222,9 @@ test('staging preview page origins require the authenticated host to confirm the
   writeFileSync(join(f.project, 'handle.json'), JSON.stringify(f.handle));
   const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, packages: f.packages });
   assert.equal((await observer.observe({ check: 'preclaim-publication' })).status, 'passed');
-  const packages = await f.packages(), createClient = packages.core.createClient;
-  packages.core.createClient = () => { const host = createClient(); const info = host.info;
-    host.info = async () => ({ ...await info(), page_url: 'https://wrong.example/' }); return host; };
+  const packages = await f.packages(), createAgentClient = packages.core.createAgentClient;
+  packages.core.createAgentClient = () => ({ page: () => { const host = createAgentClient().page(); const info = host.info;
+    host.info = async () => ({ ...await info(), page_url: 'https://wrong.example/' }); return host; } });
   observer.packages = async () => packages;
   const mismatch = await observer.observe({ check: 'publication' });
   assert.equal(mismatch.status, 'failed'); assert(mismatch.evidence.mismatches.includes('host-authoritative-page-url'));

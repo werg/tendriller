@@ -60,15 +60,19 @@ export function loadObserverConfig(path, request) {
   const descriptor = recordFile(project, need(config.native.descriptor, 'pinned-descriptor')).value;
   same(descriptor.payload?.applicationId, applicationId, 'descriptor-application');
   same(descriptor.payload?.historyId, historyId, 'descriptor-history');
-  const handle = recordFile(project, need(config.native.handle, 'host-handle')).value;
-  same(handle.application?.id, applicationId, 'handle-application');
-  same(handle.api, request.origin + '/api/t/' + handle.id, 'handle-origin-and-page');
-  if (!/^[a-z2-7]{12}$/.test(handle.id ?? '')) throw new MeasurementError('handle-page-id', 'failed');
-  need(handle.token, 'host-credential');
-  const page = new URL(handle.page_url);
-  if (page.protocol !== 'https:' || page.username || page.password || page.search || page.hash ||
-      !page.hostname.startsWith(handle.id + '.') && !page.hostname.startsWith(handle.id + '--p-') ||
-      !/^\/s\/[a-z2-7]{26}\/$/.test(page.pathname)) throw new MeasurementError('handle-page-url', 'failed');
+  // The workspace page record (.tendriller/pages/<id>/page.json) and the agent credential
+  // (.tendriller/agent/credential.json) are separate private files.
+  const page = recordFile(project, need(config.native.handle, 'host-handle')).value;
+  same(page.application?.id, applicationId, 'handle-application');
+  if (!/^[a-z2-7]{12}$/.test(page.id ?? '')) throw new MeasurementError('handle-page-id', 'failed');
+  const credential = recordFile(project, need(config.native.credential, 'agent-credential')).value;
+  same(credential.service, request.origin, 'credential-origin');
+  if (!/^ta_[a-z2-7]{32}$/.test(credential.token ?? '')) throw new MeasurementError('host-credential', 'failed');
+  const handle = { ...page, api: request.origin + '/api/agent/pages/' + page.id, token: credential.token };
+  const pageUrl = new URL(handle.page_url);
+  if (pageUrl.protocol !== 'https:' || pageUrl.username || pageUrl.password || pageUrl.search || pageUrl.hash ||
+      !pageUrl.hostname.startsWith(handle.id + '.') && !pageUrl.hostname.startsWith(handle.id + '--p-') ||
+      !/^\/s\/[a-z2-7]{26}\/$/.test(pageUrl.pathname)) throw new MeasurementError('handle-page-url', 'failed');
   const modulePath = realpathSync(resolve(project, config.native.module ?? 'session.mjs'));
   if (!inside(project, modulePath)) throw new MeasurementError('native-module-outside-project', 'failed');
   return { ...config, native: { ...config.native, project, modulePath, deviceId }, descriptor, handle };

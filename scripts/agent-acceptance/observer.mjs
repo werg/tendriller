@@ -123,8 +123,9 @@ export class StarterObserver {
   }
   async host(config) {
     const { core, session: sdk } = await this.packages(config.native.project);
-    const host = core.createClient(config.handle, { applicationId: config.applicationId,
-      fetch: (url, options = {}) => fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(12000) }) });
+    const host = core.createAgentClient({ service: config.origin, token: config.handle.token },
+      { fetch: (url, options = {}) => fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(12000) }) })
+      .page(config.handle.id, { applicationId: config.applicationId });
     const bundle = await host.peers.application();
     const authority = await sdk.verifyAuthorityBundle(bundle, config.descriptor);
     same(authority.descriptor.applicationId, config.applicationId, 'authority-application');
