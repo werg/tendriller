@@ -40,7 +40,7 @@ replace only the domain in this prompt:
 
 Do not rescue a stuck agent with implementation advice during the baseline
 attempt. It may ask for owner identity, human claim, legitimate device enrollment
-approval or an unavailable tool/artifact. Record those questions and the reason.
+or an unavailable tool/artifact. Record those questions and the reason.
 If a maintainer supplies architecture or code guidance, mark the attempt
 **assisted** and keep the preceding failure trace; a successful continuation is
 useful evidence but is not an unassisted completion.
@@ -50,7 +50,7 @@ useful evidence but is not an unassisted completion.
 | Stage | Evidence required |
 | --- | --- |
 | Discover | Starting from the domain, the agent finds a task-oriented build route and the compatible public artifacts through published links. Record the URLs followed and any broken or inaccessible resource. |
-| Prepare before claim | The agent saves a private handle, initializes and publishes the signed UI before requesting sign-in, starts the participant, and gives the owner the ready page and permission-review URLs. Claim retains the same publication and keys; no claimed reply or agent redeployment is required. |
+| Prepare before claim | The agent registers one workspace agent (credential and shared signing key retained privately under `.tendriller/agent/`), creates the page, initializes and publishes the signed UI before requesting sign-in, starts `tendril agent run`, and gives the owner the ready page and permission-review URLs. Claim retains the same publication and keys and claims the agent; no claimed reply or agent redeployment is required. |
 | Reuse | The agent uses the task/capability map and imports or adapts current session/helpers where appropriate. Record exact files used and whether historical contrib links were mistaken for current APIs. |
 | Define retained work | The authored application has a real checklist definition, declared commands and a coherent query/read path. Identify where an agent edits the model and UI for a different user request. |
 | Configure authority | The actual public definition and execution commitments are configured; device grants and account bindings are explicit. The first generation is selected using a retained signed creation transition before opening the session. No invented digest, fixture-only authority or copied private signer stands in for enrollment. |
@@ -356,9 +356,10 @@ credential-bearing URLs. Action results contain visible page text and remain
 private. Login uses a static URL and a separately filled private account code;
 credentials are never a model input. Exact review text must be chosen by the
 evaluator after inspection, not guessed or approved by checking every checkbox.
-For a device review with one approval button and no permission checkboxes, use
-`permissions: []`; the exact fingerprint, rights and retained-prefix checks still
-apply. Add the application/account text to `expected` when checking those fields.
+For a review with one confirm button and no permission checkboxes, use
+`permissions: []`; the exact displayed-text checks still apply. Add the
+application/account text to `expected` when checking those fields. Browser device
+enrollment has no review step.
 `inspect` also returns a private `view` of definition-list fields, link targets,
 non-secret visible inputs, and the displayed proposal JSON, so the evaluator can
 choose actual values without exporting browser keys or injecting state.
@@ -369,8 +370,8 @@ support the browser review flow without an external browser driver or report
 writer. `wait` accepts a selector, `condition` (`visible`, `enabled`, or `text`),
 optional text `value`, and `timeoutMs` up to 30000. It only observes the DOM. If a
 review form reports expired/already used, navigate with GET to the same review
-link, compare the unchanged proposal/fingerprint/rights/prefix, then approve; do
-not replace the browser key or start a new enrollment to bypass that message.
+link, compare the unchanged proposal and rights, then confirm; do not replace the
+browser key or start a new enrollment to bypass that message.
 
 ### Maintained starter observer (no custom module)
 

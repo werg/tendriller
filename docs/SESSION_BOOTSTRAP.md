@@ -2,8 +2,8 @@
 
 The runnable [first-app tutorial](BUILD_AN_APP.md) supplies the actual composition
 in [`tutorial/setup.mjs`](https://github.com/werg/tendriller/blob/master/docs/tutorial/setup.mjs),
-[`tutorial/session.mjs`](https://github.com/werg/tendriller/blob/master/docs/tutorial/session.mjs) and
-[`tutorial/worker.mjs`](https://github.com/werg/tendriller/blob/master/docs/tutorial/worker.mjs). This reference explains the
+[`tutorial/shared/native-page.mjs`](https://github.com/werg/tendriller/blob/master/docs/tutorial/shared/native-page.mjs) and
+[`tutorial/templates/notes/worker.mjs`](https://github.com/werg/tendriller/blob/master/docs/tutorial/templates/notes/worker.mjs). This reference explains the
 boundaries when adapting those files. It is not a replacement for the executable
 path.
 
@@ -11,28 +11,31 @@ path.
 
 | Value | Created or owned by | Used for |
 | --- | --- | --- |
-| Page handle, URL, agent token | Tendriller | Hosted page and account-authorized host operations |
+| Agent token (`ta_`), page URL | Tendriller | The agent's account-level host credential, and one hosted page's address |
 | `application.id` | Page creation or an explicitly supplied existing application | Stable scope across native/browser participants and publications |
-| Native/browser device signing identity | Chronolog's owned device store | Authenticated commands, peer channels, permitted transitions and code signatures |
+| Native/browser device signing identity | Chronolog's owned device store | Authenticated commands, peer channels, permitted transitions and code signatures. All of one agent's pages share its one signing key, each with its own device store |
 | Account binding | Hosted signed control configuration | Relates an enrolled device to an active admitted account |
 | Epoch encryption key | Initial creator, then authenticated reader-to-reader transfer | Reading the committed application history |
 | Application definition and execution manifest | Application author and exact execution package | Immutable declared domain/schema and compatible execution |
 | Selected generation | Signed control selection | Current coordinating peer and adopted complete history prefix |
 | Publication ID/version | Signed publication selection | Immutable authored code graph, independent of data recovery history |
 
-An account login is not a device grant. A host token is not a device signer. A
+An account login is not a device grant. The agent token is not a device signer. A
 publisher grant is independent of data access and control administration. A
 page release does not initialize or replace an application session.
 
 ## Fresh creation, in order
 
-First create the hosted page and prepare its first signed release before claim.
-The private setup credential can configure authority and publish within the
+First register the workspace agent and create the hosted page (the creating
+agent is granted it automatically), then prepare its first signed release before
+claim. The agent's grant lets it configure authority and publish within the
 common publication capacity and the unclaimed page's 24-hour expiry. The owner later signs in to open the
 ready page; existing keys, controls and publications are adopted without reset.
-Open an explicit new device with
-`openNativeDevice({ path, create: true })`; retain its identity, a new epoch key
-and the intended setup inputs before sending mutations.
+The workspace's one signer comes from `tendril workspace init|join|key`; each
+page's explicit new device opens its own store with that signer (the kit's
+`npm run init -- <slug>` does this through the page context's
+`openDevice({ create: true })`). Retain the page's epoch key and the intended
+setup inputs before sending mutations.
 
 From the public session package, use `describeApplication(definition)` and
 `executionManifestArtifacts(await eventExecutionManifest())`. Configure the host
@@ -104,32 +107,29 @@ application, origins, rights, expected generation and expiry are fixed by the
 proof. `pairing-browser.mjs` retains only public intent, and
 `pairing-worker.mjs` keeps private key operations inside the device owner.
 
-The existing native owner processes the request through `pairing-native.mjs`.
+The page's owner inside `tendril agent run` processes the request through `pairing-native.mjs`.
 It retains its intent, calls the public durable `session.pauseOrdering(id)`, and
 prepares the usual `reason: 'control-change'` transition with the exact drained
 prefix, next control revision and proved account binding. All existing grants
 and key commitments remain intact. The complete signed request and full control
 update are saved and staged with `client.prepare`. Staging approves that exact
 member-only proposal automatically for the signed-in owner or an admitted guest;
-there is no approval screen. (Older kits that still open a `/pairings/...`
-review link are returned to their own page origin.) The normal serialized host selector rechecks
+there is no approval screen. The normal serialized host selector rechecks
 current authority and account access when committing it. The page waits for the
 commit and connects; it also connects when it later finds a request the native
 owner committed while it was away.
 
-The native participant subscribes to authenticated setup notifications over a
-hibernating WebSocket. Later devices can pair without restarting it. Idle setup
+The agent program receives authenticated setup notifications for every page over
+its one hub connection. Later devices can pair without restarting it. Idle setup
 does not poll or send heartbeats. Each review request expires after ten minutes,
 with one local expiry deadline while that request is active. A lost commit reply
 or process close preserves both the exact request and durable ordering pause.
 On reopen, verify the original signed transition and complete reviewed payload
 before adopting it and resuming ordering. A mismatch or unavailable status stays
-paused; never substitute a new prefix or signer. `npm run pair` performs one
-bounded pass with the resident owner stopped; it does not wait for owner review
-or later independent receipt verification. Restart the same native participant
+paused; never substitute a new prefix or signer. Restart the same agent program
 to finish or reconcile a prepared/submitted proposal, and keep it running for
-the complete pairing flow. The deliberate manual `enroll`
-command still uses authenticated `info().owner_account_id` for a separately
+the complete pairing flow. The deliberate manual `npm run enroll -- <slug> PUBLIC_KEY`
+command (agent program stopped) still uses authenticated `info().owner_account_id` for a separately
 verified owner device; it is not the ordinary browser pairing flow.
 
 The published code never receives the agent token, native signer or plaintext
@@ -229,14 +229,14 @@ implemented supported evolution path explicitly.
 
 ## Own shutdown and uncertain operations
 
-For a native session returned by the tutorial's `openSession()`, await the
-returned `owned.close()` before reopening its store. This closes the supervisor,
-its attachment listener and ownership fence as well as the session; closing only
-`owned.session` leaves supervisor resources behind. The inference launcher owns
-the same supervisor and follows the same shutdown path.
+For a page owner opened by `openPage(context)` in `pages/<slug>/agent.mjs`,
+`tendril agent run` awaits the returned `owner.close()` when the page closes or
+the program stops, before another process may reopen that page's store. Closing
+only `owner.session` leaves supervisor resources behind. SIGINT/SIGTERM closes
+every page owner, then the hub and the attach socket.
 
-The standalone events, assistant, SQL and photo-inference entry points own their
-Node process. After the application and all owned components finish cleanup,
+The `tendril agent run` process and the photo-inference launcher own their Node
+process. After the application and all owned components finish cleanup,
 they flush stdout/stderr and explicitly dispose that process: an Undici socket
 can remain in `CLOSING` after owned shutdown has returned. This is process
 disposal, not proof that every remote close handshake completed. Cleanup failure
@@ -245,15 +245,15 @@ failure or its bounded deadline also stays nonzero. The original device, inputs
 and signed operation references remain the recovery source. No disposal timer
 runs while the application or a cleanup promise is still active.
 
-Imported `runPeer`, `runAssistant`, `runInference` and `openSession` never exit an
-embedding process. Their caller owns its other listeners and its final lifetime.
+An imported `runInference` or page `openPage` never exits an embedding process.
+The caller owns its other listeners and its final lifetime.
 Tools `watch` and the preview HTTP server retain their explicit listener
 lifetimes; this standalone tutorial policy does not terminate them.
 
-Ordinary CLI commands use `--mode attach` against the running peer. Closing that
-attachment detaches it without stopping the owner or sibling clients. Reserve
-`--mode own` for deliberate standalone ownership while the peer is stopped; two
-owners must not open the same device store concurrently.
+Ordinary CLI commands attach to the running agent program with `--page <slug|id>`.
+Closing that attachment detaches it without stopping the owner or sibling clients.
+A command never opens a second signer; two owners must not open the same page
+device store concurrently.
 
 An application that owns a bare session must await `session.close()` before
 reopening its store or terminating a gracefully closing browser Worker. Close

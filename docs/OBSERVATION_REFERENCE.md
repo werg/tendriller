@@ -50,7 +50,7 @@ await receiver.requestObservation(browserDeviceId, 'location');
 await receiver.done;
 ```
 
-The supplied `observation/native.mjs` CLI can attach to an existing retained owner from the starter's `session.mjs`; it accepts `--allow BROWSER_DEVICE_ID` and optional `--request simulated` or `--request location`. It detaches on shutdown without claiming to keep the owner process alive.
+The supplied `observation/native.mjs` CLI can attach to a page's owner inside the running `tendril agent run`; it accepts `--page SLUG`, `--allow BROWSER_DEVICE_ID` and optional `--request simulated` or `--request location`. It detaches on shutdown without claiming to keep the owner process alive.
 
 A remote request only displays a card and expires after 30 seconds. The person can decline, or press the clearly labelled Start simulator sharing or Start location sharing button. Each start requires `event.isTrusted`. The location route is inspected with `tendril.capabilities(['location'])`, and a pending resource is registered before geolocation acquisition. Visible Stop, page hiding, view teardown, session shutdown, disconnection and global Stop sensors end the run. Reconnection does not restart capture. Late callbacks check the registration's aborted signal; late acknowledgements cannot replace a stopped review candidate.
 

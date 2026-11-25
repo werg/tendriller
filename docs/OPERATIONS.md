@@ -7,8 +7,8 @@ Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendrille
 Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 11** (consolidated page, pairing, publication, and assistant delivery tables).
 
 This pre-release target uses fresh matching storage only — there are no legacy migration paths or compatibility readers:
-1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and the single unified `server/migrations/0001_accounts.sql` baseline (exported as `@tendriller/engine/accounts-schema`, account-setup schema revision 3). Verify `d1_migrations` records `0001_accounts.sql`; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This initializes new storage only; it is not conversion of an older database.
-2. Provision fresh `Tendril` and `Admission` Durable Object namespaces matching revision 11.
+1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and the ordered `server/migrations/0001_accounts.sql` (accounts, OAuth, assistant connections) and `0002_agents.sql` (agents, page grants, join codes) migrations (exported as `@tendriller/engine/accounts-schema`). Verify `d1_migrations` records both; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This initializes new storage only; it is not conversion of an older database.
+2. Provision fresh `Tendril`, `Admission` and `AgentHub` Durable Object namespaces (`Tendril` matching revision 11; `AgentHub` is one object per agent, holding its single control-traffic connection).
 3. Missing or mismatched storage fails closed without mutating existing records.
 
 `scripts/provision.mjs` plans and provisions fresh named Worker, D1, R2, and domain resources and writes a complete Wrangler config. Review resource names and page-domain isolation before deploying.
@@ -30,7 +30,7 @@ objects: inspect the new namespace object inventories before deployment. Leave
 the fresh service in `creation_paused` while preparing it. Reuse privately held
 provider registrations/signing secrets as appropriate for the same origins, but
 validate OAuth configuration against the current strict schema and create new
-review/test accounts in the fresh D1. Never log credentials or private handles.
+review/test accounts in the fresh D1. Never log agent tokens, join codes or other credentials.
 
 ### Hold automatic deployment before merging/publishing
 
@@ -174,7 +174,7 @@ no data export, namespace transfer, resource deletion or local process restart.
 - **Secrets:** store OAuth provider secrets, `OAUTH_SIGNING_JWK`, `ASSISTANT_STORE_KEY` (32 random bytes base64 for webhook secret encryption and inbox tickets), and anti-abuse secrets in the platform secret store. Never embed secrets in logs, source, or published assets.
 - **Optional OAuth & `/mcp`:** disabled when `OAUTH_CONFIG_JSON` is absent. Configure exact `resource` (`<PUBLIC_BASE>/mcp`), registered clients, `OAUTH_SIGNING_JWK`, and optional `ASSISTANT_CALLBACK_ORIGINS` (space-separated allowed HTTPS webhook origins). See [OAuth setup](INTEGRATION_OAUTH.md) and [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md).
 - **Initial mode:** fresh deployments start in `creation_paused`. Verify sign-in, page claim, origin isolation, and signed publication before opening creation.
-- **Setup ledger integrity:** `account_setups` and `account_setup_allocations` enforce atomic non-double-charging retries. Never delete allocation witness rows to clear quotas; restore a verified backup if storage is inconsistent.
+- **Agent ledger integrity:** `agents`, `agent_grants` and `agent_join_codes` hold only SHA-256 hashes of agent tokens and join codes, public keys and per-page grants. Never delete grant rows by hand to clear a limit; revoke the agent or remove the grant through the dashboard so page objects close its sockets. Restore a verified backup if storage is inconsistent.
 
 ## Traffic budgets and Free-tier operation
 

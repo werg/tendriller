@@ -78,12 +78,12 @@ await observer.requestObservation(approvedBrowserDeviceId, 'location');
 // Keep the process alive while observing; await observer.close() on shutdown.
 ```
 
-The optional CLI attaches to the running retained owner exported by the starter's
-`session.mjs`. Run it from that application directory, substituting its verified
-browser device ID:
+The optional CLI attaches to a page's owner inside the running `tendril agent run`.
+Run it from the workspace, substituting the page slug and its verified browser
+device ID:
 
 ```sh
-node observation/native.mjs --session ./session.mjs --allow BROWSER_DEVICE_ID --request simulated
+node shared/observation/native.mjs --page notes --allow BROWSER_DEVICE_ID --request simulated
 ```
 
 Omit `--request` to observe only locally initiated sharing. Use `--request location`

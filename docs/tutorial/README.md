@@ -60,7 +60,9 @@ account-linked MCP connector, `npx tendril workspace key --service https://YOUR_
 prints the `register_agent` arguments; save that tool's result privately and run
 `npx tendril workspace adopt --service https://YOUR_HOST --credential FILE`.
 Pages an agent creates are granted to it; an existing page needs the owner's
-explicit grant, after which `npx tendril page grant <slug> <page-id>` registers it.
+explicit grant (the per-agent checkbox on the dashboard or the page's **Add people
+& devices → An agent**), after which `npx tendril page grant <slug> <page-id>`
+registers it.
 
 `page:new` refuses a non-empty `pages/<slug>/` folder: retained source or build
 output belongs to an existing page. Choose another slug for an explicitly new
@@ -99,13 +101,16 @@ control streams (setup notices, discovery, invitations, rendezvous, assistant)
 so each one reopens through its own retry, while local data, local writes and
 direct peer links continue. Page sync data (WebRTC, relay) never uses the hub.
 
-The page's owner handles reviewed pairing with its existing session and signer.
+The page's owner handles browser pairing with its existing session and signer.
 After the browser proves possession of its own key, the owner retains the pairing
-intent, durably pauses command ordering and saves the exact signed proposal
-**before owner review**. The service review displays the fingerprint, account,
-application, origins, narrow reader/writer rights, selected generation, retained
-prefix and proposal digest. Approval binds that complete proposal. Each review
-expires after ten minutes; idle setup has no polling or heartbeat.
+intent, durably pauses command ordering and saves the exact signed member-only
+proposal. The host verifies it against the proved key, account and current
+authority and approves it automatically for the signed-in owner or an admitted
+guest; there is no approval screen. The proposal binds the key, account,
+application, origins, narrow reader/writer rights, selected generation and
+retained prefix. Each request expires after ten minutes; idle setup has no
+polling or heartbeat, and setup notices for every page arrive over the agent
+program's one hub connection.
 
 Private pairing records are `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json` under the page's private
@@ -148,7 +153,7 @@ existing history, or create a new page for a different domain.
 | `setup.mjs` | Page lifecycle across the workspace |
 | `shared/local.mjs` | Page context from the workspace (`@tendriller/tools/workspace`) and the empty-folder check |
 | `shared/native-page.mjs` | One page's owner in the agent program: authority, control, participation, setup notices, pairing, assistant |
-| `shared/pairing-native.mjs` | Durable ordering pause and exact reviewed transition recovery |
+| `shared/pairing-native.mjs` | Durable ordering pause and exact signed transition recovery |
 | `shared/participant-lifecycle.mjs` | Setup notices, pairing passes and the optional adapter on one owner |
 | `shared/connection.mjs`, `shared/connect-view.mjs` | Browser connection state and its card |
 | `shared/pairing-browser.mjs`, `shared/pairing-worker.mjs` | Browser pairing request and proof with its own fenced device |
@@ -172,8 +177,8 @@ SQL-native and SQL-browser Chronolog archives; the events-only archive cannot ru
 
 Run `npm run assistant:prepare -- notes` before owner sign-in and retain its
 returned review URL; give the owner the ready page and review URL together. The
-running agent program connects the adapter after approval, through the page's
-setup notices. The default selection is the notes query and add-note command.
+running agent program connects the adapter after the owner approves the
+permission review, through the page's setup notices. The default selection is the notes query and add-note command.
 `npm run assistant:prepare -- notes --events` also forwards `note.added` events from
 a retained private cursor (`assistant-event-cursor.json`). Forwarding does not
 create an MCP subscription, run a future model turn, or extend any process

@@ -12,14 +12,22 @@ alone does not establish it.
    installing or building. Stop if creation is paused or readiness is unavailable;
    keep the same origin. Then read `/api/service`, onboarding descriptor and
    [capability map](CAPABILITIES.md). Identify the smallest native application path.
-2. Obtain the owner's verified email if it is missing. Use the supplied create
-   command and retain the private setup handle. Continue through authority,
-   initial generation, bundling and signed publication before requesting sign-in.
-3. Start the native participant and prepare any assistant-access proposal. Give
+2. Register the workspace agent (`tendril workspace init` with the owner's
+   verified email, `workspace join` with a dashboard code, or MCP
+   `register_agent` plus `workspace adopt`; see [Build an app](BUILD_AN_APP.md)).
+   The workspace holds one agent credential and one signing key for every page.
+   Create the page with `npm run page:new` (the creating agent is granted it
+   automatically) and continue through authority, initial generation, bundling
+   and signed publication before requesting sign-in.
+3. Start `npm run agent` and prepare any assistant-access proposal. Give
    the owner the ready `page_url` and actual permission-review URL together.
-   Do not stop at an unclaimed handle, ask for a "claimed" reply, or postpone
+   Do not stop at an unclaimed page, ask for a "claimed" reply, or postpone
    publication until sign-in. If the URL was already shared, keep preparing.
-4. Sign-in adopts the already-published app; no agent redeployment is necessary.
+4. Sign-in claims the agent and adopts the already-published app; no agent
+   redeployment is necessary. Further pages the same agent creates need no new
+   credential; an existing page needs the owner's explicit grant (a per-agent
+   checkbox on the dashboard or the page's **Add people & devices → An agent**).
+   Browser enrollment and assistant consent remain explicit authority decisions.
    Browser enrollment and assistant consent remain explicit authority decisions.
    Use their concrete public keys and permission-review forms for those actions.
 5. Perform real shared commands in both directions and verify reopening before
@@ -31,29 +39,31 @@ attempted** from **attempted and failed**, with the observed error. An unfamilia
 bootstrap is work to perform; it is not evidence of a platform failure or a reason
 to silently switch the user's application to another stack.
 
-## Keep the native participant alive
+## Keep the agent program alive
 
-The starter provides a complete persistent device/session owner:
+The workspace has exactly one long-running local program:
 
 ```sh
-npm run serve
+npm run agent        # tendril agent run
 ```
 
-The process participates in the selected application and observes real changes.
-It stays alive until stopped, including while MCP access is unapproved or its
-optional adapter is disconnected. Authenticated setup notifications let later
-devices pair without restarting it, with no idle status polling. Its private
-device store must survive future
-invocations. Start it in the supported execution environment and retain enough
-process information to monitor, stop and restart it. The CLI and this process
-cannot simultaneously own the same native store. Ordinary CLI queries and
-commands use `--mode attach` while the supervisor runs. UI publication also
-attaches through an explicitly authorized
+It holds one hub connection to the host for every page's control traffic (setup
+notices, discovery, invitations, rendezvous, assistant adapter) and opens one
+Chronolog session per initialized page, each with its own device store and the
+agent's shared signing key. Page sync data (WebRTC, relay) keeps per-page
+connections and never uses the hub. The program participates in each selected
+application and observes real changes. It stays alive until stopped, including
+while MCP access is unapproved or an optional adapter is disconnected.
+Authenticated setup notifications let later devices pair without restarting it,
+with no idle status polling. The private workspace (`.tendriller/`) must survive
+future invocations. Start the program in the supported execution environment and
+retain enough process information to monitor, stop and restart it. CLI queries,
+commands and publication attach to it with `--page <slug|id>`; an unavailable
+program is `OWNER_UNREACHABLE`, never a reason to open a second signer. UI
+publication attaches through an explicitly authorized
 [publication binding](tools/CLI.md#publication-capability-and-retained-bindings),
-keeping that owner and its journals alive. Initial publication before startup
-can use `--mode own`. Deliberate standalone administration/enrollment still
-requires the owner to be stopped unless an owner-administration attachment
-supplies that operation.
+keeping that owner and its journals alive. Deliberate standalone
+administration (`npm run enroll`) requires the agent program to be stopped.
 
 For an agent integration, connect the session's public application tools and
 changes to the agent's actual execution loop. `createApplicationTools` and
@@ -64,7 +74,7 @@ Name the process lifetime explicitly:
 
 | Environment | Honest delivery statement |
 | --- | --- |
-| A process verified running during the current task | The page and native peer exchanged work during this run; identify the active process and how to resume it |
+| A process verified running during the current task | The page and the agent program exchanged work during this run; identify the active process and how to resume it |
 | A durable machine/service with a configured, verified process owner | Identify that owner, its restart mechanism and the persistent device location; test a restart |
 | A temporary agent execution environment | State its known lifetime or that lifetime is unverified; arrange a supported persistent participant if ongoing service is required |
 | Only the hosted page remains | The signed UI is available, but ongoing native coordination or agent responses still require the relevant participant |
@@ -122,13 +132,13 @@ to return to the application:
 
 | Item | Required evidence |
 | --- | --- |
-| Live application | Actual page URL, application identity and owner claim status |
+| Live application | Actual page URL, application identity, owner claim status and the workspace agent that maintains it |
 | Selected code | Signed publication receipt and the visible release tested |
 | Connected state | A browser command observed natively and a native command observed in the browser |
 | Retained work | Same-device browser reload and native reopen, with the original work still present |
 | Agent/process | What is running, where, its known lifetime, and the exact resume command |
 | Reuse | Which supplied session, helper and capability modules the app uses |
-| First visit and later visits | From a fresh phone-sized profile: the page connects with at most one approval tap on the service origin and no other setup UI; a reload and a second tab connect with none |
+| First visit and later visits | From a fresh phone-sized profile: the page connects by itself, showing only the connection state (no approval screen or other setup UI); a reload and a second tab connect with none |
 | User experience | Before/after screenshots of every main flow on a phone-sized viewport and on desktop (below) |
 | Remaining boundary | Concrete unverified or blocked behavior, including conversation wake if relevant |
 
@@ -191,7 +201,7 @@ what changed. An unchanged flow may reference the same image with an explicit
 “no change needed” finding; never invent a before screenshot. Screenshots are
 review evidence, while the steps establish behavior. A phone-sized desktop
 browser verifies responsive layout, not physical-device permissions or durability.
-If a real browser or approval is unavailable, state the exact remaining check
+If a real browser is unavailable, state the exact remaining check
 and complete the accessible flows without calling the whole app verified.
 
 Supply editable source alongside this evidence when useful. Do not describe source

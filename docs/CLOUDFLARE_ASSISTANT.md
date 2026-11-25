@@ -1,6 +1,6 @@
 # Connect any Tendriller application to an assistant
 
-Tendriller exposes one account-linked `/mcp` endpoint on the service origin. Each page Durable Object owns its approved assistant connection, event inbox, webhook subscriptions, and delivery queue. Application code and durable state stay on the enrolled Chronolog participants — the host executes no application code.
+Tendriller exposes one account-linked `/mcp` endpoint on the service origin. Each page Durable Object owns its approved assistant connection, event inbox, webhook subscriptions, and delivery queue. Application code and durable state stay on the enrolled Chronolog participants (the workspace's agent program for each page) — the host executes no application code.
 
 ## Start from an agent conversation
 
@@ -15,7 +15,7 @@ Call `tendril_guide` with `topic: "start"` for the [MCP workflow](MCP_AGENT_GUID
 
 ## Enroll an application
 
-1. Build and publish the app through [Build an app](BUILD_AN_APP.md) so its signed definition, initial generation, and native Chronolog participant exist (this can happen before owner claim).
+1. Build and publish the app through [Build an app](BUILD_AN_APP.md) so its signed definition, initial generation, and page owner inside `tendril agent run` exist (this can happen before owner claim).
 2. Generate and privately store an adapter key (`createAssistantKey()`), plus up to two distinct `backupKeys` for standby enrolled devices if needed. Propose the exact queries, commands, and event projections declared by the signed definition.
 3. Give the owner the published page URL and `proposal.reviewUrl`. Once claimed, the owner reviews and approves exact capabilities at `/connections`. Editing capabilities keeps unchanged grants/subscriptions; removing an event or changing its projection clears its retained inbox/subscriptions.
 4. Attach `connectApplicationAssistant` to the running Chronolog session, connect the MCP client to `<PUBLIC_BASE>/mcp`, and verify `list_tendrils`, `describe_application`, a read query, and an applied command.
@@ -27,19 +27,20 @@ import {
   createAssistantEventDelivery,
 } from '@tendriller/core/assistant';
 
-// Setup once using the private host handle; persist `key` privately.
+// Setup once with the page's host client (`context.host` in a page module, or
+// `createAgentClient({ service, token }).page(pageId, { applicationId })`); persist `key` privately.
 const key = await loadAssistantKey() ?? createAssistantKey();
 await saveAssistantKey(key);
 const exposed = { queries: ['notes'], commands: ['addNote'] };
 const proposal = await proposeApplicationAssistant({
-  api: handle.api, token: handle.token, key, label: 'Shared notes', ...exposed,
+  page: host, key, label: 'Shared notes', ...exposed,
   events: [{ name: 'note.added', description: 'A note was retained (ID only).' }],
 });
 console.log(proposal.reviewUrl);
 
-// Inside the running application peer after owner approval:
+// Inside the running page owner (the agent program) after owner approval:
 const assistant = connectApplicationAssistant({
-  api: handle.api, key, session,
+  page: host, key, session,
   tools: createScopedApplicationTools(session, exposed),
   onStatus: status => console.log(status),
 });
@@ -69,7 +70,7 @@ OAuth authenticates the account and client, not separate chats inside the same c
 3. Have the owner approve the exact binding at the returned URL (capped by the app connection and OAuth grant).
 4. Send the proof via `Tendriller-Agent-Binding`, MCP `_meta['tendriller/agentBinding']`, or `bindingToken` (never in app data, code, or events).
 
-Each binding gets isolated `operationId` namespaces, subscriptions, cursors, and delivery receipts, and can be rotated (`rotate_application_agent`) or individually revoked (`revoke_application_agent`). Cryptographic execution provenance remains the Chronolog signing device; attested caller binding is passed separately from caller-asserted metadata. See [Agent bindings](AGENT_BINDINGS.md).
+Each binding gets isolated `operationId` namespaces, subscriptions, cursors, and delivery receipts, and can be rotated (`rotate_application_agent`) or individually revoked (`revoke_application_agent`). Cryptographic execution provenance remains the Chronolog signing device; attested caller binding is passed separately from caller-asserted metadata. These bindings are distinct from the account's maintenance agents (see [Agents and grants](AGENT_BINDINGS.md)).
 
 ## Events, catch-up, and live inbox
 
@@ -89,7 +90,7 @@ Each binding gets isolated `operationId` namespaces, subscriptions, cursors, and
 An already authorized OAuth client may use the same service origin's
 `/v1/apps/APPLICATION_ID` gateway: `POST /commands`, `POST /commands/batch`,
 `GET /operations/OPERATION_ID`, `GET` or `POST /query`, and `GET /events`.
-Use its bearer token and, for an independently approved agent, the
+Use its OAuth bearer token and, for an independently approved agent, the
 `Tendriller-Agent-Binding` header. Command/query JSON has the same fields as the
 corresponding MCP tool; batches contain `commands` and optional `stopOnError`.
 The same account, OAuth scopes, reviewed capabilities and original signer

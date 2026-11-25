@@ -4,7 +4,7 @@
 
 Read [the agent entry point](agent.md), then follow [Build an app](docs/BUILD_AN_APP.md).
 Deliver the [running connected application](docs/AGENT_DELIVERY.md): start
-provisioning early, prepare and publish before claim, start the participant, give
+provisioning early, prepare and publish before claim, start the agent program, give
 the human the ready page URL without asking for a claimed reply, and finish with a verified live page and process/resume details. Treat setup as
 part of the task. Use the [capability map](docs/CAPABILITIES.md) and import/adapt
 the current helper modules before implementing another application stack.
@@ -16,11 +16,18 @@ Read `/api/readiness` before downloading or installing packages. Require open
 creation readiness at that origin; stop on a pause, unavailable or unsupported
 readiness and report its next action. Follow `firstApp.release` and the build
 guide for the immutable kit and exact local package composition.
-With account-linked MCP, run `tendril workspace key`, call `register_agent`
-with its public arguments, and retain the result with `tendril workspace adopt`;
-the host derives the verified owner. One workspace agent then creates and runs
-every page (`npm run page:new`, `npm run agent`).
-For browser pairing, keep the existing native participant running. Its
+One **agent** has one `ta_` credential and one signing key shared by all of its
+pages, kept in the workspace (`tendriller.json`, `pages/<slug>/`, `shared/`,
+private `.tendriller/agent` and `.tendriller/pages/<id>`). Register it once:
+with account-linked MCP, run `tendril workspace key`, call `register_agent` with
+its public arguments, and retain the result with `tendril workspace adopt` (the
+host derives the verified owner); from a domain, `tendril workspace init --owner
+EMAIL`; or with a dashboard join code, `tendril workspace join`. Pages the agent
+creates (`npm run page:new`) are granted to it automatically; the owner grants
+an existing page with the per-agent checkbox on the dashboard or page settings,
+then `tendril page grant`. `tendril agent run` (`npm run agent`) is the one local
+program: one hub connection for all control traffic, one session per page.
+For browser pairing, keep that agent program running. Its
 bounded helper durably pauses ordering and stages the exact signed member-only
 proposal; the host approves it automatically for the signed-in owner or an
 admitted guest — there is no approval screen. Preserve the same browser key,
@@ -28,13 +35,13 @@ native records and ordering pause through uncertain replies or restart. A
 committed enrollment still requires a real connected session and cross-device
 verification.
 
-The intended route is **create → define state → configure authority and initial generation → publish signed UI → owner sign-in → connect devices → verify**. A created
-page is only the host handle. Host credentials, device grants and publication
+The intended route is **register agent → create page → define state → configure authority and initial generation → publish signed UI → owner sign-in → connect devices → verify**. A created
+page is only the host handle. The agent credential, device grants and publication
 rights are independent. Use Chronolog for durable application commands, queries
 and events; use session signals for disposable live updates. A separately hosted
 backend is an architectural decision that needs a concrete requirement.
 
-Keep private handles, signing identities and epoch keys outside authored assets.
+Keep the agent token, signing identities and epoch keys outside authored assets.
 Resume existing device storage. Preserve operation IDs and signed attempts after
 uncertain responses. The owner completes their own sign-in; device enrollment and
 recovery remain explicit. If blocked, name the exact prerequisite and next action
@@ -44,7 +51,7 @@ Completion means demonstrating a real command, an applied read from the other
 participant, persistence after reload, and the verified signed publication. State
 which process must remain running. An installed adapter or an HTML preview alone
 does not establish a working connected application.
-Report the actual native process lifetime. Page residency and MCP do not establish
+Report the actual agent program lifetime. Page residency and MCP do not establish
 a supported handoff to, or future wake of, an existing ChatGPT conversation.
 
 ## Verify the user experience

@@ -16,8 +16,8 @@ returned origin; do not infer an environment from the plugin name or substitute
 another service.
 
 For a **new page/application**, read `tendril_guide` with `topic: "build"` and
-`topic: "capabilities"`. Use the supplied native/browser starter, the supported
-HTTP page-creation API and the existing UI/sensor helper modules. Before
+`topic: "capabilities"`. Use the supplied native/browser starter workspace, its
+agent registration and page-creation commands and the existing UI/sensor helper modules. Before
 downloading or installing packages, inspect this origin's `/api/readiness`
 (the returned `setup.readinessUrl`). Require the matching `serviceOrigin`,
 `mode: "open"` and `creation.available: true`. Stop on paused, read-only,
@@ -31,22 +31,25 @@ in the retained starter workspace. Call `register_agent` with its printed public
 `name` and `publicKey` through this connector. The server resolves the owner;
 OAuth credentials never enter the workspace and the signing key never leaves it.
 Save the result privately and run `npx tendril workspace adopt --service
-SERVICE_ORIGIN --credential FILE`, then `npm run page:new -- <slug>`. Calling
+SERVICE_ORIGIN --credential FILE`, then `npm run page:new -- <slug>`. One agent
+(one credential, one signing key) maintains every page it creates, and further
+pages reuse it; an existing page needs the owner's explicit per-agent grant on
+the dashboard, then `npx tendril page grant <slug> <page-id>`. Calling
 `register_agent` again with the same name rotates the token; adopt the newest
 result and never fall back to anonymous registration. Follow the maintained build guide when the
 catalog or granted scope needs an update.
 
 Check that your
 execution environment supports Node 24, installing the exact packages, retained
-private storage and the required running participant. Provision early, initialize and publish the first signed version, prepare any
-assistant-access proposal, and start the participant before giving the owner the
+private storage and the long-running `tendril agent run` program. Provision early, initialize and publish the first signed version, prepare any
+assistant-access proposal, and start the agent program before giving the owner the
 ready page and permission-review URLs. Never wait for claim or ask for a
 "claimed" reply before publishing. Use `topic: "delivery"` for completion evidence. Complete claim, authority/first generation, device
 connection, signed publication and bidirectional verification. Then follow
 `topic: "connect"` to expose selected app operations through MCP. If the necessary
 runtime is unavailable, read `topic: "deployment"` for measured hosting and handoff choices, name that prerequisite and offer a concrete handoff to a
 coding-agent/runtime with the same origin and guide. MCP alone does not host a
-new app's executable participant.
+new app's executable agent program.
 
 A full-featured or rich request requires domain views: conversations, timelines,
 searchable list/detail, named related links and reviewed edits. A JSON editor or
@@ -65,14 +68,14 @@ peer-connection guide and verify real application traffic with no hosted relay
 payload when direct connectivity is available; explicitly qualify forced fallback.
 
 Use the starter's browser pairing flow. The browser retains its own key and
-request; the existing native owner durably pauses ordering and stages the exact
+request; the page's owner inside the agent program durably pauses ordering and stages the exact
 signed member-only proposal. The host verifies and approves it automatically for
 the signed-in owner or an admitted guest; there is no approval screen. The
 fingerprint, account, narrow rights, generation and retained prefix remain bound
-to that exact signed proposal. The native participant receives later pairing
-requests through a hibernating setup subscription, without idle polling.
+to that exact signed proposal. The agent program receives later pairing
+requests for every page through its one hub connection, without idle polling.
 Individual requests expire after ten minutes; uncertain replies and process
-restart preserve the ordering pause. Reopen that same participant and reconcile
+restart preserve the ordering pause. Restart that same agent program and reconcile
 the original outcome, preserving its signed proposal. A committed grant still
 needs a real session connection and cross-device command/read evidence.
 
@@ -111,7 +114,7 @@ Verify a supported subscription before promising future background delivery;
 a page or mounted card does not guarantee a future wake of this conversation.
 
 After a republish or participant restart, read the returned service origin's
-`/docs/AGENT_RESTART.md`. Reconnect attach clients to the retained owner, preserve
+`/docs/AGENT_RESTART.md`. Reconnect attach clients to the restarted agent program, preserve
 handled cursors and exact pending inputs. For apps with a request consumer, verify
 heartbeat and request/receipt/answer behavior only through its declared capabilities;
 report missing support instead of inventing commands. For other apps, verify a

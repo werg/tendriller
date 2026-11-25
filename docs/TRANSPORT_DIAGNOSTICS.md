@@ -87,16 +87,14 @@ delivery proof.
 
 ## Native and SDK consumers
 
-Keep the resident native owner running. These tutorial commands attach to it,
-read once, detach, flush output and exit; they do not open the signing store or
+Keep `tendril agent run` running. These commands attach to a page's owner inside
+it, read once, detach, flush output and exit; they do not open the signing store or
 stop the owner:
 
 ```sh
-node session.mjs diagnostics
-node session.mjs status retained-profile
-# The SQL tutorial supports the same commands from its sql/ directory.
-# The existing native tool doctor also includes the sanitized transport report:
-tendril --session ./session.mjs --mode attach doctor
+tendril --page notes status
+# doctor also includes the sanitized transport report:
+tendril --page notes doctor
 ```
 
 For another native or browser consumer, use the same public SDK helper:

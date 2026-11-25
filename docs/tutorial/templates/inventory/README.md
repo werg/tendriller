@@ -50,7 +50,7 @@ its own stored public key without exporting its signing identity. Verify that
 key; stop `npm run agent` before running `npm run enroll -- SLUG PUBLIC_KEY`
 (the agent program owns this page's device while it runs), then restart
 `npm run agent` and reload the page in the same browser profile. This is explicit native administrator enrollment, not the
-Shared Notes owner-review pairing workflow. Lost enrollment replies reuse the
+Shared Notes automatic browser pairing. Lost enrollment replies reuse the
 saved signed request. Keep the agent program running for writes and epoch
 key delivery. Signing in alone does not enroll a device.
 
