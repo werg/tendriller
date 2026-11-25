@@ -63,19 +63,19 @@ jobs:
           if (!seeds.length || seeds.some(seed => !Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff)) throw Error('Invalid seed list');
           appendFileSync(process.env.GITHUB_OUTPUT, `seeds=${JSON.stringify(seeds)}\n`);
           JS
+      # Exactly the assets the release manifest lists, so this cannot drift from the release.
+      - name: Collect release assets
+        run: |
+          mkdir release-assets
+          node -e 'for (const a of require("./dist/manifest.json").artifacts) console.log(a.file)' |
+            while read -r file; do cp "dist/$file" release-assets/; done
+          cp dist/manifest.json dist/SHA256SUMS release-assets/
       - uses: actions/upload-artifact@v4
         with:
           name: chaos-public-packages
           if-no-files-found: error
           retention-days: 7
-          path: |
-            dist/tendriller-*.tgz
-            dist/chronolog-peer-session-*.tgz
-            dist/manifest.json
-            dist/composition.json
-            dist/provenance.json
-            dist/tools-manifest.json
-            dist/SHA256SUMS
+          path: release-assets/
 
   chaos:
     name: Chaos seed ${{ matrix.seed }}
