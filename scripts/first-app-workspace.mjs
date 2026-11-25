@@ -140,6 +140,12 @@ export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, pu
     checkpoint('optional workspace: stop hub, author browser offline, restart same devices');
     assert.deepEqual(await program.stop(), { code: 0, signal: null }); program = undefined;
     const offline = await save(first.page, 'Stored with optional agent stopped');
+    const originalOffline = await first.page.evaluate(async id => {
+      const operation = await window.tendril.application.backend.operations.get(id);
+      if (!operation) throw Error('Original offline operation is missing');
+      return operation.inspect();
+    }, offline);
+    assert.equal(originalOffline.stored, true); assert.equal(originalOffline.author, browserKey);
     await first.page.reload(); await expect(first.page.locator('#public-key')).toHaveValue(browserKey, { timeout: 60000 }); await expect(first.page.locator('#operation-id')).toHaveValue(offline); await expect(first.page.locator('#notes')).toContainText('Stored with optional agent stopped');
     await first.page.locator('#note').fill('Draft survives optional agent restart');
     await first.page.goto('about:blank');
@@ -150,7 +156,19 @@ export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, pu
     await peer.request('configure', { browserDeviceId: browserKey });
     await expect(first.page.locator('#notes')).toContainText('Native work while browser closed', { timeout: 60000 });
     await expect.poll(async () => (await notes(['query', 'notes', 'null'])).value.some(row => row.text === 'Stored with optional agent stopped'), { timeout: 60000 }).toBe(true);
-    await expect.poll(async () => (await peer.request('operation',{operationId:offline}))?.retained?.length ?? 0, { timeout: 30000 }).toBeGreaterThan(0);
+    const importedOffline = await peer.request('operation', { operationId: originalOffline.proposalId });
+    assert.ok(importedOffline, 'The native replica must retain the exact browser-authored proposal, not resolve a foreign author-local alias');
+    assert.equal(importedOffline.stored, true); assert.equal(importedOffline.proposalId, originalOffline.proposalId);
+    assert.equal(importedOffline.operationId, offline); assert.equal(importedOffline.authorTimestampMs, originalOffline.authorTimestampMs);
+    await expect.poll(async () => first.page.evaluate(async ({ id, proposalId, authorTimestampMs, peerKey }) => {
+      const operation = await window.tendril.application.backend.operations.get(id);
+      if (!operation) throw Error('Original browser operation disappeared');
+      const inspection = await operation.inspect();
+      if (inspection.proposalId !== proposalId || inspection.authorTimestampMs !== authorTimestampMs) throw Error('Original signed intent changed');
+      // Retention is observed by the authoring browser: the native replica must
+      // not count its own retained copy as evidence from another peer.
+      return inspection.retained.filter(row => row.payload.peer === peerKey).length;
+    }, { id: offline, proposalId: originalOffline.proposalId, authorTimestampMs: originalOffline.authorTimestampMs, peerKey: publicKey }), { timeout: 30000 }).toBeGreaterThan(0);
     passed('native program/hub shutdown is clean, saved local work and draft survive, automatic peer convergence needs no replacement intent');
 
     if (network) {
