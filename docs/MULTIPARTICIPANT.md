@@ -209,20 +209,20 @@ checkpoint; filter/generation/retention changes require an explicit reset. The
 gateway's scoped subscriptions and outbox implement this delivery boundary.
 Observation never acquires a task claim.
 
-With the native peer running, use the public CLI diagnostics:
+With `tendril agent run` running, use the public CLI diagnostics on one page:
 
 ```sh
-npx tendril --session ./session.mjs self
-npx tendril --session ./session.mjs endpoints
-npx tendril --session ./session.mjs doctor
-npx tendril --session ./session.mjs operation ORIGINAL_OPERATION_ID
+npx tendril --page notes self
+npx tendril --page notes endpoints
+npx tendril --page notes doctor
+npx tendril --page notes operation ORIGINAL_OPERATION_ID
 ```
 
-The owner assigns endpoint/incarnation and binds a trusted native credential to
-its stable caller namespace. A new CLI process detaches locally after its call.
-Use `--mode own` only for explicit standalone ownership, and `--mode independent
---profile NAME` only for a separately provisioned and enrolled retained profile.
-Failure to attach is an error; it never silently creates another signer.
+The agent program's page owner assigns endpoint/incarnation and binds a trusted
+native credential to its stable caller namespace. A new CLI process detaches
+locally after its call. A different signing profile needs its own separately
+enrolled device and workspace. Failure to attach (`OWNER_UNREACHABLE`) is an
+error; it never silently creates another signer.
 
 ## Bounded supported composition
 
@@ -242,7 +242,7 @@ modes. The SQL/WASM browser consumer qualifies dedicated elected ownership and
 explicitly rejects unsupported SharedWorker storage.
 Signal queues, encrypted fallback frames, native IPC and gateway deliveries have
 independent bounds so a slow client cannot turn disposable progress into an
-unbounded durable queue. Named host tokens share their human owner's admission
+unbounded durable queue. Named agents share their human owner's admission
 budget while retaining independently revocable routes.
 
 ## Version and release boundaries

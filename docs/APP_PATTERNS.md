@@ -45,8 +45,8 @@ void connection.start();
 | --- | --- | --- |
 | Enrolled (every later visit, any tab) | Nothing; the app opens | none |
 | New browser, request being prepared | "Setting up this browser…" with progress | none |
-| Prepared | The service-origin approval opens once, returns by itself | one **Approve** tap there |
-| Approved, native owner committing | "Finishing setup…" | none |
+| Prepared, agent program committing | "Finishing setup…" (the host approves the staged proposal automatically; the page never leaves) | none |
+| Setup request expired (second time in a visit) | "Setup request expired" | **Request another review** |
 | Another tab is starting the owner | "Connecting…" | none (retries) |
 | Declined | "The request was declined" | **Ask again** |
 | Signed out, private mode, other failures | Plain words from `describeConnectionError`; code under *Technical details* | **Reload** or **Try again** where useful |
@@ -89,7 +89,7 @@ User-facing copy for the codes an app can meet (developer causes are in
 
 | Code | Message |
 | --- | --- |
-| `APPLICATION_DEVICE_NOT_FOUND`, `DEVICE_NOT_ENROLLED` | Not an error: "Setting up this browser…", then the approval |
+| `APPLICATION_DEVICE_NOT_FOUND`, `DEVICE_NOT_ENROLLED` | Not an error: "Setting up this browser…", then "Finishing setup…" |
 | `OWNER_BUSY`, `OWNER_UNREACHABLE`, `ENDPOINT_STALE` | "Connecting…" (another tab is starting); retried |
 | `pairing_account_required`, 401 | "Sign in to continue" · Reload |
 | `PAIRING_STORAGE_REQUIRED`, `PAIRING_LOCK_REQUIRED`, `QuotaExceededError` | "This browser can't keep the app's key" · use a normal tab |
@@ -265,7 +265,7 @@ recovery. Application content never becomes `innerHTML` in these components.
 
 ### Empty, loading, error and connection states
 
-![Importable loading, empty, error and approval connection components](assets/app-patterns-states.png)
+![Importable loading, empty, error and connection components](assets/app-patterns-states.png)
 
 These are real Chromium captures of the supplied specimen, at 1200×1100 and
 390×844 viewports. Reproduce the behavior check with

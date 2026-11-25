@@ -66,19 +66,20 @@ There are two separate approvals in this example:
   for analysis. The result remains an editable suggestion.
 
 Obtain the **browser device public key** displayed by the connected page. It is
-the signer enrolled with `npm run enroll -- BROWSER_PUBLIC_KEY`, not an account
-email, agent bearer token, page ID or the native device key. The inference
+the signer enrolled with `npm run enroll -- <slug> BROWSER_PUBLIC_KEY`, not an account
+email, agent token, page ID or the native device key. The inference
 allowlist is an additional permission to use the native provider budget.
 
-Stop the ordinary `npm run peer` process with Ctrl-C. The inference launcher
-opens the same native session and signer, so it **replaces** that process. Two
-processes must not open the same exclusive device store.
+Keep `npm run agent` running. The inference launcher **attaches** to one page of
+that program and never opens a signer or the page's exclusive device store.
+Ctrl-C detaches the launcher only.
 
-In the extracted starter directory, supply the credential through the native
+In the extracted starter workspace, supply the credential through the native
 environment or secret manager, select an image-capable model explicitly, and run:
 
 ```sh
-node media/inference-peer.mjs \
+node shared/media/inference-peer.mjs \
+  --page notes \
   --model YOUR_EXPLICIT_IMAGE_CAPABLE_MODEL \
   --allow-device BROWSER_PUBLIC_KEY \
   --max-requests 1

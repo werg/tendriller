@@ -198,7 +198,7 @@ is reported as null; core release and runtime identity remain explicit.
 
 `scripts/onboarding.mjs` generates `llms-full.txt` from maintained guides and
 packages the explicitly enumerated tutorial source files into a download.
-Generated private handles, device stores, epoch keys and build output must never
+Generated agent credentials, signers, device stores, epoch keys and build output must never
 enter that archive. Tutorial HTML is available inside the download, not as an
 executable document on the service origin. `npm run test:onboarding` runs in the
 normal Node test gate; public Worker tests follow the discovery links anonymously.
@@ -291,11 +291,11 @@ editing generated `agent.md` or `llms.txt` alone. Run the MCP-only cold-start
 scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavior;
 link and consistency checks do not prove that an unfamiliar agent can finish.
 
-Account-bound setup retains one client credential and allocation across retries.
+Agent registration retains one credential and one signing key per workspace across retries; the agent's pages are granted automatically and an owner grants existing pages.
 Device pairing uses the browser's own key proof, a native member-only proposal that the host
 approves automatically when staged (no approval screen), and a durable ordering pause until
 the exact signed outcome is resolved.
-The native participant uses hibernating setup notifications without idle polling;
+The agent program receives setup notifications for every page over one hub connection without idle polling;
 individual requests expire after ten minutes. Its lifetime is independent of the
 optional MCP adapter. Closing or restarting it does not erase uncertain work. Public SDK/endpoint and tutorial helper tests cover their named
 boundaries. The exact packed first-app/browser run, selected-host MCP run and

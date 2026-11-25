@@ -10,9 +10,9 @@ production sign-in. Review production state through its own authorized page.
 
 | Goal | Command or surface | What it establishes |
 | --- | --- | --- |
-| Inspect the authored UI immediately | `npx tendril-preview ./page` | Local rendering of the exact authored asset graph |
-| Capture the layout in a browser | `npx tendril-preview ./page --headless --desktop --out preview.png` | A screenshot and browser errors from that graph |
-| Exercise the starter's real app/session | Signed publication on its authorized Tendriller page, with `npm run peer` running | Real commands, queries, operation journal, key acquisition and peer synchronization |
+| Inspect the authored UI immediately | `npx tendril-preview ./pages/notes/dist` | Local rendering of the exact authored asset graph |
+| Capture the layout in a browser | `npx tendril-preview ./pages/notes/dist --headless --desktop --out preview.png` | A screenshot and browser errors from that graph |
+| Exercise the starter's real app/session | Signed publication on its authorized Tendriller page, with `npm run agent` running | Real commands, queries, operation journal, key acquisition and peer synchronization |
 | Review connected UX before production sign-in | `npm run dev:host -- --release FULL_SOURCE_SHA --state /absolute/isolated-state --open`, then use its matching kit | The selected sealed host release, synthetic owner, real application implementation and separate development identity/data |
 | Validate the local host integration from the core checkout | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | An isolated packed host, synthetic local account, real application sessions and scripted browser checks |
 | Integrate an already implemented local session bootstrap | `--bootstrap` naming an existing authored `openPreview` module | Exactly the real backend and cleanup supplied by that module |
@@ -25,10 +25,10 @@ for their prerequisites and recorded limits.
 
 ## File preview is immediately runnable
 
-From the application directory after `npm run build`:
+From the workspace after `npm run build -- notes`:
 
 ```sh
-npx tendril-preview ./page
+npx tendril-preview ./pages/notes/dist
 ```
 
 The returned localhost URL serves the complete authored files. Opening the
@@ -47,11 +47,12 @@ capabilities described in [the capability map](../CAPABILITIES.md).
 
 Follow [the local-host procedure](../LOCAL_HOST.md) using the full source SHA of
 the release you intend to qualify. The runner verifies its sealed manifest,
-packed host, public assets and matching first-app kit. Use a fresh local app
-directory and the generated local network preload. Initialize and publish the
-same application source, keep its native participant running, then claim and
-enroll its browser through the synthetic test account in the runner's Chromium
-profile. This is a separate development application with its own keys and data.
+packed host, public assets and matching first-app kit. Use a fresh local
+workspace directory and the generated local network preload. Register its agent,
+create a page, initialize and publish the same application source, keep
+`npm run agent` running, then claim and enroll the browser through the synthetic
+test account in the runner's Chromium profile. This is a separate development
+agent and page with their own keys and data.
 
 Seed realistic examples through the domain's real commands, including empty
 and long-content cases. Do not substitute a mock state provider for connected
@@ -78,23 +79,22 @@ an existing Playwright module through `--playwright-path`.
 ## Review a running hosted application
 
 For the application's actual retained data, use its authorized page origin.
-Keep the native peer running and publish through an explicitly authorized
+Keep `npm run agent` running and publish through its explicitly authorized
 attachment:
 
 ```sh
-npm run build
-npx tendril --session ./session.mjs --mode attach publish ./page --operation notes-review-1
-npx tendril --session ./session.mjs --mode attach publication
+npm run build -- notes
+npx tendril --page notes publish pages/notes/dist --operation notes-review-1
+npx tendril --page notes publication
 ```
 
 The [publication capability](CLI.md#publication-capability-and-retained-bindings)
-is explicit; an older retained binding is never elevated automatically. Initial
-publication before the owner starts can still use `--mode own`.
+is explicit; a retained binding is never elevated automatically.
 
 Open the saved page URL and selected release while signed in. A new browser uses
 the supplied [enrollment step](../BUILD_AN_APP.md#6-enroll-and-connect-the-owners-browser).
 Verify a browser command natively, a native command in the browser, and
-same-device reopening. The native peer remains available for the starter's
+same-device reopening. The agent program remains available for the starter's
 coordinator and key-donor role; attached publication does not replace it.
 
 The publication operation ID identifies the exact authored graph. After an

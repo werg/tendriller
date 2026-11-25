@@ -160,8 +160,8 @@ read alone. A crash before that checkpoint can redeliver a request; the work key
 and exact answer input make that redelivery safe. After recovery, inspect the
 selected history before continuing an old cursor or reapplying excluded work.
 
-For an event-driven process use `tendril --session ./session.mjs --mode attach
-watch --events --topics '["agent/request"]'` with the last committed cursor, or the public event forwarder. Plain `watch`
+For an event-driven process use `tendril --page notes watch --events
+--topics '["agent/request"]'` with the last committed cursor, or the public event forwarder. Plain `watch`
 reports coalesced query invalidations and is not an event delivery log. See
 [CLI supervision](tools/CLI.md) and [restart checklist](AGENT_RESTART.md).
 Map each raw request event into the query's reference shape before using the

@@ -3,8 +3,8 @@
 Use the supported `dev:host` command to run one immutable Tendriller release on
 your own machine. It starts the release's packed Worker and public assets, an
 isolated account/page database and object storage, and a synthetic owner login.
-You can create, initialize, publish, pair and connect an application before
-creating anything on your production host.
+You can register a workspace agent, create, initialize, publish, pair and
+connect an application before creating anything on your production host.
 
 ## 1. Start the selected release
 
@@ -58,10 +58,10 @@ it does not contact GitHub or Google for OAuth. The local access token expires
 after 24 hours. Restart the runner to renew it, then open the newly printed
 sign-in link in the isolated Chromium window.
 
-## 2. Copy the matching kit into a fresh application directory
+## 2. Copy the matching kit into a fresh workspace directory
 
 In another terminal, set `TENDRILLER_DEV_STATE` to the **absolute state path**
-printed by the runner. Use a separate new directory for the test application;
+printed by the runner. Use a separate new directory for the test workspace;
 the runner recreates its extracted release directory when restarted.
 
 ```sh
@@ -81,67 +81,69 @@ npm install --save-dev --save-exact esbuild@0.28.2
 ```
 
 The verified kit supplies SDK, tools and the events session; esbuild is the local
-application bundler. For an existing application, install these same matched
-packages in a separate source copy and use a fresh local device/profile. Keep
-your production handles, credentials and device storage in their original
-project. A local app has a different application identity and host handle.
+application bundler. To try an existing page's source, copy it into
+`pages/<slug>/` of this fresh workspace. Keep your production workspace,
+credentials and device storage in their original folder. A local workspace has a
+different agent, signing key and application identities.
 
-## 3. Create, initialize and publish
+## 3. Register the agent, create, initialize and publish
 
 The generated `local-network.mjs` is an opt-in Node preload. It supplies the
 loopback DNS mapping, trusts only this host's certificate, and refuses nonlocal
-HTTP/WebSocket requests. Pass it to the app commands below. Do not enable it
-while installing npm dependencies or calling a remote provider.
+HTTP/WebSocket requests. Enable it only for the application commands below, in a
+shell where dependencies are already installed; Node child processes (npm
+scripts, `tendril`) inherit it. Do not enable it while installing npm
+dependencies or calling a remote provider.
 
 ```sh
-TENDRILLER_LOCAL_PRELOAD="$TENDRILLER_DEV_STATE/local-network.mjs"
+export NODE_OPTIONS="--import $TENDRILLER_DEV_STATE/local-network.mjs"
 
-node --import "$TENDRILLER_LOCAL_PRELOAD" setup.mjs create \
-  https://service.localhost:8790 owner@example.test "Local shared notes"
-node --import "$TENDRILLER_LOCAL_PRELOAD" setup.mjs init
-npm run build
-node --import "$TENDRILLER_LOCAL_PRELOAD" \
-  node_modules/@tendriller/tools/bin/tendril.mjs \
-  --session ./session.mjs --mode own --timeout 120 \
-  publish ./page --operation local-notes-release-1
+npx tendril workspace init --service https://service.localhost:8790 \
+  --owner owner@example.test --name local-agent
+npm run page:new -- notes --template notes --name "Local shared notes"
+npm run init -- notes
+npm run build -- notes
 ```
 
-Use the printed service origin if you selected another port. Creation performs
-the ordinary readiness check. Retain the complete `.tendriller/` directory and
-the signed publication operation ID. A retry in this same project resumes the
-same application. To try another release, use a separate host state directory
-and a separate app directory.
+Use the printed service origin if you selected another port. `workspace init`
+performs the ordinary readiness check and registers one agent (one credential,
+one signing key) for the synthetic owner; `page:new` creates the page, granted to
+that agent. Retain the complete `.tendriller/` directory and the signed
+publication operation ID. A retry in this same workspace resumes the same agent
+and page. To try another release, use a separate host state directory and a
+separate workspace directory.
 
-## 4. Run the native participant, claim and pair the browser
+## 4. Run the agent program, claim and pair the browser
+
+In a second terminal with the same `NODE_OPTIONS`, start the workspace's one
+long-running program and leave it running, then publish through it:
 
 ```sh
-node --import "$TENDRILLER_LOCAL_PRELOAD" session.mjs
+npm run agent
+# in the first terminal:
+npm run deploy -- notes
 ```
 
-Leave that process running. Open the `page_url` returned by creation in the
-runner's Chromium window. Keep its URL unchanged; the browser handles local
-port routing. Sign in to the local test account first if necessary, claim the
-page, and follow the normal browser connection flow. The running native owner
-stages the browser's signed device proposal; the host approves it automatically
-and the page connects by itself, without an approval screen.
+Open the `page_url` returned by `page:new` in the runner's Chromium window. Keep
+its URL unchanged; the browser handles local port routing. Sign in to the local
+test account first if necessary, claim the page (this also claims the agent), and
+follow the normal browser connection flow. The running agent program stages the
+browser's signed device proposal; the host approves it automatically and the page
+connects by itself, without an approval screen.
 The [build guide](BUILD_AN_APP.md) describes these normal connection steps.
 
-Add a note in the browser. From another terminal in the same application
-directory, verify the native participant can read it:
+Add a note in the browser. From another terminal in the same workspace
+directory, verify the agent program can read it:
 
 ```sh
-TENDRILLER_DEV_STATE=/absolute/path/to/tendriller/.tendriller-dev-host/FULL_SOURCE_SHA
-TENDRILLER_APP=/absolute/path/to/local-shared-notes
-TENDRILLER_LOCAL_PRELOAD="$TENDRILLER_DEV_STATE/local-network.mjs"
+export NODE_OPTIONS="--import $TENDRILLER_DEV_STATE/local-network.mjs"
 cd "$TENDRILLER_APP"
-node --import "$TENDRILLER_LOCAL_PRELOAD" \
-  node_modules/@tendriller/tools/bin/tendril.mjs \
-  --session ./session.mjs --mode attach query notes null
+npx tendril --page notes query notes null
 ```
 
 Also submit a native command and observe it in the browser, reload the browser,
 and check that the original notes remain. Inspect the signed publication with
-the same CLI's `publication` command. These checks exercise real host setup,
+`npx tendril --page notes publication`. These checks exercise real host setup,
 publication, browser enrollment and connected application state. A successful
 server startup alone does not establish application connectivity.
 
@@ -150,19 +152,15 @@ server startup alone does not establish application connectivity.
 Use this environment for the connected UX pass before asking the production
 owner to sign in. Keep the selected sealed release and matching SDK/tools/session
 archives together. The same application source runs with a separate local
-handle, signer, browser profile and data; record that scope in the review.
+agent, signer, browser profile and data; record that scope in the review.
 
-Seed data through the real domain commands while the native participant runs.
+Seed data through the real domain commands while the agent program runs.
 For the unmodified Shared Notes kit, one retained example is:
 
 ```sh
-TENDRILLER_DEV_STATE=/absolute/path/to/tendriller/.tendriller-dev-host/FULL_SOURCE_SHA
-TENDRILLER_APP=/absolute/path/to/local-shared-notes
-TENDRILLER_LOCAL_PRELOAD="$TENDRILLER_DEV_STATE/local-network.mjs"
+export NODE_OPTIONS="--import $TENDRILLER_DEV_STATE/local-network.mjs"
 cd "$TENDRILLER_APP"
-node --import "$TENDRILLER_LOCAL_PRELOAD" \
-  node_modules/@tendriller/tools/bin/tendril.mjs \
-  --session ./session.mjs --mode attach command addNote \
+npx tendril --page notes command addNote \
   '{"text":"A realistic local review note"}' --operation local-ux-note-1
 ```
 
@@ -184,9 +182,9 @@ physical phones. Complete and identify those remaining checks separately.
 
 ## Restart, offline release input and limits
 
-Stop the participant first, then stop the host with Ctrl-C. Restart the host
+Stop the agent program first, then stop the host with Ctrl-C. Restart the host
 with the same source, state path and port; it retains D1, R2, Durable Object and
-Chromium storage. Restart the same application using its retained `.tendriller/`
+Chromium storage. Restart the same workspace using its retained `.tendriller/`
 directory and current local preload. The state record pins the original release
 manifest and service origin, so another release or port cannot silently reuse
 that storage. After a forced crash, inspect the PID in `host.lock` and remove

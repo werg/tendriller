@@ -5,7 +5,8 @@ before changing architecture: **create → define state and UI → configure
 authority and select the first generation → publish → owner sign-in → connect and verify**. A page URL, an installed adapter, and
 a working shared application are different checkpoints.
 
-Keep the private handle, signer store, epoch keys and saved attempts intact while
+Keep the workspace's `.tendriller/` folder (agent credential, shared signer, page
+device stores), epoch keys and saved attempts intact while
 diagnosing. Share error codes, public device IDs and redacted status; keep bearer
 tokens, capability URLs, private keys and application data out of public logs and
 published assets. An uncertain response is a reason to inspect the existing work,
@@ -19,7 +20,7 @@ Call `tendril_guide` with `topic: "start"` for the maintained
 `list_tendrils`, then refresh the plugin's tool catalog. A missing tool or guide
 does not authorize switching the application to a different service origin.
 An empty `list_tendrils` means no assistant-connected apps for that account. Use `topic: "build"` for a
-new application and its supported HTTP creation route, or `topic: "connect"`
+new application and its supported agent registration and page creation route, or `topic: "connect"`
 for the existing participant's proposal and owner review. Check Node 24, retained
 storage and actual process lifetime before promising a connected new app. A
 missing runtime requires a concrete runtime handoff, not another website plugin.
@@ -42,25 +43,28 @@ production to find an app.
 | Checkpoint | Evidence to inspect | What remains to do |
 | --- | --- | --- |
 | Host discovered | `GET /api/service` returns a compatible contract and limits. | Obtain compatible public artifacts and read the build guide. A descriptor does not open a session. |
-| Page created | The saved private handle contains `api`, `token`, `page_url` and `application.id`. | Prepare and publish the first UI, start the participant, and give the owner the ready page and permission-review URLs. Do not wait for a claimed reply. |
-| Owner claimed | The owner completed sign-in; inspect host info through `host.info()` or `tendril --tendril NAME info`. | Inspect the prepared authority and publication, then explicitly enroll devices and approve assistant access. An older unprepared page may still need configuration. |
+| Agent registered | `tendril status` shows the workspace agent and `GET /api/agent` accepts its token. | Create a page with `tendril page new <slug>` (or `npm run page:new`). Without a workspace, run `tendril workspace init`, `workspace join` or the MCP `register_agent` route. |
+| Page created | `tendril page list` shows the slug with its page ID; `.tendriller/pages/<page-id>/page.json` holds `page_url` and `application.id`. | Prepare and publish the first UI, start the participant, and give the owner the ready page and permission-review URLs. Do not wait for a claimed reply. |
+| Owner claimed | The owner completed sign-in; inspect host info with `tendril --page SLUG info`; `tendril status` reports the agent's claimed state. | Inspect the prepared authority and publication, then explicitly enroll devices and approve assistant access. An older unprepared page may still need configuration. |
 | Authority configured | Host info reports `configured: true`; `host.peers.application()` returns authority to verify and pin through Chronolog. | Select the first generation. Configuration retains the descriptor and controls but supplies no selected generation and starts no application process. |
 | Initial generation selected | The saved, signed creation transition has been submitted through `host.peers.selectGeneration(...)`; verified authority contains the selected generation. | Open the enrolled device's session with the matching definition, keys and persistent store. The tutorial's `init` step saves the exact transition before sending it and resumes that attempt after interruption. |
 | Browser binding installed | `tendril.application.available` is true; `ready()` resolves with the backend. | Inspect `session.status` and participation status for connectivity and the selected generation. |
 | Data path exercised | A declared command has an observed outcome and a coherent query shows the intended value. | Check the other peer and reopen the same device. A local result alone does not prove replication or resume. |
 | Code published | `control.publish(...)` returned a signed publication receipt; `control.publication()` verifies the selected release. | Open the actual published page and exercise its browser/session integration. |
 
-The CLI examples below assume the tools are installed and `./application.mjs` is
-your real application bootstrap exporting `openSession({ signal })`. If that file
-does not exist, return to [the build guide](BUILD_AN_APP.md) and complete setup;
-an empty module or invented `deployment.mjs` does not provide a session.
+The CLI examples below assume the tools are installed, you are inside the
+workspace and `tendril agent run` is running, with the page's
+`pages/<slug>/agent.mjs` exporting `openPage(context)`. If that module does not
+exist, return to [the build guide](BUILD_AN_APP.md) and complete setup; an empty
+module or invented `deployment.mjs` does not provide a session.
 
 ```sh
-tendril --tendril NAME info
-tendril --session ./application.mjs status
-tendril --session ./application.mjs describe
-tendril --session ./application.mjs definition
-tendril --session ./application.mjs publication
+tendril status
+tendril --page notes info
+tendril --page notes status
+tendril --page notes describe
+tendril --page notes definition
+tendril --page notes publication
 ```
 
 These commands inspect different boundaries. Preserve the returned application
@@ -72,53 +76,45 @@ artifact versions in the private build record so mismatches are visible.
 | Observation or code | Next action |
 | --- | --- |
 | `/api/service` returns HTML, a challenge, or `invalid_response` | Check that the URL is the service origin, not a page or agent API URL. Inspect HTTP status and content type. If ordinary automated clients are blocked before the Worker, report the host access problem with a redacted response. Do not treat it as a successful descriptor. |
-| `APPLICATION_WORKER_METADATA_INVALID` when attaching to a running owner | Check for a mixed package/owner composition, including an older owner missing current participation metadata. Preserve device identities, storage and original signed operation references. Close old app tabs, update native participants and the signed UI to the same qualified public package composition, then reopen the retained profile. Do not reset or clear app data. |
+| `APPLICATION_WORKER_METADATA_INVALID` when attaching to a running owner | Check for a mixed package/owner composition. Preserve device identities, storage and original signed operation references. Close old app tabs, restart the agent program and republish the signed UI from the same qualified public package composition, then reopen the retained profile. Do not reset or clear app data. |
 | `contract_mismatch`, missing package export, or incompatible definition/engine artifacts | Compare the host contract, core release and exact installed artifact manifests. Follow [artifact acquisition](tools/ARTIFACTS.md) and the [release composition](RELEASE_COMPOSITION.md) record. Supply a compatible public Chronolog session archive; the core host's control dependency is not the full native/browser session package. Do not assume that unrelated latest package versions compose. |
-| `Unknown advertisement field` after a host upgrade | An older participant may still send `ttlMs`; current discovery uses an authenticated presence socket. Upgrade native and browser packages and copied starter code together from the selected host's exact kit, republish, and close old tabs before reopening the same retained profile. Follow the [rc.16 migration guide](MIGRATION_RC16_RC17.md#discovery-advertisements-no-longer-have-leases); removing one field from the old renewal loop is insufficient. |
-| `application_not_found`, or `404` with `error.code: "not_found"` and `No such tendril` from the application's authenticated `self` endpoint | Confirm the original service origin and handle. A deleted application or a fresh host storage deployment needs [explicit recreation](MIGRATION_RC16_RC17.md#recreate-after-a-host-storage-reset): retain the old private project, install the matching kit in a fresh directory, run `npm run create` and `npm run init` again, then publish and enroll using the new handle. Host credential renewal cannot restore a missing application. This is separate from data recovery. |
-| `unauthorized` from an agent API | Check the saved handle's service/API and current bearer token. For a claimed application, use [same-app owner delegation](BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss) to retain a reviewed credential with `npm run host:adopt`; do not create another page or signer. |
-| `setup_expired` or `setup_binding_inactive` after owner claim | The 24-hour setup credential or its original OAuth grant is no longer active. Have the same owner open `page_url` + `_tendril/manage`, choose **Add agent**, review the native scopes and save its one-use code privately. Redeem it with `npm run host:adopt -- SERVICE_ORIGIN .tendriller/delegation-code.txt`, then reopen the retained native device and verify existing data. Claim does not extend the setup credential. |
-| `setup_recovery_required` from `npm run create` | The directory retains setup, signer or recovery evidence without a usable handle. Preserve it and restore or continue the original application. A reviewed host credential plus the matching retained descriptor resumes the same page even when the original handle is missing; incomplete or conflicting evidence cannot authorize replacement creation. |
-| `adoption_outcome_unknown` | The one-use code may have been consumed without a retained response. Keep the private attempt. The owner inspects its named agent, disconnects that binding if present and explicitly approves another **Add agent** code. If a response was retained, the same helper reuses it and verifies current access without redeeming the code again. |
-| `host_credential_unverified` | The retained delegation response could not be verified through the same host's authenticated `self` endpoint. Inspect network state and the named binding with the owner. Keep the response; repeating verification sends no one-use code. A revoked binding needs a new reviewed delegation. |
-| `host_selection_changed` or `host_selection_busy` | A later renewal or another command owns credential selection. Do not roll back the later selected credential. Let the other command finish. After a crash, confirm all adoption commands have stopped before removing only `.tendriller/host-selection.lock` and resuming; retain all attempts and responses. |
-| `delegation_unavailable` | The selected host did not confirm the required `GET /api/adopt` capability. No code was submitted. Ask the operator to deploy the matching host and keep the original service origin. |
-| `host_identity_required` or `host_handle_mismatch` | Restore the original private checkpoint. If only host credentials were lost, retain the signed descriptor/device and save the original setup inspection as `.tendriller/account-setup-result.json`. With the connector disconnected, have the owner inspect `SERVICE_ORIGIN/dashboard/setups` and save its original page link as `.tendriller/owner-page-url.txt`. Resolve identity conflicts before delegation. Missing signing keys still require a device checkpoint or explicit application recovery. |
-| Sign-in is shown, `wrong_owner`, or `claimed` | Have the human open the returned owner `page_url` and sign in with the intended verified identity. If another account owns the page, report that mismatch. Agent credentials cannot claim the page on the owner's behalf. |
+| `Unknown advertisement field` | A participant sends `ttlMs`; discovery uses an authenticated presence socket and takes no lease field. Build native and browser packages and starter code together from the selected host's exact kit, republish, and close old tabs before reopening the same retained profile. |
+| `404` `not_found` ("No such granted page") from `/api/agent/pages/<id>/...` | The agent holds no grant for that page ID, or the page was deleted. Run `tendril status` and `tendril page list`. The owner grants an existing page from the dashboard card's **Add people & devices → An agent**, then `tendril page grant <slug> <page-id>`. Creating a page with the agent grants it automatically. |
+| `401 unauthorized` ("Invalid or revoked agent token") | Check the workspace's `.tendriller/agent/credential.json` and service origin. A revoked agent stays revoked: the owner adds a new agent (**Dashboard → Your agents → Add agent**) and you run `tendril workspace join` in a fresh folder, or call `register_agent` again with the same name to rotate the token and key, then `tendril workspace adopt`. Do not create another page to work around it. |
+| `agent_credential_missing`, `agent_signer_missing` or `agent_signer_mismatch` | `.tendriller/agent/` is damaged or from another workspace. Restore it from a verified checkpoint; a new key would not match the registered agent or its signed page grants, and a lost token is never reissued silently. |
+| `workspace_required`, `page_required` or `page_unknown` | Run the command inside the workspace (the nearest `tendriller.json`, `--workspace DIR` or `TENDRIL_WORKSPACE`), and add `--page <slug or id>` when the workspace has more than one page. `tendril page list` shows the slugs. |
+| `workspace_exists` or `workspace_not_empty` | The folder already is a workspace, or holds `pages/` without `tendriller.json`. Resume it; never register a second agent for the same folder. Restore a missing `tendriller.json` from the checkpoint. |
+| `page_not_granted` from `page grant` | The agent does not hold that page yet. Ask the owner to check the agent for the page on the dashboard. |
+| `invalid_code` from `workspace join` | The join code is unknown, used or expired (ten minutes). The owner makes a new one under **Dashboard → Your agents → Add agent**. A lost registration reply cannot be recovered: the owner can revoke the unclaimed agent and add another. |
+| `agent_capacity` or `agent_name_in_use` | The account holds the maximum number of agents (50), an owner email has too many unclaimed agents, or the name already exists in the account. Revoke an unused agent or choose another `--name`. |
+| `OWNER_UNREACHABLE` | Start `tendril agent run` in the workspace and keep it running. A page opens only after `npm run init -- <slug>` wrote `initialized.json`. A command never opens a second signer. |
+| Hub status `replaced` or `revoked` | `replaced`: a newer agent program for the same credential took the hub; stop the duplicate. `revoked`: the owner revoked the agent; its local page data is kept. |
+| Sign-in is shown, `wrong_owner`, or `claimed` | Have the human open the returned owner `page_url` and sign in with the intended verified identity (that also claims the workspace agent). If another account owns the page, report that mismatch. Agent credentials cannot claim a page on the owner's behalf. |
 | `forbidden` while configuring, or `account_required` while making a page resident | Confirm owner claim and the current account's authority. Host control configuration is owner administration. A page display role cannot perform it. Read the specific error message; `forbidden` can also mean revoked access. |
 | `lifetime_pending` | Inspect current host info and retry the same requested lifetime after account storage recovers. Do not alternate lifetime values to work around an uncertain account write. |
-| `quota`, `rate_limited`, or `peer_participant_busy` | Read the reported limit and service status; reduce concurrency or wait before a bounded retry. Preserve existing handles and operation identities. Do not repeatedly create pages to evade a limit. |
+| `quota`, `rate_limited`, or `peer_participant_busy` | Read the reported limit and service status; reduce concurrency or wait before a bounded retry. Preserve the existing agent, pages and operation identities. Do not repeatedly create pages to evade a limit. |
 
 Unclaimed pages expire after 24 hours. Creating another page is a new application
-setup decision, not a recovery mechanism for an existing claimed application.
-After a confirmed host storage reset, the old application itself is absent;
-follow the explicit recreation route above. Older rc.17 clients can incorrectly
-label this missing-application `404` as `access_revoked` and stop reconnecting.
-The corrected setup watcher reports `application_not_found` with recreation
-guidance and retries after 1, 2, 4 seconds, up to a 60-second maximum. A still-running
-process with that status is unhealthy. Retries do not create an app or change its
-handle; intentionally recreate and restart with the new handle, or have the host
-operator restore the original application. `401`/`403` remain access failures.
-These checks run after connection failure, not as polling on a healthy idle socket.
+setup decision, not a recovery mechanism for an existing claimed application. A
+deleted page is absent; its private folder under `.tendriller/pages/` stays as
+evidence for the old identity. The agent program reports `closed` for it and keeps
+running the others. These checks run after connection failure, not as polling on a
+healthy idle socket.
 
-The account-linked setup credential has its own 24-hour deadline even for a
-claimed resident page. The starter retains reviewed host credentials separately
-from the initial handle, so `project()` and terminal attachment resume the same
-application after owner delegation. Stop and restart an already running native
-participant to select the new credential. Assistant access tied to the former
-credential requires `npm run assistant:prepare` and a fresh owner permission
-review; the existing assistant key and event cursor can remain intact.
+The agent credential does not expire when the owner claims. Assistant access tied
+to a page requires `npm run assistant:prepare -- <slug>` and a fresh owner
+permission review; the existing assistant key and event cursor can remain intact.
 See [membership](MEMBERSHIP.md) for the independent account and device rights.
 
 ## Definition, authority and enrollment
 
 | Code | Next action |
 | --- | --- |
-| `peer_application_unconfigured` | Using the private setup credential, complete `host.peers.configureApplication(...)` before asking for owner sign-in with the real public definition, execution-manifest digest, schema administrator, epoch/key digest and initial device grants. SQL also needs its matching signed schema. Inspect authority after an uncertain response before repeating the exact configuration. Publishing HTML cannot configure the application. |
+| `peer_application_unconfigured` | Run `npm run init -- <slug>`: using the agent's grant, complete `host.peers.configureApplication(...)` before asking for owner sign-in with the real public definition, execution-manifest digest, schema administrator, epoch/key digest and initial device grants. SQL also needs its matching signed schema. Inspect authority after an uncertain response before repeating the exact configuration. Publishing HTML cannot configure the application. |
 | `PEER_NO_SELECTED_GENERATION` when opening the session | Configuration succeeded but the initial generation has not been selected. Resume the tutorial's `init` step or the complete [session bootstrap](SESSION_BOOTSTRAP.md): persist the signed creation transition, submit it through `host.peers.selectGeneration(...)`, verify the resulting authority, then open the session. Reuse a retained transition on an uncertain response; do not invent a replacement generation or start an empty session. |
 | `peer_definition_invalid` or `peer_schema_definition_mismatch` | Validate the actual application definition and, for SQL, prepare its schema with the matching public engine/session artifacts. Compare the signed definition/schema commitments instead of inventing digest values. |
 | `peer_application_immutable` | Read the configured definition and authority. The initial descriptor cannot be replaced by submitting different configuration. Resume that application or deliberately design a new application identity; preserve the existing page and data while deciding. |
-| `invalid_application`, `peer_application_identity`, or `peer_participant_scope_mismatch` | Compare the handle's 32-byte lowercase hex `application.id` with the session, runtime binding and participant request. A page ID, URL or device ID is not the application ID. |
+| `invalid_application`, `peer_application_identity`, or `peer_participant_scope_mismatch` | Compare the page record's 32-byte lowercase hex `application.id` with the session, runtime binding and participant request. A page ID, URL or device ID is not the application ID. |
 | `peer_account_binding_required`, `peer_account_binding_immutable`, or `peer_requester_account` | Inspect the signed grants and authenticated account bindings. Enroll the actual device under an admitted account through authorized control changes. An existing device key retains its original account; changing a payload role does not change authority. |
 | `peer_control_revision_mismatch` or `peer_transition_id_reused` | Inspect the current verified authority and the retained transition. An exact retry keeps its original signed bytes and transition ID. A changed control proposal is a new reviewed transition, not a modification of the saved request. |
 | `peer_control_state_missing`, `peer_control_state_mismatch`, or `peer_definition_state_mismatch` | Preserve the existing records and report the host consistency failure. Recreating a signer or empty authority would destroy the pinned trust relationship. Use explicit recovery with actual surviving evidence; do not fabricate it. |
@@ -137,7 +133,7 @@ helps peers find each other. None of these replaces the others.
 | `signal_unavailable` | Install that same session's `signals` with `tendril.signals.install(session.signals)`. Live signals are disposable; successful send is not a durable application write. |
 | Adapter installed, but commands wait or no peers are visible | Inspect `session.status` and the one participation controller's status. Confirm the intended native process/browser Worker is running, has current grants and keys, and uses the same application. Check the host introduction adapter and actual environment RTC/relay openers. A resident host page does not keep an application coordinator running. |
 | `APPLICATION_DEVICE_NOT_FOUND`, `DEVICE_NOT_ENROLLED` in a delivered page | The browser has no grant yet. This is the connection component's setup step, not an error for the user. Keep `createOwnerConnection`; user-facing copy for every code is in [Connect the browser](APP_PATTERNS.md#connect-the-browser). |
-| `PAIRING_HISTORY_FULL` | Preserve the browser’s retained requests and existing device key. Ask the agent to inspect the host outcomes, then use the starter’s explicit `npm run enroll -- PUBLIC_KEY` administration route with the resident owner stopped, and restart that same participant. Reload the browser to attach to the enrolled device. Do not clear storage or generate another signer. |
+| `PAIRING_HISTORY_FULL` | Preserve the browser’s retained requests and existing device key. Ask the agent to inspect the host outcomes, then use the starter’s explicit `npm run enroll -- <slug> PUBLIC_KEY` administration route with the agent program stopped, and restart it. Reload the browser to attach to the enrolled device. Do not clear storage or generate another signer. |
 | `OWNER_BUSY` | Another owner holds this browser profile. Current pages attach to it (any tab, any release); the pairing Worker waits for the fence. If it persists, an older SDK is in use: update the starter files and core package. |
 | Connection status flips, or `SIGNAL_ROUTE_UNAVAILABLE` while a browser is open | Log `participation.status.connectedPeers` with timestamps on both sides to see which peer drops. Update to the current core (relay live window, fallback-route frame queue, owner retirement grace) and starter (8 MiB subscription queues). An app that detaches and reattaches on every error restarts the owner; let the connection component own reconnects. |
 | `SIGNAL_BACKPRESSURE` for a multi-piece reply, or "connected, waiting for data" | Use `helpers/signal-request.mjs` for bounded replies and retries when a piece encounters backpressure; it waits for the answering peer before the first request. Awaiting `send` means local acceptance, not network drain. The relay sender queue is 1 MiB; 8 MiB subscription queues are separate receiver limits. |
@@ -158,8 +154,8 @@ and device enrollment. See [application storage](APPLICATION_BACKENDS.md) and
 Use the original operation ID to inspect uncertain work:
 
 ```sh
-tendril --session ./application.mjs operation add-item-1
-tendril --session ./application.mjs retry add-item-1
+tendril --page notes operation add-item-1
+tendril --page notes retry add-item-1
 ```
 
 | Observation | Meaning and next step |
@@ -208,7 +204,7 @@ The ordinary host MCP endpoint administers host controls; it does not run domain
 commands or wake an agent conversation. For application tools, subscribed events,
 mounted UI handoff and the optional Workspace Agent route, use the separate
 [ChatGPT setup and recovery guide](CHATGPT_INTEGRATION.md#troubleshoot-setup).
-State which native process or integration actually
+State which agent program or integration actually
 consumes the application work and how long it remains available. If a prerequisite
 is missing, report the completed checkpoint, exact missing artifact/authority,
 redacted error, preserved work and next action. Keep a separate persistence
