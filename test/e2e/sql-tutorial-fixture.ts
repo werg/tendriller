@@ -79,6 +79,8 @@ export async function prepareSqlTutorial(consumer: string, engineDirectory: stri
     await cp(resolve(consumer, 'node_modules'), modules, { recursive: true, dereference: true });
     await cp(resolve('dist/sdk'), join(modules, '@tendriller/core'), { recursive: true, dereference: true });
     await cp(resolve('dist/tools'), join(modules, '@tendriller/tools'), { recursive: true, dereference: true });
+    // The pinned authority package matching the session's kernel source (page provisioning imports it).
+    await cp(resolve('node_modules/@chronolog/authority'), join(modules, '@chronolog/authority'), { recursive: true, dereference: true });
     const load = (path: string) => import(pathToFileURL(join(workspaceRoot, path)).href);
     const tools = await load('node_modules/@tendriller/tools/lib/workspace.mjs');
     const session = (key: string) => import(pathToFileURL(join(modules, '@chronolog/peer-session', exportPath(modules, '@chronolog/peer-session', key))).href);
