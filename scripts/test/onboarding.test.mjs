@@ -47,8 +47,10 @@ test('MCP, published onboarding and installable skill retain one current discove
   for (const path of ['AGENTS.md', 'agent.md', 'docs/BUILD_AN_APP.md', 'docs/MCP_AGENT_GUIDE.md',
     'plugin/skills/connect-tendriller/SKILL.md']) {
     const content = readFileSync(join(root, path), 'utf8');
-    for (const step of ['prepare_tendril_setup', 'inspect_tendril_setup', 'setup:finish'])
-      assert(content.includes(step), `${path} lost the retained account-setup route ${step}`);
+    for (const step of ['register_agent', 'workspace adopt'])
+      assert(content.includes(step), `${path} lost the account-linked agent route ${step}`);
+    for (const removed of ['prepare_tendril_setup', 'setup:prepare', 'setup:finish'])
+      assert(!content.includes(removed), `${path} still describes the removed account-setup route ${removed}`);
   }
 });
 

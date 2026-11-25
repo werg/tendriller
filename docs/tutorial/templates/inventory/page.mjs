@@ -137,7 +137,7 @@ $('#create-device').addEventListener('click', () => {
   $('#create-device').disabled = true;
   void createBrowserIdentity(options).then(key => {
     $('#device-key').value = key;
-    $('#result').textContent = `Verify this browser public key, stop the native peer, then run npm run enroll -- ${key} in the original SQL project. Restart npm run peer and reload this page. Keep this browser profile and all private native records.`;
+    $('#result').textContent = `Verify this browser public key, stop the agent program, then run npm run enroll -- <slug> ${key} in the workspace. Restart npm run agent and reload this page. Keep this browser profile and all private native records.`;
   }).catch(report).finally(() => { $('#create-device').disabled = Boolean(session); });
 });
 $('#export-diagnostics').addEventListener('click', () => {

@@ -52,12 +52,12 @@ created application's code by itself.
    media, voice and preview needs before implementing equivalent plumbing.
 2. Follow **create → define state → configure authority and the first
    generation → publish → owner sign-in → connect devices → verify** in the build guide.
-3. With an account-linked MCP connection, run `setup:prepare`, call
-   `prepare_tendril_setup` with its public arguments, and use `setup:finish`
-   to reconstruct the private handle from the exact ready result. The server
-   derives the verified owner; preserve the private original intent and call
-   `inspect_tendril_setup` after a lost reply. The direct-domain route without account-linked creation
-   asks for the actual owner's verified email. Create the real page early,
+3. With an account-linked MCP connection, run `tendril workspace key`, call
+   `register_agent` with its public arguments, and retain the result with
+   `tendril workspace adopt`. The server derives the verified owner. The
+   direct-domain route without account-linked creation (`tendril workspace init`)
+   asks for the actual owner's verified email. Either way one workspace agent
+   creates every page with `npm run page:new` and runs them with `npm run agent`. Create the real page early,
    initialize and publish its first version, start the participant, and
    prepare any assistant-access proposal before giving the owner the ready URL.
    Do not wait for claim or ask for a "claimed" reply. The owner opens the ready
@@ -150,9 +150,9 @@ guide's native-tool or manual-handoff fallback and name the exact prerequisite.
   including Back/deep links, keyboard, long content and failure states. The
   [importable domain views](docs/APP_PATTERNS.md#domain-views-you-can-import) include
   runnable desktop/phone examples.
-- **Live answers & private API feeds:** use `helpers/data-feed.mjs` (`serveDataFeeds` / `useDataFeed`) to expose private or local APIs run by the native agent directly to browser dashboards with zero durable Chronolog writes (secrets stay native). Use `helpers/signal-request.mjs` for arbitrary on-demand chunked answers.
-- **Full-duplex dashboards & voice/text chat:** import `ui/dashboard.mjs` for responsive KPI/sparkline/feedback cards and `ui/chat-session.mjs` (wrapping `@tendriller/runtime/voice`'s `mountAgentChat`) for 1-tap voice + text chat with built-in TTS, barge-in, streaming previews and automatic or once-per-session voice consent.
-- **Fast hot updates & live page error logs:** keep `npm run peer` running and ship UI updates with `npm run deploy` (`tendril --session ./session.mjs --mode attach publish ./page`, which skips unchanged assets). Wire `helpers/dev-telemetry.mjs` (`mountDevTelemetry`) and tail real browser errors from your terminal with `npm run logs` (`tendril --mode attach logs`).
+- **Live answers & private API feeds:** use `shared/helpers/data-feed.mjs` (`serveDataFeeds` / `useDataFeed`) to expose private or local APIs run by the native agent directly to browser dashboards with zero durable Chronolog writes (secrets stay native). Use `shared/helpers/signal-request.mjs` for arbitrary on-demand chunked answers.
+- **Full-duplex dashboards & voice/text chat:** import `shared/ui/dashboard.mjs` for responsive KPI/sparkline/feedback cards and `shared/ui/chat-session.mjs` (wrapping `@tendriller/runtime/voice`'s `mountAgentChat`) for 1-tap voice + text chat with built-in TTS, barge-in, streaming previews and automatic or once-per-session voice consent.
+- **Fast hot updates & live page error logs:** keep `npm run agent` running and ship UI updates with `npm run deploy -- <slug>` (`tendril --page <slug> publish pages/<slug>/dist`, which skips unchanged assets). Wire `shared/helpers/dev-telemetry.mjs` (`mountDevTelemetry`) and tail real browser errors from your terminal with `npx tendril --page <slug> logs`.
 
 Use [troubleshooting](docs/TROUBLESHOOTING.md) at the failing stage. In particular,
 `peer_application_unconfigured` means configuration is missing; an unavailable
@@ -165,20 +165,16 @@ Tendriller hosts the page and joins its Chronolog protocol as a light control pa
 
 ## Create and claim the page
 
-Read `/api/service` to check the host contract and limits. Create a page with `POST /api/tendrils` and an owner email:
+Read `/api/service` to check the host contract and limits. One **agent** (one `ta_` credential and one signing key) maintains many pages from one workspace; see [multi-page agents](docs/MULTI_PAGE_AGENTS.md). Register it once with `tendril workspace init --service ORIGIN --owner EMAIL` (`POST /api/agents {owner, name, publicKey}`), `tendril workspace join --code CODE` from the owner's dashboard, or the account-linked MCP `register_agent` tool followed by `tendril workspace adopt`. Then create pages with `tendril page new <slug>` (`POST /api/agent/pages {name}`); the creating agent receives a full grant.
 
-```json
-{"owner":"owner@example.com","name":"Shared work"}
-```
+The page result includes `id`, `page_url` and `application:{id}`. The generated application ID is a stable 32-byte lowercase hex identity, independent of the page ID. There is no backend or profile selector.
 
-The result includes `page_url`, the agent `api` and token, and `application:{id}`. The generated application ID is a stable 32-byte lowercase hex identity, independent of the page ID. Supply `application:{id}` explicitly when binding a known application. There is no backend or profile selector.
-
-Use the private setup handle to initialize and publish before claim. Then give
+Initialize and publish before claim. Then give
 `page_url` to the human owner; they sign in to open the already-published page. Agent credentials cannot claim a page for them. An unclaimed page expires after 24 hours. After claim, explicit host lifecycle operations may make it resident; residency retains control and code without a continuously running application process.
 
 ## Configure authority and open the application
 
-Use the public SDK's `createClient(handle, {applicationId: handle.application.id})`. The host SDK has `peers`, `request`, `info` and `service`. Its construction starts no traffic.
+Use the public SDK's `createAgentClient({service, token}).page(pageId, {applicationId})`. The page client has `peers`, `request`, `info`, `socket`, `fetch` and `service`; its control streams share the agent's one hub WebSocket. Construction starts no traffic.
 
 Configure the initial descriptor through `host.peers.configureApplication`. Provide the immutable public application definition, execution-manifest digest, schema administrator, initial epoch/key digest, and enrolled device grants. SQL applications also provide their signed schema. The host validates the definition/schema bindings and retains the signed authority. Application identity exists before configuration; reading unconfigured authority reports that state explicitly.
 

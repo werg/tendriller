@@ -55,7 +55,10 @@ npm run deploy -- notes  # publishes through the running agent program
 `.tendriller/agent/identity.sqlite` and registers an unclaimed agent for that
 owner. The owner claims the agent by signing in to any page it created. On a
 signed-in dashboard the owner can instead add an agent and paste its one-time
-code: `npx tendril workspace join --service https://YOUR_HOST --code CODE`.
+code: `npx tendril workspace join --service https://YOUR_HOST --code CODE`. With an
+account-linked MCP connector, `npx tendril workspace key --service https://YOUR_HOST`
+prints the `register_agent` arguments; save that tool's result privately and run
+`npx tendril workspace adopt --service https://YOUR_HOST --credential FILE`.
 Pages an agent creates are granted to it; an existing page needs the owner's
 explicit grant, after which `npx tendril page grant <slug> <page-id>` registers it.
 
