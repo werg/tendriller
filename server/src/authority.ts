@@ -122,8 +122,11 @@ export async function prepareApplication(t: Tendril, principal: Principal, input
 export async function handleEnrollment(t: Tendril, req: Request, principal: Principal): Promise<Response> {
   if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
   if (principal.kind !== 'page' || !principal.accountId || principal.role === 'display') throw new HttpError(403, 'browser_account_required');
-  const expectedOrigin = new URL(pageUrl(t.env, t.tid, 'a'.repeat(26))).origin;
-  if (req.headers.get('Origin') !== expectedOrigin) throw new HttpError(403, 'enrollment_origin_forbidden');
+  // The router forwards the served page origin (scheme, this page's host and any
+  // local port). Enrollment must come from exactly that origin of this page.
+  const served = req.headers.get('x-tendril-origin'), pageHost = new URL(pageUrl(t.env, t.tid, 'a'.repeat(26))).hostname;
+  let servedHost: string | null = null; try { servedHost = served ? new URL(served).hostname : null; } catch {}
+  if (!served || servedHost !== pageHost || req.headers.get('Origin') !== served) throw new HttpError(403, 'enrollment_origin_forbidden');
   const input = object(await readJson(req, 2 * 1024 * 1024), ['action', 'publicKey', 'proof', 'bundle', 'requestId', 'expectedMembershipId', 'authorTimeAfterMs', 'grant']);
   try { return await withAuthorityMutation(t, async () => {
     await freshAuthorityAccess(t, principal);
