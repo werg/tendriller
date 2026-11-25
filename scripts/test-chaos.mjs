@@ -22,6 +22,7 @@ const { values } = parseArgs({ options: {
   browsers: { type: 'string', default: '3' }, pages: { type: 'string', default: '2' },
   'first-app-archive': { type: 'string' }, report: { type: 'string' },
   replay: { type: 'string' }, shrink: { type: 'boolean' }, 'shrink-budget': { type: 'string', default: '40' },
+  'shrink-attempts': { type: 'string', default: '1' },
   network: { type: 'boolean' }, transport: { type: 'string', default: 'direct' },
   'heal-every': { type: 'string', default: '15' }, 'heal-deadline': { type: 'string', default: '120s' },
   'no-host-restart': { type: 'boolean' }, 'keep-going': { type: 'boolean' },
@@ -32,7 +33,7 @@ const { values } = parseArgs({ options: {
 
 const USAGE = `Usage: npm run test:chaos -- [--seed N] [--steps N | --duration 10m] [--browsers N] [--pages N]
   [--first-app-archive dist/tendriller-first-app-VERSION.tgz] [--report FILE] [--transport direct|relay]
-  [--replay REPORT.json] [--shrink [--shrink-budget N]] [--network] [--heal-every N] [--heal-deadline 120s]
+  [--replay REPORT.json] [--shrink [--shrink-budget N] [--shrink-attempts N]] [--network] [--heal-every N] [--heal-deadline 120s]
   [--no-host-restart] [--keep-going] [--fixture DIR] [--port 8791] [--keep] [--headed] [--no-trace]
   [--inject-fault ${Object.keys(INJECTED_FAULTS).join('|')}]   (test-only, demonstrates shrinking)`;
 if (values.help) { console.log(USAGE); process.exit(0); }
@@ -166,18 +167,25 @@ try {
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
   console.log(`chaos ${report.status}: ${report.summary.actions} entries, ${report.summary.violations} violations, ${report.summary.actionErrors} action errors; report ${reportPath}`);
 
-  if (values.shrink && report.status === 'failed') {
-    const signature = report.violations[0].invariant;
+  // Replaying a failed report whose failure is timing-dependent may pass once; shrink its recorded failure anyway.
+  const shrinkFrom = report.status === 'failed' ? report : replayed?.status === 'failed' ? replayed : null;
+  if (values.shrink && shrinkFrom) {
+    const signature = shrinkFrom.violations[0].invariant;
     const candidates = replayEntries(report);
     console.log(`chaos shrink: ddmin over ${candidates.length} entries for invariant ${signature} (budget ${values['shrink-budget']} trials)`);
     let trial = 0;
+    const attempts = positive('shrink-attempts', values['shrink-attempts']);
     const shrinkConfig = { ...config, failFast: true };
     const shrunk = await ddmin(candidates, async subset => {
       trial++;
       const savedConfig = { ...config }; Object.assign(config, shrinkConfig);
       try {
-        const { outcome } = await runOnce({ label: `shrink-${trial}`, replay: subset, injectFault: config.injectFault, saveEvidence: false });
-        return outcome.violations.some(item => item.invariant === signature);
+        // A timing-dependent failure counts as reproduced if any attempt shows it.
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          const { outcome } = await runOnce({ label: `shrink-${trial}-${attempt}`, replay: subset, injectFault: config.injectFault, saveEvidence: false });
+          if (outcome.violations.some(item => item.invariant === signature)) return true;
+        }
+        return false;
       } catch (error) {
         console.log(`chaos shrink trial ${trial} errored: ${error.message}`);
         return false;

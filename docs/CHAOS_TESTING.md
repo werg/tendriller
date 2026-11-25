@@ -34,7 +34,7 @@ The seed is always printed, both first and last. Without `--seed`, a random 32-b
 | `--first-app-archive PATH` | Kit to test (default `dist/tendriller-first-app-VERSION.tgz`, which must match `dist/manifest.json`) |
 | `--report PATH` | Report file (default `.results/chaos/chaos-SEED.json`). Evidence goes in the sibling directory of the same name |
 | `--replay REPORT.json` | Re-run exactly the action log of an earlier report |
-| `--shrink [--shrink-budget 40]` | After a failure, delta-debug the action log to a minimal sequence that still fails |
+| `--shrink [--shrink-budget 40] [--shrink-attempts 1]` | After a failure, delta-debug the action log to a minimal sequence that still fails. For a timing-dependent failure, `--shrink-attempts N` counts a candidate as failing if any of N runs fails |
 | `--network` | Add packet-fault actions from the [Docker network lab](../test/e2e/network-qualification/faults.mjs). They are only available inside that lab's container; elsewhere the run prints that they are disabled and records the limit |
 | `--no-host-restart`, `--keep-going` | Leave out the host restart action. Keep going after the first violation (the default stops) |
 | `--fixture DIR`, `--keep`, `--port 8791` | Reuse a prepared setup directory, keep work directories, and choose the host port (8791 by default, so a concurrent `test:first-app` on 8790 is unaffected) |
