@@ -132,6 +132,8 @@ view/root lifetimes are local fencing, not an application ordering coordinator.
 ```sh
 tendril --page notes self
 tendril --page notes describe
+tendril --page notes endpoints   # attached owner's endpoint diagnostics
+tendril --page notes doctor      # bounded owner/session diagnostics, no secrets
 tendril --page notes status
 tendril --page notes query notes null
 tendril --page notes command addNote '{"text":"review"}' --operation note-review-1
@@ -164,7 +166,14 @@ tendril watch --events
 
 Named queries return `{value,revision}` from one captured coherent snapshot. Raw view SQL/event reads retain their captured revision and must be released. Materialized revisions are digests of effective authenticated operation/execution/policy inputs, not global sequence numbers.
 
-`watch --events` emits snapshot-scoped batches `{revision, events, cursor, hasMore}` and explicit **reset** records when materialization changes; consumers replace/rederive by stable event identities, never treat provisional arrivals as an append-only UI database. With `--page` it watches one page. Without `--page` it is one combined stream over every initialized page, each row carrying `page`, and `--cursor` takes a JSON object of page id to cursor. A cursor from another projection reports an explicit revision error. Persist the **processed** cursor together with your own results; a stdout write is not a processing receipt and emitted progress is not proof of consumer processing or irreversible finality.
+Streaming `watch` records carry a `kind`. Plain `watch` first emits `{kind:"status", status, ...}` with the current session status, then emits session changes. `watch --events` instead starts with an initial captured snapshot even for a quiet retained owner, and emits:
+
+| `kind` | Shape | Consumer action |
+| --- | --- | --- |
+| `snapshot` | `{revision, events, cursor, hasMore}` read from one captured coherent view | Apply by stable event identity; persist `cursor` only after processing it |
+| `reset` | `{reason:"materialization-revised", revision, events:[], cursor:null, hasMore:true}` | An earlier operation, authority or schema change revised the effective history. Discard rows derived from earlier snapshots and rebuild from the snapshots that follow; the next cursor restarts from `null` |
+
+Snapshots after a `reset` replay the revised effective events from the start. Never treat provisional arrivals as an append-only UI database; consumers replace/rederive by stable event identities. A stored cursor from before a reset is never a valid resume point for the revised history, which reports an explicit stale-cursor revision error (`EVENT_CURSOR_STALE`); rescan from a fresh coherent view instead. With `--page` it watches one page. Without `--page` it is one combined stream over every initialized page, each row carrying `page`, and `--cursor` takes a JSON object of page id to cursor. A cursor from another projection reports an explicit revision error. Persist the **processed** cursor together with your own results; a stdout write is not a processing receipt and emitted progress is not proof of consumer processing or irreversible finality.
 
 ```sh
 tendril watch --events --cursor '{"aaaaaaaaaaaa":"<processed cursor>"}'
@@ -173,7 +182,7 @@ tendril --page notes signal progress '{"complete":3}' --ttl 2000
 tendril --page notes logs [--latest]
 ```
 
-Output is NDJSON with backpressure. An unexpected end, owner loss or read failure exits nonzero with a `watch` object on stderr (`mode`, `cursor` or `cursors`, `revision`); independent read/output/cleanup failure remains nonzero even if cancellation occurs later. A requested `--timeout` or SIGINT/SIGTERM stops normally and exits 0 with that summary. `logs`/`signal` consume disposable authorized live channels, not durable data order. Optional agents/media providers may be offline while ordinary browser data edits remain available.
+Output is NDJSON with backpressure. An unexpected end, owner loss or read failure exits nonzero with a `watch` object on stderr (`mode`, `cursor` or `cursors`, `revision`); independent read/output/cleanup failure remains nonzero even if cancellation occurs later. A requested `--timeout` or SIGINT/SIGTERM stops normally and exits 0 with that summary: the in-flight event read is cancelled cooperatively, its captured view is released, and only then does the CLI detach from the owner (the owner and its stored work are never stopped). A release or output failure during that cleanup remains a nonzero failure. `logs`/`signal` consume disposable authorized live channels, not durable data order. Optional agents/media providers may be offline while ordinary browser data edits remain available.
 
 ## Optional author-time finality
 

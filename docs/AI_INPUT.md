@@ -66,7 +66,8 @@ There are two separate approvals in this example:
   for analysis. The result remains an editable suggestion.
 
 Obtain the **browser device public key** displayed by the connected page. It is
-the signer enrolled with `npm run enroll -- <slug> BROWSER_PUBLIC_KEY`, not an account
+the key the owner's browser proved and the owner granted as that page's device
+(see [membership](MEMBERSHIP.md); there is no separate enrollment command), not an account
 email, agent token, page ID or the native device key. The inference
 allowlist is an additional permission to use the native provider budget.
 
