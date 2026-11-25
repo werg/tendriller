@@ -12,7 +12,8 @@ const pause = (ms, signal) => new Promise(resolve => {
 });
 /** Optional background introductions. Local authoring and opening never wait for this controller. */
 export function participateApplication(session, { peers, openDirectConnection,
-  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, onTransport } = {}) {
+  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, upgradeCooldownMs = 30_000, onTransport } = {}) {
+  if (!Number.isSafeInteger(upgradeCooldownMs) || upgradeCooldownMs < 0 || upgradeCooldownMs > 600_000) throw TypeError('upgradeCooldownMs must be a bounded integer');
   if (typeof session?.connectPeer !== 'function' || typeof session.device?.storageId !== 'string' || !session.device.storageId || typeof openDirectConnection !== 'function') throw TypeError('Provide an owned operation-set session and RTC adapter');
   const stop = new AbortController(), signal = AbortSignal.any([stop.signal, session.signal]);
   const adapter = createPeerIntroductions({ peers, identity: session.identity.publicKey, directTimeoutMs,
@@ -39,8 +40,19 @@ export function participateApplication(session, { peers, openDirectConnection,
     }).finally(() => { advertising = undefined; });
     return advertising;
   }
-  async function connect(peer, invitation) {
+  // Retire this peer's current link. A later link for the peer owns the slot.
+  function retire(peerId) {
+    const stale = links.get(peerId);
+    if (!stale) return;
+    void stale.close().catch(() => {});
+    if (links.get(peerId) === stale) { links.delete(peerId); descriptions.delete(peerId); connectionRevision++; }
+  }
+  // `promote` asks for a direct-only path that replaces a relay link to the peer.
+  async function connect(peer, invitation, promote = false) {
     if (signal.aborted || peer.identity === session.identity.publicKey) return;
+    // A remote's `direct:` invitation is its promotion attempt: our current link
+    // stays until the direct path physically opens, and survives if it fails.
+    const upgrade = promote || typeof invitation?.channel === 'string' && invitation.channel.startsWith('direct:');
     if (invitation !== undefined) {
       // A redelivered hint for the current link or attempt changes nothing.
       if ((links.has(peer.identity) || opening.has(peer.identity)) && introduced.get(peer.identity) === invitation?.channel) return;
@@ -50,27 +62,41 @@ export function participateApplication(session, { peers, openDirectConnection,
       // RTC consent expiry is per endpoint, so the silent end must not keep
       // a dead link and ignore the replacement until its own ICE notices.
       opening.get(peer.identity)?.abort(new Error('PEER_CONNECTION_SUPERSEDED'));
-      const stale = links.get(peer.identity);
-      if (stale) {
-        void stale.close().catch(() => {});
-        if (links.get(peer.identity) === stale) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; }
-      }
+      if (!upgrade) retire(peer.identity);
     }
-    if (links.has(peer.identity) || opening.has(peer.identity) && invitation === undefined || links.size + opening.size >= 8) return;
+    if (opening.has(peer.identity) && invitation === undefined || links.size + opening.size >= 8) return;
+    if (upgrade ? !links.has(peer.identity) || promote && descriptions.get(peer.identity)?.kind !== 'relay' : links.has(peer.identity)) return;
     // Exactly one side proactively dials; the other always accepts its invitation.
-    if (invitation === undefined && session.identity.publicKey > peer.identity) return;
+    // Either side may promote its own relay link after a local network change.
+    if (invitation === undefined && !promote && session.identity.publicKey > peer.identity) return;
     const controller = new AbortController(), connectionSignal = AbortSignal.any([signal, controller.signal]);
     opening.set(peer.identity, controller); introduced.set(peer.identity, invitation?.channel); changed(); let connection;
     try {
-      connection = await adapter.transport.open({ peer, ...(invitation === undefined ? {} : { invitation }) }, { signal: connectionSignal });
+      const target = { peer, ...(invitation === undefined ? {} : { invitation }) };
+      connection = await (promote ? adapter.transport.upgrade(target, { signal: connectionSignal }) : adapter.transport.open(target, { signal: connectionSignal }));
+      // The direct path is physically open: hand the peer over from its relay link.
+      if (upgrade) { connectionSignal.throwIfAborted(); retire(peer.identity); }
       const link = await session.connectPeer({ connection, peerIdentity: peer.identity, signal: connectionSignal });
       if (signal.aborted || link.signal.aborted) { await link.close(); if (!signal.aborted) scheduleRetry(); return; }
       links.set(peer.identity, link); descriptions.set(peer.identity, adapter.transport.describe(connection)); connectionRevision++; error = null; retryCount = 0;
       link.signal.addEventListener('abort', () => { if (links.get(peer.identity) === link) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; } changed(); scheduleRetry(); }, { once: true });
     } catch (cause) {
       try { await connection?.close(); } catch {}
-      if (!connectionSignal.aborted) { error = `connect:${failureCode(cause, 'peer_connection_unavailable')}`; scheduleRetry(); }
+      // A failed promotion keeps the working relay link; nothing needs a retry.
+      if (!connectionSignal.aborted && !links.has(peer.identity)) { error = `connect:${failureCode(cause, 'peer_connection_unavailable')}`; scheduleRetry(); }
     } finally { if (opening.get(peer.identity) === controller) opening.delete(peer.identity); changed(); }
+  }
+  // Event-triggered only (online, network change, visible page): never a timer.
+  // A per-peer cooldown bounds promotion attempts while UDP stays unusable.
+  const promoted = new Map();
+  function promoteRelays() {
+    if (signal.aborted) return Promise.resolve();
+    const now = Date.now();
+    for (const peerId of promoted.keys()) if (!links.has(peerId)) promoted.delete(peerId);
+    const work = [...links.keys()].filter(peerId => descriptions.get(peerId)?.kind === 'relay' && !opening.has(peerId) &&
+      now - (promoted.get(peerId) ?? -Infinity) >= upgradeCooldownMs);
+    for (const peerId of work) promoted.set(peerId, now);
+    return Promise.allSettled(work.map(peerId => connect({ identity: peerId, route: null }, undefined, true))).then(() => undefined);
   }
   async function refresh() {
     dirty = true; if (refreshing) return refreshing;
@@ -123,7 +149,7 @@ export function participateApplication(session, { peers, openDirectConnection,
   return Object.freeze({ get status() { return status(); }, signal, closed,
     onStatus(listener) { listeners.add(listener); try { listener(status()); } catch {} return () => listeners.delete(listener); },
     async diagnostics() { return [...links.keys()].map(peerId => ({ peerId, ...descriptions.get(peerId) })); },
-    reconsiderConnections() { return refresh(); }, resume() { return refresh(); },
+    reconsiderConnections() { return Promise.all([refresh(), promoteRelays()]).then(() => undefined); }, resume() { return refresh(); },
     async close() { stop.abort(new Error('PARTICIPATION_CLOSED')); await closed; },
   });
 }

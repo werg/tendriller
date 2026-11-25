@@ -17,6 +17,8 @@ export interface ApplicationTransportOptions {
   readonly openDirectConnection: (options: { role: 'offerer' | 'answerer'; signaling: PeerRendezvous; signal: AbortSignal; configuration: RTCConfiguration; timeoutMs: number }) => Promise<FramedPeerConnection>;
   readonly configuration?: RTCConfiguration;
   readonly directTimeoutMs?: number;
+  /** Minimum time between relay-to-direct promotion attempts per peer, triggered only by reconsiderConnections(). Defaults to 30 seconds. */
+  readonly upgradeCooldownMs?: number;
   readonly onTransport?: (event: Readonly<{ peerId: string; kind: 'direct' | 'relay'; reason?: 'direct_failed' | 'direct_timeout' }>) => void;
 }
 export declare function participateApplication(session: ApplicationSession, options: ApplicationTransportOptions): ApplicationParticipation;

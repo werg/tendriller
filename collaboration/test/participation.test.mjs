@@ -114,7 +114,19 @@ function physicalPath() {
   };
   return { ends: [end_(0), end_(1)], blackhole() { blackholed = true; }, fail(index) { end(index, Error('WEBRTC_CONNECTION_FAILED')); } };
 }
-function sharedHost(applicationId) {
+// Two in-memory WebSocket ends; the relay host pairs them by channel and lane.
+function socketPair() {
+  const ends = [0, 1].map(() => Object.assign(new EventTarget(), { readyState: 1, bufferedAmount: 0, binaryType: 'arraybuffer' }));
+  ends.forEach((end, index) => {
+    const other = ends[1 - index];
+    end.send = data => { if (end.readyState !== 1) throw Error('closed'); const copy = data instanceof ArrayBuffer ? data.slice(0) : new Uint8Array(data).slice().buffer;
+      queueMicrotask(() => { if (other.readyState === 1) other.dispatchEvent(Object.assign(new Event('message'), { data: copy })); }); };
+    end.close = () => { for (const value of ends) if (value.readyState < 3) { value.readyState = 3; queueMicrotask(() => value.dispatchEvent(Object.assign(new Event('close'), { code: 1000, reason: '' }))); } };
+  });
+  return ends;
+}
+function sharedHost(applicationId, { relays = false } = {}) {
+  const relayPairs = new Map(), state = { udpBlocked: false };
   const advertised = new Map(), listeners = new Map(), watchers = new Map(), channels = new Map(), invitations = [];
   const route = channel => { let value = channels.get(channel); if (!value) channels.set(channel, value = { joined: [], path: physicalPath(), ready: Promise.withResolvers() }); return value; };
   const peersFor = identity => ({
@@ -144,10 +156,21 @@ function sharedHost(applicationId) {
       if (value.joined.length === 2) value.ready.resolve();
       return { ready: value.ready.promise.then(() => ({ role: value.joined[0] === peerId ? 'offerer' : 'answerer' })), channel, close() {} };
     },
-    relay() { throw Object.assign(Error('This fixture has no relay'), { code: 'relay_unavailable' }); },
+    relay(channel, peerId) {
+      if (!relays) throw Object.assign(Error('This fixture has no relay'), { code: 'relay_unavailable' });
+      let value = relayPairs.get(channel);
+      if (!value) relayPairs.set(channel, value = { joined: [], ready: Promise.withResolvers(), lanes: { reliable: socketPair(), live: socketPair() } });
+      const index = value.joined.push(peerId) - 1;
+      if (value.joined.length === 2) value.ready.resolve();
+      return { reliable: value.lanes.reliable[index], live: value.lanes.live[index], ready: value.ready.promise, close() { value.lanes.reliable[index].close(); value.lanes.live[index].close(); } };
+    },
   });
-  const openDirectConnection = async ({ signaling, role }) => route(signaling.channel).path.ends[role === 'offerer' ? 0 : 1];
-  return { peersFor, openDirectConnection, invitations, channels, deliver: (target, token) => listeners.get(target)(token) };
+  // UDP blocked: an RTC attempt never connects and simply waits for its timeout.
+  const openDirectConnection = async ({ signaling, role, signal }) => {
+    if (state.udpBlocked) await new Promise((_resolve, reject) => { signal.addEventListener('abort', () => reject(signal.reason), { once: true }); });
+    return route(signaling.channel).path.ends[role === 'offerer' ? 0 : 1];
+  };
+  return { peersFor, openDirectConnection, invitations, channels, relayPairs, state, deliver: (target, token) => listeners.get(target)(token) };
 }
 async function eventually(predicate, ms = 15_000) { const end = Date.now() + ms; while (!predicate()) { if (Date.now() > end) throw Error('PARTICIPATION_TEST_DEADLINE'); await new Promise(resolve => setTimeout(resolve, 10)); } }
 
@@ -184,4 +207,38 @@ test('a peer whose path died silently accepts the replacement its remote dials, 
     assert.equal(known(dialer).size, 1);
     await eventually(() => [...known(dialer)].every(id => known(zombie).has(id)));
   } finally { await Promise.allSettled(controllers.map(controller => controller.close())); await Promise.allSettled(sessions.map(session => session.close())); }
+});
+
+test('a relay link is promoted to direct after a network change, and a failed promotion keeps the relay', async () => {
+  const devices = [await p.openApplicationDevice({ store: memoryStore(), create: true }), await p.openApplicationDevice({ store: memoryStore(), create: true })];
+  const { authority, key } = await authorityForDevices(devices);
+  const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, authority, epochKeys: new Map([[0, key]]),
+    definition: p.defineApplication({ id: 'relay-promotion', version: '1', commands: {}, queries: {} }) })));
+  const host = sharedHost(authority.descriptor.payload.applicationId, { relays: true });
+  host.state.udpBlocked = true;
+  const controllers = sessions.map(session => participateApplication(session, { peers: host.peersFor(session.identity.publicKey), directTimeoutMs: 300,
+    upgradeCooldownMs: 0, openDirectConnection: host.openDirectConnection }));
+  // The side that observes the network change need not be the one that dials.
+  const dialer = sessions[0].identity.publicKey < sessions[1].identity.publicKey ? 0 : 1, observer = 1 - dialer;
+  const kinds = async () => (await Promise.all(controllers.map(controller => controller.diagnostics()))).map(links => links.map(link => link.kind).join());
+  let maxLinks = 0; const stops = sessions.map(session => session.onStatus(status => { maxLinks = Math.max(maxLinks, status.connectedPeers); }));
+  try {
+    await eventually(() => controllers.every(controller => controller.status.connectedPeers.length === 1));
+    assert.deepEqual(await kinds(), ['relay', 'relay']);
+    // UDP still blocked: the promotion fails and the working relay link stays.
+    const revisions = controllers.map(controller => controller.status.connectionRevision);
+    await controllers[observer].reconsiderConnections();
+    assert.deepEqual(await kinds(), ['relay', 'relay']);
+    assert.deepEqual(controllers.map(controller => controller.status.connectionRevision), revisions);
+    assert.equal(controllers[observer].status.error, null);
+    // UDP restored: the next network change promotes both ends to one direct link.
+    host.state.udpBlocked = false;
+    await controllers[observer].reconsiderConnections();
+    let current; await eventually(() => { void kinds().then(value => { current = value; }); return current?.join() === 'direct,direct'; });
+    assert.equal(maxLinks, 1, 'The relay link is retired before the direct link authenticates: never two links to one peer');
+    const operation = await sessions[dialer].submit({ operationId: 'after-promotion', program: p.program(p.emit('promoted', { ok: true })) });
+    await operation.materialized();
+    const known = index => new Set(sessions[index].exportFacts().envelopes.map(envelope => envelope.payload.proposalId));
+    await eventually(() => known(dialer).size === 1 && [...known(dialer)].every(id => known(observer).has(id)));
+  } finally { stops.forEach(stop => stop()); await Promise.allSettled(controllers.map(controller => controller.close())); await Promise.allSettled(sessions.map(session => session.close())); }
 });
