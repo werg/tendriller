@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createPeerInferenceClient } from '../../docs/tutorial/media/inference-client.mjs';
-import { servePeerInference } from '../../docs/tutorial/media/inference-service.mjs';
-import { createInferenceProvider } from '../../docs/tutorial/media/provider-openai.mjs';
-import { INFERENCE_TOPICS as topics, AUDIO_TYPES, IMAGE_TYPES, MEDIA_TYPES, normalizeEvidenceType, isEvidenceType, sha256 } from '../../docs/tutorial/media/inference-protocol.mjs';
+import { createPeerInferenceClient } from '../../docs/tutorial/shared/media/inference-client.mjs';
+import { servePeerInference } from '../../docs/tutorial/shared/media/inference-service.mjs';
+import { createInferenceProvider } from '../../docs/tutorial/shared/media/provider-openai.mjs';
+import { INFERENCE_TOPICS as topics, AUDIO_TYPES, IMAGE_TYPES, MEDIA_TYPES, normalizeEvidenceType, isEvidenceType, sha256 } from '../../docs/tutorial/shared/media/inference-protocol.mjs';
 
 const applicationId = 'a'.repeat(64), browser = 'b'.repeat(64), native = 'c'.repeat(64), stranger = 'd'.repeat(64);
 const flush = () => new Promise(resolve => setImmediate(resolve));

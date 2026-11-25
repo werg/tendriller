@@ -4,12 +4,11 @@ import {
   createPeerIdentity, participantGrant, bytesDigest, signPublicationManifest, signTransitionRequest,
   encodePeerValue, decodePeerValue, type AuthorityBundle,
 } from '@chronolog/peer-generation/control';
-import { authenticateAgentToken } from '../src/access';
 import { exchangePeerControl } from '../src/peer-generations';
 import { exchangePeerPublication, type PeerPublicationReceipt } from '../src/peer-publications';
 import { exchangeDiscovery } from '../src/discovery';
 import { handlePeers } from '../src/peers';
-import { create, inDO, stub } from './helpers';
+import { agentPrincipal, create, inDO, stub } from './helpers';
 import { peerApiJson } from './peer-exchange';
 
 afterEach(() => vi.restoreAllMocks());
@@ -38,7 +37,7 @@ async function configured() {
 it('serves warm control, definition and publication reads with zero local SQL and signature verification while checking fresh policy', async () => {
   const { page, authority, receipt } = await configured();
   const measured = await inDO(page.id, async t => {
-    const principal = await authenticateAgentToken(t, page.token);
+    const principal = agentPrincipal(t, page);
     const read = () => exchangePeerControl(t, principal, 'read') as Promise<AuthorityBundle>;
     const definition = () => exchangePeerControl(t, principal, 'definition') as Promise<{ definition: { version: string } }>;
     const publication = () => exchangePeerPublication(t, principal, 'read', {}) as Promise<PeerPublicationReceipt>;
@@ -79,7 +78,7 @@ it('serves warm control, definition and publication reads with zero local SQL an
 it.each(['signing identity', 'registry', 'definition', 'publication'] as const)('invalidates warm verification when retained %s changes', async kind => {
   const { page } = await configured();
   await inDO(page.id, async t => {
-    const principal = await authenticateAgentToken(t, page.token);
+    const principal = agentPrincipal(t, page);
     await exchangePeerControl(t, principal, 'read');
     await exchangePeerControl(t, principal, 'definition');
     await exchangePeerPublication(t, principal, 'read', {});
@@ -109,7 +108,7 @@ it('does not expose cached publication receipts through new publish results, exa
   const publication = await signPublicationManifest({ ...receipt.publication.payload,
     operationId: 'next', revision: 1, previous: receipt.publication.id }, author);
   await inDO(page.id, async t => {
-    const principal = await authenticateAgentToken(t, page.token), input = { publication: structuredClone(publication), assets: [] };
+    const principal = agentPrincipal(t, page), input = { publication: structuredClone(publication), assets: [] };
     const published = await exchangePeerPublication(t, principal, 'publish', input) as PeerPublicationReceipt;
     const expected = structuredClone(published);
     Object.assign(published.publication.payload, { entry: 'poisoned-result.html' });
@@ -124,7 +123,7 @@ it('does not expose cached publication receipts through new publish results, exa
 it('rebuilds verified state after rollback and actual object eviction', async () => {
   const { page, authority, receipt } = await configured();
   await inDO(page.id, async t => {
-    const principal = await authenticateAgentToken(t, page.token);
+    const principal = agentPrincipal(t, page);
     await exchangePeerControl(t, principal, 'read'); await exchangePeerPublication(t, principal, 'read', {});
     expect(() => t.transaction(() => {
       t.db.run('DELETE FROM participant_records');
@@ -149,7 +148,7 @@ it.each(['suspension', 'ownership change'] as const)('checks fresh owner policy 
     policy: 'eligible-members-v1', transitionId: 'in-flight-change', requester: author.publicKey, coordinator: author.publicKey,
     expectedGeneration: null, controlRevision: 0, reason: 'create', base: null }, author);
   await inDO(page.id, async t => {
-    const principal = await authenticateAgentToken(t, page.token), database = t.env.ACCOUNTS;
+    const principal = agentPrincipal(t, page), database = t.env.ACCOUNTS;
     await exchangePeerControl(t, principal, 'read');
     let checked = false;
     t.env.ACCOUNTS = { prepare(sql: string) {
@@ -179,7 +178,7 @@ it.each(['suspension', 'ownership change'] as const)('checks fresh owner policy 
 it('keeps duplicate discovery withdrawals and bootstrap settings read-only while still removing disconnected hints', async () => {
   const page = await create();
   await inDO(page.id, async t => {
-    const principal = await authenticateAgentToken(t, page.token), url = new URL('https://tendril.internal/peers/bootstrap');
+    const principal = agentPrincipal(t, page), url = new URL('https://tendril.internal/peers/bootstrap');
     const bootstrap = { version: 2, endpoints: [] };
     const put = () => handlePeers(t, new Request(url, { method: 'PUT', body: JSON.stringify(bootstrap) }), url, 'peers/bootstrap', principal);
     expect((await put()).status).toBe(200);

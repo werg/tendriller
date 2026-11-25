@@ -2,9 +2,8 @@ import { beforeAll, expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { createPeerIdentity, participantGrant, signTransitionRequest, generationStartRoot,
   type AuthorityBundle, type SignedGeneration } from '@chronolog/peer-generation/control';
-import { create, inDO } from './helpers';
+import { agentPrincipal, create, inDO } from './helpers';
 import { peerApiJson } from './peer-exchange';
-import { authenticateAgentToken } from '../src/access';
 import { assistantRequest } from '../src/assistant';
 import { selectProvider } from '../src/assistant-bindings';
 
@@ -46,7 +45,7 @@ async function fixture(count = 1) {
     t.env.OAUTH_SIGNING_JWK = signing;
     t.env.OAUTH_CONFIG_JSON = JSON.stringify({ resource: origin + '/mcp', clients: [{ id: 'read-routing',
       redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: scope.split(' ') }] });
-    const agent = await authenticateAgentToken(t, handle.token), version = crypto.randomUUID();
+    const agent = agentPrincipal(t, handle), version = crypto.randomUUID();
     t.db.set('assistant_connection', { id: version, version, inboxVersion: version, owner: account,
       applicationId: handle.application.id, label: 'Routing fixture', queries: definition.queries,
       commands: definition.commands, events: [] });
@@ -58,7 +57,7 @@ async function fixture(count = 1) {
       t.db.set('assistant_adapter_epoch:' + hash, 1);
       const [client, server] = Object.values(new WebSocketPair());
       t.ctx.acceptWebSocket(server, ['application-mcp']);
-      server.serializeAttachment({ tag: 'application-mcp', adapterHash: hash, deviceId: device.publicKey, connectionEpoch: 1 });
+      server.serializeAttachment({ tag: 'application-mcp', adapterHash: hash, deviceId: device.publicKey, connectionEpoch: 1, agentId: agent.agentId, principal: agent });
       client.addEventListener('message', event => { const body = JSON.parse(event.data as string); if (body.type === 'call') calls[i].resolve(body); });
       client.accept(); clients.push(client);
     }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
-import { shareOrDownloadFile } from '../../docs/tutorial/helpers/mobile-media.mjs';
+import { shareOrDownloadFile } from '../../docs/tutorial/shared/helpers/mobile-media.mjs';
 
 const layoutBundle = await build({
   entryPoints: [new URL('../src/utility-layout.ts', import.meta.url).pathname],

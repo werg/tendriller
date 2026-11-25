@@ -6,10 +6,10 @@ import { chromium } from '@playwright/test';
 
 const root = new URL('../../../', import.meta.url);
 const files = new Map([
-  ['/ui/showcase.html', 'docs/tutorial/ui/showcase.html'],
-  ['/ui/showcase.mjs', 'docs/tutorial/ui/showcase.mjs'],
-  ['/ui/patterns.mjs', 'docs/tutorial/ui/patterns.mjs'],
-  ['/connect-view.mjs', 'docs/tutorial/connect-view.mjs'],
+  ['/ui/showcase.html', 'docs/tutorial/shared/ui/showcase.html'],
+  ['/ui/showcase.mjs', 'docs/tutorial/shared/ui/showcase.mjs'],
+  ['/ui/patterns.mjs', 'docs/tutorial/shared/ui/patterns.mjs'],
+  ['/connect-view.mjs', 'docs/tutorial/shared/connect-view.mjs'],
 ]);
 
 test('connection colors inherit before mounting and remain readable across states and viewports', { timeout:60000 }, async t => {

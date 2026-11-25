@@ -1,6 +1,15 @@
+// Test-only qualification participant for the first-app workspace. The harness
+// writes qualificationPageSource() over one page's pages/<slug>/agent.mjs in the
+// private downloaded application. `tendril agent run` imports it like any page
+// module: the same shared native composition (control, peer participation, setup
+// notices, reviewed pairing) runs inside the one agent program, plus a private
+// JSON-lines control socket through which the harness asks for evidence.
 import { once } from 'node:events';
-import { readFileSync } from 'node:fs';
+import { connect } from 'node:net';
+import { createInterface } from 'node:readline';
 import { observeSetupReadiness } from './first-app-setup-readiness.mjs';
+
+export const QUALIFICATION_SOCKET_ENV = 'FIRST_APP_QUALIFICATION_SOCKET';
 
 export async function authenticatedTransportSnapshot(participation, peerId) {
   const pending = participation.diagnostics();
@@ -18,232 +27,197 @@ export function authenticatedRouteMatches(value, kind, afterRevision) {
   return value.kind === kind && (afterRevision === undefined || value.connectionRevision > afterRevision);
 }
 
-/** Optional Linux diagnostic: unavailable is not zero and cannot fail a run. */
-export function memoryAvailableGb(read = readFileSync) {
-  try {
-    const value = /^MemAvailable:\s+(\d+)\s+kB\s*$/m.exec(read('/proc/meminfo', 'utf8'));
-    const kb = value ? Number(value[1]) : NaN;
-    return Number.isSafeInteger(kb) && kb >= 0 ? Math.round(kb / 1048576 * 10) / 10 : null;
-  } catch { return null; }
-}
+/**
+ * Source of a page module (pages/<slug>/agent.mjs) for the private test workspace.
+ * `qualificationSources` are serialized `async owned => ({ actions, close })`
+ * factories. `owned` is { session, slug, ownerInstanceId() }.
+ */
+export function qualificationPageSource({ evidenceBase64, networkQualification = false, qualificationSources = [] }) {
+  return `// Private first-app qualification page module, written by the test harness.
+import assert from 'node:assert/strict';
+import { rm } from 'node:fs/promises';
+import { createServer } from 'node:net';
+import { createInterface } from 'node:readline';
+import { verifyAuthorityBundle } from '@chronolog/peer-session';
+import { openNativeApplication } from '@chronolog/peer-session/native';
+import { createApplicationOwner } from '@chronolog/peer-session/worker';
+import { participateNativeApplication } from '@tendriller/core/native-rtc';
+import { watchApplicationSetup } from '@tendriller/core/setup';
+import { pairingFor } from '../../shared/native-page.mjs';
+import { superviseParticipant } from '../../shared/participant-lifecycle.mjs';
+import { servePeerInference } from '../../shared/media/inference-service.mjs';
+import { serveSignalRequests } from '../../shared/helpers/signal-request.mjs';
+import { definition } from './domain.mjs';
 
-/** Serialized by Playwright; intentionally contains no module-local references. */
-export async function installSoakObserver() {
-  await window.tendril.signals.ready();
-  window.soak?.stop?.abort();
-  const state = window.soak = { pieces: 0, complete: 0, replies: new Map(), stop: new AbortController() };
-  void (async () => {
-    for await (const signal of window.tendril.signals.subscribe({ topics: ['soak'], mode: 'all', signal: state.stop.signal })) {
-      const { id, g, i, n } = signal.payload ?? {};
-      if (!(typeof id === 'string' || Number.isSafeInteger(id)) || !Number.isSafeInteger(n) || n < 1 || n > 512 ||
-          !Number.isSafeInteger(i) || i < 0 || i >= n) continue;
-      const key = JSON.stringify([id, g ?? null]);
-      let reply = state.replies.get(key);
-      if (!reply) {
-        if (state.replies.size >= 128) {
-          const old = [...state.replies].find(([, value]) => value.complete);
-          if (!old) throw Error('SOAK_REPLY_LIMIT');
-          state.replies.delete(old[0]);
-        }
-        state.replies.set(key, reply = { n, indexes: new Set(), complete: false });
-      }
-      if (reply.n !== n || reply.indexes.has(i)) continue;
-      reply.indexes.add(i); state.pieces++;
-      if (reply.indexes.size === n && !reply.complete) { reply.complete = true; state.complete++; }
-    }
-  })().catch(error => { if (!state.stop.signal.aborted) state.error = error.code || error.message; });
-}
-
-export async function installStateSignalObservers() {
-  await window.tendril.signals.ready();
-  window.stateModes = { all: 0, latest: 0 }; window.stateModeErrors = [];
-  for (const mode of ['all', 'latest']) void (async () => {
-    for await (const signal of window.tendril.signals.subscribe({ topics: ['state'], mode })) { void signal; window.stateModes[mode]++; }
-  })().catch(error => window.stateModeErrors.push(error.code || error.name));
-}
-
-/** The test participant owns the complete bootstrap, including its supervisor. */
-export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transportModule, networkQualification = false, qualificationSources = [] }) {
-  return `import assert from 'node:assert/strict';
-import {createInterface} from 'node:readline';
-import {openSession} from './session.mjs';
-import {superviseParticipant} from './helpers/participant-lifecycle.mjs';
-import {servePeerInference} from './media/inference-service.mjs';
-import {serveSignalRequests, sendPieces} from './helpers/signal-request.mjs';
-${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transportModule)};` : 'const closeLocalTransport = async () => {};'}
-const owned = await openSession(), {session,supervisor} = owned;
-const qualifications = [], qualificationActions = Object.create(null);
-const setupReadiness = (${observeSetupReadiness.toString()})(owned);
+export { definition };
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
-const lifecycleLog = [];
-let pairings, pairingStatus = null, inference, input, closing, inferenceCalls = 0, inferenceSource = null, requestTask, requestFailure;
-const requestsStopped = new AbortController();
-const close = () => closing ??= (async () => {
-  const errors = [];
-  requestsStopped.abort();
-  for (const qualification of qualifications.toReversed()) {
-    try { await qualification.close?.(); } catch (error) { errors.push(error); }
-  }
-  await requestTask;
-  if(requestFailure) errors.push(requestFailure);
-  try { await pairings?.close(); } catch (error) { errors.push(error); }
-  try { await inference?.close(); } catch (error) { errors.push(error); }
-  try { await owned.close(); } catch (error) { errors.push(error); }
-  // The local fixture owns its custom HTTP/WebSocket dispatcher separately from
-  // the application. It must drain only after the real owner closes its sockets.
-  try { await closeLocalTransport(); } catch (error) { errors.push(error); }
-  if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed: ' + errors.map(error => error.message).join('; '));
-})();
-try {
-  for (const create of [${qualificationSources.map(source => '(' + source + ')').join(',')}]) {
-    const qualification = await create(owned); qualifications.push(qualification);
-    for (const [action, handler] of Object.entries(qualification.actions)) {
-      assert.ok(!Object.hasOwn(qualificationActions, action)); qualificationActions[action] = handler;
+const observeSetupReadiness = ${observeSetupReadiness.toString()};
+
+export async function openPage(context) {
+  const { signal, report } = context;
+  const socketDirectory = process.env.${QUALIFICATION_SOCKET_ENV};
+  if (!socketDirectory) throw Error('The private qualification page needs ${QUALIFICATION_SOCKET_ENV}.');
+  const authority = await context.host.peers.application({ signal });
+  const descriptor = await context.readPrivate('descriptor.json');
+  await verifyAuthorityBundle(authority, descriptor);
+  const device = await context.openDevice();
+  const lifecycleLog = [], participationLog = [], statusLog = [], qualifications = [], actions = Object.create(null);
+  let session, lifecycle, owner, server, inference, inferenceCalls = 0, inferenceSource = null, pairingStatus = null;
+  let requestTask, requestFailure, closing;
+  const requestsStopped = new AbortController();
+  const socketPath = socketDirectory + '/' + context.page.slug + '.sock';
+  const close = () => closing ??= (async () => {
+    const errors = [];
+    requestsStopped.abort();
+    try { await new Promise(resolve => server ? server.close(() => resolve()) : resolve()); } catch (error) { errors.push(error); }
+    for (const qualification of qualifications.toReversed()) {
+      try { await qualification.close?.(); } catch (error) { errors.push(error); }
     }
-  }
-  pairings = superviseParticipant({owned:{...owned,processPairings:options=>setupReadiness.processPairings(options)},watch:callbacks=>setupReadiness.watch(callbacks),
-    report:(value) => { if(value.pairing) pairingStatus={state:value.pairing.state,code:value.pairing.code ?? null};
-      if (lifecycleLog.length < 200) lifecycleLog.push({at:Date.now(),...(value.pairing ? {pairing:value.pairing.state,pairingId:value.pairing.pairingId ?? null} : {state:value.state ?? null,setup:value.setup ?? null})}); }});
-  inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: ${networkQualification ? 20 : 2},
-    async infer({bytes, mediaType, source, signal}) {
-      signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
-      inferenceCalls++; inferenceSource = source;
-      return {text: 'Suggested fixture observation'};
-    },
-  });
-  // Every participation change, with its peer set, so the harness can count churn.
-  const participationLog = [];
-  // Application status transitions (phase, generation, database) for failure diagnosis.
-  const statusLog = [];
-  session.onStatus?.(status => { const last = statusLog.at(-1);
-    if (statusLog.length < 500 && (!last || last.phase !== status.phase || last.generation !== status.generation || last.database !== status.database))
-      statusLog.push({at:Date.now(),phase:status.phase,generation:status.generation,database:status.database}); });
-  session.participation.onStatus(status => { if (participationLog.length < 5000) participationLog.push({at:Date.now(),phase:status.phase,peers:[...status.connectedPeers].sort(),error:status.error}); });
-  requestTask = serveSignalRequests(session, { signal: requestsStopped.signal, handle: async (q, input) => {
-    if (q !== 'rows') throw Object.assign(Error('Unknown request'), { code: 'unknown' });
-    assert.ok(Number.isSafeInteger(input?.count) && input.count >= 0 && input.count <= 1024);
-    assert.ok(Number.isSafeInteger(input?.width) && input.width >= 0 && input.width <= 4096);
-    return { rows: Array.from({ length: input.count }, (_value, index) => ({ index, label: 'row "' + index + '"', text: 'x'.repeat(input.width) })) };
-  } }).catch(error => { requestFailure=Object.assign(Error('Signal reply service failed'), {code:error?.code || 'SIGNAL_REQUEST_FAILED'}); });
-  console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
-  input = createInterface({input:process.stdin});
-  for await (const line of input) {
-    const request=JSON.parse(line);
-    try {
-      let result;
-      if(Object.hasOwn(qualificationActions, request.action)) result=await qualificationActions[request.action](request);
-      else if(request.action==='query') result=await session.query('notes',null);
-      ${networkQualification ? `else if(request.action==='transport-snapshot' || request.action==='transport-wait') {
-        const snapshot=()=>(${authenticatedTransportSnapshot.toString()})(session.participation,${JSON.stringify(browserDeviceId)});
-        if(request.action==='transport-snapshot') result=await snapshot();
-        else {
-          assert.ok(['direct','relay','unknown'].includes(request.kind));
-          assert.ok(request.afterRevision===undefined || Number.isSafeInteger(request.afterRevision) && request.afterRevision>=0);
-          result=await new Promise((resolve,reject)=>{
-            let stopped=false,checking=false,again=false,revision=-1;
-            let remove=()=>{};
-            const finish=(error,value)=>{if(stopped)return;stopped=true;clearTimeout(timer);remove();error?reject(error):resolve(value);};
-            const check=async()=>{
-              if(stopped)return;
-              if(checking){again=true;return;}
-              checking=true;
-              try{const value=await snapshot();if((${authenticatedRouteMatches.toString()})(value,request.kind,request.afterRevision))finish(null,value);}
-              catch(error){finish(error);}
-              finally{checking=false;if(again){again=false;void check();}}
+    await requestTask;
+    if (requestFailure) errors.push(requestFailure);
+    try { await inference?.close(); } catch (error) { errors.push(error); }
+    try { await lifecycle?.close(); } catch (error) { errors.push(error); }
+    if (owner) { try { await ownerClose(); } catch (error) { errors.push(error); } }
+    else if (session) { try { await session.close(); } catch (error) { errors.push(error); } }
+    else { try { await device.close(); } catch (error) { errors.push(error); } }
+    await rm(socketPath, { force: true });
+    if (errors.length) throw new AggregateError(errors, 'Qualification page cleanup failed: ' + errors.map(error => error.message).join('; '));
+  })();
+  let ownerClose;
+  try {
+    session = await openNativeApplication({ device, definition, authority,
+      signals: { limits: { maxQueuedSignals: 1024, maxQueuedBytes: 8 * 1024 * 1024 } } });
+    const control = session.connectControlParticipant({ exchange: (message, options) => context.host.peers.exchange(message, options) });
+    participateNativeApplication(session, { peers: context.host.peers, control });
+    const { processPairings } = pairingFor(context, { session, device, descriptor });
+    const setupReadiness = observeSetupReadiness({ processPairings,
+      watchSetup: callbacks => watchApplicationSetup({ page: context.host, ...callbacks }) });
+    lifecycle = superviseParticipant({ owned: { session, control, processPairings: options => setupReadiness.processPairings(options) },
+      signal: session.signal, watch: callbacks => setupReadiness.watch(callbacks),
+      report(value) {
+        if (value.pairing) pairingStatus = { state: value.pairing.state, code: value.pairing.code ?? null };
+        if (lifecycleLog.length < 200) lifecycleLog.push({ at: Date.now(), ...(value.pairing ? { pairing: value.pairing.state, pairingId: value.pairing.pairingId ?? null } : { state: value.state ?? null, setup: value.setup ?? null }) });
+        report(value);
+      } });
+    owner = createApplicationOwner(session, { host: control });
+    ownerClose = owner.close.bind(owner);
+    const owned = { session, slug: context.page.slug, ownerInstanceId: () => owner.ownerInstanceId };
+    for (const create of [${qualificationSources.map(source => '(' + source + ')').join(',')}]) {
+      const qualification = await create(owned); qualifications.push(qualification);
+      for (const [action, handler] of Object.entries(qualification.actions)) {
+        assert.ok(!Object.hasOwn(actions, action)); actions[action] = handler;
+      }
+    }
+    session.onStatus?.(status => { const last = statusLog.at(-1);
+      if (statusLog.length < 500 && (!last || last.phase !== status.phase || last.generation !== status.generation || last.database !== status.database))
+        statusLog.push({ at: Date.now(), phase: status.phase, generation: status.generation, database: status.database }); });
+    session.participation.onStatus(status => { if (participationLog.length < 5000) participationLog.push({ at: Date.now(), phase: status.phase, peers: [...status.connectedPeers].sort(), error: status.error }); });
+    requestTask = serveSignalRequests(session, { signal: requestsStopped.signal, handle: async (q, input) => {
+      if (q !== 'rows') throw Object.assign(Error('Unknown request'), { code: 'unknown' });
+      assert.ok(Number.isSafeInteger(input?.count) && input.count >= 0 && input.count <= 1024);
+      assert.ok(Number.isSafeInteger(input?.width) && input.width >= 0 && input.width <= 4096);
+      return { rows: Array.from({ length: input.count }, (_value, index) => ({ index, label: 'row "' + index + '"', text: 'x'.repeat(input.width) })) };
+    } }).catch(error => { requestFailure = Object.assign(Error('Signal reply service failed'), { code: error?.code || 'SIGNAL_REQUEST_FAILED' }); });
+    let browserDeviceId = null;
+    const snapshot = () => (${authenticatedTransportSnapshot.toString()})(session.participation, browserDeviceId);
+    async function handle(request) {
+      if (Object.hasOwn(actions, request.action)) return actions[request.action](request);
+      switch (request.action) {
+        case 'configure':
+          // The harness learns the enrolled browser key after the agent program started.
+          assert.match(request.browserDeviceId, /^[a-f0-9]{64}$/);
+          if (browserDeviceId === request.browserDeviceId) return { configured: true };
+          assert.equal(browserDeviceId, null, 'One qualified browser device per agent program lifetime.');
+          browserDeviceId = request.browserDeviceId;
+          inference = servePeerInference({ session, allowedDevices: [browserDeviceId], maxRequests: ${networkQualification ? 20 : 2},
+            async infer({ bytes, mediaType, source, signal }) {
+              signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
+              inferenceCalls++; inferenceSource = source;
+              return { text: 'Suggested fixture observation' };
+            } });
+          return { configured: true };
+        case 'self': return { deviceId: session.deviceId, ownerInstanceId: owner.ownerInstanceId };
+        case 'query': return session.query('notes', null);
+        case 'command': {
+          const before = await session.query('notes', null);
+          const operation = await session.command('addNote', { text: request.text }, { operationId: request.operationId, basedOn: before.revision });
+          return operation.applied({ signal: AbortSignal.timeout(30000) });
+        }
+        case 'transport-snapshot': return snapshot();
+        case 'transport-wait': {
+          assert.ok(['direct', 'relay', 'unknown'].includes(request.kind));
+          assert.ok(request.afterRevision === undefined || Number.isSafeInteger(request.afterRevision) && request.afterRevision >= 0);
+          const matches = ${authenticatedRouteMatches.toString()};
+          return new Promise((resolve, reject) => {
+            let stopped = false, checking = false, again = false, revision = -1, remove = () => {};
+            const finish = (error, value) => { if (stopped) return; stopped = true; clearTimeout(timer); remove(); error ? reject(error) : resolve(value); };
+            const check = async () => {
+              if (stopped) return;
+              if (checking) { again = true; return; }
+              checking = true;
+              try { const value = await snapshot(); if (matches(value, request.kind, request.afterRevision)) finish(null, value); }
+              catch (error) { finish(error); }
+              finally { checking = false; if (again) { again = false; void check(); } }
             };
-            const timer=setTimeout(()=>finish(Error('NETWORK_QUALIFICATION_ROUTE_TIMEOUT')),55000);
-            remove=session.participation.onStatus(status=>{if(status.connectionRevision!==revision){revision=status.connectionRevision;void check();}});
+            const timer = setTimeout(() => finish(Error('NETWORK_QUALIFICATION_ROUTE_TIMEOUT')), 55000);
+            remove = session.participation.onStatus(status => { if (status.connectionRevision !== revision) { revision = status.connectionRevision; void check(); } });
+            void check();
           });
         }
-      }` : ''}
-      else if(request.action==='setup-ready') {
-        const before=setupReadiness.snapshot(),started=performance.now();
-        const after=await setupReadiness.wait({signal:session.signal});
-        result={before,after,elapsedMs:performance.now()-started};
+        case 'setup-ready': {
+          const before = setupReadiness.snapshot(), started = performance.now();
+          const after = await setupReadiness.wait({ signal: session.signal });
+          return { before, after, elapsedMs: performance.now() - started };
+        }
+        case 'diagnostics': return { status: session.status, participation: session.participation.status, pairing: pairingStatus,
+          setupReadiness: setupReadiness.snapshot(), statusLog, lifecycleLog,
+          signalRequests: { state: requestFailure ? 'failed' : requestsStopped.signal.aborted ? 'closed' : 'running', code: requestFailure?.code ?? null } };
+        case 'participation-log': return { entries: participationLog.splice(0),
+          current: { phase: session.participation.status.phase, peers: [...session.participation.status.connectedPeers].sort() } };
+        case 'inference-status': return { ...(inference?.snapshot() ?? {}), calls: inferenceCalls, source: inferenceSource };
+        default: throw Error('Unknown test action');
       }
-      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus,setupReadiness:setupReadiness.snapshot(),statusLog,lifecycleLog,
-        signalRequests:{state:requestFailure?'failed':requestsStopped.signal.aborted?'closed':'running',code:requestFailure?.code ?? null}};
-      else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:{phase:session.participation.status.phase,peers:[...session.participation.status.connectedPeers].sort()}};
-      else if(request.action==='signal-state') {
-        // Periodic state updates, as a dashboard sends them.
-        for(let index=0;index<request.count;index++){ await session.signals.send('state',{index,at:Date.now()},{ttlMs:30000}); await new Promise(r=>setTimeout(r,request.intervalMs)); }
-        result={sent:request.count};
-      }
-      else if(request.action==='signal-burst') {
-        // A reply larger than one signal, using the starter's bounded retrying sender.
-        const failures=[], started=Date.now(), pieceMs=[];
-        const generation=crypto.randomUUID();
-        // Event-loop lag beside the sends tells a stalled process from a stalled transport.
-        let lagMax=0, tick=Date.now(); const lag=setInterval(()=>{ const now=Date.now(); lagMax=Math.max(lagMax, now-tick-50); tick=now; },50);
-        // Sent as an app sends a reply (the starter's retrying piece sender); retries are reported.
-        let retries=0;
-        try { for(let index=0;index<request.pieces;index++){
-          const pieceStarted=Date.now();
-          try{retries+=await sendPieces(session,request.topic,[{id:request.id,g:generation,i:index,n:request.pieces,z:'x'.repeat(request.bytes)}],{signal:requestsStopped.signal});}
-          catch(error){failures.push(error.code||error.message);}
-          pieceMs.push(Date.now()-pieceStarted);
-        } } finally { clearInterval(lag); }
-        result={sent:request.pieces-failures.length,failures,retries,ms:Date.now()-started,pieceMs,eventLoopLagMaxMs:lagMax,participation:session.participation.status.phase};
-      }
-      else if(request.action==='ordering-pause') result={pause:await session.orderingPause()};
-      else if(request.action==='pairing-process') result=await owned.processPairings();
-      else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
-      else if(request.action==='command') {
-        const before=await session.query('notes',null);
-        const operation=await session.command('addNote',{text:request.text},{operationId:request.operationId,basedOn:before.revision});
-        result=await operation.applied({signal:AbortSignal.timeout(30000)});
-      } else if(request.action==='close') {
-        await close();
-        console.log(JSON.stringify({id:request.id,closed:true,resources:process.getActiveResourcesInfo()}));
-        break;
-      }
-      else throw Error('Unknown test action');
-      console.log(JSON.stringify({id:request.id,result}));
-    } catch(error) {console.log(JSON.stringify({id:request.id,error:error.message})); if(request.action==='close') break;}
+    }
+    await rm(socketPath, { force: true });
+    server = createServer(socket => {
+      socket.on('error', () => {});
+      createInterface({ input: socket }).on('line', line => {
+        let request;
+        try { request = JSON.parse(line); } catch { socket.destroy(); return; }
+        void handle(request).then(result => ({ id: request.id, result }), error => ({ id: request.id, error: error?.message ?? String(error) }))
+          .then(reply => { if (!socket.destroyed) socket.write(JSON.stringify(reply) + '\\n'); });
+      });
+    });
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, () => { server.off('error', reject); resolve(); }); });
+    return Object.assign(owner, { control, close });
+  } catch (error) {
+    try { await close(); } catch {}
+    throw error;
   }
-} finally { input?.close(); await close(); }
+}
 `;
 }
 
-const closures = new WeakMap();
-
-/** Forced termination cleans up a failed test; it must never qualify shutdown. */
-export function closeTestPeer(peer, { timeoutMs = 5_000 } = {}) {
-  let closing = closures.get(peer.child);
-  if (closing) return closing;
-  closing = close(peer, timeoutMs);
-  closures.set(peer.child, closing);
-  return closing;
-}
-
-async function close(peer, timeoutMs) {
-  const child = peer.child;
-  const exited = child.exitCode !== null || child.signalCode !== null;
-  const ended = exited ? Promise.resolve([child.exitCode, child.signalCode]) : once(child, 'close');
-  void ended.catch(() => {});
-  let timer, acknowledgment;
-  try {
-    if (exited) throw Error('Native peer exited before owned shutdown was acknowledged.');
-    const graceful = (async () => {
-      const reply = await peer.request('close', {}, timeoutMs);
-      if (reply?.closed !== true) throw Error('Native peer did not acknowledge owned shutdown.');
-      acknowledgment = reply;
-      child.stdin.end();
-      const [code, signal] = await ended;
-      if (code !== 0 || signal !== null) throw Error(`Native peer shutdown failed (exit ${code}, signal ${signal}).`);
-      return { exitCode: code, signal };
-    })();
-    return await Promise.race([graceful, new Promise((_resolve, reject) => {
-      timer = setTimeout(() => reject(Error('Native peer did not exit after owned cleanup before the shutdown deadline. ' +
-        (acknowledgment ? 'Shutdown acknowledged; active resource kinds: ' + JSON.stringify(acknowledgment.resources ?? [])
-          : 'The owned participant has not acknowledged shutdown.'))), timeoutMs);
-    })]);
-  } catch (error) {
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGTERM');
-      const killTimer = setTimeout(() => child.kill('SIGKILL'), 5_000);
-      try { await ended.catch(() => {}); } finally { clearTimeout(killTimer); }
-    }
-    throw error;
-  } finally { clearTimeout(timer); }
+/** The harness side: one bounded request per connection, so agent restarts need no reconnect logic. */
+export function connectQualificationPeer(socketPath) {
+  let sequence = 0;
+  return {
+    async request(action, input = {}, timeoutMs = 40_000) {
+      const socket = connect(socketPath), id = ++sequence;
+      socket.on('error', () => {}); // once() below rejects with the connection error.
+      let timer, lines;
+      try {
+        await once(socket, 'connect');
+        lines = createInterface({ input: socket });
+        lines.on('error', () => {});
+        socket.write(JSON.stringify({ id, action, ...input }) + '\n');
+        const reply = await Promise.race([
+          (async () => { for await (const line of lines) { const value = JSON.parse(line); if (value.id === id) return value; } throw Error(`Qualification participant closed during ${action}.`); })(),
+          new Promise((_resolve, reject) => { timer = setTimeout(() => reject(Error(`Qualification ${action} timed out.`)), timeoutMs); }),
+        ]);
+        if (reply.error) throw Error(reply.error);
+        return reply.result;
+      } finally { clearTimeout(timer); lines?.close(); socket.destroy(); }
+    },
+  };
 }

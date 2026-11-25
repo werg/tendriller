@@ -40,7 +40,7 @@ replace only the domain in this prompt:
 
 Do not rescue a stuck agent with implementation advice during the baseline
 attempt. It may ask for owner identity, human claim, legitimate device enrollment
-approval or an unavailable tool/artifact. Record those questions and the reason.
+or an unavailable tool/artifact. Record those questions and the reason.
 If a maintainer supplies architecture or code guidance, mark the attempt
 **assisted** and keep the preceding failure trace; a successful continuation is
 useful evidence but is not an unassisted completion.
@@ -50,7 +50,7 @@ useful evidence but is not an unassisted completion.
 | Stage | Evidence required |
 | --- | --- |
 | Discover | Starting from the domain, the agent finds a task-oriented build route and the compatible public artifacts through published links. Record the URLs followed and any broken or inaccessible resource. |
-| Prepare before claim | The agent saves a private handle, initializes and publishes the signed UI before requesting sign-in, starts the participant, and gives the owner the ready page and permission-review URLs. Claim retains the same publication and keys; no claimed reply or agent redeployment is required. |
+| Prepare before claim | The agent registers one workspace agent (credential and shared signing key retained privately under `.tendriller/agent/`), creates the page, initializes and publishes the signed UI before requesting sign-in, starts `tendril agent run`, and gives the owner the ready page and permission-review URLs. Claim retains the same publication and keys and claims the agent; no claimed reply or agent redeployment is required. |
 | Reuse | The agent uses the task/capability map and imports or adapts current session/helpers where appropriate. Record exact files used and whether historical contrib links were mistaken for current APIs. |
 | Define retained work | The authored application has a real checklist definition, declared commands and a coherent query/read path. Identify where an agent edits the model and UI for a different user request. |
 | Configure authority | The actual public definition and execution commitments are configured; device grants and account bindings are explicit. The first generation is selected using a retained signed creation transition before opening the session. No invented digest, fixture-only authority or copied private signer stands in for enrollment. |
@@ -356,9 +356,10 @@ credential-bearing URLs. Action results contain visible page text and remain
 private. Login uses a static URL and a separately filled private account code;
 credentials are never a model input. Exact review text must be chosen by the
 evaluator after inspection, not guessed or approved by checking every checkbox.
-For a device review with one approval button and no permission checkboxes, use
-`permissions: []`; the exact fingerprint, rights and retained-prefix checks still
-apply. Add the application/account text to `expected` when checking those fields.
+For a review with one confirm button and no permission checkboxes, use
+`permissions: []`; the exact displayed-text checks still apply. Add the
+application/account text to `expected` when checking those fields. Browser device
+enrollment has no review step.
 `inspect` also returns a private `view` of definition-list fields, link targets,
 non-secret visible inputs, and the displayed proposal JSON, so the evaluator can
 choose actual values without exporting browser keys or injecting state.
@@ -369,8 +370,8 @@ support the browser review flow without an external browser driver or report
 writer. `wait` accepts a selector, `condition` (`visible`, `enabled`, or `text`),
 optional text `value`, and `timeoutMs` up to 30000. It only observes the DOM. If a
 review form reports expired/already used, navigate with GET to the same review
-link, compare the unchanged proposal/fingerprint/rights/prefix, then approve; do
-not replace the browser key or start a new enrollment to bypass that message.
+link, compare the unchanged proposal and rights, then confirm; do not replace the
+browser key or start a new enrollment to bypass that message.
 
 ### Maintained starter observer (no custom module)
 
@@ -390,19 +391,20 @@ example: copy them from the app actually produced in that run.
   "applicationId": "ACTUAL_64_HEX_APPLICATION_ID",
   "historyId": "ACTUAL_SIGNED_HISTORY_ID",
   "native": {
-    "project": "/private/acceptance/new-domain-run/project/actual-app",
-    "module": "session.mjs",
+    "project": "/private/acceptance/new-domain-run/project/actual-workspace",
+    "module": "ACTUAL_ATTACH_MODULE.mjs",
     "export": "attachSession",
     "profile": "main",
-    "handle": { "file": ".tendriller/handle.json" },
-    "descriptor": { "file": ".tendriller/descriptor.json" },
-    "deviceId": { "file": ".tendriller/initialized.json", "pointer": "/deviceId" },
-    "deviceStore": ".tendriller/device.sqlite",
+    "credential": { "file": ".tendriller/agent/credential.json" },
+    "handle": { "file": ".tendriller/pages/ACTUAL_PAGE_ID/page.json" },
+    "descriptor": { "file": ".tendriller/pages/ACTUAL_PAGE_ID/descriptor.json" },
+    "deviceId": { "file": ".tendriller/pages/ACTUAL_PAGE_ID/initialized.json", "pointer": "/deviceId" },
+    "deviceStore": ".tendriller/pages/ACTUAL_PAGE_ID/device.sqlite",
     "process": {
       "pid": 12345,
-      "argv": ["/absolute/node", "session.mjs"],
-      "resume": ["/absolute/node", "session.mjs"],
-      "storage": ".tendriller/device.sqlite"
+      "argv": ["/absolute/node", "/absolute/workspace/node_modules/.bin/tendril", "agent", "run"],
+      "resume": ["/absolute/node", "/absolute/workspace/node_modules/.bin/tendril", "agent", "run"],
+      "storage": ".tendriller/pages/ACTUAL_PAGE_ID/device.sqlite"
     }
   },
   "query": {
@@ -432,6 +434,19 @@ example: copy them from the app actually produced in that run.
 
 All `pointer` and query field paths are JSON Pointers, relative to the referenced
 JSON object. File paths are relative to `native.project` unless absolute.
+`native.project` is the agent workspace (the folder holding `tendriller.json`).
+`native.handle` is the page's workspace record `.tendriller/pages/<page-id>/page.json`
+(page ID, page URL and application); `native.credential` is the workspace agent
+credential `.tendriller/agent/credential.json`, whose `service` must equal the
+selected origin and whose `ta_` token authorizes `/api/agent/pages/<page-id>`. They
+are separate private files; the observer combines them in memory and never writes
+the token anywhere. The measured process is the workspace's one `tendril agent run`,
+which owns every page's device store; copy its actual argv from `/proc`.
+By default the observer attaches to the handle's page owner inside that running
+program through the project's installed `@tendriller/tools/workspace`
+(`attachPage`); it never opens a second signer or store. `native.module` /
+`native.export` can instead name a project module whose export attaches
+(`attachSession({ signal, profile })`).
 `native.deviceId` can alternatively be the actual public key string; `process.pid`
 can be a JSON file reference. JSONL references accept `format: "jsonl"`, `line`
 (a zero-based index or `"last"`) and a pointer into that entry. The process check

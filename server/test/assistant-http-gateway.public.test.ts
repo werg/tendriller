@@ -1,9 +1,8 @@
 import { beforeAll, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
 import { createPeerIdentity, participantGrant, signTransitionRequest, type AuthorityBundle } from '@chronolog/peer-generation/control';
-import { create, inDO } from './helpers';
+import { agentPrincipal, create, inDO } from './helpers';
 import { peerApiJson } from './peer-exchange';
-import { authenticateAgentToken } from '../src/access';
 import { selectProvider } from '../src/assistant-bindings';
 import { route } from '../src/router';
 import { oauthConfig as loadOAuthConfig, signAccessToken } from '../src/accounts/oauth-support';
@@ -58,7 +57,7 @@ it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP co
   await inDO(handle.id, async t => {
     t.env.OAUTH_SIGNING_JWK = signingJwk;
     t.env.OAUTH_CONFIG_JSON = oauthConfig;
-    const agent = await authenticateAgentToken(t, handle.token);
+    const agent = agentPrincipal(t, handle);
     const version = crypto.randomUUID();
     t.db.set('assistant_connection', {
       id: version, version, inboxVersion: version, owner: account,
@@ -71,7 +70,7 @@ it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP co
     t.db.set('assistant_adapter_epoch:' + hash, 1);
     const [client, server] = Object.values(new WebSocketPair());
     t.ctx.acceptWebSocket(server, ['application-mcp']);
-    server.serializeAttachment({ tag: 'application-mcp', adapterHash: hash, deviceId: device.publicKey, connectionEpoch: 1 });
+    server.serializeAttachment({ tag: 'application-mcp', adapterHash: hash, deviceId: device.publicKey, connectionEpoch: 1, agentId: agent.agentId, principal: agent });
     client.addEventListener('message', event => {
       const msg = JSON.parse(event.data as string);
       if (msg.type !== 'call') return;

@@ -166,10 +166,10 @@ OpenAI's [submission guide](https://developers.openai.com/plugins/deploy/submiss
 defines the current review requirements. Do not claim directory submission,
 publication or ChatGPT web testing without evidence of that action.
 
-## Account setup permission
+## Agent registration permission
 
 New plugin connections request `tendrils:create` alongside the existing app
-permissions so `prepare_tendril_setup`, inspection and recovery are available.
-The host must allow this scope for the configured client. Existing OAuth grants
-retain their original scopes; reconnect with explicit consent when creation is
-needed. Never treat an existing read/write grant as account-setup authorization.
+permissions so `register_agent` is available. The host must allow this scope for
+the configured client. Existing OAuth grants retain their original scopes;
+reconnect with explicit consent when agent registration is needed. Never treat
+an existing read/write grant as agent-registration authorization.

@@ -15,7 +15,7 @@
   },
   "native": {
     "argv": ["/ABSOLUTE/PATH/TO/node", "/ABSOLUTE/QUALIFIED/CHECKOUT/scripts/idle-soak/native-bootstrap.mjs"],
-    "cwd": "/PRIVATE/synthetic-starter"
+    "cwd": "/PRIVATE/synthetic-agent-workspace"
   },
   "browserProfile": "/PRIVATE/idle-soak/browser-profile",
   "adapter": "/PRIVATE/idle-soak/adapter.mjs",

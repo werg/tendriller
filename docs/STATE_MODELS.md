@@ -7,8 +7,8 @@ control plane. SQL is an optional execution capability inside that session.
 
 | Your application's first requirement | Start with | Concrete source |
 | --- | --- | --- |
-| Retain notes, messages, observations or an activity history; derive a small view from those records | Events | [Shared Notes](BUILD_AN_APP.md), included at the starter archive's root |
-| Keep related rows consistent; guard a reservation, transfer or checkout against the actual shared state | SQL | [Shared Inventory source](https://github.com/werg/tendriller/tree/master/docs/tutorial/sql), included in the archive's `sql/` directory |
+| Retain notes, messages, observations or an activity history; derive a small view from those records | Events | [Shared Notes](BUILD_AN_APP.md), the `templates/notes/` page template of the starter workspace |
+| Keep related rows consistent; guard a reservation, transfer or checkout against the actual shared state | SQL | [Shared Inventory source](https://github.com/werg/tendriller/tree/master/docs/tutorial/templates/inventory), the `templates/inventory/` page template in the same workspace |
 | Send typing, pointer or other disposable presence | Live signals alongside either model | [Application signals](APPLICATION_SIGNALS.md) and the session's `signals` capability |
 | Use speech, camera or other sensors | Runtime capabilities alongside either model | [Browser API](BROWSER_API.md); sensor output becomes retained state only through an explicit application command |
 
@@ -20,9 +20,11 @@ an additional package, and do not label a layout preview as a connected app.
 
 An initial descriptor binds the application definition, schema and execution
 manifest. Choosing SQL for a new app is not an in-place switch for an already
-initialized events application. The two starters have separate handles, signers
-and stores. Changing the declared domain semantics requires a deliberate
-version and migration/release design; publishing new HTML alone does not change
+initialized events application. Each page is its own application with its own
+page record and device store, though all pages of a workspace share the agent's
+one signing key; a SQL page is a new page next to an events page, not a change to
+it. Changing the declared domain semantics requires a deliberate new
+definition version or a new page; publishing new HTML alone does not change
 that binding.
 
 ## The SQL starter and its guarded transaction
@@ -76,22 +78,16 @@ demo; it is not an unbounded export. The row guards carry the business
 preconditions. The command also records the caller's `basedOn` revision, while
 Chronolog owns the durable operation identity and outcome.
 
-## Provision the native SQL capability before creating an app
+## Provision the native SQL capability before creating a page
 
 First download the starter and the host's matching SDK/tools as described in
 [Build an app, step 1](BUILD_AN_APP.md#1-get-the-starter-and-matching-public-packages).
 Check the selected host's readiness before acquiring or building optional SQL
 dependencies. The first-app kit includes an events-only Chronolog archive;
-this SQL application uses its own qualified session package instead. From the
-extracted starter root, use the independent `sql/` directory and the kit's local
-SDK/tools packages:
-
-```sh
-cd sql
-TENDRILLER_RELEASE=$(node -p "JSON.parse(require('fs').readFileSync('../service.json','utf8')).core_release")
-npm install --save-exact "../packages/tendriller-sdk-$TENDRILLER_RELEASE.tgz" \
-  "../packages/tendriller-tools-$TENDRILLER_RELEASE.tgz"
-```
+an inventory page needs a qualified SQL session package installed in its place
+in the same workspace (one install serves every page, so an events page and a
+SQL page cannot use different session packages in one workspace; use a
+separate workspace for the other model).
 
 Build the exact SQL package from a fresh Chronolog checkout, using the source
 bound by the downloaded kit’s `composition.json`; do not select a second kernel
@@ -114,19 +110,18 @@ node tools/test-peer-session-sql.mjs \
   --artifact "$PWD/artifacts/session-sql/chronolog-peer-session-$CHRONOLOG_PREFIX-sql.tgz"
 ```
 
-Return to your starter's `sql/` directory, and install the produced archive by
-its absolute path:
+Return to your workspace root and install the produced archive by its absolute
+path:
 
 ```sh
 npm install --save-exact /absolute/path/to/chronolog-sql-source/artifacts/session-sql/chronolog-peer-session-*-sql.tgz
-npm run engine
 ```
 
-`engine` must print `available: true` and an execution-manifest digest before you
-create the hosted app. `create` first verifies its requested service origin,
-current readiness and host contract, then runs the same capability check before
-creating any page. A saved handle resumes only on its original service and
-does not trigger another engine load or create request.
+`npm run page:new -- stock --template inventory` first verifies the workspace's
+service origin, current readiness and host contract, then loads the native SQL
+engine and checks its execution manifest before creating any hosted page. A
+missing or unsupported engine fails there, before a page exists. A registered
+slug resumes without another create request.
 Keep the archive SHA-256, its `provenance.json`, the native qualification report,
 and this application's `package-lock.json` with your release evidence.
 
@@ -147,21 +142,22 @@ but browser WASM assets are built and deployed separately.
 
 ## Create, initialize and exercise real retained SQL state
 
-Use a fresh development application for the demonstration. Set the actual
-service origin and owner email; `create` prints the claim URL:
+Use a fresh development page for the demonstration, in a workspace registered
+with `tendril workspace init` (see [Build an app](BUILD_AN_APP.md)). `page:new`
+prints the page URL for the owner:
 
 ```sh
-TENDRILLER_ORIGIN=https://tendriller.dev
-npm run create -- "$TENDRILLER_ORIGIN" owner@example.com "Shared inventory"
+npm run page:new -- stock --template inventory --name "Shared inventory"
 ```
 
-Initialize and prepare the application immediately, without waiting for owner claim:
+Initialize and prepare the page immediately, without waiting for owner claim:
 
 ```sh
-npm run init
-npx tendril --session ./session.mjs describe
-npx tendril --session ./session.mjs query inventory null
-npm run demo
+npm run init -- stock
+npm run agent                      # keep running; it opens the page once initialized
+npx tendril --page stock describe
+npx tendril --page stock query inventory null
+npm run demo -- stock
 ```
 
 `init` is complete: it creates the native device explicitly, saves the initial
@@ -169,10 +165,10 @@ history/key once, calls `prepareSqlApplication` to sign the literal schema and
 bind its exact engine manifest, configures the host descriptor and grants,
 saves/selects the first generation, then activates a coherent SQL view. The
 signed schema and exact transition request are saved before first submission.
-An uncertain retry reuses them. Ordinary `session.mjs` reopening omits
+An uncertain retry reuses them. Ordinary reopening by the agent program omits
 `create: true`, uses the saved schema/descriptor and device, and attaches the
 same host control participant and maintained participation controller as the
-events starter.
+events template.
 
 The demo changes actual retained state. It verifies:
 
@@ -184,14 +180,15 @@ The demo changes actual retained state. It verifies:
 | Close and reopen the native device | The same signer, balances, accepted operation and rejected operation |
 | Rerun the demo unchanged | The saved original inputs, revisions and operation IDs are reused |
 
-Do not run `peer` concurrently with `init`, `demo`, `enroll` or a CLI command on
-the same native device. That store has one owner. When a command times out,
-inspect its saved identity before starting new work:
+The page's native device store has one owner: `tendril agent run`. `demo` and
+every CLI command attach to it; run `enroll` only while the agent program is
+stopped. When a command times out, inspect its saved identity before starting
+new work:
 
 ```sh
-npx tendril --session ./session.mjs operation inventory-demo-transfer-v1
-npx tendril --session ./session.mjs operation inventory-demo-rejected-v1
-npx tendril --session ./session.mjs query inventory null
+npx tendril --page stock operation inventory-demo-transfer-v1
+npx tendril --page stock operation inventory-demo-rejected-v1
+npx tendril --page stock query inventory null
 ```
 
 `applied` is an observation with an `outcome`; rejected work is also applied.
@@ -200,21 +197,21 @@ and inspect the original operation before deliberately reapplying it with a
 linked new identity. Keep SQL guards in that new attempt; a successful prior
 read does not reserve stock.
 
-The domain, setup, session and demo are executable source. Passing upstream
+The domain, setup, agent module and demo are executable source. Passing upstream
 engine conformance or importing this domain does not establish that your exact
 host/package combination passed this demo. Run it and retain the result as the
 native SQL acceptance gate.
 
 ## Browser SQL uses the same definition and session
 
-`sql/worker.mjs` is a complete owning Worker composition of the same
-`sql/domain.mjs`. It loads the signed schema from `peers.definition()`, verifies
+`templates/inventory/worker.mjs` is a complete owning Worker composition of the same
+`domain.mjs`. It loads the signed schema from `peers.definition()`, verifies
 the application's pinned authority and reader grant, and calls
 `openSqlApplication`. Its lazy `createEngine` factory loads the exact WASM build
 and creates an OPFS SAH pool. The session's command/query/operation/replication
 interface is unchanged.
 
-The SQL directory includes a guarded inventory UI. It renders the `inventory`
+The inventory template includes a guarded inventory UI. It renders the `inventory`
 query's `id`/`units` rows and captures both displayed balances for `transfer`.
 The original operation ID, input and `basedOn` revision remain in the browser's
 view store across an uncertain response or reload. Inspect or retry that exact
@@ -222,11 +219,11 @@ intent; recovery never silently replaces it. The diagnostics download contains
 status only, not a device checkpoint.
 
 After native initialization, build with the matching `--sql-browser` package
-and four verified WASM files under `sql/engine/`, then publish the complete
-`sql/page/` output. The build rejects missing or mismatched setup and engine
+and four verified WASM files under `pages/stock/engine/`, then publish the complete
+`pages/stock/dist/` output. The build rejects missing or mismatched setup and engine
 artifacts and removes incomplete output. Enroll the browser public key in the
 same SQL application before opening its data. See the shipped
-`sql/README.md` in the [downloaded starter](https://tendriller.dev/downloads/tendriller-first-app.tgz) for the complete procedure. Native
+`templates/inventory/README.md` in the [downloaded starter](https://tendriller.dev/downloads/tendriller-first-app.tgz) for the complete procedure. Native
 SQL results alone do not qualify browser behavior.
 
 For a browser build, prepare both optional package entries and the separate
@@ -265,15 +262,15 @@ The Worker expects `configuration.json` next to its bundled output with these
 common public fields: `{ applicationId, page_url, descriptor }`. Shared Notes
 additionally includes `nativeDeviceId` for its optional inference panel; this SQL
 Worker does not require that field.
-Use the matching SQL project's saved handle and pinned descriptor to build
-these fields. Never copy the handle itself, `.tendriller/`, a private signer or
-the bootstrap epoch key into the publication. It uses the same owner lifecycle as
-the events starter:
+Use the page's private record and pinned descriptor to build
+these fields. Never copy the page record, `.tendriller/`, a private signer, the
+agent token or the bootstrap epoch key into the publication. It uses the same
+owner lifecycle as the events template:
 
 | Page action | Public composition |
 | --- | --- |
 | Create this browser's identity deliberately | `createBrowserIdentity({ workerUrl, profileId })` returns only the public key under the exclusive profile fence |
-| Enroll the verified owner's browser | Stop the native owner; run `npm run enroll -- PUBLIC_KEY` from the SQL directory; then start `npm run peer` |
+| Enroll the verified owner's browser | Stop `npm run agent`; run `npm run enroll -- stock PUBLIC_KEY`; then start `npm run agent` again |
 | Attach the existing enrolled device | `openBrowserOwner({ workerUrl, profileId, applicationId, definitionId, definitionVersion, requiresDedicatedWorker: true, context })` returns a fenced elected-owner facade for synchronous OPFS SQL |
 | Install runtime access | Install `createApplicationBackend({ id: session.applicationId, session })` and `session.signals` as in the first-app page |
 | Leave one view | `attachment.detach()` closes only that view's requests, streams and captured reads |
@@ -289,15 +286,16 @@ dedicated Worker, not SharedWorker. `requiresDedicatedWorker: true` selects that
 route before opening storage. An explicitly forced shared mode fails with
 `OWNER_STORAGE_UNSUPPORTED`; it must not silently choose a different database.
 
-The native SQL peer also uses the private supervisor. Ordinary CLI calls attach
-to a running `npm run peer`; deliberate one-off setup/publication calls use
-`--mode own` while that owner is stopped. A separately enrolled native profile
-has its own signer and SQL materialization; it is never created implicitly.
+The native SQL page owner also uses the private supervisor inside `npm run agent`.
+Ordinary CLI calls, `demo` and publication attach to the running program with
+`--page stock`. A separately enrolled native profile has its own signer and SQL
+materialization; it is never created implicitly.
 
 Serve the actual bundled Worker, its chunks, the four engine assets, public
 configuration and your UI in one authored graph. Publish only that graph via
-`tendril --session ./session.mjs --mode own publish`, with an explicit operation ID.
-Keep the native peer running for this starter's coordinator/key-donor role.
+`npm run deploy -- stock` (`tendril --page stock publish pages/stock/dist`), with an
+explicit `--operation` ID when you need an exact retry. Keep the agent program
+running for this template's coordinator/key-donor role.
 
 Browser SQL requires separate qualification on the target browser, origin,
 storage provider and network. An events-only IndexedDB fallback does not prove
@@ -328,7 +326,7 @@ the caller. Its server serves authored/runtime assets and does not proxy
 [preview contract](tools/PREVIEW.md).
 
 For this starter, use an explicitly created development page for live review.
-Run the same create/init/build/publish/claim/enroll steps against that page's
+Run the same page:new/init/build/publish/claim/enroll steps against that page's
 configuration. Later publish the reviewed graph to the intended application
 using its authorized session and pinned configuration. If reviewing the exact
 same production application/data is required, open its actual authorized page

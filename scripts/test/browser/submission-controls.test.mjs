@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 test('documented multi-control wiring releases all eligible actions without data rerender or lost editor state', { timeout: 30000 }, async t => {
   const guide = await readFile(new URL('../../../docs/APP_PATTERNS.md', import.meta.url), 'utf8');
   const example = guide.match(/```js\n(\/\/ submission-controls-example\n[\s\S]*?)\n```/)[1];
-  const bundle = await build({ stdin: { contents: example, resolveDir: fileURLToPath(new URL('../../../docs/tutorial/', import.meta.url)) },
+  const bundle = await build({ stdin: { contents: example, resolveDir: fileURLToPath(new URL('../../../docs/tutorial/templates/notes/', import.meta.url)) },
     bundle: true, write: false, format: 'iife', globalName: 'Example' });
   const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined });
   t.after(() => browser.close());
@@ -69,7 +69,8 @@ test('documented multi-control wiring releases all eligible actions without data
     await page.evaluate(() => {
       controls.submission.update({ pending: null }); controls.submission.participation({ phase: 'following' });
     });
-    assert.equal(await enabled('card-save'), false, 'reconnect still requires a coherent current read');
+    // Connection changes do not invalidate this device's coherent local read; saving stays local-first.
+    assert.equal(await enabled('card-save'), true, 'a coherent local read survives reconnecting');
     await page.evaluate(() => { currentRead(); const done = controls.submission.begin(); try { throw Error('Validation failed before dispatch'); } catch {} finally { done(); } });
     assert.equal(await enabled('card-save'), true); assert.equal(await enabled('invalid'), false);
     assert.equal(await page.locator('#draft').inputValue(), 'Retained draft');

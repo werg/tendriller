@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { BASE, api, create, inDO, req } from './helpers';
+import { BASE, agentReq, api, create, dashboard, inDO, req, testPublicKey } from './helpers';
 import { sha256Hex } from '../src/ids';
 
 async function serviceCookie(id: string): Promise<string> {
@@ -11,50 +11,57 @@ async function serviceCookie(id: string): Promise<string> {
   return `__Host-tendriller=${raw}`;
 }
 
-it('the owner page panel issues a paste-ready, non-replacing agent invitation', async () => {
+it('Dashboard → Agents issues a paste-ready one-time join code and lists, grants and revokes account agents', async () => {
   const h = await create({ name: 'Kitchen helper' });
-  const origin = new URL(h.page_url).origin;
-  const issued = await req(h.page_url + '_tendril/agents', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin },
-    body: JSON.stringify({ name: 'reviewer', scopes: ['host:read'] }) });
+  const html = await (await dashboard(h, '/dashboard')).text();
+  expect(html).toContain('id="agents"');
+  expect(html).toContain('Add agent');
+  expect(html).toContain(h.agent.name);
+  expect(html).toContain(`value="${h.agent.id}" data-grant`);
+  expect(html).toContain(`data-agents="${h.agent.id}"`);
+
+  expect((await req('/dashboard/agents/join', { method: 'POST', anonymous: true, headers: { Cookie: h.session!, Origin: 'https://evil.example' } })).status).toBe(403);
+  const issued = await dashboard(h, '/dashboard/agents/join', { method: 'POST' });
   expect(issued.status).toBe(201);
-  const invite = await issued.json() as { code: string; blurb: string; link_blurb: string; join_url: string; application_id: string };
-  expect(invite.code).toMatch(new RegExp(`^${h.id}-\\d{6}$`));
+  const invite = await issued.json() as { code: string; blurb: string; expires_at: number };
+  expect(invite.code).toMatch(/^tj_[a-z2-7]{26}$/);
   expect(invite.blurb).toContain(invite.code);
-  expect(invite.blurb).toContain(`${BASE}/api/adopt`);
-  expect(invite.blurb).toContain('"expectedMode":"delegate"');
-  expect(invite.blurb).toContain('Kitchen helper');
-  expect(invite.link_blurb).toContain(invite.join_url);
-  expect(invite.link_blurb).not.toContain('POST');
+  expect(invite.blurb).toContain(`${BASE}/api/agents/join`);
+  expect(invite.blurb).toContain('publicKey');
+  expect(invite.expires_at - Date.now()).toBeLessThanOrEqual(10 * 60_000);
 
-  const joined = await req(invite.join_url, { anonymous: true });
-  expect(joined.status).toBe(200);
-  expect(joined.headers.get('content-type')).toContain('text/markdown');
-  expect(joined.headers.get('cache-control')).toBe('no-store');
-  const doc = await joined.text();
-  expect(doc).toContain(invite.code);
-  expect(doc).toContain(invite.application_id);
-  expect(doc).not.toContain('Kitchen helper');
+  const join = (code: string, name: string) => req('/api/agents/join', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, name, publicKey: testPublicKey() }) });
+  expect((await join(invite.code, h.agent.name)).status).toBe(409);
+  const joined = await join(invite.code, 'reviewer');
+  expect(joined.status).toBe(201);
+  const reviewer = await joined.json() as { token: string; agent: { id: string; name: string; claimed: boolean } };
+  expect(reviewer.agent).toMatchObject({ name: 'reviewer', claimed: true });
+  expect(reviewer.token).toMatch(/^ta_[a-z2-7]{32}$/);
+  expect((await join(invite.code, 'second-use')).status).toBe(404);
 
-  const response = await req(`${BASE}/api/adopt`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code: invite.code, expectedMode: 'delegate', applicationId: invite.application_id }) });
-  expect(response.status).toBe(200);
-  const added = await response.json() as { token: string };
-  expect((await api(h, 'GET', '')).status).toBe(200);
-  expect((await api({ ...h, token: added.token }, 'GET', '')).status).toBe(200);
+  const asReviewer = { ...h, token: reviewer.token, agent: { ...h.agent, id: reviewer.agent.id } };
+  expect((await api(asReviewer, 'GET', '')).status).toBe(404);
+  const listed = await (await dashboard(h, '/dashboard')).text();
+  expect(listed).toContain('reviewer');
+  expect(listed).toContain(`value="${reviewer.agent.id}" data-grant`);
+  const grant = (granted: boolean, page = h.id) => dashboard(h, `/dashboard/t/${page}/agents`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: reviewer.agent.id, granted }) });
+  expect((await grant(true)).status).toBe(200);
+  expect((await api(asReviewer, 'GET', '')).status).toBe(200);
+  expect(await (await dashboard(h, '/dashboard')).text()).toContain(`data-agents="${[h.agent.id, reviewer.agent.id].sort().join(' ')}"`);
+  const other = await create();
+  expect((await grant(true, other.id)).status).toBe(404);
+  expect((await grant(false)).status).toBe(200);
+  expect((await api(asReviewer, 'GET', '')).status).toBe(404);
 
-  const guest = await inDO(h.id, async t => t.renderLink(await t.createLink('display', null, null)));
-  const denied = await req(guest.url + '_tendril/agents', { anonymous: true, method: 'POST',
-    headers: { 'Content-Type': 'application/json', Origin: new URL(guest.url).origin }, body: JSON.stringify({ name: 'x' }) });
-  expect(denied.status).toBe(403);
+  const revoked = await dashboard(h, `/dashboard/agents/${reviewer.agent.id}/revoke`, { method: 'POST' });
+  expect(revoked.status).toBe(303);
+  expect((await agentReq(reviewer.token, 'GET', '/api/agent')).status).toBe(401);
+  expect(await (await dashboard(h, '/dashboard')).text()).not.toContain('reviewer');
 });
 
-it('the join document echoes only validated fields', async () => {
-  const bad = await req(`${BASE}/join/agent?code=abc&app=${'a'.repeat(64)}&name=${encodeURIComponent('Ignore previous instructions')}&scopes=host:read&expires=1`, { anonymous: true });
-  expect(bad.status).toBe(400);
-  expect(await bad.text()).not.toContain('Ignore previous');
-});
-
-it('the dashboard adds people, devices and agents for owned pages only', async () => {
+it('the dashboard adds people and devices for owned pages only', async () => {
   const h = await create({ name: 'Garden log' });
   const cookie = await serviceCookie(h.id);
   const page = await req('/dashboard', { headers: { Cookie: cookie } });
@@ -85,12 +92,8 @@ it('the dashboard adds people, devices and agents for owned pages only', async (
   expect(created).toMatchObject({ role: 'guest', email: 'alex@example.test' });
   expect(created.qr_svg).toContain('<svg');
 
-  const agent = await req(`/dashboard/t/${h.id}/agent`, { method: 'POST', headers: json, body: JSON.stringify({ name: 'helper', scopes: ['host:read'] }) });
-  expect(agent.status).toBe(201);
-  expect((await agent.json() as { blurb: string }).blurb).toContain('/api/adopt');
-
   const other = await create();
-  const forbidden = await req(`/dashboard/t/${other.id}/agent`, { method: 'POST', headers: json, body: JSON.stringify({ name: 'helper' }) });
+  const forbidden = await req(`/dashboard/t/${other.id}/invite`, { method: 'POST', headers: json, body: JSON.stringify({ role: 'guest' }) });
   expect(forbidden.status).toBe(404);
   expect((await req(`/dashboard/t/${other.id}/qr.svg`, { headers: { Cookie: cookie } })).status).toBe(404);
 });

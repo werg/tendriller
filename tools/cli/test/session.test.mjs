@@ -44,11 +44,11 @@ test('an uncertain batch keeps earlier results and does not submit later command
 
 test('missing application setup reports the next step before issuing session work', async () => {
   let called = false;
-  await assert.rejects(withSession(undefined, () => { called = true; }),
-    error => /page handle does not open a Chronolog session/.test(error.message) && /BUILD_AN_APP\.md/.test(error.message));
+  await assert.rejects(withSession(undefined, () => { called = true; }), /page attachment/);
+  await assert.rejects(withSession(async () => ({ session: {} }), () => { called = true; }), /detach/);
   assert.equal(called, false);
   await assert.rejects(runSessionCommand({ session: {} }, 'publication', []),
-    error => /session-owned control participant/.test(error.message) && /publisher grant/.test(error.message));
+    error => /tendril agent run/.test(error.message) && /publisher grant/.test(error.message));
 });
 
 test('commands preserve exact operation identity and captured revision without a tool retry queue', async () => {
@@ -93,32 +93,29 @@ test('coherent event reads always release their captured view, including a stale
   assert.equal(released, 1);
 });
 
-test('session bootstrap ownership closes actual resources on failed actions and cancellation', async t => {
-  const root = await directory(t), path = join(root, 'application.mjs'), closed = join(root, 'closed');
-  await writeFile(path, `import { writeFile } from 'node:fs/promises';
-export async function openSession() { return { session: { async close() { await writeFile(${JSON.stringify(closed)}, 'closed'); } } }; }`);
-  await assert.rejects(withSession(path, async () => { throw Error('action failed'); }), /action failed/);
-  assert.equal(await readFile(closed, 'utf8'), 'closed');
+test('a page attachment detaches on failed actions and cancellation', async () => {
+  let detached = 0;
+  const open = async () => ({ session: {}, async detach() { detached++; } });
+  await assert.rejects(withSession(open, async () => { throw Error('action failed'); }), /action failed/);
+  assert.equal(detached, 1);
   const controller = new AbortController();
-  await withSession(path, async () => { controller.abort(); }, { signal: controller.signal });
-  assert.equal(await readFile(closed, 'utf8'), 'closed');
+  await withSession(open, async owned => { assert.equal(owned.mode, 'attach'); controller.abort(); await Promise.resolve(); }, { signal: controller.signal });
+  assert.equal(detached, 2, 'cancellation detaches exactly once');
 });
 
-test('cleanup failure does not overwrite the original action or operation evidence', async t => {
-  const root = await directory(t), path = join(root, 'failed-close.mjs');
-  await writeFile(path, `export async function openSession() { return {session:{}, async close(){throw Object.assign(Error('cleanup failed'),{code:'CLOSE_FAILED'});}}; }`);
+test('cleanup failure does not overwrite the original action or operation evidence', async () => {
+  const open = async () => ({ session: {}, async detach() { throw Object.assign(Error('cleanup failed'), { code: 'CLOSE_FAILED' }); } });
   const original = Object.assign(Error('publication verification failed'), { code: 'PUBLICATION_UNVERIFIED',
     publication: { operationId: 'original-release', outcome: 'committed', version: 1 } });
-  await assert.rejects(withSession(path, async () => { throw original; }), error =>
+  await assert.rejects(withSession(open, async () => { throw original; }), error =>
     error === original && error.code === 'PUBLICATION_UNVERIFIED' && error.cleanupError.code === 'CLOSE_FAILED' && error.publication.operationId === 'original-release');
-  await assert.rejects(withSession(path, async () => 'successful action'), { code: 'CLOSE_FAILED' });
+  await assert.rejects(withSession(open, async () => 'successful action'), { code: 'CLOSE_FAILED' });
 });
 
-test('deadline remains the primary error when closing the session rejects the pending action', async t => {
-  const root = await directory(t), path = join(root, 'cancelled.mjs');
-  await writeFile(path, `export async function openSession() { return {session:{}, async close(){throw Error('secondary cleanup failure');}}; }`);
+test('deadline remains the primary error when detaching rejects the pending action', async () => {
+  const open = async () => ({ session: {}, async detach() { throw Error('secondary cleanup failure'); } });
   const controller = new AbortController();
-  await assert.rejects(withSession(path, async () => {
+  await assert.rejects(withSession(open, async () => {
     controller.abort(Object.assign(Error('Invocation timed out'), { code: 'invocation_timeout' }));
     throw Object.assign(Error('APPLICATION_SESSION_CLOSED'), { publication: { operationId: 'release-1', outcome: 'unknown' } });
   }, { signal: controller.signal }), error => error.code === 'invocation_timeout' && error.message === 'Invocation timed out'
@@ -126,46 +123,11 @@ test('deadline remains the primary error when closing the session rejects the pe
     && error.cleanupError.message === 'secondary cleanup failure');
 });
 
-test('attachment is preferred, passes retained profile and context, and only detaches once on cancellation', async t => {
-  const root = await directory(t), path = join(root, 'attached.mjs'), calls = join(root, 'calls');
-  await writeFile(path, `import { appendFile } from 'node:fs/promises';
-export async function openSession() { throw Error('must not open another signer'); }
-export async function attachSession({mode,profile,context}) {
-  await appendFile(${JSON.stringify(calls)}, JSON.stringify({mode,profile,context})+'\\n');
-  return {session:{close(){throw Error('must not close the shared owner');}},
-    async detach(){await appendFile(${JSON.stringify(calls)}, 'detach\\n');}};
-}`);
-  const controller = new AbortController();
-  await withSession(path, async owned => {
-    assert.equal(owned.mode, 'attach'); controller.abort();
-    await Promise.resolve();
-  }, { signal: controller.signal, profile: 'retained-main', runId: 'review-run' });
-  assert.deepEqual((await readFile(calls, 'utf8')).trim().split('\n'), [
-    JSON.stringify({ mode: 'attach', profile: 'retained-main', context: { runId: 'review-run' } }), 'detach',
-  ]);
-});
-
-test('unreachable owner never causes a fallback signer; explicit ownership and independent profiles are deliberate', async t => {
-  const root = await directory(t), path = join(root, 'modes.mjs'), calls = join(root, 'calls');
-  await writeFile(path, `import { appendFile } from 'node:fs/promises';
-export async function attachSession(){throw Object.assign(Error('owner offline'),{code:'OWNER_UNREACHABLE'});}
-export async function openSession({mode,profile}) {
-  await appendFile(${JSON.stringify(calls)}, JSON.stringify({mode,profile})+'\\n');
-  return {session:{close(){throw Error('close must also release the profile fence');}},
-    async close(){await appendFile(${JSON.stringify(calls)}, 'release\\n');}};
-}`);
-  await assert.rejects(withSession(path, () => {}), error => error.code === 'OWNER_UNREACHABLE');
-  await assert.rejects(readFile(calls), { code: 'ENOENT' });
-  await assert.rejects(withSession(path, () => {}, { mode: 'independent' }), /requires --profile/);
-  await withSession(path, () => {}, { mode: 'own', profile: 'retained-main' });
-  await withSession(path, () => {}, { mode: 'independent', profile: 'enrolled-reviewer' });
-  assert.deepEqual((await readFile(calls, 'utf8')).trim().split('\n'), [
-    JSON.stringify({ mode: 'own', profile: 'retained-main' }), 'release',
-    JSON.stringify({ mode: 'independent', profile: 'enrolled-reviewer' }), 'release',
-  ]);
-  const legacy = join(root, 'legacy.mjs');
-  await writeFile(legacy, 'export function openSession(){throw Error("must not open");}');
-  await assert.rejects(withSession(legacy, () => {}, { mode: 'attach' }), /Attachment never falls back/);
+test('an unreachable agent program is reported and never replaced by a second signer', async () => {
+  let opened = 0;
+  await assert.rejects(withSession(async () => { opened++; throw Object.assign(Error('owner offline'), { code: 'OWNER_UNREACHABLE' }); }, () => {}),
+    error => error.code === 'OWNER_UNREACHABLE');
+  assert.equal(opened, 1);
 });
 
 test('self and endpoint diagnostics expose the actual attachment provenance', async () => {
@@ -173,7 +135,7 @@ test('self and endpoint diagnostics expose the actual attachment provenance', as
     identity: { agentBindingId: 'agent' }, context: { runId: 'review' } };
   const owned = { mode: 'attach', session: { applicationId: 'application', deviceId: 'signer', endpoint,
     describe: () => ({ id: 'definition' }), status: { phase: 'ready' }, endpoints: async () => [endpoint] } };
-  assert.deepEqual(await runSessionCommand(owned, 'self', []), { mode: 'attach', applicationId: 'application',
+  assert.deepEqual(await runSessionCommand(owned, 'self', []), { mode: 'attach', page: null, applicationId: 'application',
     historyId: null, deviceId: 'signer', endpoint });
   const diagnostic = await runSessionCommand(owned, 'doctor', []);
   assert.deepEqual(diagnostic.identity.endpoint.identity, endpoint.identity); assert.deepEqual(diagnostic.capabilities, ['queries']);

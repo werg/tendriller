@@ -199,16 +199,19 @@ test('isolated host forwards WebSocket ownership and finishes the cold hibernata
 test('host activity keeps bounded receipt metadata, fixed labels and no private request material', () => {
   const activity = createFirstAppRequestActivity();
   const paths = [
-    ['/agent/private/peers/discovery/watch', 'discovery-watch'],
-    ['/agent/private/peers/rendezvous', 'rendezvous'],
-    ['/agent/private/peers/invitations', 'invitations'],
-    ['/agent/private/peers/relay', 'relay'],
-    ['/agent/private/setup/watch', 'setup-watch'],
+    ['/api/agent/hub', 'agent-hub'],
+    ['/api/agent/pages/private/peers/discovery/watch', 'discovery-watch'],
+    ['/api/agent/pages/private/peers/rendezvous', 'rendezvous'],
+    ['/api/agent/pages/private/peers/invitations', 'invitations'],
+    ['/api/agent/pages/private/peers/relay', 'relay'],
+    ['/api/agent/pages/private/setup/watch', 'setup-watch'],
     ['/s/private/publication-ready', 'publication-watch'],
-    ['/agent/private/peers/participant', 'peer-participant'],
-    ['/agent/private/peers/bootstrap', 'peer-bootstrap'],
+    ['/api/agent/pages/private/peers/participant', 'peer-participant'],
+    ['/api/agent/pages/private/peers/bootstrap', 'peer-bootstrap'],
+    ['/api/agent/pages/private/application', 'application-control'],
+    ['/api/agent/hubs', 'api-control'], ['/api/agent/pages', 'api-control'],
     ['/s/private/peers/pairing', 'peer-pairing'],
-    ['/api/t/private/self', 'access-probe'],
+    ['/api/agent/pages/private/self', 'access-probe'],
     ['/s/private/application', 'application-control'],
     ['/s/private/_tendril/sw.js', 'service-worker'],
     ['/favicon.ico', 'favicon'],
@@ -232,7 +235,7 @@ test('host activity keeps bounded receipt metadata, fixed labels and no private 
     assert.ok(!JSON.stringify(snapshot).includes(secret));
   }
   snapshot.items[0].category = 'MUTATED';
-  assert.equal(activity.snapshot().items[0].category, 'discovery-watch');
+  assert.equal(activity.snapshot().items[0].category, 'agent-hub');
   for (let n = 0; n < 300; n++) activity.record(new Request('https://private-origin.invalid/secret'));
   const bounded = activity.snapshot();
   assert.equal(bounded.items.length, 256);
@@ -245,12 +248,12 @@ test('host activity keeps bounded receipt metadata, fixed labels and no private 
 test('participant discovery and invitation operations remain opaque to path-only receipt classification', () => {
   const activity = createFirstAppRequestActivity();
   for (const method of ['GET', 'PUT', 'POST', 'DELETE']) activity.record({
-    method, url: 'https://private.invalid/api/t/private/peers/participant',
+    method, url: 'https://private.invalid/api/agent/pages/private/peers/participant',
     get body() { assert.fail('must never inspect a participant body to classify its action'); },
     get headers() { assert.fail('must never inspect auth headers'); },
   });
   assert.deepEqual(activity.snapshot().items.map(x => [x.method, x.category]),
     ['GET', 'PUT', 'POST', 'DELETE'].map(method => [method, 'peer-participant']));
-  activity.record(new Request('https://private.invalid/api/t/private/peers/invitation'));
+  activity.record(new Request('https://private.invalid/api/agent/pages/private/peers/invitation'));
   assert.equal(activity.snapshot().items.at(-1).category, 'api-control', 'Do not invent a singular invitation route absent from the current contract');
 });

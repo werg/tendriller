@@ -59,27 +59,32 @@ email, account credentials or application keys.
    inspection, not a matching package composition. Use the supplied files;
    do not invent a deployment module or substitute a separate backend merely
    because the session is not configured yet.
-5. Use the linked account's `tendrils:create` permission. Run the starter's
-   `npm run setup:prepare -- SERVICE_ORIGIN "App name"`, then call
-   `prepare_tendril_setup` with its exact public `prepare.arguments`. The native
-   project has already retained the private credential; only its commitment
-   enters MCP. The host derives the intended owner without asking for an email.
-   Save the public ready result and run `npm run setup:finish -- RESULT.json`
-   to reconstruct the same private handle. For a lost reply, call
-   `inspect_tendril_setup` for the original operation. Never generate a new intent
-   or use anonymous creation to replace an uncertain setup. A missing creation
-   scope or tool needs the matching deployment/catalog/consent update.
+5. Register the workspace agent through the linked account. One agent has one
+   credential and one signing key for all of its pages. Run
+   `npx tendril workspace key --service SERVICE_ORIGIN` in the starter workspace,
+   then call `register_agent` with its exact public `name` and `publicKey`. The
+   signing key stays local; only its public key enters MCP. The host derives the
+   intended owner without asking for an email. Save the result privately and run
+   `npx tendril workspace adopt --service SERVICE_ORIGIN --credential FILE`, then
+   `npm run page:new -- <slug>`; the pages the agent creates are granted to it
+   automatically, and later pages reuse the same agent. An existing page the
+   account already owns is added by its owner with the per-agent checkbox on the
+   dashboard (or the page's **Add people & devices → An agent**), then
+   `npx tendril page grant <slug> <page-id>`. Calling `register_agent` again with
+   the same name rotates the token and key; never use anonymous registration to
+   replace it. A missing creation scope or tool needs the matching
+   deployment/catalog/consent update.
    Initialize, build and publish the first signed version before asking the
    person to sign in at `page_url`. Do not stop for a "claimed" reply. Keep private
-   setup records, tokens and keys out of chat and published HTML. Direct-domain
-   setup without a linked creation account retains its explicit email-based
-   route in the build guide.
+   workspace records, tokens and keys out of chat and published HTML. Without a
+   linked creation account, `tendril workspace init --owner EMAIL` or a dashboard
+   join code (`workspace join`) registers the agent; see the build guide.
 6. Follow **create → define state → configure authority and initial
-   generation → publish signed UI → owner sign-in → connect devices → verify**. Creating a host
-   handle does not create application commands or a running session. Keep the
+   generation → publish signed UI → owner sign-in → connect devices → verify**. Creating a hosted
+   page does not create application commands or a running session. Keep the
    starter's connection component (`connection.mjs`, `connect-view.mjs`): opening
-   the page connects, and a new browser is approved with one tap on the service
-   origin that returns to the page. Never ship separate request/connect buttons.
+   the page connects, and a new browser is set up automatically with no approval
+   screen. Never ship separate request/connect buttons.
    Design views that fit the data; a JSON or field-by-field record editor is a
    fallback, never the deliverable for a "full-featured" request. After the first
    working version, run the UX pass in the delivery guide (phone and desktop,
@@ -88,17 +93,18 @@ email, account credentials or application keys.
    observed friction. Adapt the [importable domain views](APP_PATTERNS.md#domain-views-you-can-import)
    and record before/after evidence; transport checks alone do not finish the UX.
    Give the app a recognizable emoji favicon during
-   preparation: set `icon` to an emoji such as `🌱` through the host metadata API;
+   preparation: set `icon` to an emoji such as `🌱` through the page's metadata (`tendril --page <slug> meta`);
    the [build guide](BUILD_AN_APP.md#give-the-app-a-recognizable-favicon) has a runnable example.
 7. To use the app from this MCP connection, read `topic: "connect"`. Attach
    `@tendriller/core/assistant` to the *existing* application participant, propose
    its declared capabilities before claim, and give the owner the ready page and
    returned permission-review URL. The supplied starter has `npm run assistant:prepare`
-   and `npm run serve` for this route. They choose what to expose. Keep that participant available for calls.
+   for this route, and `npx tendril agent run` keeps every page's participant running through one hub
+   connection. They choose what to expose. Keep that participant available for calls.
 8. Refresh `list_tendrils`, call `describe_application`, make a real query and
    the requested command, then verify the applied result and retained state
    after reload. Use `topic: "delivery"` for the completion evidence and report
-   the actual running process and how to resume its saved device store.
+   the actual running process and how to resume the workspace's saved device stores.
 
 ## Use browser observations
 
@@ -116,9 +122,10 @@ explicit command retention. An incoming request never activates a sensor.
 
 ## Use or connect an existing application
 
-Call `list_tendrils`, then `describe_application` for the selected application.
+Call `list_tendrils` (100 per call; pass the returned `nextCursor` to continue),
+then `describe_application` for the selected application.
 Use its exact allowed query/command schemas. If a known app is absent, check its
-account and ask its existing participant to propose assistant access using
+account and ask its existing page owner to propose assistant access using
 `topic: "connect"`; the owner reviews it at the returned URL. Do not create a
 replacement app just because this account has not approved the existing one.
 
@@ -134,17 +141,17 @@ a mounted card or a connected page does not guarantee that this ChatGPT
 conversation will wake after the turn ends. A stopped participant cannot execute
 new queries or commands: resume it from its retained store.
 
-The native participant stays running while the owner signs in or reviews access.
-Its authenticated hibernating setup subscription receives later device requests
-and consent changes without idle polling. The optional MCP adapter starts after
+The agent program stays running while the owner signs in or reviews access.
+Its one hub connection carries every page's setup notices, so later device
+requests and consent changes arrive without idle polling. The optional MCP adapter starts after
 approval. Its timeout, revocation or replacement never ends the application or
 pairing process; new consent reconnects that component. Individual browser
 reviews expire after ten minutes and retain uncertain attempts. After a deliberate
-process stop, resume the same project and device store. Idle adapter sockets
+process stop, resume the same workspace and its device stores. Idle adapter sockets
 hibernate. Neither subscription promises a future ChatGPT model turn.
 
 After a republish or owner restart, follow the [consumer re-arm checklist](AGENT_RESTART.md).
-Attach clients must reconnect to a replacement owner. Preserve handled cursors,
+Attach clients must reconnect to a replacement agent program. Preserve handled cursors,
 exact operation inputs and pending work. For apps with a request consumer, verify
 its heartbeat and request/receipt/answer flow only through declared capabilities;
 report unsupported evidence. For other apps, verify an ordinary domain command/read

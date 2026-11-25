@@ -15,7 +15,7 @@ test('relay probe requires both actual paired lanes and binary traffic, and forg
     close() { this.readyState = 3; this.dispatchEvent(new Event('close')); }
   }
   const deviceId = 'aa'.repeat(32), remoteDeviceId = 'bb'.repeat(32), records = [];
-  const api = 'https://staging.example/api/t/' + 'a'.repeat(12);
+  const api = 'https://staging.example/api/agent/pages/' + 'a'.repeat(12);
   const Observed = observeRelaySockets(Socket, { api, deviceId, remoteDeviceId, record: value => records.push(value) });
   const route = lane => api.replace('https:', 'wss:') + '/peers/relay?channel=private-channel&peerId=' + deviceId + '&remotePeerId=' + remoteDeviceId + '&lane=' + lane + '&token=NEVER_RECORD';
   const reliable = new Observed(route('reliable'), ['PRIVATE_AUTH']), live = new Observed(route('live'), ['PRIVATE_AUTH']);
@@ -34,9 +34,9 @@ test('relay probe requires both actual paired lanes and binary traffic, and forg
 test('relay construction, wrong application, or mismatched session never establishes a measured transport', () => {
   class Socket extends EventTarget { readyState = 1; send() {} }
   const deviceId = 'aa'.repeat(32), remoteDeviceId = 'bb'.repeat(32), records = [];
-  const Observed = observeRelaySockets(Socket, { api: 'https://staging.example/api/t/' + 'a'.repeat(12), deviceId, remoteDeviceId, record: value => records.push(value) });
-  new Observed('wss://other.example/api/t/' + 'a'.repeat(12) + '/peers/relay'); assert.equal(records.length, 0);
-  const route = lane => 'wss://staging.example/api/t/' + 'a'.repeat(12) + '/peers/relay?channel=x&peerId=' + deviceId + '&remotePeerId=' + remoteDeviceId + '&lane=' + lane;
+  const Observed = observeRelaySockets(Socket, { api: 'https://staging.example/api/agent/pages/' + 'a'.repeat(12), deviceId, remoteDeviceId, record: value => records.push(value) });
+  new Observed('wss://other.example/api/agent/pages/' + 'a'.repeat(12) + '/peers/relay'); assert.equal(records.length, 0);
+  const route = lane => 'wss://staging.example/api/agent/pages/' + 'a'.repeat(12) + '/peers/relay?channel=x&peerId=' + deviceId + '&remotePeerId=' + remoteDeviceId + '&lane=' + lane;
   const reliable = new Observed(route('reliable')), live = new Observed(route('live'));
   assert.equal(records.at(-1).transport, null);
   for (const [socket, lane, session] of [[reliable, 'reliable', 'a'.repeat(36)], [live, 'live', 'b'.repeat(36)]])
@@ -71,9 +71,9 @@ test('failed close invalidation terminates the instrumented process so a stale p
     class Socket extends EventTarget { readyState = 1; send() {} }
     let fail = false;
     const deviceId = 'aa'.repeat(32), remoteDeviceId = 'bb'.repeat(32);
-    const Observed = observeRelaySockets(Socket, { api: 'https://staging.example/api/t/aaaaaaaaaaaa', deviceId, remoteDeviceId,
+    const Observed = observeRelaySockets(Socket, { api: 'https://staging.example/api/agent/pages/aaaaaaaaaaaa', deviceId, remoteDeviceId,
       onFailure: () => process.exit(74), record: value => { if (fail) throw Error('write failed'); writeFileSync(${JSON.stringify(output)}, JSON.stringify(value)); } });
-    const route = lane => 'wss://staging.example/api/t/aaaaaaaaaaaa/peers/relay?channel=x&peerId=' + deviceId + '&remotePeerId=' + remoteDeviceId + '&lane=' + lane;
+    const route = lane => 'wss://staging.example/api/agent/pages/aaaaaaaaaaaa/peers/relay?channel=x&peerId=' + deviceId + '&remotePeerId=' + remoteDeviceId + '&lane=' + lane;
     const reliable = new Observed(route('reliable')), live = new Observed(route('live'));
     for (const [socket, lane] of [[reliable, 'reliable'], [live, 'live']]) socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ t: 'ready', version: 1, lane, peerId: deviceId, remotePeerId: remoteDeviceId, session: 'a'.repeat(36) }) }));
     reliable.send(new Uint8Array(1)); reliable.dispatchEvent(new MessageEvent('message', { data: new ArrayBuffer(1) }));

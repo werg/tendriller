@@ -35,7 +35,7 @@ export async function upgradeSetupWatch(t: Tendril, req: Request, principal: Age
     if (!currentPrincipal(t, old.principal)) { ws.close(4003, 'Setup access revoked'); return false; }
     return true;
   });
-  if (sockets.length >= 8 || sockets.filter(ws => attachment(ws)?.principal.credentialHash === principal.credentialHash).length >= 2)
+  if (sockets.length >= 8 || sockets.filter(ws => attachment(ws)?.principal.agentId === principal.agentId).length >= 2)
     throw new HttpError(429, 'setup_watch_full');
   const [client, server] = Object.values(new WebSocketPair());
   t.ctx.acceptWebSocket(server, [TAG]);

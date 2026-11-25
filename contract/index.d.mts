@@ -5,7 +5,8 @@ export interface ValidationIssue { path: string; message: string }
 export type PublicError = WireContracts['error'];
 export type ErrorResponse = WireContracts['errorResponse'];
 export type Role = 'owner' | 'guest' | 'display';
-export type CreateRequest = WireContracts['create'];
+export type AgentRegistration = WireContracts['agentRegistration'];
+export type AgentPageCreate = WireContracts['agentPageCreate'];
 export type ServiceDescriptor = WireContracts['serviceDescriptor'];
 export interface RuntimeErrorEntry {
   readonly id: string;

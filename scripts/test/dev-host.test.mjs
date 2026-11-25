@@ -58,6 +58,7 @@ async function fixture(t) {
     ['dist/engine/worker.mjs', Buffer.from('export default { fetch() { return new Response("release"); } };')],
     ['dist/engine/testing-ratelimits.json', json({ ratelimits: [] })],
     ['dist/engine/migrations/0001_accounts.sql', Buffer.from('CREATE TABLE accounts(id TEXT PRIMARY KEY);')],
+    ['dist/engine/migrations/0002_agents.sql', Buffer.from('CREATE TABLE agents(id TEXT PRIMARY KEY);')],
     ['server/public/llms.txt', Buffer.from('Exact public guide.')],
   ]);
   const proof = { source, sourceTree: tree, dirty: false, storageSchemaRevision: 11,

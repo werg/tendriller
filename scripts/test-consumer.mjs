@@ -51,7 +51,7 @@ try {
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
-import { createClient, requireService, describeReadiness, requireCreationReady, requireServiceOrigin } from '@tendriller/core';
+import { createAgentClient, requireService, describeReadiness, requireCreationReady, requireServiceOrigin } from '@tendriller/core';
 import { CONTRACT_VERSION, assertValid } from '@tendriller/core/contract';
 import { createApplicationBinding } from '@tendriller/core/application';
 import { onboardingDescriptor, ASSISTANT_GUIDES } from '@tendriller/core/onboarding';
@@ -77,23 +77,24 @@ for (const api of [createApplicationAgentKey, proposeApplicationAssistant, conne
   createAssistantEventDelivery, pack, withSession, startServer]) assert.equal(typeof api, 'function');
 const accounts = new DatabaseSync(':memory:');
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/agents-schema')), 'utf8'));
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_grants'").get().name,
   'integration_oauth_grants');
 assert.equal(accounts.prepare("SELECT COUNT(*) AS count FROM assistant_connections").get().count, 0);
 accounts.close();
 assert.equal(CONTRACT_VERSION, 3); assert.equal(typeof startRuntime, 'function'); assert.equal(typeof createVoice, 'function');
 assert.equal(typeof mountVoiceControls, 'function'); assert.equal(SPEECH_DOWNLOAD_BYTES, 18224260);
-assert.equal(schema.$defs.stateUpdate, undefined); assert.equal(schema.$defs.create.properties.application.properties.kind, undefined);
+assert.equal(schema.$defs.stateUpdate, undefined); assert.equal(schema.$defs.create, undefined); assert.equal(schema.$defs.pageHandle, undefined);
 assert.ok(manifest.assets.some(file => file.path === 'tendril.js'));
 assert.ok(manifest.assets.some(file => file.path === 'voice-pcm-worklet.js'));
 assert.ok(manifest.assets.every(file => /^[a-f0-9]{64}$/.test(file.sha256)));
-assertValid('create', {owner:'owner@example.test', application});
+assertValid('agentRegistration', {owner:'owner@example.test', name:'laptop', publicKey:'A'.repeat(43)});
 assert.throws(() => requireService({contract:2,core_release:'old',limits:{}}), /contract/);
 let requests = 0;
-const client = createClient({api:'https://host.test/api/t/test',token:'private'}, {applicationId: application.id, fetch: async (_url, init) => {
+const client = createAgentClient({service:'https://host.test',token:'ta_'+'a'.repeat(32)}, {fetch: async (_url, init) => {
   requests++; return Response.json(createParticipantResponse(JSON.parse(init.body), null));
-}});
-assert.deepEqual(Object.keys(client).sort(), ['info', 'peers', 'request', 'service']);
+}}).page('aaaaaaaaaaaa', {applicationId: application.id});
+assert.deepEqual(Object.keys(client).sort(), ['base', 'fetch', 'id', 'info', 'peers', 'request', 'service', 'socket']);
 assert.equal(requests, 0);
 const introductions = createPeerIntroductions({ peers: client.peers, identity: '34'.repeat(32),
   openDirectConnection: async () => ({ close() {} }), openRelayConnection: async () => ({ close() {} }) });
@@ -112,7 +113,7 @@ await assert.rejects(signals.send('typing', null), {code:'signal_unavailable'});
 `);
   run(process.execPath, ['consumer.mjs']);
   writeFileSync(join(directory, 'consumer.mts'), `
-import {createClient, createPage, describeReadiness, requireCreationReady, requireServiceOrigin,
+import {createAgentClient, registerAgent, describeReadiness, requireCreationReady, requireServiceOrigin,
   type ServiceReadiness} from '@tendriller/core';
 import type {RuntimeApi, RuntimeConfiguration} from '@tendriller/core/contract';
 import type {ApplicationBackend, ApplicationOperation} from '@tendriller/core/application';
@@ -144,7 +145,9 @@ await view.query('items'); await view.readEvents(); await view.release();
 application.onRecovery(notice => { const loss:boolean=notice.unknownLoss; void loss; });
 application.onStatus(status => { const peers:number=status.connectedPeers; void peers; });
 await application.inspectRecovery();
-const client = createClient({api:'https://host.test',token:'private'}, {applicationId: cfg.application.id});
+const agent = createAgentClient({service:'https://host.test',token:'ta_'});
+const client = agent.page('aaaaaaaaaaaa', {applicationId: cfg.application.id});
+void agent.pages.create({name:'Notes'}); void agent.hub.events(event => void event.kind);
 const origin: string = requireServiceOrigin('https://host.test');
 const readiness: ServiceReadiness = await describeReadiness(origin, {signal:new AbortController().signal});
 const ready: ServiceReadiness = requireCreationReady(readiness, {service:origin});
@@ -157,7 +160,7 @@ const introductions = createPeerIntroductions({ peers: client.peers, identity: '
 const raw = await introductions.transport.open({ peer: { identity:'56'.repeat(32), route:{kind:'invitation',peerId:'56'.repeat(32)} } }, { signal: new AbortController().signal });
 const kind:'raw'=raw.kind; void kind;
 
-void createPage('https://host.test', {owner:'owner@example.test',application:cfg.application});
+void registerAgent('https://host.test', {owner:'owner@example.test',name:'laptop',publicKey:'A'.repeat(43)});
 declare const message: ParticipantRequest;
 void client.peers.exchange(message);
 void createVoice(page, {consent:async()=>true,transcript:()=>{},status:()=>{}});
@@ -199,10 +202,10 @@ import assert from 'node:assert/strict';
 import { createCollaborationDefinition, createCollaborationClient } from '@tendriller/core/collaboration';
 import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/browser-owner';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
-import { createNativeAttachmentKey, createNativeSessionSupervisor, attachNativeSession } from '@tendriller/core/native-owner';
+import { createNativeAttachmentKey, createNativeSessionSupervisor, createNativeWorkspaceSupervisor, attachNativeSession } from '@tendriller/core/native-owner';
 import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
 import { createTransportDiagnostics, readTransportDiagnostics } from '@tendriller/core/transport-diagnostics';
-import { createSetupIntent, setupRequest, completeSetupIntent, inspectTendrilSetup } from '@tendriller/core/setup';
+import { watchApplicationSetup } from '@tendriller/core/setup';
 import { createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge } from '@tendriller/core/pairing';
 import { openPeerApplication, createApplicationOwner, createLiveView, forwardSessionEvents, createScopedApplicationTools, createViewStore, operationReference } from '@chronolog/peer-session';
 import { openNativeDevice } from '@chronolog/peer-session/native';
@@ -211,8 +214,7 @@ for (const api of [createCollaborationDefinition, createCollaborationClient, ope
   createBrowserIdentity, serveBrowserOwner, createNativeSessionSupervisor, attachNativeSession,
   diagnoseApplicationSession, createLiveView, createBrowserLiveView, forwardSessionEvents, createScopedApplicationTools,
   createViewStore, operationReference, createTransportDiagnostics, readTransportDiagnostics, openPeerApplication, createApplicationOwner,
-  openNativeDevice, connectApplicationOwner, createSetupIntent, setupRequest, completeSetupIntent,
-  inspectTendrilSetup, createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge]) assert.equal(typeof api, 'function');
+  openNativeDevice, connectApplicationOwner, watchApplicationSetup, createNativeWorkspaceSupervisor, createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge]) assert.equal(typeof api, 'function');
 assert.match(createNativeAttachmentKey(), /^td_n_[a-f0-9]{64}$/);
 `);
   run(process.execPath, ['collaboration.mjs']);
@@ -228,14 +230,14 @@ import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/c
 import { createTransportDiagnostics, readTransportDiagnostics, type TransportDiagnosticReport } from '@tendriller/core/transport-diagnostics';
 import { defineApplication, defineQuery, createLiveView, createScopedApplicationTools, forwardSessionEvents, type LiveView, type LiveViewSession, type ApplicationSession } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
-import { createSetupIntent, completeSetupIntent, type SetupIntent, type SetupResult } from '@tendriller/core/setup';
+import { watchApplicationSetup } from '@tendriller/core/setup';
+import { createAgentClient } from '@tendriller/core';
 import { createDevicePairingClient, signDevicePairingChallenge, type DevicePairingChallenge } from '@tendriller/core/pairing';
-declare const setupIntent: SetupIntent;
-declare const setupResult: SetupResult;
 declare const pairingChallenge: DevicePairingChallenge;
-const restored = await completeSetupIntent(setupIntent, setupResult);
-const pairingClient = createDevicePairingClient({url: restored.api + '/peers/pairing'});
-void createSetupIntent; void pairingClient; void signDevicePairingChallenge; void pairingChallenge;
+const agentPage = createAgentClient({service:'https://service.example',token:'ta_'}).page('aaaaaaaaaaaa');
+const pairingClient = createDevicePairingClient({url: agentPage.base + '/peers/pairing', fetch: agentPage.fetch});
+const setupWatch = watchApplicationSetup({page:agentPage,onChange(){}}); void setupWatch.close;
+void pairingClient; void signDevicePairingChallenge; void pairingChallenge;
 declare const session: CollaborationSession;
 declare const owner: NativeSessionOwner;
 declare const browser: BrowserOwnerOptions;
@@ -248,7 +250,7 @@ const browserView = createLiveView(attached.session, {query:'notes'});
 const viewDefinition = defineApplication({id:'views',version:'1',commands:{},queries:{notes:defineQuery({description:'Read notes',input:{type:'null'},read:()=>['typed']})}});
 declare const nativeSession: ApplicationSession<typeof viewDefinition>;
 declare const browserSession: WorkerApplicationSession<typeof viewDefinition>;
-const assistant = connectApplicationAssistant({api:'https://service.example/api/t/aaaaaaaaaaaa',key:'td_a_'+'a'.repeat(64),
+const assistant = connectApplicationAssistant({page:agentPage,key:'td_a_'+'a'.repeat(64),
   session:nativeSession,tools:createScopedApplicationTools(nativeSession,{queries:['notes']})});
 const forwarded:Promise<void>=forwardSessionEvents({session:nativeSession,
   checkpoint:{load:()=>undefined,save:()=>{}},project:event=>({name:'note',payload:{id:event.id}}),

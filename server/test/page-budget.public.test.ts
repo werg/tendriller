@@ -72,7 +72,7 @@ describe('page request budgets follow admission', () => {
       const display = t.renderLink(await t.createLink('display', null, null));
       const shown = await request(display.url, { headers: {} }, '');
       expect(shown.status).toBe(200); await shown.text();
-      const forbidden = await request(display.url, { headers: {} }, '_tendril/agents');
+      const forbidden = await request(display.url, { headers: {} }, '_tendril/guests');
       expect(forbidden.status).toBe(403); await forbidden.text();
       // An admitted caller's endpoint permission error still consumes traffic.
       expect(budget.pages).toEqual([h.id, h.id, h.id]);

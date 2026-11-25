@@ -124,7 +124,7 @@ describe('page request cost and admission', () => {
     const h = await create();
     const display = await inDO(h.id, async t => t.renderLink(await t.createLink('display', null, null)));
     const router = countedRouter();
-    const forbidden = await router.fetch(display.url + '_tendril/agents');
+    const forbidden = await router.fetch(display.url + '_tendril/guests');
     expect(forbidden.status).toBe(403);
     expect(await forbidden.json()).toMatchObject({ error: { code: 'forbidden' } });
     const owner = await inDO(h.id, t => t.db.get('owner_account', ''));
@@ -176,7 +176,7 @@ describe('page request cost and admission', () => {
       expect((await router.fetch(h.page_url, { headers: ownerHeaders(h.page_url), method: 'HEAD' })).status).toBe(200);
       await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=NULL WHERE id=?').bind(account).run();
     } finally { await inDO(h.id, restore); }
-    const forbidden = await router.fetch(guest.url + '_tendril/agents', { headers });
+    const forbidden = await router.fetch(guest.url + '_tendril/guests', { headers });
     expect(forbidden.status).toBe(403);
     expect(await forbidden.json()).toMatchObject({ error: { code: 'forbidden' } });
     await inDO(h.id, t => t.db.run('UPDATE guest_accounts SET approved=0 WHERE account_id=?', account));
@@ -236,7 +236,7 @@ describe('page request cost and admission', () => {
         expect(revoked).toBe(true);
         expect(response.status).toBe(401);
         expect(response.headers.get(PAGE_ACCESS_HEADER)).toBe('signin');
-        expect(t.db.one("SELECT 1 AS present FROM tokens WHERE name='main'")).not.toBeNull();
+        expect(t.db.one("SELECT 1 AS present FROM agent_grants")).not.toBeNull();
       } finally { t.env.ACCOUNTS = original; }
     });
   });

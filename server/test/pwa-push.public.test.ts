@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { api, apiJson, create, req } from './helpers';
+import { api, apiJson, create, grantAgent, joinAccountAgent, req } from './helpers';
 import { b64UrlDecode, b64UrlEncode, encryptWebPushPayload, signVapidJwt, validatePushPayload, validatePushSubscriptionInput } from '../src/push';
 
 async function hmacSha256(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
@@ -164,9 +164,9 @@ describe('PWA shortcuts, maskable icons, share target, and Web Push', () => {
     expect(pushRes.status).toBe(503);
     expect(await pushRes.json()).toMatchObject({ error: { code: 'push_not_configured' } });
 
-    // Delegated token without notifications:send scope gets 403
-    const delegated = await apiJson(handle, 'POST', 'tokens', { name: 'readonly', scopes: ['host:read'] });
-    const denied = await api({ ...handle, token: delegated.token }, 'POST', 'push', { title: 'Hello' });
+    // An agent granted without notifications:send gets 403
+    const readonly = await grantAgent(handle, await joinAccountAgent(handle, 'readonly'), ['host:read']);
+    const denied = await api(readonly, 'POST', 'push', { title: 'Hello' });
     expect(denied.status).toBe(403);
   });
 });

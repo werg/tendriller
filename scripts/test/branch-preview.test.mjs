@@ -57,9 +57,9 @@ test("preview config cannot carry staging resources, routes, or variables into d
   assert.deepEqual(config.r2_buckets.map(b => b.bucket_name), [identity.bucket]);
   assert.equal(config.main, '../dist/engine/worker.mjs');
   assert.deepEqual(config.durable_objects.bindings, [
-    { name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' },
+    { name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' }, { name: 'AGENT_HUB', class_name: 'AgentHub' },
   ]);
-  assert.deepEqual(config.migrations, [{ tag: 'baseline', new_sqlite_classes: ['Tendril', 'Admission'] }]);
+  assert.deepEqual(config.migrations, [{ tag: 'baseline', new_sqlite_classes: ['Tendril', 'Admission'] }, { tag: 'agent-hub', new_sqlite_classes: ['AgentHub'] }]);
   assert.equal(config.exports, undefined, 'canonical tombstones cannot enter a fresh preview Worker');
   assert.ok(template.triggers.crons.length > 0, "staging has scheduled maintenance");
   assert.deepEqual(config.triggers, { crons: [] }, "preview never consumes account-wide cron quota");
@@ -237,6 +237,6 @@ test("live smoke rejects an agent guide with a stale production service URL", as
     const path = new URL(url).pathname;
     if (path === "/health") return Response.json({ ok: true, preview: { commit } });
     if (path === "/api/service") return Response.json({ contract: 3 });
-    return new Response(path === "/agent.md" ? "Tendriller https://tendriller.dev/api/tendrils" : "Tendriller");
+    return new Response(path === "/agent.md" ? "Tendriller https://tendriller.dev/api/agents" : "Tendriller");
   } }), /Agent guide points at another environment/);
 });

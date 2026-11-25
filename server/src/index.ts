@@ -6,6 +6,7 @@ import { reconcileSuspensions } from "./abuse/reconcile";
 import { Tendril } from "./tendril";
 export { Tendril };
 export { Admission } from "./admission";
+export { AgentHub } from "./agent-hub";
 
 export default {
   fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

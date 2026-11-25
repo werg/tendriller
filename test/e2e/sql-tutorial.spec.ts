@@ -1,7 +1,7 @@
 // Real tutorial qualification. No specimen UI/domain, injected application
 // backend, mocked command, preseeded browser key, or substitute transport.
 import { test, expect, type Page } from '@playwright/test';
-import { createPage, deletePage, openClaimed, signInFixture } from './local-helpers';
+import { deletePage, openClaimed, signInFixture } from './local-helpers';
 import { prepareSqlTutorial } from './sql-tutorial-fixture';
 
 async function stock(page: Page, source: number, destination: number) {
@@ -38,20 +38,21 @@ async function pendingRecord(page: Page, operationId: string) {
   }, operationId);
 }
 
-test('actual SQL tutorial: signed publication, explicit enrollment, native replication and uncertain reload/inspect', async ({ page, context }, testInfo) => {
+// The workspace starter's inventory template: its own page:new, init, build, enroll and
+// agent page module, signed by the workspace's one agent key.
+test('actual SQL inventory page: signed publication, explicit enrollment, native replication and uncertain reload/inspect', async ({ page, context }, testInfo) => {
   // This scenario has its own fixed overall budget. Existing asymmetric/cold
   // SQL startup tests and their operation deadlines remain unchanged.
   test.setTimeout(180_000);
   const consumer = process.env.E2E_CHRONOLOG_CONSUMER, engine = process.env.E2E_CHRONOLOG_WASM;
   expect(consumer, 'Required combined public SQL consumer; no events-only fallback').toBeTruthy();
   expect(engine, 'Required matching manifest-bound WASM assets').toBeTruthy();
-  const handle = await createPage();
   let fixture: Awaited<ReturnType<typeof prepareSqlTutorial>> | undefined;
   try {
-    await test.step('build and sign the actual tutorial before claim', async () => {
-      fixture = await prepareSqlTutorial(handle, consumer!, engine!);
+    await test.step('create, initialize, build and sign the inventory page before claim', async () => {
+      fixture = await prepareSqlTutorial(consumer!, engine!);
     });
-    const app = fixture!;
+    const app = fixture!, handle = app.handle;
     await testInfo.attach('sql-tutorial-public-graph', { contentType: 'application/json', body: Buffer.from(JSON.stringify({
       session: app.sessionProvenance, publication: app.publication, hostVersion: app.publicationVersion,
       limits: ['Synthetic local owner, not live OAuth or Internet NAT.', 'Native supervisor/SQL close is checked; raw workerd TCP close is outside this UI scenario.'],
@@ -65,9 +66,9 @@ test('actual SQL tutorial: signed publication, explicit enrollment, native repli
     await page.locator('#create-device').click();
     await expect(page.locator('#device-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 30_000 });
     const browserKey = await page.locator('#device-key').inputValue();
-    await expect(page.locator('#result')).toContainText(`npm run enroll -- ${browserKey}`);
-    await app.enroll(browserKey); // Actual tutorial administrator signs enrollment.
-    let native = await app.start(); // Actual tutorial's resident native owner.
+    await expect(page.locator('#result')).toContainText(`npm run enroll -- <slug> ${browserKey}`);
+    await app.enroll(browserKey); // The template's administrator enrollment, signed by the agent key.
+    let native = await app.start(); // The page's owner from pages/stock/agent.mjs.
     const nativeKey = native.deviceId;
     expect(nativeKey).not.toBe(browserKey);
     const seed = await native.command('seed', null, { operationId: 'sql-ui-seed' });
@@ -133,7 +134,7 @@ test('actual SQL tutorial: signed publication, explicit enrollment, native repli
       expect(inspected.state.status).toBe('applied');
       expect(inspected.state.outcome).toBe('accepted');
     });
-    await test.step('device-only CLI handoff replays SQL history, receipts, events and the uncertain attempt', async () => {
+    await test.step('discarded SQL materialization is rebuilt from the retained history, receipts, events and the uncertain attempt', async () => {
       await stock(page, 8, 2);
       await expect.poll(async () => {
         const { value } = await native.query('inventory', null);
@@ -147,22 +148,20 @@ test('actual SQL tutorial: signed publication, explicit enrollment, native repli
       await publishedGraph(page, app);
       await page.locator('#close').click(); await expect(page.locator('#session-status')).toContainText('Detached.');
       // Capture the original browser-authored signed attempt on the native
-      // participant before it moves. Reconcile that exact author/ID after replay.
+      // participant before its SQL state is discarded. Reconcile that exact author/ID after replay.
       const beforeMove = await native.query('inventory', null);
       const originalAttempt = await native.operations.inspect(uncertainId, { author: browserKey });
       expect(originalAttempt?.state).toMatchObject({ operationId: uncertainId, status: 'applied', outcome: 'accepted' });
       expect(originalAttempt?.attempt).toBeTruthy();
       await page.close(); await app.stop();
-      const handoff = await app.moveCheckpoint(); // Actual dist/tools CLI, ephemeral env secret.
-      expect(handoff).toEqual({ exported: { retiredSource: true, deviceId: nativeKey, hasSqlDatabase: false },
-        restored: { materialization: 'rebuild-on-open', deviceId: nativeKey }, sourceRetired: true });
-      expect(await app.movedMaterializationExists()).toBe(false);
-      // Root handle/descriptor/schema stay in place. Only the restored device
-      // journal is under profiles/moved; there is no copied derived SQL file.
-      native = await app.start('moved');
+      expect(await app.discardMaterialization()).toEqual({ sourceSetAside: true, deviceKept: true });
+      expect(await app.materializationExists()).toBe(false);
+      // Page records, descriptor, schema, the device journal and the shared signer
+      // stay in place; there is no derived SQL file until the owner reopens.
+      native = await app.start();
       expect(native.deviceId).toBe(nativeKey);
       const replayed = await native.query('inventory', null);
-      expect(await app.movedMaterializationExists()).toBe(true);
+      expect(await app.materializationExists()).toBe(true);
       expect(replayed.value).toEqual(beforeMove.value);
       expect(replayed.value.stock).toEqual([{ id: 'destination', units: 2 }, { id: 'source', units: 8 }]);
       expect(replayed.value.transfers).toHaveLength(3);
@@ -175,6 +174,6 @@ test('actual SQL tutorial: signed publication, explicit enrollment, native repli
   } finally {
     // Browser attachments retire before native supervisor/database cleanup.
     if (!page.isClosed()) await page.close();
-    try { await fixture?.cleanup(); } finally { await deletePage(handle); }
+    try { await fixture?.cleanup(); } finally { if (fixture) await deletePage(fixture.handle); }
   }
 });

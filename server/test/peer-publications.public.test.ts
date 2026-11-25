@@ -6,9 +6,8 @@ import {
   type AuthorityBundle, type PeerIdentity, type SignedPublication, type SignedGeneration,
 } from '@chronolog/peer-generation/control';
 import { createTestPage } from './public-fixture';
-import { apiJson, advance, req, signInAsOwner, create, inDO } from './helpers';
+import { agentPrincipal, apiJson, advance, req, signInAsOwner, create, inDO } from './helpers';
 import { peerApi, peerApiJson, participantMessage } from './peer-exchange';
-import { authenticateAgentToken } from '../src/access';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { servedVersion } from '../src/files';
 import { sha256Hex } from '../src/ids';
@@ -143,11 +142,11 @@ it('rechecks account authorization after code upload before selecting a release'
   const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration(a, b));
   const publication = await release(authority, a, 'revoked-during-upload');
   await inDO(h.id, async t => {
-    const principal = await authenticateAgentToken(t, h.token), original = t.env.FILES;
+    const principal = agentPrincipal(t, h), original = t.env.FILES;
     let uploaded = false;
     t.env.FILES = new Proxy(original, { get(target, name) {
       if (name === 'put') return async (...args: Parameters<R2Bucket['put']>) => {
-        const result = await (original.put as any)(...args); uploaded = true; t.db.run('DELETE FROM tokens'); return result;
+        const result = await (original.put as any)(...args); uploaded = true; t.db.run('DELETE FROM agent_grants'); return result;
       };
       const value = Reflect.get(target, name); return typeof value === 'function' ? value.bind(target) : value;
     } });
@@ -219,7 +218,7 @@ it('publishes a complete signed app before claim and adopts its existing keys an
   expect(await peerApiJson(h, 'publication/read')).toEqual(receipt);
   const accountId = 'prepared-owner-' + crypto.randomUUID();
   await env.ACCOUNTS.prepare('INSERT INTO accounts(id,email,created_at) VALUES(?,?,?)').bind(accountId, ownerEmail, Date.now()).run();
-  const cookie = await signInAsOwner(h, accountId, ownerEmail);
+  const { cookie } = await signInAsOwner(h, accountId, ownerEmail);
   const page = await req(h.page_url, { anonymous: true, headers: { Cookie: cookie } });
   expect(page.status).toBe(200);
   expect(await page.text()).toContain('Already deployed before sign-in');

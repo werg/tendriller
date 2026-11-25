@@ -5,9 +5,9 @@ import { createPeerIdentity, signTransitionRequest, verifyAuthorityBundle, gener
   participantGrant, controlParticipantGrant, applicationDescriptionDigest, signApplicationSchema, verifyApplicationSchema, peerDigest,
   type ApplicationDescription, type PeerIdentity, type PeerGrant, type AuthorityBundle, type SignedGeneration, type TransitionRequest } from '@chronolog/peer-generation/control';
 import type { PeerApplicationConfiguration } from '../../contract/peer-controls.mjs';
-import { advance, api, apiJson, create, inDO, req, runAlarm, type Handle } from './helpers';
+import { agentPrincipal, advance, api, apiJson, create, inDO, req, runAlarm, type Handle } from './helpers';
 import { createTestPage } from './public-fixture';
-import { authenticateAgentToken, type PagePrincipal, type Principal } from '../src/access';
+import { type PagePrincipal, type Principal } from '../src/access';
 import { exchangePeerControl } from '../src/peer-generations';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { selectedApplication } from '../src/application';
@@ -216,14 +216,14 @@ it('rechecks local access after asynchronous definition verification before disc
   const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
   await peerApiJson(h, 'control/configure', configuration([a]));
   await inDO(h.id, async t => {
-    const principal = await authenticateAgentToken(t, h.token), original = t.env.ACCOUNTS;
+    const principal = agentPrincipal(t, h), original = t.env.ACCOUNTS;
     let checked = false;
     t.env.ACCOUNTS = { prepare(sql: string) {
       const statement = original.prepare(sql);
       if (!sql.includes('FROM tendrils t')) return statement;
       return { bind(...args: unknown[]) {
         const bound = statement.bind(...args);
-        return { async first() { const result = await bound.first(); checked = true; t.db.run('DELETE FROM tokens'); return result; } };
+        return { async first() { const result = await bound.first(); checked = true; t.db.run('DELETE FROM agent_grants'); return result; } };
       } };
     } } as D1Database;
     try {
@@ -347,7 +347,7 @@ it('bounds admitted control bodies before reading and releases slots after body 
   const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
   await peerApiJson(h, 'control/configure', configuration([a]));
   await inDO(h.id, async t => {
-    const principal = await authenticateAgentToken(t, h.token), controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+    const principal = agentPrincipal(t, h), controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
     const pending: Promise<unknown>[] = [], url = 'https://page.example/_tendril/peers/participant';
     const request = (operation: string) => new Request(url, { method: 'POST', body: JSON.stringify(participantMessage(selectedApplication(t).id, operation)) });
     const guest = async (): Promise<PagePrincipal> => {
@@ -419,7 +419,7 @@ for (const phase of ['initial configuration', 'control update', 'owner control u
       }
     }
     await inDO(h.id, async t => {
-      const principal = await authenticateAgentToken(t, h.token);
+      const principal = agentPrincipal(t, h);
       await revokePreparedTarget(t, account, async () => {
         await expect(exchangePeerControl(t, principal, action, body))
           .rejects.toMatchObject({ status: 403, code: 'forbidden' });
@@ -547,7 +547,7 @@ it('rechecks local token revocation after asynchronous authorization before comm
     policy: 'eligible-members-v1', transitionId: 'revoked-during-commit', expectedGeneration: null,
     requester: a.publicKey, coordinator: a.publicKey, controlRevision: 0, reason: 'create', base: null }, a);
   await inDO(h.id, async t => {
-    const principal = await authenticateAgentToken(t, h.token), original = t.env.ACCOUNTS;
+    const principal = agentPrincipal(t, h), original = t.env.ACCOUNTS;
     let changed = false;
     t.env.ACCOUNTS = { prepare(sql: string) {
       const statement = original.prepare(sql);
@@ -555,7 +555,7 @@ it('rechecks local token revocation after asynchronous authorization before comm
       return { bind(...args: unknown[]) {
         const bound = statement.bind(...args);
         return { async first() {
-          const result = await bound.first(); changed = true; t.db.run('DELETE FROM tokens'); return result;
+          const result = await bound.first(); changed = true; t.db.run('DELETE FROM agent_grants'); return result;
         } };
       } };
     } } as D1Database;

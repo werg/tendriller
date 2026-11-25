@@ -14,14 +14,15 @@ test('classification uses only path and returns a fixed category without retaini
   const routes = { 'setup/watch':'setup-watch', 'peers/discovery/watch':'discovery-watch',
     'peers/invitations':'invitations', 'peers/rendezvous':'rendezvous', 'peers/relay':'relay',
     'assistant/adapter':'assistant-provider', 'publication-ready':'publication-watch', 'peers/participant':'control' };
-  for (const [route, expected] of Object.entries(routes)) for (const prefix of ['/api/t/SECRET_ID/', '/_tendril/', '/s/SECRET_KEY/_tendril/']) {
+  for (const [route, expected] of Object.entries(routes)) for (const prefix of ['/api/agent/pages/SECRET_ID/', '/_tendril/', '/s/SECRET_KEY/_tendril/']) {
     assert.equal(classifyTransport(`wss://SECRET_USER:SECRET_PASS@secret.example${prefix}${route}?token=SECRET_TOKEN#SECRET`), expected);
     assert.equal(classifyTransport(new URL(`https://another.example${prefix}${route}`)), expected);
   }
-  assert.equal(classifyTransport(new Request('https://example.test/api/t/SECRET/setup/watch')), 'setup-watch');
-  for (const value of ['SECRET', 'https://example.test/?path=/api/t/SECRET/setup/watch', 'https://example.test/other/peers/relay', null, {}])
+  assert.equal(classifyTransport(new Request('https://example.test/api/agent/pages/SECRET/setup/watch')), 'setup-watch');
+  for (const value of ['SECRET', 'https://example.test/?path=/api/agent/pages/SECRET/setup/watch', 'https://example.test/other/peers/relay', null, {}])
     assert.equal(classifyTransport(value), 'other');
   assert.equal(classifyTransport('https://example.test/_tendril/__proto__'), 'control');
+  assert.equal(classifyTransport('wss://example.test/api/agent/hub'), 'agent-hub');
 });
 
 test('receipt timeline validates vocabulary, discards labels/secrets and bounds retention without dropping totals', () => {

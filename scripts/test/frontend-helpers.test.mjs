@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import { setImmediate as tick } from 'node:timers/promises';
 import test from 'node:test';
 import { createLiveView } from '@chronolog/peer-session';
-import { createOperationView } from '../../docs/tutorial/helpers/operation-view.mjs';
-import { createReviewedInput } from '../../docs/tutorial/helpers/reviewed-input.mjs';
+import { createOperationView } from '../../docs/tutorial/shared/helpers/operation-view.mjs';
+import { createReviewedInput } from '../../docs/tutorial/shared/helpers/reviewed-input.mjs';
 
 const deferred = () => {
   let resolve, reject;

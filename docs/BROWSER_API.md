@@ -111,16 +111,18 @@ host converts it to an SVG automatically. No image file, upload or image service
 is needed. Compound emoji such as `👩🏽‍💻`, flags and keycaps are supported. The SVG
 uses the device's emoji font, so its appearance can vary by platform.
 
-From a native agent using the private handle and public SDK:
+From a native agent using its agent credential and the public SDK:
 
 ```js
-const host = createClient(handle, { applicationId: handle.application.id });
+const agent = createAgentClient({ service: SERVICE_ORIGIN, token: AGENT_TOKEN });
+const host = agent.page(PAGE_ID, { applicationId: APPLICATION_ID });
 await host.request('', { method: 'PATCH', body: { icon: '🌱' } });
 ```
 
-Import `createClient` from `@tendriller/core`. The equivalent HTTP request is
-`PATCH` to the returned handle's `api` URL, with `Authorization: Bearer TOKEN`,
-`Content-Type: application/json` and the body `{"icon":"🌱"}`. This host metadata
+Import `createAgentClient` from `@tendriller/core`. The equivalent HTTP request is
+`PATCH` to `SERVICE_ORIGIN/api/agent/pages/PAGE_ID`, with
+`Authorization: Bearer ta_…`, `Content-Type: application/json` and the body
+`{"icon":"🌱"}`. This host metadata
 operation requires `host:manage`; keep the agent credential outside browser code.
 For the CLI, see [set a favicon](tools/CLI.md#set-a-favicon).
 
@@ -270,15 +272,15 @@ the browser's permission.
 `setBadge()` is optional local app badging, silently unavailable on unsupported
 browsers; it does not send a notification.
 
-Native senders can use the configured CLI handle:
+Native senders can use the workspace CLI:
 
 ```sh
-npx tendril --tendril my-page notify --title 'Review ready' \
+npx tendril --page my-page notify --title 'Review ready' \
   --body 'Open your page to review the result.' --path '#review' --tag review --badge 1
 ```
 
-The same host operation is `POST /api/t/:id/push` with the private host bearer
-credential and a JSON payload, or `notify_user` in the session CLI's
+The same host operation is `POST /api/agent/pages/<id>/push` with the agent
+credential (scope `notifications:send`) and a JSON payload, or `notify_user` in the session CLI's
 [stdio MCP interface](tools/CLI.md). The account-linked application gateway's
 declared application commands are a separate surface; do not assume it advertises
 this CLI tool. Keep sender credentials and private VAPID keys out of authored code.

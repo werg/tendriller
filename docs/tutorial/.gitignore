@@ -1,3 +1,4 @@
 node_modules/
 .tendriller/
-page/
+pages/*/dist/
+pages/*/engine/

@@ -1,8 +1,6 @@
 // Operational commands use the application's public session composition. This module
 // has no transport, signer, delivery queue, event checkpoint or data store.
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { pack } from './pack.mjs';
 import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
 
@@ -21,28 +19,18 @@ function invocationFailure(error, signal) {
   });
 }
 
-export async function withSession(modulePath, run, { signal, mode, profile, runId } = {}) {
-  if (!modulePath) throw Error('Supply --session with a module exporting attachSession({ signal }) or openSession({ signal }). A page handle does not open a Chronolog session. Run tendril guide --server YOUR_SERVICE_ORIGIN and follow /docs/BUILD_AN_APP.md to configure authority, enroll the device and compose the session.');
-  if (mode !== undefined && !['attach', 'own', 'independent'].includes(mode)) throw Error('Use --mode attach, own, or independent');
-  if (profile !== undefined && (typeof profile !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/u.test(profile))) throw Error('Use --profile with a retained profile name');
-  if (mode === 'independent' && !profile) throw Error('--mode independent requires --profile naming a separately provisioned device');
-  if (runId !== undefined && (typeof runId !== 'string' || !runId.length || runId.length > 128 || /[\u0000-\u001f]/u.test(runId))) throw Error('Use --run with a bounded run identity');
+/** Attach to one page of the running agent program for one invocation. `open`
+ * returns { session, control?, detach() }; detaching never stops the agent. */
+export async function withSession(open, run, { signal } = {}) {
+  if (typeof open !== 'function') throw Error('Supply the page attachment.');
   signal?.throwIfAborted();
-  const bootstrap = await import(pathToFileURL(resolve(modulePath)).href);
-  const selected = mode ?? (typeof bootstrap.attachSession === 'function' ? 'attach' : 'own');
-  const hook = selected === 'attach' ? bootstrap.attachSession : bootstrap.openSession;
-  if (typeof hook !== 'function') throw Error(selected === 'attach'
-    ? 'The session module must export attachSession({ signal, profile, context }). Attachment never falls back to opening a signer.'
-    : 'The session module must export openSession({ signal, mode, profile }) and acquire exclusive ownership of the selected retained profile.');
   let owned;
-  try { owned = await hook({ signal, mode: selected, profile, ...(runId === undefined ? {} : { context: { runId } }) }); }
+  try { owned = await open({ signal }); }
   catch (error) { throw invocationFailure(error, signal); }
-  const dispose = selected === 'attach'
-    ? typeof owned?.detach === 'function' ? () => owned.detach() : typeof owned?.session?.detach === 'function' ? () => owned.session.detach() : undefined
-    : typeof owned?.close === 'function' ? () => owned.close() : typeof owned?.session?.close === 'function' ? () => owned.session.close() : undefined;
-  if (!owned?.session || !dispose) throw Error(selected === 'attach'
-    ? 'attachSession must return { session, detach? } with a local detach method; detaching must not stop the owner.'
-    : 'openSession must return { session, control?, close? }; close releases its exclusive profile ownership.');
+  const dispose = typeof owned?.detach === 'function' ? () => owned.detach()
+    : typeof owned?.session?.detach === 'function' ? () => owned.session.detach()
+      : typeof owned?.close === 'function' ? () => owned.close() : undefined;
+  if (!owned?.session || !dispose) throw Error('A page attachment must return { session, detach } with a local detach method; detaching must not stop the agent program.');
   let closing;
   const close = () => closing ??= Promise.resolve().then(dispose);
   const abort = () => { void close().catch(() => {}); };
@@ -50,7 +38,7 @@ export async function withSession(modulePath, run, { signal, mode, profile, runI
   let result, failure;
   try {
     signal?.throwIfAborted();
-    result = await run({ ...owned, mode: selected });
+    result = await run({ ...owned, mode: 'attach' });
   } catch (error) {
     failure = invocationFailure(error, signal);
   } finally {
@@ -79,7 +67,7 @@ export function jsonInput(value, description = 'JSON input') {
 const identity = options => ({ operationId: required(options.operation, '--operation with a stable operation identity'),
   ...(options['based-on'] === undefined ? {} : { basedOn: jsonInput(options['based-on'], 'captured revision JSON') }) });
 const controlOf = owned => {
-  if (!owned.control) throw Error('This action requires the session-owned control participant returned by openSession. Connect it with session.connectControlParticipant({ exchange }) and return { session, control }; see /docs/BUILD_AN_APP.md. Signed publication also requires an explicit publisher grant, independent of page access.');
+  if (!owned.control) throw Error('This action requires the control participant of the page owner in tendril agent run (returned by the page module as owner.control). Signed publication also requires an explicit publisher grant, independent of page access.');
   return owned.control;
 };
 
@@ -89,13 +77,13 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   signal?.throwIfAborted();
   if (command === 'describe') return session.describe();
   if (command === 'status') return session.status;
-  if (command === 'self') return { mode: owned.mode ?? 'own', applicationId: session.applicationId,
+  if (command === 'self') return { mode: 'attach', page: owned.page ?? null, applicationId: session.applicationId,
     historyId: session.historyId ?? null, deviceId: session.deviceId, endpoint: session.endpoint ?? null };
   if (command === 'endpoints') {
     if (typeof session.endpoints !== 'function') throw Error('Endpoint diagnostics require an attached application owner.');
     return session.endpoints();
   }
-  if (command === 'doctor') return diagnoseApplicationSession(session, { mode: owned.mode ?? 'own', signal });
+  if (command === 'doctor') return diagnoseApplicationSession(session, { mode: 'attach', signal });
   if (command === 'query') return session.query(required(args[0], 'a query name'), jsonInput(args[1] ?? '{}'));
   if (command === 'operation') return session.operations.inspect(required(args[0], 'an operation identity'));
   if (command === 'command' || command === 'reapply') {
@@ -166,14 +154,8 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   if (command === 'recovery') {
     if (args[0] === 'inspect') return session.recovery.inspect();
     const transitionId = required(options.transition, '--transition with a stable transition identity');
-    if (owned.mode === 'attach') {
-      if (args[0] === 'takeover') return session.recovery.takeover({ transitionId, signal });
-      if (args[0] === 'handover') return session.recovery.handover({ transitionId, coordinator: required(args[1], 'the successor device identity'), signal });
-      throw Error('Use recovery inspect, takeover, or handover <coordinator>');
-    }
-    const control = controlOf(owned);
-    if (args[0] === 'takeover') return session.recovery.takeover(control, { transitionId });
-    if (args[0] === 'handover') return session.recovery.handover(control, { transitionId, coordinator: required(args[1], 'the successor device identity') });
+    if (args[0] === 'takeover') return session.recovery.takeover({ transitionId, signal });
+    if (args[0] === 'handover') return session.recovery.handover({ transitionId, coordinator: required(args[1], 'the successor device identity'), signal });
     throw Error('Use recovery inspect, takeover, or handover <coordinator>');
   }
   if (command === 'definition') return controlOf(owned).definition();
@@ -330,6 +312,30 @@ export async function watchSession(owned, emit, { signal, events = false, cursor
       failure.watch = progress();
       throw failure;
     }
+  }
+  return { ...progress(), reason: signal?.reason?.code === 'invocation_timeout' ? 'timeout' : 'interrupted' };
+}
+
+/** One combined change/event stream over several pages, with a cursor per page.
+ * Each page attachment keeps its own backpressure; any page failure stops all. */
+export async function watchPages(pages, emit, { signal, events = false, cursor = {}, topics, limit } = {}) {
+  const stop = new AbortController(), lifetime = AbortSignal.any([stop.signal, ...(signal ? [signal] : [])]);
+  const cursors = Object.fromEntries(pages.map(({ page }) => [page, cursor?.[page] ?? null]));
+  const revisions = {};
+  let output = Promise.resolve();
+  const serialized = value => (output = output.then(() => emit(value)));
+  const progress = () => ({ mode: events ? 'events' : 'changes', cursors: { ...cursors }, revisions: { ...revisions } });
+  try {
+    await Promise.all(pages.map(({ page, open }) => withSession(open, owned => watchSession(owned, async value => {
+      await serialized({ page, ...value });
+      revisions[page] = value.revision ?? null;
+      if (events) cursors[page] = value.cursor;
+    }, { signal: lifetime, events, ...(cursors[page] === null ? {} : { cursor: cursors[page] }), topics, limit }), { signal: lifetime })
+      .catch(error => { if (!stop.signal.aborted) stop.abort(error); throw Object.assign(error, { page }); })));
+  } catch (error) {
+    const failure = error instanceof Error && Object.isExtensible(error) ? error : new Error('Session watch failed', { cause: error });
+    failure.watch = progress();
+    throw failure;
   }
   return { ...progress(), reason: signal?.reason?.code === 'invocation_timeout' ? 'timeout' : 'interrupted' };
 }

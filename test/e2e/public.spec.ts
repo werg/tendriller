@@ -1,12 +1,13 @@
 import { devices, expect, test, webkit, type Page } from '@playwright/test';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createClient } from '../../dist/sdk/client.mjs';
+import { createAgentClient } from '../../dist/sdk/client.mjs';
 import { publishAssetGraph } from './publication-helpers';
 import { staging, stagingSession } from './staging-session';
 
+/** A page plus the token of the one synthetic agent that created it. */
 type Handle = { id: string; page_url: string; api: string; token: string; application: { id: string } };
-const client = (handle: Handle) => createClient(handle, { applicationId: handle.application.id });
+const client = (handle: Handle) => createAgentClient({ service: staging, token: handle.token }).page(handle.id, { applicationId: handle.application.id });
 const handles: Handle[] = [];
 const createAttempts: number[] = [];
 let owner: Awaited<ReturnType<typeof stagingSession>>;
@@ -15,15 +16,20 @@ test.beforeAll(async () => { owner = await stagingSession(); });
 test.beforeEach(async ({ context }) => { await owner.signIn(context); });
 async function cleanPages() {
   const failed = await Promise.all(handles.map(async handle => {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const response = await fetch(handle.api, { method: 'DELETE', signal: AbortSignal.timeout(5_000),
-          headers: { Authorization: `Bearer ${handle.token}` } });
-        if (response.ok || response.status === 404) return null;
-      } catch { /* Retry a lost deletion response with the same handle. */ }
-      if (attempt < 2) await delay(500);
-    }
-    return handle;
+    const remove = async (url: string, gone: number) => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const response = await fetch(url, { method: 'DELETE', signal: AbortSignal.timeout(5_000),
+            headers: { Authorization: `Bearer ${handle.token}` } });
+          // A deleted page (404) or revoked agent (401) is already cleaned up.
+          if (response.ok || response.status === gone) return true;
+        } catch { /* Retry a lost deletion response with the same handle. */ }
+        if (attempt < 2) await delay(500);
+      }
+      return false;
+    };
+    // Each test page has its own agent; revoke it after deleting its only page.
+    return await remove(handle.api, 404) && await remove(`${staging}/api/agent`, 401) ? null : handle;
   }));
   handles.splice(0, handles.length, ...failed.filter((handle): handle is Handle => handle !== null));
 }
@@ -44,14 +50,24 @@ async function createPage(name: string, intendedOwner = owner.email): Promise<Ha
     await delay(Math.max(0, first + 61_000 - Date.now()));
   }
   createAttempts.push(Date.now());
-  const response = await fetch(`${staging}/api/tendrils`, { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, owner: intendedOwner }) });
-  if (response.status !== 201) {
+  const failure = async (step: string, response: Response) => {
     const body = await response.json().catch(() => null);
     const reason = body?.error?.message;
-    throw new Error(`Page creation returned HTTP ${response.status}${typeof reason === 'string' ? ` (${reason})` : ''}`);
+    return new Error(`${step} returned HTTP ${response.status}${typeof reason === 'string' ? ` (${reason})` : ''}`);
+  };
+  const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
+  const registered = await fetch(`${staging}/api/agents`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: intendedOwner, name: 'staging-acceptance', publicKey }) });
+  if (registered.status !== 201) throw await failure('Agent registration', registered);
+  const { token } = await registered.json() as { token: string };
+  const response = await fetch(`${staging}/api/agent/pages`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ name }) });
+  if (response.status !== 201) {
+    const error = await failure('Page creation', response);
+    await fetch(`${staging}/api/agent`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+    throw error;
   }
-  const handle = await response.json() as Handle;
+  const handle = { ...await response.json(), token } as Handle;
   handles.push(handle);
   expect(new URL(handle.api).origin).toBe(staging);
   return handle;

@@ -68,11 +68,6 @@ export class Admission extends DurableObject<Env> {
       return json({ ok: true });
     }
     if (url.pathname !== "/reserve" || req.method !== "POST") return errorResponse(404, "not_found", "Not found");
-    // Account setup owns an independently scheduled expiry journal. Reject a
-    // delayed reserve after that deadline, including one arriving after cleanup.
-    const setupDeadline = req.headers.get('x-setup-expires-at');
-    if (setupDeadline !== null && (!/^\d{1,16}$/.test(setupDeadline) || !Number.isSafeInteger(Number(setupDeadline)) || Number(setupDeadline) <= now))
-      return errorResponse(410, 'setup_expired', 'The account setup admission deadline expired');
     if (sql.exec("SELECT id FROM creations WHERE id = ?", id).toArray().length) return json({ ok: true });
     const hourCap = Number(this.env.PUBLIC_CREATIONS_PER_HOUR ?? 100);
     const liveCap = Number(this.env.PUBLIC_UNCLAIMED_CAP ?? 1000);

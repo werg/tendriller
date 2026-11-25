@@ -1,68 +1,69 @@
-# Deploy a retained application participant
+# Deploy the agent program
 
-Choose a host that can keep the application process and its private device store.
-The host's page and `/mcp` endpoint do not replace that participant or wake a
+Choose a host that can keep the workspace's one long-running program,
+`tendril agent run`, and its private `.tendriller/` folder (agent credential,
+shared signer and every page's device store).
+The host's page and `/mcp` endpoint do not replace that program or wake a
 terminated agent conversation. Prepare and publish the app through the selected
 service's [build guide](BUILD_AN_APP.md), then verify a real command and a read
 from its other participant before reporting it available.
 
 | Host | Actual lifetime | Durable state |
 | --- | --- | --- |
-| Existing cloud computer or foreground Node process | Until the process or computer stops | Project `.tendriller/` on retained private disk |
-| Turn-scoped sandbox | Only the current execution window; no future wake is implied | Retained private project or an explicitly verified device checkpoint |
+| Existing cloud computer or foreground Node process | Until the process or computer stops | Workspace `.tendriller/` on retained private disk |
+| Turn-scoped sandbox | Only the current execution window; no future wake is implied | Retained private workspace or an explicitly verified device checkpoint |
 | Browser participant | While the supported browser owns the participant; closing it ends availability | That browser's IndexedDB/OPFS, subject to browser storage policy |
-| Linux systemd or macOS launchd | While the machine and configured service/user session run | Service-user-owned project `.tendriller/` |
-| Windows logon task | While the registered user is logged on and the task runs | That user's private project `.tendriller/` |
+| Linux systemd or macOS launchd | While the machine and configured service/user session run | Service-user-owned workspace `.tendriller/` |
+| Windows logon task | While the registered user is logged on and the task runs | That user's private workspace `.tendriller/` |
 | Container | While its orchestrator runs it | Volume mounted at `/app/.tendriller` |
 
-A remote MCP client still needs a running authorized application participant.
+A remote MCP client still needs a running authorized agent program.
 The [request adapter](SERVERLESS_HOST.md) in `@tendriller/core/serverless` is an application integration
 primitive; it does not automatically turn an ordinary starter into an on-demand
 Chronolog participant. Do not describe a template as qualifying such a deployment.
 
-## Start and stop the same participant
+## Start and stop the same program
 
-These templates target the current native starter's exported
-`runPeer({ signal }, { onOwned, onClosed })` lifecycle. The immutable first-app kit selected by that service's build guide
-and the [source-only starter download](../downloads/tendriller-first-app.tgz)
-include the `deploy/` directory alongside `session.mjs`, `local.mjs` and helpers.
-Retain that directory when extracting the kit. For an existing authored project,
-copy `deploy/` from the selected qualified kit into its project root; no separate
-repository checkout is required. Those files are packaged directly from the
-maintained root `deploy/` sources, without a second maintained copy. Install the
-project's exact dependencies and finish its normal setup first. Use **Node 24
-or newer** for this launcher and native starter, even though some portable Core
-modules support Node 22. Do not infer native/SQL compatibility from that lower
-package minimum.
+Every template runs the same command, `tendril agent run`, from the workspace
+root: one process, one hub connection and one session per initialized page. The
+immutable first-app kit selected by that service's build guide and the
+[source-only starter download](../downloads/tendriller-first-app.tgz)
+include the `deploy/` directory beside `tendriller.json`. Retain that directory
+when extracting the kit. For an existing workspace, copy `deploy/` from the
+selected qualified kit into its root; no separate repository checkout is
+required. Those files are packaged directly from the maintained root `deploy/`
+sources, without a second maintained copy. Install the workspace's exact
+dependencies, register its agent and initialize at least one page first. Use
+**Node 24 or newer** for the starter, even though some portable Core modules
+support Node 22. Do not infer native/SQL compatibility from that lower package
+minimum.
 
-Run from the project directory:
+Run from the workspace directory:
 
 ```sh
-node deploy/participant.mjs --session ./session.mjs
+npm run agent        # tendril agent run
 ```
 
-The launcher explicitly awaits `runPeer`; importing an arbitrary module alone
-would not start a participant. An application with a different native entry point
-must adapt and test its own launcher. A separate optional assistant process must
-use the application's documented assistant entry point and exclusive owner
-rules; starting a second signer against the same store is not a deployment method.
+A page initialized while the program runs is opened without a restart. A
+separate optional assistant adapter is part of a page owner inside this program;
+starting a second signer against the same page store is not a deployment method.
 
-On POSIX hosts, SIGINT/SIGTERM requests cancellation and awaits the participant's
-owned cleanup. The launcher reports failure if cleanup fails or exceeds ten
-seconds, and bounds output flushing. It does not claim that in-flight operations
-committed: preserve their original IDs, signed attempts and device store, then
-inspect uncertain outcomes after reopening. Machine loss, forced container kill
-and Windows task termination can interrupt cleanup. Resume the same private
-store; never rerun initialization merely because the process stopped.
+SIGINT/SIGTERM requests cancellation and awaits each page owner's cleanup, then
+closes the hub connection and the attach socket. A cleanup or output-flush failure
+exits nonzero. It does not claim that in-flight operations committed: preserve
+their original IDs, signed attempts and device stores, then inspect uncertain
+outcomes after reopening. Machine loss, forced container kill and Windows task
+termination can interrupt cleanup. Resume the same private workspace; never
+rerun initialization merely because the process stopped.
 
 ## Linux and macOS
 
-Edit the absolute Node/project paths in
+Edit the absolute Node/workspace paths in
 `deploy/tendriller.service` or
 `deploy/dev.tendriller.participant.plist`.
 Verify the selected Node binary's version. Create the dedicated service user and
 private `.tendriller` directory before installing the unit; systemd's writable
-path must exist and contain the retained setup/store. Do not put credentials in
+path must exist and contain the retained agent credential, signer and page stores. Do not put credentials in
 unit arguments. The systemd template permits writes only in that state directory;
 applications needing other persistent paths must declare them explicitly.
 
@@ -95,18 +96,18 @@ history and process status alone do not prove application connectivity. Use the
 application's public query and the paired browser for that check. A scheduler
 stop/logoff may forcibly terminate Node; it is not proof of a graceful flush.
 The task can be removed with `Unregister-ScheduledTask` after stopping it, without
-deleting the project or state.
+deleting the workspace or state.
 
 ## Container
 
 The `deploy/Dockerfile` uses Node 24 on Debian, a non-root user,
-and the project's locked runtime dependencies. It is a native events-starter
+and the workspace's locked runtime dependencies. It is a native events-starter
 template. A native SQL engine with install-time build requirements needs its own
 matching prepared runtime/image; `--ignore-scripts` does not compile such an engine
 or establish SQL support. No silent fallback to events is permitted.
 
 Use the matching `deploy/Dockerfile.dockerignore`
-when building from the project root. It excludes the standard private store,
+when building from the workspace root. It excludes the standard private store,
 checkpoint files, environment secrets, Git data and local dependencies. Review
 the authored context for any additional private paths before building. Never
 bake signing keys or initialized device state into an image.
@@ -118,18 +119,18 @@ docker run --name my-tendriller-app --memory=1g --memory-swap=1g --cpus=1 \
   --stop-timeout=15 my-tendriller-app
 ```
 
-The host state directory must already contain the prepared application's private
-records and be accessible only to the container's service user (the image's
+The host state directory must already contain the prepared workspace's private
+records (agent credential, signer and page stores) and be accessible only to the container's service user (the image's
 `node` user, normally UID/GID 1000). Keep it out of the build context. A read-only
-or incorrectly owned mount is a startup error. `local.mjs` locates state beside
-its source module, so mounting `/data/.tendriller` would not retain this starter's
-actual store. No inbound port is required by this template. Resource limits are
+or incorrectly owned mount is a startup error. The workspace keeps its state in
+`.tendriller/` beside `tendriller.json`, so mounting `/data/.tendriller` would not
+retain this starter's actual stores. No inbound port is required by this template. Resource limits are
 an explicit host budget, not a memory or Internet-connectivity qualification.
 
 ## Verify the deployment and retain evidence
 
 Record the exact source/package hashes, actual Node version, executable command,
-process/service identity, private store location and resume command. Prove an
+process/service identity, private workspace location and resume command. Prove an
 applied command observed from the other participant and persistence after process
 restart. Report which process must remain running. Unit syntax tests and a mocked
 launcher prove only template wiring and shutdown behavior; actual Linux, macOS,

@@ -9,8 +9,8 @@ import { build } from 'esbuild';
 import { chromium } from '@playwright/test';
 import * as p from '@chronolog/peer-session';
 import { openNativeDevice, openNativeApplication } from '@chronolog/peer-session/native';
-import { definition } from '../docs/tutorial/observation/domain.mjs';
-import { serveObservations } from '../docs/tutorial/observation/receiver.mjs';
+import { definition } from '../docs/tutorial/shared/observation/domain.mjs';
+import { serveObservations } from '../docs/tutorial/shared/observation/receiver.mjs';
 import { createTestConnection } from './observation-fixture/connection.mjs';
 
 const root = resolve(import.meta.dirname, '..'), output = join(root, '.results/observation-assets');

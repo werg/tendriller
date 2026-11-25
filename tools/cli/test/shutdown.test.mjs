@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const cli = process.env.TENDRILLER_TOOLS_TEST_CLI ?? fileURLToPath(new URL('../bin/tendril.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./support/run-cli.mjs', import.meta.url));
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'tendril-cli-shutdown-')), sockets = new Set();
@@ -31,8 +31,8 @@ async function fixture(t) {
   await writeFile(session, `
 import { writeFile, appendFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
-export async function openSession({ signal, mode }) {
-  if (mode !== 'own') throw Error('Expected explicit ownership');
+export async function attach({ signal, page }) {
+  if (page !== 'fixture') throw Error('Expected the named page');
   const socket = new WebSocket('ws://127.0.0.1:${server.address().port}');
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
   const record = value => appendFile(${JSON.stringify(calls)}, JSON.stringify(value)+'\\n');
@@ -50,14 +50,14 @@ export async function openSession({ signal, mode }) {
   }, control: {
     preparePublication:async ({operationId})=>{await record({prepare:operationId});return {id:'signed-publication'};},
     publish:async ()=>{await record({publish:'signed-publication'});if(process.env.COMMITTED)return {publication:{id:'signed-publication'},version:7};throw lost();}
-  }, async close() {
+  }, async detach() {
     await delay(60); socket.close(1000);
     await writeFile(${JSON.stringify(cleanup)}, JSON.stringify({finished:true,readyState:socket.readyState}));
     if(process.env.CLOSE_FAIL)throw Object.assign(Error('Cleanup failed'),{code:'CLOSE_FAILED'});
   }};
 }`);
   function start(args, variables = {}, pause = []) {
-    const child = spawn(process.execPath, [cli, ...args, '--session', session, '--mode', 'own'], {
+    const child = spawn(process.execPath, [cli, '--fixture', session, ...args, '--page', 'fixture'], {
       cwd: directory, env: { ...process.env, ...variables }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '', stderr = '';

@@ -37,12 +37,13 @@ test('installed fixture propose CLI exposes identity and approval on replay whil
           return {reviewUrl:'https://example.invalid/review', proposed:'${proposed}', approved:process.env.REVIEW_APPROVED === 'true'};
         }`
       : value === 'createAssistantKey' ? `export function createAssistantKey(){throw Error('Must preserve existing key');}`
+      : value === 'createAgentClient' ? `export function createAgentClient(){return {page:id=>({id})};}`
         : `export const ${value} = value => value;`).join('\n'));
   }
   mkdirSync(join(project, '.private'));
   const keyPath = join(project, '.private/assistant-key.json');
   writeFileSync(keyPath, JSON.stringify('retained-key'));
-  writeFileSync(join(project, '.private/handle.json'), JSON.stringify({ api: 'https://example.invalid/api/t/test', token: 'synthetic', application: { id: 'test' }, name: 'Checklist' }));
+  writeFileSync(join(project, '.private/handle.json'), JSON.stringify({ id: 'aaaaaaaaaaaa', service: 'https://example.invalid', api: 'https://example.invalid/api/agent/pages/aaaaaaaaaaaa', token: 'synthetic', application: { id: 'test' }, name: 'Checklist' }));
   const beforeKey = readFileSync(keyPath);
   for (const approved of [false, true]) {
     const result = validateReviewProposal(JSON.parse(execFileSync(process.execPath, ['review-app.mjs', 'propose'], {

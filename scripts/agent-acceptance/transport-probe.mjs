@@ -4,7 +4,7 @@ import { resolve, relative } from 'node:path';
 /** Evaluator-only observation of actual relay sockets. No payloads, URLs,
  * authorization protocols, or application code are copied to the evidence. */
 export function observeRelaySockets(Base, { api, deviceId, remoteDeviceId, record, processIdentity = {}, onFailure = error => { throw error; } }) {
-  const endpoint = new URL(api), path = /^\/api\/t\/([a-z2-7]{12})$/.exec(endpoint.pathname);
+  const endpoint = new URL(api), path = /^\/api\/agent\/pages\/([a-z2-7]{12})$/.exec(endpoint.pathname);
   if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !path ||
       ![deviceId, remoteDeviceId].every(id => /^[a-f0-9]{64}$/.test(id)) || deviceId === remoteDeviceId)
     throw Error('Use the exact owned API and two measured signing identities');

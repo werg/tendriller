@@ -1,12 +1,16 @@
-// Local Stdio MCP Server (W5) for Grok Bot local MCP, Cursor, and local coding agents.
-// Implements JSON-RPC 2.0 over newline-delimited stdin/stdout backed directly by the opened session.
+// Local stdio MCP server for coding agents. JSON-RPC 2.0 over newline-delimited
+// stdin/stdout, serving every workspace page; each tool names its `page`.
 import { once } from 'node:events';
-import { resolveConfig } from './config.mjs';
-import { client as hostApiClient } from './api.mjs';
 
 const PROTOCOL_VERSION = '2025-11-25';
 
-const TOOLS = [
+const PAGE = { type: 'string', minLength: 1, maxLength: 64, description: 'Workspace page slug or page id (see pages_list).' };
+const TOOL_SPECS = [
+  {
+    name: 'pages_list',
+    description: 'List the workspace pages this agent serves, with their slugs, ids and whether the agent program runs them.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
   {
     name: 'app_discover',
     description: 'Inspect the connected Tendriller application descriptor, allowed commands/queries, and current session status.',
@@ -105,6 +109,9 @@ const TOOLS = [
     },
   },
 ];
+// Every page-scoped tool takes `page`; the agent program attaches to that page only.
+export const TOOLS = TOOL_SPECS.map(tool => tool.name === 'pages_list' ? tool : { ...tool, inputSchema: { ...tool.inputSchema,
+  properties: { page: PAGE, ...tool.inputSchema.properties }, required: ['page', ...(tool.inputSchema.required ?? [])] } });
 
 function lifecycleOf(operationId, state) {
   if (!state) return { operationId, lifecycle: 'unknown', state: null };
@@ -129,7 +136,8 @@ function validateArguments(name, args) {
         /[\u0000-\u001f\u007f]/u.test(item.operationId) || !Object.hasOwn(item, 'input'))
       throw invalid('Every command needs a name, input and stable operationId');
   };
-  if (name === 'command_submit') command(args);
+  if (name !== 'pages_list' && (typeof args.page !== 'string' || !args.page.trim() || args.page.length > 64)) throw invalid('Supply the page slug or id');
+  if (name === 'command_submit') command({ ...args, page: undefined });
   if (name === 'command_submit_batch') {
     if (!Array.isArray(args.commands) || args.commands.length > 32) throw invalid('Supply 0..32 commands');
     for (const item of args.commands) {
@@ -160,8 +168,8 @@ async function uncertain(session, operationId, error) {
     nextAction: 'Inspect this operationId. Retry only the original ID and input; an interrupted response does not establish rejection.' };
 }
 
-export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
-  const { session } = owned;
+/** `pages` = { list(), open(page, { signal }) -> { session, notify? } }; attachments are cached by the caller. */
+export async function handleStdioMcpMessage(pages, message, { signal } = {}) {
   const id = message?.id ?? null;
   const ok = result => ({ jsonrpc: '2.0', id, result });
   const err = (code, msg) => ({ jsonrpc: '2.0', id, error: { code, message: msg } });
@@ -192,11 +200,15 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
       const args = message.params.arguments ?? {};
       try { validateArguments(name, args); } catch (error) { return toolErr(error.code, error.message); }
       signal.throwIfAborted();
+      if (name === 'pages_list') return toolOk({ pages: await pages.list() });
+      const owned = await pages.open(args.page, { signal });
+      const { session } = owned;
       if (name === 'app_discover') {
         return toolOk({
+          page: args.page,
           applicationId: session.applicationId,
           deviceId: session.deviceId,
-          mode: owned.mode ?? 'own',
+          mode: 'attach',
           status: session.status,
           descriptor: session.describe(),
         });
@@ -216,11 +228,7 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
           ...(args.tag !== undefined ? { tag: args.tag } : {}),
           ...(args.badge !== undefined ? { badge: args.badge } : {}),
         };
-        if (typeof owned.notify === 'function') {
-          return toolOk(await owned.notify(payload, { signal }));
-        }
-        const api = hostApiClient(resolveConfig({}));
-        return toolOk(await api.post('/push', payload, { signal }));
+        return toolOk(await owned.notify(payload, { signal }));
       }
       if (name === 'operation_inspect') {
         const state = await session.operations.get(args.operationId);
@@ -267,7 +275,7 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
 }
 
 // Read bounded frames rather than letting readline retain an unbounded line.
-export async function serveStdioMcp(owned, { input = process.stdin, output = process.stdout, signal } = {}) {
+export async function serveStdioMcp(pages, { input = process.stdin, output = process.stdout, signal } = {}) {
   const active = new Map(), pending = new Set();
   const disconnected = new AbortController();
   const lifetime = AbortSignal.any([disconnected.signal, ...(signal ? [signal] : [])]);
@@ -289,7 +297,7 @@ export async function serveStdioMcp(owned, { input = process.stdin, output = pro
       return write({ jsonrpc: '2.0', id: message.id, error: { code: -32600, message: 'Duplicate or excessive outstanding request' } });
     }
     if (message?.id !== undefined) active.set(key, cancellation);
-    try { await write(await handleStdioMcpMessage(owned, message,
+    try { await write(await handleStdioMcpMessage(pages, message,
       { signal: AbortSignal.any([lifetime, cancellation.signal]) })); }
     finally { if (active.get(key) === cancellation) active.delete(key); }
   };

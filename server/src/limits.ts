@@ -9,5 +9,7 @@ export const ACTIVITY_RETENTION = 30 * DAY;
 export const AD_HOC_IDLE = DAY;
 // Persist activity in minute buckets, granting at most this much extra retention.
 export const ACCESS_WRITE_INTERVAL = 60_000;
-export const ADOPT_MAX_ATTEMPTS = 10;
-export const ADOPT_CODE_TTL = 10 * 60 * 1000;
+/** One-time dashboard join codes for adding an agent to an account. */
+export const AGENT_JOIN_CODE_TTL = 10 * 60 * 1000;
+/** Granted pages returned per agent listing page. */
+export const AGENT_PAGE_LIST_LIMIT = 100;

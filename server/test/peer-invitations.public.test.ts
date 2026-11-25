@@ -1,9 +1,8 @@
 import { peerApi, peerApiJson, peerOwnerApi, participantMessage, participantPayload } from './peer-exchange';
 import { expect, it } from 'vitest';
 import { createPeerInvitationListener, PEER_INVITATION_LIMITS as LIMITS, PEER_INVITATION_PROTOCOL } from '../../contract/peers.mjs';
-import { api, create, inDO, req } from './helpers';
+import { agentPrincipal, api, create, inDO, req } from './helpers';
 import { createTestPage } from './public-fixture';
-import { authenticateAgentToken } from '../src/access';
 import { sendPeerInvitation } from '../src/peer-invitations';
 
 const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL };
@@ -60,7 +59,7 @@ it('authenticates native invitation listeners through private subprotocol header
   expect(response.status).toBe(101);
   const socket = response.webSocket!, closed = new Promise<number>(resolve => socket.addEventListener('close', event => resolve(event.code)));
   socket.accept();
-  await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
+  await inDO(h.id, t => t.db.run('DELETE FROM agent_grants'));
   const attempted = await peerOwnerApi(h, 'ephemeral/invite', { peerId: 'target', channel: 'after-revocation', requesterPeerId: 'owner' });
   expect(attempted.status).toBe(404); expect(await closed).toBe(4003);
 });
@@ -71,13 +70,13 @@ it('rechecks the sender after asynchronous recipient authorization before delive
   const socket = response.webSocket!, listener = createPeerInvitationListener(socket, 'target'); socket.accept(); await listener.ready;
   try {
     await inDO(h.id, async t => {
-      const principal = await authenticateAgentToken(t, h.token), original = t.env.ACCOUNTS;
+      const principal = agentPrincipal(t, h), original = t.env.ACCOUNTS;
       let changed = false;
       t.env.ACCOUNTS = { prepare(sql: string) {
         const statement = original.prepare(sql);
         if (!sql.includes('FROM accounts WHERE id')) return statement;
         return { bind(...args: unknown[]) { const bound = statement.bind(...args); return { async first() {
-          const result = await bound.first(); changed = true; t.db.run('DELETE FROM tokens'); return result;
+          const result = await bound.first(); changed = true; t.db.run('DELETE FROM agent_grants'); return result;
         } }; } };
       } } as D1Database;
       try {

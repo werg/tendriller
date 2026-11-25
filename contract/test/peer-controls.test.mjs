@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPeersClient, createPeerParticipantClient, createParticipantRequest, createParticipantResponse } from '../peers.mjs';
-import { createClient } from '../client.mjs';
+import { createAgentClient } from '../client.mjs';
 const applicationId = 'ab'.repeat(32);
 const bundle = { descriptor: { payload: { profile: 'peer-generation-v1', definitionDigest: 'digest' }, signature: 'signed' }, controls: [], generations: [] };
 const publication = { descriptor: bundle.descriptor, definition: { id: 'test', version: '1', schema: null, commands: [], queries: [] }, schema: null };
@@ -85,18 +85,17 @@ test('application authority cancellation reaches the public HTTP transport and p
   const entered = Promise.withResolvers(), controller = new AbortController();
   const reason = Error('pairing window closed');
   let requests = 0;
-  const host = createClient({ api: 'https://host.test/api/t/aaaaaaaaaaaa', token: 'synthetic-test-token' }, {
-    applicationId,
+  const host = createAgentClient({ service: 'https://host.test', token: 'ta_' + 'a'.repeat(32) }, {
     fetch: async (url, { signal }) => {
       requests++;
-      assert.equal(url, 'https://host.test/api/t/aaaaaaaaaaaa/peers/participant');
+      assert.equal(url, 'https://host.test/api/agent/pages/aaaaaaaaaaaa/peers/participant');
       assert.equal(signal, controller.signal);
       entered.resolve();
       return new Promise((resolve, reject) => {
         signal.addEventListener('abort', () => reject(signal.reason), { once: true });
       });
     },
-  });
+  }).page('aaaaaaaaaaaa', { applicationId });
   const reading = host.peers.application({ signal: controller.signal });
   const rejected = assert.rejects(reading, error => error === reason);
   await entered.promise;

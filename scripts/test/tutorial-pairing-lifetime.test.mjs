@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
-import { superviseParticipant } from '../../docs/tutorial/helpers/participant-lifecycle.mjs';
-import { createClient } from '../../contract/client.mjs';
+import { superviseParticipant } from '../../docs/tutorial/shared/participant-lifecycle.mjs';
+import { createAgentClient } from '../../contract/client.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const built = await build({ entryPoints: [root + 'docs/tutorial/pairing-native.mjs'], bundle: true,
+const built = await build({ entryPoints: [root + 'docs/tutorial/shared/pairing-native.mjs'], bundle: true,
   write: false, platform: 'node', format: 'esm', logLevel: 'silent', plugins: [{ name: 'retained-fixture', setup(builder) {
     builder.onResolve({ filter: /^\.\/local\.mjs$/ }, () => ({ path: 'private', namespace: 'fixture' }));
     builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents:
@@ -17,8 +17,7 @@ const native = await import('data:text/javascript;base64,' + Buffer.from(built.o
 
 for (const ending of ['close', 'abort']) test(`pairing ${ending} cancels its blocked authority HTTP read and preserves the durable pause`, { timeout: 3_000 }, async () => {
   const applicationId = '11'.repeat(32), pairingId = '22'.repeat(32);
-  const handle = { api: 'https://service.example/api/t/aaaaaaaaaaaa', token: 'synthetic-test-token',
-    application: { id: applicationId }, page_url: 'https://aaaaaaaaaaaa.pages.example/s/synthetic/' };
+  const base = 'https://service.example/api/agent/pages/aaaaaaaaaaaa';
   const expiresAt = Date.now() + 600_000;
   const status = { pairingId, requestId: 'retained-browser-request', state: 'pending', expiresAt,
     reviewUrl: `https://service.example/pairings/aaaaaaaaaaaa/${pairingId}`, nextAction: 'Review the exact proposal',
@@ -27,8 +26,8 @@ for (const ending of ['close', 'abort']) test(`pairing ${ending} cancels its blo
   const pause = { operationId: 'pairing:' + pairingId, generation: '33'.repeat(32), base: { retained: true } };
   const entered = Promise.withResolvers(), response = Promise.withResolvers();
   let requestSignal, aborted = false, requests = 0, pendingRequests = 0, resumed = 0;
-  const host = createClient(handle, { applicationId, fetch: async (url, { signal }) => {
-    assert.equal(url, handle.api + '/peers/participant');
+  const host = createAgentClient({ service: 'https://service.example', token: 'ta_' + 'a'.repeat(32) }, { fetch: async (url, { signal }) => {
+    assert.equal(url, base + '/peers/participant');
     requests++; requestSignal = signal;
     const abort = () => { aborted = true; response.reject(signal.reason); };
     signal?.addEventListener('abort', abort, { once: true });
@@ -39,14 +38,16 @@ for (const ending of ['close', 'abort']) test(`pairing ${ending} cancels its blo
     entered.resolve();
     try { return await response.promise; }
     finally { clearTimeout(watchdog); signal?.removeEventListener('abort', abort); pendingRequests--; }
-  } });
+  } }).page('aaaaaaaaaaaa', { applicationId });
   const session = {
     orderingPause: async () => structuredClone(pause),
     pauseOrdering: async () => { throw Error('The original pause already exists'); },
     resumeOrdering: async () => { resumed++; },
   };
-  const process = native.createReviewedPairingProcessor({ handle, host, session, descriptor: {}, identity: {},
-    client: { inspect: async () => structuredClone(status) },
+  const pairing = { applicationId, serviceOrigin: 'https://service.example', pageOrigin: 'https://aaaaaaaaaaaa.pages.example',
+    descriptor: {}, authority: options => host.peers.application(options), signTransition: () => { throw Error('No signature expected'); },
+    client: { inspect: async () => structuredClone(status) } };
+  const process = native.createReviewedPairingProcessor({ session, pairing,
     store: { load: async () => { throw Error('No authority result was received'); },
       save: async () => { throw Error('No private evidence may be changed'); } } });
   const stop = new AbortController(), channelClosed = Promise.withResolvers();

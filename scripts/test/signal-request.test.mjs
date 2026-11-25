@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { runInNewContext } from 'node:vm';
-import { createSignalRequests, serveSignalRequests, sendPieces, whenConnected } from '../../docs/tutorial/helpers/signal-request.mjs';
-import { memoryAvailableGb, installSoakObserver, installStateSignalObservers } from '../first-app-peer.mjs';
+import { createSignalRequests, serveSignalRequests, sendPieces, whenConnected } from '../../docs/tutorial/shared/helpers/signal-request.mjs';
 
 // Two sessions on one in-memory live-signal bus. `faults` lets a test drop or refuse
 // individual sends, as a slow phone link or a stalled relay would.
@@ -196,34 +194,6 @@ test('terminal send failure rejects the service instead of silently abandoning r
   const f = bus(); f.native.signals.send = async () => { throw Object.assign(Error('broken'), { code: 'BROKEN_ROUTE' }); };
   const checked = assert.rejects(serveSignalRequests(f.native, { handle: () => 'answer' }), { code: 'BROKEN_ROUTE' });
   await f.browser.signals.send('app/request', { id: 'request', q: 'q' }); await checked;
-});
-
-test('memory diagnostics remain optional and distinguish missing from zero', () => {
-  assert.equal(memoryAvailableGb(() => { throw Error('no /proc'); }), null);
-  assert.equal(memoryAvailableGb(() => 'MemTotal: 123 kB\n'), null);
-  assert.equal(memoryAvailableGb(() => 'MemAvailable: 0 kB\n'), 0);
-  assert.equal(memoryAvailableGb(() => 'MemAvailable: 2097152 kB\n'), 2);
-});
-
-test('actual soak observer counts distinct indexes, not duplicate signals', async () => {
-  const f = bus(), window = { tendril: { signals: { ...f.browser.signals, ready: async () => {} } } };
-  await runInNewContext(`(${installSoakObserver.toString()})()`, { window, AbortController });
-  const send = (i, n = 3) => f.native.signals.send('soak', { id: 'reply', i, n });
-  try {
-    for (const i of [0, 0, 1]) await send(i);
-    await turn(); assert.equal(window.soak.complete, 0); assert.equal(window.soak.pieces, 2);
-    await send(2); await send(2); await turn(); assert.equal(window.soak.complete, 1);
-    await send(999, Number.MAX_SAFE_INTEGER); await turn(); assert.equal(window.soak.complete, 1);
-  } finally { window.soak.stop.abort(); }
-});
-
-test('state subscriptions wait for installation and expose subscription errors', async () => {
-  let ready, subscriptions = 0;
-  const gate = new Promise(resolve => { ready = resolve; });
-  const window = { tendril: { signals: { ready: () => gate, subscribe() { subscriptions++; throw Object.assign(Error('unavailable'), { code: 'unavailable' }); } } } };
-  const installed = runInNewContext(`(${installStateSignalObservers.toString()})()`, { window });
-  assert.equal(subscriptions, 0); ready(); await installed; await turn();
-  assert.equal(subscriptions, 2); assert.equal(window.stateModeErrors.length, 2);
 });
 
 test('a piece refused with SIGNAL_SEND_TIMEOUT is retried and does not drop the rest of the reply', async () => {

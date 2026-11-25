@@ -39,7 +39,7 @@ try {
   fixtureSources = Object.fromEntries(installReviewFixtureSources(consumerRoot, project).map(file => [file, createHash('sha256').update(readFileSync(join(project, file))).digest('hex')]));
   execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
     composition.packagePaths.sdk, composition.packagePaths.session], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
-  const { core: { createClient } } = await importReviewPackages(project);
+  const { core: { createAgentClient } } = await importReviewPackages(project);
   // Admission may change during package installation. Observe it again without
   // overriding a pause; the create request still enforces any subsequent race.
   await preflightReviewDeployment(access.origin, composition);
@@ -54,7 +54,7 @@ try {
   const diagnostic = openSync(join(project, 'participant-private.log'), 'w', 0o600);
   try { child = spawn(process.execPath, ['review-app.mjs', 'run'], { cwd: project, stdio: ['ignore', 'ignore', diagnostic] }); }
   finally { closeSync(diagnostic); }
-  const host = createClient(handle, { applicationId: handle.application.id });
+  const host = createAgentClient({ service: access.origin, token: handle.token }).page(handle.id, { applicationId: handle.application.id });
   let participantError;
   child.once('error', () => { participantError = true; });
   // Wait for the consumer's atomic publication checkpoint locally. Polling its
@@ -72,7 +72,7 @@ try {
   assert(publication, 'Verify the committed publication on the actual host');
   assert.equal((await host.info()).owner_account_id, null);
   phase = 'claim and review permissions';
-  diagnostics = createReviewDiagnostics({ origin: access.origin, pageUrl: handle.page_url, reviewUrl: proposal.reviewUrl, apiUrl: handle.api });
+  diagnostics = createReviewDiagnostics({ origin: access.origin, pageUrl: handle.page_url, reviewUrl: proposal.reviewUrl, apiUrl: host.base });
   diagnostics.step('launch-browser');
   const browser = await chromium.launch();
   try {

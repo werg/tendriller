@@ -53,7 +53,7 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
     throw new HttpError(400, 'invalid_exposure');
   const applicationId = selectedApplication(t).id;
   // Claim changes the authorized owner, not this page's exact prepared proposal.
-  const id = await sha256Hex(JSON.stringify([t.tid, applicationId, agent.credentialHash, label, adapterHashes, queries, commands, events]));
+  const id = await sha256Hex(JSON.stringify([t.tid, applicationId, agent.agentId, label, adapterHashes, queries, commands, events]));
   return t.serializeAssistant(async () => {
     const ownerCurrent = () => owner === (t.db.get('owner_account', null) ?? pendingPeerOwner(t));
     if (!await freshPrincipal(t, agent) || !ownerCurrent()) throw new HttpError(403, 'forbidden');

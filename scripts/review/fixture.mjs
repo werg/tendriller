@@ -7,7 +7,7 @@ export const REVIEW_FIXTURE_FILES = [
   ['review-app.mjs', 'plugin/review-app.mjs'],
   ['review-domain.mjs', 'plugin/review-domain.mjs'],
   ['review-assistant.mjs', 'plugin/review-assistant.mjs'],
-  ['support/participant-lifecycle.mjs', 'docs/tutorial/helpers/participant-lifecycle.mjs'],
+  ['support/participant-lifecycle.mjs', 'docs/tutorial/shared/participant-lifecycle.mjs'],
 ];
 export function installReviewFixtureSources(root, project) {
   for (const [file, source] of REVIEW_FIXTURE_FILES) {
@@ -34,13 +34,17 @@ export async function cleanupFixturePage({ project, origin, creationAttempted, h
   try {
     const api = new URL(handle.api);
     if (api.origin !== origin || api.username || api.password || api.search || api.hash ||
-        !/^[a-z2-7]{12}$/.test(handle.id ?? '') || api.pathname !== '/api/t/' + handle.id ||
-        typeof handle.token !== 'string' || !handle.token) {
+        !/^[a-z2-7]{12}$/.test(handle.id ?? '') || api.pathname !== '/api/agent/pages/' + handle.id ||
+        typeof handle.token !== 'string' || !/^ta_[a-z2-7]{32}$/.test(handle.token)) {
       return ['Saved fixture handle does not match the selected deployment; no cleanup request was sent'];
     }
-    const response = await fetcher(api.href, { method: 'DELETE', redirect: 'error',
+    const remove = url => fetcher(url, { method: 'DELETE', redirect: 'error',
       headers: { Authorization: 'Bearer ' + handle.token }, signal: AbortSignal.timeout(15000) });
+    const response = await remove(api.href);
     if (!response.ok) return ['Could not delete the qualification-owned synthetic page'];
+    // The fixture's own agent is revoked with its only page.
+    const revoked = await remove(origin + '/api/agent');
+    if (!revoked.ok) return ['Could not revoke the qualification-owned synthetic agent'];
     return [];
   } catch { return ['Could not delete the qualification-owned synthetic page']; }
 }

@@ -4,26 +4,26 @@
 
 ## Start here, in order
 
-- [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md): complete first application; create → define state → configure authority and first generation → publish → owner sign-in → connect devices → verify.
+- [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md): complete first application in an agent workspace; register the agent → create a page → define state → configure authority and first generation → publish → owner sign-in → connect devices → verify.
 - [Capability map](https://tendriller.dev/docs/CAPABILITIES.md): task keywords mapped to Chronolog, session, UI, camera, voice, inference, and preview APIs.
 - [Sensors and agent-requested observations](https://tendriller.dev/docs/SENSORS.md): filtered capability inspection, cooperative resource lifecycle, runnable location/motion/instrument/media examples, and local consent.
-- [Deliver the running app](https://tendriller.dev/docs/AGENT_DELIVERY.md): provision early, publish before claim, start the participant, and verify live state plus process/resume details.
+- [Deliver the running app](https://tendriller.dev/docs/AGENT_DELIVERY.md): provision early, publish before claim, start the agent program, and verify live state plus process/resume details.
 - [Download the first app](https://tendriller.dev/downloads/tendriller-first-app.tgz): starter source files; follow the build guide for the verified `firstApp.release` package kit.
 - [Reusable application patterns](https://tendriller.dev/docs/APP_PATTERNS.md): `createLiveView`, operation tracking, connection UX, and reviewed input over the real session.
 - [Agent requests and receipts](https://tendriller.dev/docs/AGENT_REQUESTS.md): durable last-seen consumers, full request references, timestamps, receipts and answers.
-- [Restart consumers](https://tendriller.dev/docs/AGENT_RESTART.md): what survives a republish, what to re-arm after owner replacement, and every retired bridge binary's current route.
+- [Restart consumers](https://tendriller.dev/docs/AGENT_RESTART.md): what survives a republish, and what to re-arm after an agent program restart.
 - [Reviewed media and inference](https://tendriller.dev/docs/AI_INPUT.md): camera/file or voice capture, credential-owning native inference, editable review, and explicit command commit.
 - [Events or SQL](https://tendriller.dev/docs/STATE_MODELS.md): events vs. guarded SQL transactions and required engine artifacts.
 - [Preview early](https://tendriller.dev/docs/tools/PREVIEW.md): static authored-file preview vs. explicitly composed real-session preview.
 - [Session bootstrap](https://tendriller.dev/docs/SESSION_BOOTSTRAP.md): persistent device identity, initial generation setup, browser pairing, and safe resume.
 - [Multi-participant composition](https://tendriller.dev/docs/MULTIPARTICIPANT.md): shared profile owners, addressed work, exclusive claims, independent drafts, and recovery.
-- [Agent bindings](https://tendriller.dev/docs/AGENT_BINDINGS.md): scoped host credentials, approved consumer bindings, and targeted revocation.
+- [Multi-page agents](https://tendriller.dev/docs/MULTI_PAGE_AGENTS.md): one agent, one credential and one signing key for many pages; workspace layout, grants, hub and `tendril agent run`.
+- [Agents and grants](https://tendriller.dev/docs/AGENT_BINDINGS.md): agent credentials, dashboard join codes, per-page grants, scopes and revocation.
 - [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries, and reference snippets.
-- [MCP agent start](https://tendriller.dev/docs/MCP_AGENT_GUIDE.md): `tendril_guide`, account-bound setup (`prepare_tendril_setup`), and connecting existing apps.
+- [MCP agent start](https://tendriller.dev/docs/MCP_AGENT_GUIDE.md): `tendril_guide`, account-linked agent registration (`register_agent`), and connecting existing apps.
 - [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md#agent-walkthrough): plugin install, workspace sharing, account linking, per-app consent, and event delivery.
 - [Troubleshooting](https://tendriller.dev/docs/TROUBLESHOOTING.md): failing stages, safe retries, and exact next actions.
-- [rc.16 to rc.17 migration](https://tendriller.dev/docs/MIGRATION_RC16_RC17.md): source releases, host resets, package changes, and before/after code.
-- [Test a release locally](https://tendriller.dev/docs/LOCAL_HOST.md): verified packed host, synthetic owner, and create/init/publish/pair/connect before production.
+- [Test a release locally](https://tendriller.dev/docs/LOCAL_HOST.md): verified packed host, synthetic owner, and register/create/init/publish/pair/connect before production.
 
 Page creation or package installation alone is not completion. Verify a browser command in a native read, a native command in the browser, persistence after reload, and the signed publication receipt. Keep private identity, keys, and exact operation IDs outside published UI.
 
@@ -51,10 +51,10 @@ Page creation or package installation alone is not completion. Verify a browser 
 
 ## Tools, examples, and verification
 
-- [Deployment](https://tendriller.dev/docs/DEPLOYMENT_GUIDE.md): choose a retained participant host, process lifetime and resume route.
+- [Deployment](https://tendriller.dev/docs/DEPLOYMENT_GUIDE.md): choose a host for `tendril agent run`, its process lifetime and resume route.
 - [Request-driven hosting](https://tendriller.dev/docs/SERVERLESS_HOST.md): explicit storage-owner serialization, authorization and bounded execution.
 
-- [CLI](https://tendriller.dev/docs/tools/CLI.md): `tendril guide --server URL`, `tendril service --server URL`, and session inspection.
+- [CLI](https://tendriller.dev/docs/tools/CLI.md): `tendril guide --server URL`, `tendril service --server URL`, the agent workspace (`workspace`, `page`, `agent run`), and session inspection.
 - [Preview](https://tendriller.dev/docs/tools/PREVIEW.md): static and live authored-file preview.
 - [Releases](https://github.com/werg/tendriller/releases): SDK, runtime, tools, and first-app kit archives.
 - [Chronolog](https://github.com/werg/chronolog-db): native/browser session implementation and package builder.

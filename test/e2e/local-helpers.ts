@@ -1,5 +1,6 @@
 import { expect, request, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
-import { createClient } from '../../dist/sdk/client.mjs';
+import { generateKeyPairSync } from 'node:crypto';
+import { createAgentClient } from '../../dist/sdk/client.mjs';
 import { publishAssetGraph } from './publication-helpers';
 
 export const SERVICE = 'https://service.localhost:8790';
@@ -10,21 +11,34 @@ export const LOGOUT_TOKEN = 'tendriller-local-e2e-logout-session';
 let nextIp = 1;
 let localRequest: Promise<APIRequestContext> | undefined;
 export function requester() { return localRequest ??= request.newContext({ ignoreHTTPSErrors: true }); }
-export type Handle = { id: string; page_url: string; api: string; token: string; application: { id: string } };
-const clients = new Map<string, ReturnType<typeof createClient>>();
+/** A page plus the account-level credential of the agent that created it. */
+export type Handle = { id: string; page_url: string; api: string; token: string; agent: { id: string }; application: { id: string } };
+const clients = new Map<string, ReturnType<ReturnType<typeof createAgentClient>['page']>>();
 
+/** A base64url Ed25519 public key, the agent's shared page signing key. */
+export function agentPublicKey() {
+  return generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x as string;
+}
+
+/** A new unclaimed agent for `owner` creates one page; the owner claims both by signing in. */
 export async function createPage(owner = OWNER): Promise<Handle> {
-  const response = await (await requester()).post(`${SERVICE}/api/tendrils`, { headers: {
-    'Content-Type': 'application/json', 'CF-Connecting-IP': `198.18.0.${nextIp++}`,
-  }, data: { owner, name: 'E2E page' } });
+  const ip = `198.18.${Math.floor(nextIp / 250)}.${nextIp++ % 250 + 1}`;
+  const http = await requester();
+  const registered = await http.post(`${SERVICE}/api/agents`, { headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
+    data: { owner, name: 'e2e-agent', publicKey: agentPublicKey() } });
+  expect(registered.status(), await registered.text()).toBe(201);
+  const { token, agent } = await registered.json() as { token: string; agent: { id: string } };
+  const response = await http.post(`${SERVICE}/api/agent/pages`, { headers: {
+    'Content-Type': 'application/json', 'CF-Connecting-IP': ip, Authorization: `Bearer ${token}`,
+  }, data: { name: 'E2E page' } });
   expect(response.status(), await response.text()).toBe(201);
-  return response.json() as Promise<Handle>;
+  return { ...await response.json(), token, agent } as Handle;
 }
 
 export function client(handle: Handle) {
   let value = clients.get(handle.id);
   if (!value) {
-    value = createClient(handle, { applicationId: handle.application.id, fetch: async (url, init) => {
+    value = createAgentClient({ service: SERVICE, token: handle.token }, { fetch: async (url, init) => {
       const response = await (await requester()).fetch(String(url), {
         method: init?.method, headers: init?.headers as Record<string, string>,
         data: init?.body as string | undefined,
@@ -32,7 +46,7 @@ export function client(handle: Handle) {
       return new Response(response.status() === 204 ? null : await response.body(), {
         status: response.status(), headers: response.headers(),
       });
-    } });
+    } }).page(handle.id, { applicationId: handle.application.id });
     clients.set(handle.id, value);
   }
   return value;
@@ -80,5 +94,8 @@ export async function openClaimed(page: Page, handle: Handle) {
 }
 export async function deletePage(handle: Handle) {
   clients.delete(handle.id);
-  await (await requester()).delete(handle.api, { headers: { Authorization: `Bearer ${handle.token}` } });
+  const http = await requester(), headers = { Authorization: `Bearer ${handle.token}` };
+  await http.delete(handle.api, { headers });
+  // Each page has its own agent; revoking it keeps the owner's unclaimed-agent capacity free.
+  await http.delete(`${SERVICE}/api/agent`, { headers });
 }

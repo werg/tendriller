@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as p from '@chronolog/peer-session';
 import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
-import { definition } from '../../docs/tutorial/domain.mjs';
+import { definition } from '../../docs/tutorial/templates/notes/domain.mjs';
 
 // Execute the published example itself: the native API and cleanup contract
 // must stay usable without a private package import or an undocumented method.
