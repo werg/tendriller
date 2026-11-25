@@ -26,7 +26,7 @@ EMAIL`; or with a dashboard join code, `tendril workspace join`. Pages the agent
 creates (`npm run page:new`) are granted to it automatically; the owner grants
 an existing page with the per-agent checkbox on the dashboard or page settings,
 then `tendril page grant`. `tendril agent run` (`npm run agent`) is the one local
-program: one hub connection for all control traffic, one session per page.
+owner program: one hub connection for all control traffic, one session per page.
 For browser pairing, keep that agent program running. Its
 bounded helper durably pauses ordering and stages the exact signed member-only
 proposal; the host approves it automatically for the signed-in owner or an
@@ -51,8 +51,12 @@ Completion means demonstrating a real command, an applied read from the other
 participant, persistence after reload, and the verified signed publication. State
 which process must remain running. An installed adapter or an HTML preview alone
 does not establish a working connected application.
-Report the actual agent program lifetime. Page residency and MCP do not establish
-a supported handoff to, or future wake of, an existing ChatGPT conversation.
+Report the actual agent program and request worker lifetimes separately. Bind
+presence only to the worker and topics it handles; a connected native owner or
+event forwarder cannot advertise an absent assistant. For an existing Codex or
+ChatGPT conversation, qualify the actual host route and a second request after
+the first turn ends using [same-conversation delivery](docs/CONVERSATION_DELIVERY.md).
+Page residency and MCP alone do not establish that handoff.
 
 ## Verify the user experience
 

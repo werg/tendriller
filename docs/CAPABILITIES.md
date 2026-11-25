@@ -159,8 +159,11 @@ The optional [ChatGPT integration](CHATGPT_INTEGRATION.md) adds concrete remote
 tools, explicit supported event subscriptions, a mounted widget, and a separate
 published Workspace Agent route. These require deployment, trusted account
 adapters, an enrolled device and owner consent; they are not enabled by page
-residency. An arbitrary ordinary conversation still has no automatic wake route.
-Use the guide's route/failure matrix and record actual live acceptance evidence.
+residency. For the same existing Codex or ChatGPT conversation, inspect the actual
+host's execution/admission route using [same-conversation delivery](CONVERSATION_DELIVERY.md).
+Retain per-page handled checkpoints and verify a second request after the first
+turn ends. A native owner, event forwarder or one-shot waiter does not establish
+this capability. Use the route/failure matrix and record actual live acceptance evidence.
 The integration's native and injected-transport tests alone do not qualify a
 deployed ChatGPT connection.
 

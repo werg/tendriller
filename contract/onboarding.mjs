@@ -2,7 +2,7 @@
 export const ASSISTANT_GUIDES = Object.freeze({
   start: '/docs/MCP_AGENT_GUIDE.md', build: '/docs/BUILD_AN_APP.md',
   capabilities: '/docs/CAPABILITIES.md', sensors: '/docs/SENSORS.md', connect: '/docs/CLOUDFLARE_ASSISTANT.md',
-  deployment: '/docs/DEPLOYMENT_GUIDE.md', delivery: '/docs/AGENT_DELIVERY.md', troubleshooting: '/docs/TROUBLESHOOTING.md',
+  deployment: '/docs/DEPLOYMENT_GUIDE.md', delivery: '/docs/AGENT_DELIVERY.md', conversation: '/docs/CONVERSATION_DELIVERY.md', troubleshooting: '/docs/TROUBLESHOOTING.md',
 });
 
 // Build substitutes the exact checkout into both packed SDK and host.
@@ -43,6 +43,7 @@ export function onboardingDescriptor(base) {
       browser: url('/docs/BROWSER_API.md'),
       cli: url('/docs/tools/CLI.md'),
       multi_page_agents: url('/docs/MULTI_PAGE_AGENTS.md'),
+      conversation_delivery: url(ASSISTANT_GUIDES.conversation),
     },
     interfaces: {
       service_descriptor: url('/api/service'),
@@ -77,6 +78,7 @@ export function onboardingDescriptor(base) {
       host: 'Tendriller hosts authenticated code, signed controls and bounded introductions. It does not run a resident application or agent process.',
       browser: 'Browser views attach to one profile owner using SharedWorker or a fenced elected Worker. Each view retains its own draft and original operation references. Runtime installation alone does not establish connectivity.',
       agents: 'Approved consumer bindings, native profile ownership and application grants are independent. Addressed claims select execution; observing shared history does not claim work.',
+      conversation: 'Same-conversation wake is not established by page residency, a connected owner, event forwarding or account linking. Qualify the current host admission mechanism and a second request after the first turn ends. Presence belongs only to the worker handling the advertised topics.',
     },
     sources: {
       core: 'https://github.com/werg/tendriller',

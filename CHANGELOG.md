@@ -9,6 +9,21 @@ and kit, as described in [Build an app](docs/BUILD_AN_APP.md).
 
 ## Unreleased
 
+- **Worker-owned availability and durable consumption.** Presence can select the
+  intended consumer and request topic even when workers share a signer. The
+  starter's request worker binds presence to its own lifetime, retains exact
+  receipt/answer inputs and handled checkpoints, and stops on uncertain external
+  effects or recovery. Verification stops the worker while its native owner
+  remains connected. See [agent requests](docs/AGENT_REQUESTS.md). Fixes #121.
+- **Same-conversation delivery.** The canonical `conversation` guide and setup
+  notice distinguish native participation, worker handling and actual host turn
+  admission. A supervised multi-page Codex queue bridge targets one exact thread,
+  retains uncertain admission evidence and never treats queue acceptance as a
+  receipt or answer. The host matrix, restart/recovery and two-request rehearsal
+  document qualification for the selected Codex/ChatGPT host. See
+  [conversation delivery](docs/CONVERSATION_DELIVERY.md). Addresses #122 without
+  claiming live model-turn acceptance from deterministic bridge tests.
+
 - **Multi-page agents.** One agent maintains many pages. It has one account-level
   `ta_` credential and one signing key shared by all of its pages; pages it
   creates are granted to it automatically, the owner grants existing pages with

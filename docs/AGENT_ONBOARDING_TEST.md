@@ -768,3 +768,20 @@ display labels. Qualification should first exercise the unchanged kit and then
 adapt labels/domain operations while preserving its profile/key/storage bindings.
 The evaluator must not supply that implementation guidance to a baseline model;
 it belongs in maintained starter/SDK guidance naturally discovered on the service.
+
+## Additional acceptance for same-conversation request consumers
+
+When the requested app promises replies in the existing Codex or ChatGPT
+conversation after a turn ends, include the
+[same-conversation rehearsal](CONVERSATION_DELIVERY.md#two-request-same-conversation-rehearsal).
+Record the actual host/version and admission mechanism, a first request after
+turn completion, a second request from another page after the answering turn
+ends, and the durable receipt/answer on each original request. A tool-level
+MCP run, installed queue/receiver or accepted webhook does not prove model-turn
+execution.
+
+Stop only the request worker while the native owner remains connected. Its
+assistant presence must become stopped/stale and later requests must remain
+pending. Resume with retained handled cursors and exact operation inputs, then
+verify the pending request without duplicate effects. Mark these host-specific
+checks unqualified when their actual execution boundary was not exercised.

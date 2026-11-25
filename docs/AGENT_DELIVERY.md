@@ -40,7 +40,7 @@ to silently switch the user's application to another stack.
 
 ## Keep the agent program alive
 
-The workspace has exactly one long-running local program:
+The workspace has one long-running page-owner program:
 
 ```sh
 npm run agent        # tendril agent run
@@ -69,6 +69,14 @@ changes to the agent's actual execution loop. `createApplicationTools` and
 `serveApplicationToolLines` from `@chronolog/peer-session` are the public tooling
 primitives. Merely printing changes in a terminal does not make an LLM respond.
 
+The page owner, request worker and conversation receiver have separate lifetimes,
+even when they share a machine or signer. Bind `announceAgentPresence` and any
+optional startup/stop checkpoints to the actual worker and only its implemented
+topics. An owner that syncs data or fetches mail cannot advertise a stopped
+interactive assistant. Match `consumerId` and request topic as well as the peer
+in the browser. Use the [runnable request worker](AGENT_REQUESTS.md#run-a-supervised-consumer-with-a-handled-checkpoint)
+for a supervised loop with durable handling/checkpoint evidence.
+
 Name the process lifetime explicitly:
 
 | Environment | Honest delivery statement |
@@ -91,7 +99,14 @@ browser has explicit reader/writer grants and relies on its native coordinator
 for applied writes. Changing that availability policy requires deliberate grants
 and recovery choices, not a silent identity reset.
 
-## An existing ChatGPT conversation
+## An existing Codex or ChatGPT conversation
+
+Read [same-conversation delivery](CONVERSATION_DELIVERY.md), available through
+`tendril_guide` with `topic: "conversation"`, during setup. It maps actual host
+mechanisms, per-page handled checkpoints, authentication and failure visibility.
+Qualify the selected existing thread with a real request after the current turn
+ends and a second request after the answering turn ends. A one-shot waiter or
+accepted webhook does not establish either result.
 
 A user saying “connect this app to this conversation” has asked for an additional
 host integration. The ordinary Tendriller MCP endpoint administers host/control
@@ -111,8 +126,8 @@ browser/MCP connection. Use the supported
 before production sign-in. Verify the actual production page with its own
 authorized account separately, and state any remaining browser execution limit.
 
-These routes do not provide or qualify a universal ChatGPT conversation wake
-adapter. OAuth ownership alone does not subscribe a conversation. Establish
+These routes do not provide or qualify a universal conversation wake adapter.
+OAuth ownership alone does not subscribe or resume a conversation. Establish
 whether the actual agent host supports the selected route before promising
 replies after its current turn/process ends. The
 [resuming-agent cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/connect-resuming-agent/COOKBOOK.md)
@@ -214,9 +229,11 @@ Follow the [re-arm checklist](AGENT_RESTART.md) after republishing or replacing 
 native participant. State which owner and consumer processes must remain alive,
 and preserve their retained profiles, exact operations and handled cursors.
 An attach client does not survive owner replacement automatically. For apps with
-a request consumer, verify its recent check-in and request/receipt/answer flow
-using its declared capabilities; report missing liveness/receipt support rather
-than inventing commands. Other apps retain the ordinary domain command/read and
+a request consumer, verify its actual worker presence and request/receipt/answer
+flow using declared capabilities; report missing liveness/receipt support rather
+than inventing commands. Stop the worker while the native participant stays
+connected and confirm its assistant indicator becomes stopped or stale; pending
+requests remain visible. An unrelated fetch worker must not refresh that indicator. Other apps retain the ordinary domain command/read and
 reload checks. `applied` and peer connectivity alone do not establish that an
 agent read work. Use the [request lifecycle pattern](AGENT_REQUESTS.md) when a
-new domain needs durable listener presence and addressed answers.
+new domain needs worker-owned ephemeral presence and durable addressed answers.

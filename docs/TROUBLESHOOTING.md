@@ -210,3 +210,18 @@ is missing, report the completed checkpoint, exact missing artifact/authority,
 redacted error, preserved work and next action. Keep a separate persistence
 service out of the repair unless the task requires a capability beyond the
 documented application contract and that architectural choice is explicit.
+
+## A connected page does not get an assistant reply
+
+Read [same-conversation delivery](CONVERSATION_DELIVERY.md) and identify the exact
+blocked stage: worker absent, host admission unavailable, reauthentication,
+subscription/callback failure, admitted turn without receipt, or receipt without
+answer. `get_application_delivery` reports forwarded delivery outcomes; the
+application's declared inbox reports actual acknowledgement and answers.
+
+Keep the last handled cursor, request references and uncertain operation inputs.
+Do not resubmit a request, switch to the latest thread or create a replacement
+application to hide the failure. Stop only the worker while leaving its native
+owner connected to check that the assistant indicator becomes stopped or stale.
+After repairing/rearming the selected route, repeat the two-request rehearsal
+in the same existing conversation, including a request after the first turn ends.

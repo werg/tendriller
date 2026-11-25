@@ -22,6 +22,7 @@ const documents = [
   ['/docs/AGENT_ONBOARDING_TEST.md', 'text/markdown'],
   ['/docs/CAPABILITIES.md', 'text/markdown'],
   ['/docs/AGENT_DELIVERY.md', 'text/markdown'],
+  ['/docs/CONVERSATION_DELIVERY.md', 'text/markdown'],
   ['/docs/APP_PATTERNS.md', 'text/markdown'],
   ['/docs/AI_INPUT.md', 'text/markdown'],
   ['/docs/STATE_MODELS.md', 'text/markdown'],
@@ -53,6 +54,7 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
       bootstrap: origin + '/docs/SESSION_BOOTSTRAP.md',
       troubleshooting: origin + '/docs/TROUBLESHOOTING.md',
       multi_page_agents: origin + '/docs/MULTI_PAGE_AGENTS.md',
+      conversation_delivery: origin + '/docs/CONVERSATION_DELIVERY.md',
     },
     interfaces: {
       service_descriptor: origin + '/api/service',
