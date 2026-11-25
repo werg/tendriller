@@ -222,3 +222,21 @@ void [fatal,alsoFatal,neutral,transient];
   await promisify(execFile)(process.execPath,[fileURLToPath(new URL('../../node_modules/typescript/bin/tsc',import.meta.url)),
     '--strict','--noEmit','--skipLibCheck','--target','ES2022','--module','NodeNext',file],{cwd:directory});
 });
+
+test('regaining the network reconnects at once instead of waiting out the offline backoff', async () => {
+  const network = new EventTarget(), {watch,sockets} = fixture({network, retryMs: 1000, maxRetryMs: 60_000});
+  // Three failed attempts while offline: the next retry would be 4 s away.
+  sockets[0].end(); await new Promise(resolve => setTimeout(resolve, 1050));
+  sockets[1].end(); await new Promise(resolve => setTimeout(resolve, 2050));
+  sockets[2].end(); await flush();
+  assert.equal(sockets.length, 3, 'still backing off');
+  network.dispatchEvent(new Event('online'));
+  assert.equal(sockets.length, 4, 'online reconnects immediately');
+  sockets[3].receive({type:'ready'}); await watch.ready;
+  // Online while connected does not open another socket.
+  network.dispatchEvent(new Event('online'));
+  assert.equal(sockets.length, 4);
+  watch.close(); await watch.closed;
+  network.dispatchEvent(new Event('online'));
+  assert.equal(sockets.length, 4, 'a closed watch ignores later online events');
+});
