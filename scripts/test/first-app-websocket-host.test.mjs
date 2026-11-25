@@ -208,7 +208,7 @@ test('host activity keeps bounded receipt metadata, fixed labels and no private 
     ['/agent/private/peers/participant', 'peer-participant'],
     ['/agent/private/peers/bootstrap', 'peer-bootstrap'],
     ['/s/private/peers/pairing', 'peer-pairing'],
-    ['/api/t/private/self', 'access-probe'],
+    ['/api/agent/pages/private/self', 'access-probe'],
     ['/s/private/application', 'application-control'],
     ['/s/private/_tendril/sw.js', 'service-worker'],
     ['/favicon.ico', 'favicon'],
@@ -245,12 +245,12 @@ test('host activity keeps bounded receipt metadata, fixed labels and no private 
 test('participant discovery and invitation operations remain opaque to path-only receipt classification', () => {
   const activity = createFirstAppRequestActivity();
   for (const method of ['GET', 'PUT', 'POST', 'DELETE']) activity.record({
-    method, url: 'https://private.invalid/api/t/private/peers/participant',
+    method, url: 'https://private.invalid/api/agent/pages/private/peers/participant',
     get body() { assert.fail('must never inspect a participant body to classify its action'); },
     get headers() { assert.fail('must never inspect auth headers'); },
   });
   assert.deepEqual(activity.snapshot().items.map(x => [x.method, x.category]),
     ['GET', 'PUT', 'POST', 'DELETE'].map(method => [method, 'peer-participant']));
-  activity.record(new Request('https://private.invalid/api/t/private/peers/invitation'));
+  activity.record(new Request('https://private.invalid/api/agent/pages/private/peers/invitation'));
   assert.equal(activity.snapshot().items.at(-1).category, 'api-control', 'Do not invent a singular invitation route absent from the current contract');
 });

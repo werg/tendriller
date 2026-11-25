@@ -12,7 +12,7 @@ const author = 'a'.repeat(64), previous = 'b'.repeat(64), operationId = 'nativep
 const proofHash = createHash('sha256').update('attached-publication-proof\n' + 'p'.repeat(900_000)).digest('hex');
 const intent = { author, previous, operationId,
   files: [{ path: 'resident-publication-proof.txt', hash: proofHash, size: 900_027 }] };
-const publishRequest = (payload = intent) => new Request('https://fixture/api/t/page/peers/participant', {
+const publishRequest = (payload = intent) => new Request('https://fixture/api/agent/pages/page/peers/participant', {
   method: 'POST', body: JSON.stringify({ protocol: 'chronolog-participant-v1', facet: 'publication',
     action: 'publish', payload: { publication: { id: 'c'.repeat(64), payload }, assets: {} } }),
 });

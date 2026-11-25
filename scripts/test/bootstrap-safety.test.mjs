@@ -16,8 +16,8 @@ test('standalone bundle exactly matches shared-source build',()=>{
 test('copied standalone bootstrap rejects unsafe archives and never infers initialized app from retained files',t=>{
   const root=mkdtempSync(join(tmpdir(),'bootstrap-safety-'));t.after(()=>rmSync(root,{recursive:true,force:true}));
   const standalone=join(root,'bootstrap.mjs');copyFileSync(script,standalone);
-  const project=join(root,'project');mkdirSync(join(project,'.tendriller'),{recursive:true});
-  writeFileSync(join(project,'.tendriller/handle.json'),'{}');
+  const project=join(root,'project');mkdirSync(join(project,'.tendriller/agent'),{recursive:true});
+  writeFileSync(join(project,'.tendriller/agent/credential.json'),'{}');
   const archive=join(root,'kit.tgz');
   const run=()=>{
     const result=spawnSync(process.execPath,[standalone,'--archive-file',archive,'--project',project,'--profile','sql-full'],{encoding:'utf8',timeout:5000});

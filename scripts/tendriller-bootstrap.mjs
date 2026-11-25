@@ -408,7 +408,7 @@ async function run() {
     const kit = await downloader.download(firstApp.file, firstApp.sha256, firstApp.size, true);
     extracted = extractVerifiedTarGz(kit, projectDir, { expectedSha256: firstApp.sha256, preserveExisting: preservePrivate });
   }
-  const hasRetainedIdentity = existsSync(join2(projectDir, ".tendriller", "device.sqlite")) || existsSync(join2(projectDir, ".tendriller", "handle.json"));
+  const hasRetainedIdentity = existsSync(join2(projectDir, ".tendriller", "agent", "identity.sqlite")) || existsSync(join2(projectDir, ".tendriller", "agent", "credential.json"));
   process.stdout.write(JSON.stringify({
     ok: true,
     readiness: readinessState,

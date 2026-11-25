@@ -106,8 +106,8 @@ test('native observer bounds fetch, emits numeric counters only and does not ext
     globalThis.fetch=async (_input,init)=>{assert(init.signal);return new Response('PRIVATE_APP_DATA');};
     globalThis.WebSocket=class extends EventTarget{send(){} close(){this.dispatchEvent(new Event('close'));}};
     await import(${JSON.stringify(observer)});
-    await fetch('https://invalid.example/api/t/PRIVATE_HANDLE/peers/participant?token=PRIVATE_TOKEN',{headers:{Authorization:'Bearer PRIVATE_TOKEN'}});
-    const ws=new WebSocket('wss://invalid.example/api/t/PRIVATE_HANDLE/peers/discovery/watch?peerId=PRIVATE_ID', ['PRIVATE_TOKEN']);
+    await fetch('https://invalid.example/api/agent/pages/PRIVATE_HANDLE/peers/participant?token=PRIVATE_TOKEN',{headers:{Authorization:'Bearer PRIVATE_TOKEN'}});
+    const ws=new WebSocket('wss://invalid.example/api/agent/pages/PRIVATE_HANDLE/peers/discovery/watch?peerId=PRIVATE_ID', ['PRIVATE_TOKEN']);
     ws.dispatchEvent(new Event('open'));ws.send('PRIVATE_APP_DATA');
     ws.dispatchEvent(Object.assign(new Event('message'),{data:'PRIVATE_APP_DATA'}));ws.close();
     globalThis[Symbol.for('tendriller.idle-soak.record')]('wakeups',1,'PRIVATE_LABEL');

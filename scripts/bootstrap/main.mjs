@@ -132,7 +132,8 @@ async function run() {
     extracted = extractVerifiedTarGz(kit, projectDir, {expectedSha256: firstApp.sha256, preserveExisting: preservePrivate});
   }
 
-  const hasRetainedIdentity = existsSync(join(projectDir, '.tendriller', 'device.sqlite')) || existsSync(join(projectDir, '.tendriller', 'handle.json'));
+  // The workspace agent's shared signer and credential are the retained identity.
+  const hasRetainedIdentity = existsSync(join(projectDir, '.tendriller', 'agent', 'identity.sqlite')) || existsSync(join(projectDir, '.tendriller', 'agent', 'credential.json'));
   // Retained files are not proof of a verified app, reachable participant or applied command.
 
   process.stdout.write(JSON.stringify({
