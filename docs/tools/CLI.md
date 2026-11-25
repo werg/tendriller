@@ -17,6 +17,7 @@ These commands need no workspace and make no authenticated request:
 tendril guide --server https://YOUR_HOST          # workflow and documentation links; no network
 tendril readiness --server https://YOUR_HOST      # current creation availability
 tendril service --server https://YOUR_HOST        # public contract and limits
+tendril broadcasts --server https://YOUR_HOST     # verified Ed25519-signed upgrade & security broadcasts
 tendril probe --server https://YOUR_HOST --check-network
 ```
 

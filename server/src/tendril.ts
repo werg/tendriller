@@ -28,7 +28,8 @@ import { parseShareExpiry } from './sharing';
 import { AGENT_PUBLIC_KEY_RE, AGENT_WRAP_KEY_RE, handleAgentGrants, mirroredAgents, notifyAgentHub, notifyGrantedAgents, validAgentBio, validAgentHandle, writeLocalGrant } from './agent-grants';
 import { AGENT_ID_RE, newLinkId, newPageKey, sha256Hex, safeEqual } from './ids';
 import type { Features } from './inject';
-import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, DAY, MB, HOUR, RESIDENT_LIMIT } from './limits';
+import { ACCESS_WRITE_INTERVAL, ACCOUNT_STORAGE_LIMIT, AD_HOC_IDLE, DAY, HOUR, PAGE_LIMIT, RESIDENT_LIMIT } from './limits';
+import { accountLimits } from './service-state';
 import { handlePage, pageAccessDenied } from './page';
 import { agentPageApi, pageUrl, publicBase } from './urls';
 import { AGENT_HEADER, AGENT_SCOPES, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
@@ -518,9 +519,13 @@ export class Tendril extends DurableObject<Env> {
           WHERE id = ? AND (owner_account IS NULL OR owner_account = ?) RETURNING id`)
           .bind(accountId, this.now(), lifetime, this.tid, accountId).first();
       } catch (err) {
-        if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: RESIDENT_LIMIT });
-        if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
-        if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
+        const msg = String(err);
+        if (msg.includes("account_residents_full") || msg.includes("account_tendrils_full") || msg.includes("account_full")) {
+          const limits = await accountLimits(this.env);
+          if (msg.includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: limits.residents ?? RESIDENT_LIMIT });
+          if (msg.includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: limits.pages ?? PAGE_LIMIT });
+          throw new HttpError(413, "quota", "Account storage limit reached", { limit: limits.storage ?? ACCOUNT_STORAGE_LIMIT });
+        }
         throw err;
       }
       if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
@@ -620,7 +625,10 @@ export class Tendril extends DurableObject<Env> {
       if (err instanceof HttpError) throw err;
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("service_full")) throw new HttpError(507, "service_full", "Service storage is full");
-      if (message.includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
+      if (message.includes("account_full")) {
+        const limits = await accountLimits(this.env);
+        throw new HttpError(413, "quota", "Account storage limit reached", { limit: limits.storage ?? ACCOUNT_STORAGE_LIMIT });
+      }
       throw err;
     }
   }

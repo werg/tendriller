@@ -17,12 +17,14 @@ import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimary
 import { listAccountAgents } from "./agents";
 import { handlePageMcp } from "./mcp-participant";
 import { publicBase } from "./urls";
-import { brandHead, brandMark, brandStyle } from "./brand";
-import { serviceStyle } from "./accounts/ui";
+import { brandMark } from "./brand";
+import { renderShell } from "./accounts/ui";
 import { requireWritesOpen } from "./service-state";
 import { admitPageTraffic } from "./traffic-budget";
 import { DEFAULT_THEME_COLOR, isEmojiIcon, pageIcons, resolveShortcuts } from "./pwa";
 import { deletePushSubscription, savePushSubscription, validatePushSubscriptionInput, vapidConfig } from "./push";
+import { listActiveBroadcasts } from "./broadcasts";
+import { etagMatches } from "./immutable-cache";
 
 /** Internal admission result; the Worker consumes it before returning a page response. */
 export const PAGE_ACCESS_HEADER = "x-tendril-page-access";
@@ -87,6 +89,38 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return handlePageMcp(t, req, sub, principal);
   }
   if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t.env));
+  if (sub === 'broadcasts' && (m === 'GET' || m === 'HEAD')) {
+    const audiences = principal.role === 'owner'
+      ? (['page_owners', 'page_all'] as const)
+      : (['page_all'] as const);
+    const sinceRaw = url.searchParams.get('since');
+    const since = sinceRaw !== null && /^\d+$/.test(sinceRaw) ? Number(sinceRaw) : 0;
+    const v = servedVersion(t);
+    const ver = v > 0
+      ? t.db.one<{ runtime_id: string; runtime_version: string; created_at: number }>('SELECT runtime_id, runtime_version, created_at FROM versions WHERE version = ?', v)
+      : null;
+    const agentCount = pageAgents(t).agents.length;
+    const feed = await listActiveBroadcasts(t.env, { audiences, since });
+    const pageTag = `"${feed.etag.slice(1, -1)}-${principal.role}-${v}-${agentCount}"`;
+    if (etagMatches(req.headers.get('If-None-Match'), pageTag)) {
+      return new Response(null, { status: 304, headers: { ETag: pageTag, 'Cache-Control': 'private, max-age=60' } });
+    }
+    const response = json({
+      issuer: feed.issuer,
+      keys: feed.keys,
+      latest_seq: feed.latest_seq,
+      page: {
+        role: principal.role,
+        version: v,
+        runtime_id: ver?.runtime_id ?? null,
+        runtime_version: ver?.runtime_version ?? null,
+        published_at: ver?.created_at ?? null,
+        agent_count: agentCount,
+      },
+      broadcasts: feed.broadcasts,
+    }, 200, { ETag: pageTag, 'Cache-Control': 'private, max-age=60' });
+    return m === 'HEAD' ? new Response(null, response) : response;
+  }
   if (sub === "trust-version" && m === "POST") {
     if (!allows(principal, "page.owner") || !session?.account_id) throw new HttpError(403, "forbidden");
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
@@ -99,7 +133,15 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   }
 
   if (sub === "report" && m === "GET") {
-    return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>Report page · Tendriller</title>${brandHead(base + "_tendril/brand/")}${serviceStyle}${brandStyle}</head><body><main><header>${brandMark(base + "_tendril/brand/", base)}<a class="nav-link" href="${base}">Return to page</a></header><section class="card"><span class="eyebrow">Safety</span><h1>Report this page</h1><p class="lead">Tell us what is wrong with this page.</p><form method="post"><div class="field"><label class="field-label" for="report-reason">Details</label><textarea id="report-reason" name="reason" required maxlength="2000" placeholder="Describe the issue…"></textarea></div><div class="actions"><button type="submit">Send report</button></div></form></section></main></body></html>`,
+    const html = renderShell({
+      title: "Report page",
+      brand: brandMark(base + "_tendril/brand/", base),
+      brandBase: base + "_tendril/brand/",
+      nav: `<a class="nav-link" href="${base}">Return to page</a>`,
+      footer: "",
+      body: `<section class="card"><span class="eyebrow">Safety</span><h1>Report this page</h1><p class="lead">Tell us what is wrong with this page.</p><form method="post"><div class="field"><label class="field-label" for="report-reason">Details</label><textarea id="report-reason" name="reason" required maxlength="2000" placeholder="Describe the issue…"></textarea></div><div class="actions"><button type="submit">Send report</button></div></form></section>`,
+    });
+    return new Response(html,
       { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Referrer-Policy": "same-origin",
         "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }

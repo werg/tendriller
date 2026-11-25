@@ -20,7 +20,7 @@ export function validatePeerRoute(route) {
   if (route?.kind !== 'https' || !exact(route, ['kind', 'url']) || typeof route.url !== 'string' || route.url.length > 2048)
     invalid('Expected an HTTPS introduction, invitation listener or rendezvous channel');
   let url; try { url = new URL(route.url); } catch { invalid('Invalid peer route'); }
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  const local = url.hostname === 'localhost' || url.hostname.endsWith('.localhost') || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
   if (url.username || url.password || url.search || url.hash || url.href.length > 2048 ||
       !(url.protocol === 'https:' || url.protocol === 'http:' && local))
     invalid('Peer introductions require secure URLs without credentials');

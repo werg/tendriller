@@ -1,6 +1,8 @@
 import runtimeRelease from "./runtime-release.json";
 import type { RuntimeArtifactFeatures } from "../../contract/index.mjs";
-import { brandHead, brandLink, brandLogo, brandStyle } from "./brand";
+import { brandHead, brandStyle } from "./brand";
+import { baseThemeCss } from "./accounts/ui";
+export { landingPage } from "./landing";
 import { DEFAULT_THEME_COLOR, iconMediaType, isEmojiIcon, type PageBranding } from "./pwa";
 
 // Runtime injection into served HTML (PROTOCOL section 5) and built-in pages.
@@ -26,6 +28,10 @@ export type InjectConfig = {
   peerBootstrap?: import("../../contract/peers.mjs").PeerBootstrap;
   /** Asks the owner's page to draw missing home-screen PNG icons (owner only). */
   iconRaster?: { key: string };
+  /** Trusted Ed25519 public keys for verifying system-wide signed broadcasts. */
+  broadcastKeys?: import("../../contract/broadcasts.mjs").BroadcastPublicJwk[];
+  /** Nonzero when at least one active system broadcast exists on the service. */
+  broadcastLatestSeq?: number;
   /** Server-rendered install branding, not part of the runtime configuration. */
   branding?: PageBranding;
 } & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
@@ -51,6 +57,8 @@ export function runtimeTags(cfg: InjectConfig, installTags = `<link rel="manifes
   const runtimeBase = publication?.runtime.base ?? `/_tendril/runtime/${runtimeRelease.id}/`;
   const conf = { id: cfg.id, base: cfg.base, version: cfg.version, documentPath: cfg.documentPath,
     application: cfg.application, peerBootstrap: cfg.peerBootstrap, ...(cfg.iconRaster ? { iconRaster: cfg.iconRaster } : {}),
+    ...(cfg.broadcastKeys?.length ? { broadcastKeys: cfg.broadcastKeys } : {}),
+    ...(cfg.broadcastLatestSeq ? { broadcastLatestSeq: cfg.broadcastLatestSeq } : {}),
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +
@@ -126,92 +134,24 @@ export function holdingPage(name: string): string {
 <title>${n} is getting ready · Tendriller</title>
 ${brandHead()}${brandStyle}
 <style>
-  :root{color-scheme:light dark}*{box-sizing:border-box}html,body{min-height:100%;margin:0}body{display:grid;place-items:center;font:15px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;background:#f6f8f7;color:#111a16;padding:1.25rem}main{max-width:32rem;width:100%;padding:clamp(1.5rem,4vw,2.4rem);border:1px solid #dde5e0;border-radius:16px;background:#fff;box-shadow:0 1px 2px rgba(15,26,21,.05),0 12px 32px rgba(15,26,21,.06)}.eyebrow{display:inline-block;font-size:.74rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#0e573b;margin-bottom:.35rem}h1{font-size:clamp(1.55rem,4vw,2.1rem);line-height:1.15;letter-spacing:-.028em;margin:.2rem 0 .75rem}.pulse{display:inline-block;width:.6rem;height:.6rem;background:#1f9d68;border-radius:50%;margin-right:.55rem;vertical-align:middle;animation:pulse 1.5s infinite}p{color:#53665d;margin:0 0 1rem}a{color:#0e573b;font-weight:600}@keyframes pulse{50%{opacity:.35;transform:scale(.7)}}@media(prefers-reduced-motion:reduce){.pulse{animation:none}}@media(prefers-color-scheme:dark){body{background:#0d1210;color:#eef3f0}main{background:#141b18;border-color:#26332d;box-shadow:0 12px 32px rgba(0,0,0,.35)}.eyebrow,a{color:#6ee0a8}p{color:#91a49a}}
+${baseThemeCss}
+body{display:grid;place-items:center;padding:1.25rem}
+main{max-width:34rem;width:100%;margin:0;padding:clamp(1.6rem,4vw,2.5rem);border:1px solid var(--line-strong);border-radius:var(--radius);background:var(--surface);box-shadow:var(--shadow)}
+h1{font-size:clamp(1.6rem,4vw,2.15rem);line-height:1.12;letter-spacing:-.032em;margin:.2rem 0 .75rem}
+.pulse{display:inline-block;width:.58rem;height:.58rem;background:var(--accent-2);border-radius:50%;margin-right:.55rem;vertical-align:middle;box-shadow:0 0 0 4px color-mix(in srgb,var(--accent-2) 22%,transparent);animation:pulse 1.8s ease-in-out infinite}
+p{color:var(--muted);margin:0 0 1rem}
+p:last-child{margin-bottom:0}
+a{font-weight:660}
+@keyframes pulse{50%{opacity:.4;transform:scale(.78)}}
+@media(prefers-reduced-motion:reduce){.pulse{animation:none}}
 </style>
 </head>
 <body>
 <main>
-  <img class="holding-brand" src="/_tendril/brand/icon-180.png" alt="Tendriller" width="88" height="88">
+  <img class="holding-brand" src="/_tendril/brand/icon-180.png" alt="Tendriller" width="72" height="72">
   <span class="eyebrow">Waiting for publication</span><h1>${n} is getting ready.</h1>
   <p><span class="pulse" aria-hidden="true"></span><span id="publication-status" role="status">Your agent is preparing the first version. It will open here automatically.</span></p>
   <p><a href="">Check now</a></p>
-</main>
-
-</body>
-</html>`;
-}
-
-export function landingPage(publicBase: string): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tendriller</title>
-<meta name="description" content="Build an app with your agent: shared state, a live browser interface and device sensors. Start with the complete Tendriller application guide.">
-<meta property="og:type" content="website"><meta property="og:title" content="Tendriller"><meta property="og:description" content="Build a shared, session-connected app with your agent."><meta property="og:image" content="${escapeHtml(publicBase)}/_tendril/brand/logo.png">
-<link rel="alternate" type="text/markdown" href="${escapeHtml(publicBase)}/agent.md" title="Agent instructions">
-<link rel="alternate" type="text/plain" href="${escapeHtml(publicBase)}/llms.txt" title="Documentation index">
-<link rel="service-desc" type="application/json" href="${escapeHtml(publicBase)}/.well-known/tendriller.json">
-${brandHead()}${brandStyle}
-<style>
-:root{color-scheme:light dark;--paper:#f8f5ec;--ink:#20332c;--muted:#52685c;--line:#d8e0d5;--green:#195d46;--orange:#e87442;--cream:#fff9ea}
-*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:1rem/1.55 system-ui,sans-serif}
-a{color:var(--green)}a:focus-visible{outline:3px solid var(--orange);outline-offset:4px}main{max-width:76rem;margin:auto;padding:clamp(1rem,3vw,2.5rem)}
-header,footer{display:flex;align-items:center;justify-content:space-between;gap:1rem}header{padding:.35rem 0 1.5rem}header a{text-decoration:none;font-weight:700}header .brand img{width:44px;height:44px}header nav{display:flex;align-items:center;gap:clamp(.8rem,2vw,1.5rem);font-size:.94rem}
-h1,h2,h3,p{margin-top:0}h1{font-size:clamp(2.15rem,4vw,3.65rem);line-height:1.08;letter-spacing:-.045em;margin-bottom:1.15rem}h2{font-size:clamp(1.5rem,2.5vw,2rem);line-height:1.2;letter-spacing:-.025em;margin-bottom:.5rem}h3{font-size:1.04rem;line-height:1.25;margin-bottom:.4rem}p{margin-bottom:1rem}
-.hero{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,.92fr);align-items:center;overflow:hidden;background:radial-gradient(circle at 25% 45%,#3d311e 0,#29291e 54%,#182a24 100%);color:#fff8ea;border-radius:1.5rem;box-shadow:0 20px 50px #20332c20}
-.hero-art{min-width:0}.hero .brand-art{display:block;width:100%;max-width:none;margin:0}.hero .brand-art img{display:block;width:100%;height:auto}.hero-copy{padding:2.5rem clamp(1.5rem,3vw,3rem) 2.5rem 0}.hero-copy p{font-size:clamp(1.04rem,1.5vw,1.2rem);line-height:1.55;max-width:30rem;color:#f1ebd9}.hero-copy p:last-of-type{color:#d7dfcc}.actions{display:flex;flex-wrap:wrap;gap:.65rem;margin-top:1.6rem}.button{display:inline-flex;align-items:center;justify-content:center;min-height:2.9rem;padding:.7rem 1.1rem;border-radius:.65rem;background:#ef8150;color:#241e19;text-decoration:none;font-weight:750}.button.secondary{background:#f7eed8;color:#263b2e}.button:hover{filter:brightness(1.06)}
-.how,.access,.examples{padding:clamp(2.7rem,5vw,4.5rem) 0}.how{border-bottom:1px solid var(--line)}.how>p,.examples>p{color:var(--muted);max-width:45rem}
-.namesake{padding:1.4rem 0 2rem;color:var(--muted)}.namesake p{max-width:48rem;margin:0}.namesake strong{color:var(--ink)}
-.flow{position:relative;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));list-style:none;margin:2.2rem 0 0;padding:0}.flow::before{content:"";position:absolute;top:1.45rem;left:10%;right:10%;height:2px;background:#a9c4ac}.flow li{position:relative;z-index:1;text-align:center;padding:0 .55rem}.flow-number{display:grid;place-items:center;width:3rem;height:3rem;margin:0 auto 1rem;border-radius:50%;background:var(--green);border:3px solid var(--paper);color:#fff;font-weight:800;box-shadow:0 0 0 1px #8bae98}.flow li:last-child .flow-number{background:var(--orange);color:#241e19;box-shadow:0 0 0 1px #d47046}.flow p{max-width:12rem;margin:0 auto;line-height:1.4;font-weight:600}
-.access{display:grid;grid-template-columns:minmax(0,.4fr) minmax(0,.6fr);gap:2rem;align-items:start;border-bottom:1px solid var(--line)}.access p{max-width:41rem;margin:0;font-size:1.08rem}.access strong{color:var(--green)}
-.examples>p{margin-bottom:1.7rem}.ideas{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.9rem;list-style:none;padding:0;margin:0}.ideas li{padding:1.2rem 1.3rem 1.35rem;background:#fffdf7;border:1px solid #e3e7dc;border-radius:.9rem;box-shadow:0 3px 12px #20332c08}.ideas li p{color:var(--muted);margin:0;line-height:1.45}
-footer{padding:2rem 0 1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.9rem;flex-wrap:wrap}
-@media(max-width:850px){.hero{grid-template-columns:1fr}.hero-art{max-width:42rem;margin:0 auto}.hero-copy{padding:0 clamp(1.4rem,5vw,2.3rem) 2.4rem}.hero-copy h1{max-width:18ch}.access{grid-template-columns:1fr;gap:.5rem}.ideas{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:650px){header{padding-bottom:1rem}.hero{border-radius:1.1rem}.hero-art{width:100%}.hero-copy h1{font-size:clamp(2rem,8vw,2.65rem)}.how,.access,.examples{padding:2.6rem .1rem}.flow{display:block;margin:1.7rem 0 0}.flow::before{top:1.25rem;bottom:1.5rem;left:1.5rem;right:auto;width:2px;height:auto}.flow li{display:flex;align-items:flex-start;text-align:left;gap:1rem;padding:0 0 1.3rem}.flow li:last-child{padding-bottom:0}.flow-number{flex:none;margin:0}.flow p{max-width:none;margin:.42rem 0 0}.ideas{grid-template-columns:1fr}.ideas li{padding:1rem 1.1rem}.access p{font-size:1rem}}
-@media(prefers-color-scheme:dark){:root{--paper:#17251d;--ink:#f0f5e9;--muted:#b8cbbb;--line:#385343;--green:#9ed4a9}.hero{box-shadow:none}.flow::before{background:#729d7b}.flow-number{background:#315b40;border-color:var(--paper);color:#fff}.access strong{color:#a9deb2}.ideas li{background:#203528;border-color:#395542}}
-</style>
-</head>
-<body>
-<main>
-<header>${brandLink}<nav aria-label="Main navigation"><a href="${escapeHtml(publicBase)}/docs/BUILD_AN_APP.md">Build an app</a><a href="/dashboard">Dashboard</a><a href="https://github.com/werg/tendriller">GitHub</a></nav></header>
-<section class="hero" aria-labelledby="hero-title">
-<div class="hero-art">${brandLogo}</div>
-<div class="hero-copy"><h1 id="hero-title">A page your agent launches for you</h1>
-<p>Give your agent a task and this website. It can build a shared app with a browser interface, durable state and live connections to your devices.</p>
-<p>Open the app on your devices. Its interface can exchange updates with a running agent and use the camera, location, motion, microphone, and other sensor input you allow.</p>
-<p><strong>Agents: start with <a href="${escapeHtml(publicBase)}/docs/BUILD_AN_APP.md" style="color:inherit">Build an app</a>.</strong> Follow the complete example from page creation to shared state, browser enrollment and signed publication. Find reusable views, camera, voice and reviewed AI input in the <a href="${escapeHtml(publicBase)}/docs/CAPABILITIES.md" style="color:inherit">capability map</a>. <a href="${escapeHtml(publicBase)}/agent.md" style="color:inherit">Agent instructions</a> and the <a href="${escapeHtml(publicBase)}/llms.txt" style="color:inherit">ordered documentation index</a> explain the path.</p>
-<div class="actions"><a class="button" href="${escapeHtml(publicBase)}/docs/BUILD_AN_APP.md">Build your first app</a><a class="button secondary" href="https://cookbooks.tendriller.dev/">Explore cookbooks</a></div></div>
-</section>
-<section class="how" aria-labelledby="how-title"><h2 id="how-title">From a task to a working app</h2><p>Give your agent the task, this domain, and the email address you will use to sign in. The guide supplies the setup and application files.</p>
-<ol class="flow">
-<li><span class="flow-number" aria-hidden="true">1</span><p>Create the app for your task.</p></li>
-<li><span class="flow-number" aria-hidden="true">2</span><p>Define its shared state and commands.</p></li>
-<li><span class="flow-number" aria-hidden="true">3</span><p>Build the browser interface.</p></li>
-<li><span class="flow-number" aria-hidden="true">4</span><p>Sign in and connect your devices.</p></li>
-<li><span class="flow-number" aria-hidden="true">5</span><p>Publish and verify it together.</p></li>
-</ol><p style="margin-top:1.7rem">Shared data belongs to the app’s Chronolog session. Tendriller hosts the page and its access controls. Live agent responses need the agent’s connected process to remain running. <a href="${escapeHtml(publicBase)}/docs/TROUBLESHOOTING.md">Setup help</a> names the next step when something is missing.</p></section>
-<section class="access" aria-labelledby="access-title"><h2 id="access-title">Access and permissions</h2><p>Your owner page is gated by <strong>GitHub or Google OAuth sign-in</strong>. Your agent uses a separate credential that you can revoke. Camera, location, and other browser permissions are requested on the device where you open the page.</p></section>
-<section class="examples" aria-labelledby="examples-title"><h2 id="examples-title">Things you can build</h2><p>Choose the interface and behavior that fit your task. <a href="https://cookbooks.tendriller.dev/">Explore the decisions and alternatives in the cookbooks.</a></p><ul class="ideas">
-<li><h3>Field notebook</h3><p>Collect photos, location, voice notes, and observations on a walk.</p></li>
-<li><h3>Remote camera helper</h3><p>Point your phone at an object and discuss it with an agent running elsewhere.</p></li>
-<li><h3>Sports and activity companion</h3><p>Build your own experience for sailing, cycling, geocaching, or any physical activity using location and motion.</p></li>
-<li><h3>Voice-guided task</h3><p>Get spoken prompts and replies while cooking or working with your hands.</p></li>
-<li><h3>Kitchen assistant</h3><p>Keep a shopping list, look inside the fridge with your camera, show recipes, and follow along as you cook.</p></li>
-<li><h3>Inventory scanner</h3><p>Scan barcodes or photograph items while the agent updates a list.</p></li>
-<li><h3>Collaborative sketchpad</h3><p>Draw and make choices as the agent changes the controls and layout.</p></li>
-<li><h3>Workshop instrument</h3><p>Connect a Bluetooth, Serial, USB, or MIDI device and interpret its readings.</p></li>
-<li><h3>Accessibility controls</h3><p>Use a gamepad or connected switch to trigger page actions.</p></li>
-<li><h3>Screen troubleshooting</h3><p>Share a selected screen capture and get help on the page.</p></li>
-<li><h3>Hands-on repair helper</h3><p>Point your camera at a car repair or other physical task while the agent shows diagrams, images, and next steps.</p></li>
-<li><h3>Location-aware checklist</h3><p>Show the next task or question as you move between places.</p></li>
-<li><h3>Multi-device workspace</h3><p>Use a phone for sensors and a computer for a larger live display.</p></li>
-<li><h3>Interactive office dashboard</h3><p>Bring tasks, notes, status, and controls into a dashboard the agent can update as your work changes.</p></li>
-<li><h3>Home experiment log</h3><p>Track light, motion, or connected sensors and summarize changes.</p></li>
-</ul></section>
-<aside class="namesake" aria-label="About the name"><p><strong>Why Tendriller?</strong> An agent can extend its tendrils into other devices’ interfaces and sensors. Tendriller makes the opening for each new connection, like a drill.</p></aside>
-<footer><span>Tendriller</span><span><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/status">Status</a></span></footer>
 </main>
 </body>
 </html>`;

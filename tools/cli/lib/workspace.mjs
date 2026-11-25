@@ -12,7 +12,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createWorkspacePage } from './page-creation.mjs';
 import { randomBytes } from 'node:crypto';
-import { agentCredential, createAgentClient, describeReadiness, describeService, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin } from '@tendriller/core';
+import { agentCredential, createAgentClient, describeReadiness, describeService, evaluateBroadcastMatch, fetchBroadcastKeys, fetchBroadcasts, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin, validateClientVersions, verifyBroadcastSignature } from '@tendriller/core';
 
 export const WORKSPACE_FILE = 'tendriller.json';
 export const SLUG = /^[a-z0-9][a-z0-9-]{0,47}$/u;
@@ -60,6 +60,7 @@ export function workspacePaths(root) {
     root, config: join(root, WORKSPACE_FILE), secret, sources: join(root, 'pages'),
     agent: join(secret, 'agent'), identity: join(secret, 'agent', 'identity.sqlite'), wrapKey: join(secret, 'agent', 'wrap-key.json'),
     credential: join(secret, 'agent', 'credential.json'), attach: join(secret, 'agent', 'attach.json'),
+    broadcasts: join(secret, 'agent', 'broadcasts.json'),
     owner: join(secret, 'agent', 'owner'), pages: join(secret, 'pages'),
     retired: join(secret, 'checkpoint-retired.json'),
   });
@@ -354,7 +355,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       return savePrivateJson(paths.attach, { id: 'local-terminal', token: createNativeAttachmentKey(), policy: ATTACH_POLICY });
     },
     /** Everything a page module needs; it never sees the agent token or private key bytes. */
-    async pageContext(ref, { signal, report = () => {}, roster } = {}) {
+    async pageContext(ref, { signal, report = () => {}, roster, broadcasts } = {}) {
       const page = await workspace.page(ref), agent = await getClient(), shared = await workspace.signer(), wrap = await workspace.wrapKey();
       const host = agent.page(page.id, { applicationId: page.application.id });
       const privatePath = name => {
@@ -368,12 +369,18 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
         snapshot: () => ({ primary_agent_id: null, is_primary: false, agents: [] }),
         onChange: () => () => {},
       });
+      const defaultBroadcasts = Object.freeze({
+        snapshot: () => ({ latestSeq: 0, versions: null, active: [], all: [] }),
+        acknowledge: async () => false,
+        onBroadcast: () => () => {},
+      });
       return Object.freeze({
         workspace: root, service: config.service, agent: config.agent,
         page: Object.freeze({ id: page.id, slug: page.slug, name: page.name, applicationId: page.application.id,
           pageUrl: page.page_url, directory: page.directory, source: page.source }),
         host, signal, report,
         roster: roster ?? defaultRoster,
+        broadcasts: broadcasts ?? defaultBroadcasts,
         // Opaque signing authority stays in the Node-only context; never serialize it
         // into configuration, authored files, diagnostics or a checkpoint record.
         signer: Object.freeze({ publicKey: shared.publicKey, privateKey: shared.privateKey }),
@@ -391,20 +398,156 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
   return workspace;
 }
 
+/** Detect installed connector & Chronolog dependency versions in a workspace. */
+export async function detectWorkspaceVersions(root, kit) {
+  const readPkgVersion = async rel => {
+    const pkg = await readJson(join(root, rel), true);
+    return typeof pkg?.version === 'string' ? pkg.version.trim() : null;
+  };
+  const [core, tools, chronolog, authority, rootPkg] = await Promise.all([
+    readPkgVersion('node_modules/@tendriller/core/package.json'),
+    readPkgVersion('node_modules/@tendriller/tools/package.json'),
+    readPkgVersion('node_modules/@chronolog/peer-session/package.json'),
+    readPkgVersion('node_modules/@chronolog/authority/package.json'),
+    readJson(join(root, 'package.json'), true),
+  ]);
+  const packages = {};
+  if (core) packages['@tendriller/core'] = core;
+  if (tools) packages['@tendriller/tools'] = tools;
+  if (chronolog) packages['@chronolog/peer-session'] = chronolog;
+  if (authority) packages['@chronolog/authority'] = authority;
+  const declared = { ...(rootPkg?.dependencies ?? {}), ...(rootPkg?.devDependencies ?? {}) };
+  for (const name of ['@tendriller/core', '@tendriller/tools', '@chronolog/peer-session', '@chronolog/authority']) {
+    if (!packages[name] && typeof declared[name] === 'string' && /^[0-9]/.test(declared[name].replace(/^[\^~]/, ''))) {
+      packages[name] = declared[name].replace(/^[\^~]/, '');
+    }
+  }
+  const raw = {
+    ...(packages['@tendriller/core'] ? { core: packages['@tendriller/core'] } : {}),
+    ...(packages['@tendriller/tools'] ? { tools: packages['@tendriller/tools'] } : {}),
+    ...(packages['@chronolog/peer-session'] ? { chronolog: packages['@chronolog/peer-session'] } : {}),
+    ...(packages['@chronolog/authority'] ? { authority: packages['@chronolog/authority'] } : {}),
+    node: process.versions.node,
+    ...(typeof kit === 'string' && /^[A-Za-z0-9.+_-]{1,64}$/.test(kit) ? { kit } : {}),
+    ...(Object.keys(packages).length ? { packages } : {}),
+  };
+  try { return validateClientVersions(raw); } catch { return { node: process.versions.node }; }
+}
+
+export async function readBroadcastState(workspace) {
+  if (!workspace?.paths?.broadcasts) {
+    return { schemaVersion: 1, lastSeq: 0, acknowledged: [], trustedKeys: [], items: [] };
+  }
+  const saved = await readJson(workspace.paths.broadcasts, true);
+  if (!saved || typeof saved !== 'object') {
+    return { schemaVersion: 1, lastSeq: 0, acknowledged: [], trustedKeys: [], items: [] };
+  }
+  return {
+    schemaVersion: 1,
+    lastSeq: Number.isSafeInteger(saved.lastSeq) && saved.lastSeq >= 0 ? saved.lastSeq : 0,
+    acknowledged: Array.isArray(saved.acknowledged) ? saved.acknowledged.filter(v => typeof v === 'string') : [],
+    trustedKeys: Array.isArray(saved.trustedKeys) ? saved.trustedKeys : [],
+    items: Array.isArray(saved.items) ? saved.items : [],
+  };
+}
+
+export async function saveBroadcastState(workspace, state) {
+  if (!workspace?.paths?.broadcasts) return;
+  await mkdir(dirname(workspace.paths.broadcasts), { recursive: true, mode: 0o700 });
+  await replaceJson(workspace.paths.broadcasts, {
+    schemaVersion: 1,
+    lastSeq: state.lastSeq ?? 0,
+    acknowledged: [...new Set(state.acknowledged ?? [])].slice(-200),
+    trustedKeys: state.trustedKeys ?? [],
+    items: (state.items ?? []).slice(-100),
+  }, 0o600);
+}
+
+/** Verify and locally evaluate signed broadcasts for a workspace, persisting the cursor. */
+export async function syncWorkspaceBroadcasts(workspace, { signal, all = false } = {}) {
+  const client = await workspace.client();
+  const [versions, state] = await Promise.all([
+    detectWorkspaceVersions(workspace.root, workspace.config.kit),
+    readBroadcastState(workspace),
+  ]);
+  let trustedKeys = state.trustedKeys;
+  try {
+    const fetchedKeys = await client.broadcastKeys({ signal });
+    if (fetchedKeys.keys.length) trustedKeys = fetchedKeys.keys;
+  } catch { /* fall back to cached trusted keys */ }
+  const feed = await client.broadcasts({
+    audience: 'agents',
+    since: all ? 0 : 0,
+    verifyKeys: trustedKeys,
+    signal,
+  });
+  const ackSet = new Set(state.acknowledged);
+  const evaluated = feed.verified.map(signed => {
+    const match = evaluateBroadcastMatch(signed.payload, { audience: 'agents', versions });
+    return {
+      ...signed.payload,
+      signature: signed.signature,
+      verified: true,
+      matched: match.matched,
+      matchReasons: match.reasons,
+      acknowledged: ackSet.has(signed.payload.id),
+    };
+  });
+  const nextSeq = Math.max(state.lastSeq, feed.latest_seq);
+  await saveBroadcastState(workspace, {
+    lastSeq: nextSeq,
+    acknowledged: state.acknowledged,
+    trustedKeys,
+    items: evaluated,
+  });
+  return {
+    issuer: feed.issuer,
+    latest_seq: nextSeq,
+    versions,
+    active: evaluated.filter(b => b.matched && !b.acknowledged),
+    all: evaluated,
+    rejected: feed.rejected.map(r => ({ reason: r.reason })),
+  };
+}
+
+export async function acknowledgeWorkspaceBroadcast(workspace, id) {
+  if (typeof id !== 'string' || !/^bc_[a-z2-7]{26}$/.test(id)) {
+    throw failure('invalid_broadcast_id', 'Supply a valid broadcast id (bc_...).', 64);
+  }
+  const state = await readBroadcastState(workspace);
+  const acked = new Set(state.acknowledged);
+  acked.add(id);
+  const items = state.items.map(item => item.id === id ? { ...item, acknowledged: true } : item);
+  await saveBroadcastState(workspace, { ...state, acknowledged: [...acked], items });
+  return { acknowledged: true, id };
+}
+
 /** Bounded, non-secret status for terminals and the status command. */
 export async function describeWorkspace(workspace, { signal, remote = true } = {}) {
-  const pages = await workspace.pages();
-  let agent = null, granted = null, error;
+  const [pages, versions] = await Promise.all([
+    workspace.pages(),
+    detectWorkspaceVersions(workspace.root, workspace.config.kit),
+  ]);
+  let agent = null, granted = null, broadcasts = null, error;
   if (remote) {
     try {
       const client = await workspace.client();
       agent = await client.self({ signal });
       granted = [];
       for await (const page of client.pages.all({ signal })) granted.push({ id: page.id, name: page.name, scopes: page.scopes ?? [] });
+      broadcasts = await syncWorkspaceBroadcasts(workspace, { signal }).then(res => ({
+        latestSeq: res.latest_seq,
+        activeCount: res.active.length,
+        active: res.active.map(({ id, seq, kind, severity, title, summary, docs_url, action, matchReasons }) => ({
+          id, seq, kind, severity, title, summary, docs_url, action, matchReasons,
+        })),
+      })).catch(() => null);
     } catch (cause) { error = { code: cause.code ?? 'agent_unavailable', status: cause.status ?? null, message: cause.message }; }
   }
   const running = await stat(join(workspace.paths.owner, 'endpoint.json')).then(() => true, () => false);
   return { workspace: workspace.root, service: workspace.config.service, agent: { ...workspace.config.agent, ...(agent ? { remote: agent } : {}) },
+    versions,
+    ...(broadcasts ? { broadcasts } : {}),
     pages: pages.map(page => ({ ...page, granted: granted ? granted.some(item => item.id === page.id) : null })),
     unregistered: granted ? granted.filter(item => !pages.some(page => page.id === item.id)) : null,
     agentProgram: { endpointRecorded: running }, ...(error ? { error } : {}) };

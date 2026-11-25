@@ -46,7 +46,7 @@ export async function prepareDevHostRelease({ release, directory, artifacts, man
     const content = files.get('dist/engine/' + path);
     if (!content || digest(content) !== sha256) throw Error(`The packed engine failed verification: ${path}`);
   }
-  for (const path of ['dist/engine/worker.mjs', 'dist/engine/testing-ratelimits.json', 'dist/engine/migrations/0001_accounts.sql', 'dist/engine/migrations/0002_agents.sql', 'server/public/llms.txt'])
+  for (const path of ['dist/engine/worker.mjs', 'dist/engine/testing-ratelimits.json', 'dist/engine/migrations/0001_accounts.sql', 'dist/engine/migrations/0002_agents.sql', 'dist/engine/migrations/0003_broadcasts.sql', 'dist/engine/migrations/0004_account_limits.sql', 'server/public/llms.txt'])
     if (!files.has(path)) throw Error(`The sealed deployment is missing ${path}.`);
   // Only our dedicated release child is replaced. D1, R2, device and browser state live elsewhere.
   const destination = join(resolve(directory), 'release');

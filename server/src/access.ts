@@ -3,6 +3,7 @@ import type { Role } from "../../contract/index.mjs";
 import type { Link, Tendril } from "./tendril";
 import { HttpError } from "./http";
 import { AGENT_ID_RE, sha256Hex } from "./ids";
+import { readPageSessionCookie } from "./accounts/local-auth";
 
 export const AGENT_SCOPES = ['host:read', 'host:manage', 'participants:connect', 'control:write', 'publication:write', 'notifications:send'] as const;
 export type AgentScope = typeof AGENT_SCOPES[number];
@@ -101,7 +102,7 @@ function sessionByHash(t: Tendril, hash: string): PageSession | null {
 }
 
 async function browserSession(t: Tendril, req: Request): Promise<PageSession | null> {
-  const token = /(?:^|;\s*)__Host-tendril=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
+  const token = readPageSessionCookie(req, t.env);
   return token ? sessionByHash(t, await sha256Hex(token)) : null;
 }
 

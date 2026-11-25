@@ -61,6 +61,7 @@ assert.equal(onboardingDescriptor('https://example.test').firstApp.release.manif
 import { createSignalBinding } from '@tendriller/core/signals';
 import { authorityRecord, authorityRecordBytes, createAuthorityClient } from '@tendriller/core/authority';
 import { createPeerIntroductions } from '@tendriller/core/peers';
+import { generateBroadcastKeyPair, signBroadcastPayload, verifyBroadcastSignature, evaluateBroadcastMatch } from '@tendriller/core/broadcasts';
 import { attachPage } from '@tendriller/tools/workspace';
 import { startRuntime } from '@tendriller/runtime/kernel';
 import { createVoice, mountVoiceControls, SPEECH_DOWNLOAD_BYTES } from '@tendriller/runtime/voice';
@@ -79,6 +80,10 @@ for (const api of [pack, withSession, startServer]) assert.equal(typeof api, 'fu
 const accounts = new DatabaseSync(':memory:');
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/agents-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/broadcasts-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/limits-schema')), 'utf8'));
+assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='system_broadcasts'").get().name, 'system_broadcasts');
+for (const api of [generateBroadcastKeyPair, signBroadcastPayload, verifyBroadcastSignature, evaluateBroadcastMatch]) assert.equal(typeof api, 'function');
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_grants'").get().name,
   'integration_oauth_grants');
 assert.equal(accounts.prepare("SELECT COUNT(*) AS count FROM mcp_connections").get().count, 0);

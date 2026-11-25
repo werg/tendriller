@@ -6,6 +6,7 @@
  * or WebSocket adapter proxy.
  */
 import { registerAccountAgent } from './agents';
+import { listActiveBroadcasts } from './broadcasts';
 import type { Env } from './env';
 import { assistantDiscovery, assistantGuide, assistantGuides } from './mcp-guide';
 import { serviceIdentity } from './service-identity';
@@ -41,13 +42,21 @@ const tools = [
     securitySchemes: [{ type: 'noauth' }],
   },
   {
+    ...tool('get_broadcasts', 'Read active Ed25519-signed system broadcasts (dependency upgrade notices, security advisories, maintenance windows) and public verification keys for this service.', null,
+      {
+        audience: { type: 'string', enum: ['agents', 'mcp', 'page_owners', 'page_all', 'dashboard'] },
+        since: { type: 'integer', minimum: 0 },
+      }, []),
+    securitySchemes: [{ type: 'noauth' }],
+  },
+  {
     ...tool('get_profile', 'Identify the linked account and this service origin.', null, {}, []),
     _meta: { 'openai/profile': true },
     outputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string' }, serviceOrigin: { type: 'string' }, environment: { type: 'object' }, build: { type: 'object' },
-        readiness: { type: 'object' }, setup: { type: 'object' },
+        readiness: { type: 'object' }, setup: { type: 'object' }, broadcasts: { type: 'object' },
       },
       required: ['id'],
     },
@@ -292,7 +301,7 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
   }
 
   if (message.id === undefined && message.method === 'notifications/initialized') return new Response(null, { status: 202 });
-  const publicGuideCall = message.method === 'tools/call' && isPlainObject(message.params) && message.params.name === 'tendril_guide';
+  const publicGuideCall = message.method === 'tools/call' && isPlainObject(message.params) && (message.params.name === 'tendril_guide' || message.params.name === 'get_broadcasts');
   if (!principal && !discoveryMethods.has(message.method) && !publicGuideCall) return challenge();
   if (message.id === undefined) return new Response(null, { status: 202 });
 
@@ -310,13 +319,23 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
       throw new HttpError(400, 'invalid_mcp_headers', 'The MCP request headers must match its method and name.', { rpcCode: -32602 });
     }
 
-    if (method === 'initialize') return result(id, {
-      protocolVersion: supported.includes(String(params.protocolVersion)) ? params.protocolVersion : PROTOCOL,
-      capabilities: { tools: {}, resources: {} },
-      serverInfo: { name: 'tendriller', version: serviceIdentity(env).build.coreRelease },
-      _meta: { 'tendriller/service': serviceIdentity(env) },
-      instructions: instructions + ' Connected service: ' + config.issuer + '. All guide links target this deployment. If tendril_guide is missing from the installed tools, read ' + config.issuer + assistantGuides.start + ' directly. Never substitute another service origin.',
-    });
+    if (method === 'initialize') {
+      const mcpFeed = await listActiveBroadcasts(env, { audiences: ['mcp', 'agents'] }).catch(() => null);
+      const urgent = mcpFeed?.broadcasts.filter(b => b.payload.severity === 'urgent' || b.payload.severity === 'critical') ?? [];
+      const advisoryNote = urgent.length
+        ? ` Active service advisories (${urgent.length}): ${urgent.map(b => `[${b.payload.severity}] ${b.payload.title}`).join('; ')}. Call get_broadcasts for full signed details.`
+        : '';
+      return result(id, {
+        protocolVersion: supported.includes(String(params.protocolVersion)) ? params.protocolVersion : PROTOCOL,
+        capabilities: { tools: {}, resources: {} },
+        serverInfo: { name: 'tendriller', version: serviceIdentity(env).build.coreRelease },
+        _meta: {
+          'tendriller/service': serviceIdentity(env),
+          ...(mcpFeed ? { 'tendriller/broadcasts': { latestSeq: mcpFeed.latest_seq, activeCount: mcpFeed.broadcasts.length, urgentCount: urgent.length } } : {}),
+        },
+        instructions: instructions + ' Connected service: ' + config.issuer + '. All guide links target this deployment. If tendril_guide is missing from the installed tools, read ' + config.issuer + assistantGuides.start + ' directly. Never substitute another service origin.' + advisoryNote,
+      });
+    }
     if (method === 'server/discover') return result(id, {
       resultType: 'complete', supportedVersions: ['2026-07-28'],
       capabilities: { tools: {}, resources: {} }, _meta: { 'tendriller/service': serviceIdentity(env) },
@@ -344,6 +363,18 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
       const args = fields(params.arguments ?? {}, ['topic'], []);
       return complete(toolResult(await assistantGuide(env, config.issuer, args.topic)));
     }
+    if (method === 'tools/call' && params.name === 'get_broadcasts') {
+      fields(params, ['name', 'arguments'], ['name']);
+      const args = fields(params.arguments ?? {}, ['audience', 'since'], []);
+      const audience = typeof args.audience === 'string' ? args.audience : undefined;
+      if (audience !== undefined && !['agents', 'mcp', 'page_owners', 'page_all', 'dashboard'].includes(audience)) {
+        throw new HttpError(400, 'invalid_arguments', 'Invalid broadcast audience');
+      }
+      const since = args.since === undefined ? 0 : Number(args.since);
+      if (!Number.isSafeInteger(since) || since < 0) throw new HttpError(400, 'invalid_arguments', 'since must be a non-negative integer');
+      const feed = await listActiveBroadcasts(env, audience ? { audience: audience as 'agents' | 'mcp' | 'page_owners' | 'page_all' | 'dashboard', since } : { audiences: ['mcp', 'agents'], since });
+      return complete(toolResult({ issuer: feed.issuer, keys: feed.keys, latest_seq: feed.latest_seq, broadcasts: feed.broadcasts }));
+    }
     if (!principal) return challenge();
 
     if (method === 'tools/call') {
@@ -356,9 +387,19 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
         return complete(toolResult(await registerAccountAgent(env, principal.account, args.handle, args.publicKey, args.wrapKey, args.bio)));
       }
       if (selected.name === 'get_profile') {
+        const [discovery, feed] = await Promise.all([
+          assistantDiscovery(env, config.issuer),
+          listActiveBroadcasts(env, { audiences: ['mcp', 'agents'] }),
+        ]);
         return complete(toolResult({
           id: 'profile_' + await sha256Hex(JSON.stringify([config.issuer, principal.account])),
-          ...await assistantDiscovery(env, config.issuer),
+          ...discovery,
+          broadcasts: {
+            latestSeq: feed.latest_seq,
+            issuer: feed.issuer,
+            keys: feed.keys,
+            active: feed.broadcasts,
+          },
         }));
       }
       if (selected.name === 'list_tendrils') {

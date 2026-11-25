@@ -169,6 +169,7 @@ export async function startDevHost({ release, state, port = 8790, artifacts, sig
         .bind('test', accountId, accountId, 'local-owner', owner, now),
       accounts.prepare('INSERT OR IGNORE INTO identity_emails(provider,subject,email) VALUES(?,?,?)').bind('test', accountId, owner),
     ]);
+    await accounts.prepare("UPDATE service_state SET account_page_cap=NULL, account_resident_cap=NULL, account_storage_cap=NULL WHERE id=1").run().catch(() => {});
     stage = 'local certificate setup';
     const cert = await certificate(port);
     stage = 'readiness verification';

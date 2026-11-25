@@ -1,4 +1,5 @@
 import { RESIDENT_LIMIT } from './limits';
+import { accountLimits } from './service-state';
 import { HttpError } from './http';
 import { applicationPrepared } from './authority';
 import type { Tendril } from './tendril';
@@ -49,7 +50,8 @@ export function recoverLifetimeChange(t: Tendril): Promise<void> {
       if (String(error).includes('account_residents_full')) {
         // This database constraint is a definite rollback, so release its intent.
         t.db.del(PENDING);
-        throw new HttpError(429, 'quota', 'Account resident tendril limit reached', { limit: RESIDENT_LIMIT });
+        const limits = await accountLimits(t.env);
+        throw new HttpError(429, 'quota', 'Account resident tendril limit reached', { limit: limits.residents ?? RESIDENT_LIMIT });
       }
       // An unavailable/lost response cannot prove that the account write failed.
       // Keep the reservation until the same target has been reconciled.

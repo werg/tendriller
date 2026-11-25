@@ -4,8 +4,9 @@ import { AGENT_HEADER, AGENT_SCOPES, AGENT_SCOPES_HEADER, agentScopes, type Agen
 import { AGENT_HANDLE_RE, AGENT_PUBLIC_KEY_RE, AGENT_WRAP_KEY_RE, validAgentBio, validAgentHandle } from './agent-grants';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { AGENT_ID_RE, AGENT_TOKEN_RE, newAgentId, newAgentToken, newTendrilId, randomB32, sha256Hex, TENDRIL_ID_RE } from './ids';
-import { AGENT_JOIN_CODE_TTL, AGENT_PAGE_LIST_LIMIT, DAY, RESIDENT_LIMIT } from './limits';
-import { checkCreationIp, requireCreationOpen, reserveCreationIp } from './service-state';
+import { AGENT_JOIN_CODE_TTL, AGENT_PAGE_LIST_LIMIT, DAY, PAGE_LIMIT, RESIDENT_LIMIT } from './limits';
+import { accountLimits, checkCreationIp, requireCreationOpen, reserveCreationIp } from './service-state';
+import { broadcastSummary, getAgentVersions, recordAgentVersions } from './broadcasts';
 import { publicBase } from './urls';
 import { joinBlurb } from './sharing';
 
@@ -128,6 +129,18 @@ export async function routeAgentApi(req: Request, env: Env, url: URL): Promise<R
     if (req.method === 'DELETE') { await revokeAgent(env, agent.id); return new Response(null, { status: 204 }); }
     throw new HttpError(405, 'method_not_allowed');
   }
+  if (path === '/api/agent/versions') {
+    const agent = await authenticateAgentRequest(env, req);
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      return json({ agent_id: agent.id, versions: await getAgentVersions(env, agent.id) });
+    }
+    if (req.method === 'PUT' || req.method === 'POST') {
+      const input = await body(req, 4096);
+      const saved = await recordAgentVersions(env, agent.id, input);
+      return json({ agent_id: agent.id, versions: saved, updated_at: Date.now() });
+    }
+    throw new HttpError(405, 'method_not_allowed');
+  }
   if (path === '/api/agent/hub') {
     if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new HttpError(426, 'websocket_required');
     if (!socketProtocols(req).includes(HUB_PROTOCOL)) throw new HttpError(400, 'hub_protocol_required', `Use the ${HUB_PROTOCOL} subprotocol with the agent token`);
@@ -237,12 +250,18 @@ async function updateAgentProfile(req: Request, env: Env, agent: GrantedAgent) {
 }
 
 async function agentSelf(env: Env, agent: GrantedAgent) {
-  const row = await env.ACCOUNTS.prepare(`SELECT (SELECT COUNT(*) FROM agent_grants WHERE agent_id=?) AS grants,
-    (SELECT email FROM accounts WHERE id=?) AS email`).bind(agent.id, agent.account_id).first<{ grants: number; email: string | null }>();
+  const [row, versions, broadcasts] = await Promise.all([
+    env.ACCOUNTS.prepare(`SELECT (SELECT COUNT(*) FROM agent_grants WHERE agent_id=?) AS grants,
+      (SELECT email FROM accounts WHERE id=?) AS email`).bind(agent.id, agent.account_id).first<{ grants: number; email: string | null }>(),
+    getAgentVersions(env, agent.id),
+    broadcastSummary(env),
+  ]);
   return {
     agent: agentView(agent),
     account: agent.account_id === null ? { claimed: false, owner_email: agent.owner_email } : { claimed: true, email: row?.email ?? null },
     grants: row?.grants ?? 0,
+    ...(versions ? { versions } : {}),
+    broadcasts,
     service: publicBase(env),
   };
 }
@@ -313,8 +332,11 @@ async function createAgentPage(req: Request, env: Env, agent: GrantedAgent): Pro
             .bind(id, claimed, claimed ? null : agent.owner_email, req.headers.get('CF-Connecting-IP'), now, claimed ? now : null, 'ad_hoc').run();
         } catch (err) {
           const message = String(err);
-          if (message.includes('account_tendrils_full')) throw new HttpError(429, 'quota', 'Account tendril limit reached', { limit: 20 });
-          if (message.includes('account_residents_full')) throw new HttpError(429, 'quota', 'Account resident tendril limit reached', { limit: RESIDENT_LIMIT });
+          if (message.includes('account_tendrils_full') || message.includes('account_residents_full')) {
+            const limits = await accountLimits(env);
+            if (message.includes('account_tendrils_full')) throw new HttpError(429, 'quota', 'Account tendril limit reached', { limit: limits.pages ?? PAGE_LIMIT });
+            throw new HttpError(429, 'quota', 'Account resident tendril limit reached', { limit: limits.residents ?? RESIDENT_LIMIT });
+          }
           throw err;
         }
         indexed = true;
