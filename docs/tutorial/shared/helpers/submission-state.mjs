@@ -7,7 +7,7 @@ export function createSubmissionState(onChange = () => {}) {
       canInspect: state.attached && !state.working && Boolean(state.selected),
       canRetry: available && !state.working && Boolean(state.selected) && Boolean(state.observed?.stored || state.pending?.operationId === state.selected) && !state.observed?.excluded,
       message: !state.attached ? 'Opening this device’s retained local session. Your draft remains editable.'
-        : !state.keyReady ? 'This device needs explicit key provisioning. Existing devices can continue writing.'
+        : !state.keyReady ? 'This device is waiting to be admitted to the page. See Devices and access; admitted devices can continue writing.'
         : !state.storageReady ? 'Local storage is unavailable. Your draft has not been submitted.'
         : state.working ? 'Storing the exact signed intent on this device.'
         : 'Save is available, including offline. Materialized outcomes can change when earlier work arrives.',

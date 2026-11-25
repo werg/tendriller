@@ -2,7 +2,7 @@
 // writes qualificationPageSource() over one page's pages/<slug>/agent.mjs in the
 // private downloaded application. `tendril agent run` imports it like any page
 // module: the same shared native composition (control, peer participation, setup
-// notices and explicit key provisioning) runs inside the one agent program, plus a private
+// notices and automatic page admission) runs inside the one agent program, plus a private
 // JSON-lines control socket through which the harness asks for evidence.
 import { once } from 'node:events';
 import { connect } from 'node:net';
@@ -109,7 +109,7 @@ export async function installStateSignalObservers() {
  * uses only the tutorial's workspace shared/native-page composition, the application
  * session (`query`, `command`, `operations`, `signals`, `status`) and its separate
  * participation controller. Nothing here creates a root, an epoch key or a
- * membership: the device must already have been explicitly provisioned, and the
+ * membership: an online member admits it from its signed host grant, and the
  * ordinary application browser never depends on this process.
  *
  * Local durability (the command resolves once signed and stored), local

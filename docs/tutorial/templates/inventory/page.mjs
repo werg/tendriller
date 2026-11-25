@@ -5,7 +5,7 @@ import { openBrowserOwner } from '@tendriller/core/browser-owner';
 import { createLiveView, createViewStore, createApplicationBackend } from '@chronolog/peer-session';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
-import { mountProvisioning } from '../../shared/helpers/provisioning-view.mjs';
+import { mountDevices } from '../../shared/helpers/devices-view.mjs';
 import { mountFinality } from '../../shared/helpers/finality-view.mjs';
 import { deriveInventory } from './domain.mjs';
 const $ = id => document.querySelector(id);
@@ -22,7 +22,7 @@ const save = (key, value) => { try { local.writeDraft(value, key); } catch { $('
 const draftIds = ['from', 'to', 'units', 'expected-source', 'expected-destination', 'bin-id', 'bin-units', 'bin-expected', 'bin-label', 'sql-grantee', 'author-time'];
 const draft = read('draft', {}); for (const id of draftIds) if ($('#' + id)) { $('#' + id).value = draft[id] ?? ''; $('#' + id).addEventListener('input', () => { draft[id] = $('#' + id).value; save('draft', draft); }); }
 const intents = read('intents', {}); $('#op-id').value = read('selected-operation', '');
-let session, attachment, live, snapshot, stale = false, inspectionToken = 0;
+let session, attachment, live, devices, snapshot, stale = false, inspectionToken = 0;
 let operationView, observedOperationId;
 const nodes = new Map();
 const selected = () => new URLSearchParams(location.hash.slice(1)).get('bin');
@@ -109,16 +109,16 @@ $('#retry').addEventListener('click', action(async () => { const id = $('#op-id'
 $('#offline').addEventListener('click', action(async () => { $('#offline-status').textContent = 'Saving and verifying the complete immutable application and engine graph…'; try { const value = await window.tendril.publication.saveOffline(); $('#offline-status').textContent = `Offline ready: publication ${value.id}. Local identity, keys and operation history are separate retained device state.`; } catch (error) { $('#offline-status').textContent = `Not offline ready: ${error.message}`; } }));
 try {
   attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, requiresDedicatedWorker: true, context: { viewId }, timeoutMs: 30_000 });
-  session = attachment.session; $('#public-key').value = session.identity.publicKey;
+  session = attachment.session;
   submission.update({ attached: true });
-  session.onStatus(status => { submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); $('#session-status').textContent = `${status.canAuthor ? 'Local signing/storage ready' : 'Explicit key provisioning required'} · ${status.connectedPeers} peers · SQL ${status.database}. Stored submission does not wait for peers or a read.`; });
+  session.onStatus(status => { submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); $('#session-status').textContent = `${status.canAuthor ? 'Local signing/storage ready' : 'Not admitted yet (see Devices and access)'} · ${status.connectedPeers} peers · SQL ${status.database}. Stored submission does not wait for peers or a read.`; });
 
   window.tendril.application.install(createApplicationBackend(session));
   window.tendril.signals.install(session.signals);
   window.tendril.transport.install(session);
   telemetry=mountDevTelemetry({session,runtime:window.tendril});
   unregisterFlush=registerLifecycleFlush(()=>telemetry.sendSnapshot());
-  mountProvisioning({ root: $('#provisioning'), session, peers: window.tendril.host.peers, local }); mountFinality({ root: $('#finality'), session });
+  devices = mountDevices({ root: $('#devices'), session, pageUrl: configuration.page_url, storage }); mountFinality({ root: $('#finality'), session });
   const viewError = error => { stale = true; $('#view-error').hidden = false; $('#view-error').textContent = `View not current: ${error.message}. The last snapshot and your local drafts are retained. On a fresh app, create the initial tables with the ordinary transaction button; storing that intent does not wait for this read.`; $('#summary').textContent = snapshot ? `${snapshot.value.stock.length} bins in last snapshot — not current` : 'No current domain snapshot; schema may not exist yet.'; renderDetail(); };
   live = createLiveView(session, deriveInventory, { onError: viewError });
   live.subscribe(render);
@@ -126,5 +126,5 @@ try {
   window.tendril.ready();
   if ($('#op-id').value) void inspect().catch(report);
 } catch (error) { $('#session-status').textContent = `Local opening failed: ${error.message}. Preserve this browser's private identity/store and reload after fixing its named prerequisite.`; }
-window.addEventListener('pagehide', event => { stopOperationObservation(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); live?.close(); void attachment?.detach().catch(() => {}); } });
+window.addEventListener('pagehide', event => { stopOperationObservation(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); live?.close(); devices?.close(); void attachment?.detach().catch(() => {}); } });
 window.addEventListener('pageshow', event => { if (event.persisted) void attachment?.resume().then(() => { observeSelectedOperation(); return live?.refresh(); }).catch(report); });

@@ -53,7 +53,14 @@ async function bundles() {
             if (op.materialized?.outcome === 'accepted') store.events.push({ id: 'event-' + op.proposalId, proposalId: op.proposalId, operationId: op.operationId, author, authorTimestampMs: '1000', topic: op.topic, payload: op.input });
             store.version++; persist(); changed();
           };
-          const owner = { applicationId, historyId: 'history', identity: { publicKey: author }, endpoint: { context }, signals: {}, signal: new AbortController().signal,
+          const owner = { applicationId, historyId: 'history', identity: { publicKey: author },
+            extensions: { async call(name) { if (name !== 'admission.state') throw Error('Unsupported fixture action ' + name);
+              // The owner's admission controller state for an admitted creator device (devices view input).
+              return { phase: 'admitted', publicKey: author, wrapKey: 'd'.repeat(64), subject: 'device', mode: 'attested', accounts: ['acct_owner'], epoch: 0, revision: 0,
+                administrator: true, canAdmit: true, members: [{ publicKey: author, self: true, reader: true, writer: true, administrator: true, wrapKey: 'd'.repeat(64), via: 'creator', subject: 'creator', label: 'Browser device' }],
+                pending: [], invites: [], notices: [], attestationExpiresAt: null, error: null }; },
+              subscribe() { return () => {}; } },
+            endpoint: { context }, signals: {}, signal: new AbortController().signal,
             get status() { return { ...status }; },
             onStatus(fn) { statusListeners.add(fn); fn({ ...status }); return () => statusListeners.delete(fn); },
             onChange(fn) { changeListeners.add(fn); return () => changeListeners.delete(fn); },
@@ -181,9 +188,9 @@ test('Save follows signing and storage prerequisites, never peers, database stat
   // Keys missing: honest explanation, and even a synthetic/keyboard submission cannot bypass it.
   await page.evaluate(() => fixture.canAuthor(false));
   assert.equal(await enabled(page, '#submit'), false);
-  assert.match(await page.locator('#submission-status').textContent(), /explicit key provisioning/);
+  assert.match(await page.locator('#submission-status').textContent(), /waiting to be admitted/);
   await page.locator('#form').dispatchEvent('submit');
-  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('explicit key provisioning'));
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('waiting to be admitted'));
   assert.equal(await page.locator('#operation-id').inputValue(), '');
   assert.deepEqual(await page.evaluate(() => fixture.calls), []);
   assert.equal(await page.locator('#note').inputValue(), 'Preserved draft');

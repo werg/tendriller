@@ -26,7 +26,7 @@ export function createOwnerConnection({ configuration, connect, onState = () => 
       try {
         const connected = await connect({ signal: lifetime.signal }); lifetime.signal.throwIfAborted();
         const session = connected?.session ?? connected;
-        const observe = status => emit(status?.canAuthor === false ? { phase: 'key-required', title: 'Device attached; authoring prerequisites missing', detail: 'Use explicit key provisioning/crypto grants. Other devices can keep writing; account access alone cannot decrypt old data.' }
+        const observe = status => emit(status?.canAuthor === false ? { phase: 'key-required', title: 'Device attached; waiting for admission', detail: 'An online device or agent that holds the page keys admits this device automatically (or an administrator approves it in strict mode). Other devices can keep writing; account access alone cannot decrypt data.' }
           : { phase: 'connected', title: 'Local session ready', detail: 'Save can store signed work with zero peers. Network and optional finality are separate.' });
         stopStatus(); stopStatus = session?.onStatus?.(observe) ?? (() => {}); if (closed) stopStatus(); else observe(session?.status);
         return connected;

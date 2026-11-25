@@ -104,7 +104,8 @@ export function serveBrowserOwner(options) {
         lifetime.signal.throwIfAborted();
         owned = await openSession({ signal: lifetime.signal, openDirectConnection: rtc.openDirectConnection }); lifetime.signal.throwIfAborted();
         if (!owned?.session) throw Error('OWNER_SESSION_REQUIRED');
-        owner = createApplicationOwner(owned.session, ownerOptions);
+        // openSession may compose owner extensions (device admission) beside the session.
+        owner = createApplicationOwner(owned.session, owned.extensions ? { ...ownerOptions, extensions: owned.extensions } : ownerOptions);
         sessionAborted = () => { void close().catch(() => {}); };
         owned.session.signal.addEventListener('abort', sessionAborted, { once: true });
         if (owned.session.signal.aborted) sessionAborted();

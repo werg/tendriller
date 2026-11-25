@@ -47,10 +47,10 @@ test('when the supervisor already removed the failed page it owns the close, so 
   f.stop.abort(); await f.running;
 });
 
-// A real temporary private root and real recursive file watching: registering a page or writing its explicit
-// provisioning marker must be discovered by the running agent program without a restart, and nothing is opened
-// (no device, page context or module) until the page is explicitly provisioned.
-test('the agent discovers a newly registered page and its later provisioning marker without a restart, then disposes its watch', async t => {
+// A real temporary private root and real recursive file watching: registering a page or writing its
+// initialization marker (`npm run init`) must be discovered by the running agent program without a restart, and
+// nothing is opened (no device, page context or module) until the page is initialized.
+test('the agent discovers a newly registered page and its later initialization marker without a restart, then disposes its watch', async t => {
   const secret = await mkdtemp(join(tmpdir(), 'agent-watch-')), sessionStop = new AbortController();
   t.after(() => rm(secret, { recursive: true, force: true }));
   const registered = [], reports = [], opened = [], calls = { pages: 0, contexts: 0, modules: 0, addPage: [] }, stop = new AbortController();
@@ -79,10 +79,10 @@ test('the agent discovers a newly registered page and its later provisioning mar
   await writeFile(join(pageDirectory(id), 'page.json'), JSON.stringify({ schemaVersion: 1, id }), { mode: 0o600 });
   await until(() => reports.some(value => value.state === 'awaiting_initialization' && value.page === id), 'the new page is reported as awaiting initialization');
   assert.deepEqual({ contexts: calls.contexts, modules: calls.modules, addPage: calls.addPage }, { contexts: 0, modules: 0, addPage: [] },
-    'an unprovisioned page opens no page context, module, device or owner');
-  // Explicit provisioning writes the marker; the running agent opens the page without restarting.
-  await writeFile(join(pageDirectory(id), 'initialized.json'), JSON.stringify({ provisioned: true }), { mode: 0o600 });
-  await until(() => reports.some(value => value.state === 'running' && value.page === id), 'the provisioned page opens in the same agent program');
+    'an uninitialized page opens no page context, module, device or owner');
+  // `npm run init` writes the marker; the running agent opens the page without restarting.
+  await writeFile(join(pageDirectory(id), 'initialized.json'), JSON.stringify({ creator: 'agent' }), { mode: 0o600 });
+  await until(() => reports.some(value => value.state === 'running' && value.page === id), 'the initialized page opens in the same agent program');
   assert.deepEqual(calls.addPage, [id]);
   assert.equal(calls.contexts, 1); assert.equal(calls.modules, 1);
   assert.equal(reports.filter(value => value.running === true).length, 1, 'no restart: one start report only');

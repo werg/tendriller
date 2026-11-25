@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { createNativeWorkspaceSupervisor } from '@tendriller/core/native-owner';
 import { exportWorkspaceCheckpoint, restoreWorkspaceCheckpoint } from '../lib/checkpoint.mjs';
-import { openPageDevice, openSharedSigner, openWorkspace, workspacePaths } from '../lib/workspace.mjs';
+import { openPageDevice, openSharedSigner, openWrapKey, openWorkspace, workspacePaths } from '../lib/workspace.mjs';
 
 const run = promisify(execFile);
 const cli = process.env.TENDRILLER_TOOLS_TEST_CLI ?? fileURLToPath(new URL('../bin/tendril.mjs', import.meta.url));
@@ -27,8 +27,8 @@ function temporary(t, prefix) {
 /** A workspace with two initialized-like pages: device history, setup records and an effect journal. */
 async function workspaceFixture(t) {
   const root = temporary(t, 'checkpoint-source-'), paths = workspacePaths(root);
-  const signer = await openSharedSigner(paths.identity, { create: true });
-  privateJson(paths.credential, { schemaVersion: 1, service: SERVICE, agent: AGENT, token: TOKEN, publicKey: signer.publicKey, accountState: null });
+  const signer = await openSharedSigner(paths.identity, { create: true }), wrap = await openWrapKey(paths.wrapKey, { create: true });
+  privateJson(paths.credential, { schemaVersion: 1, service: SERVICE, agent: AGENT, token: TOKEN, publicKey: signer.publicKey, wrapKey: wrap.publicKey, accountState: null });
   writeFileSync(paths.config, JSON.stringify({ schemaVersion: 1, service: SERVICE, agent: AGENT,
     pages: Object.fromEntries(Object.entries(PAGES).map(([slug, id]) => [slug, { id }])) }, null, 2) + '\n');
   for (const [slug, id] of Object.entries(PAGES)) {

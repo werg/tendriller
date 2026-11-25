@@ -1,5 +1,6 @@
 // The only long-running local program: one hub connection, one Chronolog session per
-// granted and initialized page (own device store, shared signer), one attach socket.
+// granted and initialized page (own device store, shared signer and wrap key), one attach socket.
+// A page whose data a browser created opens too: it waits there until a member admits this agent.
 import { existsSync, watch as watchFiles } from 'node:fs';
 import { join } from 'node:path';
 
@@ -187,7 +188,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
   let watcher;
   try {
     // Watch the existing private parent, including when no page directory exists
-    // yet. Registration discovers a page; only explicit provisioning may open it.
+    // yet. Registration discovers a page; `init` (initialized.json) lets the program open it.
     if (existsSync(workspace.paths.secret)) {
       watcher = watchFiles(workspace.paths.secret, { recursive: true }, (_type, name) => {
         const file = String(name ?? '').split(/[\\/]/u).at(-1);

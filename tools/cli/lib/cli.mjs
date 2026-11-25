@@ -28,6 +28,12 @@ Workspace (one agent credential and signing key for many pages):
   page new <slug> [--name TITLE]        Create a page (granted to this agent) and its pages/<slug>/ folder
   page grant <slug> <page-id>           Register a page the owner granted to this agent
   page list                             Granted and registered pages
+  page devices <slug>                   Admitted devices/agents, pending sign-ins, invites and admission mode
+  page approve <slug> <public-key> [--writer] [--admin]   Admit a pending device (strict mode, guests)
+  page remove-device <slug> <public-key>  Remove a device or agent and rotate the page key
+  page mode <slug> attested|strict      Auto-admit owner devices, or require approval
+  page invite <slug> --email ADDRESS | --open | --public [--max N] [--expires DAYS] [--role reader|writer|admin]
+  page revoke-invite <slug> <invite-id> Stop an invite (signed in page state; the host stops redemptions)
   status                                Workspace, agent, grants and the agent program
   agent run                             The only long-running program: hub, one session per page, attach socket
   agent profile [--handle H] [--bio B]  Update this agent's @handle or short bio
@@ -76,7 +82,7 @@ const flagsByCommand = {
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
   readiness: ['server'], service: ['server'],
-  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name'], agent: ['handle', 'bio'], 'mcp-stdio': [],
+  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role'], agent: ['handle', 'bio'], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
 };
@@ -151,7 +157,8 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
       const page = await workspace.registerPage(slug, granted);
       return { slug, id: page.id, name: page.name, source: page.source };
     }
-    throw invalid('Use page new <slug>, page grant <slug> <page-id> or page list');
+    if (['devices', 'approve', 'remove-device', 'mode', 'invite', 'revoke-invite'].includes(action)) return pageAdmission(workspace, action, slug, id, flags, signal);
+    throw invalid('Use page new|grant|list|devices|approve|remove-device|mode|invite|revoke-invite; see --help');
   }
   if (command === 'agent') {
     if (args[0] === 'profile') {
@@ -244,6 +251,36 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
   if (action === 'remove' && args.length === 2) { await host.request(`/links/${checkedName(input)}`, { method: 'DELETE', ...options }); return { removed: input }; }
   if (action === 'rotate' && args.length === 2) return host.request(`/links/${checkedName(input)}/rotate`, { method: 'POST', body: {}, ...options });
   throw invalid('Unknown link action; see --help');
+}
+
+const KEY_RE = /^[0-9a-f]{64}$/u;
+/** Page admission actions run inside the page owner of the running agent program (its signer, never the host's). */
+async function pageAdmission(workspace, action, slug, value, flags, signal) {
+  if (!slug) throw invalid(`page ${action} requires a page slug`);
+  const call = async (name, ...input) => {
+    const owned = await attachPage(workspace, slug, { signal });
+    try { return await owned.session.extensions.call(name, input); } finally { await owned.detach(); }
+  };
+  if (action === 'devices') {
+    const state = await call('admission.state');
+    return { page: slug, phase: state.phase, mode: state.mode, administrator: state.administrator, members: state.members, pending: state.pending, invites: state.invites };
+  }
+  if (action === 'approve' || action === 'remove-device') {
+    if (!KEY_RE.test(value ?? '')) throw invalid(`page ${action} requires the device's 64-hex public key (see page devices)`);
+    return action === 'approve' ? call('admission.approve', value, { ...(flags.writer ? { writer: true } : {}), ...(flags.admin ? { writer: true, administrator: true } : {}) })
+      : call('admission.remove', value);
+  }
+  if (action === 'mode') { if (!['attested', 'strict'].includes(value)) throw invalid('page mode takes attested or strict'); return call('admission.mode', value); }
+  if (action === 'revoke-invite') { if (!/^[0-9a-f]{32}$/u.test(value ?? '')) throw invalid('page revoke-invite requires the invite id'); return call('admission.revokeInvite', value); }
+  const kinds = ['email', 'open', 'public'].filter(name => flags[name] !== undefined && flags[name] !== false);
+  if (kinds.length !== 1 || value !== undefined) throw invalid('page invite takes exactly one of --email ADDRESS, --open or --public');
+  if (kinds[0] === 'email' && typeof flags.email !== 'string') throw invalid('--email requires the invitee address');
+  const binding = kinds[0] === 'email' ? { kind: 'email', email: flags.email } : kinds[0] === 'open' ? { kind: 'open' } : { kind: 'public', max: flags.max === undefined ? null : intFlag(flags.max, 'max') };
+  const days = flags.expires === undefined ? 7 : intFlag(flags.expires, 'expires');
+  const created = await call('admission.invite', { binding, ...(flags.role ? { role: flags.role } : {}), expiresInMs: days * 86_400_000 });
+  const page = await workspace.page(slug), link = new URL(page.page_url); link.hash = created.fragment;
+  return { inviteId: created.inviteId, role: created.role, binding: created.binding, expiresAt: String(created.expiresAt), link: link.href,
+    note: 'The link fragment carries the invite secret; share it only with the invitee. Revoke with page revoke-invite.' };
 }
 
 /** Parse, validate and run one invocation. `attach` replaces the agent attachment in tests only. */

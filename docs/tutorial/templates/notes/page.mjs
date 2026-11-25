@@ -9,7 +9,7 @@ import { decodeRecord } from '@chronolog/authority';
 import { authorityRecordBytes } from '@tendriller/core/authority';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
-import { mountProvisioning } from '../../shared/helpers/provisioning-view.mjs';
+import { mountDevices } from '../../shared/helpers/devices-view.mjs';
 import { mountFinality } from '../../shared/helpers/finality-view.mjs';
 import { deriveNotes } from './domain.mjs';
 const $ = selector => document.querySelector(selector);
@@ -25,7 +25,7 @@ const local = createViewStore({ storage, applicationId: configuration.applicatio
 const read = (key, fallback) => { try { return local.readDraft(key) ?? fallback; } catch { persistence = false; return fallback; } };
 const save = (key, value) => { try { local.writeDraft(value, key); } catch { persistence = false; $('#draft-help').textContent = 'This browser could not persist the draft. Keep this page open or copy unsent text before leaving.'; } };
 let editor = read('editor', { id: crypto.randomUUID(), isNew: true }), drafts = read('drafts', {}), intents = read('intents', {});
-let attachment, session, live, provisioning, notes = [], stale = false, hasSnapshot = false, inspectToken = 0;
+let attachment, session, live, devices, notes = [], stale = false, hasSnapshot = false, inspectToken = 0;
 let operationView, observedOperationId, media;
 const nodes = new Map(), selectedId = () => { try { return new URLSearchParams(location.hash.slice(1)).get('note'); } catch { return null; } };
 $('#note').value = drafts[editor.id] ?? ''; $('#editor-heading').textContent = editor.isNew ? 'New note' : 'Edit note';
@@ -132,16 +132,16 @@ async function connect() {
   $('#reconnect').hidden = true;
   try {
     attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, context: { viewId }, timeoutMs: 30_000 });
-    session = attachment.session; $('#public-key').value = session.identity.publicKey;
+    session = attachment.session;
     submission.update({ attached: true });
-    session.onStatus(status => { submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); $('#connection-status').textContent = `${status.canAuthor ? 'Local signing and storage ready' : 'Key provisioning required'} · ${status.connectedPeers} connected peers · database ${status.database}. Peer availability never gates Save.`; });
+    session.onStatus(status => { submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); $('#connection-status').textContent = `${status.canAuthor ? 'Local signing and storage ready' : 'This browser is not admitted yet (see Devices and access)'} · ${status.connectedPeers} connected peers · database ${status.database}. Peer availability never gates Save on an admitted device.`; });
 
     window.tendril.application.install(createApplicationBackend(session));
   window.tendril.signals.install(session.signals);
   window.tendril.transport.install(session);
   telemetry=mountDevTelemetry({session,runtime:window.tendril});
   unregisterFlush=registerLifecycleFlush(()=>telemetry.sendSnapshot());
-    provisioning = mountProvisioning({ root: $('#provisioning'), session, peers: window.tendril.host.peers, local });
+    devices = mountDevices({ root: $('#devices'), session, pageUrl: configuration.page_url, storage });
     mountFinality({ root: $('#finality-status').parentElement, session });
     live = createLiveView(session, deriveNotes, { onError: viewError });
     live.subscribe(renderNotes);
@@ -158,7 +158,7 @@ async function connect() {
   } catch (error) { $('#connection-status').textContent = `Local session could not open: ${error.message}. Retain this browser profile and original work.`; $('#reconnect').hidden = false; }
 }
 $('#reconnect').addEventListener('click', () => { if (session) location.reload(); else void connect(); });
-window.addEventListener('pagehide', event => { stopOperationObservation(); retainEditor(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); media?.close(); window.appRequests?.close(); live?.close(); provisioning?.close(); void attachment?.detach().catch(() => {}); } });
+window.addEventListener('pagehide', event => { stopOperationObservation(); retainEditor(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); media?.close(); window.appRequests?.close(); live?.close(); devices?.close(); void attachment?.detach().catch(() => {}); } });
 window.addEventListener('pageshow', event => { if (event.persisted) void attachment?.resume().then(() => { observeSelectedOperation(); return live?.refresh(); }).catch(report); });
 void connect();
 

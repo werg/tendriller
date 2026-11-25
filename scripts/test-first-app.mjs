@@ -238,17 +238,18 @@ try {
   const created=await setup(['new',slug,'--template',sqlBrowser?'inventory':'notes','--name',sqlBrowser?'SQL browser qualification':'Browser qualification']);
   const resumed=await setup(['new',slug,'--template',sqlBrowser?'inventory':'notes']);assert.equal(resumed.id,created.id);
   const journal=await setup(['new','journal','--template','notes','--name','Second explicitly granted workspace page']);
-  await setup(['init','journal']);const journalPublication=await setup(['deploy','journal']);assert.match(journalPublication.publicationId,/^[a-f0-9]{64}$/);
+  const journalInit=await setup(['init','journal']);assert.equal(journalInit.creator,'agent');const journalPublication=await setup(['deploy','journal']);assert.match(journalPublication.publicationId,/^[a-f0-9]{64}$/);
   const pageRecord=await jsonFile(join(app,'.tendriller/pages',created.id,'page.json'));
   const handle={id:pageRecord.id,application:pageRecord.application,page_url:pageRecord.page_url};
   const requestHost=async(path,init={})=>{const response=await fetch(SERVICE+'/api/agent/pages/'+handle.id+'/'+path,{...init,headers:{Authorization:'Bearer '+credential.token,...init.headers}});const value=await response.json();assert.ok(response.ok,JSON.stringify(value));return value;};
   if(nativeWorkspace&&!sqlBrowser)await prepareWorkspaceQualification({app,slug,feedback:feedbackQualification,network:networkLab});
-  await setup(['init',slug,...(values['browser-finalizer']?['--browser-finalizer']:[])]);
-  assert.equal((await requestHost('application')).authority,null,'Preparation may not create a native data root');
+  // The browser baseline lets the owner's first browser create the page data; the journal page is agent-first.
+  await setup(['init',slug,'--browser-first',...(values['browser-finalizer']?['--browser-finalizer']:[])]);
+  assert.equal((await requestHost('application')).authority,null,'A browser-first page has no data until its first browser creates it');
   const prepared=await jsonFile(join(app,'.tendriller/pages',created.id,'prepared.json')),secondPrepared=await jsonFile(join(app,'.tendriller/pages',journal.id,'prepared.json'));
   assert.equal(prepared.publisherKey,secondPrepared.publisherKey,'Every page uses the SAME registered workspace signer, never per-page signing keys');
   const publication=await setup(['deploy',slug]);assert.match(publication.publicationId,/^[a-f0-9]{64}$/);
-  assert.equal((await requestHost('application')).authority,null,'Publication must precede the first authorized browser data key');
+  assert.equal((await requestHost('application')).authority,null,'Publication precedes the first browser-created data key');
   assert.equal((await setup(['deploy',slug])).publicationId,publication.publicationId,'Lost/uncertain publication replies reuse the original signed graph');
   for(const path of await files(join(project,'dist')))assert.doesNotMatch(path,/\.tendriller|device\.sqlite|identity\.sqlite|publisher\.json/);
   report.workspace={agentId:workspaceFile.agent.id,pages:[created.id,journal.id],oneSharedPublisher:true,nativeProcessBeforeBrowser:false};
@@ -396,24 +397,20 @@ try {
   passed('complete immutable graph acknowledgment, offline local CRUD and reload with the same signing identity');
   await first.context.setOffline(false);
 
-  checkpoint('second profile proves key and receives explicit recipient-bound wrapped keys');
+  checkpoint('second profile signs in and is admitted automatically by the first browser');
   const second = await profile({ width: 320, height: 800 });
   await expect(second.page.locator('#public-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 60_000 });
   const secondKey = await second.page.locator('#public-key').inputValue(); assert.notEqual(secondKey, firstKey);
-  await expect(saveButton(second.page)).toBeDisabled();
-  await screenshot(second.page, 'phone-before-provisioning');
-  for (const target of [page, second.page]) if (!await target.locator('#provisioning').evaluate(node => node.open)) await target.locator('#provisioning > summary').click();
-  await second.page.locator('[data-provisioning=request]').click();
-  await expect(second.page.locator('[data-provisioning=out]')).toHaveValue(/"record"/, { timeout: 30_000 });
-  const recipientRequest = await second.page.locator('[data-provisioning=out]').inputValue();
-  await page.locator('[data-provisioning=in]').fill(recipientRequest); await page.locator('[data-provisioning=review]').click();
-  await expect(page.locator('[data-provisioning=status]')).toContainText(secondKey);
-  await page.locator('[data-provisioning=grant]').click();
-  await expect(page.locator('[data-provisioning=status]')).toContainText('Recipient-bound encrypted key package created', { timeout: 30_000 });
-  const encryptedPackage = await page.locator('[data-provisioning=out]').inputValue();
-  await second.page.locator('[data-provisioning=in]').fill(encryptedPackage); await second.page.locator('[data-provisioning=import]').click();
-  await expect(saveButton(second.page)).toBeEnabled({ timeout: 30_000 });
+  await screenshot(second.page, 'phone-before-admission');
+  // Plain sign-in only: the online first browser verifies the host attestation against the pinned key
+  // and owner account, signs the admission and wraps the keys. No code, request or package is copied.
+  await expect(saveButton(second.page)).toBeEnabled({ timeout: 60_000 });
+  await expect(page.locator('#devices')).toContainText('New device signed in', { timeout: 30_000 });
+  await expect(page.locator('#devices')).toContainText(`${secondKey.slice(0, 8)}…${secondKey.slice(-4)}`);
   await expect(second.page.locator(sqlBrowser ? '#stock' : '#notes')).toContainText(sqlBrowser ? 'offline-bin' : 'offline durable note', { timeout: 60_000 });
+  const admittedVia = await second.page.evaluate(async () => (await window.tendril.application.backend.readAuthority()).memberships.at(-1).payload.admitted.map(item => item.via));
+  assert.deepEqual(admittedVia, ['attested']);
+  report.second_device = { admission: 'attested', copiedArtifacts: 0 };
   let uxDeniedOperation;
   if (sqlBrowser) {
     if(values['ux-second-pass']){
@@ -450,7 +447,7 @@ try {
     await expect(page.locator('#notes')).toContainText('second-profile edited', { timeout: 60_000 });
     await second.page.locator('#delete').click(); await expect(page.locator('#notes')).not.toContainText('second-profile edited', { timeout: 60_000 });
     if(values['ux-second-pass']){await expect(page.locator('#note')).toBeFocused();await expect(page.locator('#note')).toHaveValue('ux peer-arrival draft');uxPassed('phone create/edit/delete converges while the desktop focused draft survives incoming work');}
-    passed('two independently provisioned browser authors converge across create/edit/delete without native process');
+    passed('two automatically admitted browser authors converge across create/edit/delete without native process');
   }
   if(values['ux-second-pass']){
     checkpoint('separate second UX pass: phone long content, selected facts and optional local media');

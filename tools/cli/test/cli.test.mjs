@@ -112,7 +112,7 @@ test('readiness reports current mode anonymously', async t => {
 });
 
 test('public service discovery is anonymous and rejects unsafe origins without echoing them', async t => {
-  const { origin, calls, env } = await fixture(t, () => ({ body: { contract: 3, core_release: 'test', limits: {} } }));
+  const { origin, calls, env } = await fixture(t, () => ({ body: { contract: 3, core_release: 'test', limits: {}, attestationKey: 'ab'.repeat(32) } }));
   for (const args of [['service', '--server', origin]]) {
     const result = await run(process.execPath, [cli, ...args], { env });
     assert.equal(JSON.parse(result.stdout).contract, 3);

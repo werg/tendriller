@@ -2,7 +2,7 @@
 //
 //   tendriller.json          { schemaVersion, service, agent: { id, handle, bio }, kit, pages: { <slug>: { id } } }
 //   pages/<slug>/            per-page source (agent.mjs, domain.mjs, page.mjs, ...)
-//   .tendriller/agent/       identity.sqlite (shared signer), credential.json, attach.json, owner/ (attach socket)
+//   .tendriller/agent/       identity.sqlite (shared signer), wrap-key.json (shared key-wrap key), credential.json, attach.json, owner/ (attach socket)
 //   .tendriller/pages/<id>/  page.json, device.sqlite, descriptor and setup records
 //   .tendriller/checkpoint-retired.json  present once `tendril checkpoint export` moved this workspace away
 import { existsSync } from 'node:fs';
@@ -18,7 +18,7 @@ export const WORKSPACE_FILE = 'tendriller.json';
 export const SLUG = /^[a-z0-9][a-z0-9-]{0,47}$/u;
 const PAGE_ID = /^[a-z2-7]{12}$/u;
 const AGENT_TOKEN = /^ta_[a-z2-7]{32}$/u;
-export const ATTACH_POLICY = Object.freeze({ capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'finality', 'publish'] });
+export const ATTACH_POLICY = Object.freeze({ capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'finality', 'extensions', 'publish'] });
 const failure = (code, message, exit) => Object.assign(new Error(message), { code, ...(exit ? { exit } : {}) });
 
 async function readJson(path, optional = false) {
@@ -58,7 +58,7 @@ export function workspacePaths(root) {
   const secret = join(root, '.tendriller');
   return Object.freeze({
     root, config: join(root, WORKSPACE_FILE), secret, sources: join(root, 'pages'),
-    agent: join(secret, 'agent'), identity: join(secret, 'agent', 'identity.sqlite'),
+    agent: join(secret, 'agent'), identity: join(secret, 'agent', 'identity.sqlite'), wrapKey: join(secret, 'agent', 'wrap-key.json'),
     credential: join(secret, 'agent', 'credential.json'), attach: join(secret, 'agent', 'attach.json'),
     owner: join(secret, 'agent', 'owner'), pages: join(secret, 'pages'),
     retired: join(secret, 'checkpoint-retired.json'),
@@ -75,6 +75,24 @@ export async function openSharedSigner(path, { create = false } = {}) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const device = await openNativeDevice({ path, ...(create ? { create: true } : {}) });
   try { return device.identity; } finally { await device.close(); }
+}
+
+/** The agent's one X25519 key-wrap key, registered with the host beside its signing key.
+ * Members wrap each page's epoch keys to it; the private half never leaves this folder. */
+export async function openWrapKey(path, { create = false } = {}) {
+  let saved = await readJson(path, true);
+  if (!saved) {
+    if (!create) throw failure('agent_wrap_key_missing', `The workspace key-wrap key ${path} is missing. Restore it from a checkpoint; a new key would not match the registered agent.`);
+    const { createWrapKeyPair } = await import('@chronolog/peer-session');
+    const pair = await createWrapKeyPair();
+    saved = await savePrivateJson(path, { publicKey: pair.publicKey, privateKey: Buffer.from(pair.privateKey).toString('hex') });
+  }
+  if (!/^[0-9a-f]{64}$/u.test(saved.publicKey ?? '') || !/^[0-9a-f]+$/u.test(saved.privateKey ?? '')) throw failure('agent_wrap_key_invalid', `${path} is damaged; restore it from a checkpoint.`);
+  return saved;
+}
+async function importWrapKey(saved) {
+  const { importWrapPrivateKey } = await import('@chronolog/peer-session');
+  return Object.freeze({ publicKey: saved.publicKey, privateKey: await importWrapPrivateKey(Uint8Array.from(Buffer.from(saved.privateKey, 'hex'))) });
 }
 
 /** One page device: its own native store, always signed by the shared agent key.
@@ -117,6 +135,7 @@ async function enroll(root, { service, handle, bio = '', kit, signal }, request)
     requireService(await describeService(origin, { signal }));
   }
   const signer = await openSharedSigner(paths.identity, { create: !existsSync(paths.identity) });
+  const wrap = await openWrapKey(paths.wrapKey, { create: !existsSync(paths.wrapKey) });
   let credential = retained;
   if (!credential) {
     const cleanHandle = agentHandle(handle);
@@ -125,15 +144,17 @@ async function enroll(root, { service, handle, bio = '', kit, signal }, request)
       handle: cleanHandle,
       ...(cleanBio ? { bio: cleanBio } : {}),
       publicKey: publicKeyBase64url(signer.publicKey),
+      wrapKey: wrap.publicKey,
     }, { signal });
     credential = await savePrivateJson(paths.credential, {
       schemaVersion: 1, service: origin,
       agent: { id: result.id, handle: result.handle, bio: result.bio ?? cleanBio },
-      token: result.token, publicKey: signer.publicKey,
+      token: result.token, publicKey: signer.publicKey, wrapKey: wrap.publicKey,
       accountState: result.account_state ?? null,
     });
   }
   if (credential.publicKey !== signer.publicKey) throw failure('agent_signer_mismatch', 'The retained signer does not match the registered agent key. Restore the original identity.sqlite.');
+  if (credential.wrapKey !== wrap.publicKey) throw failure('agent_wrap_key_mismatch', 'The retained key-wrap key does not match the registered agent. Restore the original wrap-key.json.');
   const config = { schemaVersion: 1, service: origin, agent: credential.agent, ...(kit ? { kit } : {}), pages: {} };
   await replaceJson(paths.config, config);
   await ensureGitignore(root);
@@ -176,9 +197,10 @@ export async function workspaceKey(root, { service, handle, bio = '' } = {}) {
   await requireEmptyWorkspace(root);
   if (existsSync(paths.credential)) throw failure('agent_credential_exists', `${paths.credential} already exists. Resume with tendril workspace adopt or restore tendriller.json.`);
   const signer = await openSharedSigner(paths.identity, { create: !existsSync(paths.identity) });
+  const wrap = await openWrapKey(paths.wrapKey, { create: !existsSync(paths.wrapKey) });
   return {
     service: origin,
-    register_agent: { handle: cleanHandle, ...(cleanBio ? { bio: cleanBio } : {}), publicKey: publicKeyBase64url(signer.publicKey) },
+    register_agent: { handle: cleanHandle, ...(cleanBio ? { bio: cleanBio } : {}), publicKey: publicKeyBase64url(signer.publicKey), wrapKey: wrap.publicKey },
     next: 'Call register_agent through the account-linked connector for this service with exactly these arguments, save its result privately, then run tendril workspace adopt --service ORIGIN --credential FILE.',
   };
 }
@@ -225,7 +247,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
   const config = await readJson(paths.config);
   if (config?.schemaVersion !== 1 || typeof config.service !== 'string' || !config.agent?.id)
     throw failure('workspace_state_invalid', `${paths.config} is not a Tendriller workspace file.`);
-  let credential, client, signer;
+  let credential, client, signer, wrapKey;
   const readCredential = async () => {
     credential ??= await readJson(paths.credential, true);
     if (!credential) throw failure('agent_credential_missing', `${paths.credential} is missing. Restore it from a checkpoint; the agent token is never reissued silently.`);
@@ -250,6 +272,14 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       signer ??= await openSharedSigner(paths.identity);
       if (signer.publicKey !== (await readCredential()).publicKey) throw failure('agent_signer_mismatch', 'identity.sqlite does not hold the registered agent key.');
       return signer;
+    },
+    async wrapKey() {
+      if (!wrapKey) {
+        const saved = await openWrapKey(paths.wrapKey);
+        if (saved.publicKey !== (await readCredential()).wrapKey) throw failure('agent_wrap_key_mismatch', 'wrap-key.json does not hold the registered agent key-wrap key.');
+        wrapKey = await importWrapKey(saved);
+      }
+      return wrapKey;
     },
     /** Resolve --page <slug|id> against the workspace registry. */
     async page(ref) {
@@ -325,7 +355,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
     },
     /** Everything a page module needs; it never sees the agent token or private key bytes. */
     async pageContext(ref, { signal, report = () => {}, roster } = {}) {
-      const page = await workspace.page(ref), agent = await getClient(), shared = await workspace.signer();
+      const page = await workspace.page(ref), agent = await getClient(), shared = await workspace.signer(), wrap = await workspace.wrapKey();
       const host = agent.page(page.id, { applicationId: page.application.id });
       const privatePath = name => {
         if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name)) throw failure('invalid_private_name', 'Private record names are plain file names.');
@@ -347,6 +377,8 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
         // Opaque signing authority stays in the Node-only context; never serialize it
         // into configuration, authored files, diagnostics or a checkpoint record.
         signer: Object.freeze({ publicKey: shared.publicKey, privateKey: shared.privateKey }),
+        // The agent's key-wrap key (opaque, non-extractable private CryptoKey) for receiving wrapped page keys.
+        wrapKey: wrap,
         devicePath: join(page.directory, 'device.sqlite'),
         openDevice: ({ create = false } = {}) => openPageDevice({ path: join(page.directory, 'device.sqlite'), signer: shared, create }),
         readPrivate: (name, optional = false) => readJson(privatePath(name), optional),

@@ -49,34 +49,9 @@ export function startWorkspaceProgram({ app, preload, cli, socketDirectory, even
   };
 }
 
-/** Exercise real browser account/key proof and recipient-bound key transfer. */
-export async function provisionWorkspacePage({ page, slug, applicationId, publicKey, app, setup, expect }) {
-  if(!await page.locator('#provisioning').evaluate(node=>node.open))await page.locator('#provisioning > summary').click();
-  const external = page.locator('#provisioning details');
-  if(!await external.evaluate(node=>node.open))await external.locator('summary').click();
-  await external.locator('input').fill(publicKey);
-  await external.getByRole('button', { name: 'Create account-bound challenge for this key', exact: true }).click();
-  const out = page.locator('[data-provisioning="out"]'), incoming = page.locator('[data-provisioning="in"]');
-  await expect.poll(async () => { try { return JSON.parse(await out.inputValue()).publicKey; } catch { return null; } }).toBe(publicKey);
-  const challenge = JSON.parse(await out.inputValue()); assert.equal(challenge.applicationId, applicationId);
-  const challengeFile = join(app, '.tendriller', `qualification-${slug}-challenge.json`);
-  await writeFile(challengeFile, JSON.stringify(challenge), { mode: 0o600, flag: 'wx' });
-  const proof = await setup(['sign-enrollment', slug, challengeFile]);
-  assert.deepEqual(await setup(['sign-enrollment', slug, challengeFile]), proof, 'The exact epoch-bound signed proof must survive a lost reply');
-  await incoming.fill(JSON.stringify(proof));
-  await external.getByRole('button', { name: 'Record external signed enrollment proof from incoming field', exact: true }).click();
-  await expect(page.locator('[data-provisioning="status"]')).toContainText('External key proof recorded');
-  const request = await setup(['provisioning-request', slug]);
-  assert.deepEqual(await setup(['provisioning-request', slug]), request, 'Retry must return the same retained recipient request');
-  await incoming.fill(JSON.stringify(request)); await page.locator('[data-provisioning="review"]').click();
-  await expect(page.locator('[data-provisioning="status"]')).toContainText(publicKey);
-  await page.locator('[data-provisioning="writer"]').check(); await page.locator('[data-provisioning="grant"]').click();
-  await expect(page.locator('[data-provisioning="status"]')).toContainText('Recipient-bound encrypted key package created');
-  const packageFile = join(app, '.tendriller', `qualification-${slug}-package.json`);
-  await writeFile(packageFile, await out.inputValue(), { mode: 0o600, flag: 'wx' });
-  assert.equal((await setup(['import-provisioning', slug, packageFile])).provisioned, true);
-  assert.equal((await setup(['import-provisioning', slug, packageFile])).provisioned, true);
-  await page.locator('#provisioning > summary').click();
+/** The running agent's page is admitted from its signed host grant by an online browser holder, then holds the keys. */
+export function admittedAgent(program, pageId, label) {
+  return program.waitFor(value => value.page === pageId && value.canAuthor === true, `${label}: agent admitted with page keys`, 90000);
 }
 
 export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, publicKey, first, second, profile, setup, tendril, node, cli, preload, expect, report, service, transportCounters, transport, feedback, network, checkpoint, passed, sha256 }) {
@@ -93,15 +68,18 @@ export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, pu
   const save = async (page, text) => { await page.locator('#new').click(); await page.locator('#note').fill(text); await page.locator('#submit').click(); await expect(page.locator('#operation-status')).toContainText('Stored locally: yes'); await expect(page.locator('#notes')).toContainText(text); return page.locator('#operation-id').inputValue(); };
   const opened = async (item, width = 390) => { const value = await profile({ width, height: 844 }); await value.page.goto(item.page_url); await expect(value.page.locator('#public-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 60000 }); await expect(value.page.locator('#submit')).toBeEnabled({ timeout: 60000 }); return value; };
   try {
-    checkpoint('optional workspace: explicit key proof and provisioning, then ONE native hub');
+    checkpoint('optional workspace: ONE native hub; the browser-created page admits the agent from its signed grant');
     // Other browser data links would invalidate single-link network evidence.
     await second.context.close();
-    await provisionWorkspacePage({ page: first.page, slug, applicationId: primary.application.id, publicKey, app, setup, expect });
     program = start();
     await program.waitFor(value => value.hub === 'connected', 'one authenticated control hub');
-    const primaryOpened = await program.waitFor(running(primary.id), 'explicitly provisioned primary page');
+    const primaryOpened = await program.waitFor(running(primary.id), 'primary page opened while awaiting admission');
     assert.equal(primaryOpened.publicKey, publicKey);
-    await program.waitFor(value => value.page === journal.id && value.state === 'awaiting_initialization', 'unprovisioned page excluded');
+    // The owner's online browser verifies the host attestation for the granted agent and signs its admission.
+    await admittedAgent(program, primary.id, 'browser-first page');
+    await expect(first.page.locator('#devices')).toContainText('New agent signed in', { timeout: 30000 });
+    // The agent-first journal page opened with its own creator keys.
+    await admittedAgent(program, journal.id, 'agent-first page');
     peer = connectQualificationPeer(qualificationSocketPath(socketDirectory, slug));
     const browserKey = await first.page.locator('#public-key').inputValue(); await peer.request('configure', { browserDeviceId: browserKey });
     await peer.request('setup-ready');
@@ -111,12 +89,13 @@ export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, pu
     const retry = await command(slug, 'workspace-native-exact', 'Optional native workspace author');
     assert.equal(retry.proposalId, firstCommand.proposalId); assert.equal(retry.authorTimestampMs, firstCommand.authorTimestampMs);
     await expect(first.page.locator('#notes')).toContainText('Optional native workspace author', { timeout: 30000 });
-    passed('one hub opens only explicitly provisioned page, exact native retries keep proposal/time and browser convergence');
+    passed('one hub, agent admitted automatically from its signed grant, exact native retries keep proposal/time and browser convergence');
 
-    checkpoint('optional workspace: second page, separate keys/history, same shared signer');
+    checkpoint('optional workspace: agent-first page; the owner browser is admitted by the running agent');
     journalProfile = await opened(journal); await save(journalProfile.page, 'Journal browser operation');
-    await provisionWorkspacePage({ page: journalProfile.page, slug: 'journal', applicationId: await journalProfile.page.evaluate(()=>window.tendril.application.backend.applicationId), publicKey, app, setup, expect });
-    await program.waitFor(running(journal.id), 'second page provisioned while running');
+    const journalAuthority = await journalProfile.page.evaluate(async () => (await window.tendril.application.backend.readAuthority()));
+    assert.equal(journalAuthority.descriptor.payload.rootPrincipal, publicKey, 'the agent created the journal page keys');
+    assert.equal(journalAuthority.memberships.at(-1).signer, publicKey, 'the agent signed the browser admission');
     assert.equal((await tendril(['--page', 'journal', 'self'])).identity.publicKey, publicKey);
     assert.notEqual((await notes(['self'])).applicationId, (await tendril(['--page', 'journal', 'self'])).applicationId);
     await expect.poll(async () => (await tendril(['--page', 'journal', 'query', 'notes', 'null'])).value.map(row => row.text), { timeout: 30000 }).toContain('Journal browser operation');
@@ -125,17 +104,14 @@ export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, pu
     assert.equal((await notes(['query', 'notes', 'null'])).value.some(row => row.text.includes('Journal ')), false);
     await journalProfile.context.close(); journalProfile = undefined;
 
-    checkpoint('optional workspace: new page does not open until browser-first provisioning');
+    checkpoint('optional workspace: a page created and initialized while the agent runs opens without restart');
     const late = await setup(['new', 'late', '--template', 'notes', '--name', 'Created while agent runs']);
     await setup(['init', 'late']); await setup(['deploy', 'late']);
-    await program.waitFor(value => value.page === late.id && value.state === 'awaiting_initialization', 'late page awaits explicit provisioning');
+    await admittedAgent(program, late.id, 'late agent-first page');
     lateProfile = await opened(late); await save(lateProfile.page, 'Late browser operation');
-    const lateSelf = await lateProfile.page.evaluate(() => window.tendril.application.backend.applicationId);
-    await provisionWorkspacePage({ page: lateProfile.page, slug: 'late', applicationId: lateSelf, publicKey, app, setup, expect });
-    await program.waitFor(running(late.id), 'late page opened without program restart');
     await command('late', 'late-native-exact', 'Late native operation'); await expect(lateProfile.page.locator('#notes')).toContainText('Late native operation');
     await lateProfile.context.close(); lateProfile = undefined;
-    passed('second and late pages retain independent histories and explicit keys under the same running agent and signer');
+    passed('second and late pages retain independent histories and keys under the same running agent and signer');
 
     checkpoint('optional workspace: stop hub, author browser offline, restart same devices');
     assert.deepEqual(await program.stop(), { code: 0, signal: null }); program = undefined;
@@ -205,13 +181,12 @@ export async function qualifyFirstAppSqlWorkspace({app,slug,primary,publicKey,fi
  const query=()=>tendril(['--page',slug,'query','inventory','null']);
  const command=(name,input,id)=>tendril(['--page',slug,'command',name,JSON.stringify(input),'--operation',id,'--wait','materialized']);
  try {
-  checkpoint('optional full native SQL: explicit browser provisioning and independent SQL grants');
+  checkpoint('optional full native SQL: automatic agent admission and independent SQL grants');
   await second.context.close();
-  await provisionWorkspacePage({page:first.page,slug,applicationId:primary.application.id,publicKey,app,setup,expect});
   await first.page.locator('#sql-grantee').fill(publicKey);await first.page.locator('#sql-grant').click();
   await expect(first.page.locator('#result')).toContainText('accepted',{timeout:30000});
   const start=()=>startWorkspaceProgram({app,cli,preload,socketDirectory:'unused-sql-qualification',events});
-  program=start();await program.waitFor(value=>value.hub==='connected','SQL workspace hub');await program.waitFor(value=>value.page===primary.id&&value.state==='running','provisioned full SQL page');
+  program=start();await program.waitFor(value=>value.hub==='connected','SQL workspace hub');await admittedAgent(program,primary.id,'full SQL page');
   await expect.poll(async()=>{try{return(await query()).value.catalog.map(row=>row.name);}catch{return[];}},{timeout:60000}).toContain('inventory');
   for(const[id,units]of[['native-source',10],['native-destination',0]])assert.equal((await command('addBin',{id,units},'sql-'+id)).materialized?.outcome,'accepted');
   const input={transferId:'native-transfer',from:'native-source',to:'native-destination',units:3,expectedSource:10,expectedDestination:0};
