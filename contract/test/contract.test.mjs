@@ -15,7 +15,7 @@ test('the host SDK starts no traffic and exposes only explicit host and particip
   const calls = [], fetch = async (url, options) => { calls.push({ url, options }); return Response.json({ id: 'page' }); };
   const client = createAgentClient(credential, { fetch }).page('aaaaaaaaaaaa', { applicationId: application.id });
   assert.equal(calls.length, 0);
-  assert.deepEqual(Object.keys(client).sort(), ['base', 'id', 'info', 'peers', 'request', 'service', 'socket']);
+  assert.deepEqual(Object.keys(client).sort(), ['base', 'fetch', 'id', 'info', 'peers', 'request', 'service', 'socket']);
   assert.deepEqual(await client.info(), { id: 'page' });
   assert.equal(calls[0].options.headers.Authorization, 'Bearer ' + credential.token);
   assert.equal(calls[0].url, 'https://host.test/api/agent/pages/aaaaaaaaaaaa');

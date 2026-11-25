@@ -47,9 +47,13 @@ test('the agent client is inert until used and bases page routes at /api/agent/p
   assert.deepEqual(all, [PAGE, 'bbbbbbbbbbbb']);
   const one = client.page(PAGE, { applicationId: application.id });
   assert.equal(one, client.page(PAGE, { applicationId: application.id }));
-  assert.deepEqual(Object.keys(one).sort(), ['base', 'id', 'info', 'peers', 'request', 'service', 'socket']);
+  assert.deepEqual(Object.keys(one).sort(), ['base', 'fetch', 'id', 'info', 'peers', 'request', 'service', 'socket']);
   await one.info();
   assert.equal(calls.at(-1).url, `${service}/api/agent/pages/${PAGE}`);
+  await one.fetch(`${one.base}/peers/pairing`);
+  assert.equal(calls.at(-1).init.headers.get('Authorization'), 'Bearer ' + TOKEN);
+  await assert.rejects(one.fetch(`${service}/api/agent/pages/bbbbbbbbbbbb/peers/pairing`), { code: 'invalid_page_route' });
+  await assert.rejects(one.fetch('https://elsewhere.test/'), { code: 'invalid_page_route' });
   assert.throws(() => client.page('../agent'), { code: 'invalid_page' });
   assert.throws(() => createAgentClient({ service, token: 'tk_' + 'a'.repeat(32) }), { code: 'invalid_agent_token' });
   assert.equal(hub.connections.length, 0, 'HTTP work never opens the hub');

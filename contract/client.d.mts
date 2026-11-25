@@ -13,6 +13,8 @@ export interface PageClient {
   request<T = unknown>(path: string, options?: RequestOptions): Promise<T>;
   /** A hub stream onto one page socket endpoint (setup/watch, peers/*, assistant/adapter). */
   socket(path: string, protocols?: readonly string[]): HubSocket;
+  /** Authenticated raw fetch confined to this page's routes, for helpers that take a fetch. */
+  fetch(url: string, init?: RequestInit): Promise<Response>;
   info(): Promise<Record<string, unknown>>;
   service(): Promise<ServiceDescriptor>;
 }

@@ -77,8 +77,16 @@ export function createAgentClient({ service, token }, { fetch: fetcher = globalT
       if (path.startsWith('peers/relay?')) return new Socket(url, [...protocols, token]);
       return socket(path, protocols);
     };
+    // A raw authenticated transport for helpers that take a fetch (pairing); confined to this page.
+    const pageFetch = (url, init = {}) => {
+      const target = new URL(url);
+      if (target.origin !== origin || !(target.pathname === new URL(base).pathname || target.pathname.startsWith(new URL(base).pathname + '/')))
+        return Promise.reject(new ApiError(400, { code: 'invalid_page_route', message: 'The page transport only reaches this page.' }));
+      const headers = new Headers(init.headers); headers.set('Authorization', `Bearer ${token}`);
+      return fetcher(target.href, { ...init, headers, redirect: 'error' });
+    };
     const value = Object.freeze({
-      id, base,
+      id, base, fetch: pageFetch,
       peers: createPeersClient({ base, applicationId, request: (path, options) => pageRequest('/' + path, options), protocols: [PEER_RENDEZVOUS_PROTOCOL], socket: peerSocket }),
       request: pageRequest,
       socket,
