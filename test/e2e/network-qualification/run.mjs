@@ -16,12 +16,18 @@ const { values } = parseArgs({ options: {
   'artifact-root': { type: 'string' }, profile: { type: 'string' },
   'idle-ms': { type: 'string', default: '15000' },
   'memory-mib': { type: 'string' }, cpus: { type: 'string' },
+  // Run seeded chaos (scripts/test-chaos.mjs --network) in the lab instead of a profile.
+  chaos: { type: 'string' },
 } });
 if (!values.output) throw new Error('Usage: node test/e2e/network-qualification/run.mjs --output NEW_DIRECTORY [--node-binary NODE24]');
 const resources = networkLabResources({ memoryMiB: values['memory-mib'], cpus: values.cpus });
 const application = Boolean(values['artifact-root']);
-if (application && (!(values.profile === 'suite' || NETWORK_PROFILES.includes(values.profile)) || values['browser-controls'])) throw new Error('Choose one application --profile, without --browser-controls');
+const chaos = values.chaos !== undefined;
+if (chaos && (!application || values.profile || values['browser-controls'])) throw new Error('--chaos requires --artifact-root and no --profile or --browser-controls');
+if (application && !chaos && (!(values.profile === 'suite' || NETWORK_PROFILES.includes(values.profile)) || values['browser-controls'])) throw new Error('Choose one application --profile, without --browser-controls');
 if (!application && values.profile) throw new Error('An application profile requires --artifact-root');
+const chaosArgs = chaos ? values.chaos.split(/\s+/).filter(Boolean) : [];
+if (chaosArgs.some(arg => !/^--?[a-z-]+$|^[A-Za-z0-9.:_-]+$/.test(arg))) throw new Error('Chaos arguments must be plain options and values');
 const idleMs = Number(values['idle-ms']);
 if (!Number.isSafeInteger(idleMs) || idleMs < 1000 || idleMs > 48 * 60 * 60 * 1000) throw new Error('Invalid bounded idle interval');
 let kit;
@@ -83,11 +89,13 @@ try {
         '--env', 'NETWORK_LAB_PROGRESS=/evidence/network-progress.json',
       ] : []),
       values.image, ...(values['browser-controls'] || application ? ['xvfb-run', '-a', '--server-args=-screen 0 1920x1080x24'] : []), 'node',
-      ...(application ? ['/workspace/scripts/test-first-app.mjs', '--first-app-archive', `/workspace/dist/${kit}`,
+      ...(chaos ? ['/workspace/scripts/test-chaos.mjs', '--first-app-archive', `/workspace/dist/${kit}`, '--network',
+        '--report', '/evidence/chaos.json', ...chaosArgs] :
+        application ? ['/workspace/scripts/test-first-app.mjs', '--first-app-archive', `/workspace/dist/${kit}`,
         '--network-lab-profile', values.profile, '--report', '/evidence/first-app.json'] :
         [values['browser-controls'] ? '/lab/browser-probe.mjs' : '/lab/control-probe.mjs'])], { stdio: 'inherit' });
     const idleSegments = values.profile === 'suite' ? NETWORK_PROFILES.length : 1;
-    const timer = setTimeout(() => { void stop('SIGTERM'); reject(new Error('NETWORK_LAB_RUN_TIMEOUT')); }, application ? 25 * 60_000 + idleSegments * idleMs : 90_000);
+    const timer = setTimeout(() => { void stop('SIGTERM'); reject(new Error('NETWORK_LAB_RUN_TIMEOUT')); }, chaos ? 120 * 60_000 : application ? 25 * 60_000 + idleSegments * idleMs : 90_000);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('exit', code => { clearTimeout(timer); code === 0 && !stopped ? accept() : reject(new Error('NETWORK_LAB_PROBE_FAILED')); });
   });
