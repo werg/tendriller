@@ -123,10 +123,12 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
 
   let watcher;
   try {
-    // Pages initialized while the agent runs are opened without a restart.
-    if (existsSync(workspace.paths.pages)) {
-      watcher = watchFiles(workspace.paths.pages, { recursive: true }, (_type, name) => {
-        if (String(name ?? '').endsWith('initialized.json')) scheduleRescan();
+    // Watch the existing private parent, including when no page directory exists
+    // yet. Registration discovers a page; only explicit provisioning may open it.
+    if (existsSync(workspace.paths.secret)) {
+      watcher = watchFiles(workspace.paths.secret, { recursive: true }, (_type, name) => {
+        const file = String(name ?? '').split(/[\\/]/u).at(-1);
+        if (file === 'page.json' || file === 'initialized.json') scheduleRescan();
       });
       watcher.on('error', () => {});
     }
