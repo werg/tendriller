@@ -391,19 +391,20 @@ example: copy them from the app actually produced in that run.
   "applicationId": "ACTUAL_64_HEX_APPLICATION_ID",
   "historyId": "ACTUAL_SIGNED_HISTORY_ID",
   "native": {
-    "project": "/private/acceptance/new-domain-run/project/actual-app",
-    "module": "session.mjs",
+    "project": "/private/acceptance/new-domain-run/project/actual-workspace",
+    "module": "ACTUAL_ATTACH_MODULE.mjs",
     "export": "attachSession",
     "profile": "main",
-    "handle": { "file": ".tendriller/handle.json" },
-    "descriptor": { "file": ".tendriller/descriptor.json" },
-    "deviceId": { "file": ".tendriller/initialized.json", "pointer": "/deviceId" },
-    "deviceStore": ".tendriller/device.sqlite",
+    "credential": { "file": ".tendriller/agent/credential.json" },
+    "handle": { "file": ".tendriller/pages/ACTUAL_PAGE_ID/page.json" },
+    "descriptor": { "file": ".tendriller/pages/ACTUAL_PAGE_ID/descriptor.json" },
+    "deviceId": { "file": ".tendriller/pages/ACTUAL_PAGE_ID/initialized.json", "pointer": "/deviceId" },
+    "deviceStore": ".tendriller/pages/ACTUAL_PAGE_ID/device.sqlite",
     "process": {
       "pid": 12345,
-      "argv": ["/absolute/node", "session.mjs"],
-      "resume": ["/absolute/node", "session.mjs"],
-      "storage": ".tendriller/device.sqlite"
+      "argv": ["/absolute/node", "/absolute/workspace/node_modules/.bin/tendril", "agent", "run"],
+      "resume": ["/absolute/node", "/absolute/workspace/node_modules/.bin/tendril", "agent", "run"],
+      "storage": ".tendriller/pages/ACTUAL_PAGE_ID/device.sqlite"
     }
   },
   "query": {
@@ -433,6 +434,18 @@ example: copy them from the app actually produced in that run.
 
 All `pointer` and query field paths are JSON Pointers, relative to the referenced
 JSON object. File paths are relative to `native.project` unless absolute.
+`native.project` is the agent workspace (the folder holding `tendriller.json`).
+`native.handle` is the page's workspace record `.tendriller/pages/<page-id>/page.json`
+(page ID, page URL and application); `native.credential` is the workspace agent
+credential `.tendriller/agent/credential.json`, whose `service` must equal the
+selected origin and whose `ta_` token authorizes `/api/agent/pages/<page-id>`. They
+are separate private files; the observer combines them in memory and never writes
+the token anywhere. The measured process is the workspace's one `tendril agent run`,
+which owns every page's device store; copy its actual argv from `/proc`.
+`native.module`/`native.export` name a module in the project whose export attaches
+to that running owner (`attachSession({ signal, profile })`); the workspace starter
+ships none, so native observations stay blocked until such an attach module is
+supplied for the run.
 `native.deviceId` can alternatively be the actual public key string; `process.pid`
 can be a JSON file reference. JSONL references accept `format: "jsonl"`, `line`
 (a zero-based index or `"last"`) and a pointer into that entry. The process check
