@@ -9,6 +9,7 @@ import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
+import { packedEngineModules } from './packed-engine-modules.mjs';
 import { once } from 'node:events';
 import { connect as connectTls } from 'node:tls';
 import { Agent } from 'undici';
@@ -127,13 +128,14 @@ export async function startPackedHost({ root, engine, directory, kit, port = DEF
   const oauthJwk = { ...await crypto.subtle.exportKey('jwk', oauthKey.privateKey), alg: 'ES256', kid: 'first-app-test' };
   const oauthConfiguration = { resource: SERVICE + '/mcp', clients: [{ id: 'first-app-test', name: 'First app test',
     redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: ['tendrils:create', 'tendrils:list'] }] };
+  const engineModules = await packedEngineModules(join(engine, 'package'));
   const options = () => ({ ...convertV4MiniflareOptions({
     host: '127.0.0.1', port, https: true, cf: false,
     workers: [
       { name: 'first-app-network', modules: true, script: proxyScript,
         compatibilityDate: workerOptions.compatibilityDate, serviceBindings: { PACKED_HOST: 'first-app-packed-host' } },
       { ...workerOptions, name: 'first-app-packed-host',
-        scriptPath: join(engine, 'package/worker.mjs'), modulesRoot: join(engine, 'package'), modules: true,
+        ...engineModules,
         bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost',
           OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration),
           ...(kit ? { SERVICE_SOURCE_COMMIT: kit.composition.core.source, SERVICE_COMPOSITION_ID: kit.composition.id } : {}) } },

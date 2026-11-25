@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { participateNativeApplication } from '../../session/native-rtc.mjs';
+import { nativeDirectConnectionOpener } from '../../session/native-rtc.mjs';
+import { createPeerIntroductions } from '../../contract/introductions.mjs';
+import { PEER_TRANSPORT_POLICY } from '../../contract/transport-policy.mjs';
 function inbox() {
   const values = [], waiters = []; let closed = false;
   return { push(value) { const waiter = waiters.shift(); if (waiter) waiter({ value, done: false }); else values.push(value); },
@@ -18,12 +20,16 @@ const peers = {
   },
   relay() { relayCalls++; throw Error('Expected actual native direct RTC'); },
 };
+// The same introductions and direct-first policy participateNativeApplication wires
+// into an owned session, driven here at the transport boundary it uses.
+const introductions = (identity, peerClient, onTransport) => createPeerIntroductions({ peers: peerClient, identity,
+  directTimeoutMs: PEER_TRANSPORT_POLICY.directTimeoutMs, onTransport,
+  openDirectConnection: options => nativeDirectConnectionOpener(policy.native)({ ...options,
+    configuration: PEER_TRANSPORT_POLICY.configuration, timeoutMs: PEER_TRANSPORT_POLICY.directTimeoutMs }),
+  openRelayConnection: () => { relayCalls++; throw Error('Expected actual native direct RTC'); } });
 // Deliberately use the real shipping Cloudflare STUN configuration.
 const policy = { native: { iceUseIpv6: false, iceAdditionalHostAddresses: ['127.0.0.1'] } };
-const ports = ids.map(deviceId => {
-  const session = { deviceId, participate(options) { assert.equal(options.control, 'owned-control'); return options; } };
-  return participateNativeApplication(session, { ...policy, peers, control: 'owned-control', onTransport: value => observations.push(value) });
-});
+const ports = ids.map(identity => introductions(identity, peers, value => observations.push(value)));
 const opening = ports.map((value, i) => value.transport.open({ peer: { identity: ids[1-i], route: { kind: 'rendezvous', channel: 'native-fixture' } } }, { signal: stop.signal }));
 try {
   const pair = await Promise.all(opening);
@@ -43,11 +49,10 @@ try {
 }
 // Cancellation uses the actual native opener, and must not enter fallback after stop.
 const cancelled = new AbortController(), offered = Promise.withResolvers(), waiting = inbox();
-const session = { deviceId: ids[0], participate(options) { return options; } };
-const cancelledPorts = participateNativeApplication(session, { ...policy, control: 'owned-control', peers: {
+const cancelledPorts = introductions(ids[0], {
   ...peers, rendezvous() { return { ready: Promise.resolve({ role: 'offerer' }), messages: waiting,
     async send() { offered.resolve(); }, close() { waiting.close(); } }; },
-} });
+});
 const pending = cancelledPorts.transport.open({ peer: { identity: ids[1], route: { kind: 'rendezvous', channel: 'cancel-fixture' } } }, { signal: cancelled.signal });
 const reason = Error('fixture cancelled');
 const rejected = assert.rejects(pending, error => error === reason);

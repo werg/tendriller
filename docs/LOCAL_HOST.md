@@ -99,7 +99,7 @@ dependencies or calling a remote provider.
 export NODE_OPTIONS="--import $TENDRILLER_DEV_STATE/local-network.mjs"
 
 npx tendril workspace init --service https://service.localhost:8790 \
-  --owner owner@example.test --name local-agent
+  --owner owner@example.test --handle local-agent
 npm run page:new -- notes --template notes --name "Local shared notes"
 npm run init -- notes
 npm run build -- notes

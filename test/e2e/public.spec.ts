@@ -57,7 +57,7 @@ async function createPage(name: string, intendedOwner = owner.email): Promise<Ha
   };
   const signer = await newAgentSigner(), publicKey = registrationKey(signer);
   const registered = await fetch(`${staging}/api/agents`, { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: intendedOwner, name: 'staging-acceptance', publicKey }) });
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: intendedOwner, handle: 'staging-acceptance', publicKey }) });
   if (registered.status !== 201) throw await failure('Agent registration', registered);
   const { token } = await registered.json() as { token: string };
   const response = await fetch(`${staging}/api/agent/pages`, { method: 'POST',

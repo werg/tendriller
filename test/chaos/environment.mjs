@@ -129,7 +129,7 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
     const setup = async args => JSON.parse(await node([join(app, 'setup.mjs'), ...args]));
 
     log('chaos setup: register the workspace agent');
-    await tendril(['workspace', 'init', '--service', SERVICE, '--owner', FIXTURE_OWNER.email, '--name', 'chaos']);
+    await tendril(['workspace', 'init', '--service', SERVICE, '--owner', FIXTURE_OWNER.email, '--handle', 'chaos']);
     const workspaceFile = await jsonFile(join(app, 'tendriller.json'));
     const pages = {};
     for (const slug of PAGE_SLUGS.slice(0, pageCount)) {

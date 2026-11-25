@@ -126,7 +126,7 @@ The kit is an **agent workspace**: one agent credential and one signing key for 
 The connector's linked account resolves the owner; no owner email or OAuth access token enters the local project. Create the shared key and print the public arguments:
 
 ```sh
-npx tendril workspace key --service "$TENDRILLER_ORIGIN" --name notes-agent
+npx tendril workspace key --service "$TENDRILLER_ORIGIN" --handle notes-agent
 ```
 
 Call `register_agent` through the **same selected account-linked connector** with exactly the printed arguments (`name`, `publicKey`). Save its result privately as `.tendriller/register-agent-result.json` (never in chat or page assets), then retain it:

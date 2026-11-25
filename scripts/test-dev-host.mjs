@@ -43,7 +43,7 @@ let handle = input.handle;
 if (!handle) {
   const { generateKeyPairSync } = await import('node:crypto');
   const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
-  const agent = await registerAgent(input.serviceOrigin, { owner: input.owner, name: 'local-host-smoke', publicKey });
+  const agent = await registerAgent(input.serviceOrigin, { owner: input.owner, handle: 'local-host-smoke', publicKey });
   const created = await createAgentClient({ service: input.serviceOrigin, token: agent.token }).pages.create({ name: 'Local host smoke' });
   handle = { ...created, token: agent.token };
 }

@@ -31,7 +31,7 @@ export async function createPage(owner = OWNER, sameAgent?: Handle): Promise<Han
   else {
     signer = await newAgentSigner();
     const registered = await http.post(`${SERVICE}/api/agents`, { headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
-      data: { owner, name: 'e2e-agent', publicKey: registrationKey(signer) } });
+      data: { owner, handle: 'e2e-agent', publicKey: registrationKey(signer) } });
     expect(registered.status(), await registered.text()).toBe(201);
     ({ token, agent } = await registered.json() as { token: string; agent: { id: string } });
   }

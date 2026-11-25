@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { prepareDevHostRelease } from './dev-host-release.mjs';
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
+import { packedEngineModules } from './packed-engine-modules.mjs';
 
 const require = createRequire(import.meta.url);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -120,12 +121,13 @@ export async function startDevHost({ release, state, port = 8790, artifacts, sig
     const { ratelimits } = await json(join(engine, 'testing-ratelimits.json'));
     const compatibilityDate = '2026-11-01';
     stage = 'runtime startup';
+    const engineModules = await packedEngineModules(engine);
     host = new Miniflare({ ...convertV4MiniflareOptions({
       host: '127.0.0.1', port, https: true, cf: false,
       workers: [
         { name: 'dev-host-network', modules: true, script: FIRST_APP_WEBSOCKET_PROXY_WORKER,
           compatibilityDate, serviceBindings: { PACKED_HOST: 'dev-host-packed' } },
-        { name: 'dev-host-packed', modules: true, scriptPath: join(engine, 'worker.mjs'), modulesRoot: engine,
+        { name: 'dev-host-packed', ...engineModules,
           compatibilityDate, compatibilityFlags: ['nodejs_compat'],
           durableObjects: { TENDRIL: { className: 'Tendril', useSQLite: true }, ADMISSION: { className: 'Admission', useSQLite: true } },
           d1Databases: { ACCOUNTS: 'dev-host-accounts' }, r2Buckets: { FILES: 'dev-host-files' },

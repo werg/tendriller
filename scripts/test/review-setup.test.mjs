@@ -21,10 +21,10 @@ test('the fixture names only its slug and title; page creation, intent and recov
 test('the linked-account register_agent request is a plain bearer JSON-RPC call and a refusal exposes nothing private', async () => {
   const requests = [];
   const fetch = async (url, init) => { requests.push({ url, init }); return Response.json({ jsonrpc: '2.0', id: 1, result: { structuredContent: { token: 'ta_' + 'a'.repeat(32), agent: { id: agent.id } } } }); };
-  const result = await registerAgentThroughMcp(service, 'PRIVATE_OAUTH', { name: 'review-fixture', publicKey: 'A'.repeat(43) }, { fetch });
+  const result = await registerAgentThroughMcp(service, 'PRIVATE_OAUTH', { handle: 'review-fixture', publicKey: 'A'.repeat(43) }, { fetch });
   assert.equal(result.agent.id, agent.id); assert.equal(requests[0].url, service + '/mcp');
   assert.equal(requests[0].init.headers.Authorization, 'Bearer PRIVATE_OAUTH'); assert.equal(requests[0].init.redirect, 'error');
-  assert.deepEqual(JSON.parse(requests[0].init.body).params, { name: 'register_agent', arguments: { name: 'review-fixture', publicKey: 'A'.repeat(43) } });
+  assert.deepEqual(JSON.parse(requests[0].init.body).params, { name: 'register_agent', arguments: { handle: 'review-fixture', publicKey: 'A'.repeat(43) } });
   for (const refused of [Response.json({ error: { code: -32000 } }), Response.json({ result: { isError: true } }), new Response('nope', { status: 403 })])
     await assert.rejects(registerAgentThroughMcp(service, 'PRIVATE_OAUTH', {}, { fetch: async () => refused }), error => error.message === 'The linked account refused register_agent' && !error.message.includes('PRIVATE_OAUTH'));
 });

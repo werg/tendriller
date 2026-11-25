@@ -232,7 +232,7 @@ try {
   const setup=async args=>JSON.parse(await node([join(app,'setup.mjs'),...args]));
   passed('domain-served workspace templates/shared helpers and independently installed exact public packages');
   checkpoint('register one workspace agent, grant pages, prepare and publish before browser roots or native agent');
-  const enrolled=await tendril(['workspace','init','--service',SERVICE,'--owner','owner@example.test','--name','first-app']);
+  const enrolled=await tendril(['workspace','init','--service',SERVICE,'--owner','owner@example.test','--handle','first-app']);
   const workspaceFile=await jsonFile(join(app,'tendriller.json')),credential=await jsonFile(join(app,'.tendriller/agent/credential.json'));
   assert.match(credential.token,/^ta_[a-z2-7]{32}$/);assert.equal(JSON.stringify(enrolled).includes(credential.token),false);assert.equal(JSON.stringify(workspaceFile).includes(credential.token),false);
   const created=await setup(['new',slug,'--template',sqlBrowser?'inventory':'notes','--name',sqlBrowser?'SQL browser qualification':'Browser qualification']);
@@ -256,7 +256,7 @@ try {
   // Independently qualify the current linked-account registration route, never
   // fall back to removed per-page credentials or copy an OAuth token into assets.
   const linked=join(directory,'linked-workspace');await mkdir(linked);
-  const key=await tendril(['workspace','key','--service',SERVICE,'--name','linked-agent'],{cwd:linked});
+  const key=await tendril(['workspace','key','--service',SERVICE,'--handle','linked-agent'],{cwd:linked});
   const response=await fetch(SERVICE+'/mcp',{method:'POST',redirect:'error',signal:AbortSignal.timeout(30000),headers:{Authorization:'Bearer '+oauthToken,'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'register_agent',arguments:key.register_agent}})});
   assert.equal(response.status,200);const reply=await response.json();assert.ok(reply.result&&!reply.result.isError);const registered=reply.result.structuredContent;
   const record=join(linked,'registration.json');await writeFile(record,JSON.stringify(registered),{mode:0o600,flag:'wx',flush:true});

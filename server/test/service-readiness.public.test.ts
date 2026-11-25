@@ -85,7 +85,7 @@ it('rechecks service state at creation after a previously successful preflight',
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
   try {
     for (const [path, body, headers] of [
-      ['/api/agents', { owner: 'readiness-test@example.com', name: 'readiness', publicKey: testPublicKey() }, {}],
+      ['/api/agents', { owner: 'readiness-test@example.com', handle: 'readiness', publicKey: testPublicKey() }, {}],
       ['/api/agent/pages', {}, { Authorization: `Bearer ${agent.token}` }],
     ] as const) {
       const response = await route(new Request(BASE + path, { method: 'POST',
