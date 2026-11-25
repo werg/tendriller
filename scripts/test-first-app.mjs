@@ -477,6 +477,8 @@ globalThis.WebSocket = class extends WebSocket {
       };
     }, { mode: values.transport });
     report.expected_transport = values.transport;
+    // FIRST_APP_NO_SHARED_WORKER=1 runs the whole flow on the fallback owner, as on browsers without SharedWorker.
+    if (process.env.FIRST_APP_NO_SHARED_WORKER === '1') { await context.addInitScript(() => { delete globalThis.SharedWorker; }); report.owner_route = 'elected'; }
     const watchPage = target => {
       target.on('pageerror', error => { report.browser_errors ??= []; if (report.browser_errors.length < 12) report.browser_errors.push(error.message); });
       target.on('console', message => {
