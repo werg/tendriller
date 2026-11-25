@@ -77,6 +77,87 @@ replaced; publishing UI code alone does not require a new owner incarnation.
    Do not claim future wake of a conversation unless that host explicitly
    supports and has established it.
 
+## Native event reads and captured-view lifetime
+
+Use `session.changes({ signal })` to learn that data may have changed, then
+`await session.readView()` to capture one applied revision. Read events with
+`await view.readEvents(...)` and always `await view.release()` in `finally`.
+There is no session-level `readEvents()` or captured-view `close()`. Awaiting
+the release works for both an in-process native session and an attached facade.
+
+The following function runs against the selected public session API. Pass the
+existing native session or `attached.session` returned by the starter's
+`attachSession`; it never opens a second signer. For Shared Notes use
+`topics: ['note']`; for the request pattern use its unchanged declared topics.
+
+```js
+// native-event-consumer-example
+export async function consumeNativeEvents(session, { topics, loadCursor, commitBatch, signal }) {
+  const stopped = new AbortController();
+  const lifetime = AbortSignal.any([session.signal, stopped.signal, ...[signal].filter(Boolean)]);
+  const selectedTopics = [...topics]; // Keep checkpoint scope stable for this run.
+  const review = evidence => Object.assign(
+    Error('Selected history changed. Review recovery and reconcile handled work before resuming.'),
+    evidence,
+  );
+  // Stop a batch in progress as well as the next change notification.
+  const offRecovery = session.onRecovery(recovery => stopped.abort(review({ recovery })));
+  try {
+    let cursor = await loadCursor(); // Last durably HANDLED cursor, or undefined for a deliberate first scan.
+    for await (const change of session.changes({ signal: lifetime })) {
+      lifetime.throwIfAborted();
+      if (change.kind === 'recovery') throw review({ revision: change.revision, recovery: change.recovery });
+      const view = await session.readView();
+      try {
+        for (;;) {
+          lifetime.throwIfAborted();
+          const batch = await view.readEvents({ topics: selectedTopics, limit: 64,
+            ...(cursor === undefined ? {} : { cursor }) });
+          lifetime.throwIfAborted();
+          if (batch.hasMore && batch.cursor === cursor) throw Error('Event cursor did not advance.');
+          // Application-owned local transaction: durable results/handled identities
+          // and this batch.cursor commit together. Roll back on failure/cancellation.
+          await commitBatch(batch, { signal: lifetime });
+          lifetime.throwIfAborted();
+          cursor = batch.cursor;
+          if (!batch.hasMore) break;
+        }
+      } finally { await view.release(); }
+    }
+    lifetime.throwIfAborted();
+    throw Error('Event observation ended. Inspect the owner before restarting this consumer.');
+  } finally { offRecovery(); }
+}
+```
+
+`loadCursor` and `commitBatch` are adapters to the application's existing durable
+consumer store, not extra Chronolog methods. `commitBatch` must preserve stable
+event/request identities and atomically save its results with the handled cursor;
+it must honor the supplied signal before committing. A failed or cancelled batch
+does not advance the function's cursor. If cancellation or recovery races an
+already completed commit, its retained receipts and checkpoint remain evidence
+for reconciliation. Do not replace these adapters with an in-memory set or a
+stdout watermark. Keep this local transaction bounded; external effects require
+their original provider idempotency reference and receipt reconciliation.
+
+Changes include an initial observation and coalesce later invalidations; they
+are not an event replay stream. Pagination above reads one captured revision.
+A long-lived view does not update when another peer writes: release it and capture
+another after the next invalidation. Ordinary errors and cancellation release
+the current view; an unexpected stream end is a consumer failure. The caller
+still owns its native session or attachment lifetime and closes/detaches it in
+its own `finally`.
+
+On `APPLICATION_VIEW_RECOVERED`, a recovery notification, or uncertain cursor
+continuity, stop and follow [recovered-cursor review](#review-a-recovered-cursor-before-resuming).
+Inspect `await session.inspectRecovery()` and the error's available evidence,
+retain handled-work receipts, and resume only after a deliberate rescan and
+reconciliation. Do not clear or translate a cursor automatically. For delivery
+to a separate service, the public `forwardSessionEvents` helper already supplies
+the bounded event-forwarding loop; its `EVENT_FORWARDER_REVIEW_RECOVERY` stop
+uses the same recovery guide. Neither pattern promises exactly-once external
+effects or infers continuity from a control-change label.
+
 ## Review a recovered cursor before resuming
 
 Pairing or another control transition can select a new generation even when

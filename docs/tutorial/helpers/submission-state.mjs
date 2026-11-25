@@ -1,4 +1,8 @@
 // UI eligibility only. Drafts and signed attempts remain in the view/session stores.
+// Wire every action control to onChange, including the final working release;
+// data snapshots alone cannot observe completion. See APP_PATTERNS.md's
+// "Keep every action control reactive" example. Release once in finally,
+// after coherent refresh, and retain pending/recovery state on failure.
 export function createSubmissionState(onChange = () => {}) {
   let state = { attached: false, connected: false, ready: false, coherent: false,
     generation: null, working: false, pending: null, selected: '', observed: null };

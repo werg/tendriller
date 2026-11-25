@@ -27,6 +27,7 @@ export function createVoiceController({ runtime, consent, consentMode = consent 
   let voice = null, loading = null, owner = null, attempt = null, phase = 'idle', error = null, disposed = false;
   let detail = null;
   const snapshot = () => ({ phase, error, detail: detail && { ...detail }, listening: voice?.listening ?? false,
+    microphoneActive: voice?.microphoneActive ?? false,
     speaking: voice?.speaking ?? false, muted: voice?.muted ?? true });
   const notify = () => onStatus(snapshot());
   const usable = () => {
@@ -90,13 +91,18 @@ export function createVoiceController({ runtime, consent, consentMode = consent 
         phase = 'idle'; notify();
       } catch (failure) { failed(failure, current); }
     },
-    async start(event, { context } = {}) {
+    async start(event, { context, language } = {}) {
       if (context === undefined) throw Error('Capture the task context before starting asynchronous voice input.');
       const captured = structuredClone(context), current = begin(event);
       attempt = { id: crypto.randomUUID(), context: captured, signal: current.signal };
       phase = 'preparing'; notify();
       try {
         const adapter = await getVoice(current.signal);
+        current.signal.throwIfAborted();
+        // The optional tag is captured with this attempt before loading/consent.
+        // The adapter owns validation, persistence and saved/device defaults.
+        if (language !== undefined) adapter.language(language);
+        current.signal.throwIfAborted();
         await abortable(adapter.startCapture(), current.signal); current.signal.throwIfAborted();
         if (attempt) { phase = adapter.listening ? 'recording' : 'error'; if (!adapter.listening) error = 'Recording did not start. You can type instead.'; notify(); }
       } catch (failure) { failed(failure, current); }

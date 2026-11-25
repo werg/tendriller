@@ -91,6 +91,12 @@ A saved operation retains its signed attempt locally. An applied operation recor
 
 A read view captures `view:'applied'`, revision and generation. Read query results and events from that view, then release it. Coalesced change notifications tell a consumer to capture another view; they are not a replay log. An event cursor is consumer delivery progress and must be committed atomically with the consumer's own work.
 
+For a complete native `changes()` → `readView()` → `readEvents()` loop with
+`await view.release()` in `finally`, cancellation and handled checkpoints, see
+[native event-consumer lifetime](AGENT_RESTART.md#native-event-reads-and-captured-view-lifetime).
+Read events from the captured view, not `session.readEvents()`, and acquire a new
+view after invalidation; a captured view is not an updating subscription.
+
 Recovery can abandon a suffix previously reported applied. An affected operation becomes `abandoned` or `needsReapply` and retains its previous evidence. The new selected generation and unknown-loss flag must remain visible. Reapplication creates a new signed attempt with current guards; it never silently admits old-branch intent.
 
 ## Host control connection

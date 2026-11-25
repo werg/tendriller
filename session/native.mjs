@@ -5,6 +5,7 @@ import { serialize } from 'node:v8';
 import { MessageChannel } from 'node:worker_threads';
 import { canonicalJson, identifier, PUBLICATION_LIMITS } from '@chronolog/peer-session';
 import { createNativeFrames as frames } from './native-transport.mjs';
+import { transportCauseSummary } from './transport-causes.mjs';
 import { acquireAtomicLock, connectLocalIpc, ensurePrivateDirectory, isWindows, listenLocalIpc, readPrivateJson, writePrivateJsonAtomic } from './ipc.mjs';
 
 const PROTOCOL = 'tendriller.native-owner.v1';
@@ -269,6 +270,8 @@ export async function createNativeSessionSupervisor({ directory: path, profileId
           sendReply({ error: {
             name: error?.name ?? 'Error', message: error?.message ?? String(error),
             code: error?.code, status: error?.status, outcome: error?.outcome, phase: error?.phase, receipt: error?.receipt,
+            operationId: error?.operationId, publicationId: error?.publicationId,
+            transportCauses: transportCauseSummary(error),
           } });
         } finally { --client.controlRequests; }
       };
@@ -385,6 +388,7 @@ export async function attachNativeSession({ directory: path, token, connect, app
       if (!waiter) return;
       controlWaiters.delete(frame.id); clearTimeout(waiter.timer);
       if (frame.error) {
+        const transportCauses = transportCauseSummary(frame.error);
         const err = Object.assign(new Error(frame.error.message ?? 'Control request failed'), {
           name: frame.error.name ?? 'Error',
           ...(frame.error.code ? { code: frame.error.code } : {}),
@@ -392,6 +396,9 @@ export async function attachNativeSession({ directory: path, token, connect, app
           ...(frame.error.outcome !== undefined ? { outcome: frame.error.outcome } : {}),
           ...(frame.error.phase !== undefined ? { phase: frame.error.phase } : {}),
           ...(frame.error.receipt !== undefined ? { receipt: frame.error.receipt } : {}),
+          ...(frame.error.operationId !== undefined ? { operationId: frame.error.operationId } : {}),
+          ...(frame.error.publicationId !== undefined ? { publicationId: frame.error.publicationId } : {}),
+          ...(transportCauses ? { transportCauses } : {}),
         });
         waiter.reject(err);
       } else waiter.resolve(frame.value);

@@ -322,9 +322,30 @@ const voice = createVoiceController({
   onStatus: renderVoiceStatus,
 });
 await voice.prepare(trustedPrepareEvent); // Selected resources; no microphone.
-await voice.start(trustedRecordEvent, { context });
+await voice.start(trustedRecordEvent, {
+  context,
+  language: languagePicker.value || undefined, // Optional regional tag, e.g. de-DE.
+});
 voice.finish(); // Produces an editable transcript candidate, never a command.
 ```
+
+The application owns its language picker. `start` captures that choice and the
+task context before loading or consent; changing the picker cannot alter the
+pending attempt. A new deliberate `start` cancels the old attempt and suppresses
+its late transcript. Omit `language` to retain the adapter's saved/device default.
+The same adapter validates and canonicalizes explicit tags, persists the choice,
+and checks model support; malformed tags fail validation and unsupported model
+languages leave the microphone stopped with an error and typed input available.
+No language is silently replaced with English. Use `createVoice` directly if
+your application needs the broader adapter API.
+
+Read `voice.snapshot().microphoneActive`, also included in every `onStatus`
+snapshot, for actual microphone use. It is false before the adapter exists and
+during loading or permission waiting, true only while the adapter owns active
+capture, and false after finish, cancellation, a hidden-page stop or disposal.
+`phase` and `detail` describe preparation, transcription and errors separately;
+preparing speech assets does not mean the microphone is recording. These lifecycle
+checks do not establish multilingual recognition accuracy on a physical device.
 
 Typed input remains available while resources load or transcription fails. The
 starter's **Dictate a draft note** controls use this sequence: select **Allow voice

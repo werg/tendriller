@@ -12,6 +12,100 @@ const files = new Map([
   ['/connect-view.mjs', 'docs/tutorial/connect-view.mjs'],
 ]);
 
+test('connection colors inherit before mounting and remain readable across states and viewports', { timeout:60000 }, async t => {
+  const authored = { bg:'#171b2a', fg:'#f3f4ff', muted:'#b8bfd9', border:'#596581', accent:'#c4b5fd', 'accent-fg':'#211942', 'accent-hover':'#ddd6fe' };
+  const palettes = {
+    light: { bg:'#ffffff', fg:'#111a16', muted:'#53665d', border:'#dde5e0', accent:'#146c4a', 'accent-fg':'#ffffff', 'accent-hover':'#0f583c' },
+    dark: { bg:'#141b18', fg:'#eef3f0', muted:'#91a49a', border:'#26332d', accent:'#1f9d68', 'accent-fg':'#05140d', 'accent-hover':'#26b377' },
+    root: authored,
+    container: { ...authored, 'accent-hover': authored.accent },
+  };
+  const server = createServer(async (request, response) => {
+    const url = new URL(request.url, 'http://fixture'), path = url.pathname;
+    if (!files.has(path)) { response.writeHead(404); response.end(); return; }
+    response.setHeader('Content-Type', path.endsWith('.mjs') ? 'text/javascript' : 'text/html');
+    let source = await readFile(new URL(files.get(path), root), 'utf8');
+    const palette = url.searchParams.get('palette');
+    if (path.endsWith('.html') && ['root', 'container'].includes(palette)) {
+      const selector = palette === 'root' ? ':root' : '#workspace > div:last-child';
+      const colors = Object.entries(authored).filter(([key]) => palette !== 'container' || key !== 'accent-hover');
+      // Authored colors exist before the module creates its card and injects CSS.
+      source = source.replace('<style>', `<style>${selector}{color-scheme:dark;${colors.map(([key, value]) => `--tc-${key}:${value}`).join(';')}}`);
+    }
+    response.end(source);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const browser = await chromium.launch({ headless:true, executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined });
+  t.after(() => browser.close());
+  const base = `http://127.0.0.1:${server.address().port}/ui/showcase.html?states=1`;
+  const rgb = hex => `rgb(${hex.slice(1).match(/../g).map(value => parseInt(value, 16)).join(', ')})`;
+  const luminance = hex => hex.slice(1).match(/../g).map(value => parseInt(value, 16) / 255)
+    .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4)
+    .reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
+  const contrast = (first, second) => (Math.max(luminance(first), luminance(second)) + .05) / (Math.min(luminance(first), luminance(second)) + .05);
+  for (const [width, name] of [[1200, 'desktop'], [320, 'phone']]) {
+    for (const [palette, colorScheme] of [['light', 'light'], ['dark', 'dark'], ['root', 'light'], ['container', 'dark']]) {
+      await t.test(`${name}: ${palette}`, async () => {
+        const context = await browser.newContext({ viewport:{ width, height:1000 }, colorScheme });
+        const page = await context.newPage(), errors = [], expected = palettes[palette];
+        page.setDefaultTimeout(5000); page.on('pageerror', error => errors.push(error.message));
+        try {
+          await page.goto(`${base}&palette=${palette}`);
+          const card = page.locator('#connection-card'), action = card.getByRole('button');
+          await card.waitFor();
+          const colors = await card.evaluate(element => {
+            const cardStyle = getComputedStyle(element), spinner = getComputedStyle(element.querySelector('.tc-spinner'));
+            return { bg:cardStyle.backgroundColor, fg:cardStyle.color, muted:getComputedStyle(element.querySelector('.tc-detail')).color,
+              border:cardStyle.borderColor, accent:spinner.borderTopColor, spinnerBorder:spinner.borderRightColor };
+          });
+          assert.deepEqual(colors, { bg:rgb(expected.bg), fg:rgb(expected.fg), muted:rgb(expected.muted), border:rgb(expected.border),
+            accent:rgb(expected.accent), spinnerBorder:rgb(expected.border) });
+          assert.equal(await card.locator('.tc-spinner').isVisible(), true);
+          assert.equal(await action.count(), 0);
+          assert.equal(await card.getAttribute('aria-live'), 'polite');
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+          for (const [fg, bg] of [[expected.fg, expected.bg], [expected.muted, expected.bg], [expected['accent-fg'], expected.accent], [expected['accent-fg'], expected['accent-hover']]]) {
+            assert.ok(contrast(fg, bg) >= 4.5, `${palette} text contrast: ${fg} on ${bg}`);
+          }
+          // Re-render the actual helper in the same inherited container; no
+          // public token is set on the card, even after the stylesheet exists.
+          await page.evaluate(async () => {
+            const { mountConnectionView } = await import('../connect-view.mjs');
+            const old = document.querySelector('#connection-card'), container = old.parentElement;
+            old.remove(); window.connectionView = mountConnectionView(container);
+            window.connectionActions = 0;
+            window.connectionView.render({ phase:'failed', title:'Connection needs attention', detail:'Your draft is safe.', technical:'NETWORK_UNAVAILABLE',
+              action:{ label:'Try again', run() { window.connectionActions++; } } });
+          });
+          assert.equal(await card.locator('.tc-spinner').isVisible(), false);
+          assert.equal(await action.isVisible(), true);
+          assert.equal(await card.locator('details').evaluate(element => getComputedStyle(element).color), rgb(expected.muted));
+          assert.equal(await card.evaluate(element => getComputedStyle(element).backgroundColor), rgb(expected.bg));
+          assert.equal(await action.evaluate(element => getComputedStyle(element).backgroundColor), rgb(expected.accent));
+          assert.equal(await action.evaluate(element => getComputedStyle(element).color), rgb(expected['accent-fg']));
+          await action.hover();
+          assert.equal(await action.evaluate(element => getComputedStyle(element).backgroundColor), rgb(expected['accent-hover']));
+          await page.keyboard.press('Tab'); await action.focus();
+          assert.equal(await action.evaluate(element => element.matches(':focus-visible')), true);
+          assert.equal(await action.evaluate(element => getComputedStyle(element).outlineColor), rgb(expected.accent));
+          assert.equal(await action.evaluate(element => getComputedStyle(element).outlineWidth), '2px');
+          await page.keyboard.press('Enter');
+          assert.equal(await page.evaluate(() => window.connectionActions), 1);
+          assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+          if (process.env.PATTERN_SCREENSHOT_DIR) {
+            await mkdir(process.env.PATTERN_SCREENSHOT_DIR, { recursive:true });
+            await card.screenshot({ path:`${process.env.PATTERN_SCREENSHOT_DIR}/connection-${name}-${palette}.png` });
+          }
+          await page.evaluate(() => window.connectionView.render({ phase:'connected', title:'Connected' }));
+          assert.equal(await card.isHidden(), true);
+          assert.deepEqual(errors, []);
+        } finally { await context.close(); }
+      });
+    }
+  }
+});
+
 // Real Chromium, fresh contexts, synthetic domain data. No connection,
 // persistence, native participant, mobile hardware or agent-acceptance claim.
 test('domain patterns support search, deep links, keyboard, review, undo and honest states', { timeout:60000 }, async t => {

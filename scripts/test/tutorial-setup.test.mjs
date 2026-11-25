@@ -149,6 +149,34 @@ test('conflicting or corrupt reviewed recovery records fail before any creation 
 });
 
 for (const variant of ['events', 'sql']) {
+test(`downloadable ${variant} setup identifies unrelated and unusual retained names without exposing contents or changing state`, async t => {
+  const f = await fixture(t, 'open', variant), privatePath = join(f.directory, '.tendriller');
+  await mkdir(privatePath, { mode: 0o700 });
+  const names = ['app-keyring.json', 'device.sqlite', 'unknown-state', 'a\n\u001b[31m\u202eevil.json',
+    'b"quoted.json', 'c' + '\u00e9'.repeat(70), ...Array.from({ length: 12 }, (_, index) => `extra-${index}`)];
+  for (const name of names) await writeFile(join(privatePath, name), 'private-content-must-not-be-printed');
+  await assert.rejects(f.setup.createProject(f.origin, 'owner@example.test'), error => {
+    assert.equal(error.code, 'setup_recovery_required');
+    assert.match(error.message, /Blocking directory entries \(names only, shortened when needed\):/);
+    assert.match(error.message, /"app-keyring\.json"/);
+    assert.match(error.message, /"device\.sqlite"/);
+    assert.match(error.message, /\\n\\u001b\[31m\\u202eevil\.json/);
+    assert.match(error.message, /12 more entries/);
+    assert.match(error.message, /reserved for Tendriller-managed identity, setup and recovery state/);
+    assert.match(error.message, /no replacement page creation was attempted/);
+    assert.match(error.message, /Inspect and restore/);
+    assert.doesNotMatch(error.message, /[^\x20-\x7e]|private-content-must-not-be-printed/);
+    assert.equal(error.message.includes(f.directory), false);
+    assert.ok(error.message.length < 3000);
+    assert.equal(JSON.parse(JSON.stringify({ code: error.code, message: error.message })).message, error.message);
+    return true;
+  });
+  assert.deepEqual(f.calls, []);
+  if (f.engine) assert.equal(f.engine.calls, 0);
+  for (const name of names) assert.equal(await readFile(join(privatePath, name), 'utf8'), 'private-content-must-not-be-printed');
+  await assert.rejects(access(join(privatePath, 'handle.json')), { code: 'ENOENT' });
+});
+
 test(`downloadable ${variant} setup never treats incomplete retained evidence as permission to create a replacement`, async t => {
   for (const name of ['descriptor.json', 'account-setup.json', 'account-setup-result.json',
     'owner-page-url.txt', 'host-adoption-' + 'd'.repeat(64) + '-response.json', 'device.sqlite']) {

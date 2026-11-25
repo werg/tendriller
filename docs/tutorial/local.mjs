@@ -32,7 +32,14 @@ export async function requireFreshProject() {
     if (error.code === 'ENOENT') return [];
     throw error;
   });
-  if (files.length) throw Object.assign(Error('This project retains setup or recovery state without a usable host handle. Restore or continue that original application; no replacement page creation was attempted. Use a separate empty project only for an explicitly new application.'), { code: 'setup_recovery_required' });
+  if (files.length) {
+    // Names are local diagnostic context, never a classification of safe-to-delete
+    // state. Bound both their count and length, and quote/escape terminal controls.
+    const names = files.sort().slice(0, 6).map(name => JSON.stringify(name.slice(0, 64) + (name.length > 64 ? '...' : ''))
+      .replace(/[^\x20-\x7e]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`));
+    const entries = `${names.join(', ')}${files.length > names.length ? `; ${files.length - names.length} more entries` : ''}`;
+    throw Object.assign(Error(`This project retains setup or recovery state without a usable host handle. Blocking directory entries (names only, shortened when needed): ${entries}. .tendriller/ is reserved for Tendriller-managed identity, setup and recovery state; application-specific local files belong in a separate gitignored directory. Inspect and restore or continue the original application; no replacement page creation was attempted. Use a separate empty project only for an explicitly new application.`), { code: 'setup_recovery_required' });
+  }
 }
 
 // Reviewed host delegation changes only the HTTP credential. The original

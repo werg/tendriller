@@ -12,6 +12,12 @@ setup without private state or a production fallback. A saved handle resumes
 only against the same service origin, without creating another page or reopening
 an engine; retain the original directory and signing identity on resume.
 
+Reserve `.tendriller/` for Tendriller-managed identity, setup and recovery state.
+Keep application-specific local files in a separate gitignored directory such as
+`.local/`. Without a usable handle, any retained entry blocks replacement creation;
+the diagnostic gives bounded, escaped names only. Inspect and resume the original
+checkpoint instead of deleting or ignoring retained state.
+
 `domain.mjs` declares the schema, a one-time seed command, and one guarded
 transfer that changes two bins, inserts a receipt and emits an event atomically.
 `setup.mjs` creates and configures the hosted application with its signed schema

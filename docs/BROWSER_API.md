@@ -50,6 +50,7 @@ Safari device-qualification guarantee.
 | `sensors` | Observe tracked use and cancel active or pending acquisitions |
 | `assetUrl(path)` | Resolve an explicit dependency in the pinned runtime |
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
+| `notifications.status()`, `enable()`, `disable()`, `setBadge(count?)` | Explicit opt-in Web Push subscription and supported app badging; see [notification gates](#web-push-notifications) |
 | `documentUrl(reference)` | Build a document or fragment URL in this page’s current live or explicitly pinned context; performs no navigation |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
 | `transport.install(participation)`, `status()`, `onChange()`, `refresh()` | Bounded local authenticated-link diagnostics; no polling, probes or host queries. See [transport diagnostics](TRANSPORT_DIAGNOSTICS.md) |
@@ -139,7 +140,9 @@ Tendriller icon.
 
 ## Page options placement
 
-The hosted utility sits at the bottom right. Its collapsed **Page options**
+The hosted utility starts at the bottom right. The person can drag the bar to
+another corner or choose **Page options → Button position**; that preference
+is remembered for this page on this device. Its collapsed **Page options**
 button has a 44 px minimum touch target inside a bar with 4 px padding and a
 1 px border (54 px high without wrapped sensor controls). The width depends on
 the font and active controls. Active/pending sensors can make the bar wider or
@@ -187,9 +190,11 @@ main {
 }
 ```
 
-The optional floating voice controls use the same right/bottom clearances and
-sit 10 px above the measured utility bar. They follow changes in sensor-control
-height without a separate hard-coded app offset. Supplying a voice
+The optional floating voice controls use the same right/bottom clearances plus
+the measured utility height and a 10 px gap. At the default bottom-right utility
+position, they sit above its bar. Moving the utility to another corner does not
+move the voice controls. They follow changes in sensor-control height without
+a separate hard-coded app offset. Supplying a voice
 `container` still places those controls inline. Both floating panels keep their
 content scrollable within the remaining viewport. Keep enough room for the
 controls and verify your chosen clearances at narrow and landscape sizes;
@@ -199,6 +204,94 @@ actions.
 Existing publications acquire this layout contract only when republished with
 the updated pinned runtime. Changing host code alone does not modify the
 runtime of an already signed publication.
+
+## Web Push notifications
+
+Published pages already have a hosted Web Push path. **Page options → Notifications**
+uses `tendril.notifications`; an authored button can use the same API. The built-in
+Service Worker displays the notification and handles its click, including when
+the page is closed. No custom `push` handler is needed.
+
+```js
+const enableButton = document.querySelector('[data-enable-notifications]');
+const output = document.querySelector('[data-notification-status]'); // role="status"
+function showNotificationStatus({ state, subscribed }) {
+  output.textContent = state === 'install_required'
+    ? 'Add this page to the Home Screen, open it there, then enable notifications.'
+    : state === 'unsupported' ? 'This browser does not support Web Push here.'
+    : state === 'denied' ? 'Notifications are blocked. Review this site’s browser permission.'
+    : subscribed ? 'This browser has a notification subscription.'
+    : 'Notifications are not subscribed. Use Enable notifications to opt in.';
+}
+showNotificationStatus(await tendril.notifications.status());
+enableButton.addEventListener('click', async () => {
+  try {
+    // Call directly in this user gesture; do not request permission on page load.
+    const pending = tendril.notifications.enable();
+    enableButton.disabled = true;
+    showNotificationStatus(await pending);
+  } catch (error) {
+    output.textContent = error.message; // Configuration, authorization or registration failed.
+  } finally { enableButton.disabled = false; }
+});
+// On a separate explicit disable action: await tendril.notifications.disable().
+// Optional, where supported: await tendril.notifications.setBadge(3).
+// Clear the app badge: await tendril.notifications.setBadge(0).
+```
+
+These are separate gates, not interchangeable signs of delivery:
+
+| Gate | Observed result and next action |
+| --- | --- |
+| Browser support | `Notification`, Service Worker and `PushManager` APIs must be present. Otherwise status/enable returns `unsupported`. |
+| iOS installation | A page outside an installed app returns `install_required`. Use [Home Screen setup](#home-screen-setup), then open the installed app. |
+| Explicit browser permission | `prompt`, `granted` and `denied` describe browser permission. `granted` alone does not mean a subscription exists. A denied permission needs the person's browser settings review. |
+| Local subscription | `status().subscribed` checks the browser's saved Push subscription. It does not query whether the host still retains that subscription or prove that a device received an alert. |
+| Host configuration | The operator supplies matching `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` with an appropriate `VAPID_SUBJECT`. Missing keys make the key route report `configured: false`; `enable()` surfaces a configuration error. Subscribe/send routes return `503 push_not_configured` when unconfigured. Browser permission does not configure the host. |
+| Page subscription rights | Host subscription routes require an authenticated account with `page.write` permission. `enable()` saves the subscription through that page session; a `403` or failed save is not success. |
+| Sender rights | The native sender's host credential needs `notifications:send`, independently of application membership and browser permission. |
+
+`enable()` resolves with `subscribed: true` only after saving the subscription
+on the host. `disable()` attempts both local unsubscribe and host removal on a
+best-effort basis; recheck `status()` for the local result. It does not revoke
+the browser's permission.
+`setBadge()` is optional local app badging, silently unavailable on unsupported
+browsers; it does not send a notification.
+
+Native senders can use the configured CLI handle:
+
+```sh
+npx tendril --tendril my-page notify --title 'Review ready' \
+  --body 'Open your page to review the result.' --path '#review' --tag review --badge 1
+```
+
+The same host operation is `POST /api/t/:id/push` with the private host bearer
+credential and a JSON payload, or `notify_user` in the session CLI's
+[stdio MCP interface](tools/CLI.md). The account-linked application gateway's
+declared application commands are a separate surface; do not assume it advertises
+this CLI tool. Keep sender credentials and private VAPID keys out of authored code.
+
+The built-in payload accepts a required title (1–120 characters), optional body
+(truncated to 500 after trimming whitespace), tag (1–64 alphanumeric/`.`/`_`/`-` characters), badge (0–999),
+and a safe relative `path`, query or fragment within this page. The encoded wire
+payload is limited to 2,048 bytes. Notification clicks focus or open this page;
+the Service Worker also checks the destination's origin and page scope. This
+does not install arbitrary background JavaScript, extend the Service Worker,
+or schedule future sends. The application owns when an authorized sender sends.
+
+The host reports `{ sent, failed, pruned, total }`; `sent` counts accepted push
+provider requests, not a delivery/read receipt. With no subscriptions, all counts
+are zero. Delivery depends on the browser, OS, network and provider. Retained
+application facts still belong in Chronolog. `session.signals` are disposable
+peer messages while a session is available; foreground UI/Notification use
+needs a running page. Neither is a substitute for this opt-in closed-page path.
+
+The [runtime implementation](https://github.com/werg/tendriller/blob/master/runtime/src/notifications.ts),
+[host authorization](https://github.com/werg/tendriller/blob/master/server/src/page.ts),
+and [push validation/sending](https://github.com/werg/tendriller/blob/master/server/src/push.ts)
+define this contract. Source support and configured keys do not qualify a real
+device/provider pair; verify permission, saved subscription, send result and
+actual closed-page display/click behavior separately on the intended devices.
 
 ## Home Screen setup
 
