@@ -16,3 +16,7 @@ server/.wrangler.*.cutover.jsonc
 dist/
 .consumer-*/
 .tendriller-dev-host/
+
+# Build outputs: the runtime identity and the generated deploy configs
+server/src/runtime-release.json
+server/*.deploy.jsonc

@@ -4,7 +4,7 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 
 | Command | Result |
 | --- | --- |
-| `npm run build` | Build and package SDK, runtime and generic participant engine |
+| `npm run build` | Build and package SDK, runtime and generic participant engine. Also writes the untracked `server/src/runtime-release.json`, so run it before `npm run typecheck` or the server tests in a fresh checkout |
 | `npm run build:tools` | Package the session CLI, authored-file packer and explicit preview against built public artifacts |
 | `npm run build:artifacts` | Build all four public archives |
 | `npm run dev` | Build assets and run the local account/page host |
