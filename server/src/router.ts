@@ -1,32 +1,28 @@
-import { RESIDENT_LIMIT } from "./limits";
-import { routeAccountSetup } from './account-setup';
-import { ADAPTER_KEY, ASSISTANT_PROTOCOL } from './assistant-shared';
 import { parseActivityTicket } from './assistant-activity';
 import { routeAssistant, routeAssistantHttpGateway } from './assistant-gateway';
 import { routeDevicePairingReview } from './device-pairing';
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
 import { servicePage } from "./accounts/ui";
-import { assertValid, schemaDocument } from "../../contract/index.mjs";
+import { schemaDocument } from "../../contract/index.mjs";
 // Worker router: authenticates nothing per-tendril itself; it routes to the Durable Object.
 import type { Env } from "./env";
 import { routeAuth } from "./accounts/auth";
 import { routeIntegrationOAuth } from "./accounts/integration-oauth";
 import { dashboard } from "./accounts/keys";
-import { setupDashboard } from './accounts/setups';
 import { accountData } from "./accounts/data";
 import { reportPage } from "./abuse/report";
 import { adminPage, appealPage } from "./abuse/admin";
 import { budgetWebhook } from "./budget";
 import { redeemPageCode, routePageAuth } from "./accounts/page";
-import { CORS_HEADERS, errorResponse, HttpError, isPlainObject, json, readBody, toErrorResponse, withCors } from "./http";
-import { AGENT_TOKEN_RE, newTendrilId, sha256Hex, TENDRIL_ID_RE } from "./ids";
+import { CORS_HEADERS, errorResponse, HttpError, json, toErrorResponse, withCors } from "./http";
+import { TENDRIL_ID_RE } from "./ids";
 import { landingPage } from "./inject";
-import { agentJoinDocument } from "./sharing";
+import { internalHeaders, routeAgentApi } from "./agents";
 import { serviceDescriptor } from "./descriptor";
 import { onboardingDescriptor, onboardingLinks } from "./onboarding";
 import { capabilityCatalog } from "./capability-catalog";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
-import { requireCreationOpen, reserveCreationIp, serviceReadiness } from "./service-state";
+import { serviceReadiness } from "./service-state";
 import { PAGE_ACCESS_HEADER } from "./page";
 import type { CacheContext } from "./immutable-cache";
 
@@ -36,7 +32,7 @@ function stub(env: Env, id: string): DurableObjectStub {
 
 /** Forwards a request to the tendril's Durable Object under an internal path. */
 function forward(env: Env, id: string, kind: string, req: Request, url: URL, headers: Record<string, string>): Promise<Response> {
-  const h = new Headers(req.headers);
+  const h = internalHeaders(req);
   h.set("x-tendril-id", id);
   for (const [k, v] of Object.entries(headers)) h.set(k, v);
   const init: RequestInit = { method: req.method, headers: h, signal: req.signal, ...(kind === "assistant" || kind === "page" ? { redirect: "manual" } : {}) };
@@ -174,7 +170,6 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   if (path === "/admin" || path === "/admin/action" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);
-  if (path === '/dashboard/setups' || path.startsWith('/dashboard/setups/')) return setupDashboard(req,env,url);
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
 
   if (path === "/" && (req.method === "GET" || req.method === "HEAD")) {
@@ -197,11 +192,6 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     });
     if (req.method === "HEAD") { await response.body?.cancel(); return new Response(null, response); }
     return response;
-  }
-  if (path === "/join/agent" && publicRead) {
-    if (url.origin !== publicBase(env)) return errorResponse(404, "not_found");
-    const response = agentJoinDocument(url, publicBase(env));
-    return req.method === "HEAD" ? new Response(null, response) : response;
   }
   if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
   if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
@@ -265,153 +255,17 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const response = json(readiness, readiness.mode === 'unavailable' ? 503 : 200, { Link: onboardingLinks(publicBase(env)) });
       return req.method === 'HEAD' ? new Response(null, response) : response;
     }
-    if (path === "/api/setup") return routeAccountSetup(req, env);
-    if (path === "/api/tendrils") {
-      if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
-      await requireCreationOpen(env);
-      if (req.headers.has("Authorization")) throw new HttpError(400, "bad_request", "Creation uses an owner email, not an account key");
-      if (env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {
-        throw new HttpError(429, "rate_limited", "Creation rate limit reached");
-      }
-      const body = await readBody(req, 64 * 1024);
-      let createBody: unknown;
-      try { createBody = JSON.parse(new TextDecoder().decode(body) || "{}"); }
-      catch { throw new HttpError(400, "bad_json", "Request body is not valid JSON"); }
-      if (!isPlainObject(createBody)) throw new HttpError(400, "bad_request", "Creation body must be an object");
-      const lifetime = createBody.lifetime ?? "ad_hoc";
-      if (lifetime !== "ad_hoc" && lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
-      if (typeof createBody.owner !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(createBody.owner) || createBody.owner.length > 254)
-        throw new HttpError(400, "bad_request", "owner must be a verified email address");
-      if (lifetime === "resident") throw new HttpError(400, "bad_request", "Create an ad_hoc page; the agent can make it resident after the owner opens it");
-      assertValid("create", createBody);
-      const releaseIp = await reserveCreationIp(env, req);
-      let created = false;
-      try {
-        for (let i = 0; i < 3; i++) {
-          const id = newTendrilId();
-          const admission = env.ADMISSION.get(env.ADMISSION.idFromName("global"));
-          const allowed = await admission.fetch(new Request("https://admission.internal/reserve", { method: "POST", headers: { "x-tendril-id": id } }));
-          if (!allowed.ok) return allowed;
-          await allowed.body?.cancel();
-          let indexed = false;
-          const cancel = async () => {
-            try {
-              if (indexed) await env.ACCOUNTS!.prepare("DELETE FROM tendrils WHERE id = ?").bind(id).run();
-            } finally {
-              const cancelled = await admission.fetch(new Request("https://admission.internal/cancel", { method: "POST", headers: { "x-tendril-id": id } }));
-              await cancelled.body?.cancel();
-            }
-          };
-          let res: Response;
-          try {
-            try {
-              await env.ACCOUNTS.prepare("INSERT INTO tendrils (id, owner_account, creator_ip, created_at, claimed_at, lifetime) VALUES (?, ?, ?, ?, ?, ?)")
-                .bind(id, null, req.headers.get("CF-Connecting-IP"), Date.now(), null, lifetime).run();
-            } catch (err) {
-              const message = String(err);
-              if (message.includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
-              if (message.includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: RESIDENT_LIMIT });
-              throw err;
-            }
-            indexed = true;
-            res = await stub(env, id).fetch(
-              new Request("https://tendril.internal/create", { method: "POST", headers: {
-                "x-tendril-id": id, "Content-Type": "application/json",
-              }, body }),
-            );
-          } catch (err) {
-            await cancel();
-            throw err;
-          }
-          if (res.status !== 409) {
-            if (!res.ok) await cancel();
-            else created = true;
-            return res;
-          }
-          await cancel();
-          await res.body?.cancel();
-        }
-        return errorResponse(500, "internal", "Could not allocate a tendril id");
-      } finally {
-        if (!created) await releaseIp();
-      }
-    }
-
-    if (path === "/api/adopt") {
-      if (req.method === 'GET') return json({ schemaVersion: 1, serviceOrigin: publicBase(env),
-        delegation: { applicationBound: true, nonReplacing: true, responseRecovery: false } }, 200, { 'Cache-Control': 'no-store' });
-      if (req.method !== "POST") return errorResponse(405, "method_not_allowed", "Use POST");
-      const text = new TextDecoder().decode(await readBody(req, 4096));
-      let code = "";
-      let expectedMode: 'delegate' | undefined, applicationId: string | undefined;
-      try {
-        const input = JSON.parse(text || "{}");
-        if (!isPlainObject(input) || typeof input.code !== 'string' ||
-          input.expectedMode !== undefined && input.expectedMode !== 'delegate' ||
-          input.applicationId !== undefined && (typeof input.applicationId !== 'string' || !/^[a-f0-9]{64}$/.test(input.applicationId)))
-          return errorResponse(400, 'invalid_adoption_request', 'Provide a code and, for reviewed delegation, its application identity and expectedMode delegate.');
-        code = input.code.trim(); expectedMode = input.expectedMode as 'delegate' | undefined; applicationId = input.applicationId as string | undefined;
-      } catch {
-        return errorResponse(400, "bad_json", "Request body is not valid JSON");
-      }
-      const m = /^([a-z2-7]{12})-(\d{6})$/.exec(code);
-      if (!m) return errorResponse(400, "invalid_code", "Adopt codes look like <tendril id>-<6 digits>");
-      return stub(env, m[1]).fetch(
-        new Request("https://tendril.internal/adopt", { method: "POST", headers: { "x-tendril-id": m[1], "Content-Type": "application/json" }, body: JSON.stringify({ code, expectedMode, applicationId }) }),
-      );
-    }
-
-    const m = /^\/api\/t\/([^/]+)(?:\/(.*))?$/.exec(path);
-    if (m) {
-      if (!TENDRIL_ID_RE.test(m[1])) return errorResponse(404, "not_found", "No such tendril");
-      const agentRest = safeDecode(m[2] ?? "");
-      if (agentRest === 'assistant/activity') {
-        if (url.origin !== publicBase(env) || !await parseActivityTicket(env, req, m[1])) throw new HttpError(401, 'activity_ticket_expired');
-        return forward(env, m[1], 'assistant-activity', req, url, {});
-      }
-      if (agentRest === 'assistant/adapter') {
-        const protocols = req.headers.get('Sec-WebSocket-Protocol')?.split(',').map(item => item.trim()) ?? [];
-        if (!protocols.includes(ASSISTANT_PROTOCOL) || !protocols.some(item => ADAPTER_KEY.test(item)))
-          throw new HttpError(401, 'adapter_not_approved');
-        if (env.AUTH_RATE && !(await env.AUTH_RATE.limit({ key: 'assistant-adapter:' + (req.headers.get('CF-Connecting-IP') ?? 'unknown') })).success)
-          throw new HttpError(429, 'rate_limited');
-        return forward(env, m[1], 'assistant-adapter', req, url, {});
-      }
-
-      // Node's dependency-free WebSocket client cannot set Authorization. Keep the
-      // private token in a TLS-protected subprotocol header, never in the URL.
-      const peerSocket = agentRest === "peers/rendezvous" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
-      const invitationSocket = agentRest === "peers/invitations" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
-      const relaySocket = agentRest === "peers/relay" && req.headers.get("Upgrade")?.toLowerCase() === "websocket";
-      const protocols = (req.headers.get("Sec-WebSocket-Protocol") ?? "").split(",").map((s) => s.trim());
-      const discoverySocket = agentRest === 'peers/discovery/watch' && req.headers.get('Upgrade')?.toLowerCase() === 'websocket';
-      const setupSocket = agentRest === 'setup/watch' && req.headers.get('Upgrade')?.toLowerCase() === 'websocket';
-      const socketToken = discoverySocket && protocols.includes('tendriller.discovery.v1') || setupSocket && protocols.includes('tendriller.setup.v1') || peerSocket && protocols.includes("tendriller.rendezvous.v1") ||
-        invitationSocket && protocols.includes("tendriller.invitations.v1") || relaySocket && protocols.includes("tendriller.relay.v1")
-        ? protocols.find((s) => AGENT_TOKEN_RE.test(s)) : undefined;
-      const token = socketToken || /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
-      if (token && env.AGENT_RATE && !(await env.AGENT_RATE.limit({ key: await sha256Hex(token) })).success) {
-        throw new HttpError(429, "rate_limited", "Agent request rate limit reached");
-      }
-      const res = await forward(env, m[1], "agent", req, url, { "x-tendril-rest": encodeURIComponent(agentRest),
-        ...(socketToken ? { Authorization: `Bearer ${socketToken}` } : {}) });
-      if (res.status === 401 && env.FAILED_AUTH_RATE &&
-        !(await env.FAILED_AUTH_RATE.limit({ key: req.headers.get("CF-Connecting-IP") ?? "unknown" })).success) {
-        await res.body?.cancel();
-        throw new HttpError(429, "rate_limited", "Too many failed authentication attempts");
-      }
-      return res;
+    const agentResponse = await routeAgentApi(req, env, url);
+    if (agentResponse) return agentResponse;
+    // Assistant inbox widgets watch one connected page with a short-lived activity ticket.
+    const activity = /^\/api\/assistant\/pages\/([^/]+)\/activity$/.exec(path);
+    if (activity) {
+      if (!TENDRIL_ID_RE.test(activity[1])) return errorResponse(404, "not_found", "No such tendril");
+      if (url.origin !== publicBase(env) || !await parseActivityTicket(env, req, activity[1])) throw new HttpError(401, 'activity_ticket_expired');
+      return forward(env, activity[1], 'assistant-activity', req, url, {});
     }
     return errorResponse(404, "not_found", "No such API route");
   } catch (err) {
     return toErrorResponse(err);
-  }
-}
-
-function safeDecode(s: string): string {
-  try {
-    return decodeURIComponent(s);
-  } catch {
-    return s;
   }
 }

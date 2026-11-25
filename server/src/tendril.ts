@@ -1,6 +1,5 @@
 import { isDiscoverySocket, closeDiscoverySocket } from './discovery';
 import { isSetupWatch, notifySetupChanged } from './setup-watch';
-import { setupPage, nextSetupDeadline, expireSetupReservation } from './setup-page';
 import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
 import { adoptPreparedAssistant } from './assistant-admission';
 import { isPublicationWatch, notifyPublicationWatchers } from "./publication-watch";
@@ -18,10 +17,9 @@ import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from './
 import { isAssistantActivity, upgradeAssistantActivity } from './assistant-activity';
 import { assistantRequest } from './assistant';
 import { reviewAssistant } from './assistant-admission';
-import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter, upgradeAssistantAdapter } from './assistant-socket';
+import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter } from './assistant-socket';
 import { nextAssistantDelivery, runAssistantDelivery } from './assistant-events';
 import { requireWritesOpen } from './service-state';
-import { requireHostApproval, requireHostApprovalPolicy, type HostApproval } from './host-adoption';
 import { reviewDevicePairing } from './device-pairing';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
@@ -31,13 +29,16 @@ import { admitPageTraffic } from './traffic-budget';
 import { Transactions, type CommitEffect } from './transactions';
 import { deleteUnreferencedContent } from './files';
 import { HttpError, json, readJson, toErrorResponse } from './http';
-import { agentInviteResponse, issueAgentInvite, parseShareExpiry } from './sharing';
-import { newLinkId, newPageKey, newToken, sha256Hex, safeEqual } from './ids';
+import { parseShareExpiry } from './sharing';
+import { AGENT_PUBLIC_KEY_RE, handleAgentGrants, mirroredAgents, notifyAgentHub, notifyGrantedAgents, writeLocalGrant } from './agent-grants';
+import { AGENT_ID_RE, newLinkId, newPageKey, sha256Hex, safeEqual } from './ids';
 import type { Features } from './inject';
-import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, ADOPT_MAX_ATTEMPTS, DAY, MB, HOUR, RESIDENT_LIMIT } from './limits';
+import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, DAY, MB, HOUR, RESIDENT_LIMIT } from './limits';
 import { handlePage, pageAccessDenied } from './page';
-import { apiUrl, pageUrl, publicBase } from './urls';
-import { AGENT_SCOPES, authenticateAgent, authenticateAgentToken, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession, type AgentScope } from './access';
+import { agentPageApi, pageUrl, publicBase } from './urls';
+import { AGENT_HEADER, AGENT_SCOPES, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
+import { agentPageSummary } from './agent';
+import { claimCreatorAgents } from './agents';
 import type { Role } from '../../contract/index.mjs';
 export type { Role } from '../../contract/index.mjs';
 
@@ -67,7 +68,11 @@ export class Tendril extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.db = new Db(ctx.storage, key => { if (key === 'current') notifyPublicationWatchers(this); });
+    this.db = new Db(ctx.storage, key => {
+      if (key !== 'current') return;
+      notifyPublicationWatchers(this);
+      this.afterCommit(() => notifyGrantedAgents(this, 'publication', { version: this.db.get('current', 0) }));
+    });
     this.db.init();
     this.transactions = new Transactions(ctx.storage, () => this.db.clearCache(), work => ctx.waitUntil(work));
     this.alarms = new DeadlineAlarm(ctx.storage);
@@ -128,17 +133,11 @@ export class Tendril extends DurableObject<Env> {
     await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
   }
 
-  async ensureSetupExpiry(at: number): Promise<void> {
-    await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
-  }
-
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const kind = url.pathname.split("/")[1];
     try {
-      if (kind === "setup") return await setupPage(this, req);
       if (kind === "create") return await this.create(req);
-      if (kind === "adopt") return await this.adopt(req);
       if (!this.exists()) {
         if (kind === "page") return pageAccessDenied(401);
         throw new HttpError(404, "not_found", "No such tendril");
@@ -186,7 +185,12 @@ export class Tendril extends DurableObject<Env> {
       if (kind === 'assistant' && req.method === 'POST') return await assistantRequest(this, req);
       if (kind === 'assistant-review') return await reviewAssistant(this, req);
       if (kind === 'pairing-review') return await reviewDevicePairing(this, req);
-      if (kind === 'assistant-adapter') return await upgradeAssistantAdapter(this, req);
+      if (kind === 'agent-grant') return await handleAgentGrants(this, req, url);
+      if (kind === 'agent-summary') {
+        const agentId = req.headers.get(AGENT_HEADER) ?? '';
+        if (!AGENT_ID_RE.test(agentId)) throw new HttpError(400, 'invalid_agent');
+        return json(agentPageSummary(this, agentId));
+      }
       if (kind === 'assistant-activity') return await upgradeAssistantActivity(this, req);
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
@@ -194,7 +198,7 @@ export class Tendril extends DurableObject<Env> {
           icon: this.db.get<string | null>("icon", null), theme_color: this.db.get<string | null>("theme_color", null),
           version: this.db.get("current", 0), held: this.db.get("disabled", false),
           bytes: this.storageUsed(),
-          agents: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM tokens")?.n ?? 0,
+          agents: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants")?.n ?? 0,
           guests_waiting: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0,
           last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
         });
@@ -208,7 +212,7 @@ export class Tendril extends DurableObject<Env> {
           stored_files: this.db.all("SELECT hash, size FROM stored_files ORDER BY hash"),
         });
         if (url.pathname === "/account/delete" && req.method === "POST") { await this.destroy(); return json({ ok: true }); }
-        if ((url.pathname === "/account/invite" || url.pathname === "/account/agent-invite") && req.method === "POST") {
+        if (url.pathname === "/account/invite" && req.method === "POST") {
           await requireWritesOpen(this.env);
           if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled", "This page is unavailable");
           const accountId = req.headers.get("x-account-id")!;
@@ -216,11 +220,6 @@ export class Tendril extends DurableObject<Env> {
             if (this.db.get<string | null>("owner_account", null) !== accountId) throw new HttpError(403, "forbidden");
           };
           const body = await readJson(req, 4096);
-          const pageName = this.db.get("name", "Tendril");
-          if (url.pathname === "/account/agent-invite") {
-            const invite = await issueAgentInvite(this, accountId, body.name, body.scopes, owns);
-            return json(agentInviteResponse(invite, pageName), 201);
-          }
           if (body.role !== "guest" && body.role !== "display") throw new HttpError(400, "bad_request", "role must be guest or display");
           const label = typeof body.label === "string" ? body.label.trim().slice(0, 100) || null : null;
           const email = validOptionalEmail(body.email);
@@ -278,124 +277,70 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- create / adopt
 
+  /**
+   * Called by the service router after it indexed the page in D1. The creating
+   * agent receives the full creator grant; a claimed agent's page starts owned.
+   */
   private async create(req: Request): Promise<Response> {
     if (this.exists()) throw new HttpError(409, "exists");
     const id = req.headers.get("x-tendril-id")!;
+    const agentId = req.headers.get(AGENT_HEADER) ?? "", publicKey = req.headers.get("x-tendril-agent-key") ?? "";
+    if (!AGENT_ID_RE.test(agentId) || !AGENT_PUBLIC_KEY_RE.test(publicKey)) throw new HttpError(400, "invalid_agent");
+    const account = req.headers.get("x-account-id");
     const body = await readJson(req, 64 * 1024);
     const name = body.name === undefined ? "Tendril" : validName(body.name);
-    const owner = validIntendedOwner(body.owner);
-    const lifetime = body.lifetime ?? "ad_hoc";
+    const owner = account ? null : validIntendedOwner(body.owner);
     const mode = body.mode ?? "interactive";
     if (mode !== "interactive" && mode !== "dashboard") throw new HttpError(400, "bad_request", "mode must be interactive or dashboard");
-    if (lifetime !== "ad_hoc" && lifetime !== "resident") throw new HttpError(400, "bad_request", "lifetime must be ad_hoc or resident");
-    if (lifetime === "resident") throw new HttpError(400, "bad_request", "Claim the page before making it resident");
-    if (body.pairing !== undefined) throw new HttpError(400, "bad_request", "Device pairing is unavailable");
+    const label = account ? await this.env.ACCOUNTS.prepare("SELECT login FROM identities WHERE account_id = ? ORDER BY created_at LIMIT 1")
+      .bind(account).first<{ login: string }>() : null;
     const now = this.now();
-    this.db.set("id", id);
-    this.db.set("name", name);
-    if (owner) this.db.set("intended_owner", owner);
-    this.db.set("lifetime", lifetime);
-    this.db.set("mode", mode);
-    this.db.set("application", applicationSelection(body.application ?? { id: Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("") }));
-    this.db.set("created_at", now);
-    this.db.set("next_cleanup", now + DAY);
-    const token = await this.addToken("main");
-    const key = newPageKey();
-    this.db.run(
-      "INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at) VALUES ('l_main', ?, ?, 'owner', 'main', ?, NULL)",
-      key, await sha256Hex(key), now,
-    );
-    addActivity(this, { kind: "created", summary: `Tendril "${name}" created (${lifetime})` });
-    this.scheduleAlarm();
-    return json(this.handle(token), 201);
-  }
-
-  private async adopt(req: Request): Promise<Response> {
-    if (!this.exists()) throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
-    const body = await readJson(req, 4096);
-    const code = typeof body.code === "string" ? body.code.trim() : "";
-    const a = this.db.get<HostApproval | null>("adopt", null);
-    if (!a || a.expires_at <= this.now()) throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
-    requireHostApproval(this, a);
-    // Re-run the bound owner/write policy after token hashing and before commit.
-    const policy = () => requireHostApprovalPolicy(this, a);
-    const currentCode = () => {
-      requireHostApproval(this, a);
-      if (JSON.stringify(this.db.get('adopt', null)) !== JSON.stringify(a) || a.expires_at <= this.now())
-        throw new HttpError(409, 'adoption_changed', 'The reviewed code changed or was already used. Ask the owner to inspect the named binding before issuing another code.');
-    };
-    const valid = safeEqual(await sha256Hex(code), a.hash);
-    await policy();
-    if (!valid) {
-      this.transaction(() => {
-        // A late failed attempt cannot restore an already redeemed/replaced code.
-        currentCode();
-        a.attempts += 1;
-        if (a.attempts >= ADOPT_MAX_ATTEMPTS) this.db.del('adopt');
-        else this.db.set('adopt', a);
-      });
-      throw new HttpError(404, "invalid_code", "Unknown or expired adopt code");
-    }
-    // A retained native app asks for non-replacing delegation only. Check both
-    // bindings before consuming the one-use code or issuing any credential.
-    if (body.expectedMode !== undefined && (body.expectedMode !== 'delegate' || a.mode !== 'delegate'))
-      throw new HttpError(409, 'adoption_mode_mismatch', 'Use Add agent on the owner management page; this code would replace existing agent credentials.');
-    if (body.applicationId !== undefined && body.applicationId !== selectedApplication(this).id)
-      throw new HttpError(409, 'adoption_application_mismatch', 'This code belongs to another application. Preserve the original app and ask its owner for delegation.');
-    const token = await this.addToken(a.mode === 'delegate' ? a.name! : "main", a.scopes, () => {
-      // Hashing the token yields. A replacement/expired/redeemed code must not
-      // authorize another binding after that await; consume it atomically.
-      currentCode();
-      if (body.applicationId !== undefined && body.applicationId !== selectedApplication(this).id)
-        throw new HttpError(409, 'adoption_application_mismatch');
-      if (a.mode === 'delegate') {
-        if (this.db.one('SELECT 1 FROM tokens WHERE name=?', a.name!)) throw new HttpError(409, 'agent_name_in_use');
-        if ((this.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM tokens')?.n ?? 0) >= 32) throw new HttpError(429, 'agent_binding_capacity');
+    const key = newPageKey(), keyHash = await sha256Hex(key);
+    const grant = this.transaction(() => {
+      this.db.set("id", id);
+      this.db.set("name", name);
+      if (owner) this.db.set("intended_owner", owner);
+      if (account) {
+        this.db.set("owner_account", account);
+        this.db.set("claimed_at", now);
+        if (label) this.db.set("owner_label", label.login.slice(0, 80));
       }
-      this.db.del('adopt');
-      if (a.mode !== 'delegate') this.db.run('DELETE FROM tokens');
-    }, policy);
-    addActivity(this, { kind: a.mode === 'delegate' ? 'agent_delegated' : "adopted", summary: a.mode === 'delegate'
-      ? `An independently revocable agent binding ${a.name} joined this tendril`
-      : "A new agent session adopted this tendril; earlier agent tokens were revoked" });
-    this.scheduleAlarm();
-    return json(this.handle(token));
-  }
-
-  async addToken(name: string, scopes: readonly AgentScope[] = AGENT_SCOPES, authorize: () => void = () => {},
-    prepare?: () => Promise<void>): Promise<string> {
-    if (name === 'setup') throw new HttpError(400, 'reserved_agent_name', 'The setup credential name is reserved for its committed account operation. Choose another agent name.');
-    const token = newToken();
-    const hash = await sha256Hex(token);
-    if (prepare) await prepare();
-    this.transaction(() => {
-      authorize();
-      this.db.run("INSERT INTO tokens (name, hash, created_at, last_used) VALUES (?, ?, ?, NULL)", name, hash, this.now());
-      this.db.set('agent_binding:' + name, { id: crypto.randomUUID(), scopes: [...scopes], revision: 1 });
+      this.db.set("lifetime", "ad_hoc");
+      this.db.set("mode", mode);
+      this.db.set("application", applicationSelection(body.application ?? { id: Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("") }));
+      this.db.set("created_at", now);
+      this.db.set("next_cleanup", now + DAY);
+      this.db.run(
+        "INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at) VALUES ('l_main', ?, ?, 'owner', 'main', ?, NULL)",
+        key, keyHash, now,
+      );
+      addActivity(this, { kind: "created", summary: `Tendril "${name}" created by agent ${agentId}` });
+      return writeLocalGrant(this, agentId, publicKey, [...AGENT_SCOPES], "creator");
     });
-    return token;
+    if (account) this.recordAccess();
+    this.scheduleAlarm();
+    return json({ ...this.pageResult(), scopes: grant.scopes, revision: grant.revision, granted_by: grant.granted_by }, 201);
   }
 
-  handle(token: string) {
+  /** The agent-facing description of a newly created page. Contains no credential. */
+  pageResult() {
     const application = selectedApplication(this);
+    const claimed = this.db.get<string | null>("owner_account", null) !== null;
     return {
       id: this.tid,
       name: this.db.get("name", "Tendril"),
       page_url: this.mainPageUrl(),
-      api: apiUrl(this.env, this.tid),
-      token,
-      agent_md: `${publicBase(this.env)}/agent.md`,
-      build_guide: `${publicBase(this.env)}/docs/BUILD_AN_APP.md`,
+      api: agentPageApi(this.env, this.tid),
       lifetime: this.db.get("lifetime", "ad_hoc"),
       mode: this.db.get("mode", "interactive"),
+      claimed,
       expires_at: this.expiresAt(),
-      next_step: "Prepare and publish the signed app now with this private setup handle; do not wait for claim or ask the person to reply claimed. Give the human owner page_url while you configure authority, select the initial generation, build and publish, start the native participant and prepare any assistant-access proposal. The owner signs in to access the ready page within 24 hours. Their sign-in retains the prepared authority, publication and keys, makes the configured page resident within account quotas, and activates any prepared permission review. Browser device enrollment and assistant consent remain explicit.",
       application,
-      agent_setup: {
-        application: application.id,
-        guide: `${publicBase(this.env)}/docs/BUILD_AN_APP.md`,
-        next_step: "Configure authority and select the initial generation before opening the public Chronolog application session. Commands, queries, durable events and ephemeral signals use that session. Connect this host as the filtered control participant for membership, discovery, recovery and signed page-code publication.",
-      },
+      agent_md: `${publicBase(this.env)}/agent.md`,
+      build_guide: `${publicBase(this.env)}/docs/BUILD_AN_APP.md`,
+      next_step: claimed
+        ? "This page is already owned by your account. Configure authority, publish the signed app and give the owner page_url."
+        : "Prepare and publish the signed app now; do not wait for claim. Give the human owner page_url. Their sign-in within 24 hours claims this page and this agent for their account.",
     };
   }
 
@@ -563,8 +508,6 @@ export class Tendril extends DurableObject<Env> {
   private async claimOwnerSerialized(accountId: string, identities: unknown[]): Promise<Response> {
     const current = this.db.get<string | null>("owner_account", null);
     if (current && current !== accountId) throw new HttpError(403, "claimed", "Another account owns this tendril");
-    const intendedAccount = this.db.get<string | null>("intended_owner_account", null);
-    if (intendedAccount && intendedAccount !== accountId) throw new HttpError(403, "wrong_owner", "This setup belongs to a different linked account");
     const expected = this.db.get<string | null>("intended_owner", null);
     if (!current && expected && !ownerMatches(expected, identities)) throw new HttpError(403, "wrong_owner", "This tendril was made for another account");
     if (!current) {
@@ -572,21 +515,15 @@ export class Tendril extends DurableObject<Env> {
       try {
         const lifetime = this.db.get('peer_generation_configuration', null) ? 'resident' : this.db.get('lifetime', 'ad_hoc');
         row = await this.env.ACCOUNTS.prepare(`UPDATE tendrils SET owner_account = ?, claimed_at = COALESCE(claimed_at, ?), lifetime = ?
-          WHERE id = ? AND (owner_account IS NULL OR owner_account = ?)
-          AND (? IS NULL OR EXISTS(SELECT 1 FROM accounts a JOIN identities i ON i.account_id=a.id
-            JOIN identity_emails e ON e.provider=i.provider AND e.subject=i.subject
-            WHERE a.id=? AND lower(e.email)=? AND a.suspended_at IS NULL AND a.deleting_at IS NULL)) RETURNING id`)
-          .bind(accountId, this.now(), lifetime, this.tid, accountId, intendedAccount, intendedAccount, expected).first();
+          WHERE id = ? AND (owner_account IS NULL OR owner_account = ?) RETURNING id`)
+          .bind(accountId, this.now(), lifetime, this.tid, accountId).first();
       } catch (err) {
         if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: RESIDENT_LIMIT });
         if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
         if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
         throw err;
       }
-      if (!row) {
-        if (intendedAccount) throw new HttpError(403,'owner_verification_required','The intended account must still be active and verify the original owner email before claim.');
-        throw new HttpError(409, "claimed", "This tendril was claimed already");
-      }
+      if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
       this.transaction(() => {
         adoptPreparedPeerApplication(this, accountId);
         this.db.set("owner_account", accountId);
@@ -615,6 +552,7 @@ export class Tendril extends DurableObject<Env> {
       }
     }
     await adoptPreparedAssistant(this, accountId);
+    await claimCreatorAgents(this.env, this.tid, accountId);
     notifySetupChanged(this);
     const releasedAdmission = await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
       .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));
@@ -638,18 +576,6 @@ export class Tendril extends DurableObject<Env> {
     if (this.db.get<string>("lifetime", "ad_hoc") === "resident") return null;
     const last = Math.max(this.db.get<number>("created_at", 0), this.db.get<number>("last_access", 0));
     return last + AD_HOC_IDLE;
-  }
-
-  // ---------------------------------------------------------------- agent authentication
-
-  /** Resolves identity only. Request handlers explicitly record agent activity. */
-  async authAgent(req: Request): Promise<string> {
-    return (await authenticateAgent(this, req)).name;
-  }
-
-  /** Resolves a host agent's identity without changing stored activity. */
-  async authToken(token: string): Promise<string> {
-    return (await authenticateAgentToken(this, token)).name;
   }
 
   features(): Features {
@@ -776,11 +702,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   private scheduleCommittedAlarm(): Promise<void> | void {
-    if (!this.exists()) {
-      const setupDue = nextSetupDeadline(this);
-      if (setupDue !== null) return this.alarms.ensure(Math.max(setupDue - this.skew, Date.now() + 1));
-      return;
-    }
+    if (!this.exists()) return;
     const now = this.now(), times = [this.db.get<number>('next_cleanup', now + DAY)];
     const peerDue = nextPeerDeadline(this), expires = this.expiresAt();
     if (peerDue !== null) times.push(peerDue);
@@ -797,12 +719,7 @@ export class Tendril extends DurableObject<Env> {
     await this.alarms.fired();
     this.handlingAlarm = true;
     try {
-      if (!this.exists()) {
-        await expireSetupReservation(this);
-        this.handlingAlarm = false;
-        await this.scheduleCommittedAlarm();
-        return;
-      }
+      if (!this.exists()) return;
       try { await recoverLifetimeChange(this); }
       catch (error) { console.error('Lifetime recovery remains pending', error); }
       // Expiry removes the entire object, so pruning and reconciling the same
@@ -839,8 +756,6 @@ export class Tendril extends DurableObject<Env> {
     this.db.run('DELETE FROM links WHERE expires_at IS NOT NULL AND expires_at < ?', now);
     this.db.run('DELETE FROM guest_accounts WHERE link_id NOT IN (SELECT id FROM links)');
     this.db.run('DELETE FROM page_sessions WHERE expires_at < ?', now);
-    const adoption = this.db.get<{ expires_at: number } | null>('adopt', null);
-    if (adoption && adoption.expires_at < now) this.db.del('adopt');
     this.db.set('next_cleanup', now + DAY);
   }
 
@@ -859,6 +774,8 @@ export class Tendril extends DurableObject<Env> {
   async destroy(): Promise<void> {
     const id = this.tid;
     const releaseAdmission = !!id && !this.db.get<string | null>("owner_account", null);
+    // Granted agents learn of deletion; D1 grant rows cascade with the page index.
+    const notified = id ? Promise.all(mirroredAgents(this).map(agentId => notifyAgentHub(this, agentId, "page-deleted", {}, id))) : null;
     for (const ws of this.ctx.getWebSockets()) {
       try {
         ws.close(4004, "tendril deleted");
@@ -883,6 +800,7 @@ export class Tendril extends DurableObject<Env> {
       }));
       await releasedAdmission.body?.cancel();
     }
+    await notified;
     await this.ctx.storage.deleteAll();
     this.db.clearCache();
     this.db.init();

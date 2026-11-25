@@ -13,7 +13,8 @@ export function randomB32(n: number): string {
 
 export const newTendrilId = () => randomB32(12);
 export const newPageKey = () => randomB32(26);
-export const newToken = () => "tk_" + randomB32(32);
+export const newAgentToken = () => "ta_" + randomB32(32);
+export const newAgentId = () => "ag_" + randomB32(26);
 export const newLinkId = () => "l_" + randomB32(10);
 
 /** Six decimal digits, uniformly distributed. */
@@ -28,7 +29,8 @@ export function sixDigits(): string {
 
 export const TENDRIL_ID_RE = /^[a-z2-7]{12}$/;
 export const PAGE_KEY_RE = /^[a-z2-7]{26}$/;
-export const AGENT_TOKEN_RE = /^tk_[a-z2-7]{32}$/;
+export const AGENT_TOKEN_RE = /^ta_[a-z2-7]{32}$/;
+export const AGENT_ID_RE = /^ag_[a-z2-7]{26}$/;
 
 export async function sha256Hex(data: string | ArrayBuffer | ArrayBufferView): Promise<string> {
   const bytes = typeof data === "string" ? new TextEncoder().encode(data) : data;

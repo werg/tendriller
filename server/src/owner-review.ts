@@ -1,5 +1,5 @@
+/** Owner management actions bind the reviewed ownership incarnation, not its browser session. */
 import type { Tendril } from './tendril';
-import { agentScopes, type AgentScope } from './access';
 import { selectedApplication } from './application';
 import { HttpError } from './http';
 import { publicBase } from './urls';
@@ -12,15 +12,6 @@ export interface HostApprovalBinding {
   owner_account: string;
   owner_claimed_at: number;
 }
-export interface HostApproval extends HostApprovalBinding {
-  hash: string;
-  expires_at: number;
-  attempts: number;
-  mode?: 'delegate';
-  name?: string;
-  scopes?: AgentScope[];
-}
-
 /** Approval records bind the reviewed ownership incarnation, not its browser session. */
 export function hostApprovalBinding(t: Tendril, owner: string): HostApprovalBinding {
   const binding: HostApprovalBinding = { schemaVersion: 1, service_origin: publicBase(t.env), page_id: t.tid,
@@ -30,34 +21,16 @@ export function hostApprovalBinding(t: Tendril, owner: string): HostApprovalBind
 }
 
 export function requireHostApprovalBinding(t: Tendril, binding: HostApprovalBinding): void {
-  // Old transient codes have no retained review identity. Never bind them to the
-  // current owner/application at redemption; ask the owner for a fresh review.
   if (!binding || binding.schemaVersion !== 1 || binding.service_origin !== publicBase(t.env) ||
       binding.page_id !== t.tid || !binding.page_id || typeof binding.application_id !== 'string' || !binding.application_id ||
       typeof binding.owner_account !== 'string' || !binding.owner_account ||
       !Number.isSafeInteger(binding.owner_claimed_at) || binding.owner_claimed_at <= 0)
-    throw new HttpError(409, 'adoption_review_required', 'This code has no current bound owner review. Ask the owner to issue a new code.');
+    throw new HttpError(409, 'owner_review_required', 'This action has no current bound owner review. Reload and review it again.');
   if (!t.exists() || t.db.get('disabled', false)) throw new HttpError(403, 'disabled', 'This tendril is unavailable');
   if (binding.owner_account !== t.db.get('owner_account', null) || binding.owner_claimed_at !== t.db.get('claimed_at', null))
-    throw new HttpError(403, 'adoption_owner_changed', 'The reviewed owner changed. Ask the current owner to issue a new code.');
+    throw new HttpError(403, 'owner_changed', 'The reviewed owner changed. Reload and review this action again.');
   if (binding.application_id !== selectedApplication(t).id)
-    throw new HttpError(409, 'adoption_application_mismatch', 'The reviewed application changed. Ask its owner to issue a new code.');
-}
-
-export function requireHostApproval(t: Tendril, approval: HostApproval): void {
-  requireHostApprovalBinding(t, approval);
-  if (typeof approval.hash !== 'string' || !/^[a-f0-9]{64}$/.test(approval.hash) ||
-      !Number.isSafeInteger(approval.expires_at) || !Number.isSafeInteger(approval.attempts) || approval.attempts < 0 ||
-      (approval.mode !== undefined && approval.mode !== 'delegate'))
-    throw new HttpError(409, 'adoption_review_required', 'The retained approval is invalid. Ask the owner to issue a new code.');
-  if (approval.mode === 'delegate') {
-    if (typeof approval.name !== 'string' || !/^[A-Za-z0-9_.@-]{1,64}$/.test(approval.name) || approval.name === 'setup' || !Array.isArray(approval.scopes))
-      throw new HttpError(409, 'adoption_review_required', 'The retained delegation is incomplete. Ask the owner to issue a new code.');
-    // In particular, absent scopes must not select addToken's full-access default.
-    agentScopes(approval.scopes);
-  } else if (approval.name !== undefined || approval.scopes !== undefined) {
-    throw new HttpError(409, 'adoption_review_required', 'The retained recovery mode is invalid. Ask the owner to issue a new code.');
-  }
+    throw new HttpError(409, 'application_changed', 'The reviewed application changed. Reload and review this action again.');
 }
 
 /** One primary snapshot checks writes and the claimed page's bound active owner. */

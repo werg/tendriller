@@ -8,6 +8,7 @@ import { requireWritesOpen } from "../service-state";
 import { emojiIconSvg, iconSvg } from "../inject";
 import { DEFAULT_THEME_COLOR, isEmojiIcon } from "../pwa";
 import { avatar, icon, servicePage } from "./ui";
+import { accountGrants, createJoinCode, listAccountAgents, revokeAgent, setAgentGrant } from "../agents";
 
 function escape(s: string): string { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
 export async function dashboard(req: Request, env: Env, url: URL): Promise<Response> {
@@ -55,7 +56,44 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
     if (!response.ok) return errorResponse(502, "unavailable", "The page could not be deleted. Try again.");
     return new Response(null, { status: 303, headers: { Location: "/dashboard?deleted=1", "Cache-Control": "no-store" } });
   }
-  const shareMatch = /^\/dashboard\/t\/([a-z2-7]{12})\/(invite|agent)$/.exec(url.pathname);
+  const sameOrigin = () => { if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) throw new HttpError(403, "bad_origin", "Invalid dashboard origin"); };
+  const jsonBody = async () => {
+    if (!(req.headers.get("Content-Type") ?? "").startsWith("application/json")) throw new HttpError(415, "unsupported_media_type", "Expected JSON");
+    let body: unknown;
+    try { body = JSON.parse(new TextDecoder().decode(await readBody(req, 4096)) || "{}"); }
+    catch { throw new HttpError(400, "bad_json", "Request body is not valid JSON"); }
+    if (!isPlainObject(body)) throw new HttpError(400, "bad_request");
+    return body;
+  };
+  // Agents belong to the account. A join code adds one; grants are per page.
+  if (url.pathname === "/dashboard/agents/join" && req.method === "POST") {
+    try {
+      sameOrigin();
+      await requireWritesOpen(env);
+      return json(await createJoinCode(env, session.accountId), 201, { "Cache-Control": "no-store" });
+    } catch (error) { return toErrorResponse(error); }
+  }
+  const revokeMatch = /^\/dashboard\/agents\/(ag_[a-z2-7]{26})\/revoke$/.exec(url.pathname);
+  if (revokeMatch && req.method === "POST") {
+    try {
+      sameOrigin();
+      await requireWritesOpen(env);
+      if (!await revokeAgent(env, revokeMatch[1], session.accountId)) throw new HttpError(404, "not_found", "No such agent");
+      return new Response(null, { status: 303, headers: { Location: "/dashboard?agent_revoked=1#agents", "Cache-Control": "no-store" } });
+    } catch (error) { return toErrorResponse(error); }
+  }
+  const grantMatch = /^\/dashboard\/t\/([a-z2-7]{12})\/agents$/.exec(url.pathname);
+  if (grantMatch && req.method === "POST") {
+    try {
+      sameOrigin();
+      await requireWritesOpen(env);
+      const body = await jsonBody();
+      if (typeof body.agent !== "string" || typeof body.granted !== "boolean") throw new HttpError(400, "bad_request", "Expected { agent, granted }");
+      await setAgentGrant(env, session.accountId, body.agent, grantMatch[1], body.granted);
+      return json({ page: grantMatch[1], agent: body.agent, granted: body.granted });
+    } catch (error) { return toErrorResponse(error); }
+  }
+  const shareMatch = /^\/dashboard\/t\/([a-z2-7]{12})\/invite$/.exec(url.pathname);
   if (shareMatch && req.method === "POST") {
     try {
       if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) throw new HttpError(403, "bad_origin", "Invalid dashboard origin");
@@ -64,10 +102,10 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
       if (!await owned(shareMatch[1])) throw new HttpError(404, "not_found");
       const body = JSON.parse(new TextDecoder().decode(await readBody(req, 4096)) || "{}");
       if (!isPlainObject(body)) throw new HttpError(400, "bad_request");
-      const response = await pageFetch(shareMatch[1], shareMatch[2] === "agent" ? "agent-invite" : "invite", {
+      const response = await pageFetch(shareMatch[1], "invite", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
-      if (!response.ok || shareMatch[2] === "agent") return response;
+      if (!response.ok) return response;
       const link = await response.json() as { url: string };
       let qr = "";
       try { qr = renderQrSvg(link.url, { sizePx: 176, label: "Scan to join" }); } catch { /* copy the link instead */ }
@@ -90,6 +128,7 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
   if (req.method === "GET") {
     const tendrils = await db.prepare("SELECT id, lifetime, state, created_at FROM tendrils WHERE owner_account = ? ORDER BY created_at DESC")
       .bind(session.accountId).all<{ id: string; lifetime: string; state: string; created_at: number }>();
+    const [agents, grants] = await Promise.all([listAccountAgents(env, session.accountId), accountGrants(env, session.accountId)]);
     const dbMs = performance.now() - started - sessionMs;
     type Summary = { name: string; page_url: string; icon?: string | null; theme_color?: string | null; version: number; held: boolean; bytes: number; agents: number; guests_waiting: number; last_activity: { ts: number; summary: string } | null };
     const summaries = await Promise.all(tendrils.results.map(async t => {
@@ -120,21 +159,22 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
       const stateBadge = info?.held || t.state === "held" ? '<span class="badge danger">Held</span>' : t.state === 'active' ? '<span class="badge ok">Active</span>' : `<span class="badge">${escape(t.state)}</span>`;
       const meta = info ? `<span>${icon("layers")} ${info.version ? `v${info.version}` : "Not published"}</span><span>${icon("bot")} ${info.agents} ${info.agents === 1 ? "agent" : "agents"}</span><span>${icon("database")} ${(info.bytes / 1048576).toFixed(1)} MB</span><span>${icon("clock")} ${t.lifetime === "resident" ? "Resident" : "Temporary"}</span>` : `<span>Details unavailable right now</span>`;
       const openable = info?.page_url && !info.held;
-      return `<article class="card interactive page-card"><div class="page-card-top">${favicon(info, name, t.id)}<div><h3>${escape(name)}</h3><div class="page-meta">${meta}</div></div>${stateBadge}</div>${info?.last_activity ? `<p class="activity">${escape(info.last_activity.summary)} · <span title="${escape(new Date(info.last_activity.ts).toISOString())}">${relative(info.last_activity.ts)}</span></p>` : ""}${info?.guests_waiting ? `<p class="notice warn" style="margin:0">${icon("users")}<span>${info.guests_waiting} guest ${info.guests_waiting === 1 ? "request" : "requests"} waiting · <a href="${escape(info.page_url)}_tendril/manage">Review</a></span></p>` : ""}<div class="actions">${openable ? `<a class="button sm" href="${escape(info!.page_url)}">${icon("external")} Open</a><button class="secondary sm" type="button" data-add="${escape(t.id)}" data-name="${escape(name)}" data-url="${escape(info!.page_url)}">${icon("user-plus")} Add people &amp; devices</button><button class="ghost sm icon-button" data-copy="${escape(info!.page_url)}" type="button" title="Copy page link" aria-label="Copy link to ${escape(name)}">${icon("copy")}</button><a class="button ghost sm icon-button" href="${escape(info!.page_url)}_tendril/manage" title="Page settings" aria-label="Settings for ${escape(name)}">${icon("settings")}</a>` : ""}<a class="button ghost sm icon-button" href="/dashboard/t/${escape(t.id)}" title="Activity" aria-label="Activity for ${escape(name)}">${icon("activity")}</a>${t.state === "held" ? `<a class="button sm danger" href="/appeal?tendril=${escape(t.id)}">Appeal hold</a>` : ""}<button class="ghost sm icon-button" type="button" data-delete="${escape(t.id)}" data-name="${escape(name)}" data-resident="${t.lifetime === "resident" ? "1" : ""}" title="Delete page" aria-label="Delete ${escape(name)}">${icon("trash")}</button></div></article>`;
+      return `<article class="card interactive page-card"><div class="page-card-top">${favicon(info, name, t.id)}<div><h3>${escape(name)}</h3><div class="page-meta">${meta}</div></div>${stateBadge}</div>${info?.last_activity ? `<p class="activity">${escape(info.last_activity.summary)} · <span title="${escape(new Date(info.last_activity.ts).toISOString())}">${relative(info.last_activity.ts)}</span></p>` : ""}${info?.guests_waiting ? `<p class="notice warn" style="margin:0">${icon("users")}<span>${info.guests_waiting} guest ${info.guests_waiting === 1 ? "request" : "requests"} waiting · <a href="${escape(info.page_url)}_tendril/manage">Review</a></span></p>` : ""}<div class="actions">${openable ? `<a class="button sm" href="${escape(info!.page_url)}">${icon("external")} Open</a><button class="secondary sm" type="button" data-add="${escape(t.id)}" data-name="${escape(name)}" data-url="${escape(info!.page_url)}" data-agents="${escape([...grants.get(t.id) ?? []].sort().join(" "))}">${icon("user-plus")} Add people &amp; devices</button><button class="ghost sm icon-button" data-copy="${escape(info!.page_url)}" type="button" title="Copy page link" aria-label="Copy link to ${escape(name)}">${icon("copy")}</button><a class="button ghost sm icon-button" href="${escape(info!.page_url)}_tendril/manage" title="Page settings" aria-label="Settings for ${escape(name)}">${icon("settings")}</a>` : ""}<a class="button ghost sm icon-button" href="/dashboard/t/${escape(t.id)}" title="Activity" aria-label="Activity for ${escape(name)}">${icon("activity")}</a>${t.state === "held" ? `<a class="button sm danger" href="/appeal?tendril=${escape(t.id)}">Appeal hold</a>` : ""}<button class="ghost sm icon-button" type="button" data-delete="${escape(t.id)}" data-name="${escape(name)}" data-resident="${t.lifetime === "resident" ? "1" : ""}" title="Delete page" aria-label="Delete ${escape(name)}">${icon("trash")}</button></div></article>`;
     });
     const residents = tendrils.results.filter(t => t.lifetime === "resident" && t.state === "active").length;
-    const totals = summaries.reduce((acc, info) => ({ agents: acc.agents + (info?.agents ?? 0), guests: acc.guests + (info?.guests_waiting ?? 0), published: acc.published + (info?.version ? 1 : 0) }), { agents: 0, guests: 0, published: 0 });
+    const totals = summaries.reduce((acc, info) => ({ guests: acc.guests + (info?.guests_waiting ?? 0), published: acc.published + (info?.version ? 1 : 0) }), { guests: 0, published: 0 });
     const origin = publicBase(env);
     const who = session.email ?? session.accountId;
     const firstName = session.email ? session.email.split("@")[0]!.split(/[._+-]/)[0]! : "";
     const greeting = firstName ? `Welcome back, ${escape(firstName.charAt(0).toUpperCase() + firstName.slice(1))}` : "Welcome back";
     const buildPrompt = `Build me an app with Tendriller at ${origin}. Start by reading ${origin}/agent.md and follow it end to end. I will sign in as ${session.email ?? "my GitHub or Google account"}.\n\nWhat I want: `;
-    const scopeChecks = [
-      ["host:read", "Read host status", true], ["participants:connect", "Connect enrolled participants", true],
-      ["control:write", "Update signed application control", false], ["publication:write", "Publish signed code", false], ["assistant:manage", "Propose assistant access", false],
-    ].map(([value, label, on]) => `<label class="check-item"><input type="checkbox" name="scopes" value="${value}"${on ? " checked" : ""}><span class="check-copy"><span class="check-title">${label}</span><span class="check-desc"><code>${value}</code></span></span></label>`).join("");
+    const agentChecks = agents.map(agent => `<label class="check-item"><input type="checkbox" name="agent" value="${escape(agent.id)}" data-grant><span class="check-copy"><span class="check-title">${icon("bot")} ${escape(agent.name)}</span><span class="check-desc">Full host access to this page</span></span></label>`).join("");
+    const agentRows = agents.map(agent => `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${icon("bot")} ${escape(agent.name)}</div><p class="list-item-sub">${agent.grants} ${agent.grants === 1 ? "page" : "pages"} · added ${escape(new Date(agent.created_at).toISOString().slice(0, 10))}</p></div><form class="inline-form" method="post" action="/dashboard/agents/${escape(agent.id)}/revoke"><button class="sm danger" type="submit" aria-label="Revoke ${escape(agent.name)}">Revoke</button></form></li>`).join("");
+    const agentsSection = `<section class="card" id="agents" aria-labelledby="agents-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} Agents</span><h2 id="agents-title">Your agents</h2><p>One agent can maintain many pages. It keeps pages it creates; you choose which existing pages it may maintain from each page’s <strong>Add people &amp; devices → An agent</strong>.</p></div><button class="sm" type="button" id="agent-add">${icon("bot")} Add agent</button></div>
+      ${agentRows ? `<ul class="list">${agentRows}</ul>` : '<p class="empty">No agents yet. Add one to let it maintain your pages.</p>'}
+      <div class="result" id="join-result" hidden><h3>${icon("check")} Paste this to the new agent</h3><div class="stack-sm"><div class="copy-box"><label class="field-label" for="join-blurb">Invitation (includes a one-time code, valid 10 minutes)</label><textarea id="join-blurb" class="blurb-full" readonly rows="14"></textarea><div class="cluster"><button class="sm" type="button" data-copy-from="join-blurb">${icon("copy")} Copy invitation</button></div></div><p class="fine">Single use. If the agent loses the reply, add the agent again.</p></div></div><p class="fine" role="status" id="join-status"></p></section>`;
     const dialog = `<dialog class="sheet" id="add-dialog" aria-labelledby="add-title">
-      <div class="sheet-head"><div><span class="eyebrow">${icon("sparkles")} Add people &amp; devices</span><h2 id="add-title">…</h2><p>Open it on another device, invite a person, or connect another agent.</p></div><button class="ghost sm icon-button" type="button" data-close aria-label="Close">${icon("x")}</button></div>
+      <div class="sheet-head"><div><span class="eyebrow">${icon("sparkles")} Add people &amp; devices</span><h2 id="add-title">…</h2><p>Open it on another device, invite a person, or give one of your agents access.</p></div><button class="ghost sm icon-button" type="button" data-close aria-label="Close">${icon("x")}</button></div>
       <div class="sheet-body"><div class="tabs">
         <input class="tab-input" type="radio" name="add-tab" id="tab-device" checked><input class="tab-input" type="radio" name="add-tab" id="tab-person"><input class="tab-input" type="radio" name="add-tab" id="tab-agent">
         <div class="tab-list"><label for="tab-device">${icon("phone")} My device</label><label for="tab-person">${icon("user-plus")} A person</label><label for="tab-agent">${icon("bot")} An agent</label></div>
@@ -145,20 +185,19 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
             <div class="field-row"><div class="field"><label class="field-label" for="person-role">Access</label><select id="person-role" name="role"><option value="guest">Guest — signs in and joins</option><option value="display">Page-only — page files, no sign-in</option></select></div><div class="field"><label class="field-label" for="person-expiry">Expires</label><select id="person-expiry" name="expires_in"><option value="604800">In 7 days</option><option value="86400">In 24 hours</option><option value="2592000">In 30 days</option><option value="">Never</option></select></div></div>
             <div class="actions"><button type="submit">${icon("link")} Create invite link</button></div><p class="fine" role="status" data-status></p></form>
             <div class="result" id="person-result" hidden><h3>${icon("check")} Invite link ready</h3><div class="split"><div class="stack-sm"><div class="copy-box"><label class="field-label" for="person-link">Invite link</label><div class="copy-line"><input id="person-link" type="text" readonly><button class="secondary sm" type="button" data-copy-from="person-link">${icon("copy")} Copy</button></div></div><button class="secondary sm" type="button" id="person-share" hidden>${icon("share")} Share…</button></div><div class="qr-frame" id="person-qr"></div></div></div></div>
-          <div class="tab-panel"><h3>Connect another agent</h3><p class="muted" style="font-size:.9rem">Creates a paste-ready invitation with a one-time code (valid 10 minutes). Existing agents keep their access.</p>
-            <form id="agent-form"><div class="field"><label class="field-label" for="agent-name">Agent name</label><input id="agent-name" name="name" required maxlength="64" placeholder="e.g. reviewer or mobile-sync" autocomplete="off"><span class="field-hint">Letters, numbers, dots, dashes and underscores.</span></div>
-            <details class="disclosure"><summary>Host permissions</summary><div class="disclosure-body"><div class="check-list">${scopeChecks}</div></div></details>
-            <div class="actions"><button type="submit">${icon("bot")} Create agent invitation</button></div><p class="fine" role="status" data-status></p></form>
-            <div class="result" id="agent-result" hidden><h3>${icon("check")} Paste this to the other agent</h3><div class="stack-sm"><div class="copy-box"><label class="field-label" for="agent-blurb">Full invitation (includes the one-time code)</label><textarea id="agent-blurb" class="blurb-full" readonly rows="13"></textarea><div class="cluster"><button class="sm" type="button" data-copy-from="agent-blurb">${icon("copy")} Copy invitation</button><button class="secondary sm" type="button" data-copy-from="agent-link">${icon("link")} Copy as short link message</button></div></div><input id="agent-link" type="hidden"><p class="fine">Single use. If the agent loses the reply, create a new invitation.</p></div></div></div>
+          <div class="tab-panel"><h3>Give an agent access</h3><p class="muted" style="font-size:.9rem">Checked agents can maintain this page. Unchecking closes the agent’s connections to it right away.</p>
+            ${agents.length ? `<div class="check-list" id="agent-grants">${agentChecks}</div><p class="fine" role="status" id="grant-status"></p>` : `<p class="empty">No agents yet. Use <a href="#agents">Your agents → Add agent</a> first.</p>`}</div>
         </div></div></div>
     </dialog>`;
     const empty = `<article class="card" style="grid-column:1/-1;text-align:center;padding:2.5rem 1.5rem"><div class="way-icon" style="display:inline-grid;place-items:center;width:3.2rem;height:3.2rem;border-radius:14px;background:var(--accent-soft);color:var(--accent-text);font-size:1.5rem;margin-bottom:.8rem">${icon("sparkles")}</div><h2>Start with something useful</h2><p class="muted" style="margin:0 auto 1rem">Tell your agent what you want to build. Your first page will appear here.</p><div class="actions" style="justify-content:center"><button type="button" data-copy-from="build-prompt">${icon("copy")} Copy a starter prompt</button><a class="button secondary" href="https://cookbooks.tendriller.dev/">Explore cookbooks</a><a class="button ghost" href="/agent.md">Agent guide</a></div></article>`;
-    const body = `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} Workspace</span><h1>${greeting}</h1><p class="lead">Signed in as ${escape(who)}.</p></div><div class="actions tight"><a class="button secondary sm" href="/connections">${icon("key")} Assistants</a><a class="button secondary sm" href="/dashboard/setups">${icon("inbox")} Setups</a><form class="inline-form" method="post" action="/auth/logout"><button class="secondary sm" type="submit">${icon("logout")} Sign out</button></form></div></div>
-      <div class="stats"><div class="stat"><strong>${tendrils.results.length}</strong><span>${tendrils.results.length === 1 ? "page" : "pages"}</span></div><div class="stat"><strong>${residents}<small style="font-size:.9rem;color:var(--hero-muted)"> / ${RESIDENT_LIMIT}</small></strong><span>resident pages</span></div><div class="stat"><strong>${totals.agents}</strong><span>connected agents</span></div><div class="stat"><strong>${totals.guests}</strong><span>guest requests</span></div></div></section>
+    const body = `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} Workspace</span><h1>${greeting}</h1><p class="lead">Signed in as ${escape(who)}.</p></div><div class="actions tight"><a class="button secondary sm" href="/connections">${icon("key")} Assistants</a><a class="button secondary sm" href="#agents">${icon("bot")} Agents</a><form class="inline-form" method="post" action="/auth/logout"><button class="secondary sm" type="submit">${icon("logout")} Sign out</button></form></div></div>
+      <div class="stats"><div class="stat"><strong>${tendrils.results.length}</strong><span>${tendrils.results.length === 1 ? "page" : "pages"}</span></div><div class="stat"><strong>${residents}<small style="font-size:.9rem;color:var(--hero-muted)"> / ${RESIDENT_LIMIT}</small></strong><span>resident pages</span></div><div class="stat"><strong>${agents.length}</strong><span>${agents.length === 1 ? "agent" : "agents"}</span></div><div class="stat"><strong>${totals.guests}</strong><span>guest requests</span></div></div></section>
+      ${url.searchParams.get("agent_revoked") === "1" ? `<p class="notice" role="status">${icon("check")}<span>Agent revoked. Its credential stopped working and its page connections were closed.</span></p>` : ""}
       ${url.searchParams.get("deleted") === "1" ? `<p class="notice" role="status">${icon("check")}<span>Page deleted. Its files, links and agent access were removed.</span></p>` : ""}
       ${residents >= RESIDENT_LIMIT ? `<p class="notice warn">${icon("layers")}<span>You have reached ${RESIDENT_LIMIT} resident pages. Delete one you no longer need before an agent can make another page resident.</span></p>` : ""}
       ${noticeList}
-      <section class="card" aria-labelledby="new-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} Bring in an agent</span><h2 id="new-title">Build a new page with any agent</h2><p>Paste this into Claude, ChatGPT, Codex or another coding agent, then describe what you want.</p></div></div><div class="copy-box"><textarea id="build-prompt" readonly rows="4" style="min-height:6.5rem">${escape(buildPrompt)}</textarea><div class="cluster"><button class="sm" type="button" data-copy-from="build-prompt">${icon("copy")} Copy prompt</button><a class="button ghost sm" href="/docs/BUILD_AN_APP.md">${icon("book")} Read the guide</a></div></div><p class="fine" style="margin-top:.75rem">To connect an extra agent to an <em>existing</em> page, use <strong>Add people &amp; devices → An agent</strong> on that page.</p></section>
+      <section class="card" aria-labelledby="new-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} Bring in an agent</span><h2 id="new-title">Build a new page with any agent</h2><p>Paste this into Claude, ChatGPT, Codex or another coding agent, then describe what you want.</p></div></div><div class="copy-box"><textarea id="build-prompt" readonly rows="4" style="min-height:6.5rem">${escape(buildPrompt)}</textarea><div class="cluster"><button class="sm" type="button" data-copy-from="build-prompt">${icon("copy")} Copy prompt</button><a class="button ghost sm" href="/docs/BUILD_AN_APP.md">${icon("book")} Read the guide</a></div></div><p class="fine" style="margin-top:.75rem">To let one of your agents maintain an <em>existing</em> page, add it under <a href="#agents">Your agents</a>, then check it in that page’s <strong>Add people &amp; devices → An agent</strong>.</p></section>
+      ${agentsSection}
       <div class="section-title"><h2>Your pages</h2><span class="badge">${tendrils.results.length}</span><span class="rule"></span></div>
       <div class="grid">${cards.join("") || empty}</div>
       <details class="disclosure"><summary>Account settings</summary><div class="disclosure-body stack"><div class="actions tight"><a class="button secondary sm" href="/dashboard/export">Download account data</a><a class="button secondary sm" href="/auth/link/github">Link GitHub</a><a class="button secondary sm" href="/auth/link/google">Link Google</a><a class="button secondary sm" href="/oauth/connections">OAuth clients</a></div><div class="card danger"><h3>Delete account</h3><p class="muted" style="font-size:.88rem">Permanently deletes your pages and stored files.</p><form method="post" action="/dashboard/delete"><div class="field"><label class="field-label" for="delete-confirm">Type DELETE to confirm</label><input id="delete-confirm" name="confirm" required></div><div class="actions"><button class="danger sm">Delete account</button></div></form></div></div></details>
@@ -172,7 +211,9 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)r
  if(b.dataset.copy)copy(b.dataset.copy,b);
  else if(b.dataset.copyFrom){const f=$(b.dataset.copyFrom);copy(f.value,b)}
  else if(b.dataset.add){opener=b;current=b.dataset.add;$('add-title').textContent=b.dataset.name;$('device-link').value=b.dataset.url;$('device-qr').src='/dashboard/t/'+current+'/qr.svg';
-  $('person-result').hidden=$('agent-result').hidden=true;dialog.querySelectorAll('[data-status]').forEach(s=>s.textContent='');$('tab-device').checked=true;dialog.showModal()}
+  const granted=new Set((b.dataset.agents||'').split(' ').filter(Boolean));dialog.querySelectorAll('[data-grant]').forEach(i=>i.checked=granted.has(i.value));if($('grant-status'))$('grant-status').textContent='';
+  $('person-result').hidden=true;dialog.querySelectorAll('[data-status]').forEach(s=>s.textContent='');$('tab-device').checked=true;dialog.showModal()}
+ else if(b.id==='agent-add')join(b);
  else if(b.dataset.delete){opener=b;const d=$('delete-dialog');$('delete-title').textContent='Delete “'+b.dataset.name+'”?';$('delete-confirm-id').value=b.dataset.delete;$('delete-form').action='/dashboard/t/'+b.dataset.delete+'/delete';$('delete-resident').hidden=!b.dataset.resident;d.showModal()}
  else if(b.hasAttribute('data-close'))b.closest('dialog').close()});
 $('delete-dialog').addEventListener('click',e=>{if(e.target===e.currentTarget)e.currentTarget.close()});
@@ -185,8 +226,15 @@ const post=async(form,kind,body)=>{const status=form.querySelector('[data-status
 $('person-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.target,v=id=>$(id).value.trim(),body={role:v('person-role'),label:v('person-label')||undefined,email:v('person-email')||undefined,expires_in:v('person-expiry')?Number(v('person-expiry')):undefined};
  const link=await post(f,'invite',body);if(!link)return;$('person-link').value=link.url;const qr=$('person-qr');qr.innerHTML=link.qr_svg?link.qr_svg+'<span>Scan to join</span>':'<span>Copy the link instead.</span>';
  const share=$('person-share');share.hidden=typeof navigator.share!=='function';share.onclick=()=>navigator.share({title:$('add-title').textContent,url:link.url}).catch(()=>{});$('person-result').hidden=false;$('person-email').value=$('person-label').value=''});
-$('agent-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.target,scopes=[...f.querySelectorAll('input[name=scopes]:checked')].map(i=>i.value);
- const invite=await post(f,'agent',{name:$('agent-name').value.trim(),scopes});if(!invite)return;$('agent-blurb').value=invite.blurb;$('agent-link').value=invite.link_blurb;$('agent-result').hidden=false;$('agent-name').value='';$('agent-blurb').focus();$('agent-blurb').select()});
+async function join(btn){const status=$('join-status');btn.disabled=true;status.textContent='Creating…';
+ try{const r=await fetch('/dashboard/agents/join',{method:'POST',credentials:'same-origin'});const data=await r.json().catch(()=>({}));if(!r.ok)throw Error(data.error?.message||'Could not create a join code. Try again.');
+  status.textContent='';$('join-blurb').value=data.blurb;$('join-result').hidden=false;$('join-blurb').focus();$('join-blurb').select()}
+ catch(err){status.textContent=err.message}finally{btn.disabled=false}}
+dialog.addEventListener('change',async e=>{const box=e.target.closest('[data-grant]');if(!box||!current)return;const status=$('grant-status'),want=box.checked;box.disabled=true;status.textContent='Saving…';
+ try{const r=await fetch('/dashboard/t/'+current+'/agents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:box.value,granted:want}),credentials:'same-origin'});
+  const data=await r.json().catch(()=>({}));if(!r.ok)throw Error(data.error?.message||'Could not change access. Try again.');status.textContent=want?'Access granted.':'Access removed.';
+  const opener=document.querySelector('[data-add="'+current+'"]'),set=new Set((opener?.dataset.agents||'').split(' ').filter(Boolean));want?set.add(box.value):set.delete(box.value);if(opener)opener.dataset.agents=[...set].join(' ')}
+ catch(err){box.checked=!want;status.textContent=err.message}finally{box.disabled=false}});
 })()</script>`;
     const response = servicePage("Dashboard", body, script, 200, { wide: true, remoteImages: true });
     response.headers.set("Server-Timing", `session;dur=${sessionMs.toFixed(1)}, account-db;dur=${dbMs.toFixed(1)}, page-summaries;dur=${(performance.now() - started - sessionMs - dbMs).toFixed(1)}, total;dur=${(performance.now() - started).toFixed(1)}`);

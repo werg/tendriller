@@ -32,7 +32,7 @@ function accept(result) {
     if (service.protocol !== 'https:' || service.origin !== origin || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/u.test(activity.proof))
       throw Error('Invalid inbox connection');
     service.protocol = 'wss:';
-    service.pathname = '/api/t/' + value.pageId + '/assistant/activity';
+    service.pathname = '/api/assistant/pages/' + value.pageId + '/activity';
     const transport = new WebSocket(service, ['tendriller.application-activity.v1', 'td_watch.' + activity.proof]);
     socket = transport;
     handledProof = activity.proof;
