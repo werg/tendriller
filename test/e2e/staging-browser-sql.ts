@@ -179,7 +179,7 @@ export async function openBrowserSqlSpecimen(options: {
   // Tables are created by an ordinary authorized DDL transaction on the root device before any live view
   // exists; opening then synchronizes it to the other device before that device's single initial read.
   await first.page.evaluate(() => (window as any).initializeAcceptanceApplication());
-  if (!isPrivate) await first.page.evaluate(key => (window as any).grantAcceptanceTaskUpdates(key), second.id);
+  if (!isPrivate) await first.page.evaluate(key => (window as any).grantAcceptanceMember(key), second.id);
   const open = async (fixture: Fixture, remote?: string, channel?: string) => {
     await fixture.page.waitForFunction(() => typeof (window as any).openAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).openAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),

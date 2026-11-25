@@ -146,10 +146,10 @@ window.prepareAcceptanceSession = options => preparation ??= (async () => {
     return outcome.outcome;
   };
   // An ordinary SQL permission transaction by the root; crypto enrollment alone grants no SQL rights.
-  window.grantAcceptanceTaskUpdates = async publicKey => {
-    const operation = await session.command('grantTaskUpdates', { publicKey }, { operationId: crypto.randomUUID() });
+  window.grantAcceptanceMember = async publicKey => {
+    const operation = await session.command('grantMember', { publicKey }, { operationId: crypto.randomUUID() });
     const outcome = await operation.materialized({ signal: AbortSignal.timeout(15_000) });
-    if (outcome.outcome !== 'accepted') throw new Error(`grantTaskUpdates rejected: ${outcome.rejectionCode ?? outcome.outcome}`);
+    if (outcome.outcome !== 'accepted') throw new Error(`grantMember rejected: ${outcome.rejectionCode ?? outcome.outcome}`);
     return outcome.outcome;
   };
   window.closeAcceptanceSession = async () => {

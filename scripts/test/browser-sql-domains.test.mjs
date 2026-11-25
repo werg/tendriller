@@ -19,7 +19,7 @@ test('specimen domains declare no schema and create tables only through the ordi
     assert.ok(sqlOf(initialize).every(sql => sql.startsWith('CREATE TABLE')), 'initialize is DDL only');
     assert.ok(sqlOf(initialize).length >= 1);
     for (const [name, command] of Object.entries(definition.commands))
-      if (name !== 'initialize') assert.ok(!sqlOf(command.prepare(name === 'add' ? { id: 1, title: 't' } : name === 'submit' ? { body: 'b', revision: 0 } : name === 'reserve' || name === 'cancel' ? 'slot' : name === 'grantTaskUpdates' ? { publicKey: 'b'.repeat(64) } : 1))
+      if (name !== 'initialize') assert.ok(!sqlOf(command.prepare(name === 'add' ? { id: 1, title: 't' } : name === 'submit' ? { body: 'b', revision: 0 } : name === 'reserve' || name === 'cancel' ? 'slot' : name === 'grantMember' ? { publicKey: 'b'.repeat(64) } : 1))
         .some(sql => /^\s*(CREATE|ALTER|DROP)\b/i.test(sql)), `${name} never changes the schema`);
   }
 });

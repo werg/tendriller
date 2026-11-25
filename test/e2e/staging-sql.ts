@@ -13,6 +13,8 @@ type Peers = PageClient['peers'];
 /**
  * Two native SQL devices on the authored-time CRDT through the live host. Authority is signed by the host from
  * each device's own enrollment proof (the first enrolled device is the root), never configured by this harness.
+ * A second device's proof only binds its key to the account: the owner's browser grants its membership, and the
+ * root's ordinary SQL permission transaction grants its checklist rights.
  * Concurrent edits are not ordered by a participant: both are accepted locally, and after exchange the
  * deterministic authored-time order revises exactly one outcome. Disconnected authoring converges on reconnect
  * with the original signed operation preserved; there is no recovery, takeover, abandonment or reapply.
@@ -45,7 +47,8 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
     expect(prepared.authority, 'No device has enrolled yet, so no data authority exists').toBeNull();
 
     // Enrollment goes through the signed-in owner page: the host binds each device key to the owner's account and
-    // signs the application authority. The first device becomes the root; the second joins its membership.
+    // signs the application authority. The first device becomes the root; the second joins its membership only
+    // through the owner's explicit grant below.
     const enroll = async (device: any) => {
       let metadata = await page.evaluate(async () => (window as any).tendril.host.peers.application());
       let epoch = 0, epochKeyDigest = await log.epochKeyCommitment(id, 0, key);
@@ -64,7 +67,16 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
       return bundle;
     };
     await enroll(aDevice);
-    const bundle = await enroll(bDevice);
+    let bundle = await enroll(bDevice);
+    const head = bundle.memberships.at(-1);
+    if (!head.payload.members.some((member: { publicKey: string; reader: boolean }) => member.publicKey === bDevice.identity.publicKey && member.reader)) {
+      const floor = BigInt(Date.now()) > head.payload.authorTimeAfterMs ? BigInt(Date.now()) : head.payload.authorTimeAfterMs + 1n;
+      const granted = await page.evaluate(async input => (window as any).tendril.host.peers.grant(input), {
+        requestId: randomUUID(), expectedMembershipId: await log.recordDigest(head), authorTimeAfterMs: floor.toString(),
+        grant: { publicKey: bDevice.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false } });
+      bundle = log.decodeRecord(Uint8Array.from(Buffer.from(granted.authority.record, 'hex')));
+      await log.verifyAuthorityBundle(bundle);
+    }
     expect(bundle.descriptor.payload.rootPrincipal).toBe(aDevice.identity.publicKey);
     expect(bundle.memberships.at(-1).payload.members.filter((member: { reader: boolean }) => member.reader)
       .map((member: { publicKey: string }) => member.publicKey).sort()).toEqual([aDevice.identity.publicKey, bDevice.identity.publicKey].sort());
@@ -92,19 +104,30 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
       return connected;
     };
     // Local facts only: the command is stored first, then materialized here (revisable), never waiting for a peer.
-    const run = async (session: any, command: string, input: unknown, operationId: string) =>
-      (await session.command(command, input, { operationId })).materialized({ signal: AbortSignal.timeout(12_000) });
+    // An operation ID is the author's own request reference; every other peer addresses the replicated operation by
+    // its signed proposal ID, so remember the mapping for the cross-device outcome reads below.
+    const proposals = new Map<string, string>();
+    const run = async (session: any, command: string, input: unknown, operationId: string) => {
+      const outcome = await (await session.command(command, input, { operationId })).materialized({ signal: AbortSignal.timeout(12_000) });
+      proposals.set(operationId, outcome.proposalId);
+      return outcome;
+    };
     // A revisable outcome after exchange: poll the local materialized fact, which an earlier-authored operation may revise.
+    // Until the operation has replicated here this peer has no record of it yet, which reads as no outcome.
     const outcomeOf = async (session: any, operationId: string) => {
       let outcome = '';
-      await expect.poll(async () => { outcome = (await (await session.operations.get(operationId)).inspect()).materialized?.outcome ?? ''; return outcome; },
-        { timeout: 15_000 }).not.toBe('');
+      await expect.poll(async () => {
+        const operation = await session.operations.get(proposals.get(operationId) ?? operationId);
+        outcome = operation === null ? '' : (await operation.inspect()).materialized?.outcome ?? ''; return outcome;
+      }, { timeout: 15_000 }).not.toBe('');
       return outcome;
     };
     const converge = async (pairLinks: any[]) => { await Promise.all(pairLinks.map(link => link.synchronize())); };
     const a = await open(aDevice, 'a'), b = await open(bDevice, 'b');
     // An ordinary authorized DDL/DML transaction by the root creates the tables; peers receive it like any operation.
     expect((await run(a, 'initialize', null, 'initialize')).outcome).toBe('accepted');
+    // Crypto membership grants no SQL rights over the group's rows; the root grants them explicitly.
+    if (!privateIntake) expect((await run(a, 'grantMember', { publicKey: bDevice.identity.publicKey }, 'grant-member')).outcome).toBe('accepted');
     const first = await connect(a, b);
     if (privateIntake) {
       expect((await run(a, 'submit', { body: 'Initial private answer', revision: 0 }, 'first')).outcome).toBe('accepted');
@@ -143,6 +166,9 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
     const [holder, waiting] = bookings[0] === 'accepted' ? [a, b] : [b, a];
     expect((await run(waiting, 'cancel', slot, 'not-holder')).outcome).toBe('rejected');
     expect((await run(holder, 'cancel', slot, 'release-slot')).outcome).toBe('accepted');
+    // Booking after the release is a guarded insert on the waiting device's own view: it must have received the release.
+    await converge(first);
+    await expect.poll(async () => JSON.stringify((await waiting.query('reservations', null)).value)).toBe('[]');
     expect((await run(waiting, 'reserve', slot, 'book-after-release')).outcome).toBe('accepted');
     await converge(first);
     await expect.poll(async () => JSON.stringify((await b.query('reservations', null)).value)).toBe(JSON.stringify([[slot, waiting.identity.publicKey]]));

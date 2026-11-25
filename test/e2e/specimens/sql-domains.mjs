@@ -6,7 +6,7 @@
 //
 // Rows are owned by the application's `group` collective, which only its admin (the root) may update by
 // default. Crypto enrollment confers no SQL rights (nor DDL), so another member claims and finishes tasks
-// only after the root's explicit `grantTaskUpdates` permission transaction; only `initialize` creates objects.
+// only after the root's explicit `grantMember` permission transaction; only `initialize` creates objects.
 export function checklist(log) {
   const group = log.bytesToHex(log.GROUP_COLLECTIVE_ID);
   const owner = `(SELECT id FROM chronolog_principals WHERE key=X'${group}')`;
@@ -40,13 +40,17 @@ export function checklist(log) {
           log.sqlStatement('UPDATE tasks SET done=1 WHERE id=?', [id]),
           log.emit('task.finished', { id })),
       }),
-      grantTaskUpdates: log.defineCommand({
-        description: 'Explicitly let one member key claim and finish group-owned tasks',
+      grantMember: log.defineCommand({
+        description: 'Explicitly let one member key add, claim and finish group-owned tasks and hold reservations',
         input: { type: 'object', properties: { publicKey: { type: 'string', minLength: 64, maxLength: 64 } }, required: ['publicKey'], additionalProperties: false },
         prepare: ({ publicKey }) => {
           if (!/^[0-9a-f]{64}$/.test(publicKey)) throw new Error('Invalid member key');
-          return log.program(log.platformOp.grant({ table: 'tasks', grantee: log.hexToBytes(publicKey),
-            operations: ['update'], columns: ['claimed_by', 'done'], grantor: log.GROUP_COLLECTIVE_ID }));
+          const grantee = log.hexToBytes(publicKey), grantor = log.GROUP_COLLECTIVE_ID;
+          // Whole-table grants from the group: they cover group-owned rows only. Guards stay in each command.
+          return log.program(
+            log.platformOp.grant({ table: 'tasks', grantee, operations: ['insert'], grantor }),
+            log.platformOp.grant({ table: 'tasks', grantee, operations: ['update'], columns: ['claimed_by', 'done'], grantor }),
+            log.platformOp.grant({ table: 'reservations', grantee, operations: ['insert', 'delete'], grantor }));
         },
       }),
       reserve: log.defineCommand({
@@ -91,7 +95,7 @@ export function intake(log, respondent) {
           log.emit('intake.initialized', {})),
       }),
       submit: log.defineCommand({
-        description: 'Submit or correct a private answer at its expected revision',
+        description: 'Submit or correct the respondent answer at its expected revision',
         input: { type: 'object', properties: { body: { type: 'string', minLength: 1, maxLength: 2000 },
           revision: { type: 'integer', minimum: 0 } }, required: ['body', 'revision'] },
         prepare: ({ body, revision }) => log.program(
@@ -108,7 +112,7 @@ export function intake(log, respondent) {
         read: async view => (await view.query('SELECT count(*) FROM sqlite_master')).rows }),
       summary: log.defineQuery({ description: 'Review only count and source revision', input: { type: 'null' },
         read: async view => (await rowsOrEmpty(view, 'answer', 'SELECT COUNT(*),coalesce(MAX(revision),0) FROM answer'))[0] ?? [0, 0] }),
-      answer: log.defineQuery({ description: 'Read the current private answer', input: { type: 'null' },
+      answer: log.defineQuery({ description: 'Read the current respondent answer', input: { type: 'null' },
         read: view => rowsOrEmpty(view, 'answer', 'SELECT body,revision FROM answer WHERE id=1') }),
     },
   });
