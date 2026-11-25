@@ -138,12 +138,12 @@ test('paused staging and production never authorize credential renewal, a fixtur
 test('early readiness checks need no packages or private access and remain distinct from full composition evidence', async t => {
   const { root, source } = fixture(t);
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: CORE_RELEASE }));
-  mkdirSync(join(root, 'server/src'), { recursive: true });
-  writeFileSync(join(root, 'server/src/runtime-release.json'), JSON.stringify({ id: 'e'.repeat(64) }));
+  // No build output is needed: the exact source commit determines the runtime.
   const snapshot = reviewSource(root, { source });
   assert.equal(snapshot.build.compositionId, undefined);
+  assert.equal(snapshot.build.runtimeId, undefined);
   assert.equal(snapshot.packagePaths, undefined);
-  const origin = 'https://selected.example', document = readiness(origin, { build: { ...snapshot.build, compositionId: 'c'.repeat(64) } });
+  const origin = 'https://selected.example', document = readiness(origin, { build: { ...snapshot.build, runtimeId: 'e'.repeat(64), compositionId: 'c'.repeat(64) } });
   assert.deepEqual(await preflightReviewSource(origin, snapshot, host(origin, document)), document);
   let installs = 0;
   await assert.rejects((async () => {

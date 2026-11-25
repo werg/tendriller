@@ -16,12 +16,12 @@ const sha = /^[a-f0-9]{40}$/, digest = /^[a-f0-9]{64}$/;
 
 /** Cheap source/readiness gate for CI before installing or building packages. */
 export function reviewSource(root, { source = sourceIdentity(root) } = {}) {
-  const pkg = json(resolve(root, 'package.json')), runtime = json(resolve(root, 'server/src/runtime-release.json'));
+  const pkg = json(resolve(root, 'package.json'));
   assert.equal(source.dirty, false, 'Live qualification needs a clean source checkpoint');
   assert(sha.test(source.source) && sha.test(source.sourceTree), 'Exact source identity is required');
   assert.equal(pkg.version, CORE_RELEASE, 'Source release differs from the public contract');
-  assert(digest.test(runtime.id), 'Source runtime identity is required');
-  return { build: { coreRelease: pkg.version, runtimeId: runtime.id, sourceCommit: source.source },
+  // The exact source commit determines the runtime; its ID is a build output, not checked in.
+  return { build: { coreRelease: pkg.version, sourceCommit: source.source },
     contract: CONTRACT_VERSION, sourceTree: source.sourceTree };
 }
 
@@ -103,7 +103,7 @@ async function preflight(origin, composition, keys, { fetch: fetcher = globalThi
 }
 
 export function preflightReviewSource(origin, source, options) {
-  return preflight(origin, source, ['coreRelease', 'runtimeId', 'sourceCommit'], options);
+  return preflight(origin, source, ['coreRelease', 'sourceCommit'], options);
 }
 
 export function preflightReviewDeployment(origin, composition, options) {
