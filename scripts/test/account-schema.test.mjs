@@ -22,29 +22,26 @@ test('the fresh account baseline enforces reservations and account limits atomic
   assert.equal(db.prepare('SELECT reserved FROM service_state').get().reserved, 0);
 });
 
-test('the unified account schema enforces setup allocations, OAuth and assistant tables without double charging', t => {
+test('the account schema holds OAuth, assistant and agent tables, and agent rows cascade with their account and page', t => {
   const db = new DatabaseSync(':memory:'); t.after(() => db.close());
-  db.exec(readFileSync(new URL('../../server/migrations/0001_accounts.sql', import.meta.url), 'utf8'));
-  assert.equal(db.prepare('SELECT revision FROM account_setup_schema').get().revision, 3);
+  db.exec('PRAGMA foreign_keys = ON');
+  for (const file of ['0001_accounts.sql', '0002_agents.sql'])
+    db.exec(readFileSync(new URL('../../server/migrations/' + file, import.meta.url), 'utf8'));
   for (const table of ['integration_oauth_access', 'integration_oauth_codes', 'integration_oauth_refresh',
-    'integration_oauth_grants', 'integration_oauth_intents', 'assistant_connections', 'account_setups', 'account_setup_allocations']) {
+    'integration_oauth_grants', 'integration_oauth_intents', 'assistant_connections', 'agents', 'agent_grants', 'agent_join_codes']) {
     assert.equal(db.prepare('SELECT name FROM sqlite_master WHERE type=? AND name=?').get('table', table)?.name, table);
   }
-  db.exec("UPDATE service_state SET mode='open' WHERE id=1");
+  assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'account_setup%'").get(), undefined);
   db.exec("INSERT INTO accounts(id,created_at,email) VALUES('owner',1,'owner@example.test')");
-  db.exec("INSERT INTO identities(provider,subject,account_id,login,email,created_at) VALUES('github','sub-1','owner','owner','owner@example.test',1)");
-  db.exec("INSERT INTO identity_emails(provider,subject,email) VALUES('github','sub-1','owner@example.test')");
-  db.exec("INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at) VALUES('grant','owner','client','https://service.example/mcp','tendrils:create',1,86400001)");
-  db.exec(`INSERT INTO account_setups VALUES('https://service.example','owner','client','operation','digest','commitment',
-    'grant','owner@example.test','aaaaaaaaaaaa','application','{}','198.18.0.1','2026-11-20','ready',1,1,1,86400001,1,NULL)`);
-  assert.deepEqual({ ...db.prepare('SELECT page_id,request_digest FROM account_setup_allocations').get() },
-    { page_id: 'aaaaaaaaaaaa', request_digest: 'digest' });
-  assert.equal(db.prepare('SELECT count FROM creation_ip').get().count, 1);
-  const old = db.prepare('SELECT * FROM account_setups').get();
-  db.exec('DELETE FROM account_setups');
-  const values = Object.values(old), placeholders = values.map(() => '?').join(',');
-  assert.throws(() => db.prepare(`INSERT INTO account_setups VALUES(${placeholders})`).run(...values), /setup_journal_missing/);
-  values[3] = 'different-operation';
-  assert.throws(() => db.prepare(`INSERT INTO account_setups VALUES(${placeholders})`).run(...values), /setup_allocation_conflict/);
-  assert.equal(db.prepare('SELECT count FROM creation_ip').get().count, 1);
+  db.exec("INSERT INTO tendrils(id,owner_account,created_at) VALUES('aaaaaaaaaaaa','owner',1)");
+  db.exec("INSERT INTO agents(id,account_id,name,token_hash,public_key,created_at) VALUES('ag_one','owner','maintainer','hash-1','key',1)");
+  assert.throws(() => db.exec("INSERT INTO agents(id,account_id,name,token_hash,public_key,created_at) VALUES('ag_two','owner','maintainer','hash-2','key',1)"), /UNIQUE/);
+  assert.throws(() => db.exec("INSERT INTO agents(id,name,token_hash,public_key,created_at) VALUES('ag_three','orphan','hash-3','key',1)"), /CHECK/);
+  db.exec("INSERT INTO agent_grants(agent_id,page_id,scopes,granted_at,granted_by) VALUES('ag_one','aaaaaaaaaaaa','[]',1,'creator')");
+  db.exec("DELETE FROM tendrils WHERE id='aaaaaaaaaaaa'");
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM agent_grants').get().n, 0);
+  db.exec("INSERT INTO agent_join_codes(code_hash,account_id,scopes,expires_at) VALUES('code','owner','[]',2)");
+  db.exec("DELETE FROM accounts WHERE id='owner'");
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM agents').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM agent_join_codes').get().n, 0);
 });
