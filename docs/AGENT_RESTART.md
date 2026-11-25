@@ -1,7 +1,8 @@
 # Re-arm consumers after publishing or restarting
 
 The running agent program (`tendril agent run`), an attached agent listener and a
-browser view have separate lifetimes. Publishing a page does not start an agent, migrate a listener
+browser view have separate lifetimes. The actual request worker and its host
+conversation receiver also have independent lifetimes. Publishing a page does not start an agent, migrate a listener
 to a new application, or wake an existing conversation. Include this checklist in
 the application's handoff and supervisor runbook.
 
@@ -62,18 +63,28 @@ replaced; publishing UI code alone does not require a new owner incarnation.
    or revision-bound cursor error instead of silently starting at the end. Work can be
    delivered again after a crash; use stable request references and idempotency.
 6. For a request consumer with declared liveness support, announce its new run
-   after its first successful read. Stop heartbeats on consumer failure. Verify
-   its role, topics, start time and recent check-in; peer connectivity alone is
-   insufficient. Report missing liveness support instead of inventing a command.
+   after its first successful read. Bind ephemeral presence and optional lifecycle
+   checkpoints to the actual worker, not its native owner or event forwarder.
+   Stop presence on worker failure, and advertise only the topics that worker
+   handles. Match the consumer and topic as well as peer identity in the browser;
+   connectivity alone is insufficient. Report missing liveness support instead
+   of inventing a command. Do not resume periodic durable heartbeats.
 7. Load the intended signed UI with the retained browser profile. Verify a small
    declared domain command/read and persistence after reload. For apps with a
    request consumer and receipt/answer support, also send a real request and
-   observe those facts on the originating item. Where heartbeat support exists,
-   confirm a stopped listener becomes stale. Confirm owner loss fails its watch.
+   observe those facts on the originating item. Stop only the request worker
+   while the native owner stays connected: its presence must become stopped/stale
+   and new requests must remain awaiting acknowledgement. An unrelated worker
+   must not refresh the assistant indicator. Confirm owner loss fails its watch.
 8. Report which owner and consumer processes must remain running, where their
    private checkpoints live, how to restart them, and the verified publication.
-   Do not claim future wake of a conversation unless that host explicitly
-   supports and has established it.
+   For an existing conversation, qualify the actual host admission mechanism
+   with active-turn injection for Codex, then idle wake and a second request
+   after the first turn ends using
+   [same-conversation delivery](CONVERSATION_DELIVERY.md). A busy thread requires
+   steering; a queue that waits for it to finish is not active delivery. Retain one handled
+   checkpoint per page and the same private thread binding; neither an owner
+   restart nor a one-shot waiter recreates that host receiver automatically.
 
 ## Native event reads and captured-view lifetime
 
@@ -169,6 +180,22 @@ An operation with an earlier author time arriving late, a missing dependency bec
 
 Use the application's durable inbox/result records or an existing bounded checkpoint/effect journal for this reconciliation. A process-local set of every event ID is neither durable evidence nor a bounded solution. Represent retracted or excluded work explicitly rather than claiming a complete replay. Provisional events are not finality or authority for irreversible effects.
 
+## Runnable worker and current CLI
+
+The starter's `consumers/request-worker.mjs` attaches to an already declared
+request-pattern application and runs the real handler with worker-owned presence,
+durable receipt/answer inputs and a scoped handled checkpoint. Start it with
+`--echo` for a harmless receipt/answer check or `--handler` for an implemented
+application handler; see the [runnable consumer](AGENT_REQUESTS.md#run-a-supervised-consumer-with-a-handled-checkpoint).
+`shared/helpers/agent-consumer.mjs` exposes `consumeNativeEvents` and
+`openConsumerCheckpoint` for adapting the same pattern. Its adapter performs the
+reset above: on `EVENT_CURSOR_STALE` it derives the topic's events again from the
+start of the current coherent snapshot (`onCursorReset`) and relies on durable
+answers and delivered-request records, not the old cursor, to skip handled work;
+a retained pending request that is no longer effective stops for review. The owner stays alive
+when the worker stops. Neither this worker nor the CLI below wakes an ended
+conversation without its separately established host receiver.
+
 ## Supervise the current CLI
 
 The maintained CLI is the `tendril` binary from the selected host's exact tools
@@ -217,6 +244,7 @@ its supervisor must schedule another invocation if continued observation was
 intended. Do not combine that deadline with restart-on-failure and assume it
 will stay armed forever.
 
-The [request lifecycle pattern](AGENT_REQUESTS.md) adds durable receipts, answers
-and last-seen consumer announcements so a page can verify that its intended
-listener actually resumed.
+The [request lifecycle pattern](AGENT_REQUESTS.md) adds durable receipts and
+answers, worker-owned ephemeral presence and optional startup/stop checkpoints.
+The page can verify its intended handler actually resumed without a periodic
+durable heartbeat or a misleading indication from the still-connected owner.

@@ -24,7 +24,28 @@ Report the program's PID/process manager, start command, retained state location
 
 A configured finalizer can be browser/native/host placed under the same proof contract. Report actual tested provider availability separately from policy configuration. Its absence may delay finality, never local authoring/provisional reads. Explain sealed-time exclusion of unseen offline work and preserve excluded original intents visibly.
 
+The page owner, request worker and conversation receiver have separate lifetimes,
+even when they share a machine or signer. Bind `announceAgentPresence` and any
+optional startup/stop checkpoints to the actual worker and only its implemented
+topics. An owner that syncs data or fetches mail cannot advertise a stopped
+interactive assistant. Match `consumerId` and request topic as well as the peer
+in the browser. Use the [runnable request worker](AGENT_REQUESTS.md#run-a-supervised-consumer-with-a-handled-checkpoint)
+for a supervised loop with durable handling/checkpoint evidence.
+
 ## An existing conversation
+
+Read [same-conversation delivery](CONVERSATION_DELIVERY.md), available through
+`tendril_guide` with `topic: "conversation"`, during setup. It maps actual host
+mechanisms, per-page handled checkpoints, authentication and failure visibility.
+For Codex, first qualify a real request arriving during a running turn: it must
+reach that same active turn through `turn/steer`, without waiting for completion.
+Steering adds input for the next applicable continuation boundary; it does not
+preempt a running tool or bypass approval.
+Then qualify idle wake with a real request after the turn ends and another after
+the answering turn ends. The receiver uses queue/resume only when the thread is
+idle or unloaded; plain `codex queue` alone waits while a turn is running.
+A one-shot waiter or accepted steer/queue/webhook does not establish actual
+handling. Preserve explicit interruption and report admission failures.
 
 Page residency, a durable operation set, an optional MCP gateway, hibernating sockets and retained inboxes do not establish supported future wake or handoff to an existing ChatGPT/other assistant conversation. Say which actively running process observes work. Do not imply conversation execution after it ends.
 
@@ -74,3 +95,13 @@ Capture before/after screenshots for fixed friction and name the exact flows/vie
 ## Verify consumers after a release or restart
 
 Re-run public-package Workerd, browser, RTC/relay, SQL native/WASM and first-app composition gates against the exact new graph. Historical successful receipts do not qualify this protocol. Do not keep an old ordering path, compatibility reader or migration layer to satisfy old tests. State exact commands run and their limits. Preserve existing private device state; an artifact mismatch never authorizes deletion or an unrequested production rollout.
+
+Follow the [re-arm checklist](AGENT_RESTART.md) after republishing or replacing the
+native participant. For apps with a request consumer, verify its actual worker
+presence and request/receipt/answer flow using declared capabilities; report missing
+liveness/receipt support rather than inventing commands. Stop the worker while the
+native participant stays connected and confirm its assistant indicator becomes
+stopped or stale; pending requests remain visible. An unrelated fetch worker must
+not refresh that indicator. `applied` and peer connectivity alone do not establish
+that an agent read work. Use the [request lifecycle pattern](AGENT_REQUESTS.md) when
+a new domain needs worker-owned ephemeral presence and durable addressed answers.

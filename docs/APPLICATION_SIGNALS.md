@@ -164,3 +164,14 @@ lifetime.
 A live preview and its durable completion are separate operations. For example, drag previews may be replaced or lost; the final location is submitted as an ordinary application command with an operation ID. Stopping or disconnecting a signal source must not enqueue its expired previews into durable history.
 
 Tendriller's control transport refuses `ephemeral/signal`. The host's allowed ephemeral action is the small connection invitation, which contains routing intent only. Live application signals travel through the session's authenticated peer transport. There is no built-in hosted signal channel or automatic role-based alternative.
+
+## Worker presence when transport and handling are separate
+
+The [agent request helpers](AGENT_REQUESTS.md) use ephemeral signals for live
+availability. Bind the publisher to the actual request worker's lifetime and
+implemented topics. A long-running native page owner or event forwarder may
+remain connected after that worker exits; it must not keep advertising the
+assistant as available. Filter by authenticated peer, `consumerId` and request
+topic when workers share a signing identity. Graceful shutdown reports stopped;
+abrupt failure ages to stale. Requests, receipts and final answers remain durable,
+and no presence signal establishes future conversation wake.

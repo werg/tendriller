@@ -16,5 +16,8 @@
     "agent": "tendril agent run",
     "status": "tendril status",
     "logs": "tendril logs"
+  },
+  "dependencies": {
+    "ws": "8.21.0"
   }
 }

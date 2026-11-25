@@ -11,8 +11,8 @@ const root = resolve(import.meta.dirname, '..'), source = sourceIdentity(root);
 assert.equal(source.dirty, false, 'Download qualification requires a clean checkpoint');
 const bytes = await readPublishedManifest(source.source), manifest = JSON.parse(bytes);
 const pkg = JSON.parse(readFileSync(join(root, 'package.json')));
-const runtime = JSON.parse(readFileSync(join(root, 'server/src/runtime-release.json')));
-const expected = { sourceCommit: source.source, coreRelease: pkg.version, runtimeId: runtime.id,
+// The runtime ID is a build output; the published manifest for this exact source commit names it.
+const expected = { sourceCommit: source.source, coreRelease: pkg.version, runtimeId: manifest.runtime,
   compositionId: manifest.composition?.id, manifestSha256: createHash('sha256').update(bytes).digest('hex') };
 mkdirSync(join(root, 'dist'), { recursive: true });
 await verifyPublishedRelease(expected, { onVerified: (file, content) => writeFileSync(join(root, 'dist', file), content) });

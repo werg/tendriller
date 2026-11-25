@@ -19,32 +19,56 @@ function createMockSignalPair() {
   const retained = new Map();
   const state = new Map();
 
+  const frameKey = frame => JSON.stringify([frame.authorId, frame.sessionId, frame.topic, frame.stream ?? null]);
+  const matchesStream = (frame, selectors) => !selectors || selectors.some(selector =>
+    Object.entries(selector).every(([key, value]) => (key === 'authorId' || key === 'sessionId'
+      ? frame[key] : frame.stream?.[key]) === value));
+  const deliver = frame => {
+    const key = frameKey(frame), previous = retained.get(key);
+    if (!previous || previous.sequence < frame.sequence) retained.set(key, frame);
+    for (const sub of [...subscribers]) {
+      if (sub.topics.includes(frame.topic) && !sub.signal?.aborted && matchesStream(frame, sub.streams)) sub.push(frame);
+    }
+  };
+
   const makeSession = (deviceId, peerId) => {
     const controller = new AbortController();
     const listeners = new Set();
+    let sequence = 0;
     state.set(deviceId, { peers: [peerId], connectionRevision: 1, listeners });
     const status = () => { const current = state.get(deviceId); return { canAuthor: true, phase: 'ready', database: 'ready', pendingOperations: 0,
       materializationError: null, connectedPeers: current.peers.length, connectionRevision: current.connectionRevision }; };
     const signals = {
-      async send(topic, payload) {
-        const frame = { topic, authorId: deviceId, issuedAtMs: Date.now(), payload };
-        retained.set(topic, frame);
-        for (const sub of [...subscribers]) {
-          if (sub.topics.includes(topic) && !sub.signal?.aborted) sub.push(frame);
-        }
+      async send(topic, payload, { ttlMs = 45_000, stream } = {}) {
+        const issuedAtMs = Date.now();
+        const frame = { scope: 'presence-test', topic, authorId: deviceId,
+          sessionId: deviceId + '-session', sequence: ++sequence, issuedAtMs,
+          expiresAtMs: issuedAtMs + ttlMs, payload, ...(stream ? { stream } : {}) };
+        deliver(frame);
+        return frame;
       },
-      subscribe({ topics, includeLatest = false, signal }) {
-        const queue = [];
+      subscribe({ topics, mode = 'all', streams, includeLatest = false, signal }) {
+        // Public Chronolog contract: retained replay is available only in latest mode.
+        if (includeLatest && mode !== 'latest') throw Error('SIGNAL_SUBSCRIPTION_MODE_INVALID');
+        const queue = [], latest = new Map();
         let wake = null;
         const sub = {
-          topics,
-          signal,
-          push(frame) { queue.push(frame); wake?.(); wake = null; },
+          topics, streams, signal,
+          push(frame) {
+            if (frame.expiresAtMs <= Date.now()) return;
+            const key = frameKey(frame);
+            if (mode === 'latest') {
+              if ((latest.get(key) ?? 0) >= frame.sequence) return;
+              latest.set(key, frame.sequence);
+              const previous = queue.findIndex(item => frameKey(item) === key);
+              if (previous !== -1) queue.splice(previous, 1);
+            }
+            queue.push(frame); wake?.(); wake = null;
+          },
         };
         if (includeLatest) {
-          for (const topic of topics) {
-            const existing = retained.get(topic);
-            if (existing) queue.push(existing);
+          for (const existing of retained.values()) {
+            if (topics.includes(existing.topic) && matchesStream(existing, streams)) sub.push(existing);
           }
         }
         subscribers.push(sub);
@@ -53,7 +77,10 @@ function createMockSignalPair() {
           async *[Symbol.asyncIterator]() {
             try {
               while (!signal?.aborted) {
-                while (queue.length) yield queue.shift();
+                while (queue.length) {
+                  const frame = queue.shift();
+                  if (frame.expiresAtMs > Date.now()) yield frame;
+                }
                 if (signal?.aborted) break;
                 await new Promise(resolve => { wake = resolve; });
               }
@@ -83,6 +110,7 @@ function createMockSignalPair() {
     native: makeSession('native-peer', 'browser-peer'),
     browser: makeSession('browser-peer', 'native-peer'),
     link: { native: link('native-peer'), browser: link('browser-peer') },
+    deliver,
   };
 }
 
@@ -342,4 +370,136 @@ test('agent presence is announced and watched on link changes only, and a cut li
   assert.equal(sent.length, announced, 'status notices without a new link announce nothing');
   link.browser.setPeers([]);
   assert.equal(watcher.snapshot().status, 'stale');
+});
+
+test('presence follows the actual worker and its topic while the native owner stays connected', async t => {
+  const { native, browser } = createMockSignalPair();
+  const workerLifetime = new AbortController();
+  const fetcher = announceAgentPresence(native, { consumerId: 'fetcher', topics: ['fetch'], intervalMs: 60_000 });
+  const watcher = watchAgentPresence(browser, {
+    peer: native.identity.publicKey, consumerId: 'assistant', requestTopic: 'chat',
+  });
+  let assistant;
+  t.after(async () => {
+    await assistant?.close(); await fetcher.close(); watcher.close(); native.close(); browser.close();
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(watcher.snapshot().status, 'unknown', 'a connected fetcher is not an assistant');
+  const invalid = { consumerId: 'assistant', runId: 'run', role: 'assistant',
+    topics: ['chat'], state: 'unexpected', startedAtMs: 1, atMs: 2 };
+  await native.signals.send('agent/presence', invalid, { stream: { streamId: 'assistant' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(watcher.snapshot().status, 'unknown', 'malformed state cannot become available');
+  assistant = announceAgentPresence(native, { consumerId: 'assistant', topics: ['chat'],
+    signal: workerLifetime.signal, intervalMs: 60_000 });
+  await waitUntil(() => watcher.snapshot().status === 'available');
+  workerLifetime.abort(Error('Worker stopped'));
+  await assistant.done;
+  await waitUntil(() => watcher.snapshot().status === 'stopped');
+  assert.equal(native.signal.aborted, false);
+  assert.equal(native.status.connectedPeers, 1);
+  await fetcher.ping();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(watcher.snapshot().status, 'stopped', 'another worker cannot refresh the stopped assistant');
+});
+
+test('presence and streamed replies retain the authenticated frame author', async t => {
+  const { native, browser } = createMockSignalPair();
+  const watcher = watchAgentPresence(browser, { peer: native.identity.publicKey, consumerId: 'assistant', requestTopic: 'chat' });
+  const chunks = [], stream = watchAgentStream(browser, { peer: native.identity.publicKey, onChunk: value => chunks.push(value) });
+  t.after(() => { watcher.close(); stream.close(); native.close(); browser.close(); });
+  await native.signals.send('agent/presence', { author: 'forged', consumerId: 'assistant',
+    runId: 'run', role: 'assistant', topics: ['chat'], state: 'listening', startedAtMs: 1, atMs: 2 },
+  { stream: { streamId: 'assistant' } });
+  await native.signals.send('agent/stream', { author: 'forged', text: 'Preview' });
+  await waitUntil(() => watcher.snapshot().status === 'available' && chunks.length === 1);
+  assert.equal(watcher.snapshot().consumer.author, native.identity.publicKey);
+  assert.equal(chunks[0].author, native.identity.publicKey);
+  watcher.close();
+  assert.equal(watcher.snapshot().status, 'unknown', 'a closed observer cannot keep a Live snapshot');
+});
+
+test('an already stopped worker never subscribes or starts a presence interval', async () => {
+  const lifetime = new AbortController(); lifetime.abort();
+  let sends = 0;
+  const presence = announceAgentPresence({ identity: { publicKey: 'worker' }, signals: {
+    send() { sends++; return Promise.resolve(); },
+    subscribe() { throw Error('Stopped worker must not subscribe'); },
+  } }, { signal: lifetime.signal, intervalMs: 5 });
+  await presence.done;
+  assert.equal(sends, 0);
+  assert.throws(() => presence.setState('not-a-state'), /AGENT_PRESENCE_STATE_INVALID/);
+});
+
+for (const scenario of ['same worker run', 'earlier attachment', 'prior signal session']) {
+  test('a reordered listening frame from ' + scenario + ' cannot revive a stopped worker', async t => {
+    const { native, browser, deliver } = createMockSignalPair();
+    const watcher = watchAgentPresence(browser, {
+      peer: native.identity.publicKey, consumerId: 'assistant', requestTopic: 'chat',
+    });
+    t.after(() => { watcher.close(); native.close(); browser.close(); });
+    const now = Date.now(), changedRun = scenario !== 'same worker run';
+    const earlier = {
+      scope: 'presence-test', topic: 'agent/presence', authorId: native.identity.publicKey,
+      sessionId: scenario === 'prior signal session' ? 'old-session' : 'native-peer-session',
+      sequence: scenario === 'prior signal session' ? 90 : 1,
+      issuedAtMs: now - 1000, expiresAtMs: now + 44_000,
+      stream: { streamId: 'assistant', endpointId: 'worker-view', endpointIncarnation: 'old-attachment' },
+      payload: { consumerId: 'assistant', runId: 'old-run', role: 'assistant', topics: ['chat'],
+        startedAtMs: now - 1000, atMs: now - 1000, state: 'listening' },
+    };
+    const stopped = { ...earlier, sessionId: 'native-peer-session', sequence: 2,
+      issuedAtMs: now, expiresAtMs: now + 45_000,
+      stream: { ...earlier.stream, endpointIncarnation: changedRun ? 'new-attachment' : 'old-attachment' },
+      payload: { ...earlier.payload, runId: changedRun ? 'new-run' : 'old-run',
+        startedAtMs: changedRun ? now : now - 1000, atMs: now, state: 'stopped' } };
+    // Distinct valid frames arrive out of order; the old listening frame has
+    // never reached this receiver, so ordinary replay deduplication cannot help.
+    deliver(stopped);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(watcher.snapshot().status, 'stopped');
+    deliver(earlier);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(watcher.snapshot().status, 'stopped');
+    assert.equal(watcher.snapshot().consumer.runId, stopped.payload.runId);
+  });
+}
+
+test('late retained presence expires at the signed frame deadline without a new full freshness window', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: 100_000 });
+  const { native, browser } = createMockSignalPair();
+  const frame = await native.signals.send('agent/presence', {
+    consumerId: 'assistant', runId: 'run', role: 'assistant', topics: ['chat'],
+    state: 'listening', startedAtMs: Date.now(), atMs: Date.now(),
+  }, { ttlMs: 45_000, stream: { streamId: 'assistant' } });
+  t.mock.timers.setTime(frame.expiresAtMs - 1);
+  const watcher = watchAgentPresence(browser, {
+    peer: native.identity.publicKey, consumerId: 'assistant', requestTopic: 'chat', staleAfterMs: 45_000,
+  });
+  t.after(() => { watcher.close(); native.close(); browser.close(); });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(watcher.snapshot().status, 'available', 'the retained frame is still fresh at receipt');
+  t.mock.timers.setTime(frame.expiresAtMs);
+  assert.equal(watcher.snapshot().status, 'stale', 'receipt cannot extend the signed expiry');
+  assert.equal(native.signal.aborted, false, 'transport owner remains connected');
+});
+
+test('latest presence preserves distinct workers sharing one signer before request-topic filtering', async t => {
+  const { native, browser } = createMockSignalPair();
+  const assistant = announceAgentPresence(native, {
+    consumerId: 'assistant', runId: 'assistant-run', topics: ['chat'], intervalMs: 60_000,
+  });
+  const fetcher = announceAgentPresence(native, {
+    consumerId: 'fetcher', runId: 'fetcher-run', topics: ['fetch'], intervalMs: 60_000,
+  });
+  // Both workers publish before the observer subscribes; the retained store must
+  // keep separate streams instead of letting the fetcher replace the assistant.
+  await Promise.all([assistant.ping(), fetcher.ping()]);
+  const watcher = watchAgentPresence(browser, { peer: native.identity.publicKey, requestTopic: 'chat' });
+  t.after(async () => {
+    await assistant.close(); await fetcher.close(); watcher.close(); native.close(); browser.close();
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(watcher.snapshot().status, 'available');
+  assert.equal(watcher.snapshot().consumer.consumerId, 'assistant');
 });

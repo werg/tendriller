@@ -46,3 +46,7 @@ A static preview checks layout only. Final verification uses the actual signed p
 ## Use contrib as an implementation source with evidence
 
 Reuse current public consumer examples from the matching composition. An old receipt/source checkpoint is not replacement-protocol qualification. Never preserve a second ordering stack, schema-freezing setup, compatibility alias or migration path to make an old example appear green.
+
+## Same-conversation delivery
+
+A running session watcher receives application work only while its process exists. The optional [ChatGPT integration](CHATGPT_INTEGRATION.md) adds remote tools, explicit supported event subscriptions, a mounted widget and a separate published Workspace Agent route; these need deployment, trusted account adapters, an enrolled device and owner consent, and page residency does not enable them. For the same existing Codex or ChatGPT conversation, inspect the actual host's execution/admission route using [same-conversation delivery](CONVERSATION_DELIVERY.md) and retain per-page handled checkpoints. For Codex, verify that a request arriving during a running turn is steered into that turn, then idle wake and a second request after the first turn ends; a queue that merely waits for a busy turn does not satisfy active delivery. A native participant, event forwarder or one-shot waiter does not establish this capability. Record actual live acceptance evidence; native and injected-transport tests alone do not qualify a deployed connection.

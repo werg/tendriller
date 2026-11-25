@@ -23,7 +23,7 @@
     "test:onboarding": "node --test scripts/test/onboarding.test.mjs",
     "test:first-app": "node scripts/test-first-app.mjs",
     "test:browser": "npm run build:artifacts && node scripts/test-browser.mjs",
-    "check": "npm run contract:check && npm run typecheck && npm run build && npm run build:tools && npm run check:boundaries && npm --ignore-scripts run test:ci && npm run test:contract && npm run test:collaboration && npm run test:runtime-unit && npm run test:server && npm run test:consumer && npm run test:tools",
+    "check": "npm run contract:check && npm run build && npm run typecheck && npm run build:tools && npm run check:boundaries && npm --ignore-scripts run test:ci && npm run test:contract && npm run test:collaboration && npm run test:runtime-unit && npm run test:server && npm run test:consumer && npm run test:tools",
     "pretest:ci": "npm run build",
     "test:ci": "node --test --test-timeout=120000 scripts/test/*.test.mjs",
     "check:release": "npm run check && node scripts/test-browser.mjs",

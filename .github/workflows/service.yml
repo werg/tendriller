@@ -312,7 +312,8 @@ jobs:
         run: node scripts/publish-runtime.mjs --config server/wrangler.staging.jsonc
       - if: steps.current.outputs.current == 'true'
         run: >-
-          npx wrangler deploy --config server/wrangler.staging.jsonc --no-bundle --durable-objects-code-update-mode immediate
+          node scripts/deploy-config.mjs server/wrangler.staging.jsonc
+          && npx wrangler deploy --config server/wrangler.staging.deploy.jsonc --no-bundle --durable-objects-code-update-mode immediate
           --var "SERVICE_SOURCE_COMMIT:$TENDRILLER_EXPECTED_SOURCE_COMMIT"
           --var "SERVICE_COMPOSITION_ID:$TENDRILLER_EXPECTED_COMPOSITION_ID"
       - if: steps.current.outputs.current == 'true'
@@ -390,7 +391,8 @@ jobs:
         run: node scripts/publish-runtime.mjs --config server/wrangler.production.jsonc
       - if: steps.current.outputs.current == 'true'
         run: >-
-          npx wrangler deploy --config server/wrangler.production.jsonc --no-bundle --durable-objects-code-update-mode immediate
+          node scripts/deploy-config.mjs server/wrangler.production.jsonc
+          && npx wrangler deploy --config server/wrangler.production.deploy.jsonc --no-bundle --durable-objects-code-update-mode immediate
           --var "SERVICE_SOURCE_COMMIT:$TENDRILLER_EXPECTED_SOURCE_COMMIT"
           --var "SERVICE_COMPOSITION_ID:$TENDRILLER_EXPECTED_COMPOSITION_ID"
       - if: steps.current.outputs.current == 'true'

@@ -26,7 +26,6 @@ export function verifyDeploymentArtifacts(root, expected) {
   const runtime = verifyRuntimeManifest(json(join(root, 'dist/runtime/assets/manifest.json')));
   const servedRuntime = join(root, 'server/public/_tendril/runtime', expected.runtimeId);
   if (runtime.id !== expected.runtimeId || runtime.version !== expected.coreRelease ||
-      json(join(root, 'server/src/runtime-release.json')).id !== expected.runtimeId ||
       verifyRuntimeManifest(json(join(servedRuntime, 'manifest.json'))).id !== expected.runtimeId)
     throw Error('Deployment runtime does not match the artifact-job runtime.');
   for (const asset of runtime.assets) {

@@ -72,9 +72,11 @@ the existing owner, and never substitute an always-failing RTC opener. The sessi
 owns retries and recovery. Verify actual direct application traffic and automatic
 fallback, rather than treating a connected WebSocket as proof of P2P.
 
-Read `session.status` for actual data state and
-`session.participation.status` for discovery, connections and recovery progress.
-Observe their subscriptions. A browser with a fresh grant can authenticate
+Read `session.status` for actual data state, including `connectedPeers` and
+`connectionRevision`, and observe it with `session.onStatus`. The optional
+participation controller you create with `participateApplication` (browser) or
+`participateNativeApplication` (native) separately reports discovery and
+connection progress through its own `status` and `onStatus`. A browser with a fresh grant can authenticate
 before acquiring history keys; `awaiting-keys` persists until an authorized
 reader supplies them through explicit recipient-bound provisioning. No participant
 needs to be reachable for local authoring.
@@ -196,7 +198,7 @@ OS network notifications with `participation.reconsiderConnections()`; discovery
 reconnection already supplies that event automatically. Events are coalesced and
 rate-limited locally, with no idle probes.
 
-Use `await participation.diagnostics()` (or `session.participation.diagnostics()`
-on a browser facade) to inspect authenticated routing and application framing
-bytes without contacting the host. See [peer connections](PEER_CONNECTIONS.md)
+Use `await session.diagnostics()` (or the participation controller's
+`diagnostics()` where you hold it) to inspect authenticated routing and application
+framing bytes without contacting the host. See [peer connections](PEER_CONNECTIONS.md)
 for counter scope, cooldown and replacement behavior.

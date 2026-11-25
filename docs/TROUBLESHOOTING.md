@@ -38,9 +38,12 @@ Read the selected connector's `tendril_guide` (`start`, `build`, `capabilities`,
 | --- | --- |
 | `404` `not_found` ("No such granted page") from `/api/agent/pages/<id>/...` | The agent holds no grant for that page ID, or the page was deleted. Run `tendril status` and `tendril page list`. The owner grants an existing page from the dashboard card's **Add people & devices → An agent**, then `tendril page grant <slug> <page-id>`. Creating a page with the agent grants it automatically. |
 | `401 unauthorized` ("Invalid or revoked agent token") | Check the workspace's `.tendriller/agent/credential.json` and service origin. A revoked agent stays revoked: the owner adds a new agent (**Dashboard → Your agents → Add agent**) and you run `tendril workspace join` in a fresh folder, or call `register_agent` again with the same name to rotate the token and key, then `tendril workspace adopt`. Do not create another page to work around it. |
-| `agent_credential_missing`, `agent_signer_missing` or `agent_signer_mismatch` | `.tendriller/agent/` is damaged or from another workspace. Restore it from a verified checkpoint; a new key would not match the registered agent or its signed page grants, and a lost token is never reissued silently. |
-| `workspace_required`, `page_required` or `page_unknown` | Run the command inside the workspace (nearest `tendriller.json`, `--workspace DIR` or `TENDRIL_WORKSPACE`), and add `--page <slug or id>` when it has more than one page. `tendril page list` shows the slugs. |
-| `workspace_exists` or `workspace_not_empty` | The folder already is a workspace, or holds `pages/` without `tendriller.json`. Resume it; never register a second agent for the same folder. |
+| `agent_credential_missing`, `agent_signer_missing` or `agent_signer_mismatch` | `.tendriller/agent/` is damaged or from another workspace. Restore the workspace from its checkpoint (`tendril checkpoint restore FILE` in an empty folder); a new key would not match the registered agent or its signed page grants, and a lost token is never reissued silently. |
+| `workspace_retired_by_checkpoint` | `tendril checkpoint export` moved this workspace into a checkpoint file. Restore that file with `tendril checkpoint restore FILE` in an empty folder and work there; the retired copy never resumes. |
+| `AGENT_PROGRAM_RUNNING` or `BYTES_STORE_IN_USE` from `checkpoint export` | Stop `tendril agent run` (and any script holding a page device) for this workspace, then export again. Nothing was written or retired. |
+| `CHECKPOINT_TARGET_NOT_EMPTY`, `CHECKPOINT_DECRYPT_FAILED` or `CHECKPOINT_KEY_MISMATCH` from `checkpoint restore` | Restore into an empty folder (only the checkpoint file may be there). A decrypt failure means a wrong secret or a damaged file; a key mismatch means a 64-hex key was given for a passphrase file or the reverse. Nothing was restored. |
+| `workspace_required`, `page_required` or `page_unknown` | Run the command inside the workspace (the nearest `tendriller.json`, `--workspace DIR` or `TENDRIL_WORKSPACE`), and add `--page <slug or id>` when it has more than one page. `tendril page list` shows the slugs. |
+| `workspace_exists` or `workspace_not_empty` | The folder already is a workspace, or holds `pages/` without `tendriller.json`. Resume it; never register a second agent for the same folder. Restore a missing `tendriller.json` with `tendril checkpoint restore` in an empty folder. |
 | `page_not_granted` from `page grant` | The agent does not hold that page yet. Ask the owner to check the agent for the page on the dashboard. |
 | `invalid_code` from `workspace join` | The join code is unknown, used or expired (ten minutes). The owner makes a new one under **Dashboard → Your agents → Add agent**. A lost registration reply cannot be recovered: the owner can revoke the unclaimed agent and add another. |
 | `agent_capacity` or `agent_name_in_use` | The account holds the maximum number of agents, an owner email has too many unclaimed agents, or the name already exists in the account. Revoke an unused agent or choose another `--name`. |
@@ -73,3 +76,29 @@ Verify the signed manifest, publisher policy, authored asset hashes, immutable p
 ## Report the actual boundary
 
 State which agent program or integration actually consumes application work and how long it remains available. Name the exact prerequisite, observed code/status, retained identity/operation, and next authorized action without exposing secrets. Report exact checks and untested boundaries under [delivery](AGENT_DELIVERY.md). An installed adapter, source change, static preview or old successful release is not a verified live replacement. No troubleshooting step authorizes an unrequested production deployment, storage wipe, compatibility stack or migration reader.
+
+Ordinary application commands, queries and live signals travel through peers. With a direct connection, the host can remain idle during those edits. Relay connections carry encrypted peer traffic through the host and consume bandwidth; coarse discovery renewal and explicit control/publication calls also use it. Do not interpret zero host application writes as a failed save, or claim zero host traffic for a relay-backed session.
+
+The ordinary host MCP endpoint administers host controls; it does not run domain
+commands or wake an agent conversation. For application tools, subscribed events,
+mounted UI handoff and the optional Workspace Agent route, use the separate
+[ChatGPT setup and recovery guide](CHATGPT_INTEGRATION.md#troubleshoot-setup).
+
+## A connected page does not get an assistant reply
+
+Read [same-conversation delivery](CONVERSATION_DELIVERY.md) and identify the exact
+blocked stage: worker absent, host admission unavailable, reauthentication,
+subscription/callback failure, admitted turn without receipt, or receipt without
+answer. `get_application_delivery` reports forwarded delivery outcomes; the
+application's declared inbox reports actual acknowledgement and answers.
+
+Keep the last handled cursor, request references and uncertain operation inputs.
+Do not resubmit a request, switch to the latest thread or create a replacement
+application to hide the failure. Stop only the worker while leaving its native
+owner connected to check that the assistant indicator becomes stopped or stale.
+After repairing/rearming the selected route, verify active-turn injection for
+Codex and repeat the idle two-request rehearsal in the same existing conversation.
+If notices wait until a busy turn completes, inspect whether the configured
+receiver is using `turn/steer`; plain `codex queue` intentionally waits and cannot
+satisfy active delivery. Preserve explicit interruption and uncertain admissions
+rather than starting a competing turn or silently repeating the notice.

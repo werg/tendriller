@@ -10,7 +10,8 @@
 - [Deliver the running app](https://tendriller.dev/docs/AGENT_DELIVERY.md): provision early, publish before claim, give the owner the ready page URL, and verify browser-local durable writes, offline authoring, convergence and any optional process lifetime/resume details.
 - [Download the first app](https://tendriller.dev/downloads/tendriller-first-app.tgz): starter source files; follow the build guide for the verified `firstApp.release` package kit.
 - [Reusable application patterns](https://tendriller.dev/docs/APP_PATTERNS.md): `createLiveView`, operation tracking, connection UX, and reviewed input over the real session.
-- [Agent requests and receipts](https://tendriller.dev/docs/AGENT_REQUESTS.md): durable last-seen consumers, full request references, timestamps, receipts and answers.
+- [Agent requests and receipts](https://tendriller.dev/docs/AGENT_REQUESTS.md): worker-owned ephemeral presence, full request references, timestamps, durable receipts and answers.
+- [Same-conversation delivery](https://tendriller.dev/docs/CONVERSATION_DELIVERY.md): inspect the actual host mechanism, inject requests into an active Codex turn, retain per-page handled cursors and qualify idle wake across turn completion.
 - [Restart consumers](https://tendriller.dev/docs/AGENT_RESTART.md): what survives a republish, and what to re-arm after an agent program restart.
 - [Reviewed media and inference](https://tendriller.dev/docs/AI_INPUT.md): camera/file or voice capture, credential-owning native inference, editable review, and explicit command commit.
 - [Events or SQL](https://tendriller.dev/docs/STATE_MODELS.md): events vs. guarded SQL transactions and required engine artifacts.

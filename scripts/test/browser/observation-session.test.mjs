@@ -24,14 +24,16 @@ test('real Chromium to native session: consent, coalesced live fixes, correlated
   const directory = await mkdtemp(join(tmpdir(), 'tendriller-observation-')), cleanup = [];
   t.after(async () => { for (const close of cleanup.reverse()) await close().catch(() => {}); await rm(directory, { recursive: true, force: true }); });
   const bundle = await build({ stdin: { contents: `
-    import { openApplicationDevice, createApplicationSession, MemoryBytesStore } from '@chronolog/peer-session';
+    import { openApplicationDevice, createApplicationSession } from '@chronolog/peer-session';
     import { definition } from './docs/tutorial/shared/observation/domain.mjs';
     import { mountObservations } from './docs/tutorial/shared/observation/panel.mjs';
     import { installSensorWrappers } from './runtime/src/sensors.ts';
     import { createTestConnection } from './scripts/observation-fixture/connection.mjs';
+    // Compact fixture BytesStore (current public byte contract: get/put with copied buffers); not durable.
+    const memoryStore = () => { const values = new Map(); return { async get(key) { return values.get(key)?.slice() ?? null; }, async put(key, bytes) { values.set(key, bytes.slice()); } }; };
     const tracker = installSensorWrappers();
     const runtime = { sensors: tracker, on: () => () => {}, capabilities: async () => ({capabilities:{location:{available:true,permission:'granted'}}}) };
-    const device = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
+    const device = await openApplicationDevice({ store: memoryStore(), create: true });
     window.identity = device.identity.publicKey;
     window.transport = createTestConnection((lane, bytes) => window.observationToNative(lane, [...bytes]));
     window.setup = async ({authority,key,nativeDeviceId}) => {

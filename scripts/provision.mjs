@@ -102,7 +102,7 @@ async function main() {
   if (!account || !accounts.some(value => value.id === account)) throw Error('Set CLOUDFLARE_ACCOUNT_ID to one of the accounts in npx wrangler whoami --json');
   const databaseId = provisionResources(plan, wrangler);
   await writeFile(plan.configPath, JSON.stringify(deploymentConfig(plan, databaseId, account), null, 2) + '\n');
-  console.log(`Wrote ${plan.configPath} for ${plan.worker}. Configure DNS/certificates for ${plan.service} and *${plan.suffix}.${plan.pages}; run D1 migrations, install runtime resources and secrets, then deploy this config. Canonical service configs were not switched.`);
+  console.log(`Wrote ${plan.configPath} for ${plan.worker}. Configure DNS/certificates for ${plan.service} and *${plan.suffix}.${plan.pages}; run D1 migrations, install runtime resources and secrets, then run node scripts/deploy-config.mjs ${plan.configPath} and deploy the generated .deploy.jsonc. Canonical service configs were not switched.`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();

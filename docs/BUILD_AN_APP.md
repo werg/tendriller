@@ -6,6 +6,20 @@ Start here when given a service domain and asked to build an app. Deliver the wo
 
 To test an app against a release before touching production, use the [local release host](LOCAL_HOST.md). It provides a verified host and synthetic test owner for the same create, init, publish and connect flow below.
 
+## Requests to the existing agent conversation
+
+If the app must reach this same Codex or ChatGPT conversation during work or
+after its current turn ends, qualify that route during setup with
+[same-conversation delivery](CONVERSATION_DELIVERY.md) (`tendril_guide`,
+`topic: "conversation"`). The workspace program owns page sessions; a request
+worker and the host's conversation receiver have separate lifetimes.
+Advertise only the active worker's handled topics, and keep requests pending
+when its route is unavailable. For Codex, verify that a request arriving during
+a running turn is injected into that active turn, then test idle wake and a
+second request after the answering turn ends. Plain `codex queue` waits for
+the current turn to finish; the receiver needs the verified steering route
+for active delivery. A running page owner or printed event establishes neither.
+
 ## The route and its checkpoints
 
 | Step | Do this | Evidence that it worked |
@@ -153,7 +167,7 @@ The host converts the emoji to an SVG favicon automatically. An HTTPS image URL 
 
 ### Continue after a lost credential or device
 
-`.tendriller/agent/` (credential and shared signer) and `.tendriller/pages/PAGE_ID/` (publisher identity, descriptor and device store) are the workspace's private checkpoint. Restore them from a verified checkpoint; there is no reissue of a lost key. If only the token is lost or revoked, the owner can add the agent again from the dashboard and `workspace join` a fresh folder; a new key also needs explicit signed membership and key provisioning from surviving authorized devices.
+`.tendriller/agent/` (credential and shared signer), `tendriller.json` and `.tendriller/pages/PAGE_ID/` (publisher identity, descriptor and device store) are the workspace's private state. There is no reissue of a lost key, so keep a way to move it: stop `tendril agent run`, then `tendril checkpoint export FILE` writes all of it as one encrypted file and retires this copy (a move, not a backup); `tendril checkpoint restore FILE` recreates it in an empty folder and verifies every page device against the restored signer. Page source moves separately with `tendril handoff source`. See [the CLI reference](tools/CLI.md#move-a-workspace-with-a-checkpoint). If only the token is lost or revoked, the owner can add the agent again from the dashboard and `workspace join` a fresh folder; a new key also needs explicit signed membership and key provisioning from surviving authorized devices.
 
 ## 4. Choose policy, prepare and publish before owner sign-in
 

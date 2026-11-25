@@ -105,8 +105,12 @@ serves all of them on one local attach socket (`.tendriller/agent/owner/`).
 
 stdout is one JSON object per event: `{running}`, `{hub, retryInMs?}`,
 `{page, slug, state}` (`running`, `awaiting_initialization`, `page_retry`,
-`session_ended`, `closed`, `granted_unregistered`), `{page, slug, revision, change}`
-and page integration reports such as `{page, setup}` and `{page, pairing}`.
+`session_ended`, `closed`, `granted_unregistered`), `{page, slug, revision, change}`,
+`{page, slug, canAuthor, database}` (the session's own status), `{page, slug, connection}`
+from the optional participation controller, and page integration reports such as
+`{page, setup}` (setup notices) or `{page, state}` with `awaiting_assistant_consent`,
+`adapter_online` or `adapter_offline`. Initialization and provisioning are explicit
+steps; a page that has not completed them reports `awaiting_initialization`.
 The hub reconnects with backoff; losing it fails the page control streams closed
 so each one reopens through its own retry while sessions, local writes and direct
 peer links continue. A `grant` event registers nothing by itself (it reports
@@ -331,19 +335,55 @@ provider identity and never dispatches it again automatically.
 documentation, static assets and package manifests. It excludes hidden files,
 `.tendriller/`, environment files, device/checkpoint bytes and state directories,
 and rejects recognized credentials (including `ta_` agent tokens) embedded in
-source. The recipient sets up its own workspace; the archive transfers no authority.
+source. The archive transfers no authority: the recipient either sets up its own
+workspace or restores this one's private state with `tendril checkpoint restore`.
 
-## Move a stopped retained device
+## Move a workspace with a checkpoint
 
-Stop `tendril agent run`, load `TENDRILLER_CHECKPOINT_SECRET` from private storage
-(a 64-hex key or a passphrase of at least 12 characters), then:
+A workspace's private state moves as one authenticated, encrypted file: the
+shared agent signing key (`.tendriller/agent/identity.sqlite`), the agent
+credential, `tendriller.json`, and for every page folder under
+`.tendriller/pages/` its device history (as a bounded, verified Chronolog device
+checkpoint) plus its private records (descriptor, setup records, and
+consistent snapshots of other SQLite files such as an effect journal). Stop
+`tendril agent run` and any script that opens a page device, load
+`TENDRILLER_CHECKPOINT_SECRET` from private storage (a 64-hex key or a passphrase
+of at least 12 characters; `--secret-env VAR` names another variable), then:
 
 ```sh
-tendril checkpoint export ./move.clcp --project ./my-pages --device ./my-pages/.tendriller/pages/PAGE_ID/device.sqlite
-tendril checkpoint restore ./move.clcp --project ./my-pages --device /new/my-pages/.tendriller/pages/PAGE_ID/device.sqlite
+cd ./my-pages && tendril checkpoint export ../move.clcp
+# in the new place, in an empty folder (it may hold only the checkpoint file):
+cd /new/my-pages && tendril checkpoint restore ./move.clcp
 ```
 
-The encrypted file is durably written before the source store is retired; restore
-publishes one fresh private file and never replaces existing output. Never clear original stores or introduce an old-format reader as troubleshooting; see [troubleshooting](../TROUBLESHOOTING.md). A page device
-uses the workspace's shared signer, so move the whole `.tendriller/agent/` folder
-(identity and credential) with it, and run only one copy of that workspace.
+Export is a **move**, not a copy. It refuses while the agent program runs
+(`AGENT_PROGRAM_RUNNING`) or a device is open elsewhere (`BYTES_STORE_IN_USE`)
+and then retires nothing. Never clear original stores or introduce an old-format reader as troubleshooting; see [troubleshooting](../TROUBLESHOOTING.md). Once the file is durably written, the source workspace
+is marked retired (`workspace_retired_by_checkpoint`) and its signer and page
+devices are retired, so two copies of one agent never run. If a failure happens
+after the file is durable, the error carries a `checkpoint` receipt: restore that
+file and do not resume the source.
+
+Restore refuses a non-empty folder and never overwrites. It authenticates the
+whole file, rebuilds `.tendriller/agent/` and `.tendriller/pages/<id>/` in a
+staging folder, reopens every page device with the restored signer, checks that
+the signer is the key registered in the credential, and only then publishes
+`.tendriller/` and `tendriller.json`. The local attach binding and the agent
+program's runtime folder are regenerated. Page source (`pages/`, `shared/`,
+`package.json`) is not in the checkpoint: move it with `tendril handoff source`,
+unpack it into the restored folder, run `npm ci`, then `tendril agent run`.
+
+## Request workers and existing conversations
+
+`watch --events` reports retained observations; its stdout cursor does not
+acknowledge application work or start a Codex/ChatGPT turn. The first-app kit
+ships `consumers/request-worker.mjs` for actual declared request handling and
+`consumers/codex-queue.mjs` for admitting reference-only notices from several
+pages to one exact existing Codex thread: it inspects thread state, steers a
+running turn and uses queue/resume while idle or unloaded. Plain `codex queue`
+waits for a running turn to finish and does not provide active injection. Both
+consumers attach to the running workspace owner and retain private, scoped state. Use the
+[runnable worker](../AGENT_REQUESTS.md#run-a-supervised-consumer-with-a-handled-checkpoint)
+and [conversation guide](../CONVERSATION_DELIVERY.md) for exact commands,
+uncertain-result recovery and live active/idle qualification. A steer or queue
+receipt is not a durable application receipt/answer or evidence of model execution.

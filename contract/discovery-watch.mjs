@@ -35,10 +35,17 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
   function finish(error, code = 1000, reason = 'Discovery watch closed') {
     if (ended) return;
     ended = true; failure = error; probeController?.abort(); clearTimeout(retryTimer); disconnect(code, reason); queue.length = 0;
-    signal?.removeEventListener('abort', cancelled);
+    signal?.removeEventListener('abort', cancelled); network?.removeEventListener('online', reachable);
     rejectReady(error ?? fail('discovery_closed', reason)); wake(); resolveClosed(Object.freeze({ code, reason }));
   }
   const cancelled = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  // A browser or worker that regains its network reconnects now instead of sitting out
+  // the backoff it accumulated while offline.
+  const network = options.network === undefined ? (typeof globalThis.addEventListener === 'function' ? globalThis : null) : options.network;
+  function reachable() {
+    if (ended || !retryTimer) return;
+    clearTimeout(retryTimer); retryTimer = undefined; failures = 0; connect();
+  }
   function scheduleRetry() {
     if (ended || retryTimer) return;
     const ms = Math.min(maxRetryMs, retryMs * 2 ** Math.min(failures++, 16));
@@ -111,6 +118,7 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
     if (current.readyState > 1) disconnected({ code: 1006 });
   }
   signal?.addEventListener('abort', cancelled, { once: true });
+  network?.addEventListener('online', reachable);
   if (signal?.aborted) cancelled(); else connect();
   return Object.freeze({ ready, closed,
     notifications: { async *[Symbol.asyncIterator]() {

@@ -10,7 +10,7 @@ import { ASSISTANT_GUIDES as assistantGuides } from '../../contract/onboarding.m
 export type AssistantGuideTopic = keyof typeof assistantGuides;
 export async function assistantGuide(env: Env, origin: string, topic: unknown = 'start') {
   if (typeof topic !== 'string' || !Object.hasOwn(assistantGuides, topic))
-    throw new HttpError(400, 'invalid_guide_topic', 'Choose start, build, capabilities, sensors, connect, deployment, delivery or troubleshooting.');
+    throw new HttpError(400, 'invalid_guide_topic', 'Choose start, build, capabilities, sensors, connect, deployment, delivery, conversation or troubleshooting.');
   const path = assistantGuides[topic as AssistantGuideTopic];
   const response = await env.ASSETS.fetch(new Request(origin + path));
   if (!response.ok) {
@@ -38,6 +38,9 @@ export function assistantSetup(origin: string, empty?: boolean) {
     discoveryUrl: origin + '/.well-known/tendriller.json',
     serviceDescriptor: onboarding.interfaces.service_descriptor,
     readinessUrl: onboarding.interfaces.readiness,
+    conversationGuide: onboarding.documentation.conversation_delivery,
+    conversationWake: 'not-established',
+    conversationNextAction: 'Read the conversation guide and verify injection into the exact active turn plus two requests in the same existing thread across turn completion. A connected page owner or forwarded event is not an active assistant worker.',
     starter: onboarding.starter,
     originPolicy: 'same-origin-only',
     guideUnavailableAction: `If tendril_guide is missing from the installed tools, read ${origin + assistantGuides.start} directly, or use ${origin}/.well-known/tendriller.json. Refresh the installed plugin's tool catalog when possible. Keep all setup on ${origin}; do not substitute another service origin.`,

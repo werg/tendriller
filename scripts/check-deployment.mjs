@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
 import { parseArgs } from 'node:util';
 import { describeReadiness, requireService, requireServiceOrigin } from "../contract/client.mjs";
 import { deploymentConvergence } from './deployment-convergence.mjs';
+import { builtRuntimeId } from './deployment-defaults.mjs';
 import { CORE_RELEASE } from '../contract/index.mjs';
 // Smoke check the public endpoints after each deployment.
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
@@ -10,7 +10,7 @@ const { values, positionals } = parseArgs({ allowPositionals: true, options: {
 } });
 if (positionals.length !== 1) throw Error('Usage: node scripts/check-deployment.mjs https://service-host [--assistant] [--source-commit SHA --composition-id SHA256] [--runtime-id SHA256 --core-release VERSION]');
 const base = requireServiceOrigin(positionals[0]), assistant = Boolean(values.assistant);
-const runtime = JSON.parse(readFileSync(new URL('../server/src/runtime-release.json', import.meta.url)));
+const runtime = { id: builtRuntimeId() };
 const expected = { coreRelease: values['core-release'] ?? CORE_RELEASE, runtimeId: values['runtime-id'] ?? runtime.id,
   sourceCommit: values['source-commit'], compositionId: values['composition-id'] };
 if (Boolean(expected.sourceCommit) !== Boolean(expected.compositionId) ||

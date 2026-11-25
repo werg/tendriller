@@ -170,7 +170,30 @@ workspace plugin do not create a directory listing.
 | OAuth reports an unregistered client or callback | Copy the public client ID and exact callback from the MCP connection's management page. Compare them with the host's registration. [Callback guidance](https://developers.openai.com/plugins/build/auth#redirect-url) |
 | The account is linked but the app is missing | Verify you linked the owning Tendriller account and completed the participant's application review. [App connections](https://tendriller.dev/connections) |
 | A query or command says the participant is offline | Resume the enrolled participant with its existing saved device keys. [Participant recovery](AGENT_DELIVERY.md) |
-| A subscription is blocked or no chat turn starts | Verify Work or dot availability and workspace policy, then check the approved event, actual webhook origin, and delivery receipt. Use inbox catch-up while diagnosing. [Delivery and revision](#event-delivery-and-revision) |
+| A subscription is blocked or no chat turn starts | Verify the actual host route and workspace policy, then check the approved event, actual webhook origin, and delivery receipt. A missing subscription tool and reauthentication are separate setup failures. Use on-demand catch-up while diagnosing. [Same-conversation qualification](CONVERSATION_DELIVERY.md) |
+| The native owner is connected but assistant requests remain unanswered | Check the actual worker, its consumer/topic presence filter, retained pending requests and host admission. Stop advertising the assistant when that worker stops; transport connectivity is insufficient. [Worker presence](AGENT_REQUESTS.md) |
+
+## Qualify the intended conversation
+
+For one existing conversation serving several pages, read
+[same-conversation delivery](CONVERSATION_DELIVERY.md) (`tendril_guide`,
+`topic: "conversation"`). Inspect the actual installed host tools and route,
+retain separate handled cursors per application/history, and test a second
+request after the first turn ends in that same thread. For a Codex receiver,
+also verify a request is injected into its currently active turn before
+completion; plain `codex queue` waits for completion and cannot establish that
+behavior. The selected receiver uses steering while active and queue/resume
+while idle or unloaded. A missing subscription
+tool in a Codex session is not evidence that a supported subscription failed;
+inspect its documented existing-thread execution mechanisms separately.
+Reauthentication blocks tools belonging to that account connection; a local
+Codex queue/native route has independent access requirements and must be
+verified on its own.
+
+Worker presence belongs to the process handling the advertised request topics.
+A connected native owner or event exporter must not present an absent
+interactive assistant as Live. Webhook acceptance, conversation admission,
+and the application's durable receipt/answer are separate evidence.
 
 ## Interaction options
 

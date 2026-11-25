@@ -72,8 +72,15 @@ State which browser/optional processes (including the agent program) must remain
 open for live synchronization or finality; do not imply they are needed to save
 local work. An installed adapter or HTML preview alone does not establish a
 working application.
-Report actual process lifetimes. Page residency and MCP do not establish
-a supported handoff to, or future wake of, an existing ChatGPT conversation.
+Report the actual agent program and request worker lifetimes separately. Bind
+presence only to the worker and topics it handles; a connected native participant
+or event forwarder cannot advertise an absent assistant. For an existing Codex or
+ChatGPT conversation, qualify the actual host route and a second request after
+the first turn ends using [same-conversation delivery](docs/CONVERSATION_DELIVERY.md).
+For a running Codex conversation, inject requests into its active turn through
+the verified steering route; a queue that waits for completion does not satisfy
+active delivery. Verify both active-turn injection and idle wake.
+Page residency and MCP alone do not establish that handoff.
 
 ## Verify the user experience
 
