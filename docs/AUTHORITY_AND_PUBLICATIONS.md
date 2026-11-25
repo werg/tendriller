@@ -17,7 +17,7 @@ The metadata chain is evidence for a session's verified authority cache. It does
 
 ## Host SDK operations
 
-The host's authority client encodes signed authority and finality records as canonical CBOR `{record: lowercaseHexBytes}`; JSON enrollment action envelopes carry these in their signed `proof` or `bundle` fields, while challenge and grant inputs remain ordinary JSON. It does not verify returned signed records. Publication is the exception: `publish(publication, assets)` sends the raw `SignedPublication` JSON with canonical base64 asset bytes, and `publication(id?)` returns a JSON `{publication, version}` receipt (see [protocol](PROTOCOL.md)). Callers verify signatures with `@chronolog/authority` before trusting a result.
+The host's authority client encodes signed authority and finality records as canonical tagged-JSON bytes from `@chronolog/authority.encodeRecord`, transported as `{record: lowercaseHexBytes}` (not CBOR); JSON enrollment action envelopes carry these in their signed `proof` or `bundle` fields, while challenge and grant inputs remain ordinary JSON. It does not verify returned signed records. Publication is the exception: `publish(publication, assets)` sends the raw `SignedPublication` JSON with canonical base64 asset bytes, and `publication(id?)` returns a JSON `{publication, version}` receipt (see [protocol](PROTOCOL.md)). Callers verify signatures with `@chronolog/authority` before trusting a result.
 
 | Method | Purpose |
 | --- | --- |

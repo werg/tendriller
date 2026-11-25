@@ -198,8 +198,8 @@ Signed finality statements and proofs contain exact bigint author times, which J
 
 | Command | Output |
 | --- | --- |
-| `finality close --through MS` | `{ "closedThroughMs": "<decimal string>" \| null, "proofs": { "record": "<canonical CBOR hex>" } }` |
-| `finality vote --through MS` | `{ "votes": { "record": "<canonical CBOR hex>" } }` |
+| `finality close --through MS` | `{ "closedThroughMs": "<decimal string>" \| null, "proofs": { "record": "<canonical encodeRecord bytes as hex>" } }` |
+| `finality vote --through MS` | `{ "votes": { "record": "<canonical encodeRecord bytes as hex>" } }` |
 | `finality submit '<{"record":HEX}>'` | Decodes that exact canonical record, including its bigint times internally, and submits it as proofs |
 
 `--through` is an exact nonnegative int64 decimal string (converted to a bigint once); `closedThroughMs` is a decimal string for the same reason. Round-trip a certified frontier by passing `proofs` from `close` unchanged to `submit`, for example to hand them to another participant:
