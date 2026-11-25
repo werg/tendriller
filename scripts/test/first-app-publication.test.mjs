@@ -5,16 +5,20 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { qualifyFirstAppPublication } from '../first-app-publication.mjs';
-import { createFirstAppPublicationGate } from '../first-app-websocket-host.mjs';
+import {createSigningIdentity,signPublicationManifest,encodeRecord,bytesToHex} from '@chronolog/authority';
+import {decodeFirstAppPublication} from '../first-app-publication-codec.mjs';
+import {Miniflare,convertV4MiniflareOptions} from 'miniflare';
+import {build} from 'esbuild';
+import { createFirstAppPublicationGate,createFirstAppWebsocketProxyWorker,FIRST_APP_WEBSOCKET_PROXY_WORKER } from '../first-app-websocket-host.mjs';
 
 const browserText = 'Browser work while the resident owner publishes';
-const author = 'a'.repeat(64), previous = 'b'.repeat(64), operationId = 'nativepub_scoped_fixture_identity';
-const proofHash = createHash('sha256').update('attached-publication-proof\n' + 'p'.repeat(900_000)).digest('hex');
-const intent = { author, previous, operationId,
-  files: [{ path: 'resident-publication-proof.txt', hash: proofHash, size: 900_027 }] };
-const publishRequest = (payload = intent) => new Request('https://fixture/api/agent/pages/page/peers/participant', {
-  method: 'POST', body: JSON.stringify({ protocol: 'chronolog-participant-v1', facet: 'publication',
-    action: 'publish', payload: { publication: { id: 'c'.repeat(64), payload }, assets: {} } }),
+const signer=await createSigningIdentity(),otherSigner=await createSigningIdentity();
+const author=signer.publicKey,previous='b'.repeat(64),operationId='nativepub_scoped_fixture_identity';
+const proofHash=createHash('sha256').update('attached-publication-proof\n'+'p'.repeat(900000)).digest('hex');
+const intent={applicationId:'f'.repeat(64),membershipId:'e'.repeat(64),executionManifestDigest:'d'.repeat(64),author,previous,operationId,revision:1,entry:'index.html',
+ files:[{path:'index.html',hash:'c'.repeat(64),size:22,type:'text/html'},{path:'resident-publication-proof.txt',hash:proofHash,size:900027,type:'text/plain'}]};
+const publishRequest=async(payload=intent)=>new Request('https://fixture/api/agent/pages/page/peers/publication',{
+ method:'POST',body:JSON.stringify({action:'publish',publication:{record:bytesToHex(encodeRecord(await signPublicationManifest(payload,payload.author===author?signer:otherSigner)))},assets:[]}),
 });
 const controlRequest = (action, id, extra = {}) => new Request('https://fixture/__first_app_publication', {
   method: 'POST', body: JSON.stringify({ action, id, author, previous, proofHash, ...extra }),
@@ -44,7 +48,7 @@ async function fixture(t, options = {}) {
   await writeFile(cli, `process.on('SIGTERM', () => process.exit(${options.consumerExit ?? 0}));
 process.stdout.write(${JSON.stringify(JSON.stringify({ cursor: 'fixture', events: [{ payload: { text: browserText } }] }) + '\n')});
 setInterval(() => {}, 1000);`);
-  const gate = createFirstAppPublicationGate({ timeoutMs: options.timeoutMs ?? 2_000 });
+  const gate = createFirstAppPublicationGate({ decodePublication:decodeFirstAppPublication, timeoutMs: options.timeoutMs ?? 2_000 });
   const state = { trace: [], cleaned: false, publisherSettled: false, browserSettled: false };
   const completed = Error('Reached the retained publication assertions');
   const control = async action => gate.control(controlRequest(action, state.id));
@@ -66,7 +70,7 @@ setInterval(() => {}, 1000);`);
       return JSON.stringify({ publication: { id: previous } });
     }
     assert.equal(command, 'publish');
-    const passed = gate.before(publishRequest());
+    const passed = gate.before(await publishRequest());
     try {
       if (options.publish) await options.publish({ state, passed, control });
       else {
@@ -193,14 +197,14 @@ test('release failure remains bounded and keeps progress and primary diagnostics
 });
 
 test('publication gate matches signed public intent, forwards original bytes only after release, and bounds reset', async () => {
-  const gate = createFirstAppPublicationGate({ timeoutMs: 100 });
+  const gate = createFirstAppPublicationGate({ decodePublication:decodeFirstAppPublication, timeoutMs: 100 });
   const id = randomUUID();
   assert.equal((await gate.control(controlRequest('arm', id))).status, 200);
-  for (const payload of [{ ...intent, author: 'd'.repeat(64) }, { ...intent, previous: 'd'.repeat(64) },
-    { ...intent, files: [{ path: 'resident-publication-proof.txt', hash: 'd'.repeat(64) }] }])
-    assert.equal(await gate.before(publishRequest(payload)), undefined);
-  assert.equal(await gate.before(new Request('https://fixture/peers/participant', { method: 'POST', body: 'null' })), undefined);
-  const request = publishRequest(), expected = await request.clone().text();
+  for (const payload of [{...intent,author:otherSigner.publicKey}, { ...intent, previous: 'd'.repeat(64) },
+    {...intent,files:[intent.files[0],{...intent.files[1],hash:'d'.repeat(64)}]}])
+    assert.equal(await gate.before(await publishRequest(payload)), undefined);
+  assert.equal(await gate.before(new Request('https://fixture/peers/publication', { method: 'POST', body: 'null' })), undefined);
+  const request = await publishRequest(), expected = await request.clone().text();
   let forwarded = false;
   const pending = gate.before(request).then(async response => {
     if (response) return response;
@@ -215,9 +219,51 @@ test('publication gate matches signed public intent, forwards original bytes onl
   assert.equal(forwarded, true);
   await gate.control(controlRequest('reset', id));
   await gate.control(controlRequest('arm', id));
-  const rejected = gate.before(publishRequest());
+  const rejected = gate.before(await publishRequest());
   await until(async () => (await (await gate.control(controlRequest('status', id))).json()).phase === 'held');
   await gate.control(controlRequest('reset', id));
   assert.equal((await rejected).status, 504);
   await turn();
+});
+
+
+test('raw proxy gate is inactive without an authority decoder; obsolete transport never matches',async()=>{
+ const inert=createFirstAppPublicationGate(),id=randomUUID();
+ assert.equal((await inert.control(controlRequest('arm',id))).status,503);
+ assert.equal(await inert.before(await publishRequest()),undefined);
+ assert.doesNotMatch(FIRST_APP_WEBSOCKET_PROXY_WORKER,/@chronolog|from ['"](?:node:|.*kernel)/u);
+ let decoded=0;const gate=createFirstAppPublicationGate({decodePublication:async value=>{decoded++;return decodeFirstAppPublication(value);}});
+ await gate.control(controlRequest('arm',id));
+ const original=await publishRequest(),body=await original.text();
+ assert.equal(await gate.before(new Request('https://fixture/peers/participant',{method:'POST',body})),undefined);
+ assert.equal(decoded,0);
+ assert.equal((await(await gate.control(controlRequest('status',id))).json()).phase,'armed');
+});
+
+test('gate rejects malformed canonical records and invalid signatures without consuming the original request',async()=>{
+ const gate=createFirstAppPublicationGate({decodePublication:decodeFirstAppPublication}),id=randomUUID();await gate.control(controlRequest('arm',id));
+ const signed=await signPublicationManifest(intent,signer);
+ const altered={...signed,signature:(signed.signature[0]==='0'?'1':'0')+signed.signature.slice(1)};
+ for(const publication of [{record:'00'}, {record:bytesToHex(encodeRecord(altered))}, {payload:intent}, null]){
+  const request=new Request('https://fixture/peers/publication',{method:'POST',body:JSON.stringify({action:'publish',publication,assets:[]})});
+  const expected=await request.clone().text();assert.equal(await gate.before(request),undefined);assert.equal(await request.text(),expected);
+ }
+ const state=await(await gate.control(controlRequest('status',id))).json();assert.equal(state.phase,'armed');assert.equal(state.matched,0);
+});
+
+test('bundled Workerd proxy holds the actual portable signed-record wire bytes and forwards them unchanged', {timeout:15000},async()=>{
+ const entry=new URL('../first-app-publication-codec.mjs',import.meta.url).pathname;
+ const bundle=await build({stdin:{contents:`import {decodeFirstAppPublication} from ${JSON.stringify(entry)};\n${createFirstAppWebsocketProxyWorker({decodePublicationExpression:'decodeFirstAppPublication'})}`,resolveDir:import.meta.dirname},write:false,bundle:true,format:'esm',platform:'browser',target:'es2022'});
+ const mf=new Miniflare({...convertV4MiniflareOptions({workers:[{name:'network',modules:true,script:bundle.outputFiles[0].text,compatibilityDate:'2026-11-01',serviceBindings:{PACKED_HOST:'echo'}},{name:'echo',modules:true,script:`export default{async fetch(request){return new Response(await request.arrayBuffer(),{headers:{'Content-Type':'application/json'}});}}`,compatibilityDate:'2026-11-01'}]}),logRequests:false});
+ const id=randomUUID();let pending;
+ const control=async action=>mf.dispatchFetch('https://fixture/__first_app_publication',{method:'POST',body:JSON.stringify({action,id,author,previous,proofHash})});
+ try{
+  assert.equal((await control('arm')).status,200);
+  const request=await publishRequest(),expected=await request.text();let completed=false;
+  pending=mf.dispatchFetch(request.url,{method:'POST',body:expected}).then(response=>{completed=true;return response;});
+  await until(async()=>(await(await control('status')).json()).phase==='held');
+  const state=await(await control('status')).json();assert.equal(state.matched,1);assert.equal(state.operationId,operationId);assert.equal(completed,false);
+  await control('release');assert.equal(await(await pending).text(),expected);
+  assert.equal(completed,true);
+ }finally{await control('reset').catch(()=>{});await pending?.catch(()=>{});await mf.dispose();}
 });

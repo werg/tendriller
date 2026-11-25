@@ -17,7 +17,7 @@ import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
 import { TUTORIAL_FILES } from './onboarding.mjs';
 import { readBrowserRtcEvidence, hasNonTurnTraffic } from './first-app-rtc-evidence.mjs';
-import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
+import { createFirstAppWebsocketProxyWorker } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
 import { FIRST_APP_PROFILES } from './release-composition.mjs';
 import {prepareWorkspaceQualification,qualifyFirstAppWorkspace,qualifyFirstAppSqlWorkspace} from './first-app-workspace.mjs';
@@ -191,6 +191,16 @@ try {
   for (const [path, hash] of Object.entries(engineProof.files))
     assert.equal(sha256(await readFile(join(engine, 'package', path))), hash, `Packed engine changed: ${path}`);
 
+  // Decode only the actual canonical publication envelope in this private
+  // qualifier. Bundle the exact selected PUBLIC authority archive, not host or
+  // kernel sources. The raw/dev proxy remains dependency-free and gate-inert.
+  const gateCodecRoot=join(directory,'publication-gate-authority');await mkdir(gateCodecRoot);
+  await run('tar',['-xzf',archives.authority,'-C',gateCodecRoot]);
+  const gatePackage=await jsonFile(join(gateCodecRoot,'package/package.json'));
+  assert.equal(gatePackage.name,'@chronolog/authority');assert.equal(gatePackage.exports?.['.']?.import,'./index.mjs');
+  const {build:bundleProxy}=await import('esbuild');
+  const proxyBundle=await bundleProxy({stdin:{contents:`import {decodeFirstAppPublication} from ${JSON.stringify(join(root,'scripts/first-app-publication-codec.mjs'))};\n${createFirstAppWebsocketProxyWorker({decodePublicationExpression:'decodeFirstAppPublication'})}`,resolveDir:root,sourcefile:'first-app-publication-proxy.mjs'},absWorkingDir:root,bundle:true,write:false,platform:'browser',format:'esm',target:'es2022',alias:{'@chronolog/authority':join(gateCodecRoot,'package/index.mjs')}});
+  const qualificationProxy=proxyBundle.outputFiles[0].text;
   checkpoint('start isolated packed host');
   let existing;
   try { existing = await fetch(`${SERVICE}/health`, { signal: AbortSignal.timeout(1_000) }); } catch {}
@@ -210,7 +220,7 @@ try {
   host = new Miniflare({ ...convertV4MiniflareOptions({
     host: '127.0.0.1', port: PORT, https: true, cf: false,
     workers: [
-      { name: 'first-app-network', modules: true, script: FIRST_APP_WEBSOCKET_PROXY_WORKER,
+      { name: 'first-app-network', modules: true, script: qualificationProxy,
         compatibilityDate: workerOptions.compatibilityDate, serviceBindings: { PACKED_HOST: 'first-app-packed-host' } },
       { ...workerOptions, name: 'first-app-packed-host',
         scriptPath: join(engine, 'package/worker.mjs'), modulesRoot: join(engine, 'package'), modules: true,

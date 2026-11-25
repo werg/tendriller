@@ -69,7 +69,7 @@ export function createFirstAppRequestActivity() {
 }
 
 /** Test-only pause at the real publication request, before the packed host receives it. */
-export function createFirstAppPublicationGate({ timeoutMs = 40_000 } = {}) {
+export function createFirstAppPublicationGate({ timeoutMs = 40_000, decodePublication } = {}) {
   let current;
   const snapshot = () => current ? { id: current.id, phase: current.phase, matched: current.matched,
     operationId: current.operationId ?? null }
@@ -77,6 +77,7 @@ export function createFirstAppPublicationGate({ timeoutMs = 40_000 } = {}) {
   return {
     async control(request) {
       if (request.method !== 'POST') return new Response('POST required', { status: 405 });
+      if (typeof decodePublication !== 'function') return new Response('Publication gate unavailable', { status: 503 });
       const input = await request.json();
       if (input.action === 'arm') {
         if (current && ['armed', 'held'].includes(current.phase)) return new Response('Gate already active', { status: 409 });
@@ -99,13 +100,15 @@ export function createFirstAppPublicationGate({ timeoutMs = 40_000 } = {}) {
     },
     async before(request) {
       const gate = current;
-      if (!gate || gate.phase !== 'armed' || request.method !== 'POST' ||
-        !new URL(request.url).pathname.endsWith('/peers/participant')) return;
-      let message;
-      try { message = await request.clone().json(); } catch { return; }
-      const publication = message?.payload?.publication?.payload;
-      if (current !== gate || gate.phase !== 'armed' || message?.protocol !== 'chronolog-participant-v1' ||
-        message.facet !== 'publication' || message.action !== 'publish' ||
+      if (!gate || gate.phase !== 'armed' || typeof decodePublication !== 'function' || request.method !== 'POST' ||
+        !new URL(request.url).pathname.endsWith('/peers/publication')) return;
+      let message, publication;
+      try {
+        message = await request.clone().json();
+        if (message?.action !== 'publish') return;
+        publication = await decodePublication(message.publication);
+      } catch { return; } // Malformed/unmatched bytes still reach the packed host unchanged.
+      if (current !== gate || gate.phase !== 'armed' ||
         publication?.author !== gate.author || publication.previous !== gate.previous ||
         !Array.isArray(publication.files) || !publication.files.some(file =>
           file?.path === 'resident-publication-proof.txt' && file.hash === gate.proofHash)) return;
@@ -124,11 +127,14 @@ export function createFirstAppPublicationGate({ timeoutMs = 40_000 } = {}) {
   };
 }
 
-export const FIRST_APP_WEBSOCKET_PROXY_WORKER = `
+// The raw/dev close-boundary worker has no authority dependency or active gate.
+// Only the isolated first-app qualifier supplies a bundled public decoder.
+export function createFirstAppWebsocketProxyWorker({ decodePublicationExpression = 'undefined' } = {}) {
+  return `
 const requests = (${createFirstAppRequestActivity.toString()})();
 const failures=[];
 const failed=value=>{if(failures.length===64)failures.shift();failures.push(value);};
-const publicationGate = (${createFirstAppPublicationGate.toString()})();
+const publicationGate = (${createFirstAppPublicationGate.toString()})({decodePublication: ${decodePublicationExpression}});
 const traffic = { instance: null, httpRequests: 0, relayUpgrades: 0,
   relayBinaryFrames: 0, relayBinaryBytes: 0 };
 export default {
@@ -179,3 +185,5 @@ export default {
   },
 };
 `;
+}
+export const FIRST_APP_WEBSOCKET_PROXY_WORKER = createFirstAppWebsocketProxyWorker();
