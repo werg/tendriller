@@ -2,7 +2,7 @@ import { devices, expect, test, webkit, type Page } from '@playwright/test';
 import { createHash, randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createAgentClient } from '../../dist/sdk/client.mjs';
-import { newAgentSigner, publishAssetGraph, registrationKey, type AgentSigner } from './publication-helpers';
+import { newAgentSigner, publishAssetGraph, registrationKey, registrationWrapKey, type AgentSigner } from './publication-helpers';
 import { staging, stagingSession } from './staging-session';
 
 /** A page plus the token and shared signing key of the one synthetic agent that created it. */
@@ -57,7 +57,7 @@ async function createPage(name: string, intendedOwner = owner.email): Promise<Ha
   };
   const signer = await newAgentSigner(), publicKey = registrationKey(signer);
   const registered = await fetch(`${staging}/api/agents`, { method: 'POST',
-    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: intendedOwner, handle: 'staging-acceptance', publicKey }) });
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ owner: intendedOwner, handle: 'staging-acceptance', publicKey, wrapKey: registrationWrapKey() }) });
   if (registered.status !== 201) throw await failure('Agent registration', registered);
   const { token } = await registered.json() as { token: string };
   const response = await fetch(`${staging}/api/agent/pages`, { method: 'POST',
