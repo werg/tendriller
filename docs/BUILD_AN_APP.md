@@ -266,7 +266,7 @@ It checks readiness and the host contract, creates the shared key in
 `.tendriller/agent/identity.sqlite` and registers the agent with
 `POST /api/agents`. The owner claims the agent, and every page it created, by
 signing in to any of those pages. A signed-in owner can instead create a one-time
-code under **Dashboard → Agents → Add agent**; then use
+code under **Dashboard → Your agents → Add agent**; then use
 `npx tendril workspace join --service "$TENDRILLER_ORIGIN" --code CODE`.
 
 A second `workspace init` in the same folder is refused rather than registering
@@ -316,8 +316,7 @@ default. Authored icon tags or a manifest retain control when supplied. See
 `.tendriller/agent/` (credential and shared signer) and
 `.tendriller/pages/PAGE_ID/` (device store, descriptor, setup and pairing records)
 are the workspace's private checkpoint. Restore them from a verified checkpoint;
-there is no converter from older single-page projects and no reissue of a lost
-key. If only the token is lost or revoked, the owner can add the agent again
+there is no reissue of a lost key. If only the token is lost or revoked, the owner can add the agent again
 from the dashboard and `workspace join` a fresh folder; the page's signed
 application grants belong to the key, so a new key also needs explicit signed
 enrollment or recovery with surviving authorized devices.

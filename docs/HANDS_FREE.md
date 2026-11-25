@@ -9,7 +9,7 @@ page load:
    optional immediate voice send or draft review, browser/neural TTS spoken
    replies, instant **Stop speaking** & barge-in, hands-free conversation loop,
    live streaming reply bubble, context chips (e.g. *"About: CPU card"*), and
-   file/photo attach hooks. Pair with `ui/chat-session.mjs` (`mountConnectedAgentChat`)
+   file/photo attach hooks. Pair with `shared/ui/chat-session.mjs` (`mountConnectedAgentChat`)
    to connect directly to a Chronolog session.
 2. **`mountVoiceControls(runtime, options)`** — standalone voice dock or inline
    panel with tap-to-talk, wake word, direct-send toggle, and spoken TTS controls.
@@ -30,7 +30,7 @@ Choose the `consentMode` that fits the application:
 ## Mount the packaged voice + text chat
 
 ```js
-import { mountConnectedAgentChat } from './ui/chat-session.mjs';
+import { mountConnectedAgentChat } from '../../shared/ui/chat-session.mjs';
 
 const chat = await mountConnectedAgentChat({
   runtime: window.tendril,

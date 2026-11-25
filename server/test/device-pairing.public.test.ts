@@ -133,20 +133,12 @@ it('prepares one verified immutable proposal without selecting authority before 
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).grant(device.publicKey)).toBeNull();
 });
 
-it('has no approval screen: legacy review links only return the browser and accept no decisions', async () => {
+it('has no approval screen or review route: staging approves and commit selects the exact proposal', async () => {
   const { h, native, device, cookie } = await fixture(), c = await proven(h, device), prepared = await prepare(h, native, c);
   const staged = await jsonResponse(await stage(h, c, prepared));
   expect(staged.state).toBe('approved');
-  const page = new URL('some/view?tab=2#data', h.page_url).href;
-  const back = await req(`${c.reviewUrl}?return_to=${encodeURIComponent(page)}`, { redirect: 'manual', anonymous: true });
-  expect(back.status).toBe(303); expect(back.headers.get('Location')).toBe(page);
-  const bare = await req(c.reviewUrl, { redirect: 'manual', headers: { Cookie: cookie } });
-  expect(bare.status).toBe(303); expect(bare.headers.get('Location')).toBe(new URL(c.challenge.pageOrigin).href);
-  for (const wrong of ['https://evil.example/', h.api, `${c.challenge.serviceOrigin}/dashboard`, `blob:${c.challenge.pageOrigin}/not-a-page`, `${c.challenge.pageOrigin.replace('https://', 'https://user@')}/`])
-    expect((await req(`${c.reviewUrl}?return_to=${encodeURIComponent(wrong)}`, { redirect: 'manual' })).status).toBe(400);
-  expect((await req(`${c.reviewUrl}?other=1`, { redirect: 'manual' })).status).toBe(400);
-  const posted = await req(c.reviewUrl, { method: 'POST', headers: { Cookie: cookie, Origin: c.challenge.serviceOrigin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'action=deny' });
-  expect(posted.status).toBe(410);
+  expect(staged).not.toHaveProperty('reviewUrl');
+  expect((await req(`/pairings/${h.id}/${c.pairingId}`, { redirect: 'manual', headers: { Cookie: cookie } })).status).toBe(404);
   expect((await jsonResponse(await browser(h, undefined, c.pairingId))).state).toBe('approved');
   expect((await jsonResponse(await commit(h, c, prepared))).state).toBe('committed');
 });
@@ -424,7 +416,6 @@ it('refuses corrupt prepared evidence before committing', async () => {
     const record = JSON.parse(row.data); record.prepared.request.payload.base.point.root = '00'.repeat(32);
     t.db.run('UPDATE device_pairings SET data=? WHERE id=?', JSON.stringify(record), c.pairingId);
   });
-  expect((await req(c.reviewUrl, { redirect: 'manual' })).status).toBe(503);
   await jsonResponse(await commit(h, c, prepared), 503);
   expect((await verifyAuthorityBundle(await peerApiJson(h, 'control/read'))).bundle.generations).toHaveLength(1);
 });

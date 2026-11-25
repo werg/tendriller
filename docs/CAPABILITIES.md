@@ -13,19 +13,19 @@ not establish working hardware, successful acquisition or fresh readings.
 
 | If you are building… | Compose these starter modules | State & transport pattern |
 | --- | --- | --- |
-| **Full-duplex live dashboard** (cloud/home-server agent + phone/tablet UI) | `ui/dashboard.mjs` + `helpers/data-feed.mjs` + `ui/chat-session.mjs` + `helpers/dev-telemetry.mjs` | Ephemeral `serveDataFeeds`/`useDataFeed` for private APIs (zero durable writes); Chronolog commands for user actions & chat; `npm run deploy` for hot UI updates |
-| **Voice & text agent companion** (eyes & ears on the go) | `ui/chat-session.mjs` (`mountAgentChat` from `@tendriller/runtime/voice`) + `helpers/agent-requests.mjs` + `media/panel.mjs` | Durable `agentRequest`/`agentAnswer`, ephemeral `announceAgentPresence` + `streamAgentReply`, `consentMode: 'auto'` or `'session'`, built-in TTS + barge-in |
-| **Sensor & observation console** (camera, screen, GPS, motion, hardware) | `media/` + `helpers/reviewed-input.mjs` + `helpers/signal-request.mjs` + `tendril.sensors` | Live signals for fresh observations; immutable `session.content` + reviewed declared command for retained evidence |
-| **Collaborative workspace / CRUD** (notes, checklists, inventory, multi-view) | `ui/patterns.mjs` + `domain.mjs` (or `sql/`) + `helpers/operation-view.mjs` | Chronolog events or SQL queries via `createLiveView`; optional `session.compact()` to keep history lean |
+| **Full-duplex live dashboard** (cloud/home-server agent + phone/tablet UI) | `shared/ui/dashboard.mjs` + `shared/helpers/data-feed.mjs` + `shared/ui/chat-session.mjs` + `shared/helpers/dev-telemetry.mjs` | Ephemeral `serveDataFeeds`/`useDataFeed` for private APIs (zero durable writes); Chronolog commands for user actions & chat; `npm run deploy` for hot UI updates |
+| **Voice & text agent companion** (eyes & ears on the go) | `shared/ui/chat-session.mjs` (`mountAgentChat` from `@tendriller/runtime/voice`) + `shared/helpers/agent-requests.mjs` + `shared/media/panel.mjs` | Durable `agentRequest`/`agentAnswer`, ephemeral `announceAgentPresence` + `streamAgentReply`, `consentMode: 'auto'` or `'session'`, built-in TTS + barge-in |
+| **Sensor & observation console** (camera, screen, GPS, motion, hardware) | `shared/media/` + `shared/helpers/reviewed-input.mjs` + `shared/helpers/signal-request.mjs` + `tendril.sensors` | Live signals for fresh observations; immutable `session.content` + reviewed declared command for retained evidence |
+| **Collaborative workspace / CRUD** (notes, checklists, inventory, multi-view) | `shared/ui/patterns.mjs` + `pages/<slug>/domain.mjs` (or `sql/`) + `shared/helpers/operation-view.mjs` | Chronolog events or SQL queries via `createLiveView`; optional `session.compact()` to keep history lean |
 
 ## Task to implementation
 
 | When the task needs… | Start with… | Executable source / next guide |
 | --- | --- | --- |
-| Responsive dashboard shell, KPI sparkline cards, live activity & 1-tap feedback | `mountDashboardShell`, `mountMetricCard`, `mountFeedListCard`, `mountFeedbackCard` | `ui/dashboard.mjs`; [application patterns](APP_PATTERNS.md#full-duplex-dashboards-and-data-feeds) |
-| Private or local API data fed from the native agent to the browser (secrets stay native) | `serveDataFeeds` (native) and `useDataFeed` (browser) over live signals | `helpers/data-feed.mjs`, `helpers/signal-request.mjs`; [application patterns](APP_PATTERNS.md#full-duplex-dashboards-and-data-feeds) |
-| Full-duplex voice + text chat with TTS, barge-in, streaming replies and zero per-utterance consent | `mountAgentChat` from `@tendriller/runtime/voice` + `mountConnectedAgentChat` | `ui/chat-session.mjs`, `helpers/agent-requests.mjs`; [voice and chat guide](HANDS_FREE.md) |
-| Live browser error feedback, diagnostics and agent log tailing | `tendril.errors`, `mountDevTelemetry`, `collectDevTelemetry`, `tendril logs` | `helpers/dev-telemetry.mjs`; `npm run logs`; [CLI diagnostics](tools/CLI.md) |
+| Responsive dashboard shell, KPI sparkline cards, live activity & 1-tap feedback | `mountDashboardShell`, `mountMetricCard`, `mountFeedListCard`, `mountFeedbackCard` | `shared/ui/dashboard.mjs`; [application patterns](APP_PATTERNS.md#full-duplex-dashboards-and-data-feeds) |
+| Private or local API data fed from the native agent to the browser (secrets stay native) | `serveDataFeeds` (native) and `useDataFeed` (browser) over live signals | `shared/helpers/data-feed.mjs`, `shared/helpers/signal-request.mjs`; [application patterns](APP_PATTERNS.md#full-duplex-dashboards-and-data-feeds) |
+| Full-duplex voice + text chat with TTS, barge-in, streaming replies and zero per-utterance consent | `mountAgentChat` from `@tendriller/runtime/voice` + `mountConnectedAgentChat` | `shared/ui/chat-session.mjs`, `shared/helpers/agent-requests.mjs`; [voice and chat guide](HANDS_FREE.md) |
+| Live browser error feedback, diagnostics and agent log tailing | `tendril.errors`, `mountDevTelemetry`, `collectDevTelemetry`, `tendril --page <slug> logs` | `shared/helpers/dev-telemetry.mjs`; `npm run logs`; [CLI diagnostics](tools/CLI.md) |
 | Fast UI iteration without restarting the running agent program | `npm run deploy -- <slug>` or `tendril --page <slug> publish pages/<slug>/dist` | Delta asset uploads + auto operationId; [CLI publishing](tools/CLI.md) |
 | Shared notes, checklists, retained facts, ordinary CRUD | One Chronolog definition with declared commands and `session.query` | `domain.mjs`, `setup.mjs`, `agent.mjs`, `worker.mjs` under `templates/notes/` in the [starter](/downloads/tendriller-first-app.tgz); [state choice](STATE_MODELS.md) |
 | Atomic stock deduction, multiple related rows, relational guards | The optional SQL capability and a signed schema/engine manifest | `sql/` in the starter; [events versus SQL](STATE_MODELS.md) |
@@ -40,12 +40,12 @@ not establish working hardware, successful acquisition or fresh readings.
 | Connecting a browser, first-visit setup and reconnect | `createOwnerConnection` + `mountConnectionView`: opening the page connects; a new browser is set up automatically, with no approval screen | `connection.mjs`, `connect-view.mjs`, `page.mjs`; [connection component](APP_PATTERNS.md#connect-the-browser) |
 | Local authenticated transport inspection | `tendril.transport`, `createTransportDiagnostics(participation)` | [Transport diagnostics](TRANSPORT_DIAGNOSTICS.md); Page options → Application connections |
 | State fetching and live UI refresh | `createLiveView(session, {query, input})` over real session queries and changes | `@chronolog/peer-session/browser` (or `@chronolog/peer-session`); [application patterns](APP_PATTERNS.md) |
-| Operation status, uncertain replies, retry and recovery | The operation journal and `createOperationView` | `helpers/operation-view.mjs`; [application patterns](APP_PATTERNS.md) |
+| Operation status, uncertain replies, retry and recovery | The operation journal and `createOperationView` | `shared/helpers/operation-view.mjs`; [application patterns](APP_PATTERNS.md) |
 | Typing, presence, disposable progress | `session.signals.send/subscribe` | [Live signals](APPLICATION_SIGNALS.md) |
-| Photo/file → analysis → editable suggestions → explicit commit | `createReviewedInput`, immutable session content and a declared command | `helpers/reviewed-input.mjs`, `media/`; [reviewed AI input](AI_INPUT.md) |
-| Camera permission, preview and frame capture | Browser acquisition plus the supplied camera controller | `media/camera.mjs`; [reviewed AI input](AI_INPUT.md) |
+| Photo/file → analysis → editable suggestions → explicit commit | `createReviewedInput`, immutable session content and a declared command | `shared/helpers/reviewed-input.mjs`, `shared/media/`; [reviewed AI input](AI_INPUT.md) |
+| Camera permission, preview and frame capture | Browser acquisition plus the supplied camera controller | `shared/media/camera.mjs`; [reviewed AI input](AI_INPUT.md) |
 | Active/pending sensor indicators and Stop all | `tendril.sensors.status/on/register/wakeLock/stopAll` with pending registration before acquisition | [Sensors guide](SENSORS.md); [Browser API and tracking coverage](BROWSER_API.md#sensors-and-voice) |
-| Mobile camera photo downscaling and native OS file sharing / export | `compressImageFile`, `shareOrDownloadFile` | `helpers/mobile-media.mjs` |
+| Mobile camera photo downscaling and native OS file sharing / export | `compressImageFile`, `shareOrDownloadFile` | `shared/helpers/mobile-media.mjs` |
 | Receiving links, text or photos shared into the installed PWA from another app | `tendril.shareTarget.consume()` / `onShare()` (wired automatically into `mountAgentChat`) | Installed PWA Share Target (`manifest.webmanifest`) |
 | Opt-in Web Push alerts & app icon badge when the page is closed | `tendril.notifications.status/enable/disable/setBadge`, `tendril notify` CLI & stdio MCP `notify_user` | Page options → Notifications; `POST /api/agent/pages/:id/push`; [permission, subscription and host configuration gates](BROWSER_API.md#web-push-notifications) |
 | Location fixes, watches and progress | Page-owned `navigator.geolocation`; session signals for disposable readings | [Location cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/follow-location-progress/COOKBOOK.md); [live signals](APPLICATION_SIGNALS.md) |
@@ -54,13 +54,13 @@ not establish working hardware, successful acquisition or fresh readings.
 | Agent asks for a fresh observation | A local request card, trusted Start, correlated signals and explicit retention | [Observation flow](SENSORS.md#agent-requested-observation-eyes-and-ears-loop); [runnable browser/native reference](OBSERVATION_REFERENCE.md) |
 | Motion, orientation, tilt and shake | Page-owned motion/orientation APIs with permission handling and listener cleanup | [Motion cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/interpret-motion/COOKBOOK.md); [tracking coverage](BROWSER_API.md#sensors-and-voice) |
 | Local perception from camera, audio or other sensor input | An application-selected browser library or local engine over acquired samples | [Local perception cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/select-local-perception/COOKBOOK.md); [reviewed media](AI_INPUT.md) |
-| Speech recognition, transcription, spoken TTS replies, chat or wake modes | `mountAgentChat`, `mountVoiceControls` or `createVoice` from `@tendriller/runtime/voice` (`consentMode: 'auto' \| 'session' \| 'prompt'`); hosted **Page options → Set up voice input** | `ui/chat-session.mjs`, `media/voice.mjs`; [voice and chat guide](HANDS_FREE.md), [wake-word qualification](WAKE_WORD_QUALIFICATION.md) |
-| UI preview and headless browser interaction | `tendril-preview ./page`; add a real bootstrap for session execution | [Preview](tools/PREVIEW.md) |
-| Inference using a protected provider credential | An explicitly enabled native participant with an allowed-device list and request budget | `media/inference-client.mjs`, `media/inference-service.mjs`; [reviewed AI input](AI_INPUT.md) |
+| Speech recognition, transcription, spoken TTS replies, chat or wake modes | `mountAgentChat`, `mountVoiceControls` or `createVoice` from `@tendriller/runtime/voice` (`consentMode: 'auto' \| 'session' \| 'prompt'`); hosted **Page options → Set up voice input** | `shared/ui/chat-session.mjs`, `shared/media/voice.mjs`; [voice and chat guide](HANDS_FREE.md), [wake-word qualification](WAKE_WORD_QUALIFICATION.md) |
+| UI preview and headless browser interaction | `tendril-preview ./pages/<slug>/dist`; add a real bootstrap for session execution | [Preview](tools/PREVIEW.md) |
+| Inference using a protected provider credential | An explicitly enabled agent program with an allowed-device list and request budget | `shared/media/inference-client.mjs`, `shared/media/inference-service.mjs`; [reviewed AI input](AI_INPUT.md) |
 | Agent-side tools and a connected process | The same owned session plus `createApplicationTools` / `serveApplicationToolLines` | [Delivery and process lifetime](AGENT_DELIVERY.md) |
 | Remote ChatGPT reads, writes and mounted assistance UI | `@tendriller/core/assistant`, the existing participant, OAuth and owner consent | [ChatGPT routes and setup](CHATGPT_INTEGRATION.md) |
 | App-triggered assistant work | Verified MCP Events subscription, mounted inbox and explicit follow-up, or a published Workspace Agent trigger | [Delivery, recovery and fallbacks](CHATGPT_INTEGRATION.md#event-delivery-and-recovery) |
-| Hosted UI and signed publication | `createClient` from `@tendriller/core` and the authorized session publisher | [Build an app](BUILD_AN_APP.md) |
+| Hosted UI and signed publication | `createAgentClient` from `@tendriller/core` and the authorized session publisher | [Build an app](BUILD_AN_APP.md) |
 
 The starter's helper modules are ordinary, importable application source. Adapt
 their rendering and interaction policy to the task. They are not new SDK exports,
@@ -122,7 +122,7 @@ silently become a command, and a content-upload receipt is not command acceptanc
 
 ## Preview early, verify the hosted session
 
-Once authored files exist, use `tendril-preview ./page` for layout. The tool
+Once authored files exist, use `tendril-preview ./pages/<slug>/dist` for layout. The tool
 serves their complete immutable graph and supports headless DOM actions.
 Its static mode has no application state provider. For live local execution,
 `--bootstrap` must name an actual authored `openPreview` module returning the

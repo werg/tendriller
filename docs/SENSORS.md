@@ -51,8 +51,8 @@ hardware or add new capability keys.
 
 | Capability / sensor | Standard browser API or starter module | `tendril.capabilities()` key(s) | `tendril.sensors` tracking | Fallback |
 | --- | --- | --- | --- | --- |
-| Camera (photo/frame) | `media/camera.mjs` (`createCameraController`) or `getUserMedia` | `camera` | Automatic (`camera`) | Image file picker (`camera.useFile`) |
-| Voice (on-device STT / wake / TTS) | `media/voice.mjs` (`createVoiceController`) or `mountVoiceControls` from `@tendriller/runtime/voice` | `microphone`, `speech_recognition`, `speech_synthesis` | Automatic (`microphone`) | Typed input |
+| Camera (photo/frame) | `shared/media/camera.mjs` (`createCameraController`) or `getUserMedia` | `camera` | Automatic (`camera`) | Image file picker (`camera.useFile`) |
+| Voice (on-device STT / wake / TTS) | `shared/media/voice.mjs` (`createVoiceController`) or `mountVoiceControls` from `@tendriller/runtime/voice` | `microphone`, `speech_recognition`, `speech_synthesis` | Automatic (`microphone`) | Typed input |
 | Raw audio clip | `getUserMedia({ audio: true })` + `MediaRecorder` | `microphone` | Automatic (`microphone`) | Audio file upload |
 | Screen capture (frame) | `navigator.mediaDevices.getDisplayMedia` | `screen_capture` | Automatic (`screen`) | Screenshot file upload |
 | Location (fix / watch) | `navigator.geolocation` | `location` | Automatic (`location`) | Manual stop/address selection |
@@ -60,8 +60,8 @@ hardware or add new capability keys.
 | Generic Sensors & hardware connectors | `Accelerometer`, `Gyroscope`, `AmbientLightSensor`, `BarcodeDetector`, `navigator.bluetooth`, `navigator.serial`, `navigator.usb`, `navigator.hid`, `NDEFReader`, `navigator.wakeLock` | `accelerometer`, `gyroscope`, `ambient_light`, `barcode`, `bluetooth`, `serial`, `usb`, `hid`, `nfc`, `wake_lock` | Cooperative `tendril.sensors.register({ kind, stop })` + own visible Stop button | Recorded log or manual entry |
 
 The [first-app source archive](/downloads/tendriller-first-app.tgz) includes
-`media/camera.mjs`, `media/voice.mjs`, `helpers/reviewed-input.mjs`, and
-`helpers/signal-request.mjs`. For detailed patterns and acceptance criteria across
+`shared/media/camera.mjs`, `shared/media/voice.mjs`, `shared/helpers/reviewed-input.mjs`, and
+`shared/helpers/signal-request.mjs`. For detailed patterns and acceptance criteria across
 other modalities, see the [Tendriller cookbooks](https://github.com/werg/tendriller-contrib):
 `discover-capabilities`, `capture-reviewed-evidence`, `follow-location-progress`,
 `interpret-motion`, `notice-visual-changes`, `connect-instrument`, and
@@ -179,7 +179,7 @@ tracking cannot discover resources that page code never registered.
 while keeping consent and review strictly local:
 
 1. **Agent requests an observation** via a declared command (for durable requests
-   that survive reload) or a bounded signal using `helpers/signal-request.mjs`
+   that survive reload) or a bounded signal using `shared/helpers/signal-request.mjs`
    (for live sessions), e.g. `{ requestId, kind: 'camera', prompt: 'Show the router LEDs' }`.
 2. **Page checks `tendril.capabilities(filter)` and renders a request card** showing
    what the agent asked for, the best available capture action, and a file or
@@ -196,7 +196,7 @@ while keeping consent and review strictly local:
 
 ## Runnable reference and modality cookbooks
 
-The optional [observation reference](https://github.com/werg/tendriller/tree/master/docs/tutorial/observation)
+The optional [observation reference](https://github.com/werg/tendriller/tree/master/docs/tutorial/shared/observation)
 combines a simulated source and a location adapter with a browser view, native
 receiver, correlated replies and explicit command retention. The maintained
 [observation reference guide](OBSERVATION_REFERENCE.md) explains the real-session

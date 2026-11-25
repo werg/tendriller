@@ -64,7 +64,7 @@ export function createPeerDiscoveryWatcher(openSocket, options = {}) {
       } catch (error) {
         if (!ended && [401, 403, 409].includes(error?.status))
           finish(fail('discovery_access_revoked', 'Discovery access was refused'), 4003, 'Discovery access refused');
-        // Network failures and unavailable/unknown self routes remain retryable.
+        // Network failures and unavailable/unknown access probes remain retryable.
       } finally {
         clearTimeout(timeout); probeController = undefined;
       }

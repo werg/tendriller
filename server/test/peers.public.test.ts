@@ -45,7 +45,7 @@ async function open(h: Handle, channel: string, peerId: string, page = false) {
 }
 
 it('introduces authorized peers, exchanges exactly two descriptions, and retires the host sockets', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { id: 'e914219948c672f1d1e1260b4752e95e67396b08c94126c0213ff195eb932532' } });
+  const h = await create({ listener: false, application: { id: 'e914219948c672f1d1e1260b4752e95e67396b08c94126c0213ff195eb932532' } });
   const hints = { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] };
   expect(await apiJson(h, 'PUT', 'peers/bootstrap', hints)).toEqual(hints);
   expect(await apiJson(h, 'GET', 'peers/bootstrap')).toEqual(hints);
@@ -69,7 +69,7 @@ it('introduces authorized peers, exchanges exactly two descriptions, and retires
 });
 
 it('requires the dedicated relay route and protocol for binary peer transport', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   expect((await api(h, 'GET', 'peers/socket?channel=x&peerId=y', undefined,
     { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.peer.v1' })).status).toBe(404);
   expect((await api(h, 'GET', 'peers/rendezvous?channel=x&peerId=y', undefined,
@@ -77,7 +77,7 @@ it('requires the dedicated relay route and protocol for binary peer transport', 
 });
 
 it('serves current resident introductions in peer HTML without exposing them to display links', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { id: 'b38af2e285ec262a9cfb515291202bac44f6e637403aab77104c5dfac219c722' } });
+  const h = await create({ listener: false, application: { id: 'b38af2e285ec262a9cfb515291202bac44f6e637403aab77104c5dfac219c722' } });
 
   const hints = { version: 2, endpoints: [{ url: 'https://resident.example/introduce' }] };
   await apiJson(h, 'PUT', 'peers/bootstrap', hints);
@@ -96,7 +96,7 @@ it('serves current resident introductions in peer HTML without exposing them to 
 });
 
 it('does not register hosted application devices or sockets for a peer page', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { id: '640f9dd29023c050bdf38a63589f9f26c63a61f91d58afb59f12f96d12756e84' } });
+  const h = await create({ listener: false, application: { id: '640f9dd29023c050bdf38a63589f9f26c63a61f91d58afb59f12f96d12756e84' } });
   const response = await req(`${h.page_url}_tendril/ws`, { headers: { Upgrade: 'websocket' } });
   expect(response.status).toBe(404);
   expect(await inDO(h.id, t => ({ devices: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='devices'"), sockets: t.ctx.getWebSockets().length })))
@@ -104,7 +104,7 @@ it('does not register hosted application devices or sockets for a peer page', as
 });
 
 it('isolates pairs and closes an incomplete rendezvous when either participant leaves', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   const first = await open(h, 'channel', 'first');
   expect((await api(h, 'GET', 'peers/rendezvous?channel=channel&peerId=first', undefined, headers)).status).toBe(409);
   const second = await open(h, 'channel', 'second');
@@ -117,7 +117,7 @@ it('rejects binary frames, oversized SDP and foreign sessions without retaining 
   const bad = [new Uint8Array([0x54, 1, 0, 1]), 'null', 'x'.repeat(LIMITS.messageBytes + 1),
     JSON.stringify({ t: 'description', session: 'retired', description: offer })];
   for (const invalid of bad) {
-    const h = await create({ mode: 'dashboard', listener: false });
+    const h = await create({ listener: false });
     const first = await open(h, 'bounded', 'first'), second = await open(h, 'bounded', 'second');
     await Promise.all([first.connection.ready, second.connection.ready]);
     first.socket.send(invalid);
@@ -130,7 +130,7 @@ it('rejects binary frames, oversized SDP and foreign sessions without retaining 
 
 it('refuses role confusion, premature answers and repeated descriptions', async () => {
   for (const attempt of ['role', 'premature', 'repeat']) {
-    const h = await create({ mode: 'dashboard', listener: false });
+    const h = await create({ listener: false });
     const first = await open(h, 'roles', 'first'), second = await open(h, 'roles', 'second');
     const [a] = await Promise.all([first.connection.ready, second.connection.ready]);
     if (attempt === 'repeat') {
@@ -145,7 +145,7 @@ it('refuses role confusion, premature answers and repeated descriptions', async 
 });
 
 it('rechecks the recipient host credential before forwarding an introduction', async () => {
-  const h = await create({ mode: 'dashboard', listener: false, application: { id: '5e877599b096097b35ad02ff3f399ef0fa00c01d7205c07126d441eb1bd0626f' } });
+  const h = await create({ listener: false, application: { id: '5e877599b096097b35ad02ff3f399ef0fa00c01d7205c07126d441eb1bd0626f' } });
   const page = await open(h, 'access', 'page', true), agent = await open(h, 'access', 'agent');
   await Promise.all([agent.connection.ready, page.connection.ready]);
   await inDO(h.id, t => { t.db.run('DELETE FROM agent_grants'); });
@@ -156,7 +156,7 @@ it('rechecks the recipient host credential before forwarding an introduction', a
 });
 
 it('expires stalled sessions through the Durable Object alarm without client heartbeats', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   const first = await open(h, 'expires', 'first');
   await advance(h.id, LIMITS.lifetimeMs + 1); await runAlarm(h.id);
   expect((await first.closed).code).toBe(1008);
@@ -165,7 +165,7 @@ it('expires stalled sessions through the Durable Object alarm without client hea
 });
 
 it('ignores delayed messages and close events from a retired pair after channel reuse', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   const oldFirst = await open(h, 'reused', 'first'), oldSecond = await open(h, 'reused', 'second');
   const [old] = await Promise.all([oldFirst.connection.ready, oldSecond.connection.ready]);
   let retired!: WebSocket;
@@ -185,7 +185,7 @@ it('ignores delayed messages and close events from a retired pair after channel 
 });
 
 it('bounds authorization work and forwards no pending description after a repeated send', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   const first = await open(h, 'pending', 'first'), second = await open(h, 'pending', 'second');
   const [a] = await Promise.all([first.connection.ready, second.connection.ready]);
   await inDO(h.id, async t => {
@@ -199,7 +199,7 @@ it('bounds authorization work and forwards no pending description after a repeat
 });
 
 it('retires both endpoints when asynchronous host authorization fails', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   const first = await open(h, 'failed-auth', 'first'), second = await open(h, 'failed-auth', 'second');
   const [a] = await Promise.all([first.connection.ready, second.connection.ready]);
   await inDO(h.id, async t => {

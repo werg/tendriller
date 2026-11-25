@@ -15,7 +15,7 @@ async function fixtureSocket(socket: ReturnType<Awaited<ReturnType<typeof create
 }
 
 it('retains bounded socket presence beyond former leases without timers or duplicate SQL writes', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   expect((await peerApi(h, 'discovery/advertise', { advertisement: advertisement() })).status).toBe(409);
   const socket = await subscribe(h, 'peer-a'), observer = await subscribe(h, 'observer');
   try {
@@ -34,7 +34,7 @@ it('retains bounded socket presence beyond former leases without timers or dupli
 });
 
 it('authenticates native TLS protocols and bounds watch capacity by account across credentials', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   expect((await req(h.api + '/peers/discovery/watch?peerId=a', { headers, anonymous: true })).status).toBe(401);
   const first = await req(h.api + '/peers/discovery/watch?peerId=a', { anonymous: true, headers: { ...headers, 'Sec-WebSocket-Protocol': headers['Sec-WebSocket-Protocol'] + ', ' + h.token } });
   expect(first.status).toBe(101); first.webSocket!.accept(); const sockets = [first.webSocket!];
@@ -47,7 +47,7 @@ it('authenticates native TLS protocols and bounds watch capacity by account acro
 });
 
 it('fences a replaced socket and withdraws on close without deleting the replacement advertisement', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   const old = await subscribe(h, 'peer-a'); await peerApiJson(h, 'discovery/advertise', { advertisement: advertisement() });
   const socket = await subscribe(h, 'peer-a');
   try {

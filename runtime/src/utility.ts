@@ -440,7 +440,8 @@ export function mountUtility(api: RuntimeApi): () => void {
     agentDashboard.href = dashboard; agentList.replaceChildren(); agentEmpty.hidden = agents.length > 0;
     for (const agent of agents) {
       const row = document.createElement("label"), box = document.createElement("input");
-      box.type = "checkbox"; box.value = agent.id; box.checked = agent.granted;
+      // The saved grant is the default, so a stored grant is never mistaken for an unsaved edit.
+      box.type = "checkbox"; box.value = agent.id; box.defaultChecked = box.checked = agent.granted;
       box.addEventListener("change", async () => {
         const want = box.checked; box.disabled = true; showShareStatus("Saving…");
         try {
@@ -448,6 +449,7 @@ export function mountUtility(api: RuntimeApi): () => void {
             headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: agent.id, granted: want }) });
           const data = await res.json().catch(() => null) as { error?: { message?: string } } | null;
           if (!res.ok) throw Error(data?.error?.message || "Could not change access. Try again.");
+          box.defaultChecked = want;
           if (!disposed) showShareStatus(want ? `${agent.name} can now maintain this page.` : `${agent.name} no longer has access.`);
         } catch (err) {
           if (disposed) return;

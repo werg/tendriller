@@ -28,7 +28,7 @@ const applicationId = () => crypto.randomUUID().replaceAll('-', '').repeat(2);
 
 it('shares one durable control root when release bootstrap precedes application configuration', async () => {
   const device = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   const keys = await inDO(h.id, async t => (await Promise.all([
     ensurePeerControlIdentity(t), ensurePeerControlIdentity(t), ensurePeerControlIdentity(t),
   ])).map(identity => identity.publicKey));
@@ -40,7 +40,7 @@ it('shares one durable control root when release bootstrap precedes application 
 
 it('keeps the hosted control key bound once to the owner when supplied among devices', async () => {
   const device = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   const hosted = await inDO(h.id, async t => (await ensurePeerControlIdentity(t)).publicKey);
   const guest = await admitGuest(h);
   const config = configuration([device]);
@@ -181,7 +181,7 @@ it('returns the immutable canonical definition with its signed binding to admitt
 
 it('rejects missing, unknown, malformed and mismatched definition metadata before control or lifetime writes', async () => {
   const a = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   const valid = configuration([a]);
   const { definition: omitted, ...missing } = valid;
   const variants = [missing, { ...valid, definition: { ...definition, unrecognized: true } },
@@ -200,7 +200,7 @@ it('rejects missing, unknown, malformed and mismatched definition metadata befor
 
 it('refuses a retained definition whose contents no longer match the signed descriptor', async () => {
   const a = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   await peerApiJson(h, 'control/configure', configuration([a]));
   await inDO(h.id, t => {
     const current = t.db.get<any>('peer_generation_configuration', null);
@@ -213,7 +213,7 @@ it('refuses a retained definition whose contents no longer match the signed desc
 
 it('rechecks local access after asynchronous definition verification before disclosing its schemas', async () => {
   const a = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   await peerApiJson(h, 'control/configure', configuration([a]));
   await inDO(h.id, async t => {
     const principal = agentPrincipal(t, h), original = t.env.ACCOUNTS;
@@ -236,7 +236,7 @@ it('rechecks local access after asynchronous definition verification before disc
 
 it('selects one racing successor using the shared verifier and stores no application bodies', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity(), c = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   await peerApiJson(h, 'control/configure', configuration([a, b, c]));
   const first = await select(h, a, a, null, 'create');
   expect(first.response.status).toBe(200);
@@ -253,7 +253,7 @@ it('selects one racing successor using the shared verifier and stores no applica
 
 it('separately checks requester recovery, candidate eligibility, and the authenticated account binding', async () => {
   const a = await createPeerIdentity(), writer = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   const config = configuration([a, writer]); config.members[1].grant = grant(writer, { recovery: false, coordinator: false, administrator: false });
   await peerApiJson(h, 'control/configure', config);
   expect((await select(h, writer, a, null, 'unauthorized-recovery')).response.status).toBe(403);
@@ -271,7 +271,7 @@ it('separately checks requester recovery, candidate eligibility, and the authent
 
 it('activates restrictive controls atomically, enforces key rotation, and keeps exact control retries after self-revocation', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   await peerApiJson(h, 'control/configure', configuration([a, b]));
   const initial = await select(h, a, a, null, 'initial');
   const g0 = await initial.response.json() as SignedGeneration;
@@ -334,7 +334,7 @@ it('revokes an inactive enrolled account without granting it new rights or forge
 
 it('fences a missing control identity instead of silently generating a replacement', async () => {
   const a = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   const original = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration([a]));
   await inDO(h.id, t => t.db.run('DELETE FROM participant_records WHERE key=?', 'peer-generation/identity'));
   expect((await peerApi(h, 'control/read')).status).toBe(503);
@@ -344,7 +344,7 @@ it('fences a missing control identity instead of silently generating a replaceme
 
 it('bounds admitted control bodies before reading and releases slots after body failure', async () => {
   const a = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   await peerApiJson(h, 'control/configure', configuration([a]));
   await inDO(h.id, async t => {
     const principal = agentPrincipal(t, h), controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
@@ -397,7 +397,7 @@ it('bounds admitted control bodies before reading and releases slots after body 
 for (const phase of ['initial configuration', 'control update', 'owner control update'] as const) {
   it(`rechecks target admission at the ${phase} commit after signing preparation`, async () => {
     const a = await createPeerIdentity(), b = await createPeerIdentity();
-    const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+    const h = await create({ application: { id: applicationId() }, listener: false });
     const account = await admitGuest(h);
     let action: 'configure' | 'select' | 'administer' = 'configure', body: unknown = { ...configuration([a]),
       members: [{ grant: grant(a) }, { grant: grant(b), accountId: account }] };
@@ -436,7 +436,7 @@ for (const phase of ['initial configuration', 'control update', 'owner control u
 
 it('can revoke an inactive account while retaining its immutable enrollment for exact retries', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   const account = await admitGuest(h);
   await peerApiJson(h, 'control/configure', { ...configuration([a]), members: [{ grant: grant(a) }, { grant: grant(b), accountId: account }] });
   const initial = await select(h, a, a, null, 'initial'), current = await initial.response.json() as SignedGeneration;
@@ -541,7 +541,7 @@ it('requires explicit publisher enrollment and rechecks publication-only account
 
 it('rechecks local token revocation after asynchronous authorization before committing a generation', async () => {
   const a = await createPeerIdentity();
-  const h = await create({ application: { id: applicationId() }, mode: 'dashboard', listener: false });
+  const h = await create({ application: { id: applicationId() }, listener: false });
   const initial = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration([a]));
   const request = await signTransitionRequest({ applicationId: initial.descriptor.payload.applicationId, profile: 'peer-generation-v1',
     policy: 'eligible-members-v1', transitionId: 'revoked-during-commit', expectedGeneration: null,
@@ -593,7 +593,7 @@ it('requires immutable canonical public command/query metadata before publishing
 
 it('retains a verified signed genesis schema as metadata without executing SQL on the control host', async () => {
   const a = await createPeerIdentity(), wrongSigner = await createPeerIdentity(), id = applicationId();
-  const h = await create({ application: { id }, listener: false, mode: 'dashboard' });
+  const h = await create({ application: { id }, listener: false });
   // Public Chronolog encodeChangeProgram(program('CREATE TABLE tasks (id INTEGER PRIMARY KEY)')).
   const program = 'a2000301818200a200782b435245415445205441424c45207461736b732028696420494e5445474552205052494d415259204b4559290180';
   const sqlDefinition: ApplicationDescription = { ...definition, id: 'sql-test', schema: program };

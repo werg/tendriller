@@ -27,7 +27,7 @@ refused without echoing it.
 ```sh
 mkdir my-pages && cd my-pages            # or the extracted first-app kit
 tendril workspace init --service https://YOUR_HOST --owner owner@example.com [--name laptop]
-# or, with a one-time code from Dashboard -> Agents -> Add agent:
+# or, with a one-time code from Dashboard -> Your agents -> Add agent:
 tendril workspace join --service https://YOUR_HOST --code CODE [--name laptop]
 ```
 

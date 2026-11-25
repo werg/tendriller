@@ -107,14 +107,14 @@ test('cancellation and bounded pairing timeout release both physical sockets', a
 });
 
 test('host client opens secure reciprocal lane URLs and preserves credentials in subprotocols only', () => {
-  const calls = [], client = createPeersClient({ base: 'https://host.test/api/t/page', request: async () => {},
+  const calls = [], client = createPeersClient({ base: 'https://host.test/api/agent/pages/page', request: async () => {},
     protocols: ['tendriller.rendezvous.v1', 'private-agent-token'], socket(url, protocols) { calls.push({ url, protocols }); return new Socket(); } });
   const relay = client.relay('join:one', peerId, { remotePeerId });
   try {
     assert.equal(calls.length, 2);
     for (const [index, call] of calls.entries()) {
       const url = new URL(call.url);
-      assert.equal(url.protocol, 'wss:'); assert.equal(url.pathname, '/api/t/page/peers/relay');
+      assert.equal(url.protocol, 'wss:'); assert.equal(url.pathname, '/api/agent/pages/page/peers/relay');
       assert.equal(url.searchParams.get('lane'), index ? 'live' : 'reliable');
       assert.equal(url.searchParams.get('remotePeerId'), remotePeerId);
       assert.deepEqual(call.protocols, [PEER_RELAY_PROTOCOL, 'private-agent-token']);

@@ -1,6 +1,5 @@
 import { parseActivityTicket } from './assistant-activity';
 import { routeAssistant, routeAssistantHttpGateway } from './assistant-gateway';
-import { routeDevicePairingReview } from './device-pairing';
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
 import { servicePage } from "./accounts/ui";
 import { schemaDocument } from "../../contract/index.mjs";
@@ -156,7 +155,6 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return withCors(await api(req, env, url));
   }
 
-  if (path.startsWith('/pairings/')) return routeDevicePairingReview(req, env, url);
 
   if (path.startsWith('/v1/apps/')) return routeAssistantHttpGateway(req, env, url);
   if (path === '/mcp' || path === '/connections' || path.startsWith('/connections/') ||

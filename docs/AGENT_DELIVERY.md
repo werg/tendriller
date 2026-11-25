@@ -28,7 +28,6 @@ alone does not establish it.
    credential; an existing page needs the owner's explicit grant (a per-agent
    checkbox on the dashboard or the page's **Add people & devices → An agent**).
    Browser enrollment and assistant consent remain explicit authority decisions.
-   Browser enrollment and assistant consent remain explicit authority decisions.
    Use their concrete public keys and permission-review forms for those actions.
 5. Perform real shared commands in both directions and verify reopening before
    calling the app complete. Report the running process and saved resume state.

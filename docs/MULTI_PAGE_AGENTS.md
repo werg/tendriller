@@ -45,7 +45,7 @@ agent_join_codes(code_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL,
   next to the protocol name, never in the URL.
 - Scopes per grant: `host:read`, `host:manage`, `participants:connect`,
   `control:write`, `publication:write`, `assistant:manage`,
-  `notifications:send`. (`agents:delegate` is removed: owners grant.)
+  `notifications:send`.
 - Revoking an agent sets `revoked_at`; deleting a grant removes the row. Both
   notify the affected page objects, which close that agent's sockets.
 
@@ -116,7 +116,7 @@ token. `list` results are paged listings.
 
 - `createAgentClient({ service, token })` returns:
   - `pages.list()`, `pages.create(body)`, `self()`;
-  - `page(id)` — the former per-page client (`request`, `peers`, `info`,
+  - `page(id)` — a page client (`request`, `peers`, `info`,
     `service`), based at `/api/agent/pages/<id>`;
   - `hub` — one multiplexed connection with `socket(page, path, protocols)`,
     a WebSocket-compatible object for the existing `openSocket` and `socket`

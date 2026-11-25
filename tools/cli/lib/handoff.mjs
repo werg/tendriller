@@ -50,7 +50,7 @@ function walkSourceFiles(root, current = root, out = []) {
  * Pack non-secret project source files into a deterministic tar.gz handoff archive.
  * Verifies zero private keys, device stores, or agent tokens enter the archive.
  */
-export function exportSourceHandoff(projectDir, outputPath, { nextCommand = 'npm install && npm run init' } = {}) {
+export function exportSourceHandoff(projectDir, outputPath, { nextCommand = 'npm ci, restore .tendriller/ from its private checkpoint, then npm run agent' } = {}) {
   const root = resolve(projectDir);
   if (!existsSync(root) || !statSync(root).isDirectory()) throw fail('handoff_source_missing', `Project directory not found: ${root}`);
   const destination = resolve(outputPath);

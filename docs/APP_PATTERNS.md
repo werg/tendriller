@@ -1,19 +1,19 @@
 # Reuse the application helpers
 
 Import the shared observer from the SDK. Adapt the other UI components from the
-[first-app source archive](/downloads/tendriller-first-app.tgz) beside your authored `page.mjs`:
+[first-app source archive](/downloads/tendriller-first-app.tgz) (kept in the workspace's `shared/` folder) and import them from `pages/<slug>/page.mjs`:
 
 ```js
-import { createOwnerConnection, describeConnectionError } from './connection.mjs';
-import { mountConnectionView } from './connect-view.mjs';
+import { createOwnerConnection, describeConnectionError } from '../../shared/connection.mjs';
+import { mountConnectionView } from '../../shared/connect-view.mjs';
 import { createLiveView } from '@chronolog/peer-session/browser';
-import { createOperationView } from './helpers/operation-view.mjs';
-import { createReviewedInput } from './helpers/reviewed-input.mjs';
+import { createOperationView } from '../../shared/helpers/operation-view.mjs';
+import { createReviewedInput } from '../../shared/helpers/reviewed-input.mjs';
 ```
 
 `createLiveView` is a public SDK composition helper. The other modules are
 executable application source supplied in the first-app archive. The
-starter's `page.mjs` already uses the first two. Its `media/panel.mjs` composes
+starter's `page.mjs` already uses the first two. Its `shared/media/panel.mjs` composes
 reviewed input with camera/file capture, an explicit inference request and a
 declared evidence command. The [capability map](CAPABILITIES.md) points to the
 other supplied modules.
@@ -98,7 +98,7 @@ User-facing copy for the codes an app can meet (developer causes are in
 | network and timeouts | "The connection is slow. Retrying…" |
 
 Large live answers: a reply of several signals (each at most 16 KiB) can be sent
-with the maintained `helpers/signal-request.mjs`, which reserves signed-frame overhead,
+with the maintained `shared/helpers/signal-request.mjs`, which reserves signed-frame overhead,
 bounds replies and retries backpressure. The shared P2P-first transport carries
 them directly where possible; the hosted relay is fallback only. Reassembly binds
 the request recipient and computation generation, not just a bare request ID.
@@ -115,21 +115,21 @@ and desktop before delivery ([acceptance bar](AGENT_DELIVERY.md#the-user-experie
 ## Full-duplex dashboards and data feeds
 
 For dashboards where an agent runs on a cloud server or home server and the user
-opens the page on a phone, tablet or laptop, compose `ui/dashboard.mjs`,
-`helpers/data-feed.mjs`, `ui/chat-session.mjs`, and `helpers/dev-telemetry.mjs`:
+opens the page on a phone, tablet or laptop, compose `shared/ui/dashboard.mjs`,
+`shared/helpers/data-feed.mjs`, `shared/ui/chat-session.mjs`, and `shared/helpers/dev-telemetry.mjs`:
 
 ```js
 // Native agent process (secrets & local API access stay strictly native):
-import { serveDataFeeds } from './helpers/data-feed.mjs';
+import { serveDataFeeds } from '../../shared/helpers/data-feed.mjs';
 const feeds = serveDataFeeds(session, {
   cpu: { pollMs: 5_000, fetch: async () => readHostMetrics() },
   orders: { maxAgeMs: 10_000, fetch: async (query) => fetchPrivateApi(query) },
 });
 
 // Browser page:
-import { useDataFeed } from './helpers/data-feed.mjs';
-import { mountDashboardShell, mountMetricCard, mountFeedbackCard } from './ui/dashboard.mjs';
-import { mountDevTelemetry } from './helpers/dev-telemetry.mjs';
+import { useDataFeed } from '../../shared/helpers/data-feed.mjs';
+import { mountDashboardShell, mountMetricCard, mountFeedbackCard } from '../../shared/ui/dashboard.mjs';
+import { mountDevTelemetry } from '../../shared/helpers/dev-telemetry.mjs';
 
 const shell = mountDashboardShell(document.querySelector('#app'), {
   title: 'Home Server', session,
@@ -148,22 +148,22 @@ const telemetry = mountDevTelemetry({ session, runtime: window.tendril });
 
 `serveDataFeeds` polls only while a peer is connected, skips unchanged snapshots,
 caches in RAM, broadcasts deltas over `session.signals` (`feed/<name>`), and serves
-on-demand or large (>10 KiB, up to 4 MiB) pulls via `helpers/signal-request.mjs`—all
+on-demand or large (>10 KiB, up to 4 MiB) pulls via `shared/helpers/signal-request.mjs`—all
 with **zero durable Chronolog writes**. Reserve Chronolog commands for durable user
 decisions, chat turns, and retained observations.
 
 ## Domain views you can import
 
-The first-app archive includes `ui/patterns.mjs` and a complete, dependency-free
-`ui/showcase.html` / `ui/showcase.mjs` example. Serve the extracted starter over
-local HTTP and open `/ui/showcase.html`; it uses synthetic training episodes to
+The first-app archive includes `shared/ui/patterns.mjs` and a complete, dependency-free
+`shared/ui/showcase.html` / `shared/ui/showcase.mjs` example. Serve the extracted starter over
+local HTTP and open `/shared/ui/showcase.html`; it uses synthetic training episodes to
 show useful actions before long system context, named related links and reviewed
 inline changes. It is a UI specimen, not a connected or persistent application.
 
 ```js
 import {
   mountListDetail, mountInspector, mountComparison, mountInlineReview, mountViewState,
-} from './ui/patterns.mjs';
+} from '../../shared/ui/patterns.mjs';
 ```
 
 | Pattern | Interface | Behavior and application responsibility |
@@ -293,8 +293,8 @@ Call it after opening the session. When adapting `page.mjs`, replace the
 corresponding existing rendering block instead of installing duplicate observers.
 
 ```js
-import { createOwnerConnection, describeConnectionError } from './connection.mjs';
-import { mountConnectionView } from './connect-view.mjs';
+import { createOwnerConnection, describeConnectionError } from '../../shared/connection.mjs';
+import { mountConnectionView } from '../../shared/connect-view.mjs';
 import { createLiveView } from '@chronolog/peer-session/browser';
 
 export function mountNotes(session, root = document) {
@@ -384,7 +384,7 @@ Observe the journal with its original operation identity. The optional
 `session.reapply`:
 
 ```js
-import { createOperationView } from './helpers/operation-view.mjs';
+import { createOperationView } from '../../shared/helpers/operation-view.mjs';
 
 export function watchOperation(session, operationId, output, operation) {
   const view = createOperationView(session, {
@@ -596,12 +596,12 @@ well as the coherent revision; see [guarded transactions](STATE_MODELS.md).
 
 Use `createReviewedInput` to keep asynchronous evidence work attached to the
 candidate and task the person actually selected. The supplied
-`media/panel.mjs` is the complete page integration; [Reviewed AI input](AI_INPUT.md)
+`shared/media/panel.mjs` is the complete page integration; [Reviewed AI input](AI_INPUT.md)
 provides camera/file, inference peer and provider setup. Its imports include:
 
 ```js
-import { createReviewedInput } from './helpers/reviewed-input.mjs';
-import { createPeerInferenceClient } from './media/inference-client.mjs';
+import { createReviewedInput } from '../../shared/helpers/reviewed-input.mjs';
+import { createPeerInferenceClient } from '../../shared/media/inference-client.mjs';
 
 const inference = createPeerInferenceClient({
   session,
@@ -664,7 +664,7 @@ const input = {
   capturedRevision: JSON.stringify(candidate.context.revision),
 };
 // Persist this complete input, operationId and basedOn in the app's pending
-// reference before dispatch; media/panel.mjs and page.mjs provide that path.
+// reference before dispatch; shared/media/panel.mjs and page.mjs provide that path.
 const operation = await session.command('addEvidence', input, {
   operationId,
   basedOn: candidate.context.revision,

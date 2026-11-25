@@ -15,7 +15,7 @@ hosted page with these connections working. The
 files named below; their paths are relative to its extracted directory. This
 guide does not require a second HTTP backend, database, upload service or SSE
 channel. [The capability map](CAPABILITIES.md) identifies the existing pieces.
-The shipped `media/panel.mjs` composes the controls described here; `page.mjs`
+The shipped `shared/media/panel.mjs` composes the controls described here; `page.mjs`
 owns the shared session, pending operation reference and retry controls.
 
 ## 1. Choose and review the actual evidence
@@ -55,7 +55,7 @@ will receive those bytes before they choose that action. Authorizing a camera or
 enrolling an application device does not authorize a provider request.
 The shipped panel explicitly names **OpenAI**, matching the bundled default
 provider. Before using a custom provider, update the paragraph and sharing
-checkbox in `index.html` and the analysis-consent error in `media/panel.mjs` to
+checkbox in `index.html` and the analysis-consent error in `shared/media/panel.mjs` to
 identify that actual recipient, then rebuild and publish those changes.
 
 There are two separate approvals in this example:
@@ -85,7 +85,7 @@ node shared/media/inference-peer.mjs \
   --max-requests 1
 ```
 
-The bundled `media/provider-openai.mjs` reads `OPENAI_API_KEY` only in this native
+The bundled `shared/media/provider-openai.mjs` reads `OPENAI_API_KEY` only in this native
 process. For a manual Bash session, this reads it without placing the value in
 the command history or echoing it:
 
@@ -160,11 +160,11 @@ for another attempt. A deliberate new Analyze action is a new request.
 
 ### The actual browser adapter
 
-`media/inference-client.mjs` is ordinary starter source, not a new SDK export.
+`shared/media/inference-client.mjs` is ordinary starter source, not a new SDK export.
 Inside the connected page, compose it with the existing session:
 
 ```js
-import { createPeerInferenceClient } from './media/inference-client.mjs';
+import { createPeerInferenceClient } from '../../shared/media/inference-client.mjs';
 
 const inference = createPeerInferenceClient({
   session,
@@ -208,11 +208,11 @@ must be edited before saving, rather than silently truncated. **Discard candidat
 / cancel analysis** is available before a prepared submission becomes pending.
 After the operation resolves, **Start another observation** opens a fresh review.
 
-`helpers/reviewed-input.mjs` exports `createReviewedInput`. It separates local
+`shared/helpers/reviewed-input.mjs` exports `createReviewedInput`. It separates local
 capture, optional analysis, explicit editing and durable commit:
 
 ```js
-import { createReviewedInput } from './helpers/reviewed-input.mjs';
+import { createReviewedInput } from '../../shared/helpers/reviewed-input.mjs';
 
 const review = createReviewedInput({
   analyze: input => inference.analyze(input),
@@ -231,7 +231,7 @@ await prepareEvidence({ candidate: review.snapshot.candidate, reviewed,
 await review.commit({ operationId, signal });
 ```
 
-These are the integration points used by `media/panel.mjs`: `blob` is the chosen
+These are the integration points used by `shared/media/panel.mjs`: `blob` is the chosen
 file/frame, `context` is the earlier coherent query context, and the rendering
 callback owns the visible review controls. The parent page passes its real
 `prepareEvidence` and `submitEvidence` functions as `prepareCommit` and `commit`;
@@ -288,13 +288,13 @@ reconstruct the command from the current form.
 
 ## Camera, sensor tracking and voice are distinct pieces
 
-`media/camera.mjs` acquires the camera with native `getUserMedia`, owns its preview
+`shared/media/camera.mjs` acquires the camera with native `getUserMedia`, owns its preview
 element, extracts a frame with canvas, and releases its resources. The runtime's
 `tendril.sensors.status/on/stopAll` observes tracked active/pending use and supplies
 the page-wide Stop all boundary. It does not acquire or select a photo.
 
 ```js
-import { createCameraController } from './media/camera.mjs';
+import { createCameraController } from '../../shared/media/camera.mjs';
 
 const camera = createCameraController({ runtime: tendril, video, onStatus });
 await camera.start(trustedClickEvent);
@@ -308,13 +308,13 @@ sensor cancellation boundary. A browser-owned permission dialog may remain
 visible after cancellation, but a late stream is stopped. The default source
 supports no automatic capture loop. Dispose the controller on teardown.
 
-`media/voice.mjs` wraps the existing optional `createVoice` lifecycle. By default
+`shared/media/voice.mjs` wraps the existing optional `createVoice` lifecycle. By default
 it loads `import(tendril.assetUrl('voice.mjs'))`, preserving the selected runtime.
 A bundled app can supply `loadVoice: () => import('@tendriller/runtime/voice')`.
 `@tendriller/core/voice` supplies types, not this runtime constructor.
 
 ```js
-import { createVoiceController } from './media/voice.mjs';
+import { createVoiceController } from '../../shared/media/voice.mjs';
 
 const voice = createVoiceController({
   runtime: tendril,
@@ -390,7 +390,7 @@ infer({ bytes, mediaType, prompt, context, source, signal })
 
 The module is intentionally trusted native code selected by the operator. Keep
 credentials in its native closure, respect cancellation, and return suggestions
-only. `media/inference-service.mjs` composes that callback as
+only. `shared/media/inference-service.mjs` composes that callback as
 `servePeerInference({session, allowedDevices, maxRequests, infer, signal})`; the
 returned object exposes `done`, `snapshot()` and `close()`. It reads content and
 signals from the already opened session. It never starts an HTTP data service.

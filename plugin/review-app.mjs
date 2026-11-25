@@ -1,5 +1,5 @@
 // Run this public-package consumer from its own private working directory.
-import { createHash, generateKeyPairSync, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createAgentClient, registerAgent } from '@tendriller/core';
@@ -26,13 +26,22 @@ async function save(name, value) {
   await rename(temporary, resolve(directory, name));
   return value;
 }
+// One agent signing key: registered with the host and signing every page device.
+async function agentSigner({ create = false } = {}) {
+  const identity = await openNativeDevice({ path: resolve(directory, 'identity.sqlite'), ...(create ? { create: true } : {}) });
+  try { return identity.identity; } finally { await identity.close(); }
+}
+const openPageDevice = async (signer, create = false) =>
+  openNativeDevice({ path: resolve(directory, 'device.sqlite'), managedSigner: signer, ...(create ? { create: true } : {}) });
 const mode = process.argv[2];
 if (mode === 'create') {
   const access = JSON.parse(await readFile(process.argv[3], 'utf8'));
   // One synthetic agent owns this fixture page; the owner claims both by signing in.
-  const agent = await read('agent.json') ?? await save('agent.json', await registerAgent(access.origin, {
+  const registered = await read('agent.json');
+  const signer = await agentSigner({ create: !registered });
+  const agent = registered ?? await save('agent.json', await registerAgent(access.origin, {
     owner: `${access.accountId}@example.invalid`, name: 'review-fixture',
-    publicKey: generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x }));
+    publicKey: Buffer.from(signer.publicKey, 'hex').toString('base64url') }));
   const handle = await read('handle.json') ?? await save('handle.json', { ...await createAgentClient({ service: access.origin, token: agent.token })
     .pages.create({ name: process.argv[4] ?? 'Review checklist' }), service: access.origin, token: agent.token });
   console.log(JSON.stringify({ pageUrl: handle.page_url }));
@@ -58,9 +67,10 @@ if (mode === 'init' && existing) {
   process.exit(0);
 }
 let device, session, supervisor;
+const signer = await agentSigner();
 try {
   if (mode === 'init') {
-    device = await openNativeDevice({ path: resolve(directory, 'device.sqlite'), create: true });
+    device = await openPageDevice(signer, true);
     const initial = await read('initial.json') ?? await save('initial.json', {
       historyId: `review-${randomUUID()}`, epochKey: randomBytes(32).toString('base64'),
     });
@@ -88,7 +98,7 @@ try {
       openOwner: async () => {
         const authority = await host.peers.application();
         await verifyAuthorityBundle(authority, await read('descriptor.json'));
-        device = await openNativeDevice({ path: resolve(directory, 'device.sqlite') });
+        device = await openPageDevice(signer);
         session = await openNativeApplication({ device, definition, authority });
         const controlHost = { exchange: (message, options) => host.peers.exchange(message, options) };
         const control = session.connectControlParticipant(controlHost);

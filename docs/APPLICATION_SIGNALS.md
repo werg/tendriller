@@ -107,7 +107,7 @@ A resolved `send` means the signal was accepted by a route (or echoed to local
 views with `localEcho`), not that a particular peer received it. Right after
 connecting, the answering peer may not be connected yet; a request sent then is
 only echoed locally. For on-demand answers use the starter's
-`helpers/signal-request.mjs`: it waits until the answering peer is in
+`shared/helpers/signal-request.mjs`: it waits until the answering peer is in
 `participation.status.connectedPeers`, re-sends the same request ID until the
 complete reply arrives, and splits and reassembles bounded replies larger than one
 16 KiB signal. While new pieces arrive, retries wait. Subscribe to reply pieces with `mode: 'all'`; `'latest'` keeps only

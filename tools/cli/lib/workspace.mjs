@@ -134,7 +134,7 @@ export async function initWorkspace(root, { service, owner, name, kit, signal } 
   if (!existsSync(workspacePaths(root).credential)) requireCreationReady(await describeReadiness(origin, { signal }), { service: origin });
   return enroll(root, { service: origin, name, kit, signal }, (origin, body, options) => registerAgent(origin, { owner, ...body }, options));
 }
-/** Join the inviting account with a one-time code from Dashboard -> Agents -> Add agent. */
+/** Join the inviting account with a one-time code from Dashboard -> Your agents -> Add agent. */
 export async function joinWorkspace(root, { service, code, name, kit, signal } = {}) {
   if (typeof code !== 'string' || !code.trim()) throw failure('invalid_join_code', 'workspace join requires --code from the owner dashboard', 64);
   return enroll(root, { service, name, kit, signal }, (origin, body, options) => joinAgent(origin, { code: code.trim(), ...body }, options));

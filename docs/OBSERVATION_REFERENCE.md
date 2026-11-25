@@ -1,6 +1,6 @@
 # Requested observation reference
 
-The optional [observation example source](https://github.com/werg/tendriller/tree/master/docs/tutorial/observation) connects a visible browser request card to a native participant using the existing public Chronolog session. It includes a deterministic simulated location source, a standard `navigator.geolocation.watchPosition` adapter, a review interface, and a durable pending-operation journal. It adds no Tendriller host endpoint and is excluded from the enumerated first-app archive.
+The optional [observation example source](https://github.com/werg/tendriller/tree/master/docs/tutorial/shared/observation) connects a visible browser request card to a native participant using the existing public Chronolog session. It includes a deterministic simulated location source, a standard `navigator.geolocation.watchPosition` adapter, a review interface, and a durable pending-operation journal. It adds no Tendriller host endpoint and is excluded from the enumerated first-app archive.
 
 Use [Sensors](SENSORS.md) for capability inspection and cooperative resource tracking, [Application signals](APPLICATION_SIGNALS.md) for disposable traffic, and [Session bootstrap](SESSION_BOOTSTRAP.md) for a real enrolled application. This example is an application-specific convention, not a mandatory sensor protocol.
 

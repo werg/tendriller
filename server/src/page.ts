@@ -204,7 +204,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (sub === "info" && m === "GET") {
     const v = servedVersion(t);
-    return json({ application: selectedApplication(t), id: t.tid, mode: t.db.get("mode", "interactive"), version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
+    return json({ application: selectedApplication(t), id: t.tid, version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
   }
 
   if (sub === "share-target" && m === "POST") {

@@ -313,22 +313,14 @@ export async function listenLocalIpc(root, onConnection, { preferredTransport = 
 }
 
 /**
- * Connect to an active local IPC endpoint discovered from `endpoint.json` (or legacy `owner.sock`).
+ * Connect to the active local IPC endpoint recorded in `endpoint.json`.
  */
 export async function connectLocalIpc(root) {
   const canonical = await ensurePrivateDirectory(root, false);
   const descriptor = await readPrivateJson(canonical, 'endpoint.json');
-  if (descriptor) {
-    const socket = descriptor.transport === 'loopback-tcp'
-      ? createConnection({ host: '127.0.0.1', port: descriptor.port })
-      : createConnection(descriptor.address);
-    return { socket, descriptor };
-  }
-  if (!isWindows()) {
-    const address = resolveUnixSocketPath(canonical);
-    const socket = createConnection(address);
-    return { socket, descriptor: { version: 1, transport: 'unix-socket', address } };
-  }
-  const address = resolveWindowsPipePath(canonical);
-  return { socket: createConnection(address), descriptor: { version: 1, transport: 'windows-named-pipe', address } };
+  if (!descriptor) throw fail('OWNER_UNREACHABLE', 'No local IPC endpoint is recorded; start the agent program first.');
+  const socket = descriptor.transport === 'loopback-tcp'
+    ? createConnection({ host: '127.0.0.1', port: descriptor.port })
+    : createConnection(descriptor.address);
+  return { socket, descriptor };
 }

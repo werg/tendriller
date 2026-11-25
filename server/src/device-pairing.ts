@@ -139,7 +139,6 @@ async function status(t: Tendril, record: PairingRecord, authority: PeerAuthorit
       !t.db.one('SELECT 1 FROM guest_accounts WHERE account_id=? AND approved=1', c.accountId)) state = 'revoked';
   }
   return { pairingId: c.pairingId, requestId: c.requestId, state, challenge: c, expiresAt: c.expiresAt,
-    reviewUrl: `${c.serviceOrigin}/pairings/${t.tid}/${c.pairingId}`,
     nextAction: state === 'pending' && !record.prepared ? 'Keep the authorized native participant running to prepare the exact signed proposal; approval is automatic.' : nextActions[state],
     ...(record.preparedDigest ? { preparedDigest: record.preparedDigest } : {}),
     ...(generation ? { generation } : {}), ...(native && record.prepared ? { prepared: record.prepared } : {}) };
@@ -390,43 +389,4 @@ export async function handleDevicePairing(t: Tendril, req: Request, url: URL, pr
       await fresh(t, principal); return json({ pairings });
     });
   } finally { pending.set(t, (pending.get(t) ?? 1) - 1); }
-}
-
-/** Legacy review links (from older app kits) only return the browser to its page. */
-export async function routeDevicePairingReview(req: Request, env: Env, url: URL): Promise<Response> {
-  const match = /^\/pairings\/([a-z2-7]{12})\/([0-9a-f]{64})$/.exec(url.pathname);
-  if (!match) throw new HttpError(404, 'not_found');
-  if (req.method !== 'GET') throw new HttpError(410, 'pairing_review_removed', 'Browser access is approved automatically; there is nothing to review.');
-  const headers = new Headers({ 'x-tendril-id': match[1], 'x-pairing-id': match[2] });
-  // The page that asked may name where to continue. The Durable Object accepts
-  // it only on that request's exact page origin.
-  const returnTo = url.searchParams.get('return_to');
-  if (returnTo !== null) {
-    if ([...url.searchParams.keys()].length !== 1 || returnTo.length > 2048) throw new HttpError(400, 'invalid_pairing_review');
-    headers.set('x-review-return', returnTo);
-  } else if (url.search) throw new HttpError(400, 'invalid_pairing_review');
-  return env.TENDRIL.get(env.TENDRIL.idFromName(match[1])).fetch(new Request('https://tendril.internal/pairing-review', {
-    method: 'GET', headers, signal: req.signal, redirect: 'manual',
-  }));
-}
-/**
- * Browser enrollment has no manual review step: the server approves a verified
- * member-only grant when the native participant stages it. Older app kits may
- * still send the browser here; return it to the page that asked.
- */
-export async function reviewDevicePairing(t: Tendril, req: Request): Promise<Response> {
-  if (req.method !== 'GET') throw new HttpError(410, 'pairing_review_removed', 'Browser access is approved automatically; there is nothing to review.');
-  const record = await verified(t, pairingId(req.headers.get('x-pairing-id')));
-  const target = returnTarget(req, record.challenge) ?? new URL(record.challenge.pageOrigin);
-  return new Response(null, { status: 303, headers: { Location: target.href, 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin' } });
-}
-/** Only the exact page origin that created this request may receive the browser back. */
-function returnTarget(req: Request, c: DevicePairingChallenge): URL | null {
-  const raw = req.headers.get('x-review-return');
-  if (raw === null) return null;
-  let target: URL;
-  try { target = new URL(raw); } catch { throw new HttpError(400, 'invalid_pairing_review', 'The return address must be this page.'); }
-  if (target.protocol !== new URL(c.pageOrigin).protocol || target.origin !== c.pageOrigin || target.username || target.password || target.href.length > 2048)
-    throw new HttpError(400, 'invalid_pairing_review', 'The return address must be the page that requested this device.');
-  return target;
 }

@@ -15,10 +15,6 @@ export function assertPairingContext(status, { applicationId, serviceOrigin, pag
       status.expiresAt !== c.expiresAt || !Number.isSafeInteger(c.expiresAt) ||
       c.rights?.reader !== true || typeof c.rights.writer !== 'boolean')
     throw fail('PAIRING_CONTEXT_MISMATCH', 'The pairing response does not belong to this exact retained application and service.');
-  const review = new URL(status.reviewUrl);
-  if (review.origin !== serviceOrigin || review.username || review.password || review.search || review.hash ||
-      !new RegExp(`^/pairings/[a-z2-7]{12}/${status.pairingId}$`).test(review.pathname))
-    throw fail('PAIRING_CONTEXT_MISMATCH', 'The pairing review must stay on this service origin.');
   return status;
 }
 
