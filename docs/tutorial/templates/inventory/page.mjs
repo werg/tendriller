@@ -127,7 +127,12 @@ $('#transfer-form').addEventListener('submit', event => {
     retain(intent);
     const handle = await session.command(intent.command, intent.input, { operationId: intent.id, basedOn: intent.basedOn });
     // Disconnected: the signed transfer is saved locally; its guarded outcome arrives later.
-    if (!submission.snapshot.connected) { showState(await handle.get()); return; }
+    if (!submission.snapshot.connected) {
+      showState(await handle.get());
+      // Follow it: the guarded outcome replaces the saved state once a peer applies it.
+      void handle.applied().then(state => { if ($('#op-id').value.trim() === intent.id) { showState(state); return liveView.refresh(); } }).catch(() => {});
+      return;
+    }
     showState(await handle.applied({ signal: AbortSignal.timeout(15_000) })); await liveView.refresh();
   });
 });
