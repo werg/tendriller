@@ -118,7 +118,7 @@ window.prepareAcceptanceSession = options => preparation ??= (async () => {
   window.inspectAcceptanceState = () => {
     const state = session?.status, text = el('status').textContent;
     return { stages: stages.slice(), phase: state?.phase ?? null, database: state?.database ?? null, canAuthor: state?.canAuthor ?? null,
-      viewReads: liveView?.reads ?? 0, connectedPeers: state?.connectedPeers ?? null, closed: session?.signal.aborted ?? null,
+      viewReads: liveView?.reads ?? 0, duplicateViewReads: liveView?.duplicateReads ?? 0, connectedPeers: state?.connectedPeers ?? null, closed: session?.signal.aborted ?? null,
       display: text === 'Saving…' ? 'saving' : text.startsWith('Applied here') ? 'applied'
         : text.startsWith('Shared with') ? 'shared' : text === 'Ready' ? 'ready'
           : text.startsWith('Could not complete') ? 'failed' : 'other' };
