@@ -186,3 +186,38 @@ test('agent run serves an initialized page through one attach socket; CLI comman
   assert(reports.some(value => value.state === 'closed' && value.page === PAGE));
   assert(reports.some(value => value.hub === 'reconnecting'), 'a refused hub stays retrying without stopping the pages');
 });
+
+test('account-linked MCP route: workspace key prints register_agent arguments and adopt retains only a verified credential', { timeout: 30_000 }, async t => {
+  const { mkdtemp: temp, writeFile: write, rm: remove, readFile: read } = await import('node:fs/promises');
+  const { tmpdir: tmp } = await import('node:os');
+  const { join: joinPath } = await import('node:path');
+  const { createServer: serve } = await import('node:http');
+  const { workspaceKey, adoptWorkspace } = await import('../lib/workspace.mjs');
+  const dir = await temp(joinPath(tmp(), 'ws-adopt-'));
+  t.after(() => remove(dir, { recursive: true, force: true }));
+  const token = 'ta_' + 'd'.repeat(32), seen = [];
+  const server = serve((request, response) => {
+    seen.push([request.url, request.headers.authorization]);
+    response.setHeader('Content-Type', 'application/json');
+    if (request.url === '/api/service') return response.end(JSON.stringify({ contract: 3, core_release: 'test', limits: {} }));
+    if (request.url === '/api/agent' && request.headers.authorization === 'Bearer ' + token)
+      return response.end(JSON.stringify({ id: 'ag_' + 'e'.repeat(26), name: 'assistant', account_state: 'claimed', grants: 0 }));
+    response.statusCode = 401; response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'No' } }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const service = `http://127.0.0.1:${server.address().port}`;
+  const key = await workspaceKey(dir, { service, name: 'assistant' });
+  assert.match(key.register_agent.publicKey, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(key.register_agent.name, 'assistant');
+  assert.deepEqual((await workspaceKey(dir, { service, name: 'assistant' })).register_agent, key.register_agent, 'the key is created once');
+  await write(joinPath(dir, 'bad.json'), JSON.stringify({ structuredContent: { id: 'ag_' + 'e'.repeat(26), name: 'assistant', token: 'ta_' + 'f'.repeat(32) } }));
+  await assert.rejects(adoptWorkspace(dir, { service, credential: 'bad.json' }), { status: 401 });
+  await assert.rejects(read(joinPath(dir, 'tendriller.json')), { code: 'ENOENT' });
+  await write(joinPath(dir, 'result.json'), JSON.stringify({ structuredContent: { id: 'ag_' + 'e'.repeat(26), name: 'assistant', token } }));
+  const adopted = await adoptWorkspace(dir, { service, credential: 'result.json' });
+  assert.equal(adopted.agent.id, 'ag_' + 'e'.repeat(26));
+  assert.equal(JSON.parse(await read(joinPath(dir, '.tendriller/agent/credential.json'), 'utf8')).token, token);
+  assert.equal(JSON.parse(await read(joinPath(dir, 'tendriller.json'), 'utf8')).agent.name, 'assistant');
+  assert(seen.some(([url, auth]) => url === '/api/agent' && auth === 'Bearer ' + token), 'the token was verified before retention');
+});

@@ -7,7 +7,7 @@ import { describeReadiness, describeService } from '@tendriller/core';
 import { probeCapabilities } from '@tendriller/core/probe';
 import { serveStdioMcp } from './mcp-stdio.mjs';
 import { exportSourceHandoff, exportNativeCheckpoint, restoreNativeCheckpoint } from './handoff.mjs';
-import { describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace } from './workspace.mjs';
+import { adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, workspaceKey } from './workspace.mjs';
 import { attachPage, runAgent } from './agent.mjs';
 
 export const usage = `Usage: tendril <command> [options]
@@ -23,6 +23,8 @@ Start with a service origin (no workspace required):
 Workspace (one agent credential and signing key for many pages):
   workspace init --service URL --owner VERIFIED_EMAIL [--name AGENT]   Register a new agent in this empty folder
   workspace join --service URL --code CODE [--name AGENT]              Join an account with a dashboard code
+  workspace key --service URL [--name AGENT]                           Print register_agent arguments (account-linked MCP)
+  workspace adopt --service URL --credential FILE                      Retain the saved register_agent result
   page new <slug> [--name TITLE]        Create a page (granted to this agent) and its pages/<slug>/ folder
   page grant <slug> <page-id>           Register a page the owner granted to this agent
   page list                             Granted and registered pages
@@ -69,7 +71,7 @@ const flagsByCommand = {
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['device', 'secret-env', 'project'],
   readiness: ['server'], service: ['server'],
-  workspace: ['service', 'owner', 'name', 'code', 'kit'], page: ['name'], agent: [], 'mcp-stdio': [],
+  workspace: ['service', 'owner', 'name', 'code', 'kit', 'credential'], page: ['name'], agent: [], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
 };
@@ -120,7 +122,13 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
       if (!flags.service) throw invalid('workspace join requires --service with the inviting service origin');
       return joinWorkspace(root, { service: publicServiceOrigin(flags.service), code: flags.code, name: flags.name, kit: flags.kit, signal });
     }
-    throw invalid('Use workspace init or workspace join');
+    if (args[0] === 'key' || args[0] === 'adopt') {
+      if (!flags.service) throw invalid(`workspace ${args[0]} requires --service with the account-linked connector's service origin`);
+      const service = publicServiceOrigin(flags.service);
+      return args[0] === 'key' ? workspaceKey(root, { service, name: flags.name })
+        : adoptWorkspace(root, { service, credential: flags.credential, kit: flags.kit, signal });
+    }
+    throw invalid('Use workspace init, join, key or adopt');
   }
   const workspace = await openWorkspace({ root: workspaceDir ?? findWorkspace() });
   if (command === 'status') return describeWorkspace(workspace, { signal });

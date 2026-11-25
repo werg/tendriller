@@ -143,6 +143,34 @@ export async function joinWorkspace(root, { service, code, name, kit, signal } =
   return enroll(root, { service, name, kit, signal }, (origin, body, options) => joinAgent(origin, { code: code.trim(), ...body }, options));
 }
 
+/**
+ * The account-linked MCP route: create the shared key and print the public
+ * register_agent arguments. Nothing is sent; the key is retained for adoptWorkspace.
+ */
+export async function workspaceKey(root, { service, name } = {}) {
+  const origin = requireServiceOrigin(service), paths = workspacePaths(root);
+  await requireEmptyWorkspace(root);
+  if (existsSync(paths.credential)) throw failure('agent_credential_exists', `${paths.credential} already exists. Resume with tendril workspace adopt or restore tendriller.json.`);
+  const signer = await openSharedSigner(paths.identity, { create: !existsSync(paths.identity) });
+  return { service: origin, register_agent: { name: agentName(name), publicKey: publicKeyBase64url(signer.publicKey) },
+    next: 'Call register_agent through the account-linked connector for this service with exactly these arguments, save its result privately, then run tendril workspace adopt --service ORIGIN --credential FILE.' };
+}
+
+/** Retain the agent credential an account-linked register_agent call returned for this workspace's key. */
+export async function adoptWorkspace(root, { service, credential: file, kit, signal } = {}) {
+  if (typeof file !== 'string' || !file) throw failure('invalid_credential_file', 'workspace adopt requires --credential FILE with the saved register_agent result', 64);
+  const paths = workspacePaths(root);
+  if (!existsSync(paths.identity)) throw failure('agent_signer_missing', 'Run tendril workspace key first; the registered public key must be this workspace key.', 64);
+  const result = await readJson(resolve(root, file));
+  const value = result?.structuredContent ?? result;
+  if (!/^ag_[a-z2-7]{26}$/u.test(value?.id ?? '') || !AGENT_TOKEN.test(value?.token ?? '') || typeof value?.name !== 'string')
+    throw failure('invalid_agent_credential', 'The file does not hold a register_agent result {id, name, token}.', 64);
+  const origin = requireServiceOrigin(service);
+  // The token is checked against this service before the workspace retains it.
+  await createAgentClient({ service: origin, token: value.token }).self({ signal });
+  return enroll(root, { service: origin, name: value.name, kit, signal }, async () => value);
+}
+
 export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, WebSocket } = {}) {
   if (!root) throw failure('workspace_required', 'No tendriller.json found here or in a parent folder. Run tendril workspace init --service ORIGIN --owner EMAIL in an empty folder, or cd into the workspace.', 64);
   const paths = workspacePaths(root);

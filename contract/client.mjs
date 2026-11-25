@@ -79,6 +79,9 @@ export function createAgentClient({ service, token }, { fetch: fetcher = globalT
     };
     // A raw authenticated transport for helpers that take a fetch (pairing); confined to this page.
     const pageFetch = (url, init = {}) => {
+      // A Request would carry its own method, headers and body; helpers pass a URL and init.
+      if (typeof url !== 'string' && !(url instanceof URL))
+        return Promise.reject(new ApiError(400, { code: 'invalid_page_route', message: 'Pass the page transport a URL and init.' }));
       const target = new URL(url);
       if (target.origin !== origin || !(target.pathname === new URL(base).pathname || target.pathname.startsWith(new URL(base).pathname + '/')))
         return Promise.reject(new ApiError(400, { code: 'invalid_page_route', message: 'The page transport only reaches this page.' }));
