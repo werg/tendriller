@@ -438,6 +438,19 @@ export class Tendril extends DurableObject<Env> {
 
   private async handleClaim(req: Request, url: URL): Promise<Response> {
     if (this.db.get<boolean>("disabled", false)) throw new HttpError(403, "disabled", "This tendril is unavailable");
+    if (url.pathname === "/claim/agent-owner" && req.method === "POST") {
+      // Internal only: an agent this page's creator grant names was just claimed by
+      // signing in to another of its pages. The ordinary owner claim still checks the
+      // intended owner email against the same signed-in identities.
+      const agentId = req.headers.get(AGENT_HEADER) ?? "";
+      const b = await readJson(req, 8192);
+      const creator = this.db.one<{ granted_by: string }>("SELECT granted_by FROM agent_grants WHERE agent_id = ?", agentId);
+      if (creator?.granted_by !== "creator" || typeof b.account_id !== "string" || !Array.isArray(b.identities)) throw new HttpError(403, "forbidden");
+      if (this.db.get<string | null>("owner_account", null)) return json({ role: "owner", claimed: false });
+      const claim = this.ownerClaimTail.then(() => this.claimOwner(b.account_id as string, b.identities as unknown[]));
+      this.ownerClaimTail = claim.then(() => undefined, () => undefined);
+      return claim;
+    }
     const key = req.headers.get("x-tendril-key") ?? "";
     const link = await this.linkForKey(key);
     if (!link) throw new HttpError(404, "not_found", "Unknown or expired link");
@@ -552,7 +565,7 @@ export class Tendril extends DurableObject<Env> {
       }
     }
     await adoptPreparedAssistant(this, accountId);
-    await claimCreatorAgents(this.env, this.tid, accountId);
+    await claimCreatorAgents(this.env, this.tid, accountId, identities);
     notifySetupChanged(this);
     const releasedAdmission = await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
       .fetch(new Request("https://admission.internal/release", { method: "POST", headers: { "x-tendril-id": this.tid } }));

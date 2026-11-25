@@ -11,7 +11,7 @@ page. See [multi-page agents](MULTI_PAGE_AGENTS.md) for the design.
 
 | Route | Who | Result |
 | --- | --- | --- |
-| `tendril workspace init --service ORIGIN --owner EMAIL` (`POST /api/agents {owner, name, publicKey}`) | An agent that knows the owner's verified email | An unclaimed agent and its token. The owner claims it by signing in to any page it created. |
+| `tendril workspace init --service ORIGIN --owner EMAIL` (`POST /api/agents {owner, name, publicKey}`) | An agent that knows the owner's verified email | An unclaimed agent and its token. The owner claims it, and every page it created, by signing in to any one of them. |
 | **Dashboard → Your agents → Add agent**, then `tendril workspace join --service ORIGIN --code CODE` (`POST /api/agents/join {code, name, publicKey}`) | A signed-in owner invites a new agent | An agent under that account. The code is single use, valid ten minutes, and the dashboard shows a paste-ready invitation containing it. Treat it as a credential. |
 | MCP `register_agent {name, publicKey}` with `tendrils:create`, then `tendril workspace adopt` | An OAuth-linked assistant | An agent under the linked account. Calling it again with the same name rotates the token and key. |
 

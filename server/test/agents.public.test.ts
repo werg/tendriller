@@ -40,7 +40,7 @@ async function hub(token: string) {
   };
 }
 
-it('creates an unclaimed agent, lists only its granted pages and claims it with the owner’s first page sign-in', async () => {
+it('creates an unclaimed agent, lists only its granted pages and claims it and all its pages with the owner’s first page sign-in', async () => {
   const email = `agent-owner-${crypto.randomUUID()}@example.com`;
   const bad = await req('/api/agents', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': randomTestIp() },
     body: JSON.stringify({ owner: email, name: 'x', publicKey: 'not a key' }) });
@@ -70,9 +70,31 @@ it('creates an unclaimed agent, lists only its granted pages and claims it with 
   expect((await agentReq(stranger.token, 'GET', `/api/agent/pages/${first.id}/setup/watch`, undefined,
     { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': SETUP_WATCH_PROTOCOL })).status).toBe(404);
 
+  // Pages of another agent for the same email, and of an agent for another email, stay unclaimed.
+  const strangerPage = await createPage(stranger, { name: 'Stranger' });
+  const elsewhere = await createAgent(`agent-other-${crypto.randomUUID()}@example.com`, 'elsewhere');
+  const elsewherePage = await createPage(elsewhere, { name: 'Elsewhere' });
+
   const account = crypto.randomUUID();
   await env.ACCOUNTS.prepare('INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)').bind(account, Date.now(), email).run();
   await signInAsOwner(first, account, email);
+  // Signing in to one page claims every other page this agent created for the owner.
+  for (const page of [first, second]) {
+    expect(await env.ACCOUNTS.prepare('SELECT owner_account, claimed_at IS NOT NULL AS claimed FROM tendrils WHERE id=?').bind(page.id).first())
+      .toEqual({ owner_account: account, claimed: 1 });
+    expect(await inDO(page.id, t => [t.db.get('owner_account', null), typeof t.db.get('claimed_at', null)])).toEqual([account, 'number']);
+  }
+  const listedClaimed = await (await agentReq(agent.token, 'GET', '/api/agent/pages')).json() as { pages: any[] };
+  expect(listedClaimed.pages.map(page => page.claimed)).toEqual([true, true]);
+  for (const page of [strangerPage, elsewherePage]) {
+    expect(await env.ACCOUNTS.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(page.id).first()).toEqual({ owner_account: null });
+    expect(await inDO(page.id, t => t.db.get('owner_account', null))).toBe(null);
+  }
+  // The internal sibling claim refuses an agent without this page's creator grant.
+  expect(await inDO(strangerPage.id, async t => (await t.fetch(new Request('https://tendril.internal/claim/agent-owner', { method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-tendril-agent': agent.agent.id },
+    body: JSON.stringify({ account_id: account, identities: [{ emails: [email] }] }) }))).status)).toBe(403);
+  expect(await inDO(strangerPage.id, t => t.db.get('owner_account', null))).toBe(null);
   expect(await env.ACCOUNTS.prepare('SELECT account_id, claimed_at IS NOT NULL AS claimed FROM agents WHERE id=?').bind(agent.agent.id).first())
     .toEqual({ account_id: account, claimed: 1 });
   expect(await env.ACCOUNTS.prepare('SELECT account_id FROM agents WHERE id=?').bind(stranger.agent.id).first()).toEqual({ account_id: null });

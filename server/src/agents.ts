@@ -329,19 +329,42 @@ async function createAgentPage(req: Request, env: Env, agent: GrantedAgent): Pro
 
 // ------------------------------------------------------------------ account operations
 
-/** On first owner sign-in to a page, the unclaimed agent that created it joins that account. */
-export async function claimCreatorAgents(env: Env, pageId: string, accountId: string): Promise<void> {
-  const candidates = await env.ACCOUNTS.prepare(`SELECT a.id,a.name FROM agents a JOIN agent_grants g ON g.agent_id=a.id
-    WHERE g.page_id=? AND g.granted_by='creator' AND a.account_id IS NULL AND a.revoked_at IS NULL`).bind(pageId).all<{ id: string; name: string }>();
+/**
+ * On first owner sign-in to a page, the unclaimed agent that created it joins that
+ * account, and every other page that agent created for the same owner email is
+ * claimed by that account through the page object's own owner claim.
+ */
+export async function claimCreatorAgents(env: Env, pageId: string, accountId: string, identities: unknown[] = []): Promise<void> {
+  const candidates = await env.ACCOUNTS.prepare(`SELECT a.id,a.name,a.owner_email FROM agents a JOIN agent_grants g ON g.agent_id=a.id
+    WHERE g.page_id=? AND g.granted_by='creator' AND a.account_id IS NULL AND a.revoked_at IS NULL`).bind(pageId).all<{ id: string; name: string; owner_email: string | null }>();
   const now = Date.now();
   for (const agent of candidates.results) {
+    let claimed = false;
     for (const name of [agent.name, `${agent.name.slice(0, 57)}-${agent.id.slice(3, 9)}`]) {
       try {
-        await env.ACCOUNTS.prepare('UPDATE agents SET account_id=?, claimed_at=?, name=? WHERE id=? AND account_id IS NULL AND revoked_at IS NULL')
-          .bind(accountId, now, name, agent.id).run();
+        const row = await env.ACCOUNTS.prepare('UPDATE agents SET account_id=?, claimed_at=?, name=? WHERE id=? AND account_id IS NULL AND revoked_at IS NULL RETURNING id')
+          .bind(accountId, now, name, agent.id).first();
+        claimed = Boolean(row);
         break;
       } catch (error) { if (!String(error).includes('UNIQUE')) throw error; }
     }
+    if (claimed && agent.owner_email) await claimAgentPages(env, agent.id, agent.owner_email, pageId, accountId, identities);
+  }
+}
+
+/** The agent's other unclaimed creator pages for the same intended owner. Each page
+ * runs its ordinary owner claim; a page that refuses (quota, hold) stays an invitation. */
+async function claimAgentPages(env: Env, agentId: string, ownerEmail: string, signedIn: string, accountId: string, identities: unknown[]): Promise<void> {
+  const pages = await env.ACCOUNTS.prepare(`SELECT t.id FROM tendrils t JOIN agent_grants g ON g.page_id=t.id
+    WHERE g.agent_id=? AND g.granted_by='creator' AND t.id<>? AND t.owner_account IS NULL AND lower(t.intended_owner)=lower(?)
+    ORDER BY t.created_at`).bind(agentId, signedIn, ownerEmail).all<{ id: string }>();
+  for (const page of pages.results) {
+    try {
+      const response = await pageStub(env, page.id).fetch(new Request('https://tendril.internal/claim/agent-owner', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', [AGENT_HEADER]: agentId },
+        body: JSON.stringify({ account_id: accountId, identities }) }));
+      await response.body?.cancel();
+    } catch { /* The page remains claimable by signing in to it. */ }
   }
 }
 

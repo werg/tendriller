@@ -53,7 +53,7 @@ agent_join_codes(code_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL,
 
 | Route | Who | Result |
 |---|---|---|
-| `POST /api/agents {owner, name, publicKey}` | a new agent, unauthenticated, creation rate limits | unclaimed agent + token. The owner claims it by signing in to any page it created. |
+| `POST /api/agents {owner, name, publicKey}` | a new agent, unauthenticated, creation rate limits | unclaimed agent + token. The owner claims it, and every page it created for that email, by signing in to any one of them. |
 | `POST /api/agents/join {code, name, publicKey}` | an agent given a paste-ready blurb | agent under the inviting account + token |
 | Dashboard → Your agents → Add agent | signed-in owner | one-time join code (10 min) and paste-ready blurb |
 | MCP `register_agent {name, publicKey}` | an OAuth-linked assistant | agent under the account; calling again with the same name rotates the token |
@@ -64,8 +64,9 @@ agent_join_codes(code_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL,
 - `GET /api/agent/pages?cursor=` — granted pages: id, name, page_url, scopes,
   application id, lifetime. Paged, 100 per page.
 - `POST /api/agent/pages {name?}` — create a page. Unclaimed agents create pages
-  owned by `owner_email` (claimed on owner sign-in, which also claims the
-  agent). Claimed agents create pages already owned by the account. The
+  owned by `owner_email`. The owner's first sign-in to any of them claims the
+  agent and every other page it created for that email (each page object runs
+  its ordinary owner claim; a page refused by quota stays an invitation). Claimed agents create pages already owned by the account. The
   creator receives a full grant.
 - `/api/agent/pages/<id>/<rest>` — the page routes (metadata, release, links,
   activity, application, assistant/propose, push, setup/watch, peers/*). The router authenticates the token in D1, requires a

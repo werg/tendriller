@@ -53,7 +53,7 @@ npm run deploy -- notes  # publishes through the running agent program
 
 `workspace init` checks readiness, creates the shared signing key in
 `.tendriller/agent/identity.sqlite` and registers an unclaimed agent for that
-owner. The owner claims the agent by signing in to any page it created. On a
+owner. Signing in to any page it created claims the agent and all its pages. On a
 signed-in dashboard the owner can instead add an agent and paste its one-time
 code: `npx tendril workspace join --service https://YOUR_HOST --code CODE`. With an
 account-linked MCP connector, `npx tendril workspace key --service https://YOUR_HOST`
