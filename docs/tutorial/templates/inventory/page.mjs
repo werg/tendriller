@@ -8,7 +8,10 @@ import { createSubmissionState } from '../../shared/helpers/submission-state.mjs
 import { mountProvisioning } from '../../shared/helpers/provisioning-view.mjs';
 import { mountFinality } from '../../shared/helpers/finality-view.mjs';
 import { deriveInventory } from './domain.mjs';
-const $ = id => document.querySelector(id), configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => { if (!response.ok) throw Error('Configuration unavailable'); return response.json(); });
+const $ = id => document.querySelector(id);
+const diagnostics = mountDiagnosticsPanel($('main') ?? document.body, { appName: 'Shared inventory' });
+let telemetry, unregisterFlush;
+const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => { if (!response.ok) throw Error('Configuration unavailable'); return response.json(); });
 const profileId = browserProfileId(configuration.applicationId);
 let storage, viewId;
 try { storage = localStorage; viewId = sessionStorage.getItem(`${profileId}:view`) || crypto.randomUUID(); sessionStorage.setItem(`${profileId}:view`, viewId); }
@@ -102,7 +105,7 @@ $('#add-labels').addEventListener('click', action(() => command('addLabels', nul
 $('#sql-grant').addEventListener('click', action(() => command('grantBinWrites', { publicKey: $('#sql-grantee').value })));
 $('#op-id').addEventListener('input', () => { ++inspectionToken; const id = $('#op-id').value; save('selected-operation', id); submission.update({ selected: id, pending: intents[id] ?? null, observed: null }); observeSelectedOperation(); });
 $('#inspect').addEventListener('click', action(inspect));
-$('#retry').addEventListener('click', action(async () => { const id = $('#op-id').value, intent = intents[id]; if (intent) return command(intent.command, intent.input, intent); const operation = await session.operations.retry(id); diagnostics.update({lastStoredOperationId:intent.operationId}); show(await operation.inspect()); observeSelectedOperation(); }));
+$('#retry').addEventListener('click', action(async () => { const id = $('#op-id').value, intent = intents[id]; if (intent) return command(intent.command, intent.input, intent); const operation = await session.operations.retry(id); diagnostics.update({lastStoredOperationId:operation.operationId}); show(await operation.inspect()); observeSelectedOperation(); }));
 $('#offline').addEventListener('click', action(async () => { $('#offline-status').textContent = 'Saving and verifying the complete immutable application and engine graph…'; try { const value = await window.tendril.publication.saveOffline(); $('#offline-status').textContent = `Offline ready: publication ${value.id}. Local identity, keys and operation history are separate retained device state.`; } catch (error) { $('#offline-status').textContent = `Not offline ready: ${error.message}`; } }));
 try {
   attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, requiresDedicatedWorker: true, context: { viewId }, timeoutMs: 30_000 });
