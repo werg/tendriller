@@ -85,9 +85,8 @@ export function mountUtility(api: RuntimeApi): () => void {
     .seg button{flex:1;min-height:38px;padding:6px 8px;font-size:13px;font-weight:600;border-radius:9px;opacity:.8}
     .seg button[aria-selected=true]{background:Canvas;opacity:1;box-shadow:0 1px 3px #0003}
     .tabpanel h4{font-size:13px;margin:0 0 6px}
-    .agent-fields{display:grid;gap:6px;margin-bottom:8px}.agent-fields input[type=text]{font:inherit;font-size:13px;padding:8px 10px;border:1px solid #8886;border-radius:8px;background:Canvas;color:CanvasText;width:100%}
     .scopes{display:grid;gap:2px;font-size:12px}.scopes label{display:flex;gap:8px;align-items:flex-start;padding:5px 2px;cursor:pointer}.scopes input{margin-top:2px}
-    .blurb{font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;width:100%;min-height:180px;padding:8px;border:1px solid #8886;border-radius:8px;background:#8881;color:CanvasText;resize:vertical}
+    .agent-grants{font-size:14px;margin:4px 0 12px}.agent-grants label{align-items:center}
     .message{font-size:13px;margin:10px 0 0}.suggestion p{margin:0 0 8px}.suggestion strong{font-size:16px}.actions{display:flex;align-items:center;gap:6px}.actions .primary{width:auto;margin:0;flex:1}.actions button{white-space:nowrap}
     @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}.share-role{background:#a6dfbd22;color:#a6dfbd}.share-row-actions .revoke{color:#fca5a5;border-color:#fca5a555}}
   `;
@@ -209,29 +208,13 @@ export function mountUtility(api: RuntimeApi): () => void {
   const ownerLoading = element("p", "Loading…", "note");
   personPanel.append(ownerLoading, shareOwnerBox, shareVisitorNote);
 
+  // Agents belong to the owner's account; this tab grants or removes this page per agent.
   const agentOwnerBox = element("div"); agentOwnerBox.hidden = true;
-  const agentFields = element("div", undefined, "agent-fields");
-  const agentName = document.createElement("input"); agentName.type = "text"; agentName.maxLength = 64; agentName.placeholder = "Agent name (e.g. reviewer)";
-  agentName.setAttribute("aria-label", "Agent name"); agentName.autocomplete = "off";
-  const scopeBox = element("details", undefined, "share-opts"); scopeBox.append(element("summary", "Host permissions"));
-  const scopeList = element("div", undefined, "scopes");
-  for (const [value, label, on] of [["host:read", "Read host status", true], ["participants:connect", "Connect enrolled participants", true],
-    ["control:write", "Update signed application control", false], ["publication:write", "Publish signed code", false], ["assistant:manage", "Propose assistant access", false]] as const) {
-    const row = document.createElement("label"); const box = document.createElement("input");
-    // Initial permissions are defaults, not an unsaved edit in this open shadow root.
-    box.type = "checkbox"; box.value = value; box.defaultChecked = on; row.append(box, element("span", label)); scopeList.append(row);
-  }
-  scopeBox.append(scopeList);
-  const agentCreate = button("Create agent invitation", "primary");
-  agentFields.append(agentName, scopeBox, agentCreate);
-  const agentResult = element("div", undefined, "ready-share"); agentResult.hidden = true;
-  const agentBlurb = document.createElement("textarea"); agentBlurb.readOnly = true; agentBlurb.className = "blurb";
-  agentBlurb.setAttribute("aria-label", "Agent invitation to paste");
-  const agentCopy = button("Copy invitation", "primary"), agentCopyLink = button("Copy as short link message", "secondary");
-  let agentLinkText = "";
-  agentResult.append(element("strong", "Paste this to the other agent"), agentBlurb, agentCopy, agentCopyLink,
-    element("p", "Single use, valid for 10 minutes. Existing agents keep their access.", "note"));
-  agentOwnerBox.append(element("p", "Creates a paste-ready invitation with a one-time code for another agent, such as a second coding assistant.", "note"), agentFields, agentResult);
+  const agentList = element("div", undefined, "scopes agent-grants"); agentList.setAttribute("role", "group"); agentList.setAttribute("aria-label", "Agents with access to this page");
+  const agentEmpty = element("p", "No agents on your account yet.", "note"); agentEmpty.hidden = true;
+  const agentDashboard = element("a", "Add an agent on your dashboard", "secondary"); agentDashboard.target = "_blank"; agentDashboard.rel = "noopener";
+  agentOwnerBox.append(element("p", "Checked agents can maintain this page. Add a new agent from your dashboard, then check it here.", "note"),
+    agentList, agentEmpty, agentDashboard);
   const agentVisitorNote = element("p", "Only the page owner can connect agents.", "note"); agentVisitorNote.hidden = true;
   const agentLoading = element("p", "Loading…", "note");
   agentPanel.append(agentLoading, agentOwnerBox, agentVisitorNote);
@@ -446,35 +429,43 @@ export function mountUtility(api: RuntimeApi): () => void {
       if (data.name) sharePageName = data.name;
       ownerChecked = true; showOwner(true);
       renderShareLinks(data.links ?? []);
+      void refreshAgents();
     } catch {
       if (disposed) return;
       showOwner(false);
       shareVisitorNote.textContent = agentVisitorNote.textContent = "Could not load sharing options while offline.";
     }
   };
-  agentCreate.addEventListener("click", async () => {
-    if (agentCreate.disabled) return;
-    const name = agentName.value.trim();
-    if (!/^[A-Za-z0-9_.@-]{1,64}$/.test(name)) { showShareStatus("Choose an agent name using letters, numbers, dots, dashes or underscores."); agentName.focus(); return; }
-    agentCreate.disabled = true; showShareStatus("Creating agent invitation…");
-    try {
-      const scopes = [...scopeList.querySelectorAll("input")].filter(box => box.checked).map(box => box.value);
-      const res = await fetch(`${api.identity.base}_tendril/agents`, { method: "POST", credentials: "same-origin",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, scopes }) });
-      const data = await res.json().catch(() => null) as { blurb?: string; link_blurb?: string; error?: { message?: string } } | null;
-      if (!res.ok || !data?.blurb) throw Error(data?.error?.message || "Could not create the invitation.");
-      if (disposed) return;
-      agentBlurb.value = data.blurb; agentLinkText = data.link_blurb ?? "";
-      agentResult.hidden = false; agentName.value = ""; shareMessage.hidden = true;
-      agentBlurb.focus(); agentBlurb.select();
-    } catch (err) {
-      if (!disposed) showShareStatus(err instanceof Error ? err.message : "Could not create the invitation.");
-    } finally {
-      if (!disposed) agentCreate.disabled = false;
+  const renderAgents = (agents: { id: string; name: string; granted: boolean }[], dashboard: string) => {
+    agentDashboard.href = dashboard; agentList.replaceChildren(); agentEmpty.hidden = agents.length > 0;
+    for (const agent of agents) {
+      const row = document.createElement("label"), box = document.createElement("input");
+      box.type = "checkbox"; box.value = agent.id; box.checked = agent.granted;
+      box.addEventListener("change", async () => {
+        const want = box.checked; box.disabled = true; showShareStatus("Saving…");
+        try {
+          const res = await fetch(`${api.identity.base}_tendril/agents`, { method: "POST", credentials: "same-origin",
+            headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agent: agent.id, granted: want }) });
+          const data = await res.json().catch(() => null) as { error?: { message?: string } } | null;
+          if (!res.ok) throw Error(data?.error?.message || "Could not change access. Try again.");
+          if (!disposed) showShareStatus(want ? `${agent.name} can now maintain this page.` : `${agent.name} no longer has access.`);
+        } catch (err) {
+          if (disposed) return;
+          box.checked = !want; showShareStatus(err instanceof Error ? err.message : "Could not change access. Try again.");
+        } finally { if (!disposed) box.disabled = false; }
+      });
+      row.append(box, element("span", agent.name)); agentList.append(row);
     }
-  });
-  agentCopy.addEventListener("click", () => { void copyText(agentBlurb.value, "Invitation copied. Paste it to the other agent."); });
-  agentCopyLink.addEventListener("click", () => { void copyText(agentLinkText, "Short message copied. Paste it to the other agent."); });
+  };
+  const refreshAgents = async () => {
+    if (disposed || !api.identity.base) return;
+    try {
+      const res = await fetch(`${api.identity.base}_tendril/agents`, { credentials: "same-origin", cache: "no-store" });
+      if (!res.ok) throw Error();
+      const data = await res.json() as { agents?: { id: string; name: string; granted: boolean }[]; dashboard?: string };
+      if (!disposed) renderAgents(data.agents ?? [], data.dashboard ?? "/dashboard#agents");
+    } catch { if (!disposed) { agentEmpty.textContent = "Could not load your agents. Try again later."; agentEmpty.hidden = false; } }
+  };
   const createShareLink = async (role: "guest" | "display", trigger: HTMLButtonElement) => {
     if (trigger.disabled) return;
     trigger.disabled = true;
