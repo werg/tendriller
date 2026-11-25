@@ -18,7 +18,7 @@ export function participateApplication(session, { peers, openDirectConnection,
   const adapter = createPeerIntroductions({ peers, identity: session.identity.publicKey, directTimeoutMs,
     openDirectConnection: options => openDirectConnection({ ...options, configuration, timeoutMs: directTimeoutMs }),
     openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }), onTransport });
-  const links = new Map(), opening = new Map(), listeners = new Set(), descriptions = new Map();
+  const links = new Map(), opening = new Map(), listeners = new Set(), descriptions = new Map(), introduced = new Map();
   let error = null, advertising, refreshing, dirty = false, retry, retryCount = 0, connectionRevision = 0;
   const status = () => Object.freeze({ phase: signal.aborted ? 'closed' : links.size ? 'connected' : opening.size ? 'connecting' : 'disconnected', connectedPeers: Object.freeze([...links.keys()].sort()), connectionRevision, pendingConnections: opening.size, error });
   const changed = () => { for (const listener of listeners) { try { listener(status()); } catch {} } };
@@ -40,11 +40,27 @@ export function participateApplication(session, { peers, openDirectConnection,
     return advertising;
   }
   async function connect(peer, invitation) {
-    if (signal.aborted || peer.identity === session.identity.publicKey || links.has(peer.identity) || opening.has(peer.identity) || links.size + opening.size >= 8) return;
+    if (signal.aborted || peer.identity === session.identity.publicKey) return;
+    if (invitation !== undefined) {
+      // A redelivered hint for the current link or attempt changes nothing.
+      if ((links.has(peer.identity) || opening.has(peer.identity)) && introduced.get(peer.identity) === invitation?.channel) return;
+      // A peer dials only when it holds no link or attempt to us. Its new
+      // host-routed invitation is therefore evidence that our link or attempt
+      // is dead on its side, e.g. a black-holed path only it has detected.
+      // RTC consent expiry is per endpoint, so the silent end must not keep
+      // a dead link and ignore the replacement until its own ICE notices.
+      opening.get(peer.identity)?.abort(new Error('PEER_CONNECTION_SUPERSEDED'));
+      const stale = links.get(peer.identity);
+      if (stale) {
+        void stale.close().catch(() => {});
+        if (links.get(peer.identity) === stale) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; }
+      }
+    }
+    if (links.has(peer.identity) || opening.has(peer.identity) && invitation === undefined || links.size + opening.size >= 8) return;
     // Exactly one side proactively dials; the other always accepts its invitation.
     if (invitation === undefined && session.identity.publicKey > peer.identity) return;
     const controller = new AbortController(), connectionSignal = AbortSignal.any([signal, controller.signal]);
-    opening.set(peer.identity, controller); changed(); let connection;
+    opening.set(peer.identity, controller); introduced.set(peer.identity, invitation?.channel); changed(); let connection;
     try {
       connection = await adapter.transport.open({ peer, ...(invitation === undefined ? {} : { invitation }) }, { signal: connectionSignal });
       const link = await session.connectPeer({ connection, peerIdentity: peer.identity, signal: connectionSignal });
@@ -53,8 +69,8 @@ export function participateApplication(session, { peers, openDirectConnection,
       link.signal.addEventListener('abort', () => { if (links.get(peer.identity) === link) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; } changed(); scheduleRetry(); }, { once: true });
     } catch (cause) {
       try { await connection?.close(); } catch {}
-      if (!signal.aborted) { error = `connect:${failureCode(cause, 'peer_connection_unavailable')}`; scheduleRetry(); }
-    } finally { opening.delete(peer.identity); changed(); }
+      if (!connectionSignal.aborted) { error = `connect:${failureCode(cause, 'peer_connection_unavailable')}`; scheduleRetry(); }
+    } finally { if (opening.get(peer.identity) === controller) opening.delete(peer.identity); changed(); }
   }
   async function refresh() {
     dirty = true; if (refreshing) return refreshing;
