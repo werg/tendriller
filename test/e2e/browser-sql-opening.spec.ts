@@ -38,7 +38,8 @@ for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
         // SQL is lazy: metadata readiness alone does not cover this first-use
         // work. Include fetching/buffering in the 21s hold instead of adding
         // that work after the hold and manufacturing a startup-budget overrun.
-        await delay(Math.max(0, Math.ceil(requestedAt + 21_000 - Date.now())));
+        // Timers can fire a millisecond before Date.now() reaches the target; wait until it has.
+        while (Date.now() < requestedAt + 21_000) await delay(Math.max(1, requestedAt + 21_000 - Date.now()));
         delayedSqlElapsedMs = Date.now() - requestedAt;
         await route.fulfill({ status: response.status(), headers, body });
       });
