@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, readFile, writeFile, access, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tutorial/templates/inventory/ui-state.mjs';
@@ -70,6 +71,68 @@ test('build requires setup and exact engine graph, removes stale or partial outp
   await assert.rejects(access(output), { code: 'ENOENT' });
   await rm(new URL('manifest.json', engine));
   await assert.rejects(build(opts), /no publishable dist/);
+});
+
+test('the default build verifier is the selected package\'s public sql-browser export, still hash-checked and cleaned up on failure', async t => {
+  // Injecting verifyWasmBuild hides a broken default. Run a copy of the template's build.mjs with NO injected
+  // verifier inside a project whose only @chronolog/peer-session is a small declared fixture package, so the
+  // default import resolves exactly the way an installed public SQL kit would. This does not claim the real
+  // sealed kit verifies anything; it proves the build calls the selected package's export with the engine bytes and manifest.
+  const directory = await mkdtemp(tmpdir() + '/sql-ui-default-verify-'), root = pathToFileURL(directory + '/');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = join(directory, 'verifier-calls.json');
+  const packageDirectory = join(directory, 'node_modules/@chronolog/peer-session');
+  await mkdir(packageDirectory, { recursive: true });
+  await writeFile(join(packageDirectory, 'package.json'), JSON.stringify({ name: '@chronolog/peer-session', version: '0.0.0-fixture', type: 'module',
+    exports: { './sql-browser': './sql-browser.mjs' } }));
+  await writeFile(join(packageDirectory, 'sql-browser.mjs'), `import { appendFileSync, existsSync } from 'node:fs';
+export async function verifyWasmBuild(bytes, manifest) {
+  appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ bytes: Buffer.from(bytes).toString(), wasmBytes: manifest.wasmBytes }) + '\\n');
+  if (existsSync(${JSON.stringify(join(directory, 'reject-engine'))})) throw Error('unsupported engine profile');
+}`);
+  await writeFile(join(directory, 'build.mjs'), await readFile(new URL('../../docs/tutorial/templates/inventory/build.mjs', import.meta.url), 'utf8'));
+  await writeFile(join(directory, 'index.html'), '<html>SQL</html>');
+  const engine = join(directory, 'engine'); await mkdir(engine);
+  const wasm = Buffer.from('fixture-engine'), loader = 'module';
+  const manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex'), loaderSha256: createHash('sha256').update(loader).digest('hex') };
+  for (const [name, bytes] of Object.entries({ 'manifest.json': JSON.stringify(manifest), 'sqlite3.wasm': wasm, 'sqlite3.mjs': loader, 'sqlite3-opfs-async-proxy.js': 'proxy' })) await writeFile(join(engine, name), bytes);
+  const records = { 'host-configuration.json': { executionManifestDigest: 'engine-digest' },
+    'prepared.json': { applicationId: 'app', publisherKey: 'independent-publisher', executionManifestDigest: 'engine-digest' } };
+  const context = { readPrivate: async name => records[name], signer: { publicKey: 'independent-publisher' },
+    page: { applicationId: 'app', pageUrl: 'https://page.example/', slug: 'stock' } };
+  const { buildPage } = await import(pathToFileURL(join(directory, 'build.mjs')).href);
+  const output = new URL('dist/', root), bundled = [];
+  const build = () => buildPage(context, { bundle: async options => { bundled.push(options.entryPoints); } });
+  const readCalls = async () => (await readFile(calls, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  // The default verifier receives the exact engine bytes and manifest of the retained graph.
+  await build();
+  assert.deepEqual(await readCalls(), [{ bytes: wasm.toString(), wasmBytes: wasm.length }]);
+  assert.equal((await readFile(new URL('engine/sqlite3.wasm', output))).toString(), wasm.toString());
+  assert.equal(bundled.length, 1);
+  // The same hash and manifest checks still run before the verifier and the build leaves nothing publishable.
+  await writeFile(join(engine, 'sqlite3.wasm'), 'wrong');
+  await assert.rejects(build(), /no publishable dist[\s\S]*does not match/);
+  await assert.rejects(access(output), { code: 'ENOENT' });
+  assert.equal((await readCalls()).length, 1, 'a hash mismatch fails before the verifier is asked');
+  await writeFile(join(engine, 'sqlite3.wasm'), wasm);
+  // A verifier rejection fails closed and removes stale output.
+  await writeFile(join(directory, 'reject-engine'), '');
+  await mkdir(output, { recursive: true }); await writeFile(new URL('stale', output), 'stale');
+  await assert.rejects(build(), /no publishable dist[\s\S]*unsupported engine profile/);
+  await assert.rejects(access(output), { code: 'ENOENT' });
+  assert.equal((await readCalls()).length, 2);
+  // A selected package without the public export is an explicit build failure, never a silently skipped verification.
+  // (A separate project: ES modules cache the first resolution of the fixture package above.)
+  const bare = await mkdtemp(tmpdir() + '/sql-ui-no-verifier-');
+  t.after(() => rm(bare, { recursive: true, force: true }));
+  await mkdir(join(bare, 'node_modules/@chronolog/peer-session'), { recursive: true }); await mkdir(join(bare, 'engine'));
+  await writeFile(join(bare, 'node_modules/@chronolog/peer-session/package.json'), JSON.stringify({ name: '@chronolog/peer-session', version: '0.0.0-fixture', type: 'module', exports: {} }));
+  await writeFile(join(bare, 'build.mjs'), await readFile(join(directory, 'build.mjs'), 'utf8'));
+  await writeFile(join(bare, 'index.html'), '<html>SQL</html>');
+  for (const name of ['manifest.json', 'sqlite3.wasm', 'sqlite3.mjs', 'sqlite3-opfs-async-proxy.js']) await writeFile(join(bare, 'engine', name), await readFile(join(engine, name)));
+  const { buildPage: bareBuild } = await import(pathToFileURL(join(bare, 'build.mjs')).href);
+  await assert.rejects(bareBuild(context, { bundle: async () => assert.fail('must not bundle without a verified engine') }), /no publishable dist/);
+  await assert.rejects(access(join(bare, 'dist')), { code: 'ENOENT' });
 });
 
 test('lifecycle notifications contain async flush and error-reporter rejections, and unregister', async t => {
