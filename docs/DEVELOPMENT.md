@@ -12,6 +12,7 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `node scripts/test-dev-host.mjs --artifacts /absolute/release-assets` | After sealing a release: verify local-host startup, synthetic browser sign-in, owner claim, assets and retained state across restart |
 | `npm run test:onboarding` | After a build: validate the discovery documentation graph, generated combined guide and safe tutorial archive |
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
+| `npm run test:first-app:feedback -- --first-app-archive /absolute/tendriller-first-app-VERSION.tgz` | Qualify resident signed publication, explicit enrollment recovery and signal freshness on the selected public composition |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
 | `npm run test:e2e:voice-controls` | Chromium, Firefox, desktop WebKit and mobile WebKit controls plus real AudioWorklet fixtures; deterministic inference |
@@ -28,11 +29,13 @@ The optional Cloudflare assistant uses hibernating inbound sockets to route
 approved operations to the existing application participants. The host verifies
 published schemas and retains delivery state. Participants execute their own code. See [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md). Browser composition exposes an installed session, signals and explicit host operations. Optional voice remains outside the kernel dependency graph.
 
-The browser Chronolog participant is independent of database activation. Its protocol
-identity and verified control metadata use small browser-native storage; OPFS, database
-ownership, history and materialization load on first durable use inside that same
-participant. The public `/browser` import contains the page facade; `/worker` contains
-the protocol owner and reaches durable code through a dynamic import. Keep optional
+Passive package imports and adapter installation open no database. The owning Worker
+explicitly opens its retained device and calls `createApplicationSession`, which opens
+the device's local storage and cached authority; materialization then warms
+independently of the first command or query and can replay authenticated peer
+operations. The database is therefore not guaranteed to stay `idle` until the page
+asks for data, and `session.status` reports its actual phase. The public `/browser`
+import contains the page facade; `/worker` contains the protocol owner. Keep optional
 SQL engine imports inside `createEngine` (or a custom `createMaterializer`), never
 in a page's eager import graph.
 
@@ -197,7 +200,7 @@ is reported as null; core release and runtime identity remain explicit.
 
 `scripts/onboarding.mjs` generates `llms-full.txt` from maintained guides and
 packages the explicitly enumerated tutorial source files into a download.
-Generated private handles, device stores, epoch keys and build output must never
+Generated agent credentials, signers, device stores, epoch keys and build output must never
 enter that archive. Tutorial HTML is available inside the download, not as an
 executable document on the service origin. `npm run test:onboarding` runs in the
 normal Node test gate; public Worker tests follow the discovery links anonymously.
@@ -207,18 +210,25 @@ SDK, host or runtime import graph. Validate it with an exact Chronolog archive
 when changing application APIs. [The cold-start acceptance test](AGENT_ONBOARDING_TEST.md)
 measures the full domain-only journey separately from automated route/link tests.
 
-`test:first-app` downloads the starter from its own isolated host, installs only
-public archives in a temporary consumer, and exercises owner claim, descriptor
-preparation, signed publication, owner sign-in with local browser initialization,
-native commands and process reopen, explicit key provisioning, convergent shared
-state and uncertain-operation retry after reload. It records source/archive identities and results in
-`.results/first-app.json`, with desktop and narrow-viewport homepage and connected
-starter screenshots. The photo flow transports actual encrypted session content
+`test:first-app` downloads the starter workspace from its own isolated host,
+installs only public archives in a temporary consumer, and drives it as documented:
+`tendril workspace init` for the owner email, two notes pages from one agent
+(`page:new`, `init` and `build` with exact retries), one optional `tendril agent run`,
+signed publication through the attach socket before claim, one owner sign-in that
+claims the agent and every page it created and initializes the browser locally,
+attached CLI commands, explicit key provisioning for additional devices,
+browser/agent convergence over the selected transport, local saving while the agent
+program is stopped with convergence after it restarts, a second page in another tab,
+a page initialized while the program runs, a clean SIGTERM exit, uncertain-operation
+retry after reload and the account-linked `register_agent` route. It records
+source/archive identities and results in `.results/first-app.json`, with desktop and
+narrow-viewport homepage and connected screenshots of each page.
+The photo flow transports actual encrypted session content
 and signals to an authorized native test participant. It uses an injected
 deterministic provider, verifies analysis makes no domain write, then commits only
 the person's edited observation and reopens it. It does not call a live AI service.
 Helper tests also cover stale reads, cancellation, uncertain operation states,
-failed preparation, fixed reviewed values and explicit reapplication lineage. The
+failed preparation, fixed reviewed values and exact original-operation retry. The
 `Agent onboarding` workflow runs it with a pinned Chronolog source commit and
 the repository's Playwright container. It needs no production credentials.
 
@@ -226,7 +236,25 @@ For a local release candidate, commit a clean checkpoint, run
 `npm run build:artifacts` and `npm run release:artifacts`, then pass
 `--first-app-archive /absolute/tendriller-first-app-VERSION.tgz` to `test:first-app`.
 That mode verifies and installs the packages carried by the kit; the release
-workflow requires it before publication. `--session-archive` remains available
+workflow requires it before publication.
+
+The separate `test:first-app:feedback` gate uses that same package composition
+with private fixture clock controls in the downloaded page Worker and a private
+qualification page module written over `pages/notes/agent.mjs`; the agent program
+opens it like any page and it answers evidence requests on a private socket
+(`scripts/first-app-peer.mjs`). It exercises attached signed publication while an independent
+event consumer and browser stay active, exact and stale publication retries, the
+2000 ms signal-freshness boundary over the real connection, and enrollment while
+direct, attached and forwarding consumers hold work. Recovery checks require
+verified evidence and deliberate rescans with durable handled-work receipts.
+The fixture controls do not enter shipped source or packages. This gate records
+its own limits and evidence by default in
+`.results/first-app-feedback/first-app-feedback.json`, with screenshots in that
+separate directory, and gates
+publication alongside the unmodified-kit and native/browser checks.
+For a local offline run, set `FIRST_APP_NPM_CACHE` to an existing npm download
+cache and `npm_config_offline=true`; the application install is still isolated,
+artifact hashes are verified, and missing cached packages fail the run. `--session-archive` remains available
 for deliberate alternate-source and SQL qualification, without claiming that it
 is the released first-app composition. Use Playwright's installed Chromium,
 or set `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` to an existing Chromium executable.
@@ -244,8 +272,10 @@ run does not qualify browser transport.
 The workflow also builds the pinned optional SQL-native engine on its Node 24
 runner and runs `test:first-app -- --session-archive /absolute/sql-archive.tgz
 --sql-native-only`. That mode records `.results/first-app-sql.json` and qualifies
-the separate SQL starter's setup, signed schema, guarded transfer, atomic
-rejection, exact retry and native process reopen. It reports native coverage
+an inventory page of the workspace (`page:new --template inventory`): native
+engine preflight, setup, signed schema, guarded transfer through the running agent
+program (`npm run demo`), atomic rejection, exact retry and reopen after the agent
+program restarts. It reports native coverage
 explicitly and does not claim the supplied SQL browser Worker is qualified by
 that check. Engine archives must match the target Node/platform/architecture/libc
 requirements; an events-only archive cannot stand in for SQL.
@@ -274,11 +304,11 @@ editing generated `agent.md` or `llms.txt` alone. Run the MCP-only cold-start
 scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavior;
 link and consistency checks do not prove that an unfamiliar agent can finish.
 
-Account-bound setup retains one client credential and allocation across retries.
+Agent registration retains one credential and one signing key per workspace across retries; the agent's pages are granted automatically and an owner grants existing pages.
 Device enrollment uses the browser's own key proof and an explicit owner grant. Additional
 devices receive keys through explicit authenticated provisioning. Neither pauses or selects
 application operations.
-The native participant uses hibernating setup notifications without idle polling;
+The agent program receives setup notifications for every page over one hub connection without idle polling;
 individual requests expire after ten minutes. Its lifetime is independent of the
 optional MCP adapter. Closing or restarting it does not erase uncertain work. Public SDK/endpoint and tutorial helper tests cover their named
 boundaries. The exact packed first-app/browser run, selected-host MCP run and

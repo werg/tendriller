@@ -11,7 +11,7 @@ test('verified owner claims a page and executes its signed authored module', asy
   const handle = await createPage();
   try {
     expect(handle.application.id).toMatch(/^[a-f0-9]{64}$/);
-    expect(handle.token).toMatch(/^tk_/);
+    expect(handle.token).toMatch(/^ta_/);
     await signInFixture(context); await claim(context, handle);
     const notified = page.waitForEvent('websocket', socket => socket.url().endsWith('/_tendril/publication-ready'))
       .then(socket => socket.waitForEvent('framereceived', frame => JSON.parse(String(frame.payload)).current === 1));
@@ -90,7 +90,7 @@ test('the page shows the latest release: open tabs switch when idle, wait for un
 
 test('publication switching preserves hidden form drafts, checkedness, selects and open-shadow input until reset', async ({ page, context }) => {
   const handle = await createPage();
-  const form = '<form><input id="checked" type="checkbox" value="yes"><select id="selection"><option>A</option><option>B</option></select><textarea id="preview">original</textarea></form><div id="editor"></div>';
+  const form = '<meta name="tendriller-updates" content="careful"><form><input id="checked" type="checkbox" value="yes"><select id="selection"><option>A</option><option>B</option></select><textarea id="preview">original</textarea></form><div id="editor"></div>';
   try {
     await signInFixture(context); await claim(context, handle);
     await publish(handle, '<h1 id="release">draft release</h1>' + form);
@@ -202,12 +202,26 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       text: emoji, parseError: false });
     expect(rendered.width).toBeGreaterThan(0);
     expect(rendered.height).toBe(rendered.width);
-    const emojiManifest = await cdp.send('Page.getAppManifest');
-    expect(emojiManifest.errors).toEqual([]);
-    expect(JSON.parse(emojiManifest.data!).icons).toEqual([
-      { src: generatedIcon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
-      maskableIcon,
-    ]);
+    // Android installs ignore SVG icons. The owner's page draws the emoji into
+    // 512px PNGs once; the manifest then lists them first.
+    await expect.poll(async () => {
+      const current = await cdp.send('Page.getAppManifest');
+      return current.errors.length === 0 ? JSON.parse(current.data!).icons.map((icon: { type: string; purpose: string; sizes: string }) => `${icon.type} ${icon.purpose} ${icon.sizes}`) : current.errors;
+    }, { timeout: 15_000 }).toEqual(['image/png any 512x512', 'image/png maskable 512x512', 'image/svg+xml any any', 'image/svg+xml maskable any']);
+    const emojiIcons = JSON.parse((await cdp.send('Page.getAppManifest')).data!).icons as { src: string }[];
+    expect(emojiIcons.slice(2)).toEqual([{ src: generatedIcon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' }, maskableIcon]);
+    for (const icon of emojiIcons.slice(0, 2)) {
+      const size = await page.evaluate(async url => {
+        const response = await fetch(url, { cache: 'no-store' });
+        const image = new Image(); image.src = URL.createObjectURL(await response.blob()); await image.decode();
+        return { type: response.headers.get('Content-Type'), width: image.naturalWidth, height: image.naturalHeight };
+      }, icon.src);
+      expect(size).toEqual({ type: 'image/png', width: 512, height: 512 });
+    }
+    // iOS reads apple-touch-icon, not the manifest: the opaque drawn PNG.
+    await page.reload();
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', emojiIcons[1]!.src);
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('sizes', '512x512');
     const maskableSize = await page.evaluate(async url => {
       const image = new Image(); image.src = url; await image.decode();
       return { width: image.naturalWidth, height: image.naturalHeight };
@@ -245,12 +259,14 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       await expect(favicon).toHaveAttribute('href', customIcon);
       await expect(favicon).toHaveAttribute('type', `image/${format}`);
       const branded = await cdp.send('Page.getAppManifest');
+      // The published icon's real size, so Android uses it instead of drawing a letter.
       expect(JSON.parse(branded.data!).icons).toEqual([
-        { src: customIcon, sizes: 'any', type: `image/${format}`, purpose: 'any' },
-        maskableIcon,
+        { src: customIcon, sizes: '192x192', type: `image/${format}`, purpose: 'any' },
       ]);
       expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
       expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
+      // iOS can use PNG; WebP keeps the Tendriller PNG.
+      await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', format === 'png' ? customIcon : '/_tendril/brand/icon-180.png');
     }
     expect((await agent(handle, '', 'PATCH', { icon: null })).status).toBe(200);
     await page.reload();
@@ -374,8 +390,8 @@ test('broken unpaired publication gets an explicit update and retains browser pa
     // Exercise the maintained public profile, pairing-intent and draft consumers.
     // The broken Worker models a released app that cannot enroll this browser.
     const fixture = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'publication-notice-fixture.mjs', contents: `
-      import { browserProfileId } from './docs/tutorial/helpers/browser-profile.mjs';
-      import { createBrowserPairing } from './docs/tutorial/pairing-browser.mjs';
+      import { browserProfileId } from './docs/tutorial/shared/helpers/browser-profile.mjs';
+      import { createBrowserPairing } from './docs/tutorial/shared/pairing-browser.mjs';
       import { createViewStore } from '@chronolog/peer-session/browser';
       const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
       const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view';

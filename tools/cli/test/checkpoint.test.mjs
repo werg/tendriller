@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { exportNativeCheckpoint, restoreNativeCheckpoint, loadCheckpointLibrary } from '../lib/handoff.mjs';
 
 const projectDir = process.env.TENDRILLER_CHECKPOINT_TEST_PROJECT ?? process.cwd();
-const { native: { openNativeDevice } } = await loadCheckpointLibrary(projectDir);
+const { native: { openNativeDevice, NativeBytesStore } } = await loadCheckpointLibrary(projectDir);
 const secret = 'a'.repeat(64);
 async function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'checkpoint-cli-'));
@@ -78,4 +81,110 @@ test('entry limits reject oversized snapshots before enumeration and preserve th
   const resumed = await openNativeDevice({ path: f.devicePath });
   try { assert.equal(resumed.identity.publicKey, f.key); }
   finally { await resumed.close(); }
+});
+
+
+for (const method of ['checkpointWal', 'close']) test('restore awaits asynchronous ' + method + ' failure before publishing its destination', async t => {
+  const f = await fixture(t); await exportNativeCheckpoint(f);
+  const target = join(f.root, 'restored'), devicePath = join(target, 'device.sqlite');
+  const failure = new Error('asynchronous ' + method + ' failure'), original = NativeBytesStore.prototype[method];
+  t.mock.method(NativeBytesStore.prototype, method, async function (...args) {
+    await new Promise(resolve => setImmediate(resolve));
+    await original.apply(this, args);
+    throw failure;
+  });
+  await assert.rejects(restoreNativeCheckpoint({ inputPath: f.outputPath, devicePath, secret, projectDir }), error => error === failure);
+  assert.equal(existsSync(target), false);
+  assert.deepEqual(readdirSync(f.root).filter(name => name.startsWith('.checkpoint-restore-')), []);
+  assert.equal(existsSync(f.outputPath), true);
+});
+
+for (const method of ['checkpointWal', 'close']) test('export retains the completed checkpoint receipt after asynchronous ' + method + ' failure', async t => {
+  const f = await fixture(t);
+  const failure = new Error('asynchronous export ' + method + ' failure'), original = NativeBytesStore.prototype[method];
+  t.mock.method(NativeBytesStore.prototype, method, async function (...args) {
+    await new Promise(resolve => setImmediate(resolve));
+    await original.apply(this, args);
+    throw failure;
+  });
+  let receipt;
+  await assert.rejects(exportNativeCheckpoint(f), error => {
+    assert.equal(error, failure);
+    receipt = error.checkpoint;
+    assert.equal(receipt.output, f.outputPath);
+    assert.equal(receipt.size, readFileSync(f.outputPath).byteLength);
+    assert.equal(receipt.retiredSource, true);
+    assert.equal(receipt.metadata.deviceId, f.key);
+    assert.match(receipt.nextAction, /Restore the retained checkpoint/u);
+    return true;
+  });
+  t.mock.restoreAll();
+  await assert.rejects(openNativeDevice({ path: f.devicePath }), { code: 'DEVICE_RETIRED_BY_CHECKPOINT' });
+  const devicePath = join(f.root, 'recovered', 'device.sqlite');
+  await restoreNativeCheckpoint({ inputPath: receipt.output, devicePath, secret, projectDir });
+  const recovered = await openNativeDevice({ path: devicePath });
+  try {
+    assert.equal(recovered.identity.publicKey, f.key);
+    assert.deepEqual(await recovered.store.get('test-retained-attempt'), new Uint8Array([1, 2, 3]));
+  } finally { await recovered.close(); }
+});
+
+test('restore preserves the primary WAL failure when close fails differently and still removes staging', async t => {
+  const f = await fixture(t); await exportNativeCheckpoint(f);
+  const target = join(f.root, 'restored'), devicePath = join(target, 'device.sqlite');
+  const primary = Object.assign(new Error('restore WAL failure'), { code: 'WAL_FAILED' });
+  const cleanup = Object.assign(new Error('restore close failure'), { code: 'CLOSE_FAILED' });
+  for (const [method, failure] of [['checkpointWal', primary], ['close', cleanup]]) {
+    const original = NativeBytesStore.prototype[method];
+    t.mock.method(NativeBytesStore.prototype, method, async function (...args) {
+      await new Promise(resolve => setImmediate(resolve));
+      await original.apply(this, args);
+      throw failure;
+    });
+  }
+  await assert.rejects(restoreNativeCheckpoint({ inputPath: f.outputPath, devicePath, secret, projectDir }), error => {
+    assert.equal(error, primary);
+    assert.equal(error.cleanupError, cleanup);
+    return true;
+  });
+  assert.equal(existsSync(target), false);
+  assert.deepEqual(readdirSync(f.root).filter(name => name.startsWith('.checkpoint-restore-')), []);
+  assert.equal(existsSync(f.outputPath), true);
+});
+
+test('CLI reports the retained checkpoint receipt and secondary cleanup failure after an export WAL failure', async t => {
+  const f = await fixture(t), preload = join(f.root, 'fail-wal.mjs');
+  writeFileSync(preload, `
+import { loadCheckpointLibrary } from ${JSON.stringify(new URL('../lib/handoff.mjs', import.meta.url).href)};
+const { native: { NativeBytesStore } } = await loadCheckpointLibrary(${JSON.stringify(projectDir)});
+const original = NativeBytesStore.prototype.checkpointWal;
+NativeBytesStore.prototype.checkpointWal = async function (...args) {
+  await original.apply(this, args);
+  throw Object.assign(new Error('Injected WAL failure'), { code: 'WAL_FAILED' });
+};
+const originalClose = NativeBytesStore.prototype.close;
+NativeBytesStore.prototype.close = async function (...args) {
+  await originalClose.apply(this, args);
+  throw Object.assign(new Error('Injected close failure'), { code: 'CLOSE_FAILED' });
+};
+`);
+  const cli = process.env.TENDRILLER_TOOLS_TEST_CLI ?? fileURLToPath(new URL('../bin/tendril.mjs', import.meta.url));
+  await assert.rejects(promisify(execFile)(process.execPath, [
+    '--import', preload, cli, 'checkpoint', 'export', f.outputPath,
+    '--device', f.devicePath, '--project', projectDir,
+  ], { env: { ...process.env, TENDRILLER_CHECKPOINT_SECRET: secret, NODE_NO_WARNINGS: '1' }, timeout: 10000 }), error => {
+    assert.equal(error.code, 1);
+    assert.equal(error.stdout, '');
+    const report = JSON.parse(error.stderr);
+    assert.equal(report.error.code, 'WAL_FAILED');
+    assert.equal(report.cleanup.code, 'CLOSE_FAILED');
+    assert.equal(report.checkpoint.output, f.outputPath);
+    assert.equal(report.checkpoint.retiredSource, true);
+    assert.equal(report.checkpoint.metadata.deviceId, f.key);
+    assert.match(report.checkpoint.nextAction, /Restore the retained checkpoint/u);
+    assert.equal(report.checkpoint.size, readFileSync(f.outputPath).byteLength);
+    assert.equal(error.stderr.includes(secret), false);
+    return true;
+  });
+  await assert.rejects(openNativeDevice({ path: f.devicePath }), { code: 'DEVICE_RETIRED_BY_CHECKPOINT' });
 });

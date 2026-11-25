@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { once } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import { prepareSignalQualification } from '../first-app-signals.mjs';
+
+test('first-app clock control stays in its fixture worker and releases its channel after restoration', { timeout: 5000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'first-app-clock-'));
+  let worker, exited = false;
+  const channel = new BroadcastChannel('tendriller.first-app.signal-clock.v1');
+  t.after(async () => { channel.close(); if (worker && !exited) await worker.terminate(); await rm(directory, { recursive: true, force: true }); });
+  await writeFile(join(directory, 'worker.mjs'), `import { parentPort } from 'node:worker_threads';
+parentPort.on('message', action => { if (action === 'read') parentPort.postMessage(Date.now()); else if (action === 'close') parentPort.close(); });
+setImmediate(() => parentPort.postMessage('ready'));
+`);
+  await prepareSignalQualification(directory);
+  worker = new Worker(join(directory, 'worker.mjs'));
+  const ending = once(worker, 'exit').then(([code]) => { exited = true; return code; });
+  await once(worker, 'message');
+  const control = (time, close = false) => new Promise((resolve, reject) => {
+    const id = crypto.randomUUID(), timer = setTimeout(() => { channel.onmessage = null; reject(Error('fixture clock timeout')); }, 1000);
+    channel.onmessage = ({ data }) => { if (data.id === id) { clearTimeout(timer); channel.onmessage = null; resolve(data); } };
+    channel.postMessage({ protocol: 'first-app-signal-clock', id, time, close });
+  });
+  const read = async () => { const value = once(worker, 'message'); worker.postMessage('read'); return (await value)[0]; };
+  const originalNow = Date.now, frozen = Date.now() + 1000;
+  assert.equal((await control(frozen)).time, frozen);
+  assert.equal(await read(), frozen);
+  assert.equal(Date.now, originalNow, 'The controller must not alter the test process clock.');
+  assert.equal((await control(frozen - 1)).error, 'INVALID_FIXTURE_CLOCK');
+  assert.equal(await read(), frozen, 'Rejected backward clock changes must leave the controlled instant intact.');
+  assert.equal((await control(frozen + 30_000)).error, 'INVALID_FIXTURE_CLOCK');
+  assert.equal((await control(null, true)).time, null);
+  assert.ok(Math.abs(await read() - Date.now()) < 1000);
+  worker.postMessage('close');
+  assert.equal(await ending, 0, 'Closing the fixture clock channel must allow natural worker exit.');
+});

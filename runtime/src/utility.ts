@@ -1,6 +1,6 @@
 import { mountTransportInspector } from "./transport-view";
 import { encodePublicationPath } from "./paths";
-import { observeUtilityBar, observeVisualViewport, utilityBottom, utilityMaxWidth, utilityRight, utilityTop } from "./utility-layout";
+import { observeUtilityBar, observeVisualViewport, utilityBottom, utilityLeft, utilityMaxWidth, utilityRight, utilityTop } from "./utility-layout";
 import { renderQrSvg } from "./qr";
 import type { RuntimeApi, SensorStatus } from "../../contract/index.mjs";
 
@@ -43,6 +43,12 @@ export function mountUtility(api: RuntimeApi): () => void {
     nav,.card{border:1px solid #8886;background:Canvas;color:CanvasText;box-shadow:0 4px 24px #0002}
     nav{display:flex;flex-shrink:0;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:4px;padding:4px;border-radius:14px;margin-left:auto;width:fit-content;max-width:100%;transition:opacity .15s}
     nav.tucked{opacity:0;pointer-events:none}
+    nav{touch-action:none;user-select:none;-webkit-user-select:none}nav.dragging{cursor:grabbing;box-shadow:0 10px 36px #0004;opacity:.92}
+    :host([data-h=left]) nav,:host([data-h=left]) .card{margin-left:0;margin-right:auto}
+    :host([data-v=top]) .card{margin-top:10px;margin-bottom:0}
+    .corners{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}.corners button{border:1px solid #8886;min-height:38px;padding:6px 8px;font-size:12px;font-weight:600}
+    .corners button[aria-pressed=true]{background:#1e644a;color:white;border-color:#1e644a}
+    @media(prefers-color-scheme:dark){.corners button[aria-pressed=true]{background:#a6dfbd;color:#123b2b;border-color:#a6dfbd}}
     a,button{font:inherit;color:inherit;min-height:44px;padding:10px 12px;border:0;border-radius:9px;background:transparent;text-decoration:none;cursor:pointer;touch-action:manipulation}
     a:focus-visible,button:focus-visible{outline:2px solid Highlight;outline-offset:2px}
     button:hover,a:hover{background:#8882}button:disabled{opacity:.65;cursor:default}
@@ -589,6 +595,23 @@ export function mountUtility(api: RuntimeApi): () => void {
     diagMessage.hidden = true;
     renderDiagnostics();
   });
+  // Position: the bar can sit in any corner so it never covers important page content.
+  // Drag it (it snaps to the nearest corner) or choose here; remembered per page on this device.
+  type Corner = "bottom-right" | "bottom-left" | "top-right" | "top-left";
+  const CORNERS: ReadonlyArray<[Corner, string]> = [["top-left", "Top left"], ["top-right", "Top right"], ["bottom-left", "Bottom left"], ["bottom-right", "Bottom right"]];
+  const cornerKey = "tendril:utility-corner:" + api.identity.base;
+  let corner: Corner = "bottom-right";
+  try { const saved = localStorage.getItem(cornerKey); if (CORNERS.some(([value]) => value === saved)) corner = saved as Corner; } catch { /* Storage may be blocked; the default corner still works. */ }
+  const positionSection = element("section", undefined, "section");
+  const cornerGrid = element("div", undefined, "corners"); cornerGrid.setAttribute("role", "group"); cornerGrid.setAttribute("aria-label", "Button position");
+  const cornerButtons = CORNERS.map(([value, label]) => {
+    const choice = button(label); choice.setAttribute("aria-pressed", "false");
+    choice.addEventListener("click", () => { setCorner(value); choice.focus(); });
+    return choice;
+  });
+  cornerGrid.append(...cornerButtons);
+  positionSection.append(element("h3", "Button position"), element("p", "Drag the page options button to any corner, or choose one here.", "note"), cornerGrid);
+  panel.append(positionSection);
   const links = element("div", undefined, "links");
   const latest = element("a", "Open latest version"); latest.href = api.identity.base;
   latest.title = "Open the currently selected publication";
@@ -746,6 +769,62 @@ export function mountUtility(api: RuntimeApi): () => void {
   });
 
   let lastKeyboardHeight = 0;
+  function applyCorner() {
+    const [vertical, horizontal] = corner.split("-") as ["top" | "bottom", "left" | "right"];
+    host.setAttribute("data-v", vertical); host.setAttribute("data-h", horizontal);
+    const set = (name: string, value: string) => host.style.setProperty?.(name, value, "important");
+    set("inset", "auto");
+    set("top", vertical === "top" ? utilityTop : "auto");
+    set("left", horizontal === "left" ? utilityLeft : "auto");
+    set("right", horizontal === "right" ? utilityRight : "auto");
+    set("flex-direction", vertical === "top" ? "column-reverse" : "column");
+    set("align-items", horizontal === "left" ? "flex-start" : "flex-end");
+    cornerButtons.forEach((choice, index) => choice.setAttribute("aria-pressed", String(CORNERS[index]![0] === corner)));
+    updateKeyboardLayout();
+  }
+  function setCorner(next: Corner) {
+    corner = next;
+    try { localStorage.setItem(cornerKey, next); } catch { /* Not remembered when storage is blocked. */ }
+    applyCorner();
+  }
+  // Drag: a short press is still a tap on the button under it; moving past a small
+  // threshold drags the whole bar and drops it into the nearest corner.
+  let drag: { id: number; x: number; y: number; moved: boolean } | null = null, suppressClick = false;
+  // The click that ends a drag lands on whichever button is under the pointer: swallow it.
+  nav.addEventListener("click", event => { if (suppressClick) { suppressClick = false; event.stopPropagation(); event.preventDefault(); } }, true);
+  // Follow the press on window: the pointer leaves the small bar on its first move.
+  const onMove = (event: PointerEvent) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+    if (!drag.moved) {
+      if (Math.hypot(dx, dy) < 8) return;
+      drag.moved = true; nav.classList?.add("dragging");
+    }
+    event.preventDefault();
+    host.style.setProperty?.("transform", `translate(${dx}px,${dy}px)`, "important");
+  };
+  const stopFollowing = () => {
+    window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); window.removeEventListener("pointercancel", onCancel);
+  };
+  const onUp = (event: PointerEvent) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    const moved = drag.moved; drag = null; stopFollowing();
+    if (!moved) return;
+    nav.classList?.remove("dragging"); host.style.removeProperty?.("transform");
+    const vertical = event.clientY < window.innerHeight / 2 ? "top" : "bottom", horizontal = event.clientX < window.innerWidth / 2 ? "left" : "right";
+    setCorner(`${vertical}-${horizontal}` as Corner);
+    // That click is dispatched in the same input sequence as this release.
+    suppressClick = true; setTimeout(() => { suppressClick = false; }, 0);
+  };
+  const onCancel = (event: PointerEvent) => {
+    if (!drag || event.pointerId !== drag.id) return;
+    drag = null; stopFollowing(); nav.classList?.remove("dragging"); host.style.removeProperty?.("transform");
+  };
+  nav.addEventListener("pointerdown", (event: PointerEvent) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+    window.addEventListener("pointermove", onMove); window.addEventListener("pointerup", onUp); window.addEventListener("pointercancel", onCancel);
+  });
   const updateKeyboardLayout = () => {
     if (disposed) return;
     const focused = document.activeElement;
@@ -755,11 +834,12 @@ export function mountUtility(api: RuntimeApi): () => void {
     );
     const hasSensors = !stop.hidden;
     const kbOpen = lastKeyboardHeight > 120;
+    const atBottom = !corner.startsWith("top");
     if (kbOpen && hasSensors) {
       nav.classList?.remove("tucked");
-      host.style.setProperty?.("bottom", `calc(${utilityBottom} + ${lastKeyboardHeight}px)`, "important");
+      host.style.setProperty?.("bottom", atBottom ? `calc(${utilityBottom} + ${lastKeyboardHeight}px)` : "auto", "important");
     } else {
-      host.style.setProperty?.("bottom", utilityBottom, "important");
+      host.style.setProperty?.("bottom", atBottom ? utilityBottom : "auto", "important");
       nav.classList?.toggle("tucked", kbOpen && editingExternal && panel.hidden && !hasSensors);
     }
   };
@@ -793,14 +873,14 @@ export function mountUtility(api: RuntimeApi): () => void {
   const observer = new MutationObserver(attach);
   const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
   const offErrors = api.errors?.on?.(renderDiagnostics) ?? (() => {});
-  renderInstallation(); renderSensors(); renderDiagnostics(); attach(); observer.observe(document, { childList: true, subtree: true });
+  applyCorner(); renderInstallation(); renderSensors(); renderDiagnostics(); attach(); observer.observe(document, { childList: true, subtree: true });
   const offGeometry = observeUtilityBar(nav);
   const offViewport = observeVisualViewport(({ keyboardHeight }) => {
     lastKeyboardHeight = keyboardHeight;
     updateKeyboardLayout();
   });
   return () => {
-    disposed = true; voiceControls?.dispose(); transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
+    disposed = true; stopFollowing(); voiceControls?.dispose(); transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     document.removeEventListener("focusin", updateKeyboardLayout); document.removeEventListener("focusout", updateKeyboardLayout);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();

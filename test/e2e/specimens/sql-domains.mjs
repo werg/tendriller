@@ -1,17 +1,29 @@
+// SQL specimen domains over the authored-time CRDT SQL materializer. The schema is NOT part of the
+// definition: tables are created by an ordinary authorized `initialize` transaction (DDL and DML share
+// original-signer authorization, authored-time ordering and atomic rollback), so a device that has not
+// yet received that operation derives an empty view instead of failing, and a later operation that
+// arrives earlier in authored time simply revises the derived rows.
+//
+// Rows are owned by the application's `group` collective so every enrolled member can claim and finish
+// them; a member's crypto grant never confers DDL, so only `initialize` creates objects.
 export function checklist(log) {
-  const collective = log.bytesToHex(log.APPLICATION_COLLECTIVE_ID);
+  const group = log.bytesToHex(log.GROUP_COLLECTIVE_ID);
+  const owner = `(SELECT id FROM chronolog_principals WHERE key=X'${group}')`;
   return log.defineApplication({
-    id: 'staging-shared-tasks', version: '1',
-    schema: log.program(
-      'CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, claimed_by TEXT, done INTEGER NOT NULL DEFAULT 0)',
-      'CREATE TABLE reservations (slot TEXT PRIMARY KEY, holder TEXT NOT NULL)'),
+    id: 'staging-shared-tasks', version: '2',
     commands: {
+      initialize: log.defineCommand({
+        description: 'Create the application tables as an ordinary authorized atomic DDL transaction', input: { type: 'null' },
+        prepare: () => log.program(
+          log.sqlStatement('CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, claimed_by TEXT, done INTEGER NOT NULL DEFAULT 0)'),
+          log.sqlStatement('CREATE TABLE reservations (slot TEXT PRIMARY KEY, holder TEXT NOT NULL)'),
+          log.emit('checklist.initialized', {})),
+      }),
       add: log.defineCommand({
         description: 'Add a task and record a corresponding event',
         input: { type: 'object', properties: { id: { type: 'integer' }, title: { type: 'string' } }, required: ['id', 'title'] },
         prepare: ({ id, title }) => log.program(log.sqlStatement(
-          `INSERT INTO tasks (id,title,chronolog_owner) VALUES (?,?,(SELECT id FROM chronolog_principals WHERE key=X'${collective}'))`,
-          [id, title]), log.emit('task.added', { id, title })),
+          `INSERT INTO tasks (id,title,chronolog_owner) VALUES (?,?,${owner})`, [id, title]), log.emit('task.added', { id, title })),
       }),
       claim: log.defineCommand({
         description: 'Claim an unfinished task', input: { type: 'integer' },
@@ -30,8 +42,8 @@ export function checklist(log) {
       reserve: log.defineCommand({
         description: 'Reserve a specific resource and time slot', input: { type: 'string', maxLength: 80 },
         prepare: slot => log.program(log.sqlStatement(
-          `INSERT INTO reservations (slot,holder,chronolog_owner) VALUES(?,lower(hex(chronolog_actor())),
-            (SELECT id FROM chronolog_principals WHERE key=X'${collective}'))`, [slot]), log.emit('slot.reserved', { slot })),
+          `INSERT INTO reservations (slot,holder,chronolog_owner) VALUES(?,lower(hex(chronolog_actor())),${owner})`, [slot]),
+        log.emit('slot.reserved', { slot })),
       }),
       cancel: log.defineCommand({
         description: 'Release a reservation held by the signed-in device', input: { type: 'string', maxLength: 80 },
@@ -41,24 +53,33 @@ export function checklist(log) {
       }),
     },
     queries: {
+      // SQL qualification that does not depend on application tables: it runs on the real engine against
+      // the real materialized database before `initialize` has necessarily arrived.
+      ready: log.defineQuery({ description: 'Read the engine catalog size to qualify SQL execution', input: { type: 'null' },
+        read: async view => (await view.query('SELECT count(*) FROM sqlite_master')).rows }),
       reservations: log.defineQuery({ description: 'Read the current reservations', input: { type: 'null' },
-        read: view => view.query('SELECT slot,holder FROM reservations ORDER BY slot').rows }),
+        read: view => rowsOrEmpty(view, 'reservations', 'SELECT slot,holder FROM reservations ORDER BY slot') }),
       board: log.defineQuery({ description: 'Read tasks and their assignments from the same revision', input: { type: 'null' },
-        read: view => view.query('SELECT id,title,claimed_by,done FROM tasks ORDER BY id LIMIT 200').rows }),
+        read: view => rowsOrEmpty(view, 'tasks', 'SELECT id,title,claimed_by,done FROM tasks ORDER BY id LIMIT 200') }),
       assignment: log.defineQuery({ description: 'Read assignee and completion', input: { type: 'integer' },
-        read: (view, id) => view.query('SELECT claimed_by,done FROM tasks WHERE id=?', [id]).rows[0] }),
+        read: async (view, id) => (await rowsOrEmpty(view, 'tasks', 'SELECT claimed_by,done FROM tasks WHERE id=?', [id]))[0] }),
       tasks: log.defineQuery({ description: 'Read ordered tasks', input: { type: 'null' },
-        read: view => view.query('SELECT id,title FROM tasks ORDER BY id') }),
+        read: view => rowsOrEmpty(view, 'tasks', 'SELECT id,title FROM tasks ORDER BY id') }),
     },
   });
 }
 
 export function intake(log, respondent) {
-  const collective = log.bytesToHex(log.APPLICATION_COLLECTIVE_ID);
+  const group = log.bytesToHex(log.GROUP_COLLECTIVE_ID);
   return log.defineApplication({
-    id: 'staging-private-intake', version: '1',
-    schema: log.program('CREATE TABLE answer (id INTEGER PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL)'),
+    id: 'staging-private-intake', version: '2',
     commands: {
+      initialize: log.defineCommand({
+        description: 'Create the answer table as an ordinary authorized atomic DDL transaction', input: { type: 'null' },
+        prepare: () => log.program(
+          log.sqlStatement('CREATE TABLE answer (id INTEGER PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL)'),
+          log.emit('intake.initialized', {})),
+      }),
       submit: log.defineCommand({
         description: 'Submit or correct a private answer at its expected revision',
         input: { type: 'object', properties: { body: { type: 'string', minLength: 1, maxLength: 2000 },
@@ -67,16 +88,24 @@ export function intake(log, respondent) {
           log.sqlStatement("SELECT chronolog_assert(lower(hex(chronolog_actor()))=?,'respondent_required')", [respondent]),
           log.sqlStatement("SELECT chronolog_assert(coalesce((SELECT revision FROM answer WHERE id=1),0)=?,'stale_answer')", [revision]),
           log.sqlStatement(`INSERT INTO answer (id,body,revision,chronolog_owner)
-            VALUES(1,?,?,(SELECT id FROM chronolog_principals WHERE key=X'${collective}'))
+            VALUES(1,?,?,(SELECT id FROM chronolog_principals WHERE key=X'${group}'))
             ON CONFLICT(id) DO UPDATE SET body=excluded.body, revision=excluded.revision`, [body, revision + 1]),
           log.emit('answer.updated', { revision: revision + 1 })),
       }),
     },
     queries: {
+      ready: log.defineQuery({ description: 'Read the engine catalog size to qualify SQL execution', input: { type: 'null' },
+        read: async view => (await view.query('SELECT count(*) FROM sqlite_master')).rows }),
       summary: log.defineQuery({ description: 'Review only count and source revision', input: { type: 'null' },
-        read: view => view.query('SELECT COUNT(*),coalesce(MAX(revision),0) FROM answer').rows[0] }),
+        read: async view => (await rowsOrEmpty(view, 'answer', 'SELECT COUNT(*),coalesce(MAX(revision),0) FROM answer'))[0] ?? [0, 0] }),
       answer: log.defineQuery({ description: 'Read the current private answer', input: { type: 'null' },
-        read: view => view.query('SELECT body,revision FROM answer WHERE id=1').rows }),
+        read: view => rowsOrEmpty(view, 'answer', 'SELECT body,revision FROM answer WHERE id=1') }),
     },
   });
+}
+
+/** A device that has not materialized `initialize` yet has no table: derive an empty view, never an error. */
+async function rowsOrEmpty(view, table, sql, parameters = []) {
+  const catalog = await view.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [table]);
+  return catalog.rows.length ? (await view.query(sql, parameters)).rows : [];
 }

@@ -29,12 +29,12 @@ test('quiet healthy setup watch uses no requests or heartbeat for 48 virtual hou
   t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});
   let opens=0,requests=0,changes=0,sends=0; const ws=new EventTarget();
   ws.send=()=>sends++;ws.close=()=>ws.dispatchEvent(Object.assign(new Event('close'),{code:1000}));
-  const watcher=watchApplicationSetup({api:'https://isolated.example/api/t/aaaaaaaaaaaa',token:'tk_'+'a'.repeat(32),onChange:()=>changes++,fetcher:()=>{requests++;throw Error();},openSocket:()=>{opens++;return ws;}});
+  const watcher=watchApplicationSetup({page:{socket(){throw Error('unused');},request(){requests++;throw Error();}},onChange:()=>changes++,openSocket:()=>{opens++;return ws;}});
   ws.dispatchEvent(new Event('open'));t.mock.timers.tick(48*HOUR);await flush();
   assert.deepEqual({opens,requests,changes,sends},{opens:1,requests:0,changes:0,sends:0});await watcher.close();
 });
 test('revoked watch expires active recovery after one read without idle retries',async()=>{
-  let requests=0,opens=0;const watcher=watchApplicationSetup({api:'https://isolated.example/api/t/aaaaaaaaaaaa',token:'tk_'+'a'.repeat(32),onChange(){},openSocket(){opens++;throw Error();},fetcher:async()=>{requests++;return new Response(null,{status:403});}});
+  let requests=0,opens=0;const watcher=watchApplicationSetup({page:{socket(){throw Error('unused');},async request(){requests++;throw Object.assign(Error('Forbidden'),{status:403,code:'forbidden'});}},onChange(){},openSocket(){opens++;throw Error();}});
   await watcher.closed;assert.equal(opens,1);assert.equal(requests,1);
 });
 test('active retry has attempt and wall deadline bounds',async()=>{
@@ -106,8 +106,8 @@ test('native observer bounds fetch, emits numeric counters only and does not ext
     globalThis.fetch=async (_input,init)=>{assert(init.signal);return new Response('PRIVATE_APP_DATA');};
     globalThis.WebSocket=class extends EventTarget{send(){} close(){this.dispatchEvent(new Event('close'));}};
     await import(${JSON.stringify(observer)});
-    await fetch('https://invalid.example/api/t/PRIVATE_HANDLE/peers/participant?token=PRIVATE_TOKEN',{headers:{Authorization:'Bearer PRIVATE_TOKEN'}});
-    const ws=new WebSocket('wss://invalid.example/api/t/PRIVATE_HANDLE/peers/discovery/watch?peerId=PRIVATE_ID', ['PRIVATE_TOKEN']);
+    await fetch('https://invalid.example/api/agent/pages/PRIVATE_HANDLE/peers/participant?token=PRIVATE_TOKEN',{headers:{Authorization:'Bearer PRIVATE_TOKEN'}});
+    const ws=new WebSocket('wss://invalid.example/api/agent/pages/PRIVATE_HANDLE/peers/discovery/watch?peerId=PRIVATE_ID', ['PRIVATE_TOKEN']);
     ws.dispatchEvent(new Event('open'));ws.send('PRIVATE_APP_DATA');
     ws.dispatchEvent(Object.assign(new Event('message'),{data:'PRIVATE_APP_DATA'}));ws.close();
     globalThis[Symbol.for('tendriller.idle-soak.record')]('wakeups',1,'PRIVATE_LABEL');

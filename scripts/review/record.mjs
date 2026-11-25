@@ -8,16 +8,17 @@ import { nativeHost } from './codex-host.mjs';
 import { reviewError } from './diagnostics.mjs';
 import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess } from './access.mjs';
+import { readFixtureHandle } from './fixture.mjs';
 import { preflightReviewDeployment, reviewProvenance } from './preflight.mjs';
 
 /** The browser context is the already-initialized owner profile: its retained identity and keys read the checklist. */
 export async function recordReview({ project, accessPath, output, composition, video = true, frameMs = 1500, browser, context, page, token }) {
   project = resolve(project); output = resolve(output);
-  const access = readReviewAccess(accessPath), handle = JSON.parse(readFileSync(resolve(project, '.private/handle.json')));
-  assert.equal(new URL(handle.api).origin, access.origin);
+  const access = readReviewAccess(accessPath), handle = readFixtureHandle(project);
+  assert.equal(handle.service, access.origin);
   const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   // The SDK and verifier use the same installed public archives as the native fixture.
-  const { core: { createClient }, coreAuthority: { authorityRecordBytes }, session: { verifyAuthorityBundle, verifyPublicationManifest, decodeRecord } } = await importReviewPackages(project);
+  const { core: { createAgentClient }, coreAuthority: { authorityRecordBytes }, session: { verifyAuthorityBundle, verifyPublicationManifest, decodeRecord } } = await importReviewPackages(project);
   assert(browser && context && page && token, 'Provide the initialized browser owner profile and its linked-account token');
   const definition = JSON.parse(readFileSync(new URL('../../plugin/plugin.json', import.meta.url)));
   const cases = definition.extensions['com.openai'].review.test_cases;
@@ -77,12 +78,12 @@ export async function recordReview({ project, accessPath, output, composition, v
       return { queries: value.queries.map(item => item.name), commands: value.commands.map(item => item.name), events: value.events.map(item => item.name), provider: value.provider };
     });
     await positive(2, async () => { const value = await query(); assert.equal(value.find(item => item.id === 'check-labels').complete, false); return value; });
-    const host = createClient(handle, { applicationId: app.applicationId });
+    const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: app.applicationId });
     const originalPublication = (await readWithAdmissionRetry(() => host.peers.publication())).publication.id;
     await page.goto(handle.page_url); await page.getByText('Incomplete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs));
     let operationId;
-    const operationFile = resolve(project, '.private/record-operation.json');
+    const operationFile = resolve(project, '.tendriller/pages', handle.id, 'record-operation.json');
     try { const saved = JSON.parse(readFileSync(operationFile)); assert.equal(saved.applicationId, app.applicationId); operationId = saved.operationId; }
     catch (error) { if (error.code !== 'ENOENT') throw error; operationId = randomUUID(); writeFileSync(operationFile, JSON.stringify({ ...app, operationId }), { flag: 'wx', mode: 0o600, flush: true }); }
     await positive(3, async () => {

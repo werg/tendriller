@@ -15,20 +15,17 @@ const pause = (ms, signal) => new Promise(resolve => {
 });
 
 /** Notifications wake the running native process, never imply a future model turn. */
-export function watchApplicationSetup({ api, token, signal, onChange, onStatus = () => {},
-  openSocket = (url, protocols) => new WebSocket(url, protocols), fetcher = fetch }) {
-  const url = new URL(api + '/setup/watch');
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
-      !/^\/api\/t\/[a-z2-7]{12}\/setup\/watch$/.test(url.pathname) || !/^tk_[a-z2-7]{32}$/.test(token) || typeof onChange !== 'function')
+export function watchApplicationSetup({ page, signal, onChange, onStatus = () => {},
+  openSocket = (path, protocols) => page.socket(path, protocols) }) {
+  if (!page || typeof page.request !== 'function' || typeof openSocket !== 'function' || typeof onChange !== 'function')
     throw fail('INVALID_SETUP_WATCH');
-  url.protocol = 'wss:';
   const stop = new AbortController(), lifetime = AbortSignal.any([stop.signal, ...[signal].filter(Boolean)]);
   let socket, failures = 0;
   const closed = (async () => {
     while (!lifetime.aborted) {
       let terminal = false;
       try {
-        const transport = socket = openSocket(url.href, [SETUP_WATCH_PROTOCOL, token]);
+        const transport = socket = openSocket('setup/watch', [SETUP_WATCH_PROTOCOL]);
         await new Promise(resolve => {
           let timer, ended = false;
           const done = code => {
@@ -70,16 +67,16 @@ export function watchApplicationSetup({ api, token, signal, onChange, onStatus =
       // repaired by restoring its credential, and must remain visibly retrying.
       let applicationMissing = false;
       try {
-        const response = await fetcher(api + '/self', { headers: { Authorization: 'Bearer ' + token }, redirect: 'error',
-          signal: AbortSignal.any([lifetime, AbortSignal.timeout(5000)]) });
-        if (response.status === 404) applicationMissing = (await response.json())?.error?.code === 'not_found';
-        else await response.body?.cancel();
-        if ([401, 403].includes(response.status)) { onStatus({ state: 'access_revoked' }); break; }
-      } catch { /* network failure remains retryable */ }
+        await page.request('', { signal: AbortSignal.any([lifetime, AbortSignal.timeout(5000)]) });
+      } catch (error) {
+        if (error?.status === 404) applicationMissing = error.code === 'not_found';
+        if ([401, 403].includes(error?.status)) { onStatus({ state: 'access_revoked' }); break; }
+        /* network failure remains retryable */
+      }
       if (lifetime.aborted) break;
       const retryInMs = Math.min(60000, 1000 * 2 ** Math.min(failures++, 6));
       if (applicationMissing) onStatus({ state: 'application_not_found', retryInMs,
-        next: 'Recreate the application in a new project directory: run npm run create and npm run init, publish, then restart with the new host handle. Keep the original private project, device storage and history for recovery.' });
+        next: 'The page was deleted or its grant removed. Create a replacement with tendril page new <slug> in the same workspace; keep this page\'s private folder and device storage for recovery.' });
       else onStatus({ state: 'reconnecting', retryInMs });
       await pause(retryInMs, lifetime);
     }

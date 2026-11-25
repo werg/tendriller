@@ -25,7 +25,7 @@ function fixture({ importResult = { imported: true }, keyResult = { publicKey: n
   const calls = [];
   const run = args => {
     calls.push(args[0]); log.push('native:' + args[0]);
-    if (args[0] === 'init-device') return JSON.stringify(keyResult);
+    if (args[0] === 'signer-key') return JSON.stringify(keyResult);
     if (args[0] === 'sign-enrollment') return JSON.stringify({ record: 'proof' }) + '\n';
     if (args[0] === 'provisioning-request') return JSON.stringify({ record: 'request' }) + '\n';
     return JSON.stringify(importResult);
@@ -37,9 +37,9 @@ test('native provisioning proves the native key, then transfers keys only throug
   const project = mkdtempSync(join(tmpdir(), 'review-provision-')); t.after(() => rmSync(project, { recursive: true, force: true }));
   const f = fixture();
   await provisionNative({ page: f.page, run: f.run, project });
-  assert.deepEqual(f.calls, ['init-device', 'sign-enrollment', 'provisioning-request', 'import-provisioning']);
+  assert.deepEqual(f.calls, ['signer-key', 'sign-enrollment', 'provisioning-request', 'import-provisioning']);
   const steps = f.log.filter(entry => entry.startsWith('button:') || entry.startsWith('native:'));
-  assert.deepEqual(steps, ['native:init-device', 'button:Create account-bound challenge for this key', 'native:sign-enrollment',
+  assert.deepEqual(steps, ['native:signer-key', 'button:Create account-bound challenge for this key', 'native:sign-enrollment',
     'button:Record external signed enrollment proof from incoming field', 'native:provisioning-request', 'button:Review recipient fingerprint',
     'button:Grant reviewed rights and wrap keys', 'native:import-provisioning']);
   assert.equal(JSON.parse(readFileSync(join(project, 'native-challenge.json'))).publicKey, nativeKey);
@@ -53,7 +53,7 @@ test('an invalid native key or a failed import stops explicitly without a succes
   const project = mkdtempSync(join(tmpdir(), 'review-provision-')); t.after(() => rmSync(project, { recursive: true, force: true }));
   const bad = fixture({ keyResult: { publicKey: 'not-a-key' } });
   await assert.rejects(provisionNative({ page: bad.page, run: bad.run, project }), /NATIVE_DEVICE_KEY_INVALID/);
-  assert.deepEqual(bad.log, ['native:init-device'], 'no browser action precedes a valid native key');
+  assert.deepEqual(bad.log, ['native:signer-key'], 'no browser action precedes a valid native key');
   const failed = fixture({ importResult: { imported: false } });
   await assert.rejects(provisionNative({ page: failed.page, run: failed.run, project }), /NATIVE_PROVISIONING_NOT_IMPORTED/);
 });

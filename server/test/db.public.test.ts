@@ -32,6 +32,21 @@ it('initializes a fresh schema and reopens matching storage without changing its
   });
 });
 
+it('opens pages created before agent grants existed, keeping their data and adding the grants table', async () => {
+  await isolatedDatabase(storage => {
+    const db = new Db(storage);
+    db.init();
+    // A page from the previous release: same revision, the old tokens table, no agent_grants.
+    storage.sql.exec('DROP TABLE agent_grants');
+    storage.sql.exec('CREATE TABLE tokens (name TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, last_used INTEGER)');
+    db.set('saved_work', { text: 'Existing page data' });
+    const reopened = new Db(storage);
+    reopened.init();
+    expect(reopened.get('saved_work', null)).toEqual({ text: 'Existing page data' });
+    expect(reopened.all('SELECT * FROM agent_grants')).toEqual([]);
+  });
+});
+
 it.each(['missing identity', 'revision-5 identity', 'empty identity', 'malformed identity'])(
   'rejects existing storage with %s before schema or data mutation', async scenario => {
     await isolatedDatabase(storage => {

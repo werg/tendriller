@@ -5,11 +5,16 @@ import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { readReviewAccess } from './review/access.mjs';
 import { chromium } from '@playwright/test';
-import { createClient } from '../dist/sdk/client.mjs';
-import { verifyAuthorityBundle, verifyPublicationManifest } from '@chronolog/peer-session';
+import { createAgentClient } from '../dist/sdk/client.mjs';
+import { authorityRecordBytes } from '../contract/authority.mjs';
+import { readFixtureHandle } from './review/fixture.mjs';
+import { decodeRecord, verifyAuthorityBundle, verifyPublicationManifest } from '@chronolog/peer-session';
 
 const project = resolve(process.argv[2]), access = readReviewAccess(process.argv[3]);
-const handle = JSON.parse(readFileSync(resolve(project, '.private/handle.json'), 'utf8'));
+// The project is the review fixture's agent workspace: one account credential, one shared signer, one granted page.
+const handle = readFixtureHandle(project);
+assert.ok(handle.id && handle.page_url && handle.application?.id, 'Run review-app setup first; the workspace has no registered page');
+assert.equal(handle.service, access.origin, 'The workspace belongs to another service origin');
 const origin = access.origin, resource = `${origin}/mcp`, clientId = 'https://chatgpt.com/oauth/client.json';
 const callbackUri = 'https://chatgpt.com/connector_platform_oauth_redirect';
 const report = { passed: false, chatgptConversationVerified: false, origin, applicationId: handle.application.id, checks: [] };
@@ -68,9 +73,9 @@ try {
   report.checks.push('Read the initial incomplete Check labels item');
   const display = await context.newPage(); await display.goto(handle.page_url);
   await display.getByRole('heading', { name: 'Review checklist' }).waitFor();
-  const host = createClient(handle, { applicationId: app.applicationId });
+  const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: app.applicationId });
   const beforePublication = (await host.peers.publication()).publication.id;
-  const operationRecord = resolve(project, '.private/acceptance-operation.json');
+  const operationRecord = resolve(project, '.tendriller/pages', handle.id, 'acceptance-operation.json');
   let operationId;
   try {
     const saved = JSON.parse(readFileSync(operationRecord, 'utf8'));
@@ -90,13 +95,11 @@ try {
   }
   const exactRetry = await call('call_application_command', { ...app, command: 'completeItem', input: { id: 'check-labels' }, operationId });
   assert.ok(!exactRetry.isError);
-  while ((await host.peers.publication()).publication.id === beforePublication) {
-    assert.ok(Date.now() < deadline, 'Signed snapshot deadline exceeded');
-    await new Promise(done => setTimeout(done, 200));
-  }
+  // The signed page is code and independent of data: it stays the original publication while the browser-owned replica converges.
+  assert.equal((await host.peers.publication()).publication.id, beforePublication, 'Data commands must not change the signed publication');
   await display.goto(handle.page_url);
-  await display.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 20000 });
-  report.checks.push('Apply the command, retry its exact ID and open the latest signed snapshot');
+  await display.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
+  report.checks.push('Apply the command, retry its exact ID and see it converge into the browser-owned replica of the unchanged signed page');
   let inbox;
   do {
     inbox = await call('read_application_events', app);
@@ -115,9 +118,11 @@ try {
   assert.ok(rejected.isError || rejected.structuredContent.outcome === 'rejected', JSON.stringify(rejected.structuredContent));
   assert.deepEqual(await read(), beforeDenied);
   report.checks.push('Reject deletion, another application and an unspecified item without changing state');
-  const authority = await verifyAuthorityBundle(await host.peers.application());
+  const finalMetadata = await host.peers.application();
+  await verifyAuthorityBundle(decodeRecord(authorityRecordBytes(finalMetadata.authority)));
   const publication = await host.peers.publication();
-  await verifyPublicationManifest(publication.publication, authority);
+  assert.equal(publication.publication.id, beforePublication);
+  await verifyPublicationManifest(publication.publication, finalMetadata.publicationAuthority);
   report.publication = publication.publication.id;
   await display.reload(); await display.getByText('✓ Complete · Check labels', { exact: true }).waitFor();
   await display.screenshot({ path: resolve(output, 'completed-checklist.png'), fullPage: true });

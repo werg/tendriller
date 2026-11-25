@@ -42,9 +42,9 @@ for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
         delayedSqlElapsedMs = Date.now() - requestedAt;
         await route.fulfill({ status: response.status(), headers, body });
       });
-      if (isPrivate || slowPeer === 'cold-sql') await (slowPeer === 'guest' ? guest : context).route('**/_tendril/peers/participant', async route => {
-        const body = route.request().postDataJSON();
-        if (body?.facet !== 'publication' || body?.action !== 'definition') return route.continue();
+      if (isPrivate || slowPeer === 'cold-sql') await (slowPeer === 'guest' ? guest : context).route('**/_tendril/application', async route => {
+        // Delay only the specimen Worker's authority/metadata read (it marks itself), not the page's own requests.
+        if (route.request().method() !== 'GET' || route.request().headers()['x-sql-fixture-read'] !== 'application') return route.continue();
         const response = await route.fetch();
         delayedReads++;
         // Beyond the unchanged physical transport's 10s opening deadline,

@@ -55,12 +55,14 @@ const fromRow = (row: IndexRow): Catalogue => ({
 });
 
 /** One indexed query. Discovery never fans out to dormant pages. */
-export async function listConnected(env: Env, account: string): Promise<Catalogue[]> {
+export const CONNECTED_PAGE_LIMIT = 100;
+export async function listConnected(env: Env, account: string, cursor: string | null = null): Promise<{ applications: Catalogue[]; nextCursor: string | null }> {
   const rows = await env.ACCOUNTS.prepare(`SELECT c.application_id,c.page_id,c.label
     FROM assistant_connections c JOIN tendrils t ON t.id=c.page_id
-    WHERE c.owner_account=? AND c.enabled=1 AND t.owner_account=c.owner_account AND t.state='active'
-    ORDER BY c.page_id LIMIT 20`).bind(account).all<IndexRow>();
-  return rows.results.map(fromRow);
+    WHERE c.owner_account=? AND c.enabled=1 AND t.owner_account=c.owner_account AND t.state='active' AND c.page_id>?
+    ORDER BY c.page_id LIMIT ?`).bind(account, cursor ?? '', CONNECTED_PAGE_LIMIT + 1).all<IndexRow>();
+  const visible = rows.results.slice(0, CONNECTED_PAGE_LIMIT);
+  return { applications: visible.map(fromRow), nextCursor: rows.results.length > CONNECTED_PAGE_LIMIT ? visible[visible.length - 1].page_id : null };
 }
 
 export async function resolveConnection(env: Env, account: string, applicationId: string): Promise<Catalogue> {

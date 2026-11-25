@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPeerDiscoveryWatcher, createPeersClient, PEER_DISCOVERY_PROTOCOL,
   validatePeerDiscoveryNotification } from '../peers.mjs';
-import { createClient } from '../client.mjs';
+import { createAgentClient } from '../client.mjs';
+import { fakeHub, TOKEN, PAGE } from './support/fake-hub.mjs';
 const peerId = 'ab'.repeat(32);
 const flush = () => new Promise(resolve => setImmediate(resolve));
 class Socket extends EventTarget {
@@ -18,27 +19,28 @@ function fixture(options = {}, factory) {
   return {watch,sockets};
 }
 
-test('watch uses native credential subprotocols or the page proxy cookie path; construction of the client is inert', async () => {
-  const opened = [], original = globalThis.WebSocket;
+test('watch uses the agent hub or the page proxy cookie path; construction of the client is inert', async () => {
+  const opened = [], original = globalThis.WebSocket, hub = fakeHub();
   globalThis.WebSocket = class extends Socket {constructor(url, protocols) {super(); opened.push({url,protocols,socket:this});}};
   try {
-    const native = createClient({api:'https://service.test/api/t/aaaaaaaaaaaa',token:'private-test-token'});
-    assert.equal(opened.length, 0);
+    const native = createAgentClient({service:'https://service.test',token:TOKEN}, {WebSocket:hub.WebSocket}).page(PAGE);
+    assert.equal(hub.connections.length, 0);
     const watch = native.peers.watchDiscovery(peerId);
-    assert.equal(opened[0].url, `wss://service.test/api/t/aaaaaaaaaaaa/peers/discovery/watch?peerId=${peerId}`);
-    assert.deepEqual(opened[0].protocols, [PEER_DISCOVERY_PROTOCOL,'private-test-token']);
-    opened[0].socket.receive({type:'ready'}); await watch.ready; watch.close();
+    hub.last.accept();
+    assert.deepEqual(hub.last.frames('open'), [{t:'open',s:1,page:PAGE,path:`peers/discovery/watch?peerId=${peerId}`,protocols:[PEER_DISCOVERY_PROTOCOL]}]);
+    hub.last.push({t:'opened',s:1,protocol:PEER_DISCOVERY_PROTOCOL});
+    hub.last.push({t:'data',s:1,text:JSON.stringify({type:'ready'})}); await watch.ready; watch.close();
     const page = createPeersClient({base:'https://page.test/s/code/_tendril',request:()=>{throw Error('No polling');}});
     const pageWatch = page.watchDiscovery(peerId);
-    assert.equal(opened[1].url, `wss://page.test/s/code/_tendril/peers/discovery/watch?peerId=${peerId}`);
-    assert.deepEqual(opened[1].protocols,[PEER_DISCOVERY_PROTOCOL]); pageWatch.close();
+    assert.equal(opened[0].url, `wss://page.test/s/code/_tendril/peers/discovery/watch?peerId=${peerId}`);
+    assert.deepEqual(opened[0].protocols,[PEER_DISCOVERY_PROTOCOL]); pageWatch.close();
     for (const base of ['http://remote.test/api','https://u:p@service.test/api','https://service.test/api?q=secret','https://service.test/api#fragment']) {
       const peers = createPeersClient({base,request:()=>{}});
       assert.throws(()=>peers.watchDiscovery(peerId),{code:'invalid_discovery_watch'});
     }
     assert.throws(()=>page.watchDiscovery('alias'),{code:'invalid_discovery_watch'});
     assert.throws(()=>page.watchDiscovery(peerId,{retryMs:0}),{code:'invalid_discovery_watch'});
-    assert.equal(opened.length,2);
+    assert.equal(opened.length,1);
   } finally {globalThis.WebSocket = original;}
 });
 
@@ -134,24 +136,25 @@ test('a newer controller fences the old watcher with 4000 without a reconnect co
 for(const status of [401,403,409]) test(`hidden upgrade refusal is terminal after authenticated self returns ${status}`, async t=>{
   t.mock.timers.enable({apis:['setTimeout']});let opens=0, probes=0;
   const peers=createPeersClient({base:'https://service.test/api/t/aaaaaaaaaaaa', socket:()=>{opens++;throw Error('hidden HTTP upgrade error');},
-    request:async(path,options)=>{probes++;assert.equal(path,'self');assert(options.signal instanceof AbortSignal);throw Object.assign(Error('refused'),{status});}});
+    request:async(path,options)=>{probes++;assert.equal(path,'');assert(options.signal instanceof AbortSignal);throw Object.assign(Error('refused'),{status});}});
   const watch=peers.watchDiscovery(peerId);
   await assert.rejects(watch.ready,{code:'discovery_access_revoked'});assert.equal((await watch.closed).code,4003);
   t.mock.timers.tick(86400000);await flush();assert.equal(opens,1);assert.equal(probes,1);
 });
 
-test('failure-only access diagnosis uses the original native request credentials and fetcher',async()=>{
-  const original=globalThis.WebSocket;let probes=0;
-  globalThis.WebSocket=class{constructor(){throw Error('upgrade refused');}};
+test('failure-only access diagnosis uses the agent credential and fetcher',async()=>{
+  let probes=0; const hub=fakeHub();
+  const client=createAgentClient({service:'https://service.test',token:TOKEN}, {WebSocket:hub.WebSocket,fetch:async(url,options)=>{
+    probes++;assert.equal(url,`https://service.test/api/agent/pages/${PAGE}/`);
+    assert.equal(options.headers.Authorization,'Bearer '+TOKEN);
+    return new Response('not JSON',{status:403});
+  }});
   try{
-    const native=createClient({api:'https://service.test/api/t/aaaaaaaaaaaa',token:'private-test-token'}, {fetch:async(url,options)=>{
-      probes++;assert.equal(url,'https://service.test/api/t/aaaaaaaaaaaa/self');
-      assert.equal(options.headers.Authorization,'Bearer private-test-token');
-      return new Response('not JSON',{status:403});
-    }});
-    const watch=native.peers.watchDiscovery(peerId);await assert.rejects(watch.ready,{code:'discovery_access_revoked'});
+    const watch=client.page(PAGE).peers.watchDiscovery(peerId);
+    hub.last.accept(); hub.last.push({t:'closed',s:1,code:1006,reason:'upgrade refused'});
+    await assert.rejects(watch.ready,{code:'discovery_access_revoked'});
     assert.equal(probes,1);
-  }finally{globalThis.WebSocket=original;}
+  }finally{client.close();}
 });
 
 test('healthy watches never probe; inconclusive failures back off and aborted probes cannot redial',async t=>{

@@ -1,55 +1,37 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { mkdtemp, mkdir, copyFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-const run = promisify(execFile);
+import { pathToFileURL } from 'node:url';
 
 for (const cleanupFailure of [false, true]) {
-  test(`inference launcher closes its native supervisor${cleanupFailure ? ' even after service cleanup fails' : ''}`, async t => {
+  test(`inference peer detaches from the agent program${cleanupFailure ? ' even after service cleanup fails' : ''}`, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'inference-lifecycle-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     await mkdir(join(directory, 'media'));
-    await mkdir(join(directory, 'helpers'));
-    await copyFile(new URL('../../docs/tutorial/helpers/cli-lifetime.mjs', import.meta.url), join(directory, 'helpers/cli-lifetime.mjs'));
-    for (const name of ['inference-peer.mjs', 'inference-protocol.mjs']) {
-      await copyFile(new URL(`../../docs/tutorial/media/${name}`, import.meta.url), join(directory, 'media', name));
-    }
-    // The real launcher owns a supervisor with a listening socket. Keep an
-    // active handle here so closing only its inner session leaves the process
-    // running, while owner cleanup allows a clean exit and subsequent reopen.
-    await writeFile(join(directory, 'session.mjs'), `
-export async function openSession() {
-  const listener = setInterval(() => {}, 1000);
-  return { session: { identity: { publicKey: 'a'.repeat(64) }, close: async () => console.log('fixture:inner-session-only') },
-    async close() { clearInterval(listener); console.log('fixture:supervisor-closed'); } };
-}
-`);
+    await copyFile(new URL('../../docs/tutorial/shared/cli-lifetime.mjs', import.meta.url), join(directory, 'cli-lifetime.mjs'));
+    for (const name of ['inference-peer.mjs', 'inference-protocol.mjs'])
+      await copyFile(new URL(`../../docs/tutorial/shared/media/${name}`, import.meta.url), join(directory, 'media', name));
+    const events = [];
+    globalThis.inferenceEvents = events;
     await writeFile(join(directory, 'media/inference-service.mjs'), `
 export function servePeerInference() {
   return { done: Promise.resolve(), async close() {
-    console.log('fixture:service-closed');
+    globalThis.inferenceEvents.push('service-closed');
     ${cleanupFailure ? "throw Error('fixture:service-cleanup-failed');" : ''}
   } };
 }
 `);
     await writeFile(join(directory, 'provider.mjs'), 'export const createInferenceProvider = async () => async () => ({ text: "unused" });\n');
-    let outcome;
-    try {
-      outcome = await run(process.execPath, ['media/inference-peer.mjs', '--allow-device', 'a'.repeat(64),
-        '--provider', './provider.mjs'], { cwd: directory, timeout: 5_000 });
-      assert.equal(cleanupFailure, false);
-    } catch (error) {
-      assert.equal(cleanupFailure, true);
-      assert.equal(error.killed, false, 'the native supervisor must release its active handle');
-      assert.equal(error.code, 1);
-      assert.match(error.stderr, /fixture:service-cleanup-failed/);
-      outcome = error;
-    }
-    assert.match(outcome.stdout, /fixture:service-closed[\s\S]*fixture:supervisor-closed/);
-    assert.doesNotMatch(outcome.stdout, /fixture:inner-session-only/);
+    const { runInference } = await import(pathToFileURL(join(directory, 'media/inference-peer.mjs')).href);
+    const attach = async (page, { signal }) => {
+      assert.equal(page, 'notes'); assert(signal === undefined || signal instanceof AbortSignal);
+      return { session: { identity: { publicKey: 'a'.repeat(64) }, close() { throw Error('must not close the agent-owned session'); } },
+        async detach() { events.push('detached'); } };
+    };
+    const running = runInference({ attach, args: ['--page', 'notes', '--allow-device', 'a'.repeat(64), '--provider', join(directory, 'provider.mjs')] });
+    if (cleanupFailure) await assert.rejects(running, /fixture:service-cleanup-failed/); else await running;
+    assert.deepEqual(events, ['service-closed', 'detached']);
   });
 }

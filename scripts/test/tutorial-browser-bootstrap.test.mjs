@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url';
 import * as peer from '@chronolog/peer-session';
 import * as authority from '@chronolog/authority';
 
-// Retained browser identity, key and authority bootstrap (docs/tutorial/helpers/browser-bootstrap.mjs).
+// Retained browser identity, key and authority bootstrap (docs/tutorial/shared/helpers/browser-bootstrap.mjs).
 // This replaces the removed device-pairing/ordering-pause workflow. The helper is bundled with its
 // public @tendriller/core imports mapped to this checkout's contract sources; the host is a scripted fetch.
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const built = await build({ entryPoints: [root + 'docs/tutorial/helpers/browser-bootstrap.mjs'], bundle: true, write: false,
+const built = await build({ entryPoints: [root + 'docs/tutorial/shared/helpers/browser-bootstrap.mjs'], bundle: true, write: false,
   platform: 'node', format: 'esm', logLevel: 'silent', plugins: [{ name: 'public-core', setup(builder) {
     builder.onResolve({ filter: /^@tendriller\/core\/peers$/ }, () => ({ path: root + 'contract/peers.mjs' }));
     builder.onResolve({ filter: /^@tendriller\/core\/authority$/ }, () => ({ path: root + 'contract/authority.mjs' }));

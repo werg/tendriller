@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const run = promisify(execFile);
-const cli = process.env.TENDRILLER_TOOLS_TEST_CLI ?? fileURLToPath(new URL('../bin/tendril.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./support/run-cli.mjs', import.meta.url));
 const revision = {"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view":"local","executionManifestDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","policyDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"};
 const change = { kind: 'materialized', revision, revisedProposalIds: [] };
 
@@ -137,7 +137,7 @@ test('stalled pagination fails with its last cursor instead of spinning forever'
 
 test('watch CLI rejects event options without event mode before importing a bootstrap', async () => {
   for (const flags of [['--cursor', 'old'], ['--topics', '[]'], ['--limit', '2'], ['--events', '--limit', '0'], ['--events', '--topics', '{}']]) {
-    await assert.rejects(run(process.execPath, [cli, 'watch', '--session', 'missing.mjs', ...flags]),
+    await assert.rejects(run(process.execPath, [cli, '--fixture', 'missing.mjs', 'watch', '--page', 'fixture', ...flags]),
       error => error.code === 64 && !error.stderr.includes('ERR_MODULE_NOT_FOUND'));
   }
 });
@@ -146,14 +146,14 @@ test('watch CLI timeout succeeds with progress after cleanup; unexpected end and
   const directory = await mkdtemp(join(tmpdir(), 'tendril-watch-')), module = join(directory, 'session.mjs');
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(module, `
-export async function attachSession({signal}) {
+export async function attach({signal}) {
   return {session:{async *changes(){
     yield {kind:'materialized',revision:{"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view":"local","executionManifestDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","policyDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},revisedProposalIds:[]};
     if(process.env.FIXTURE_END)return;
     await new Promise((resolve,reject)=>{if(signal.aborted)reject(signal.reason);else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});
   }},detach(){if(process.env.FIXTURE_CLEANUP_FAIL)throw Object.assign(Error('detach failed'),{code:'CLEANUP_FAILED'});}};
 }`);
-  const args = [cli, 'watch', '--session', module, '--mode', 'attach', '--timeout', '1'];
+  const args = [cli, '--fixture', module, 'watch', '--page', 'fixture', '--timeout', '1'];
   const result = await run(process.execPath, args);
   assert.deepEqual(JSON.parse(result.stderr), { watch: {
     mode: 'changes', cursor: null, revision: {"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view":"local","executionManifestDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","policyDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, reason: 'timeout',
@@ -205,7 +205,7 @@ test('event watch CLI timeout cannot hide failed view cleanup or its primary rea
   const directory = await mkdtemp(join(tmpdir(), 'tendril-watch-release-')), module = join(directory, 'session.mjs');
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(module, `
-export async function attachSession({signal}) {
+export async function attach({signal}) {
   return {session:{async *changes(){yield {kind:'materialized',revision:{"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view":"local","executionManifestDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","policyDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},revisedProposalIds:[]};},
     readView:async()=>({ revision: {"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view":"local","executionManifestDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","policyDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
       readEvents:()=>new Promise((resolve,reject)=>{
@@ -216,7 +216,7 @@ export async function attachSession({signal}) {
       release(){throw Object.assign(Error('view release failed'),{code:'VIEW_RELEASE_FAILED'});}
     })},detach(){}};
 }`);
-  const args = [cli, 'watch', '--events', '--cursor', 'previous', '--session', module, '--mode', 'attach', '--timeout', '1'];
+  const args = [cli, '--fixture', module, 'watch', '--page', 'fixture', '--events', '--cursor', 'previous', '--timeout', '1'];
   for (const readFails of [false, true]) {
     await assert.rejects(run(process.execPath, args, { env: { ...process.env, FIXTURE_ABORT_READ_FAILURE: readFails ? '1' : '' } }), error => {
       const result = JSON.parse(error.stderr);
@@ -275,15 +275,15 @@ test('watch CLI preserves a read error when its deadline expires during successf
   const directory = await mkdtemp(join(tmpdir(), 'tendril-watch-cancel-race-')), module = join(directory, 'session.mjs');
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(module, `
-export async function attachSession({signal}) {
+export async function attach({signal}) {
   return {session:{async *changes(){yield {kind:'materialized',revision:{"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view":"local","executionManifestDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","policyDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},revisedProposalIds:[]};},
     readView:async()=>({ revision: {"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","view":"local","executionManifestDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","policyDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
       readEvents(){throw Object.assign(Error('cursor recovered before the deadline'),{code:'EVENT_CURSOR_STALE'});},
       release:()=>new Promise(resolve=>{if(signal.aborted)resolve();else signal.addEventListener('abort',resolve,{once:true});})
     })},detach(){}};
 }`);
-  await assert.rejects(run(process.execPath, [cli, 'watch', '--events', '--cursor', 'previous',
-    '--session', module, '--mode', 'attach', '--timeout', '1']), error => {
+  await assert.rejects(run(process.execPath, [cli, '--fixture', module, 'watch', '--page', 'fixture', '--events', '--cursor', 'previous',
+    '--timeout', '1']), error => {
     const result = JSON.parse(error.stderr);
     assert.equal(error.code, 1); assert.equal(result.error.code, 'EVENT_CURSOR_STALE');
     assert.deepEqual(result.watch, { mode: 'events', cursor: 'previous', revision: null });
@@ -308,5 +308,34 @@ test('an already-aborted signal cannot turn an unrelated read error or AbortErro
     await assert.rejects(watchSession({ session }, () => assert.fail('must not emit'), {
       signal: stop.signal, events: true, cursor: 'previous',
     }), error => error === primary && error.watch.cursor === 'previous');
+  }
+});
+
+
+test('watch CLI reports a stale cursor after a revised projection with the current revision, the original emitted cursor and its primary cause', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'tendril-revised-')), module = join(directory, 'session.mjs');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // An earlier-authored operation arrived: the materialized revision changed and a cursor from the old
+  // projection is stale. There is no generation, recovery or adoption evidence, only the new revision identity.
+  const nextRevision = { digest: 'd'.repeat(64), view: 'local', executionManifestDigest: 'e'.repeat(64), policyDigest: 'f'.repeat(64) };
+  await writeFile(module, 'export async function attach() { return { session: {'
+    + 'async *changes() { yield { kind:"materialized", revision:' + JSON.stringify(nextRevision) + ', revisedProposalIds:["earlier-operation"] }; },'
+    + 'async readView() { return { readEvents() { throw Object.assign(Error("cursor belongs to an earlier projection"), {'
+    + 'code:"EVENT_CURSOR_STALE",revision:' + JSON.stringify(nextRevision) + '}); },'
+    + 'release() { if (process.env.RELEASE_FAILS) throw Object.assign(Error("view release failed"), { code:"VIEW_RELEASE_FAILED" }); } }; } }, detach() {} }; }');
+  for (const releaseFails of [false, true]) {
+    await assert.rejects(run(process.execPath, [cli, '--fixture', module, 'watch', '--page', 'fixture', '--events', '--cursor', 'handled-old'],
+      { env: { ...process.env, ...(releaseFails ? { RELEASE_FAILS: '1' } : {}) } }), error => {
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, '', 'a stale cursor emits nothing and never skips ahead');
+        const result = JSON.parse(error.stderr);
+        assert.equal(result.error.code, 'EVENT_CURSOR_STALE', 'the primary read failure is never replaced by cleanup');
+        assert.deepEqual(result.revision, nextRevision);
+        assert.equal(result.watch.cursor, 'handled-old', 'the last handled cursor is preserved, not advanced or rewritten');
+        assert.equal('recovery' in result, false, 'no generation or recovery evidence exists');
+        if (releaseFails) assert.deepEqual(result.cleanup, { code: 'VIEW_RELEASE_FAILED', message: 'view release failed' });
+        else assert.equal('cleanup' in result, false);
+        return true;
+      });
   }
 });

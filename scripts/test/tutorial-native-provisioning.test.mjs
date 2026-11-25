@@ -4,183 +4,156 @@ import { build } from 'esbuild';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import * as peer from '@chronolog/peer-session';
 import * as authority from '@chronolog/authority';
 
-// Optional native participant bootstrap (docs/tutorial/helpers/native-session.mjs). Replaces the
-// removed native pairing runner: explicit device creation, account-bound enrollment proof, recipient-bound
-// provisioning, cached-first opening and owned shutdown. The retained device store, the supervisor/RTC
-// owner modules and the host are fakes; peer-session, authority and the core record helpers are the real ones.
-// This is a unit-level contract check of the helper, not qualification of the native packages.
+// Optional native participant provisioning for one workspace page (docs/tutorial/shared/helpers/page-provisioning.mjs
+// and shared/native-page.mjs). The workspace's shared signer is the page device identity; nothing here creates an
+// application root, membership, epoch key or schema. Account-bound enrollment proof, recipient-bound key
+// provisioning, the explicit `initialized.json` marker and cached-first opening are checked with the real
+// peer-session, authority and record helpers; the retained device store and the host are fakes.
+// This is a unit-level contract check of the helpers, not qualification of the native packages.
 const root = fileURLToPath(new URL('../../', import.meta.url));
+// The helpers import the public core package by name; bundle them with that name mapped to this checkout's
+// contract sources, and fake only the RTC/setup modules the native page composes.
 const fakes = {
-  '@chronolog/peer-session/native': `export async function openNativeDevice(options){return globalThis.__native.openDevice(options);}`,
-  '@chronolog/peer-session/browser': `export const connectApplicationOwner=async()=>{throw Error('MUST_NOT_ATTACH_IN_THIS_TEST');};`,
-  '@chronolog/peer-session/worker': `export const createApplicationOwner=session=>({session});`,
-  '@tendriller/core/native-owner': `export const createNativeAttachmentKey=()=>globalThis.__native.attachmentKey();
-export const createNativeSessionSupervisor=options=>globalThis.__native.supervise(options);
-export const attachNativeSession=async()=>{throw Error('MUST_NOT_ATTACH_IN_THIS_TEST');};`,
   '@tendriller/core/native-rtc': `export const participateNativeApplication=(session,options)=>globalThis.__native.participate(session,options);`,
+  '@tendriller/core/setup': `export const watchApplicationSetup=()=>({close(){}});`,
 };
-const core = { peers: 'peers', authority: 'authority', setup: 'setup', assistant: 'assistant', limits: 'limits', 'transport-diagnostics': '../session/transport-diagnostics' };
-const built = await build({ entryPoints: [root + 'docs/tutorial/helpers/native-session.mjs'], bundle: true, write: false,
-  platform: 'node', format: 'esm', logLevel: 'silent', plugins: [{ name: 'native-fakes', setup(builder) {
-    builder.onResolve({ filter: /^@chronolog\/peer-session\/(native|browser|worker)$|^@tendriller\/core\/(native-owner|native-rtc)$/ }, args => ({ path: args.path, namespace: 'fake' }));
+const bundle = async entry => {
+  const built = await build({ entryPoints: [root + entry], bundle: true, write: false, platform: 'node', format: 'esm', logLevel: 'silent', plugins: [{ name: 'core', setup(builder) {
+    builder.onResolve({ filter: /^@tendriller\/core\/(native-rtc|setup)$/ }, args => ({ path: args.path, namespace: 'fake' }));
     builder.onLoad({ filter: /.*/, namespace: 'fake' }, args => ({ contents: fakes[args.path], loader: 'js' }));
-    builder.onResolve({ filter: /^@tendriller\/core\/([\w-]+)$/ }, args => {
-      const name = core[args.path.split('/').at(-1)]; if (!name) return { errors: [{ text: 'Unmapped core import ' + args.path }] };
-      return { path: root + 'contract/' + name + '.mjs' };
-    });
+    builder.onResolve({ filter: /^@tendriller\/core\/authority$/ }, () => ({ path: root + 'contract/authority.mjs' }));
   } }] });
-const { createNativeBootstrap } = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
-
+  return import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
+};
+const { provisionPage } = await bundle('docs/tutorial/shared/helpers/page-provisioning.mjs');
+const { openNativePage } = await bundle('docs/tutorial/shared/native-page.mjs');
 const applicationId = '61'.repeat(32);
-const definition = peer.defineApplication({ id: 'native-bootstrap-fixture', version: '1', commands: {}, queries: {} });
+const definition = peer.defineApplication({ id: 'native-provisioning-fixture', version: '1', commands: {}, queries: {} });
 const memoryStore = () => { const values = new Map(); return { values, async get(key) { return values.get(key)?.slice() ?? null; }, async put(key, value) { values.set(key, value.slice()); } }; };
-const record = value => authority.encodeRecord(value);
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 const unhex = text => Uint8Array.from(text.match(/../g), byte => parseInt(byte, 16));
-const member = (publicKey, { administrator = false, writer = true } = {}) => ({ publicKey, reader: true, writer, administrator, publisher: false, finalizer: false });
+const member = (publicKey, { administrator = false } = {}) => ({ publicKey, reader: true, writer: true, administrator, publisher: false, finalizer: false });
 const executionManifestDigest = peer.bytesToHex((await peer.executionManifestArtifacts(await peer.eventExecutionManifest())).executionManifestDigest);
 
-/** One browser-owner authority with the native device optionally listed as a (keyless) member. */
-async function ownerAuthority(nativeKey, rootPublicKey) {
+/** One browser-owner authority with the page's native device optionally listed as a (keyless) member. */
+async function ownerAuthority(nativeKey, rootPublicKey, forApplication = applicationId) {
   const signer = await authority.createSigningIdentity(), key = crypto.getRandomValues(new Uint8Array(32));
-  const root = rootPublicKey ?? (await authority.createSigningIdentity()).publicKey;
-  const descriptor = await authority.signAppDescriptor({ applicationId, rootPrincipal: root, authorityPublicKey: signer.publicKey, executionManifestDigest, finalityPolicy: { kind: 'none' } }, signer);
-  const membership = await authority.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
-    epochKeyDigest: await authority.epochKeyCommitment(applicationId, 0, key),
-    members: [member(root, { administrator: true }), ...(nativeKey ? [member(nativeKey)] : [])] }, signer);
-  return { bundle: { descriptor, memberships: [membership] }, key, signer };
+  const rootKey = rootPublicKey ?? (await authority.createSigningIdentity()).publicKey;
+  const descriptor = await authority.signAppDescriptor({ applicationId: forApplication, rootPrincipal: rootKey, authorityPublicKey: signer.publicKey, executionManifestDigest, finalityPolicy: { kind: 'none' } }, signer);
+  const membership = await authority.signMembership({ applicationId: forApplication, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
+    epochKeyDigest: await authority.epochKeyCommitment(forApplication, 0, key),
+    members: [member(rootKey, { administrator: true }), ...(nativeKey ? [member(nativeKey)] : [])] }, signer);
+  return { bundle: { descriptor, memberships: [membership] }, key };
 }
 
-async function harness(t, { hostAuthority = null, otherApplication = false } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'native-bootstrap-')), stores = new Map(), counts = { devices: 0, deviceCloses: 0, supervised: [], participations: [], order: [], keys: 0 };
+/** The page context `tendril agent run` / the starter's root commands hand a page helper. */
+async function harness(t, { hostAuthority = null } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'page-provisioning-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  globalThis.__native = {
-    async openDevice({ path, create }) {
-      const store = stores.get(path) ?? stores.set(path, memoryStore()).get(path);
-      counts.devices++; const device = await peer.openApplicationDevice({ store, ...(create ? { create: true } : {}) });
-      return { ...device, async close() { counts.deviceCloses++; return device.close?.(); } };
-    },
-    attachmentKey: () => 'attachment-key-' + ++counts.keys,
-    async supervise(options) {
-      const record = { options, closes: 0 }; counts.supervised.push(record);
-      record.owner = await options.openOwner({ signal: options.signal, profileId: options.profileId });
-      return { ownerInstanceId: 'fixture-owner', async close() { record.closes++; counts.order.push('supervisor'); } };
-    },
-    participate(session, options) {
-      const controller = { session, options, closes: 0, status: { phase: 'closed', connectedPeers: [] }, onStatus: () => () => {}, async close() { this.closes++; counts.order.push('participation'); } };
-      counts.participations.push(controller); return controller;
-    },
-  };
-  t.after(() => { delete globalThis.__native; });
-  const state = { hostAuthority }, privateState = new Map(), peers = { application: async () => ({ selection: { id: applicationId }, authority: state.hostAuthority ? { record: hex(record(state.hostAuthority)) } : null, publicationAuthority: null }),
-    publication: async () => null };
-  const local = { privateDirectory: pathToFileURL(directory + '/p/'),
+  const store = memoryStore(), counts = { devices: 0, deviceCloses: 0 };
+  const probe = await peer.openApplicationDevice({ store, create: true }), { publicKey, privateKey } = probe.identity; await probe.close();
+  const state = { hostAuthority }, privateState = new Map();
+  const context = { page: { applicationId, slug: 'notes' }, signer: { publicKey, privateKey }, signal: undefined,
+    host: { peers: { application: async () => ({ selection: { id: applicationId },
+      authority: state.hostAuthority ? { record: hex(authority.encodeRecord(state.hostAuthority)) } : null, publicationAuthority: null }) } },
     readPrivate: async (name, optional) => { if (privateState.has(name)) return structuredClone(privateState.get(name)); if (optional) return null; throw Object.assign(Error('missing ' + name), { code: 'ENOENT' }); },
     savePrivate: async (name, value) => { privateState.set(name, structuredClone(value)); return value; },
-    project: async () => ({ handle: { application: { id: otherApplication ? 'ff'.repeat(32) : applicationId } }, host: { peers } }) };
-  const bootstrap = createNativeBootstrap({ definition, local });
-  const devicePath = directory + '/p/device.sqlite', file = async (name, value) => { const path = join(directory, name); await writeFile(path, JSON.stringify(value)); return path; };
-  return { bootstrap, state, counts, stores, privateState, devicePath, directory, file, local,
-    store: () => stores.get(devicePath) };
+    openDevice: async ({ create = false } = {}) => {
+      counts.devices++; const device = await peer.openApplicationDevice({ store, ...(create ? { create: true } : {}) });
+      return { ...device, async close() { counts.deviceCloses++; return device.close?.(); } };
+    } };
+  const file = async (name, value) => { const path = join(directory, name); await writeFile(path, JSON.stringify(value)); return path; };
+  return { context, state, counts, store, privateState, file, publicKey, provision: (action, argument) => provisionPage(context, action, argument) };
 }
-const silently = async work => { const log = console.log; console.log = () => {}; try { return await work(); } finally { console.log = log; } };
 
-test('init-device creates only a retained signing identity: no root, membership, descriptor or epoch key', async t => {
-  const h = await harness(t);
-  const first = await h.bootstrap.main(['init-device']);
-  assert.match(first.publicKey, /^[a-f0-9]{64}$/);
-  assert.match(first.next, /account-bound challenge/);
-  assert.equal(JSON.stringify(first).includes('privateKey'), false);
-  await assert.rejects(authority.createAuthorityProvider({ store: h.store(), applicationId }), /AUTHORITY_CACHE_MISSING/);
-  assert.equal([...h.store().values.keys()].some(key => /^(authority|starter\/bootstrap)/.test(key)), false);
-  // Re-running resumes the same retained identity and closes every device handle it opened.
-  const again = await h.bootstrap.main(['init-device']);
-  assert.equal(again.publicKey, first.publicKey);
-  assert.equal(h.counts.deviceCloses, h.counts.devices);
-  await assert.rejects(h.bootstrap.main(['init-device', '../escape']), /explicit retained native profile name/);
-});
-
-test('sign-enrollment signs only an exact account-bound challenge for this retained key and exposes no private key', async t => {
-  const h = await harness(t), { publicKey } = await h.bootstrap.main(['init-device']);
-  const owner = await ownerAuthority(publicKey); h.state.hostAuthority = owner.bundle;
-  const challenge = { applicationId, publicKey, challenge: 'cd'.repeat(16), expiresAt: Date.now() + 60_000 };
-  const proof = await h.bootstrap.main(['sign-enrollment', await h.file('challenge.json', challenge)]);
+test('sign-enrollment signs only an exact challenge for this page and shared signer, retains the original proof and exposes no private key', async t => {
+  const h = await harness(t), challenge = { applicationId, publicKey: h.publicKey, challenge: 'cd'.repeat(16), expiresAt: Date.now() + 60_000 };
+  await assert.rejects(h.provision('sign-enrollment', await h.file('c0.json', challenge)), /first authorized browser must initialize/);
+  const owner = await ownerAuthority(h.publicKey); h.state.hostAuthority = owner.bundle;
+  const proof = await h.provision('sign-enrollment', await h.file('challenge.json', challenge));
   const signed = authority.decodeRecord(unhex(proof.record));
-  assert.equal(signed.signer, publicKey);
-  assert.deepEqual({ ...signed.payload }, { applicationId, publicKey, challenge: challenge.challenge, epoch: 0, epochKeyDigest: owner.bundle.memberships.at(-1).payload.epochKeyDigest });
+  assert.equal(signed.signer, h.publicKey);
+  assert.deepEqual({ ...signed.payload }, { applicationId, publicKey: h.publicKey, challenge: challenge.challenge, epoch: 0, epochKeyDigest: owner.bundle.memberships.at(-1).payload.epochKeyDigest });
   assert.equal(JSON.stringify(proof).includes('privateKey'), false);
   for (const wrong of [{ ...challenge, applicationId: 'ee'.repeat(32) }, { ...challenge, publicKey: 'ab'.repeat(32) }])
-    await assert.rejects(h.bootstrap.main(['sign-enrollment', await h.file('wrong.json', wrong)]), /another application\/key/);
-  assert.equal(h.counts.deviceCloses, h.counts.devices, 'a refused challenge still releases the retained device');
+    await assert.rejects(h.provision('sign-enrollment', await h.file('wrong.json', wrong)), /another page\/shared signer/);
+  // An uncertain reply must resume the original epoch-bound proof, not sign another one.
+  h.state.hostAuthority = (await ownerAuthority(h.publicKey)).bundle;
+  assert.deepEqual(await h.provision('sign-enrollment', await h.file('again.json', challenge)), proof);
+  assert.equal(h.counts.devices, 0, 'signing a challenge opens no page device');
 });
 
-test('provisioning requires the owner browser to initialize authority first and never accepts another application scope', async t => {
-  const missing = await harness(t); await missing.bootstrap.main(['init-device']);
-  await assert.rejects(missing.bootstrap.main(['provisioning-request']), /first owner browser must initialize/);
+test('provisioning requires the first browser to initialize authority and never accepts another application scope', async t => {
+  const missing = await harness(t);
+  await assert.rejects(missing.provision('provisioning-request'), /first authorized browser must initialize/);
   assert.equal(missing.counts.deviceCloses, missing.counts.devices);
-  await assert.rejects(authority.createAuthorityProvider({ store: missing.store(), applicationId }), /AUTHORITY_CACHE_MISSING/, 'nothing is cached from a missing authority');
-  const foreign = await ownerAuthority();
-  const wrong = await harness(t, { hostAuthority: foreign.bundle, otherApplication: true }); await wrong.bootstrap.main(['init-device']);
-  await assert.rejects(wrong.bootstrap.main(['provisioning-request']), /Application scope mismatch/);
+  await assert.rejects(authority.createAuthorityProvider({ store: missing.store, applicationId }), /AUTHORITY_CACHE_MISSING/, 'nothing is cached from a missing authority');
+  const foreign = await ownerAuthority(undefined, undefined, 'ff'.repeat(32));
+  const wrong = await harness(t, { hostAuthority: foreign.bundle });
+  await assert.rejects(wrong.provision('provisioning-request'), /Page authority scope mismatch/);
   assert.equal(wrong.counts.deviceCloses, wrong.counts.devices);
+  assert.equal(await wrong.context.readPrivate('provisioning-request.json', true), null);
+  assert.equal(await wrong.context.readPrivate('initialized.json', true), null);
 });
 
-test('provisioning request and import transfer keys only to the explicitly granted recipient and persist across reopen', async t => {
-  const h = await harness(t), { publicKey } = await h.bootstrap.main(['init-device']);
-  const ownerDevice = await peer.openApplicationDevice({ store: memoryStore(), create: true });
-  const owner = await ownerAuthority(publicKey, ownerDevice.identity.publicKey);
+test('request and import transfer keys only to the explicitly granted recipient, mark the page provisioned and persist across reopen', async t => {
+  const h = await harness(t), ownerDevice = await peer.openApplicationDevice({ store: memoryStore(), create: true });
+  const owner = await ownerAuthority(h.publicKey, ownerDevice.identity.publicKey);
   h.state.hostAuthority = owner.bundle;
-  const request = await h.bootstrap.main(['provisioning-request']);
+  const request = await h.provision('provisioning-request');
+  assert.deepEqual(await h.provision('provisioning-request'), request, 'a retained request is resumed, never replaced');
   const signedRequest = authority.decodeRecord(unhex(request.record));
-  assert.equal(signedRequest.payload.recipient, publicKey); assert.equal(signedRequest.payload.applicationId, applicationId);
-  // Authority is now cached on the device and the native device holds no data key yet.
-  const cached = await authority.createAuthorityProvider({ store: h.store(), applicationId });
-  assert.equal(cached.grant(publicKey)?.reader, true); assert.equal(cached.epochKey(0), null);
+  assert.equal(signedRequest.payload.recipient, h.publicKey); assert.equal(signedRequest.payload.applicationId, applicationId);
+  // Authority is cached on the page device and it holds no data key yet.
+  const cached = await authority.createAuthorityProvider({ store: h.store, applicationId });
+  assert.equal(cached.grant(h.publicKey)?.reader, true); assert.equal(cached.epochKey(0), null);
+  assert.equal(await h.context.readPrivate('initialized.json', true), null, 'a request alone never marks the page provisioned');
   // The browser owner (root, holding the key) exports a package bound to that exact request.
   const ownerSession = await peer.createApplicationSession({ device: ownerDevice, definition, authority: owner.bundle, epochKeys: new Map([[0, owner.key]]) });
   let packageText;
-  try { packageText = hex(record(await ownerSession.provisioning.exportProvisioning(signedRequest))); } finally { await ownerSession.close(); }
-  // A damaged package is rejected and leaves the device keyless.
+  try { packageText = hex(authority.encodeRecord(await ownerSession.provisioning.exportProvisioning(signedRequest))); } finally { await ownerSession.close(); }
+  // A damaged package is rejected, leaves the device keyless and writes no provisioned marker.
   const damaged = packageText.slice(0, -4) + (packageText.endsWith('0000') ? 'ffff' : '0000');
-  await assert.rejects(h.bootstrap.main(['import-provisioning', await h.file('damaged.json', { record: damaged })]));
-  assert.equal((await authority.createAuthorityProvider({ store: h.store(), applicationId })).epochKey(0), null);
+  await assert.rejects(h.provision('import-provisioning', await h.file('damaged.json', { record: damaged })));
+  assert.equal((await authority.createAuthorityProvider({ store: h.store, applicationId })).epochKey(0), null);
+  assert.equal(await h.context.readPrivate('initialized.json', true), null);
   assert.equal(h.counts.deviceCloses, h.counts.devices, 'failed import releases the retained device');
-  const imported = await h.bootstrap.main(['import-provisioning', await h.file('package.json', { record: packageText })]);
-  assert.equal(imported.imported, true); assert.match(imported.next, /Browser edits do not require this process/);
-  const provisioned = await authority.createAuthorityProvider({ store: h.store(), applicationId });
+  const imported = await h.provision('import-provisioning', await h.file('package.json', { record: packageText }));
+  assert.equal(imported.provisioned, true); assert.equal(imported.publicKey, h.publicKey); assert.match(imported.next, /Browser authoring never waited/);
+  assert.deepEqual(await h.context.readPrivate('initialized.json'), { applicationId, publicKey: h.publicKey, executionManifestDigest, provisioned: true });
+  const provisioned = await authority.createAuthorityProvider({ store: h.store, applicationId });
   assert.deepEqual(provisioned.epochKey(0), owner.key, 'the granted key survives reopening from the device store alone');
   assert.equal(h.counts.deviceCloses, h.counts.devices);
+  // A page can be reopened locally from cached authority: the session only needs stored authority and its granted key.
+  const device = await h.context.openDevice();
+  const reopened = await peer.createApplicationSession({ device, definition, authority: provisioned });
+  assert.equal(reopened.identity.publicKey, h.publicKey);
+  assert.equal(reopened.status.canAuthor, true, 'cached authority and its granted key are sufficient to author locally');
+  await reopened.close();
 });
 
-test('run opens cached state, stores one attachment credential, and closes the supervisor then participation exactly once', async t => {
-  const h = await harness(t), { publicKey } = await h.bootstrap.main(['init-device']);
-  const owner = await ownerAuthority(publicKey);
-  await authority.createAuthorityProvider({ store: h.store(), bundle: owner.bundle, epochKeys: new Map([[0, owner.key]]) });
-  const opened = await h.bootstrap.openSession({});
-  assert.equal(opened.session.identity.publicKey, publicKey);
-  assert.equal(opened.session.status.canAuthor, true, 'cached authority and its granted key are sufficient to author locally');
-  assert.equal(h.counts.supervised.length, 1);
-  const supervised = h.counts.supervised[0].options;
-  assert.equal(supervised.profileId, `${applicationId}:main`);
-  assert.deepEqual(supervised.bindings.map(binding => binding.id), ['terminal']);
-  assert.equal(h.privateState.get('native-attachment-main.json').token, supervised.bindings[0].token);
-  assert.equal(h.counts.participations.length, 1);
-  assert.equal(h.counts.participations[0].options.peers, (await h.local.project()).host.peers, 'introductions use the host peers client, not a second backend');
-  await opened.close();
-  assert.deepEqual(h.counts.order, ['supervisor', 'participation']);
-  assert.equal(h.counts.supervised[0].closes, 1); assert.equal(h.counts.participations[0].closes, 1);
-  // A second run reuses the same credential rather than minting another.
-  await (await h.bootstrap.openSession({})).close();
-  assert.equal(h.counts.keys, 1); assert.equal(h.privateState.get('native-attachment-main.json').token, 'attachment-key-1');
-});
-
-test('an uninitialized application never starts a native owner or a credential-bearing supervisor session', async t => {
-  const h = await harness(t); await h.bootstrap.main(['init-device']);
-  await assert.rejects(h.bootstrap.openSession({}), /first owner browser must initialize/);
-  assert.equal(h.counts.participations.length, 0);
-  assert.equal(h.counts.deviceCloses, h.counts.devices, 'the failed owner open releases its retained device');
+test('the native page owner opens only a provisioned page from cached state and closes participation before the owner exactly once', async t => {
+  const h = await harness(t), order = [];
+  globalThis.__native = { participate: (session, options) => ({ session, options, status: { phase: 'closed', connectedPeers: [] }, onStatus: () => () => {}, async close() { order.push('participation'); } }) };
+  t.after(() => { delete globalThis.__native; });
+  // An uninitialized or merely prepared page never starts a native owner and opens no device.
+  await assert.rejects(openNativePage(h.context, { definition }), error => error.code === 'native_page_provisioning_required');
+  assert.equal(h.counts.devices, 0);
+  const owner = await ownerAuthority(h.publicKey);
+  await authority.createAuthorityProvider({ store: h.store, bundle: owner.bundle, epochKeys: new Map([[0, owner.key]]) });
+  await h.context.savePrivate('initialized.json', { applicationId, publicKey: h.publicKey, executionManifestDigest, provisioned: true });
+  await h.context.savePrivate('host-configuration.json', { executionManifestDigest });
+  const opened = await openNativePage(h.context, { definition });
+  assert.equal(opened.session.identity.publicKey, h.publicKey);
+  assert.equal(opened.session.status.canAuthor, true);
+  assert.equal(opened.participation.options.peers, h.context.host.peers, 'introductions use the host peers client, not a second backend');
+  await opened.close(); await opened.close();
+  assert.deepEqual(order, ['participation']);
+  // A marker for another signer is refused rather than adopted.
+  await h.context.savePrivate('initialized.json', { applicationId, publicKey: 'ab'.repeat(32), executionManifestDigest, provisioned: true });
+  await assert.rejects(openNativePage(h.context, { definition }), error => error.code === 'native_page_provisioning_required');
 });

@@ -1,5 +1,6 @@
 import { RESIDENT_LIMIT } from './limits';
 import { HttpError } from './http';
+import { applicationPrepared } from './authority';
 import type { Tendril } from './tendril';
 
 type Lifetime = 'ad_hoc' | 'resident';
@@ -18,8 +19,8 @@ export function lifetimeChangePending(t: Pick<Tendril, 'db'>): boolean {
 
 function validate(t: Tendril, target: Lifetime): void {
   if (target === 'ad_hoc') {
-    if (t.db.get('peer_generation_configuration', null))
-      throw new HttpError(409, 'peer_controls_require_resident', 'Signed peer control state must remain retained until explicitly deleted');
+    if (applicationPrepared(t))
+      throw new HttpError(409, 'application_requires_resident', 'A prepared application keeps its signed authority and publication retained until explicitly deleted');
   } else if (!t.db.get('owner_account', null)) {
     throw new HttpError(403, 'account_required', 'Open the page as its owner before making it resident');
   }

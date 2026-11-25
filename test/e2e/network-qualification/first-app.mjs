@@ -10,8 +10,8 @@ import { waitForDirectEvidence } from './wait-direct.mjs';
 
 export function currentOperationApplied(priorOperation, operationId, status) {
   return typeof operationId === 'string' && operationId.length > 0 && operationId !== priorOperation &&
-    typeof status === 'string' && status.startsWith(`${operationId}: `) &&
-    status.includes('Applied: accepted') && status.includes('peer retention receipt(s) observed');
+    typeof status === 'string' && status.includes(`Operation: ${operationId}\n`) &&
+    status.includes('Materialized locally: accepted') && /Retained by peers: [a-f0-9]{64}/u.test(status);
 }
 
 export function assertHiddenDirectPath(before, after) {
@@ -48,7 +48,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
           hiddenAfter: null, nativeApplied: false, publicAppliedReadWhileHidden: false, signalRows: null,
           navigationsBefore: before.navigations, completed: false,
           signalBoundMs: 5000, remoteReadBoundMs: 15000,
-          readScope: 'coherent-public-applied-event-view',
+          readScope: 'coherent-public-local-event-view',
           beforeRevision: transportBefore.connectionRevision };
         assert.equal(backgroundProof.hiddenBefore, true);
         const operationId = randomUUID(), text = `Hidden native ${operationId}`;
@@ -73,13 +73,12 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
           try { await expect.poll(() => page.evaluate(async ({ text, operationId }) => {
             if (!document.hidden) throw Error('NETWORK_LAB_NOT_HIDDEN');
             const application = await window.tendril.application.ready();
-            const view = await application.readView({ view: 'applied' });
+            const view = await application.readView({ view: 'local' });
             try {
-              const batch = await view.readEvents({ topics: ['note'], limit: 128 });
+              const batch = await view.readEvents({ topics: ['note.put','note.deleted'], limit: 128 });
               if (!document.hidden) throw Error('NETWORK_LAB_NOT_HIDDEN');
               if (batch.hasMore) throw Error('NETWORK_LAB_EVENT_READ_LIMIT');
-              return batch.transactions.some(transaction => transaction.events.some(event =>
-                event.origin?.operationId === operationId && event.topic === 'note' && event.payload?.text === text));
+              return batch.events.some(event=>event.operationId===operationId&&event.topic==='note.put'&&event.payload?.text===text);
             } finally { await view.release(); }
           }, { text, operationId }), { timeout: 15_000 }).toBe(true);
           } finally { backgroundProof.publicReadElapsedMs = performance.now() - reading; }
@@ -171,15 +170,15 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       const nativeText = `Network native ${nativeOperation}`;
       await peer.request('command', { text: nativeText, operationId: nativeOperation });
       await expect(page.locator('#notes li').filter({ hasText: nativeText })).toHaveCount(1, { timeout: 15_000 });
-      await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 30_000 });
+      await expect(page.locator('#connection-status')).toContainText('Local signing and storage ready', { timeout: 30_000 });
       const text = `Network browser ${randomUUID()}`;
       const priorOperation = await page.locator('#operation-id').inputValue();
-      await page.locator('#note').fill(text);
+      await page.locator('#new').click(); await page.locator('#note').fill(text);
       await page.locator('#submit').click();
       await expect.poll(() => page.locator('#operation-id').inputValue(), { timeout: 30_000 }).not.toBe(priorOperation);
       const operationId = await page.locator('#operation-id').inputValue();
       assert.ok(operationId);
-      await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
+      await expect(page.locator('#operation-status')).toContainText('Materialized locally: accepted', { timeout: 30_000 });
       await expect.poll(async () => {
         const status = await page.locator('#operation-status').textContent();
         return currentOperationApplied(priorOperation, operationId, status);
@@ -218,7 +217,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
         scope: 'reload-to-fresh-direct-and-new-document-signal' };
       try {
       await page.reload();
-      await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
+      await expect(page.locator('#public-key')).toHaveValue(browserDevice, { timeout: 30_000 });
       await expect(page.locator('#notes li')).toHaveCount(retained.rows.length, { timeout: 30_000 });
       assert.equal(await page.locator('#operation-id').inputValue(), retained.operationId);
       assert.deepEqual((await peer.request('query')).value, retained.rows);
@@ -229,7 +228,7 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       assert.ok(current.connectionRevision > previous.connectionRevision);
       assert.equal(current.browserLinks, 1);
       assert.equal(current.otherLinks, 0);
-      await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 30_000 });
+      await expect(page.locator('#connection-status')).toContainText('Local signing and storage ready', { timeout: 30_000 });
       const rows = await page.evaluate(() => window.appRequests.request('rows', { count: 2, width: 100 }).then(value => value.rows.length));
       assert.equal(rows, 2);
       Object.assign(reopenProof, { afterRevision: current.connectionRevision, afterBrowserLinks: current.browserLinks,
@@ -242,11 +241,11 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
     },
     async settle({ signal }) {
       signal.throwIfAborted();
-      await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 30_000 });
+      await expect(page.locator('#connection-status')).toContainText('Local signing and storage ready', { timeout: 30_000 });
       await peer.request('query');
       // The optional native participant must still hold its local storage and key
       // prerequisites. Peer routes and finality are reported separately, never required here.
-      setupReadiness = await peer.request('local-ready', {}, 60_000);
+      setupReadiness = await peer.request('setup-ready', {}, 60_000);
       assert.equal(setupReadiness.after.ready, true);
     },
     async cleanup() {

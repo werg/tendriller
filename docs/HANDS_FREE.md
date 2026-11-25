@@ -241,8 +241,10 @@ command.
 
 **Wake word requires a visible, running page with microphone permission. It does
 not work when all tabs are closed. A service worker cannot maintain an always-on
-microphone.** Background Web Push notifications use no microphone and are a
-separate feature. Server agent event delivery, including `A/wake` and wake
+microphone.** The existing [opt-in hosted Web Push path](BROWSER_API.md#web-push-notifications)
+uses no microphone and can display notifications when the page is closed;
+browser permission, subscription rights and host VAPID configuration are separate
+requirements. Server agent event delivery, including `A/wake` and wake
 budgets, is also separate from spoken phrase detection.
 
 ## Output and offline assets

@@ -1,22 +1,20 @@
 {
-  "name": "tendriller-shared-notes",
+  "name": "tendriller-pages",
   "private": true,
   "type": "module",
-  "engines": {
-    "node": ">=22.15.0"
-  },
+  "engines": { "node": ">=24" },
   "scripts": {
-    "create": "node setup.mjs create",
-    "setup:prepare": "node account-setup.mjs prepare",
-    "setup:finish": "node account-setup.mjs finish",
-    "host:adopt": "node host-adoption.mjs",
+    "page:new": "node setup.mjs new",
     "init": "node setup.mjs init",
-    "build": "node build.mjs",
-    "deploy": "npm run build && node publish.mjs",
-    "logs": "npx tendril --session ./session.mjs --mode attach logs",
-    "peer": "node session.mjs",
-    "serve": "node assistant.mjs run",
-    "assistant:prepare": "node assistant.mjs prepare",
-    "assistant": "node assistant.mjs"
+    "build": "node setup.mjs build",
+    "deploy": "node setup.mjs deploy",
+    "assistant:prepare": "node setup.mjs assistant",
+    "sign-enrollment": "node setup.mjs sign-enrollment",
+    "provisioning-request": "node setup.mjs provisioning-request",
+    "import-provisioning": "node setup.mjs import-provisioning",
+    "demo": "node setup.mjs demo",
+    "agent": "tendril agent run",
+    "status": "tendril status",
+    "logs": "tendril logs"
   }
 }

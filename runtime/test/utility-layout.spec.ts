@@ -219,3 +219,27 @@ for (const width of [1280, 320]) {
     await page.screenshot({ path: testInfo.outputPath('agent-invite-created.png') });
   });
 }
+
+test('the page options bar drags to any corner, snaps there, remembers it and still opens on a tap', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 800 }); await fixture(page);
+  const options = page.getByRole('button', { name: 'Page options', exact: true });
+  const box = async () => (await page.locator('tendril-utility').boundingBox())!;
+  const start = await options.boundingBox();
+  await page.mouse.move(start!.x + start!.width / 2, start!.y + start!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(60, 80, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => { const b = await box(); return b.x < 40 && b.y < 40; }).toBe(true);
+  await expect(page.locator('#page-options')).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath('utility-top-left.png') });
+  await options.click();
+  await expect(page.locator('#page-options')).toBeVisible();
+  expect((await page.locator('#page-options').boundingBox())!.y).toBeGreaterThan((await options.boundingBox())!.y);
+  await page.screenshot({ path: testInfo.outputPath('utility-top-left-open.png') });
+  await expect(page.getByRole('button', { name: 'Top left', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Bottom right', exact: true }).click();
+  await expect.poll(async () => { const b = await box(); return b.x + b.width > 340 && b.y + b.height > 740; }).toBe(true);
+  await page.getByRole('button', { name: 'Top right', exact: true }).click();
+  await page.evaluate(() => { const w = window as any; w.disposeUtility(); w.mount(); });
+  await expect.poll(async () => { const b = await box(); return b.x + b.width > 340 && b.y < 40; }).toBe(true);
+});

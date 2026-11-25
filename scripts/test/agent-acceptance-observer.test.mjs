@@ -48,13 +48,13 @@ async function fixture(t, { native = true } = {}) {
     executionManifestDigest: revision.executionManifestDigest, operationId: 'original-publication', revision: 0, previous: null, entry: 'index.html',
     files: [{ path: 'index.html', hash: 'ff'.repeat(32), size: 3, type: 'text/html' }] }, publisher);
   const receipt = { publication, version: 1 };
-  const hostHandle = { id: 'a'.repeat(12), api: 'https://staging.example/api/t/' + 'a'.repeat(12), token: 'PRIVATE_HANDLE',
+  const credential = { service: 'https://staging.example', agent: { id: 'ag_' + 'a'.repeat(26), name: 'fixture' }, token: 'ta_' + 'p'.repeat(32) };
+  const hostHandle = { id: 'a'.repeat(12),
     application: { id: applicationId }, page_url: 'https://' + 'a'.repeat(12) + '.staging.example/s/' + 'a'.repeat(26) + '/' };
   const saveRecord = (name, value) => writeFileSync(join(project, name), JSON.stringify(value), { mode: 0o600 });
-  saveRecord('descriptor.json', descriptor); saveRecord('handle.json', hostHandle); saveRecord('publication.json', publication); saveRecord('assets.json', []);
-  writeFileSync(join(project, 'session.mjs'), 'export const fixture = true;');
-  const config = { protocol: 'tendriller-starter-observer-v2', origin: 'https://staging.example', project, applicationId, descriptor: { file: 'descriptor.json' }, handle: { file: 'handle.json' },
-    ...(native ? { native: { module: 'session.mjs', deviceId: root.publicKey, deviceStore: 'device.sqlite' } } : {}), ownerAccountId: 'fixture-owner',
+  saveRecord('descriptor.json', descriptor); saveRecord('handle.json', hostHandle); saveRecord('credential.json', credential); saveRecord('publication.json', publication); saveRecord('assets.json', []);
+  const config = { protocol: 'tendriller-starter-observer-v2', origin: 'https://staging.example', project, applicationId, descriptor: { file: 'descriptor.json' }, handle: { file: 'handle.json' }, credential: { file: 'credential.json' },
+    ...(native ? { native: { deviceId: root.publicKey, deviceStore: 'device.sqlite' } } : {}), ownerAccountId: 'fixture-owner',
     query: { name: 'notes', sql: 'SELECT operationId, author, text FROM notes', rows: '/value', marker: '/text', author: '/author', operationId: '/operationId' },
     browser: { device: { selector: '#device', read: 'value' }, rows: '#rows li' }, publication: { operationId: 'original-publication', intent: { file: 'publication.json' }, assets: { file: 'assets.json' } },
     commands: { 'browser-to-agent': { name: 'addNote' }, 'agent-to-browser': { name: 'addNote', input: { text: 'Observer marker' }, marker: 'Observer marker', operationId },
@@ -68,17 +68,17 @@ async function fixture(t, { native = true } = {}) {
     locator: () => ({ count: async () => 1, inputValue: async () => browserSigner.publicKey,
       allInnerTexts: async () => ['Observer marker · operation ' + operationId] }) };
   const lifecycle = { owner: null, authority: authorityRecord(p.encodeRecord(bundle)) };
-  const packages = async () => ({ session: p, core: { authorityRecordBytes, createClient: () => ({
+  const packages = async () => ({ session: p, core: { authorityRecordBytes, createAgentClient: (auth) => { assert.equal(auth.token, credential.token); return { page: (id, options) => { assert.equal(id, hostHandle.id); assert.equal(options.applicationId, applicationId); return {
     peers: { application: async () => ({ selection: { id: applicationId }, publicationAuthority, authority: lifecycle.authority }), publication: async () => clone(receipt),
       publish: async (intent, _assets) => { assert.deepEqual(intent, publication); return clone(receipt); } },
-    info: async () => ({ id: hostHandle.id, application: hostHandle.application, page_url: hostHandle.page_url, owner_account_id: lifecycle.owner }) }) } });
+    info: async () => ({ id: hostHandle.id, application: hostHandle.application, page_url: hostHandle.page_url, owner_account_id: lifecycle.owner }) }; } }; } } });
   const owner = { page, actions: [] };
   const observer = new StarterObserver({ ...request, runDirectory, configPath, owner, native: async (_config, options) => sessionMeasurement(session, loaded, p, options), packages });
   const browserState = clone(state); browserState.author = browserSigner.publicKey;
   browserLocal = { applicationId, deviceId: browserSigner.publicKey, revision, rows: [{ ...rows[0], author: browserSigner.publicKey }],
     events: [{ ...event, author: browserSigner.publicKey }], operation: { state: browserState } };
   return { directory, project, runDirectory, config, configPath, loaded, request, save, saveRecord, session, state, handle, envelope, bundle, root, browserSigner, publisher,
-    publicationAuthority, receipt, lifecycle, owner, observer, page, stats, browserLocal, setOffline: value => { browserOffline = value; } };
+    publicationAuthority, receipt, lifecycle, owner, observer, page, stats, credential, browserLocal, setOffline: value => { browserOffline = value; } };
 }
 
 test('current public authority returns void; outer signature, historical writer and scope are independently verified', async t => {
@@ -130,7 +130,7 @@ test('round trip requires real measured signed envelope and coherent domain row,
   assert.equal(passed.evidence.proposalId, f.state.proposalId); assert.equal('commandOutcome' in passed.evidence, false);
   f.page.locator = () => ({ count: async () => 1, inputValue: async () => f.browserSigner.publicKey, allInnerTexts: async () => ['Observer marker unrelated'] });
   const wrong = await f.observer.observe({ check: 'agent-to-browser' }); assert.equal(wrong.status, 'failed'); assert.deepEqual(wrong.evidence.mismatches, ['browser-operation-row']);
-  evidence.finish(); assert.equal(evidence.data.outcome, 'blocked'); assert(!readFileSync(join(f.runDirectory, 'report.json'), 'utf8').includes('PRIVATE_HANDLE'));
+  evidence.finish(); assert.equal(evidence.data.outcome, 'blocked'); assert(!readFileSync(join(f.runDirectory, 'report.json'), 'utf8').includes(f.credential.token));
 });
 
 test('lost response checkpoint preserves proposal, timestamp and exact signed-envelope witness on retry', async t => {
@@ -209,9 +209,17 @@ test('private config pins run/project/origin and rejects old-profile config, sig
   const f = await fixture(t);
   assert.throws(() => loadObserverConfig(f.configPath, { ...f.request, origin: 'https://other.example' }), /observer-origin/);
   f.config.protocol = 'tendriller-starter-observer-v1'; f.save(); assert.throws(() => loadObserverConfig(f.configPath, f.request), /observer-config-version/);
-  f.config.protocol = 'tendriller-starter-observer-v2'; f.config.native.module = 'escape.mjs';
-  writeFileSync(join(f.directory, 'foreign.mjs'), ''); symlinkSync(join(f.directory, 'foreign.mjs'), join(f.project, 'escape.mjs')); f.save();
-  assert.throws(() => loadObserverConfig(f.configPath, f.request), /native-module-outside-project/);
+  f.config.protocol = 'tendriller-starter-observer-v2'; f.save();
+  // Native is optional and workspace-attached only: no module, export or profile fallback exists.
+  for (const key of ['module', 'export', 'profile']) {
+    f.config.native[key] = 'escape.mjs'; f.save();
+    assert.throws(() => loadObserverConfig(f.configPath, f.request), /native-workspace-attachment-required/);
+    delete f.config.native[key]; f.save();
+  }
+  const record = f.config.handle; delete f.config.credential; f.save();
+  assert.throws(() => loadObserverConfig(f.configPath, f.request), /agent-credential/);
+  f.config.credential = { file: 'credential.json' }; writeFileSync(join(f.project, 'handle.json'), JSON.stringify({ ...JSON.parse(readFileSync(join(f.project, 'handle.json'), 'utf8')), token: 'ta_' + 'p'.repeat(32) })); f.save();
+  assert.throws(() => loadObserverConfig(f.configPath, f.request), /page-record-must-not-hold-agent-credential/);
   await assert.rejects(nativeMeasurement({}), /optional-native-observer-not-configured/);
 });
 
@@ -229,8 +237,11 @@ test('probe only attaches/detaches; current retry uses the original proposal han
   const f = await fixture(t); let detached = 0, submitted = 0;
   const command = f.session.command;
   f.session.command = (...args) => { submitted++; return command(...args); };
-  const dependencies = { packages: async () => ({ session: p }), loadModule: async () => ({ attachSession: async () => ({ session: f.session, detach: async () => { detached++; } }),
-    openSession: () => { throw Error('must never open another signer'); } }) };
+  const attachments = [];
+  const dependencies = { packages: async () => ({ session: p }), workspaceTools: async () => ({
+    openWorkspace: async ({ root }) => ({ root }),
+    attachPage: async (workspace, page, { signal }) => { attachments.push([workspace.root, page]); assert(signal instanceof AbortSignal);
+      return { session: f.session, detach: async () => { detached++; } }; } }) };
   const options = { operationId: f.state.operationId, command: 'addNote', input: { text: 'Observer marker' } };
   const lost = await probe(f.loaded, { ...options, action: 'submit-lost' }, dependencies);
   assert.equal(lost.waiterInterrupted, true); assert.equal(submitted, 1); assert.equal(detached, 1);
@@ -242,6 +253,7 @@ test('probe only attaches/detaches; current retry uses the original proposal han
   delete f.session.exportFacts;
   await assert.rejects(probe(f.loaded, { ...options, action: 'submit' }, dependencies), /signed-operation-evidence-unsupported/);
   assert.equal(submitted, 1); assert.equal(detached, 3);
+  assert.deepEqual([...new Set(attachments.map(entry => entry.join('|')))], [f.project + '|' + f.loaded.handle.id], 'only the workspace page attachment is used');
 });
 
 test('multiple signed outer envelopes preserve one stable proposal and retry selects the original witness', async t => {

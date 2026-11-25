@@ -25,8 +25,9 @@ export function pageUrl(env: Env, id: string, key: string): string {
   return `https://${id}${suffix}.${env.PAGE_BASE_DOMAIN}/s/${key}/`;
 }
 
-export function apiUrl(env: Env, id: string): string {
-  return `${publicBase(env)}/api/t/${id}`;
+/** The agent API base for one granted page. */
+export function agentPageApi(env: Env, id: string): string {
+  return `${publicBase(env)}/api/agent/pages/${id}`;
 }
 
 export interface PageRoute {

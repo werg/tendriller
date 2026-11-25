@@ -184,8 +184,9 @@ export class StarterObserver {
   async host(config) {
     const { core, session: sdk } = await this.packages(config.project);
     requireAuthoredProofSDK(sdk);
-    const host = core.createClient(config.handle, { applicationId: config.applicationId,
-      fetch: (url, options = {}) => fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(12000) }) });
+    const host = core.createAgentClient({ service: config.origin, token: config.credential.token }, {
+      fetch: (url, options = {}) => fetch(url, { ...options, redirect: 'error', signal: AbortSignal.any([AbortSignal.timeout(12000), ...[options.signal].filter(Boolean)]) })
+    }).page(config.handle.id, { applicationId: config.applicationId });
     const metadata = await host.peers.application();
     same(metadata.selection?.id, config.applicationId, 'authority-application');
     const publicationAuthority = need(metadata.publicationAuthority, 'independent-publication-authority');
@@ -459,7 +460,7 @@ export class StarterObserver {
       need(this.state.checkpoints['preclaim-publication'], 'run-owned-preclaim-checkpoint');
       const process = config.native ? need(this.state.checkpoints['native-process']?.process, 'owned-process-checkpoint') : null;
       if (process && this.processAlive(process)) throw new MeasurementError('owned-native-process-still-running');
-      const response = await fetch(config.handle.api, { headers: { Authorization: 'Bearer ' + config.handle.token }, redirect: 'error', signal: AbortSignal.timeout(12000) });
+      const response = await fetch(config.handle.api, { headers: { Authorization: 'Bearer ' + config.credential.token }, redirect: 'error', signal: AbortSignal.timeout(12000) });
       if (response.status !== 404) throw new MeasurementError('owned-application-not-confirmed-deleted');
       const body = await response.json(); same(body.error?.code ?? body.code, 'not_found', 'cleanup-host-not-found');
       return { ownedApplicationsReconciled: true, nativeProcessesStopped: true, persistentReviewerServicesUntouched: true,

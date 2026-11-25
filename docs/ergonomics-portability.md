@@ -254,7 +254,7 @@ All twelve workstreams are mandatory and execute concurrently against shared ver
 
 ### Workstream W9: Automated Handoff, Checkpointing & Anti-Split-Brain Recovery (`tendriller`)
 
-* **Current Baseline:** `docs/BUILD_AN_APP.md` documents manual private checkpoints and warns that temporary setup credentials expire after 24 hours.
+* **Current Baseline:** `docs/BUILD_AN_APP.md` documents manual private checkpoints and describes the private `.tendriller/` workspace checkpoint (agent credential, shared signer and page device stores).
 * **Mandatory Deliverables:** Automate all three distinct continuity flows so agents never manually copy SQLite sidecar files or stash private keys in undocumented memory folders:
 
 | Command / Flow | Purpose | Artifact Contents & Safety Guarantees |

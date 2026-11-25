@@ -28,8 +28,20 @@ Different participants connect to that same pipe through transports matched to t
 ## Identities and isolation
 
 - **Page identity vs. application identity:** each hosted page has an isolated origin and host page ID plus one independent 32-byte lowercase hex `application.id`. Chronolog's pinned descriptor binds `application.id` to its root principal, authority key, execution manifest and finality policy. It does not freeze an application schema.
-- **Independent rights:** host login (account cookies / OAuth), device signing grants (Chronolog authority), and code publication rights are separate checks. A page login or bearer token never grants database rights.
-- **Host storage:** D1 holds accounts, OAuth grants, setup allocations, and assistant connection indexes (`server/migrations/0001_accounts.sql`); each page Durable Object (schema revision 12) holds signed authority records, publication heads, and assistant delivery state; R2 holds immutable signed assets. There are no application operation, event-history, or database tables on the host.
+- **Independent rights:** host login (account cookies / OAuth), device signing grants (Chronolog authority), and code publication rights are separate checks. A page login or an agent's `ta_` credential never grants database rights.
+- **Host storage:** D1 holds accounts, OAuth grants, assistant connection indexes (`server/migrations/0001_accounts.sql`), and agents with their page grants and join codes (`server/migrations/0002_agents.sql`); one `AgentHub` Durable Object per agent multiplexes that agent's control streams onto its page objects; each page Durable Object (schema revision 12) holds signed authority records, publication heads, and assistant delivery state; R2 holds immutable signed assets. There are no application operation, event-history, or database tables on the host.
+
+## Agents and the control hub
+
+One **agent** maintains many pages. It has one account-level credential (`ta_`
+token, hashed on the host) and one signing key shared by all of its pages; pages
+it creates are granted to it automatically and the owner grants existing pages.
+Its one local program, `tendril agent run`, holds one `tendriller.hub.v1`
+WebSocket to an `AgentHub` Durable Object for all control traffic (setup notices,
+discovery, invitations, rendezvous and assistant adapter streams). Application sync
+data (WebRTC data channels and relay) keeps per-page connections. The program is
+optional for browser reads and durable writes. See
+[multi-page agents](MULTI_PAGE_AGENTS.md) and [agents and grants](AGENT_BINDINGS.md).
 
 ## Code publications
 

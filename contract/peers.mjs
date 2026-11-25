@@ -169,7 +169,7 @@ export function createPeersClient({ base, request: dispatch, applicationId, init
       const watchProtocols = [PEER_DISCOVERY_PROTOCOL, ...protocols.filter(value =>
         ![PEER_DISCOVERY_PROTOCOL, PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL, PEER_RELAY_PROTOCOL].includes(value))];
       return createPeerDiscoveryWatcher(() => (options.socket || socket)(url.href, watchProtocols), { ...options,
-        probeAccess: options.probeAccess ?? (({ signal }) => request('self', { signal })),
+        probeAccess: options.probeAccess ?? (({ signal }) => request('', { signal })),
       });
     },
     listenInvitations(peerId, options = {}) {

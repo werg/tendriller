@@ -165,8 +165,8 @@ and exact answer input make that redelivery safe. After a revision, reread a coh
 request before continuing an old cursor. A cursor is bound to the revision that
 produced it, so a stale one needs an explicit reread, never a silent skip.
 
-For an event-driven process use `tendril --session ./session.mjs --mode attach
-watch --events --topics '["agent/request"]'` with the last committed cursor, or the public event forwarder. Plain `watch`
+For an event-driven process use `tendril --page notes watch --events
+--topics '["agent/request"]'` with the last committed cursor, or the public event forwarder. Plain `watch`
 reports coalesced query invalidations and is not an event delivery log. See
 [CLI supervision](tools/CLI.md) and [restart checklist](AGENT_RESTART.md).
 Map each raw request event into the query's reference shape before using the

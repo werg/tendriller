@@ -5,7 +5,7 @@ import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import { RUNTIME_FEATURES } from '../../runtime/resources.mjs';
 
-const sources = { Camera: '../../docs/tutorial/media/camera.mjs', VoiceControls: '../../docs/tutorial/media/voice.mjs',
+const sources = { Camera: '../../docs/tutorial/shared/media/camera.mjs', VoiceControls: '../../docs/tutorial/shared/media/voice.mjs',
   Sensors: '../../runtime/src/sensors.ts', Voice: '../../runtime/src/voice/index.ts' };
 const bundles = await Promise.all(Object.entries(sources).map(async ([name, path]) => {
   const result = await build({ entryPoints: [new URL(path, import.meta.url).pathname], bundle: true,
@@ -71,11 +71,11 @@ function environment({ media, consent = () => true, decode, encode } = {}) {
   runtime.sensors = { status: () => tracker.status(), on: listener => tracker.onChange(() => listener(tracker.status())),
     stopAll() { const count = tracker.stopAll(); emit('sensors_stopped', { count }); return count; } };
   const video = { srcObject: null, videoWidth: 2400, videoHeight: 1200, play: async () => {}, pause() {} };
-  return { context, runtime, video, stream, document, window, workers, recordings, tracks, drafts, statuses, canvases, decoded,
+  return { context, runtime, video, stream, document, window, navigator, workers, recordings, tracks, drafts, statuses, settings, canvases, decoded,
     get acquisitions() { return acquisitions; }, get fetches() { return fetches; },
     camera() { return context.Camera.createCameraController({ runtime, video, onStatus: value => statuses.push(value) }); },
-    voice() { return context.VoiceControls.createVoiceController({ runtime, consent, onDraft: value => drafts.push(value),
-      onStatus: value => statuses.push(value), loadVoice: async () => context.Voice }); },
+    voice(options = {}) { return context.VoiceControls.createVoiceController({ runtime, consent, onDraft: value => drafts.push(value),
+      onStatus: value => statuses.push(value), loadVoice: async () => context.Voice, ...options }); },
     async prepared(controller) { const preparing = controller.prepare(gesture); await flush(); workers.at(-1).respond('init'); await preparing; },
   };
 }
@@ -119,11 +119,18 @@ test('camera visibility and Stop all stop actual resources; a file remains a com
 test('voice uses real core preparation and cancels pending microphone permission without a late draft', async () => {
   const grant = deferred(), env = environment({ media: () => grant.promise }), voice = env.voice();
   assert.equal(env.fetches, 0); assert.equal(env.acquisitions, 0);
+  assert.equal(voice.snapshot().microphoneActive, false);
   await env.prepared(voice); assert.equal(env.acquisitions, 0, 'Preparing the actual adapter must not acquire the microphone.');
+  assert.equal(voice.snapshot().microphoneActive, false);
   const starting = voice.start(gesture, { context: { task: 'original', revision: 'r1' } }), rejected = assert.rejects(starting, { name: 'AbortError' });
-  await flush(); env.runtime.sensors.stopAll(); await rejected;
+  await flush();
+  assert.equal(voice.snapshot().phase, 'preparing');
+  assert.equal(voice.snapshot().microphoneActive, false, 'Permission waiting is not active microphone use.');
+  assert.equal(env.statuses.every(status => status.microphoneActive === false), true);
+  env.runtime.sensors.stopAll(); await rejected;
   const late = env.stream('audio'); grant.resolve(late); await flush();
   assert.equal(late.getTracks()[0].readyState, 'ended'); assert.equal(env.recordings.length, 0);
+  assert.equal(voice.snapshot().microphoneActive, false);
   assert.deepEqual(env.drafts, []); voice.dispose();
 });
 
@@ -131,15 +138,18 @@ test('voice cancels decoding and keeps a later reviewed transcript bound to its 
   const decoding = deferred(); let delay = true;
   const env = environment({ decode: () => delay ? decoding.promise : Promise.resolve(env.decoded()) }), voice = env.voice();
   await env.prepared(voice); await voice.start(gesture, { context: { task: 'discarded' } }); voice.finish(); await flush();
+  assert.equal(voice.snapshot().microphoneActive, false, 'Finish releases the microphone before decoding.');
   voice.cancel(); decoding.resolve(env.decoded()); await flush(); assert.deepEqual(env.drafts, []);
   delay = false; const context = { task: 'second', revision: { sequence: 2 } };
   const restarted = voice.start(gesture, { context }); await flush();
   env.workers.at(-1).respond('init'); await restarted;
+  assert.equal(voice.snapshot().microphoneActive, true);
   context.task = 'mutated form'; context.revision.sequence = 99;
   voice.finish(); await flush(); env.workers.at(-1).respond('transcribe', { text: '  editable suggestion  ' }); await flush();
   assert.equal(env.drafts.length, 1); assert.equal(env.drafts[0].text, 'editable suggestion');
   assert.equal(env.drafts[0].context.task, 'second'); assert.equal(env.drafts[0].context.revision.sequence, 2);
   assert.equal(voice.snapshot().phase, 'draft'); assert.equal(env.tracks.every(track => track.readyState === 'ended'), true);
+  assert.equal(voice.snapshot().microphoneActive, false);
   voice.dispose();
 });
 
@@ -151,8 +161,101 @@ test('voice cancellation during consent prevents downloads and hidden pages neve
 
   const visible = environment(), controls = visible.voice(); await visible.prepared(controls);
   await controls.start(gesture, { context: { task: 'visible' } });
+  assert.equal(controls.snapshot().microphoneActive, true);
   visible.document.visibilityState = 'hidden'; visible.document.dispatchEvent(new Event('visibilitychange')); await flush();
   visible.document.visibilityState = 'visible'; visible.document.dispatchEvent(new Event('visibilitychange')); await flush();
   assert.equal(visible.acquisitions, 1); assert.equal(visible.tracks[0].readyState, 'ended'); assert.deepEqual(visible.drafts, []);
+  assert.equal(controls.snapshot().microphoneActive, false);
   controls.dispose();
+});
+
+test('voice captures a regional language before loading and consent, then uses that language for transcription', async () => {
+  const loading = deferred(), decision = deferred(), disclosures = [];
+  const env = environment({ consent: request => { disclosures.push(request); return decision.promise; } });
+  const voice = env.voice({ loadVoice: () => loading.promise });
+  const choice = { context: { task: 'original' }, language: 'de-de' };
+  const starting = voice.start(gesture, choice);
+  choice.language = 'fr-FR'; choice.context.task = 'changed while loading';
+  await flush(); assert.equal(voice.snapshot().microphoneActive, false); assert.equal(env.acquisitions, 0);
+  loading.resolve(env.context.Voice); await flush();
+  assert.equal(disclosures.length, 1); assert.equal(disclosures[0].language, 'de-DE');
+  choice.language = 'it-IT';
+  assert.equal(env.fetches, 0); assert.equal(env.acquisitions, 0);
+  assert.equal(voice.snapshot().phase, 'preparing'); assert.equal(voice.snapshot().microphoneActive, false);
+  decision.resolve(true); await flush();
+  assert.equal(env.acquisitions, 0, 'Model preparation still precedes microphone use.');
+  env.workers.at(-1).respond('init'); await starting;
+  assert.equal(voice.snapshot().microphoneActive, true);
+  assert.equal(env.statuses.some(status => status.microphoneActive === true), true);
+  voice.finish(); assert.equal(voice.snapshot().microphoneActive, false); await flush();
+  assert.equal(env.workers.at(-1).messages.findLast(message => message.action === 'transcribe').language, 'de');
+  env.workers.at(-1).respond('transcribe', { text: 'review this' }); await flush();
+  assert.equal(env.drafts[0].context.task, 'original');
+  assert.equal(JSON.parse(env.settings.get('tendril:voice:test:preferences')).language, 'de-DE');
+  voice.dispose(); assert.equal(voice.snapshot().microphoneActive, false);
+});
+
+test('omitting capture language preserves saved and device preferences through the real adapter', async t => {
+  for (const saved of [undefined, 'nl-NL']) await t.test(saved ? 'saved preference' : 'device preference', async () => {
+    const disclosures = [], env = environment({ consent: request => { disclosures.push(request); return true; } });
+    env.navigator.language = 'fr-FR';
+    if (saved) env.settings.set('tendril:voice:test:preferences', JSON.stringify({ language: saved }));
+    const voice = env.voice(), starting = voice.start(gesture, { context: { task: 'defaults' } });
+    await flush(); env.workers.at(-1).respond('init'); await starting;
+    assert.equal(disclosures[0].language, saved ?? 'fr-FR');
+    assert.equal(voice.snapshot().microphoneActive, true);
+    voice.dispose(); assert.equal(voice.snapshot().microphoneActive, false);
+    assert.equal(env.tracks.every(track => track.readyState === 'ended'), true);
+    assert.equal(env.statuses.at(-1).microphoneActive, false);
+  });
+});
+
+test('invalid and unsupported explicit languages never start capture or silently substitute English', async () => {
+  const disclosures = [], env = environment({ consent: request => { disclosures.push(request); return true; } }), voice = env.voice();
+  await assert.rejects(voice.start(gesture, { context: { task: 'invalid' }, language: 'not_a_tag' }), { name: 'RangeError' });
+  assert.equal(voice.snapshot().phase, 'error'); assert.equal(voice.snapshot().microphoneActive, false);
+  assert.equal(disclosures.length, 0); assert.equal(env.acquisitions, 0);
+  await voice.start(gesture, { context: { task: 'unsupported' }, language: 'ja-JP' });
+  assert.equal(disclosures[0].language, 'ja-JP');
+  assert.equal(voice.snapshot().phase, 'error'); assert.match(voice.snapshot().error, /supported speech language or type instead/);
+  assert.equal(voice.snapshot().microphoneActive, false); assert.equal(env.acquisitions, 0); assert.equal(env.fetches, 0);
+  assert.deepEqual(env.drafts, []); voice.dispose();
+});
+
+test('a new language attempt cancels old consent and ignores its late answer', async () => {
+  const decision = deferred(), disclosures = [];
+  const env = environment({ consent: request => { disclosures.push(request); return disclosures.length === 1 ? decision.promise : true; } });
+  const voice = env.voice();
+  const old = voice.start(gesture, { context: { task: 'obsolete' }, language: 'de-DE' });
+  const rejected = assert.rejects(old, { name: 'AbortError' }); await flush();
+  const starting = voice.start(gesture, { context: { task: 'new' }, language: 'fr-FR' });
+  await rejected; await flush();
+  assert.deepEqual(disclosures.map(request => request.language), ['de-DE', 'fr-FR']);
+  decision.resolve(true); await flush(); env.workers.at(-1).respond('init'); await starting;
+  assert.equal(env.acquisitions, 1); assert.equal(voice.snapshot().microphoneActive, true);
+  voice.finish(); await flush();
+  assert.equal(env.workers.at(-1).messages.findLast(message => message.action === 'transcribe').language, 'fr');
+  env.workers.at(-1).respond('transcribe', { text: 'new candidate' }); await flush();
+  assert.equal(env.drafts.length, 1); assert.equal(env.drafts[0].context.task, 'new');
+  voice.cancel(); assert.equal(voice.snapshot().microphoneActive, false); voice.dispose();
+});
+
+test('an immediately superseded attempt cannot change the loaded adapter language preference', async t => {
+  const env = environment();
+  env.settings.set('tendril:voice:test:preferences', JSON.stringify({ language: 'en-US' }));
+  const voice = env.voice(); t.after(() => voice.dispose());
+  await env.prepared(voice);
+  const obsolete = voice.start(gesture, { context: { task: 'obsolete' }, language: 'de-DE' });
+  const rejected = assert.rejects(obsolete, { name: 'AbortError' });
+  // Both starts reach an already-loaded adapter before either await continuation
+  // runs. The canceled start must not install a language in that shared adapter.
+  const current = voice.start(gesture, { context: { task: 'current' } });
+  await rejected; await current;
+  assert.equal(JSON.parse(env.settings.get('tendril:voice:test:preferences')).language, 'en-US');
+  assert.equal(env.acquisitions, 1); assert.equal(voice.snapshot().microphoneActive, true);
+  voice.finish(); await flush();
+  assert.equal(env.workers.at(-1).messages.findLast(message => message.action === 'transcribe').language, 'en');
+  env.workers.at(-1).respond('transcribe', { text: 'current candidate' }); await flush();
+  assert.equal(env.drafts.length, 1); assert.equal(env.drafts[0].context.task, 'current');
+  assert.equal(voice.snapshot().microphoneActive, false);
 });

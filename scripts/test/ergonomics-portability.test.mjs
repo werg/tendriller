@@ -15,6 +15,7 @@ import { acquireAtomicLock, resolveUnixSocketPath, resolveWindowsPipePath } from
 import { connectOrStartNativeSession } from '../../session/native.mjs';
 import { buildCompositionV2, COMPOSITION_V2_PROFILES } from '../release-composition.mjs';
 import { exportSourceHandoff } from '../../tools/cli/lib/handoff.mjs';
+import { createServerlessHostAdapter } from '../../contract/serverless.mjs';
 import { handleStdioMcpMessage } from '../../tools/cli/lib/mcp-stdio.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -211,10 +212,11 @@ test('source handoff blocks secrets and excludes device state', async t => {
 
 test('local Stdio MCP batch acknowledges locally stored operations without conflating materialization or peer retention', async () => {
   const session=await createPhysicalSession({definition,applicationId:'33'.repeat(32)});
+  const pages={list:async()=>[{slug:'notes'}],open:async page=>{assert.equal(page,'notes');return {session};}};
   try {
-    const init=await handleStdioMcpMessage({session,mode:'own'},{jsonrpc:'2.0',id:1,method:'initialize',params:{}});
+    const init=await handleStdioMcpMessage(pages,{jsonrpc:'2.0',id:1,method:'initialize',params:{}});
     assert.equal(init.result.serverInfo.name,'tendriller-local-stdio');
-    const batch=await handleStdioMcpMessage({session,mode:'own'},{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'command_submit_batch',arguments:{commands:[
+    const batch=await handleStdioMcpMessage(pages,{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'command_submit_batch',arguments:{page:'notes',commands:[
       {command:'add',input:{a:1},operationId:'stdio-1'},{command:'add',input:{a:2},operationId:'stdio-2'},
     ]}}});
     assert.equal(batch.result.structuredContent.results.length,2);
@@ -222,4 +224,28 @@ test('local Stdio MCP batch acknowledges locally stored operations without confl
     for(const id of ['stdio-1','stdio-2'])assert.equal((await(await session.operations.get(id)).materialized()).outcome,'accepted');
     assert.equal((await session.query('list',null)).value.count,2);
   } finally {await session.close();}
+});
+test('ServerlessHostAdapter acknowledges stored operations with independent facts and reads them back', async () => {
+  const ops = new Map(), id = '33'.repeat(32);
+  const inspection = (operationId, input) => ({ applicationId: id, author: 'author', proposalId: 'p'.repeat(64), operationId, stored: true, pending: 'materializer', materialized: null, retained: [], finalized: false, excluded: false, input });
+  const fakeSession = {
+    applicationId: id, identity: { publicKey: '44'.repeat(32) }, status: { canAuthor: true },
+    async query() { return { applicationId: id, revision: { digest: 'a'.repeat(64) }, value: { count: ops.size } }; },
+    async command(_name, input, { operationId }) { const state = inspection(operationId, input); ops.set(operationId, state); return { inspect: () => state }; },
+    operations: { get: async operationId => ops.has(operationId) ? { inspect: () => ops.get(operationId) } : null },
+  };
+  const kv = new Map();
+  const adapter = createServerlessHostAdapter({
+    applicationId: id, withLock: (_id, work) => work(), retainTask: () => {},
+    storage: { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v); }, list: async () => [...kv.keys()] },
+    authorize: req => req.headers.get('Authorization') === 'Bearer ok', openSession: async () => ({ session: fakeSession }),
+  });
+  const url = path => `https://worker.test/v1/apps/${id}${path}`, headers = { Authorization: 'Bearer ok', 'Content-Type': 'application/json' };
+  assert.equal((await adapter.handleRequest(new Request(url('/health')))).status, 401);
+  const stored = await adapter.handleRequest(new Request(url('/commands'), { method: 'POST', headers, body: JSON.stringify({ command: 'add', input: { a: 3 }, operationId: 'srv-1' }) }));
+  assert.equal(stored.status, 200);
+  const body = await stored.json();
+  assert.equal(body.submission, 'stored'); assert.equal(body.operation.stored, true); assert.equal(body.operation.materialized, null); assert.equal(body.operation.finalized, false);
+  const inspected = await (await adapter.handleRequest(new Request(url('/operations/srv-1'), { headers }))).json();
+  assert.equal(inspected.operationId ?? inspected.operation?.operationId, 'srv-1');
 });

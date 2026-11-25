@@ -28,7 +28,22 @@ describe('browser-first authored-operation authority', () => {
     expect((await body(await page.api('GET', 'application'))).authority).toBeNull();
     await page.restart();
     expect((await body(await page.api('POST', 'peers/publication', { action: 'read' }))).publication.id).toBe(publication.id);
-    expect(await (await page.asset()).text()).toContain('Browser first');
+    const authored = await page.asset();
+    expect(authored.status).toBe(200);
+    expect(authored.headers.get('Content-Type')).toContain('text/html');
+    expect(authored.headers.get('Content-Security-Policy')).toBeNull();
+    expect(await authored.text()).toContain('Browser first');
+  });
+  it('a prepared application reports configured, is not downgradable to ad hoc while an unprepared one is', async () => {
+    const page = await createTestPage({ application: { id: appId } });
+    expect((await body(await page.api('GET', ''))).configured).toBe(false);
+    expect((await page.api('PATCH', '', { lifetime: 'resident' })).status).toBe(200);
+    expect((await page.api('PATCH', '', { lifetime: 'ad_hoc' })).status).toBe(200);
+    await prepare(page);
+    expect((await body(await page.api('GET', ''))).configured).toBe(true);
+    const downgrade = await page.api('PATCH', '', { lifetime: 'ad_hoc' });
+    expect(downgrade.status).toBe(409);
+    expect((await downgrade.json() as any).error.code).toBe('application_requires_resident');
   });
   it('requires browser account+origin and binds the initial root and epoch commitment, without a native process', async () => {
     const handle = await create({ application: { id: appId } }), publisher = await createSigningIdentity(), browser = await createSigningIdentity();

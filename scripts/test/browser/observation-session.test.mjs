@@ -8,9 +8,10 @@ import { createServer } from 'node:http';
 import { build } from 'esbuild';
 import { chromium } from '@playwright/test';
 import * as peer from '@chronolog/peer-session';
-import { openNativeDevice, openNativeApplication } from '@chronolog/peer-session/native';
-import { definition } from '../../../docs/tutorial/observation/domain.mjs';
-import { serveObservations } from '../../../docs/tutorial/observation/receiver.mjs';
+import { openNativeDevice } from '@chronolog/peer-session/native';
+import { authorityForDevices } from '../../../collaboration/test/physical-fixture.mjs';
+import { definition } from '../../../docs/tutorial/shared/observation/domain.mjs';
+import { serveObservations } from '../../../docs/tutorial/shared/observation/receiver.mjs';
 import { createTestConnection } from '../../observation-fixture/connection.mjs';
 
 async function until(predicate, label, milliseconds = 10_000) {
@@ -23,9 +24,9 @@ test('real Chromium to native session: consent, coalesced live fixes, correlated
   const directory = await mkdtemp(join(tmpdir(), 'tendriller-observation-')), cleanup = [];
   t.after(async () => { for (const close of cleanup.reverse()) await close().catch(() => {}); await rm(directory, { recursive: true, force: true }); });
   const bundle = await build({ stdin: { contents: `
-    import { openApplicationDevice, openPeerApplication, MemoryBytesStore } from '@chronolog/peer-session';
-    import { definition } from './docs/tutorial/observation/domain.mjs';
-    import { mountObservations } from './docs/tutorial/observation/panel.mjs';
+    import { openApplicationDevice, createApplicationSession, MemoryBytesStore } from '@chronolog/peer-session';
+    import { definition } from './docs/tutorial/shared/observation/domain.mjs';
+    import { mountObservations } from './docs/tutorial/shared/observation/panel.mjs';
     import { installSensorWrappers } from './runtime/src/sensors.ts';
     import { createTestConnection } from './scripts/observation-fixture/connection.mjs';
     const tracker = installSensorWrappers();
@@ -34,7 +35,7 @@ test('real Chromium to native session: consent, coalesced live fixes, correlated
     window.identity = device.identity.publicKey;
     window.transport = createTestConnection((lane, bytes) => window.observationToNative(lane, [...bytes]));
     window.setup = async ({authority,key,nativeDeviceId}) => {
-      const session = window.session = await openPeerApplication({device,definition,authority,epochKeys:new Map([[0,new Uint8Array(key)]])});
+      const session = window.session = await createApplicationSession({device,definition,authority,epochKeys:new Map([[0,new Uint8Array(key)]])});
       window.link = await session.connectPeer({connection:window.transport.connection,peerIdentity:nativeDeviceId});
       window.controls = mountObservations({container:document.querySelector('main'),session,runtime,nativeDeviceId,coalesceMs:200});
       window.tracker = tracker;
@@ -62,24 +63,13 @@ test('real Chromium to native session: consent, coalesced live fixes, correlated
   const nativePath = join(directory, 'native.sqlite');
   let device = await openNativeDevice({ path: nativePath, create: true });
   cleanup.push(() => device?.close());
-  const host = await peer.createPeerIdentity(), epochKey = crypto.getRandomValues(new Uint8Array(32));
-  const manifest = await peer.executionManifestArtifacts(await peer.eventExecutionManifest());
-  const descriptor = await peer.signApplicationDescriptor({ applicationId: 'c3'.repeat(32), historyId: 'observation-reference',
-    profile: 'peer-generation-v1', policy: 'eligible-members-v1', controlPublicKey: host.publicKey, schemaAdministrator: device.identity.publicKey,
-    executionManifestDigest: peer.bytesToHex(manifest.executionManifestDigest), definitionDigest: await peer.applicationDefinitionDigest(definition), schemaDigest: null }, host);
-  const control = await peer.signControlRevision({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
-    policy: descriptor.payload.policy, revision: 0, previous: null, epoch: 0, keyDigest: await peer.bytesDigest(epochKey), recoveryFloor: null,
-    grants: [peer.participantGrant(device.identity.publicKey, { administrator: true }), peer.participantGrant(browserId)] }, host);
-  const registry = await peer.createGenerationRegistry({ store: new peer.MemoryBytesStore(), descriptor, controls: [control], signer: host });
-  await registry.select(await peer.signTransitionRequest({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
-    policy: descriptor.payload.policy, transitionId: 'initial', expectedGeneration: null, requester: device.identity.publicKey,
-    coordinator: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null }, device.identity));
-  const authority = await registry.read();
-  let session = await openNativeApplication({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
+  // Real signed authority: the native device administers; the browser identity is an explicit writer member.
+  const { authority, key: epochKey } = await authorityForDevices([device, { identity: { publicKey: browserId } }], { applicationId: 'c3'.repeat(32) });
+  let session = await peer.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
   cleanup.push(() => session.close());
   const observed = [], receiver = serveObservations({ session, allowedDevices: [browserId], maxAgeMs: 600, onState: state => observed.push(state) });
   cleanup.push(() => receiver.close());
-  const browserOpening = page.evaluate(value => window.setup(value), { authority, key: [...epochKey], nativeDeviceId: session.deviceId });
+  const browserOpening = page.evaluate(value => window.setup(value), { authority, key: [...epochKey], nativeDeviceId: session.identity.publicKey });
   const link = await session.connectPeer({ connection: transport.connection, peerIdentity: browserId });
   await browserOpening;
   cleanup.push(async () => { await page.evaluate(async () => { await window.controls.close(); await window.session.close(); }); });
@@ -101,7 +91,7 @@ test('real Chromium to native session: consent, coalesced live fixes, correlated
   assert.equal((await session.query('observations', null)).value.length, 0, 'Live observation is not a domain write.');
   await page.fill('#observation-review', 'Human-reviewed simulated observation.');
   await page.click('#observation-retain');
-  await page.waitForFunction(() => document.querySelector('#observation-result').textContent.includes('Applied: accepted'));
+  await page.waitForFunction(() => document.querySelector('#observation-result').textContent.includes('Materialized: accepted'));
   assert.equal((await session.query('observations', null)).value[0].text, 'Human-reviewed simulated observation.');
   // Refresh the synthetic device measurement itself; a later delivery time
   // must not make the original context-created geolocation fix fresh.
@@ -116,7 +106,7 @@ test('real Chromium to native session: consent, coalesced live fixes, correlated
   await until(() => receiver.snapshot()[browserId]?.phase === 'disconnected', 'Native receiver should expose disconnection.');
   await receiver.close(); await session.close(); await device.close();
   device = await openNativeDevice({ path: nativePath });
-  session = await openNativeApplication({ device, definition, authority });
+  session = await peer.createApplicationSession({ device, definition, authority });
   assert.equal((await session.query('observations', null)).value.length, 1, 'Only explicitly retained review survives native reopen.');
   assert.deepEqual(browserErrors, []);
 });

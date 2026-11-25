@@ -1,4 +1,6 @@
 import { readTransportDiagnostics } from './transport-diagnostics.mjs';
+import { transportCauseSummary } from './transport-causes.mjs';
+export { transportCauseSummary } from './transport-causes.mjs';
 /** Inert, redacted observations. Diagnostics never submit work or activate data. */
 export const DIAGNOSTIC_PROTOCOL = 'tendriller.diagnostics.v1';
 const actions = {
@@ -53,7 +55,9 @@ export function diagnosticFinding(error, { scope = {}, state = {}, severity = 'e
     (Object.hasOwn(actions,error?.message)||Object.hasOwn(aliases,error?.message)?error.message:undefined);
   const code = typeof candidate === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,95}$/u.test(candidate) ? candidate : 'DIAGNOSTIC_UNAVAILABLE';
   const mapped = aliases[code] ?? code;
+  const transportCauses = transportCauseSummary(error);
   return { code, severity, scope:pick(scope,scopeKeys), state:stateOf(state),
+    ...(transportCauses ? { transportCauses } : {}),
     retrySafe:['OWNER_BUSY','DATA_IDLE','DATA_OPENING'].includes(mapped),
     nextAction:actions[mapped] ?? actions.DIAGNOSTIC_UNAVAILABLE };
 }

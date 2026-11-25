@@ -29,9 +29,9 @@ Before package acquisition, the workflow checks open readiness and deployed
 source/release/runtime identity using only public reads. Before renewing the
 account or creating a fixture, it checks the
 selected host's readiness and exact source/release/runtime/composition identity.
-The fixture installs the SDK, Chronolog authority and Chronolog session archives
+The fixture installs the SDK, tools, Chronolog authority and Chronolog session archives
 named by that one composition, verifies their hashes against the current source
-pins and their installed provenance against the composition's clean checkpoint,
+pins, the installed tools release and runtime against that composition, and the installed Chronolog provenance against its clean checkpoint,
 and reports those identities. There is no registry lookup, guessed path or
 optional fallback for any of them. A mismatched deployment, missing readiness or paused staging or production stops
 the run; it does not select another origin or an older archive. The recording
@@ -39,16 +39,20 @@ rechecks deployment identity at completion. This fixture adapts the starter's
 browser-owner and native-session helpers but does not replace the first-app kit
 or browser-peer gates, which are separate.
 The command signs in with the static form and completes real OAuth with PKCE,
-then creates its own synthetic app through account-linked setup (the linked
-account's `tendrils:create` grant names the owner; the runner supplies no owner
-identity). It prepares the independent publisher policy and publishes the complete
-signed browser page **before any browser key exists**, verifying that no data
-authority exists yet. The signed-in browser then initializes its own identity,
+then creates its own agent workspace through account-linked setup: the linked
+account's `tendrils:create` grant registers the workspace's one shared signing
+key with MCP `register_agent` (the runner supplies no owner identity), and one page
+is created for that agent from a privately retained creation intent with a random
+application ID. The page is found again only by that exact application ID, never by
+name, and an uncertain creation stops rather than creating a second page. The
+runner prepares publication with the shared key (there is no separate page
+publisher) and publishes the complete signed browser page **before any browser key
+exists**, verifying that no data authority exists yet. The signed-in browser then initializes its own identity,
 root and data key locally with no native process running. Only then does the
-runner explicitly provision the optional native participant: the native device
-proves its own key for an account-bound challenge, the browser reviews its public
+runner explicitly provision the optional native participant: the native
+signer, the workspace's shared key, proves itself for an account-bound challenge, the browser reviews its public
 request and wraps keys to exactly that recipient, and the native process imports
-the package. The runner starts the participant, approves application access and
+the package. The runner starts `tendril agent run` from the installed tools archive, approves application access and
 connects an actual Codex app-server MCP client, exercising the six positive and
 three negative packaged scenarios at the tool/protocol level. It verifies reads,
 a write, exact retry, retained events, rejected operations, that the signed
@@ -122,45 +126,55 @@ explicit item ID. There is no deletion or reset command.
 
 Extract the plugin ZIP's `review/` directory into a private directory. It
 contains the review app (`review-app.mjs`, `review-domain.mjs`,
-`review-assistant.mjs`, `review-local.mjs`), the signed page sources
+`review-assistant.mjs`, `review-local.mjs`, `review-setup.mjs`, `review-agent.mjs`), the signed page sources
 (`review-page.mjs`, `review-worker.mjs`, `review-index.html`) and `support/`,
 the canonical public starter helpers copied byte-for-byte. For a source checkout,
 `installReviewFixtureSources` in `scripts/review/fixture.mjs` prepares the same
 enumerated files; do not invent a separate lifecycle, bootstrap or provisioning
-helper. Install the qualified public `@tendriller/core`,
+helper. Install the qualified public `@tendriller/core`, `@tendriller/tools`,
 `@chronolog/authority` and events-capable `@chronolog/peer-session` archives
-there, all three from the same release composition and never from a registry
-(`npm install --ignore-scripts SDK.tgz AUTHORITY.tgz SESSION.tgz`), confirm
+there, all four from the same release composition and never from a registry
+(`npm install --ignore-scripts SDK.tgz TOOLS.tgz AUTHORITY.tgz SESSION.tgz`), confirm
 `node_modules/@chronolog/*/provenance.json` names the composition's clean
 checkpoint, then install `esbuild` for the one-time page build
 (`node review-app.mjs build` imports it). Then:
 
-1. Create the page through the owner's account-linked setup:
+1. Create the workspace and page through the owner's account-linked setup:
    `REVIEW_ACCESS_TOKEN=<linked-account OAuth token with tendrils:create> node review-app.mjs setup SERVICE_ORIGIN`.
    The service derives the owner from that grant; never supply an owner identity.
+   Setup creates `tendriller.json` and the private `.tendriller/` (one account-level
+   agent credential and one shared signing key) and retains
+   `.tendriller/page-intents/review/intent.json` before asking the host to create the page.
+   A rerun resumes only the page with that exact application ID. If a reply was lost
+   and no granted page has that ID, setup stops with `page_creation_uncertain`
+   and never creates another; inspect the account's pages (`tendril page list` or
+   the dashboard) for the application ID in that record before deciding anything.
 2. Run `node review-app.mjs init`, `node review-app.mjs build` and
-   `node review-app.mjs publish` to prepare the independent publisher policy and
+   `node review-app.mjs publish` to prepare publication with the shared key and
    publish the complete signed page **before** the owner browser key exists. Run
-   `node review-app.mjs propose`; retain the private `assistant-proposal.json`,
-   which binds the returned proposal ID to the adapter key hash. `run` never
-   substitutes a foreign observed proposal. Do not re-propose or reset consent
-   merely to update this code.
+   `node review-app.mjs propose`; retain the private `assistant-proposal.json`
+   in the page's `.tendriller/pages/<id>/` records, which binds the returned
+   proposal ID to the adapter key hash. The participant never substitutes a
+   foreign observed proposal. Do not re-propose or reset consent merely to update
+   this code.
 3. The owner signs in with the static test-account form and opens the page. Its
    browser initializes identity, keys and storage locally; the checklist works
    with no native process.
-4. To enable the optional MCP participant, create its device with
-   `node review-app.mjs init-device`. In the page's **Add another device
-   explicitly** section prove that public key for the account-bound challenge,
-   sign the challenge with `node review-app.mjs sign-enrollment FILE`, record the
-   proof, then use `node review-app.mjs provisioning-request`, review that
-   request in the page, grant the reviewed rights and import the wrapped package
-   with `node review-app.mjs import-provisioning FILE`. The native process never
+4. To enable the optional MCP participant, print its public key with
+   `node review-app.mjs signer-key` (the workspace's shared signer; no device is
+   created). In the page's **Add another device explicitly** section prove that
+   public key for the account-bound challenge, sign the challenge with
+   `node review-app.mjs sign-enrollment FILE`, record the proof, then use
+   `node review-app.mjs provisioning-request`, review that request in the page,
+   grant the reviewed rights and import the wrapped package with
+   `node review-app.mjs import-provisioning FILE`. The native process never
    creates a root, membership or data key.
-5. Supervise `node review-app.mjs run`. It opens its cached provisioned store.
-   Setup notifications resume the existing proposal; only exact owner approval
-   starts the adapter and its checkpointed event forwarding. Revocation or
-   replacement stops that component without closing the native application.
-   Open the proposal URL and approve `checklist`, `completeItem` and
+5. Supervise `npx tendril agent run` in the workspace (the installed tools
+   archive's one long-running program). It opens only provisioned pages from their
+   cached stores. Setup notifications resume the existing proposal; only exact
+   owner approval starts the adapter and its checkpointed event forwarding.
+   Revocation or replacement stops that component without closing the native
+   application. Open the proposal URL and approve `checklist`, `completeItem` and
    `item.completed`; verify the native signer is enrolled.
 6. Verify listing, description and the initial read without sending a command.
    Use the disposable qualification fixture for the mutation and denial tests.
@@ -197,10 +211,10 @@ OpenAI's [submission guide](https://developers.openai.com/plugins/deploy/submiss
 defines the current review requirements. Do not claim directory submission,
 publication or ChatGPT web testing without evidence of that action.
 
-## Account setup permission
+## Agent registration permission
 
 New plugin connections request `tendrils:create` alongside the existing app
-permissions so `prepare_tendril_setup`, inspection and recovery are available.
-The host must allow this scope for the configured client. Existing OAuth grants
-retain their original scopes; reconnect with explicit consent when creation is
-needed. Never treat an existing read/write grant as account-setup authorization.
+permissions so `register_agent` is available. The host must allow this scope for
+the configured client. Existing OAuth grants retain their original scopes;
+reconnect with explicit consent when agent registration is needed. Never treat
+an existing read/write grant as agent-registration authorization.

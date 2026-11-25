@@ -7,7 +7,7 @@ import * as p from '@chronolog/peer-session';
 import { authorityForDevices } from '../../collaboration/test/physical-fixture.mjs';
 import { openNativeDevice } from '@chronolog/peer-session/native';
 import { agentRequestCommands, agentRequestQueries, consumerPresence, readAgentInbox,
-  requestDelivery } from '../../docs/tutorial/helpers/agent-requests.mjs';
+  requestDelivery } from '../../docs/tutorial/shared/helpers/agent-requests.mjs';
 
 const definition = p.defineApplication({ id: 'agent-requests-test', version: '1',
   commands: agentRequestCommands, queries: agentRequestQueries });

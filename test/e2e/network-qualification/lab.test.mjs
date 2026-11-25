@@ -249,18 +249,64 @@ test('transport counters and revision come from the same synchronous snapshot tu
   assert.equal(value.peerId, undefined);
 });
 
+test('with a session, byte counters come from its authenticated links and only the route kind from the controller', async () => {
+  const links = [{ peerId: 'browser', sentReliableBytes: 12, receivedReliableBytes: 13, sentLiveBytes: 14, receivedLiveBytes: 15,
+    signalRejections: { total: 0, clockSkew: 0, expired: 0, unauthorized: 0, duplicate: 0, capacity: 0 } }];
+  const session = { status: { connectionRevision: 8 }, diagnostics() { return Promise.resolve(links); } };
+  // The controller reports a route kind and deliberately different counters, which must never be used.
+  const controller = { status: { connectionRevision: 99 }, diagnostics: async () => [{ peerId: 'browser', kind: 'direct',
+    sentReliableBytes: 1000, receivedReliableBytes: 1000, sentLiveBytes: 1000, receivedLiveBytes: 1000 }] };
+  const value = await authenticatedTransportSnapshot(controller, 'browser', session);
+  assert.deepEqual(value, { connectionRevision: 8, browserLinks: 1, otherLinks: 0, kind: 'direct',
+    sentReliableBytes: 12, receivedReliableBytes: 13, sentLiveBytes: 14, receivedLiveBytes: 15 });
+  assert.equal(links[0].kind, undefined, 'the session diagnostic object is copied, never mutated');
+  assert.equal(value.peerId, undefined);
+  assert.equal(authenticatedRouteMatches(value, 'direct', 7), true);
+  assert.equal(authenticatedRouteMatches(value, 'direct', 8), false, 'the session revision gates a route change, not the controller revision');
+});
+
+test('missing live counters and an unreported route stay absent instead of becoming synthetic zeros', async () => {
+  // A route without live instrumentation omits the live byte fields; the helper preserves that absence.
+  const session = { status: { connectionRevision: 2 }, diagnostics: async () => [{ peerId: 'browser', sentReliableBytes: 5, receivedReliableBytes: 6 }] };
+  const quiet = { diagnostics: async () => [] };
+  const value = await authenticatedTransportSnapshot(quiet, 'browser', session);
+  assert.equal(value.sentReliableBytes, 5); assert.equal(value.receivedReliableBytes, 6);
+  assert.equal(value.sentLiveBytes, undefined); assert.equal(value.receivedLiveBytes, undefined);
+  assert.equal(value.kind, undefined, 'no controller route means no fabricated kind');
+  assert.notEqual(value.sentLiveBytes, 0);
+  assert.equal(authenticatedRouteMatches(value, 'direct'), false);
+  // With no authenticated session link the snapshot is the explicit unknown route, with no counters at all.
+  const none = await authenticatedTransportSnapshot({ diagnostics: async () => [{ peerId: 'browser', kind: 'direct' }] }, 'browser',
+    { status: { connectionRevision: 3 }, diagnostics: async () => [] });
+  assert.deepEqual(none, { connectionRevision: 3, browserLinks: 0, otherLinks: 0, kind: 'unknown' });
+  // A controller-only route for a peer the session never authenticated cannot add a link or a counter.
+  await assert.rejects(authenticatedTransportSnapshot({ diagnostics: async () => [] }, 'browser',
+    { status: { connectionRevision: 1 }, diagnostics: async () => [{ peerId: 'browser' }, { peerId: 'other' }] }), /UNEXPECTED_LINK_SET/);
+});
+
 test('unrelated peers and duplicate browser links cannot qualify the single-peer fixture epoch', async () => {
   const make = links => ({ status: { connectionRevision: 1 }, diagnostics: () => Promise.resolve(links) });
   await assert.rejects(authenticatedTransportSnapshot(make([{ peerId: 'browser' }, { peerId: 'other' }]), 'browser'), /UNEXPECTED_LINK_SET/);
   await assert.rejects(authenticatedTransportSnapshot(make([{ peerId: 'browser' }, { peerId: 'browser' }]), 'browser'), /UNEXPECTED_LINK_SET/);
 });
 
-test('old applied/retention labels and reused IDs cannot prove a fresh browser command', () => {
-  const status = id => `${id}: Applied: accepted. 1 peer retention receipt(s) observed.`;
-  assert.equal(currentOperationApplied('old', 'old', status('old')), false);
-  assert.equal(currentOperationApplied('old', 'new', status('old')), false);
-  assert.equal(currentOperationApplied('old', 'new', 'new: Saved. 1 peer retention receipt(s) observed.'), false);
-  assert.equal(currentOperationApplied('old', 'new', 'new: Applied: accepted. Peer retention has not been observed here.'), false);
+test('old, reused or incomplete operation evidence cannot prove a fresh browser command', () => {
+  const peer = 'ab'.repeat(32);
+  // The page's operation inspection: its own operation, local materialization and a retention receipt from a peer.
+  const status = (id, { materialized = 'accepted', retained = peer } = {}) => `Operation: ${id}\nProposal: ${'cd'.repeat(32)}\nStored locally: true\n`
+    + `Materialized locally: ${materialized} (revisable)\nRetained by peers: ${retained}`;
+  assert.equal(currentOperationApplied('old', 'old', status('old')), false, 'a reused operation ID is never fresh');
+  assert.equal(currentOperationApplied('old', 'new', status('old')), false, 'the previous operation\'s evidence is not this command\'s');
+  assert.equal(currentOperationApplied('old', 'new', 'new: Saved. 1 peer retention receipt(s) observed.'), false, 'the removed saved/applied labels prove nothing');
+  assert.equal(currentOperationApplied('old', 'new', 'new: Applied: accepted. 1 peer retention receipt(s) observed.'), false, 'the removed applied label proves nothing');
+  assert.equal(currentOperationApplied('old', 'new', status('new', { materialized: 'pending' })), false, 'local materialization must be accepted');
+  assert.equal(currentOperationApplied('old', 'new', status('new', { materialized: 'rejected' })), false);
+  assert.equal(currentOperationApplied('old', 'new', status('new', { retained: 'none' })), false, 'peer retention must be an observed 64-hex signer');
+  assert.equal(currentOperationApplied('old', 'new', status('new', { retained: 'ab'.repeat(16) })), false, 'a truncated retention signer is not evidence');
+  assert.equal(currentOperationApplied('old', 'new', `Operation: new\nStored locally: true\nMaterialized locally: accepted (revisable)`), false, 'no retention evidence');
+  assert.equal(currentOperationApplied('old', '', status('')), false);
+  assert.equal(currentOperationApplied('old', undefined, status('new')), false);
+  assert.equal(currentOperationApplied('old', 'new', undefined), false);
   assert.equal(currentOperationApplied('old', 'new', status('new')), true);
 });
 

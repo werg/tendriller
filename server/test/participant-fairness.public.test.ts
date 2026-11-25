@@ -1,19 +1,18 @@
 import { expect, it } from 'vitest';
-import { api, apiJson, create, inDO, req, ownerHeaders, type Handle } from './helpers';
+import { agentPrincipal, api, create, grantAgent, inDO, joinAccountAgent, req, revokeGrant, ownerHeaders, type Handle } from './helpers';
 import { peerApi, peerApiJson, peerOwnerApi } from './peer-exchange';
 import { PEER_DIRECTORY_LIMITS, PEER_INVITATION_LIMITS, PEER_INVITATION_PROTOCOL, PEER_RELAY_LIMITS, PEER_RELAY_PROTOCOL } from '../../contract/peers.mjs';
-import { authenticateAgentToken, type PagePrincipal } from '../src/access';
+import { type PagePrincipal } from '../src/access';
 import { handlePeerParticipant } from '../src/peer-participant';
 import { authorityRecord } from '../../contract/authority.mjs';
 import { encodeRecord } from '@chronolog/authority';
 
 async function agent(handle: Handle, name: string, scopes = ['host:read', 'participants:connect']): Promise<Handle> {
-  const value = await apiJson(handle, 'POST', 'tokens', { name, scopes });
-  return { ...handle, token: value.token };
+  return grantAgent(handle, await joinAccountAgent(handle, name), scopes);
 }
 const advertisement = (peerId: string) => ({ peerId, storageId: `store:${peerId}`, routes: [{ kind: 'rendezvous', channel: `join:${peerId}` }] });
 
-it('named agent bindings and the human owner share discovery capacity while revocation stays narrow', async () => {
+it('account agents and the human owner share discovery capacity while revocation stays narrow', async () => {
   const handle = await create(), one = await agent(handle, 'one'), two = await agent(handle, 'two'), three = await agent(handle, 'three');
   const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.discovery.v1' }, sockets: WebSocket[] = [];
   const watch = async (h: Handle, id: string) => {
@@ -30,7 +29,7 @@ it('named agent bindings and the human owner share discovery capacity while revo
     expect((await req(handle.page_url + '_tendril/peers/discovery/watch?peerId=same-human',
       { headers: { ...ownerHeaders(handle.page_url), ...headers } })).status).toBe(429);
     expect((await peerApi(one, 'discovery/withdraw', { peerId: 'shared-0' })).status).toBe(409);
-    expect((await api(handle, 'DELETE', 'tokens/one')).ok).toBe(true);
+    expect((await revokeGrant(handle, one.agent.id)).ok).toBe(true);
     const remaining = (await peerApiJson(two, 'discovery/read')).peers;
     expect(remaining).toHaveLength(PEER_DIRECTORY_LIMITS.peersPerPrincipal / 2);
     expect(remaining.every((row: any) => Number(row.advertisement.peerId.split('-')[1]) % 2 === 0)).toBe(true);
@@ -39,7 +38,7 @@ it('named agent bindings and the human owner share discovery capacity while revo
   } finally { for (const socket of sockets) socket.close(); }
 });
 
-it('listener and relay quotas cannot be multiplied by additive credentials or credential rotation', async () => {
+it('listener and relay quotas cannot be multiplied by additional account agents', async () => {
   const handle = await create(), one = await agent(handle, 'one'), two = await agent(handle, 'two'), three = await agent(handle, 'three');
   const sockets: WebSocket[] = [], invitationHeaders = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATION_PROTOCOL };
   const relayHeaders = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_RELAY_PROTOCOL };
@@ -55,25 +54,22 @@ it('listener and relay quotas cannot be multiplied by additive credentials or cr
       expect(response.status).toBe(101); response.webSocket!.accept(); sockets.push(response.webSocket!);
     }
     expect((await api(three, 'GET', relay(99), undefined, relayHeaders)).status).toBe(429);
-    await api(handle, 'DELETE', 'tokens/one');
+    expect((await revokeGrant(handle, one.agent.id)).ok).toBe(true);
     const replacement = await api(three, 'GET', 'peers/invitations?peerId=after-revocation', undefined, invitationHeaders);
     expect(replacement.status).toBe(101); replacement.webSocket!.accept(); sockets.push(replacement.webSocket!);
     const nextRelay = await api(three, 'GET', relay(100), undefined, relayHeaders);
     expect(nextRelay.status).toBe(101); nextRelay.webSocket!.accept(); sockets.push(nextRelay.webSocket!);
     const retained = await inDO(handle.id, t => t.ctx.getWebSockets().filter(ws => ws.readyState === WebSocket.READY_STATE_OPEN)
       .map(ws => ws.deserializeAttachment()).filter(row => ['peer-relay', 'peer-invitations'].includes(row?.kind)));
-    expect(retained.some(row => row.principal.name === 'one')).toBe(false);
-    expect(retained.filter(row => row.principal.name === 'two')).toHaveLength(8);
-    const rotated = await apiJson(handle, 'POST', 'tokens/two/rotate', {});
-    const rotatedListener = await api({ ...two, token: rotated.token }, 'GET', 'peers/invitations?peerId=rotated', undefined, invitationHeaders);
-    expect(rotatedListener.status).toBe(101); rotatedListener.webSocket!.accept(); sockets.push(rotatedListener.webSocket!);
+    expect(retained.some(row => row.principal.agentId === one.agent.id)).toBe(false);
+    expect(retained.filter(row => row.principal.agentId === two.agent.id)).toHaveLength(8);
   } finally { for (const socket of sockets) try { socket.close(); } catch {} }
 });
 
 it('a saturated account retains no more than half the participant request slots', async () => {
   const handle = await create(), first = await agent(handle, 'first'), second = await agent(handle, 'second'), third = await agent(handle, 'third');
   await inDO(handle.id, async t => {
-    const a = await authenticateAgentToken(t, first.token), b = await authenticateAgentToken(t, second.token), c = await authenticateAgentToken(t, third.token);
+    const a = agentPrincipal(t, first), b = agentPrincipal(t, second), c = agentPrincipal(t, third);
     const message = authorityRecord(encodeRecord({})), complete: (() => void)[] = [];
     const held = () => new Request('https://participant.invalid/', { method: 'POST', body: new ReadableStream<Uint8Array>({ start(controller) {
       complete.push(() => { controller.enqueue(new TextEncoder().encode(JSON.stringify(message))); controller.close(); });

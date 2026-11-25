@@ -4,7 +4,7 @@ Tendriller is a light Chronolog participant over authenticated HTTP. The applica
 
 ## Envelope and routes
 
-Agent credentials use `POST /api/t/<page>/peers/<route>`. The corresponding page route is `<page_url>_tendril/peers/<route>`, authenticated by the page's account session. Both dispatch the same implementation. The routes are `application` (read and prepare), `peers/enrollment` (`challenge`, `enroll`, `grant`, `membership`), `peers/participant`, `peers/publication` (`read`, `publish`) and the relay.
+Agent credentials use `POST /api/agent/pages/<page>/peers/<route>`. The corresponding page route is `<page_url>_tendril/peers/<route>`, authenticated by the page's account session. Both dispatch the same implementation. The routes are `application` (read and prepare), `peers/enrollment` (`challenge`, `enroll`, `grant`, `membership`), `peers/participant`, `peers/publication` (`read`, `publish`) and the relay.
 
 The participant route carries one bounded canonical record, `{record: lowercaseHexBytes}`, containing a signed portable authority, publication or finality request. The host verifies it against the pinned descriptor and its retained authority. Application programs, ciphertext and epoch keys are never accepted. Responses are canonical records. Transport failures remain typed errors, and the SDK rejects unsupported requests before network I/O while the host independently enforces the same role policy. See [Authority records and signed publications](AUTHORITY_AND_PUBLICATIONS.md).
 

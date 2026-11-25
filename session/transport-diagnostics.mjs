@@ -6,6 +6,9 @@ const kinds = new Set(['direct','relay','unknown']);
 const reasons = new Set(['direct_failed','direct_timeout']);
 const peer = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const counter = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+const signalRejections = value => value && typeof value === 'object' && !Array.isArray(value)
+  ? Object.freeze({ total: counter(value.total), clockSkew: counter(value.clockSkew), expired: counter(value.expired),
+    unauthorized: counter(value.unauthorized), duplicate: counter(value.duplicate), capacity: counter(value.capacity) }) : null;
 
 /** The source is the owned participant's authenticated-link diagnostics API.
  * Raw adapter onTransport selections deliberately have no input path here. */
@@ -20,7 +23,7 @@ export function createTransportDiagnostics(participation, { signal, timeoutMs = 
       state: closed ? 'closed' : !supported ? 'unavailable' : 'available', phase, connectionRevision,
       authenticatedPeers: peers?.size ?? (sampled ? new Set(rows.map(row => row.peerId)).size : null), sampled, limited: statusLimited || sampleLimited, error: failure,
       connections: Object.freeze(rows.map((row, index) => Object.freeze({ link: index + 1, kind: row.kind, reason: row.reason,
-        sentBytes: row.sentBytes, receivedBytes: row.receivedBytes, sentReliableBytes: row.sentReliableBytes, receivedReliableBytes: row.receivedReliableBytes, sentLiveBytes: row.sentLiveBytes, receivedLiveBytes: row.receivedLiveBytes, sentRequests: row.sentRequests, receivedRequests: row.receivedRequests }))),
+        sentBytes: row.sentBytes, receivedBytes: row.receivedBytes, sentReliableBytes: row.sentReliableBytes, receivedReliableBytes: row.receivedReliableBytes, sentLiveBytes: row.sentLiveBytes, receivedLiveBytes: row.receivedLiveBytes, sentRequests: row.sentRequests, receivedRequests: row.receivedRequests, signalRejections: row.signalRejections }))),
     });
   }
   const notify = (listener, value) => { try { void Promise.resolve(listener(value)).catch(() => {}); } catch {} };
@@ -68,7 +71,7 @@ export function createTransportDiagnostics(participation, { signal, timeoutMs = 
         if (!item || !peer(item.peerId) || seen.has(linkId) || peers && !peers.has(item.peerId)) { nextSampleLimited = true; continue; }
         seen.add(linkId);
         next.push({ peerId: item.peerId, kind: kinds.has(item.kind) ? item.kind : 'unknown', reason: item.kind === 'relay' && reasons.has(item.reason) ? item.reason : null,
-          sentBytes: counter(item.sentBytes), receivedBytes: counter(item.receivedBytes), sentReliableBytes: counter(item.sentReliableBytes), receivedReliableBytes: counter(item.receivedReliableBytes), sentLiveBytes: counter(item.sentLiveBytes), receivedLiveBytes: counter(item.receivedLiveBytes), sentRequests: counter(item.sentRequests), receivedRequests: counter(item.receivedRequests) });
+          sentBytes: counter(item.sentBytes), receivedBytes: counter(item.receivedBytes), sentReliableBytes: counter(item.sentReliableBytes), receivedReliableBytes: counter(item.receivedReliableBytes), sentLiveBytes: counter(item.sentLiveBytes), receivedLiveBytes: counter(item.receivedLiveBytes), sentRequests: counter(item.sentRequests), receivedRequests: counter(item.receivedRequests), signalRejections: signalRejections(item.signalRejections) });
       }
       rows = next; sampleLimited = nextSampleLimited; sampled = true; failure = null; emit();
     }, () => {

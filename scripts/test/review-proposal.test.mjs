@@ -23,7 +23,7 @@ test('installed fixture propose CLI exposes identity and approval on replay whil
   installReviewFixtureSources(resolve(import.meta.dirname, '../..'), project);
   // Substitute only public package boundaries; execute the actual copied CLI and
   // its durable proposal write. No native owner or remote account is opened.
-  for (const name of ['@tendriller/core', '@chronolog/peer-session', '@chronolog/authority']) {
+  for (const name of ['@tendriller/core', '@chronolog/peer-session', '@chronolog/authority', '@tendriller/tools']) {
     const directory = join(project, 'node_modules', name);
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, 'package.json'), JSON.stringify({ type: 'module', exports: { '.': './stub.mjs', './*': './stub.mjs' } }));
@@ -37,12 +37,20 @@ test('installed fixture propose CLI exposes identity and approval on replay whil
           return {reviewUrl:'https://example.invalid/review', proposed:'${proposed}', approved:process.env.REVIEW_APPROVED === 'true'};
         }`
       : value === 'createAssistantKey' ? `export function createAssistantKey(){throw Error('Must preserve existing key');}`
+      : value === 'openWorkspace' ? `import { readFile, writeFile } from 'node:fs/promises';
+        // The installed tools package supplies the page context; only its write-once private records are exercised here.
+        export function openWorkspace({ root }) { return { async pageContext() {
+          const path = name => new URL('.private/' + name, 'file://' + root);
+          return { page: { id: 'aaaaaaaaaaaa', name: 'Checklist', applicationId: 'test' }, host: { id: 'aaaaaaaaaaaa' },
+            async readPrivate(name, optional) { try { return JSON.parse(await readFile(path(name), 'utf8')); } catch (error) { if (optional && error.code === 'ENOENT') return null; throw error; } },
+            async savePrivate(name, value) { const text = JSON.stringify(value, null, 2) + '\\n';
+              try { await writeFile(path(name), text, { flag: 'wx' }); } catch (error) { if (error.code !== 'EEXIST' || await readFile(path(name), 'utf8') !== text) throw error; } return value; } };
+        } }; }`
         : `export const ${value} = value => value;`).join('\n'));
   }
   mkdirSync(join(project, '.private'));
   const keyPath = join(project, '.private/assistant-key.json');
-  writeFileSync(keyPath, JSON.stringify('retained-key'));
-  writeFileSync(join(project, '.private/handle.json'), JSON.stringify({ api: 'https://example.invalid/api/t/test', token: 'synthetic', application: { id: 'test' }, name: 'Checklist' }));
+  writeFileSync(keyPath, JSON.stringify('retained-key', null, 2) + '\n');
   const beforeKey = readFileSync(keyPath);
   for (const approved of [false, true]) {
     const result = validateReviewProposal(JSON.parse(execFileSync(process.execPath, ['review-app.mjs', 'propose'], {
@@ -58,13 +66,15 @@ test('installed fixture propose CLI exposes identity and approval on replay whil
 
 test('fixture sources contain no removed ordering bootstrap, native-required claim, fake owner or host-owned data', () => {
   const root = resolve(import.meta.dirname, '../..');
-  const removed = /schemaAdministrator|participantGrant|signTransitionRequest|selectGeneration|connectControlParticipant|configureApplication|openNativeApplication|createGenerationRegistry|orderingPause|processPairings|pending-publication|example\.invalid|createPage\(|\.deviceId\b|owner_account_id/;
+  const removed = /schemaAdministrator|participantGrant|signTransitionRequest|selectGeneration|connectControlParticipant|configureApplication|openNativeApplication|createGenerationRegistry|orderingPause|processPairings|pending-publication|example\.invalid|(?<![.\w])createPage\(|\.deviceId\b|owner_account_id/;
   for (const [file, source] of REVIEW_FIXTURE_FILES) {
     const text = readFileSync(resolve(root, source), 'utf8');
     assert.doesNotMatch(text, removed, file);
   }
   const app = readFileSync(resolve(root, 'plugin/review-app.mjs'), 'utf8');
   // Browser-first: the page is signed and published before any browser key exists, and native participation is explicitly optional.
-  assert.match(app, /optional: true/); assert.match(app, /needs no native process/);
+  assert.match(app, /OPTIONAL/); assert.match(app, /no native process is a prerequisite/);
+  assert.match(app, /@tendriller\/tools\/workspace/, 'The fixture is a workspace with one account credential and one shared signer');
+  assert.doesNotMatch(app, /createClient|prepareTendrilSetup|publisher\.json|--session/, 'No per-page client, separate page publisher or session-file compatibility');
   assert.doesNotMatch(app, /must remain running for reviewer reads, writes/);
 });

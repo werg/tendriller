@@ -2,6 +2,7 @@
 export interface Env {
   TENDRIL: DurableObjectNamespace;
   ADMISSION: DurableObjectNamespace;
+  AGENT_HUB: DurableObjectNamespace;
   ACCOUNTS: D1Database;
   CREATE_RATE?: RateLimit;
   AGENT_RATE?: RateLimit;

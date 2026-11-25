@@ -74,7 +74,7 @@ export function reviewComposition(root, { source = sourceIdentity(root) } = {}) 
   verifyFirstAppProfiles(composition, manifest);
   const sqlPin = readBrowserSqlPin(root);
   assert.equal(sqlPin.sha256, components.get('session-sql-browser').sha256, 'Composition uses a different browser SQL session than the explicit source pin');
-  const sdk = components.get('sdk'), session = components.get('session'), sessionSource = composition.chronolog?.session;
+  const sdk = components.get('sdk'), tools = components.get('tools'), session = components.get('session'), sessionSource = composition.chronolog?.session;
   assert.equal(sessionSource?.repository, 'werg/chronolog-db');
   assert.equal(sessionSource?.dirty, false);
   assert(sha.test(sessionSource.source) && sha.test(sessionSource.sourceTree), 'Exact Chronolog session provenance is required');
@@ -93,9 +93,10 @@ export function reviewComposition(root, { source = sourceIdentity(root) } = {}) 
     build: { coreRelease: manifest.version, runtimeId: manifest.runtime, sourceCommit: source.source, compositionId: id },
     sourceTree: source.sourceTree,
     sdk: { file: sdk.file, sha256: sdk.sha256 },
+    tools: { file: tools.file, sha256: tools.sha256 },
     session: { file: session.file, sha256: session.sha256, sourceCommit: sessionSource.source, sourceTree: sessionSource.sourceTree },
     authority: { file: authority.file, sha256: authority.sha256 },
-    packagePaths: { sdk: resolve(root, 'dist', sdk.file), authority: resolve(root, 'dist', authority.file), session: resolve(root, 'dist', session.file) },
+    packagePaths: { sdk: resolve(root, 'dist', sdk.file), tools: resolve(root, 'dist', tools.file), authority: resolve(root, 'dist', authority.file), session: resolve(root, 'dist', session.file) },
   };
 }
 

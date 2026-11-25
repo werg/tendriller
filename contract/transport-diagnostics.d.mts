@@ -1,3 +1,12 @@
+/** Fixed, payload-free counters from the current link; null means unavailable. */
+export interface TransportSignalRejections {
+  readonly total: number | null;
+  readonly clockSkew: number | null;
+  readonly expired: number | null;
+  readonly unauthorized: number | null;
+  readonly duplicate: number | null;
+  readonly capacity: number | null;
+}
 /** Cached authenticated-link evidence, never raw adapter selection or delivery proof. */
 export interface TransportDiagnosticConnection {
   readonly link: number;
@@ -11,6 +20,7 @@ export interface TransportDiagnosticConnection {
   readonly receivedLiveBytes: number | null;
   readonly sentRequests: number | null;
   readonly receivedRequests: number | null;
+  readonly signalRejections: TransportSignalRejections | null;
 }
 export interface TransportDiagnosticReport {
   readonly protocol: 'tendriller.transport-diagnostics.v1';

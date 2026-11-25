@@ -1,9 +1,9 @@
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { startRuntime } from '@tendriller/runtime/kernel';
-import { mountObservations } from '../../docs/tutorial/observation/panel.mjs';
-import { createReviewedInput } from '../../docs/tutorial/helpers/reviewed-input.mjs';
-import { createCameraController } from '../../docs/tutorial/media/camera.mjs';
-import { createPeerInferenceClient } from '../../docs/tutorial/media/inference-client.mjs';
+import { mountObservations } from '../../docs/tutorial/shared/observation/panel.mjs';
+import { createReviewedInput } from '../../docs/tutorial/shared/helpers/reviewed-input.mjs';
+import { createCameraController } from '../../docs/tutorial/shared/media/camera.mjs';
+import { createPeerInferenceClient } from '../../docs/tutorial/shared/media/inference-client.mjs';
 const worker=window.worker=new Worker('/worker.mjs',{type:'module'});
 let closed;const closedPromise=new Promise(resolve=>closed=resolve);
 worker.addEventListener('error',event=>{throw Error(event.message);});

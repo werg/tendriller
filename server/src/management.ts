@@ -1,22 +1,19 @@
 import type { Tendril } from './tendril';
 import { validOptionalEmail } from './tendril';
 import type { PagePrincipal } from './access';
-import { agentScopes, currentPrincipal } from './access';
+import { AGENT_SCOPES, currentPrincipal, localAgentGrant } from './access';
 import { addActivity } from './activity';
 import { brandHead, brandMark, brandStyle } from './brand';
 import { renderQrSvg } from './qr';
 import { listVersions, pointers } from './files';
 import { escapeHtml } from './inject';
 import { HttpError, readBody } from './http';
-import { sha256Hex, sixDigits } from './ids';
-import { ADOPT_CODE_TTL } from './limits';
 import { avatar, icon, serviceStyle } from './accounts/ui';
-import { AGENT_SCOPE_ITEMS, agentInviteResponse, issueAgentInvite } from './sharing';
-import { hostApprovalBinding, requireHostApprovalBinding, requireHostApprovalPolicy, type HostApproval } from './host-adoption';
+import { hostApprovalBinding, requireHostApprovalBinding, requireHostApprovalPolicy } from './owner-review';
+import { listAccountAgents, type AccountAgent } from './agents';
+import { deleteAgentGrant, mirroredAgents, putAgentGrant } from './agent-grants';
 
 const text = (value: unknown) => escapeHtml(String(value ?? ''));
-
-const SCOPE_ITEMS = AGENT_SCOPE_ITEMS;
 
 /** Service-owned page management works even when the authored page cannot execute. */
 export async function handleManagement(t: Tendril, req: Request, base: string, principal: PagePrincipal): Promise<Response> {
@@ -24,7 +21,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
   let message = '';
   let tab: 'device' | 'person' | 'agent' = 'device';
   let createdLink: { url: string; role: string; email: string | null } | null = null;
-  let createdAgent: ReturnType<typeof agentInviteResponse> | null = null;
+  const accountAgents: AccountAgent[] = owner ? await listAccountAgents(t.env, principal.accountId!) : [];
   if (req.method === 'POST') {
     if (!owner) throw new HttpError(403, 'forbidden', 'Only the signed-in owner can manage this page');
     if (!(req.headers.get('Content-Type') ?? '').startsWith('application/x-www-form-urlencoded'))
@@ -41,14 +38,28 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
     };
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
     const action = form.get('action');
-    if (action === 'delegate-agent') {
-      const invite = await issueAgentInvite(t, principal.accountId!, form.get('name'), form.getAll('scopes'), () => {
-        if (!currentPrincipal(t, principal, req.headers.get('x-tendril-key') ?? undefined))
-          throw new HttpError(401, 'unauthorized', 'The owner session changed. Sign in and review this action again.');
-      });
-      createdAgent = agentInviteResponse(invite, t.db.get('name', 'Tendril'));
+    if (action === 'agent-access') {
+      // One checkbox per account agent; `known` names every box the owner saw.
+      const known = new Set(form.getAll('known')), checked = new Set(form.getAll('agent'));
+      let granted = 0, removed = 0;
+      for (const agent of accountAgents) {
+        if (!known.has(agent.id)) continue;
+        const has = !!localAgentGrant(t, agent.id);
+        if (checked.has(agent.id) && !has) {
+          await commit(() => {});
+          await putAgentGrant(t, principal.accountId!, agent.id, agent.public_key, [...AGENT_SCOPES]); granted++;
+        } else if (!checked.has(agent.id) && has) {
+          await commit(() => {});
+          await deleteAgentGrant(t, agent.id, `owner:${principal.accountId}`); removed++;
+        }
+      }
       tab = 'agent';
-      message = `One-time code for ${invite.name}: ${invite.code} (expires in 10 minutes). Existing agents keep their access. Copy the invitation below and paste it to the new agent.`;
+      message = granted || removed ? `Agent access saved: ${granted} granted, ${removed} removed.` : 'Agent access unchanged.';
+    } else if (action === 'remove-agent') {
+      const agentId = form.get('agent') ?? '';
+      await commit(() => { if (!localAgentGrant(t, agentId)) throw new HttpError(404, 'not_found', 'This agent has no access to this page'); });
+      await deleteAgentGrant(t, agentId, `owner:${principal.accountId}`);
+      message = 'Agent access removed. Its open connections to this page were closed.';
     } else if (action === 'delete-page') {
       if ((form.get('confirm') ?? '').trim() !== 'DELETE') throw new HttpError(400, 'confirmation_required', 'Type DELETE to confirm deleting this page.');
       await commit(() => {});
@@ -56,22 +67,6 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
       await t.destroy();
       return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page deleted · Tendriller</title>${serviceStyle}</head><body><main><section class="card" style="margin-top:2rem"><span class="eyebrow">Deleted</span><h1>This page was deleted</h1><p class="lead">Its files, invite links and agent credentials were removed.</p><div class="actions"><a class="button" href="${dashboardUrl}">Back to dashboard</a></div></section></main></body></html>`,
         { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'" } });
-    } else if (action === 'connect-agent') {
-      const code = `${t.tid}-${sixDigits()}`, expires = t.now() + ADOPT_CODE_TTL;
-      const hash = await sha256Hex(code);
-      await commit(() => {
-        t.db.set('adopt', { ...binding, hash, expires_at: expires, attempts: 0 } satisfies HostApproval);
-        addActivity(t, { kind: 'adopt_code', summary: 'The owner created an agent connection code', by: `owner:${principal.accountId}` });
-      });
-      message = `Recovery code: ${code} (expires in 10 minutes). Using it replaces all existing agent credentials.`;
-    } else if (action === 'disconnect-agent') {
-      const name = form.get('agent') ?? '';
-      await commit(() => {
-        if (!t.db.one('SELECT 1 FROM tokens WHERE name=?', name)) throw new HttpError(404, 'not_found', 'No such agent');
-        t.db.run('DELETE FROM tokens WHERE name=?', name);
-        t.db.del('agent_binding:' + name);
-      });
-      message = `Disconnected ${name}.`;
     } else if (action === 'create-link') {
       const role = form.get('role');
       if (role !== 'guest' && role !== 'display') throw new HttpError(400, 'bad_request', 'Choose a guest invite or page-only link');
@@ -128,16 +123,17 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
   };
   const copyField = (value: string, label: string, id: string) =>
     `<div class="copy-box"><label class="field-label" for="${id}">${text(label)}</label><input id="${id}" type="text" readonly value="${text(value)}"></div>`;
-  const scopeChecks = SCOPE_ITEMS.map(item =>
-    `<label class="check-item"><input type="checkbox" name="scopes" value="${item.value}"${item.defaultChecked ? ' checked' : ''}><span class="check-copy"><span class="check-title">${item.label}</span><span class="check-desc">${item.desc}</span></span></label>`,
-  ).join('');
-  const agents = owner ? t.db.all<{ name: string; last_used: number | null }>('SELECT name, last_used FROM tokens ORDER BY created_at') : [];
-  const agentRows = agents.map(agent => {
-    const binding = t.db.get<{ scopes?: string[] } | null>('agent_binding:' + agent.name, null);
-    const scopeSummary = binding?.scopes?.length ? binding.scopes.join(', ') : 'Full host access';
-    const used = agent.last_used ? `Last active ${new Date(agent.last_used).toISOString().slice(0, 16).replace('T', ' ')} UTC` : 'Not used yet';
-    return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${icon('bot')} ${text(agent.name)}</div><p class="list-item-sub">${text(scopeSummary)} · ${text(used)}</p></div><form class="inline-form" action="${actionURL}" method="post"><input type="hidden" name="action" value="disconnect-agent"><input type="hidden" name="agent" value="${text(agent.name)}"><button class="sm danger">Disconnect</button></form></li>`;
+  const names = new Map(accountAgents.map(agent => [agent.id, agent.name]));
+  const granted = owner ? mirroredAgents(t).map(id => ({ id, grant: localAgentGrant(t, id)! })) : [];
+  const agentRows = granted.map(({ id, grant }) => {
+    const label = names.get(id) ?? id;
+    const origin = grant.granted_by === 'creator' ? 'Created this page' : `Granted ${new Date(grant.granted_at).toISOString().slice(0, 10)}`;
+    return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${icon('bot')} ${text(label)}</div><p class="list-item-sub">${text(origin)} · Full host access</p></div><form class="inline-form" action="${actionURL}" method="post"><input type="hidden" name="action" value="remove-agent"><input type="hidden" name="agent" value="${text(id)}"><button class="sm danger">Remove access</button></form></li>`;
   }).join('');
+  const agentChecks = accountAgents.map(agent =>
+    `<label class="check-item"><input type="hidden" name="known" value="${text(agent.id)}"><input type="checkbox" name="agent" value="${text(agent.id)}"${localAgentGrant(t, agent.id) ? ' checked' : ''}><span class="check-copy"><span class="check-title">${icon('bot')} ${text(agent.name)}</span><span class="check-desc">${agent.grants} ${agent.grants === 1 ? 'page' : 'pages'} granted</span></span></label>`,
+  ).join('');
+  const agents = granted;
   const shareLinks = owner ? t.listLinks().filter(link => link.role !== 'owner') : [];
   const shareRows = shareLinks.map(link => {
     const roleLabel = link.role === 'guest' ? 'Guest invite' : 'Page-only';
@@ -156,10 +152,9 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
   const checked = (name: typeof tab) => tab === name ? ' checked' : '';
 
   const linkResult = createdLink ? `<div class="result" role="status"><h3>${icon('check')} ${createdLink.role === 'guest' ? 'Invite link ready' : 'Page-only link ready'}</h3><p class="fine">${createdLink.role === 'guest' ? `Send this to ${createdLink.email ? text(createdLink.email) : 'the person you are inviting'}, or let them scan the code. They sign in with GitHub or Google to join.` : 'Anyone with this link can open the page files without signing in.'}</p><div class="split"><div class="stack-sm">${copyField(createdLink.url, 'Invite link', 'created-link')}</div>${qr(createdLink.url, 'Scan to join')}</div></div>` : '';
-  const agentResult = createdAgent ? `<div class="result" role="status"><h3>${icon('check')} Invitation for “${text(createdAgent.name)}” is ready</h3><p class="fine">Paste one of these into the other agent’s chat or terminal. The code works once and expires at ${text(new Date(createdAgent.expires_at).toISOString().slice(11, 16))} UTC.</p><div class="stack-sm"><div class="copy-box"><label class="field-label" for="agent-blurb">Full invitation (includes the one-time code)</label><textarea id="agent-blurb" class="blurb-full" readonly rows="14">${text(createdAgent.blurb)}</textarea></div><div class="copy-box"><label class="field-label" for="agent-link">Or a short message with an instructions link</label><textarea id="agent-link" readonly rows="4">${text(createdAgent.link_blurb)}</textarea></div><p class="fine">One-time code: <code>${text(createdAgent.code)}</code></p></div></div>` : '';
 
   const addPanel = `<section class="card" id="add" aria-labelledby="add-title">
-      <div class="card-head"><div><span class="eyebrow">${icon('sparkles')} Grow this page</span><h2 id="add-title">Add people &amp; devices</h2><p>Open this page on another device, invite someone, or connect another agent.</p></div></div>
+      <div class="card-head"><div><span class="eyebrow">${icon('sparkles')} Grow this page</span><h2 id="add-title">Add people &amp; devices</h2><p>Open this page on another device, invite someone, or give one of your agents access.</p></div></div>
       <div class="tabs">
         <input class="tab-input" type="radio" name="add-tab" id="tab-device" aria-controls="panel-device"${checked('device')}>
         <input class="tab-input" type="radio" name="add-tab" id="tab-person" aria-controls="panel-person"${checked('person')}>
@@ -174,13 +169,8 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
               <div class="field-row"><div class="field"><label class="field-label" for="link-role">Access</label><select id="link-role" name="role"><option value="guest">Guest — signs in and joins</option><option value="display">Page-only — page files, no sign-in</option></select></div><div class="field"><label class="field-label" for="link-expiry">Expires</label><select id="link-expiry" name="expires_in"><option value="604800">In 7 days</option><option value="86400">In 24 hours</option><option value="2592000">In 30 days</option><option value="">Never</option></select></div></div>
               <div class="actions"><button>${icon('link')} Create share link</button></div>
             </form>${linkResult}</div>
-          <div class="tab-panel" id="panel-agent"><h3>Connect another agent</h3><p class="muted" style="font-size:.9rem">You get a paste-ready invitation with a one-time code. Existing agents keep their access.</p>
-            <form action="${actionURL}" method="post">
-              <input type="hidden" name="action" value="delegate-agent">
-              <div class="field"><label class="field-label" for="agent-name">Agent name</label><input id="agent-name" name="name" required maxlength="64" placeholder="e.g. reviewer or mobile-sync"><span class="field-hint">Letters, numbers, dots, dashes and underscores.</span></div>
-              <details class="disclosure"><summary>Host permissions</summary><div class="disclosure-body"><div class="check-list">${scopeChecks}</div></div></details>
-              <div class="actions"><button>${icon('bot')} Add agent</button></div>
-            </form>${agentResult}</div>
+          <div class="tab-panel" id="panel-agent"><h3>Give an agent access</h3><p class="muted" style="font-size:.9rem">Agents belong to your account and maintain any page you check here. Add new agents from your <a href="${text(t.env.PUBLIC_BASE + '/dashboard#agents')}">dashboard</a>.</p>
+            ${accountAgents.length ? `<form action="${actionURL}" method="post"><input type="hidden" name="action" value="agent-access"><div class="check-list">${agentChecks}</div><div class="actions"><button>${icon('bot')} Save agent access</button></div></form>` : `<p class="empty">No agents in your account yet. <a href="${text(t.env.PUBLIC_BASE + '/dashboard#agents')}">Add an agent</a> from your dashboard.</p>`}</div>
         </div>
       </div>
     </section>`;
@@ -193,12 +183,8 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
       ${shareRows ? `<ul class="list">${shareRows}</ul>` : '<p class="empty">No active invite or page-only links yet. Create one under <a href="#add">Add people &amp; devices</a>.</p>'}
     </section>
     <section class="card">
-      <div class="card-head"><div><h2>Connected agents</h2><p>Each connected agent uses its own revocable host credential. Chronolog signing grants are managed separately.</p></div>${agents.length ? `<span class="badge ok">${agents.length} connected</span>` : ''}</div>
-      ${agentRows ? `<ul class="list">${agentRows}</ul>` : '<p class="empty">No agents connected.</p>'}
-      <details class="disclosure danger"><summary>Replace all agent credentials for recovery</summary><div class="disclosure-body">
-        <p class="muted">Creates a one-time recovery code. Redeeming it revokes every existing agent token above.</p>
-        <form action="${actionURL}" method="post"><input type="hidden" name="action" value="connect-agent"><div class="actions"><button class="danger">Create replacing recovery code</button></div></form>
-      </div></details>
+      <div class="card-head"><div><h2>Agents with access</h2><p>Each agent uses its own account-level credential. Removing access closes its connections to this page; Chronolog signing grants are managed separately.</p></div>${agents.length ? `<span class="badge ok">${agents.length} with access</span>` : ''}</div>
+      ${agentRows ? `<ul class="list">${agentRows}</ul>` : '<p class="empty">No agents have access to this page.</p>'}
     </section>
     <section class="card">
       <div class="card-head"><div><h2>Publications</h2><p>Restoring earlier code requires a new signed Chronolog publication.</p></div>${current ? `<span class="badge">v${text(current)}</span>` : ''}</div>

@@ -1,7 +1,8 @@
 import { fork } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { importReviewPackages } from '../review/packages.mjs';
 import { at, need, same, MeasurementError } from './observer-data.mjs';
 import { hash } from './evidence.mjs';
@@ -123,16 +124,22 @@ export async function sessionMeasurement(session, config, sdk, { operationId, au
   return result;
 }
 
+async function importWorkspaceTools(project) {
+  const path = resolve(project, '.observer-imports-' + randomUUID() + '.mjs');
+  writeFileSync(path, "export { openWorkspace, attachPage } from '@tendriller/tools/workspace';\n", { flag: 'wx', mode: 0o600 });
+  try { return await import(pathToFileURL(path).href); }
+  finally { rmSync(path, { force: true }); }
+}
+
+
 /** Attach only. Never open another signer/store. A facade lacking raw signed
  * proof is an evidence boundary, not an application Save/network failure. */
-export async function probe(config, options, { packages = importReviewPackages, loadModule = url => import(url) } = {}) {
+export async function probe(config, options, { packages = importReviewPackages, workspaceTools = importWorkspaceTools } = {}) {
   if (!config.native) throw new MeasurementError('optional-native-observer-not-configured');
   const { session: sdk } = await packages(config.native.project);
-  const module = await loadModule(pathToFileURL(config.native.modulePath).href);
-  const hook = module[config.native.export ?? 'attachSession'];
-  if (typeof hook !== 'function') throw new MeasurementError('native-attach-export');
+  const { openWorkspace, attachPage } = await workspaceTools(config.native.project);
   const signal = AbortSignal.timeout(15000);
-  const attached = await hook({ signal, profile: config.native.profile ?? 'main' });
+  const attached = await attachPage(await openWorkspace({ root: config.native.project }), config.handle.id, { signal });
   const session = need(attached?.session, 'attached-session');
   const detach = attached.detach?.bind(attached) ?? session.detach?.bind(session);
   if (!detach) throw new MeasurementError('native-detach-method');

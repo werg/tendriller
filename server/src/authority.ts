@@ -12,6 +12,8 @@ import { pageUrl } from './urls';
 import type { Tendril } from './tendril';
 
 const CONFIG = 'application_configuration', BUNDLE = 'application_authority', BINDINGS = 'application_device_accounts';
+/** True once the owner's agent has prepared this page's application (publisher policy saved). */
+export const applicationPrepared = (t: Tendril): boolean => t.db.get(CONFIG, null) !== null;
 interface DeviceBinding { publicKey: string; accountId: string }
 interface Challenge { applicationId: string; publicKey: string; accountId: string; challenge: string; expiresAt: number; consumed: boolean }
 const tails = new WeakMap<Tendril, Promise<unknown>>();

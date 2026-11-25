@@ -4,25 +4,27 @@ Both choices use one device-owned authored operation-set session, signed intent 
 
 | Requirement | Start with |
 | --- | --- |
-| Notes/messages/observations; derive a domain from retained facts | Event notes at the tutorial root |
-| Relational constraints, guarded multi-row transfers, permissioned DDL and ownership | SQL inventory in `tutorial/sql/` |
+| Notes/messages/observations; derive a domain from retained facts | Event notes: the `templates/notes/` page template of the starter workspace ([Shared Notes](BUILD_AN_APP.md)) |
+| Relational constraints, guarded multi-row transfers, permissioned DDL and ownership | SQL inventory: the `templates/inventory/` page template ([source](https://github.com/werg/tendriller/tree/master/docs/tutorial/templates/inventory)) |
 | Device capture or inference | [Sensors](SENSORS.md)/reviewed content, then an explicit command in either model |
 
-The descriptor pins deterministic execution semantics and chosen finality policy. It does **not** freeze application schema. Code/tool declarations may describe supported behavior but cannot reject otherwise authorized ordinary schema programs.
+Each page is its own application with its own page record and device store, though all pages of a workspace share the agent's one signing key; a SQL page is a new page next to an events page, not a change to it. Choosing SQL for a new app is not an in-place switch for an already initialized events application, and publishing new HTML alone does not change a page's pinned definition. The descriptor pins deterministic execution semantics and chosen finality policy. It does **not** freeze application schema. Code/tool declarations may describe supported behavior but cannot reject otherwise authorized ordinary schema programs.
 
 ## Browser-first SQL setup
 
-Follow [Build an app](BUILD_AN_APP.md) for readiness, immutable SDK/tools/authority/session installation and retained handle. Select the advertised immutable SQL kit and its exact SQL-capable session. The kit supplies the matching browser WASM graph; SQL setup verifies and copies its four package-public assets to `sql/engine/` without a supplemental download. Do not substitute a stock binary or a JS-only permission claim for the matching native/WASM authorization ABI.
+Follow [Build an app](BUILD_AN_APP.md) for readiness, immutable SDK/tools/authority/session installation and the registered workspace agent. Select the advertised immutable SQL kit and its exact SQL-capable session; one install serves every page of a workspace, so keep events and SQL pages in separate workspaces when they need different session packages. The kit supplies the matching browser WASM graph; SQL setup verifies and copies its four package-public assets to `pages/<slug>/engine/` without a supplemental download. Do not substitute a stock binary or a JS-only permission claim for the matching native/WASM authorization ABI.
 
 The SQL setup verifies WASM bytes and derives the engine/platform execution manifest from the public browser metadata. It needs no running native participant or native addon to prepare/publish the browser app.
 
 ```sh
-cd sql
-npm run init
-npm run deploy
+npm run page:new -- stock --template inventory --name "Shared inventory"
+npm run init -- stock
+npm run deploy -- stock
 ```
 
-The independent publisher signs code before the first browser root exists. The owner signs in and initializes local data keys. Additional browsers remain keyless until exact key proof, explicit crypto grants and recipient-bound wrapping/import. The owning SQL Worker uses the supported dedicated Worker/VFS mode with the same retained local profile.
+`page:new` verifies the workspace's service origin, readiness and host contract, then loads the SQL engine and checks its execution manifest before creating any hosted page; a missing or unsupported engine fails there, before a page exists.
+
+The workspace's shared signer publishes code (a separate right from data access) before the first browser root exists; `init` creates no device, root or key. The owner signs in and initializes local data keys. Additional browsers remain keyless until exact key proof, explicit crypto grants and recipient-bound wrapping/import. The owning SQL Worker uses the supported dedicated Worker/VFS mode with the same retained local profile.
 
 ## Schema is an ordinary transaction
 

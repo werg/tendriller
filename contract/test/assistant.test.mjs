@@ -12,7 +12,7 @@ async function startupFixture(t, options = {}) {
     constructor() { super(); queueMicrotask(() => { this.readyState = 1; this.dispatchEvent(new Event('open')); }); }
     close(code = 1000) { this.readyState = 3; this.dispatchEvent(Object.assign(new Event('close'), { code })); }
   }
-  const participant = connectApplicationAssistant({ api: 'https://staging.example/api/t/aaaaaaaaaaaa',
+  const participant = connectApplicationAssistant({ page: { request: async () => ({}), socket() { throw Error('unused'); } },
     key: 'td_a_' + 'a'.repeat(64), session: { identity: { publicKey: 'b'.repeat(64) }, signal: stop.signal }, tools: { operationId: async id => id, execute: async () => {} },
     onStatus: value => reports.push(value), ...options,
     openSocket: () => { attempts++; if (attempts < (options.succeedAt ?? Infinity)) throw Error('awaiting owner consent'); return socket = new Socket(); },
@@ -75,7 +75,7 @@ test('the hosted adapter uses scoped execute and preserves the canonical signed 
   }
   const reference = { applicationId: 'c'.repeat(64), author,
     operationId: 'scoped/original-id', proposalId: 'd'.repeat(64) };
-  const participant = connectApplicationAssistant({ api: 'https://service.example/api/t/aaaaaaaaaaaa', key: 'td_a_' + 'e'.repeat(64),
+  const participant = connectApplicationAssistant({ page: { request: async () => ({}), socket() { throw Error('unused'); } }, key: 'td_a_' + 'e'.repeat(64),
     session: { applicationId: reference.applicationId, identity: { publicKey: author }, signal: stop.signal },
     tools: { operationId: async (raw,context) => { assert.equal(raw,'gateway-request');assert.equal(context.caller,'binding');return reference.operationId; }, execute: async (call, options) => {
       calls.push({ call, options });

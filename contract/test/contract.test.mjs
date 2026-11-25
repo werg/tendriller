@@ -1,37 +1,35 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { validate, assertValid, CONTRACT_VERSION } from '../index.mjs';
-import { createPage, createClient, describeService, requireService } from '../client.mjs';
+import { createAgentClient, describeService, requireService } from '../client.mjs';
 const application = { id: '12'.repeat(32) };
-const handle = { id: 'page', api: 'https://host.test/api/tendrils/page', token: 'secret', page_url: 'https://page.test/p/key/', application };
-test('creation accepts only application identity and validates owner and explicit fields', () => {
-  assertValid('create', { owner: 'owner@example.test', application });
-  for (const body of [{ owner: 'bad' }, { owner: 'a b@example.test' }, { owner: 'owner@example.test', state: {} },
-    { owner: 'owner@example.test', application: { kind: 'peer', ...application } }]) assert.ok(validate('create', body).length);
+const credential = { service: 'https://host.test', token: 'ta_' + 'a'.repeat(32) };
+test('agent registration and page creation schemas reject unknown or malformed fields', () => {
+  assertValid('agentRegistration', { owner: 'owner@example.test', name: 'laptop', publicKey: 'A'.repeat(43) });
+  assertValid('agentPageCreate', { name: 'Notes' }); assertValid('agentPageCreate', {});
+  assertValid('agentPageCreate', { name: 'Board', mode: 'dashboard', application: { id: 'ab'.repeat(32) } });
+  for (const body of [{ mode: 'hosted' }, { application: { id: 'AB'.repeat(32) } }, { application: { id: 'ab'.repeat(32), extra: true } }])
+    assert.ok(validate('agentPageCreate', body).length);
+  for (const body of [{ owner: 'bad', name: 'x', publicKey: 'A'.repeat(43) }, { owner: 'owner@example.test', name: 'x', publicKey: 'ab'.repeat(32) },
+    { owner: 'owner@example.test', name: 'x', publicKey: 'A'.repeat(43), token: 'ta_' }]) assert.ok(validate('agentRegistration', body).length);
+  assert.ok(validate('agentPageCreate', { name: 'x', owner: 'owner@example.test' }).length);
 });
 test('the host SDK starts no traffic and exposes only explicit host and participant services', async () => {
   const calls = [], fetch = async (url, options) => { calls.push({ url, options }); return Response.json({ id: 'page' }); };
-  const client = createClient(handle, { fetch, applicationId: application.id });
+  const client = createAgentClient(credential, { fetch }).page('aaaaaaaaaaaa', { applicationId: application.id });
   assert.equal(calls.length, 0);
-  assert.deepEqual(Object.keys(client).sort(), ['info', 'peers', 'request', 'service']);
+  assert.deepEqual(Object.keys(client).sort(), ['base', 'fetch', 'id', 'info', 'peers', 'request', 'service', 'socket']);
   assert.deepEqual(await client.info(), { id: 'page' });
-  assert.equal(calls[0].options.headers.Authorization, 'Bearer secret');
-  assert.equal(calls[0].url, handle.api);
-});
-test('creation validates both directions and returns the stable application identity', async () => {
-  const calls = [];
-  assert.deepEqual(await createPage('https://host.test/', { owner: 'owner@example.test' }, { fetch: async (...args) => { calls.push(args); return Response.json(handle, { status: 201 }); } }), handle);
-  assert.equal(calls[0][0], 'https://host.test/api/tendrils');
-  await assert.rejects(createPage('https://host.test', { owner: 'owner@example.test' }, { fetch: async () => Response.json({ ...handle, application: undefined }) }), { code: 'invalid_response' });
-  await assert.rejects(createPage('https://host.test', { owner: 'bad' }, { fetch: async () => { throw Error('must not send'); } }), { name: 'ContractError' });
+  assert.equal(calls[0].options.headers.Authorization, 'Bearer ' + credential.token);
+  assert.equal(calls[0].url, 'https://host.test/api/agent/pages/aaaaaaaaaaaa');
 });
 test('service metadata and structured failures are checked without inventing application capabilities', async () => {
   const descriptor = { contract: CONTRACT_VERSION, core_release: 'test', limits: {} };
   assert.deepEqual(await describeService('https://host.test', { fetch: async () => Response.json(descriptor) }), descriptor);
   assert.equal(requireService(descriptor), descriptor);
   assert.throws(() => requireService({ ...descriptor, contract: -1 }), { code: 'contract_mismatch' });
-  const denied = createClient(handle, { fetch: async () => Response.json({ error: { code: 'forbidden', message: 'No access' } }, { status: 403 }) });
+  const denied = createAgentClient(credential, { fetch: async () => Response.json({ error: { code: 'forbidden', message: 'No access' } }, { status: 403 }) }).page('aaaaaaaaaaaa');
   await assert.rejects(denied.info(), { status: 403, code: 'forbidden', message: 'No access' });
-  const broken = createClient(handle, { fetch: async () => new Response('not json') });
+  const broken = createAgentClient(credential, { fetch: async () => new Response('not json') }).page('aaaaaaaaaaaa');
   await assert.rejects(broken.info(), { code: 'invalid_response' });
 });

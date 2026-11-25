@@ -5,7 +5,8 @@ export interface ValidationIssue { path: string; message: string }
 export type PublicError = WireContracts['error'];
 export type ErrorResponse = WireContracts['errorResponse'];
 export type Role = 'owner' | 'guest' | 'display';
-export type CreateRequest = WireContracts['create'];
+export type AgentRegistration = WireContracts['agentRegistration'];
+export type AgentPageCreate = WireContracts['agentPageCreate'];
 export type ServiceDescriptor = WireContracts['serviceDescriptor'];
 export interface RuntimeErrorEntry {
   readonly id: string;
@@ -43,6 +44,8 @@ export type RuntimeConfiguration = {
   application: import("./application.mjs").ApplicationSelection;
   /** Public resident introduction addresses supplied with the initial page. */
   peerBootstrap?: import("./peers.mjs").PeerBootstrap;
+  /** Owner pages only: draw the page's icon SVGs into 512px PNGs for Android home-screen installs. */
+  iconRaster?: { key: string };
 } & (
   /** Decoded logical path of this document, independently of the publication's root entry. */
   { publication: PublicationManifest; documentPath: string }

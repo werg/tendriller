@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
 import { observeSqlFixture } from '../../test/e2e/specimens/browser-sql-view.mjs';
-const revision = (sequence, generation = 'first') => ({ applicationId: 'application', historyId: 'history', generation,
-  point: { generation, sequence, root: `root-${sequence}` }, controlRevision: 0, materializationRevision: String(sequence) });
+const revision = (sequence, tag = 'first') => ({ digest: `${tag}-${sequence}`, view: 'local', executionManifestDigest: 'engine', policyDigest: 'none' });
 const deferred = () => { let resolve, reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 function fixture() {
   const lifetime = new AbortController(), queued = [], reads = [], rendered = [];
@@ -19,11 +18,11 @@ function fixture() {
     query() { const read = deferred(); reads.push(read); return read.promise; },
   };
   const view = observeSqlFixture(session, { query: 'board', onSnapshot: value => rendered.push(value), onError: error => errors.push(error) });
-  const change = (sequence, generation, kind = 'applied') => {
-    const value = { done: false, value: { kind, revision: revision(sequence, generation) } };
+  const change = (sequence, tag, kind = 'materialized') => {
+    const value = { done: false, value: { kind, revision: revision(sequence, tag), revisedProposalIds: [] } };
     if (waiting) { const resolve = waiting; waiting = undefined; resolve(value); } else queued.push(value);
   };
-  const complete = (index, sequence, generation) => reads[index].resolve({ revision: revision(sequence, generation), value: [sequence] });
+  const complete = (index, sequence, tag) => reads[index].resolve({ revision: revision(sequence, tag), value: [sequence] });
   return { view, reads, rendered, change, complete, errors,
     status(phase) { for (const fn of statuses) fn({phase}); }, get statusListeners() { return statuses.size; }, get returned() { return returned; } };
 }
@@ -53,11 +52,11 @@ test('a change during the first blocked read fences stale output and Ready until
   assert.deepEqual(f.rendered.map(value => value.value), [[1]]); f.view.close();
 });
 
-test('a read already containing the newest change coalesces it, and recovery can select a lower sequence', async () => {
+test('a read already containing the newest change coalesces it, and an earlier-operation revision may select a lower sequence', async () => {
   const f = fixture(); f.change(0); await setImmediate(); f.change(1); await setImmediate();
   f.complete(0, 1); await f.view.ready; assert.equal(f.reads.length, 1);
-  f.change(0, 'replacement', 'recovery'); await setImmediate(); f.complete(1, 0, 'replacement'); await setImmediate();
-  assert.deepEqual(f.rendered.map(value => value.revision.generation), ['first', 'replacement']); f.view.close();
+  f.change(0, 'revised'); await setImmediate(); f.complete(1, 0, 'revised'); await setImmediate();
+  assert.deepEqual(f.rendered.map(value => value.revision.digest), ['first-1', 'revised-0']); f.view.close();
 });
 
 test('closing a blocked initial read rejects Ready, returns the subscription and ignores the late result', async () => {
@@ -74,19 +73,19 @@ test('a missing initial observation cannot leave readiness unbounded', async t =
 });
 
 
-test('SQL initial PEER_RECOVERING retains the observer until readiness, without a post-Ready duplicate', async () => {
+test('SQL initial materializer-unavailable read retains the observer until readiness, without a post-Ready duplicate', async () => {
   const f = fixture(); let ready = false; f.view.ready.then(() => { ready = true; });
-  f.change(0); await setImmediate(); f.reads[0].reject(Error('PEER_RECOVERING')); await setImmediate();
+  f.change(0); await setImmediate(); f.reads[0].reject(Error('MATERIALIZATION_UNAVAILABLE')); await setImmediate();
   assert.equal(ready, false); assert.equal(f.returned, 0); assert.deepEqual(f.errors, []); assert.equal(f.reads.length, 1);
   f.status('ready'); await setImmediate(); assert.equal(f.reads.length, 2);
   f.complete(1, 0); await f.view.ready; f.change(0); await setImmediate(); assert.equal(f.reads.length, 2);
   f.view.close(); assert.equal(f.statusListeners, 0);
 });
 
-test('SQL initial recovery keeps its existing deadline; fatal query errors still close promptly', async t => {
+test('SQL initial unavailability keeps its existing deadline; fatal query errors still close promptly', async t => {
   t.mock.timers.enable({apis:['setTimeout']});
   for (const fatal of [false, true]) {
-    const f = fixture(), failure = Error(fatal ? 'APPLICATION_QUERY_UNKNOWN' : 'PEER_RECOVERING');
+    const f = fixture(), failure = Error(fatal ? 'APPLICATION_QUERY_UNKNOWN' : 'MATERIALIZATION_UNAVAILABLE');
     const rejected = assert.rejects(f.view.ready, fatal ? {message:'APPLICATION_QUERY_UNKNOWN'} : /SQL_FIXTURE_VIEW_TIMEOUT/);
     f.change(0); await setImmediate(); f.reads[0].reject(failure); await setImmediate();
     if (!fatal) { t.mock.timers.tick(20_000); }
@@ -98,7 +97,7 @@ test('SQL initial recovery keeps its existing deadline; fatal query errors still
 
 test('SQL readiness arriving during a failed initial read is retained as one retry event', async () => {
   const f = fixture(); f.change(0); await setImmediate();
-  f.status('ready'); f.reads[0].reject(Error('PEER_RECOVERING')); await setImmediate();
+  f.status('ready'); f.reads[0].reject(Error('MATERIALIZATION_UNAVAILABLE')); await setImmediate();
   assert.equal(f.reads.length, 2); f.complete(1, 0); await f.view.ready;
   assert.deepEqual(f.errors, []); f.view.close(); assert.equal(f.statusListeners, 0);
 });

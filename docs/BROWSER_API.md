@@ -50,12 +50,58 @@ Safari device-qualification guarantee.
 | `sensors` | Observe tracked use and cancel active or pending acquisitions |
 | `assetUrl(path)` | Resolve an explicit dependency in the pinned runtime |
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
+| `notifications.status()`, `enable()`, `disable()`, `setBadge(count?)` | Explicit opt-in Web Push subscription and supported app badging; see [notification gates](#web-push-notifications) |
 | `documentUrl(reference)` | Build a document or fragment URL in this page’s current live or explicitly pinned context; performs no navigation |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
 | `transport.install(participation)`, `status()`, `onChange()`, `refresh()` | Bounded local authenticated-link diagnostics; no polling, probes or host queries. See [transport diagnostics](TRANSPORT_DIAGNOSTICS.md) |
 | `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned`, `policy` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
 
 The hosted `tendril.js` entry opens one receive-only publication metadata WebSocket during construction, including on holding and explicitly pinned pages. The bare `startRuntime()` kernel opens it only when passed `watchPublication: true`; otherwise construction starts no host connection or fetch. A healthy publication watch sends no heartbeat or periodic HTTP request; transport failure can trigger bounded recovery reads and reconnects. This watch does not install an application transport. Construction creates no IndexedDB outbox, service worker registration or sensor permission request. Explicit host requests authenticate with existing account cookies. The runtime creates no extra device secret or device authorization headers.
+
+## Published-page security policy
+
+The ordinary authored-page response from `servePageFile` currently adds no host
+`Content-Security-Policy` header. This differs from host-owned sign-in,
+permission-review, management and report documents, which carry their own
+restrictive policies. Those documents' policies do not describe the authored
+application page. The implementation is in
+[page file serving](https://github.com/werg/tendriller/blob/458082873371daeb890336a997897ba6a06c3584/server/src/files.ts),
+[service pages](https://github.com/werg/tendriller/blob/458082873371daeb890336a997897ba6a06c3584/server/src/accounts/ui.ts)
+and [page routes](https://github.com/werg/tendriller/blob/458082873371daeb890336a997897ba6a06c3584/server/src/page.ts).
+
+Check the release and route actually loaded before diagnosing a blocked asset:
+
+1. Open the selected authored publication in an authorized browser. In Network,
+   inspect the final **200 document response**, its publication/version headers
+   and any `Content-Security-Policy` or `Content-Security-Policy-Report-Only`
+   headers. A report-only policy reports violations without enforcing them.
+2. Inspect the authored HTML for
+   `<meta http-equiv="Content-Security-Policy" ...>`. A page author or another
+   hosting layer can supply a policy even when this host route does not.
+3. Use the console and failed resource request to identify the actual rule.
+   An unauthenticated `HEAD` or sign-in/review redirect is not evidence about
+   the selected authored document's policy.
+
+Absence of a host CSP does not waive browser resource rules:
+
+| Resource | Checks that still apply |
+| --- | --- |
+| External API requests | The target's CORS response and credential rules, any effective `connect-src` policy, and mixed-content rules |
+| JavaScript modules | CORS for cross-origin modules and a valid JavaScript MIME type |
+| Worker entry points and imports | Worker origin/type requirements, module import rules and any effective `worker-src` policy |
+| Fonts, images and other external assets | The resource's browser rules, any effective policy and HTTPS/mixed-content handling |
+
+Prefer bundling dependencies, fonts, Worker code and required assets into the
+signed publication graph so their exact bytes travel with that release. This
+also keeps the normal page path independent of a CDN's availability or headers.
+External data requests remain an explicit application choice; test them from the
+actual page origin. There is no generic host CSP allowlist/configuration API or
+implicit cross-origin proxy to enable.
+
+See MDN's [CSP guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP),
+[CORS guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS),
+[mixed-content rules](https://developer.mozilla.org/en-US/docs/Web/Security/Defenses/Mixed_content)
+and [Worker constructor requirements](https://developer.mozilla.org/en-US/docs/Web/API/Worker/Worker).
 
 ## Favicons and page branding
 
@@ -65,16 +111,18 @@ host converts it to an SVG automatically. No image file, upload or image service
 is needed. Compound emoji such as `👩🏽‍💻`, flags and keycaps are supported. The SVG
 uses the device's emoji font, so its appearance can vary by platform.
 
-From a native agent using the private handle and public SDK:
+From a native agent using its agent credential and the public SDK:
 
 ```js
-const host = createClient(handle, { applicationId: handle.application.id });
+const agent = createAgentClient({ service: SERVICE_ORIGIN, token: AGENT_TOKEN });
+const host = agent.page(PAGE_ID, { applicationId: APPLICATION_ID });
 await host.request('', { method: 'PATCH', body: { icon: '🌱' } });
 ```
 
-Import `createClient` from `@tendriller/core`. The equivalent HTTP request is
-`PATCH` to the returned handle's `api` URL, with `Authorization: Bearer TOKEN`,
-`Content-Type: application/json` and the body `{"icon":"🌱"}`. This host metadata
+Import `createAgentClient` from `@tendriller/core`. The equivalent HTTP request is
+`PATCH` to `SERVICE_ORIGIN/api/agent/pages/PAGE_ID`, with
+`Authorization: Bearer ta_…`, `Content-Type: application/json` and the body
+`{"icon":"🌱"}`. This host metadata
 operation requires `host:manage`; keep the agent credential outside browser code.
 For the CLI, see [set a favicon](tools/CLI.md#set-a-favicon).
 
@@ -92,9 +140,23 @@ manifest also suppresses host icon defaults, so update that authored branding
 when it is present. Before the first publication, the holding page retains the
 Tendriller icon.
 
+Android home-screen installs use only PNG or WebP icons with known dimensions.
+For an emoji icon, the owner's next visit draws it into 512px PNG icons once,
+in the background, and the manifest lists those first. For an image URL, the
+host measures the image (reading it from the publication when it is one of the
+page's own files) and lists its real size. Use a square PNG or WebP of at least
+192px; otherwise Android may fall back to a generic icon.
+
+iOS ignores manifest icons and SVGs; Safari's Add to Home Screen uses the
+page's `apple-touch-icon`. Emoji pages use the drawn PNG (on its theme-colour
+background, since iOS fills transparency with black); image icons are used
+when they are PNG or JPEG. Otherwise iOS shows the Tendriller icon.
+
 ## Page options placement
 
-The hosted utility sits at the bottom right. Its collapsed **Page options**
+The hosted utility starts at the bottom right. The person can drag the bar to
+another corner or choose **Page options → Button position**; that preference
+is remembered for this page on this device. Its collapsed **Page options**
 button has a 44 px minimum touch target inside a bar with 4 px padding and a
 1 px border (54 px high without wrapped sensor controls). The width depends on
 the font and active controls. Active/pending sensors can make the bar wider or
@@ -142,9 +204,11 @@ main {
 }
 ```
 
-The optional floating voice controls use the same right/bottom clearances and
-sit 10 px above the measured utility bar. They follow changes in sensor-control
-height without a separate hard-coded app offset. Supplying a voice
+The optional floating voice controls use the same right/bottom clearances plus
+the measured utility height and a 10 px gap. At the default bottom-right utility
+position, they sit above its bar. Moving the utility to another corner does not
+move the voice controls. They follow changes in sensor-control height without
+a separate hard-coded app offset. Supplying a voice
 `container` still places those controls inline. Both floating panels keep their
 content scrollable within the remaining viewport. Keep enough room for the
 controls and verify your chosen clearances at narrow and landscape sizes;
@@ -154,6 +218,94 @@ actions.
 Existing publications acquire this layout contract only when republished with
 the updated pinned runtime. Changing host code alone does not modify the
 runtime of an already signed publication.
+
+## Web Push notifications
+
+Published pages already have a hosted Web Push path. **Page options → Notifications**
+uses `tendril.notifications`; an authored button can use the same API. The built-in
+Service Worker displays the notification and handles its click, including when
+the page is closed. No custom `push` handler is needed.
+
+```js
+const enableButton = document.querySelector('[data-enable-notifications]');
+const output = document.querySelector('[data-notification-status]'); // role="status"
+function showNotificationStatus({ state, subscribed }) {
+  output.textContent = state === 'install_required'
+    ? 'Add this page to the Home Screen, open it there, then enable notifications.'
+    : state === 'unsupported' ? 'This browser does not support Web Push here.'
+    : state === 'denied' ? 'Notifications are blocked. Review this site’s browser permission.'
+    : subscribed ? 'This browser has a notification subscription.'
+    : 'Notifications are not subscribed. Use Enable notifications to opt in.';
+}
+showNotificationStatus(await tendril.notifications.status());
+enableButton.addEventListener('click', async () => {
+  try {
+    // Call directly in this user gesture; do not request permission on page load.
+    const pending = tendril.notifications.enable();
+    enableButton.disabled = true;
+    showNotificationStatus(await pending);
+  } catch (error) {
+    output.textContent = error.message; // Configuration, authorization or registration failed.
+  } finally { enableButton.disabled = false; }
+});
+// On a separate explicit disable action: await tendril.notifications.disable().
+// Optional, where supported: await tendril.notifications.setBadge(3).
+// Clear the app badge: await tendril.notifications.setBadge(0).
+```
+
+These are separate gates, not interchangeable signs of delivery:
+
+| Gate | Observed result and next action |
+| --- | --- |
+| Browser support | `Notification`, Service Worker and `PushManager` APIs must be present. Otherwise status/enable returns `unsupported`. |
+| iOS installation | A page outside an installed app returns `install_required`. Use [Home Screen setup](#home-screen-setup), then open the installed app. |
+| Explicit browser permission | `prompt`, `granted` and `denied` describe browser permission. `granted` alone does not mean a subscription exists. A denied permission needs the person's browser settings review. |
+| Local subscription | `status().subscribed` checks the browser's saved Push subscription. It does not query whether the host still retains that subscription or prove that a device received an alert. |
+| Host configuration | The operator supplies matching `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` with an appropriate `VAPID_SUBJECT`. Missing keys make the key route report `configured: false`; `enable()` surfaces a configuration error. Subscribe/send routes return `503 push_not_configured` when unconfigured. Browser permission does not configure the host. |
+| Page subscription rights | Host subscription routes require an authenticated account with `page.write` permission. `enable()` saves the subscription through that page session; a `403` or failed save is not success. |
+| Sender rights | The native sender's host credential needs `notifications:send`, independently of application membership and browser permission. |
+
+`enable()` resolves with `subscribed: true` only after saving the subscription
+on the host. `disable()` attempts both local unsubscribe and host removal on a
+best-effort basis; recheck `status()` for the local result. It does not revoke
+the browser's permission.
+`setBadge()` is optional local app badging, silently unavailable on unsupported
+browsers; it does not send a notification.
+
+Native senders can use the workspace CLI:
+
+```sh
+npx tendril --page my-page notify --title 'Review ready' \
+  --body 'Open your page to review the result.' --path '#review' --tag review --badge 1
+```
+
+The same host operation is `POST /api/agent/pages/<id>/push` with the agent
+credential (scope `notifications:send`) and a JSON payload, or `notify_user` in the session CLI's
+[stdio MCP interface](tools/CLI.md). The account-linked application gateway's
+declared application commands are a separate surface; do not assume it advertises
+this CLI tool. Keep sender credentials and private VAPID keys out of authored code.
+
+The built-in payload accepts a required title (1–120 characters), optional body
+(truncated to 500 after trimming whitespace), tag (1–64 alphanumeric/`.`/`_`/`-` characters), badge (0–999),
+and a safe relative `path`, query or fragment within this page. The encoded wire
+payload is limited to 2,048 bytes. Notification clicks focus or open this page;
+the Service Worker also checks the destination's origin and page scope. This
+does not install arbitrary background JavaScript, extend the Service Worker,
+or schedule future sends. The application owns when an authorized sender sends.
+
+The host reports `{ sent, failed, pruned, total }`; `sent` counts accepted push
+provider requests, not a delivery/read receipt. With no subscriptions, all counts
+are zero. Delivery depends on the browser, OS, network and provider. Retained
+application facts still belong in Chronolog. `session.signals` are disposable
+peer messages while a session is available; foreground UI/Notification use
+needs a running page. Neither is a substitute for this opt-in closed-page path.
+
+The [runtime implementation](https://github.com/werg/tendriller/blob/master/runtime/src/notifications.ts),
+[host authorization](https://github.com/werg/tendriller/blob/master/server/src/page.ts),
+and [push validation/sending](https://github.com/werg/tendriller/blob/master/server/src/push.ts)
+define this contract. Source support and configured keys do not qualify a real
+device/provider pair; verify permission, saved subscription, send result and
+actual closed-page display/click behavior separately on the intended devices.
 
 ## Home Screen setup
 

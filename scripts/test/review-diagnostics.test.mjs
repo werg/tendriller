@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createReviewDiagnostics, reviewError, reviewNativeError, waitForReviewProvider } from '../review/diagnostics.mjs';
 const options = { origin: 'https://selected.example', pageUrl: 'https://selected.example/PRIVATE_PAGE/',
-  reviewUrl: 'https://selected.example/connections/PRIVATE_PAGE', apiUrl: 'https://selected.example/api/t/PRIVATE_PAGE' };
+  reviewUrl: 'https://selected.example/connections/PRIVATE_PAGE', apiUrl: 'https://selected.example/api/agent/pages/PRIVATE_PAGE' };
 test('review diagnostics retain fixed routes, counters and markers without private browser or error data', async () => {
   let now = 10;
   const diagnostics = createReviewDiagnostics({ ...options, now: () => now });

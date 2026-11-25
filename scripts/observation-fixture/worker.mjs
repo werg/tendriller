@@ -1,5 +1,5 @@
 import { openBrowserDevice, createApplicationSession, createApplicationOwner } from '@chronolog/peer-session/worker';
-import { definition } from '../../docs/tutorial/observation/domain.mjs';
+import { definition } from '../../docs/tutorial/shared/observation/domain.mjs';
 import { createTestConnection } from './connection.mjs';
 const pending=new Map();let sequence=0,owner,ownerReady;
 const ready=new Promise(resolve=>ownerReady=resolve);

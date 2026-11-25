@@ -1,16 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createClient } from '../client.mjs';
+import { createAgentClient } from '../client.mjs';
 import { createPeersClient } from '../peers.mjs';
 const applicationId = 'ab'.repeat(32), metadata = { selection: { id: applicationId }, configuration: null, publicationAuthority: null, authority: null };
 const json = value => new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
 test('explicit host metadata cancellation aborts only that caller and a later read remains usable', async () => {
   const entered = Promise.withResolvers(), caller = new AbortController(), reason = Error('this view ended'); let requests = 0, observed;
-  const host = createClient({ api: 'https://host.test/api/t/aaaaaaaaaaaa', token: 'synthetic-test-token' }, { fetch: async (url, options) => {
-    assert.equal(url, 'https://host.test/api/t/aaaaaaaaaaaa/application'); requests++;
+  const host = createAgentClient({ service: 'https://host.test', token: 'ta_' + 'a'.repeat(32) }, { fetch: async (url, options) => {
+    assert.equal(url, 'https://host.test/api/agent/pages/aaaaaaaaaaaa/application'); requests++;
     if (requests > 1) return json(metadata);
     observed = options.signal; entered.resolve(); return new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
-  } });
+  } }).page('aaaaaaaaaaaa');
   const rejected = assert.rejects(host.peers.application({ signal: caller.signal }), error => error === reason); await entered.promise; caller.abort(reason); await rejected; assert.equal(observed.aborted, true);
   assert.deepEqual(await host.peers.application(), metadata); assert.equal(requests, 2);
 });

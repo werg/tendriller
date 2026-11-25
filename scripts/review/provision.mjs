@@ -3,12 +3,12 @@ import { join } from 'node:path';
 
 /**
  * Explicitly provision the OPTIONAL native participant from the already-initialized browser owner.
- * The browser never receives the native private key, and the native process never creates a root,
- * membership or data key: it proves its own signing key for the account-bound challenge, then imports
- * a package wrapped to exactly that recipient. Every step uses public records only.
+ * The native signer is the workspace's one shared agent key: the browser never receives its private key, and
+ * the native process never creates a root, membership or data key. It proves the key for the account-bound
+ * challenge, then imports a package wrapped to exactly that recipient. Every step uses public records only.
  */
 export async function provisionNative({ page, run, project, timeoutMs = 60000 }) {
-  const { publicKey } = JSON.parse(run(['init-device']));
+  const { publicKey } = JSON.parse(run(['signer-key']));
   if (!/^[a-f0-9]{64}$/.test(publicKey ?? '')) throw Error('NATIVE_DEVICE_KEY_INVALID');
   const status = (pattern) => page.locator('[data-provisioning="status"]').filter({ hasText: pattern }).waitFor({ timeout: timeoutMs });
   const out = page.locator('#transfer-out'), incoming = page.locator('#transfer-in');

@@ -6,9 +6,9 @@ Read [the agent entry point](agent.md), then follow [Build an app](docs/BUILD_AN
 Deliver the [running application](docs/AGENT_DELIVERY.md): start provisioning
 early, prepare and publish before claim, give the human the ready page URL without
 asking for a claimed reply, and verify browser-first operation and peer convergence.
-A native participant or agent server is optional; never make its reachability a
-prerequisite for ordinary browser reads or durable writes. Treat setup as part of
-the task. Use the [capability map](docs/CAPABILITIES.md) and import/adapt
+The agent program (`tendril agent run`) and any native participant are optional;
+never make their reachability a prerequisite for ordinary browser reads or durable
+writes. Treat setup as part of the task. Use the [capability map](docs/CAPABILITIES.md) and import/adapt
 the current helper modules before implementing another application stack.
 The complete [session bootstrap](docs/SESSION_BOOTSTRAP.md) and tutorial files supply
 the native session and browser Worker; do not invent a `deployment.mjs` import.
@@ -18,10 +18,17 @@ Read `/api/readiness` before downloading or installing packages. Require open
 creation readiness at that origin; stop on a pause, unavailable or unsupported
 readiness and report its next action. Follow `firstApp.release` and the build
 guide for the immutable kit and exact local package composition.
-With account-linked MCP, use the starter's `setup:prepare`, call
-`prepare_tendril_setup` with its public arguments, and use `setup:finish` with
-the exact ready result. Retain the original private intent and use
-`inspect_tendril_setup` after a lost reply; the host derives the verified owner.
+One **agent** has one `ta_` credential and one signing key shared by all of its
+pages, kept in the workspace (`tendriller.json`, `pages/<slug>/`, `shared/`,
+private `.tendriller/agent` and `.tendriller/pages/<id>`). Register it once:
+with account-linked MCP, run `tendril workspace key`, call `register_agent` with
+its public arguments, and retain the result with `tendril workspace adopt` (the
+host derives the verified owner); from a domain, `tendril workspace init --owner
+EMAIL`; or with a dashboard join code, `tendril workspace join`. Pages the agent
+creates (`npm run page:new`) are granted to it automatically; the owner grants
+an existing page with the per-agent checkbox on the dashboard or page settings,
+then `tendril page grant`. `tendril agent run` (`npm run agent`) is the optional
+local program: one hub connection for all control traffic, one session per page.
 Browser enrollment authenticates the account, origin and device-key proof; it
 does not pause or select application history. Bootstrap the first authorized
 browser's local identity, permissions and keys durably. Additional devices need
@@ -29,13 +36,14 @@ explicit authenticated key provisioning; an empty browser cannot invent missing
 private keys. Retained devices open cached local state before background authority
 refresh or discovery. Preserve exact signed intents across uncertain replies.
 
-The intended route is **create → choose finality/availability policy → publish signed UI → owner sign-in → initialize browser locally → author and replicate → verify**. A created
-page is only the host handle. Host credentials, device grants, data permissions,
-finality eligibility and publication rights are independent. Chronolog operations
-are an authenticated CRDT set, ordered solely by signed author timestamp, signing
-public key and stable proposal ID. No participant assigns operation order. Use
-session signals for disposable live updates. A separately hosted application
-backend needs a concrete requirement; Tendriller is not the application database.
+The intended route is **register agent → create page → choose finality/availability policy → publish signed UI → owner sign-in → initialize browser locally → author and replicate → verify**. A created
+page is only the host handle. The agent credential, host credentials, device grants,
+data permissions, finality eligibility and publication rights are independent.
+Chronolog operations are an authenticated CRDT set, ordered solely by signed author
+timestamp, signing public key and stable proposal ID. No participant assigns
+operation order. Use session signals for disposable live updates. A separately
+hosted application backend needs a concrete requirement; Tendriller is not the
+application database.
 
 Finality is optional admission/closed-time evidence, never an operation sorter.
 Choose the supported policy explicitly; ordinary apps default to no finality.
@@ -50,7 +58,7 @@ Pinned SQL engine/platform manifests establish deterministic execution, not an
 immutable database schema. There are no old ordering profiles, compatibility
 adapters or migrations to implement.
 
-Keep private handles, signing identities and epoch keys outside authored assets.
+Keep the agent token, signing identities and epoch keys outside authored assets.
 Resume existing device storage. Preserve operation IDs and signed attempts after
 uncertain responses. The owner completes their own sign-in; device enrollment and
 recovery remain explicit. If blocked, name the exact prerequisite and next action
@@ -60,9 +68,10 @@ Completion means demonstrating a real locally stored and materialized operation,
 independent authoring while disconnected, automatic convergence with another
 participant, persistence after reload, and verified signed publication. Distinguish
 local durability, revisable materialization, peer retention and configured finality.
-State which browser/optional processes must remain open for live synchronization
-or finality; do not imply they are needed to save local work. An installed adapter
-or HTML preview alone does not establish a working application.
+State which browser/optional processes (including the agent program) must remain
+open for live synchronization or finality; do not imply they are needed to save
+local work. An installed adapter or HTML preview alone does not establish a
+working application.
 Report actual process lifetimes. Page residency and MCP do not establish
 a supported handoff to, or future wake of, an existing ChatGPT conversation.
 

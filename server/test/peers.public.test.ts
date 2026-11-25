@@ -148,7 +148,7 @@ it('rechecks the recipient host credential before forwarding an introduction', a
   const h = await create({ mode: 'dashboard', listener: false, application: { id: '5e877599b096097b35ad02ff3f399ef0fa00c01d7205c07126d441eb1bd0626f' } });
   const page = await open(h, 'access', 'page', true), agent = await open(h, 'access', 'agent');
   await Promise.all([agent.connection.ready, page.connection.ready]);
-  await inDO(h.id, t => { t.db.run('DELETE FROM tokens'); });
+  await inDO(h.id, t => { t.db.run('DELETE FROM agent_grants'); });
   await page.connection.send(offer);
   expect((await agent.closed).code).toBe(4003);
   expect(agent.connection.stats.receivedDescriptions).toBe(0);

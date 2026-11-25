@@ -58,8 +58,8 @@ export function previewConfig(identity, template, databaseId, accountId, runtime
     assets: { directory: "./public", binding: "ASSETS", run_worker_first: assetRouting(runtimeId) },
     // Every preview Worker is new and uses the public generic engine classes.
     // The canonical service's V4 aliases/tombstones belong only to its Worker.
-    durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' }] },
-    migrations: [{ tag: 'baseline', new_sqlite_classes: ['Tendril', 'Admission'] }],
+    durable_objects: { bindings: [{ name: 'TENDRIL', class_name: 'Tendril' }, { name: 'ADMISSION', class_name: 'Admission' }, { name: 'AGENT_HUB', class_name: 'AgentHub' }] },
+    migrations: [{ tag: 'baseline', new_sqlite_classes: ['Tendril', 'Admission'] }, { tag: 'agent-hub', new_sqlite_classes: ['AgentHub'] }],
     d1_databases: [{ binding: "ACCOUNTS", database_name: identity.database,
       database_id: databaseId, migrations_dir: "migrations" }],
     r2_buckets: [{ binding: "FILES", bucket_name: identity.bucket }],

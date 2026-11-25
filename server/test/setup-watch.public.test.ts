@@ -41,6 +41,6 @@ it('publishes no notification for rolled-back writes and fences revoked credenti
     expect(t.db.get('assistant_proposal', null)).toBe(null);
   });
   const closed = new Promise<number>(resolve => socket.addEventListener('close', e => resolve(e.code)));
-  await inDO(h.id, t => { t.db.run('DELETE FROM tokens'); notifySetupChanged(t); });
+  await inDO(h.id, t => { t.db.run('DELETE FROM agent_grants'); notifySetupChanged(t); });
   expect(await closed).toBe(4003);
 });

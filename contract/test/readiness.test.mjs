@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPage, describeService, describeReadiness, requireCreationReady, requireServiceOrigin } from '../client.mjs';
+import { describeService, describeReadiness, requireCreationReady, requireServiceOrigin } from '../client.mjs';
 
 const origin = 'https://staging.example.test';
 const readiness = (mode = 'open') => ({ schemaVersion: 1, serviceOrigin: origin,
@@ -65,14 +65,4 @@ test('service origin validation rejects credentials, paths and non-loopback HTTP
   for (const value of ['https://user:private@example.test', origin + '/api/t/private', origin + '?token=private', 'http://example.test', 'not a URL']) {
     assert.throws(() => requireServiceOrigin(value), error => error.code === 'invalid_service_origin' && !error.message.includes('private'));
   }
-});
-
-test('creation enforces origin and retains a service-mode race as the actual creation error', async () => {
-  const handle = { id: 'page', api: origin + '/api/t/page', token: 'fixture', page_url: 'https://page.example.test/s/key/', application: { id: 'a'.repeat(64) } };
-  let options;
-  await createPage(origin, { owner: 'owner@example.test' }, { fetch: async (_url, value) => { options = value; return Response.json(handle); } });
-  assert.equal(options.redirect, 'error');
-  await assert.rejects(createPage(origin, { owner: 'owner@example.test' }, { fetch: async () => Response.json({ ...handle, api: 'https://production.example.test/api/t/page' }) }), { code: 'service_origin_mismatch' });
-  requireCreationReady(readiness());
-  await assert.rejects(createPage(origin, { owner: 'owner@example.test' }, { fetch: async () => Response.json({ error: { code: 'creation_paused', message: 'New tendrils are temporarily paused' } }, { status: 503 }) }), { code: 'creation_paused', status: 503 });
 });

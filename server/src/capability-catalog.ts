@@ -244,7 +244,7 @@ const capabilities = [
   { id: 'signed-publication', title: 'Create, claim and deliver a hosted application',
     keywords: ['deploy', 'publish', 'hosting', 'owner', 'live app', 'deliver'],
     owner: 'Tendriller host plus authorized Chronolog publisher', availability: 'provided', imports: ['@tendriller/core'],
-    api: ['createClient', 'host.peers.prepare', 'tendril --session ./session.mjs publish ./page'],
+    api: ['createAgentClient', 'host.peers.prepare', 'tendril --session ./session.mjs publish ./page'],
     guide: '/docs/BUILD_AN_APP.md', example: 'setup.mjs; session.mjs',
     boundary: 'Owner sign-in, signed device enrollment and publisher rights are separate. Deliver the live page and verified exchange; a source archive alone is not completion.' },
 ];

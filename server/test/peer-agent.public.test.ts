@@ -15,8 +15,9 @@ it('creates an independent stable application identity and leaves authority expl
 it.each(['interactive', 'dashboard'])('uses the same owned application contract for %s pages', async mode => {
   const application = { id: '12'.repeat(32) }, h = await create({ application, mode });
   expect(h.application).toEqual(application);
-  const setup = (h as unknown as { agent_setup: { application: string; next_step: string } }).agent_setup;
-  expect(setup.application).toBe(application.id); expect(setup.next_step).toContain('public Chronolog application session');
+  const created = h as unknown as { next_step: string; api: string; claimed: boolean };
+  expect(created.api).toBe(`https://tendriller.dev/api/agent/pages/${h.id}`); expect(created.claimed).toBe(false);
+  expect(created.next_step).toContain('claims this page and this agent');
   const html = await (await req(h.page_url)).text();
   const configuration = JSON.parse(/window\.__TENDRIL__=(.*?);<\/script>/.exec(html)![1]);
   expect(configuration.application).toEqual(application); expect(configuration).not.toHaveProperty('ws');

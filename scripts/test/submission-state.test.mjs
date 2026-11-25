@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSubmissionState } from '../../docs/tutorial/helpers/submission-state.mjs';
+import { createSubmissionState } from '../../docs/tutorial/shared/helpers/submission-state.mjs';
 function ready(ui) {
   ui.update({ attached: true });
   ui.application({ phase: 'ready', canAuthor: true });

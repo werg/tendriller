@@ -7,7 +7,7 @@ import {createServer} from 'node:http';
 import {mkdir,readFile,writeFile} from 'node:fs/promises';
 import {resolve,join} from 'node:path';
 const qualifyLifecycle=process.env.TENDRILLER_BROWSER_LIFECYCLE==='1';
-const root=resolve(import.meta.dirname,'..'),out=join(root,'.results/collaboration-browser-assets');
+const root=resolve(import.meta.dirname,'..'),reportRoot=resolve(process.env.TENDRILLER_BROWSER_OUTPUT??join(root,'.results')),out=join(reportRoot,'collaboration-browser-assets');
 await mkdir(out,{recursive:true});
 await build({absWorkingDir:root,entryPoints:{page:'collaboration/test/browser/page.mjs',worker:'collaboration/test/browser/worker.mjs'},
   bundle:true,splitting:true,format:'esm',platform:'browser',target:'es2022',outdir:out,outExtension:{'.js':'.mjs'}});
@@ -30,9 +30,9 @@ window.passiveReady=(async()=>{
 });
 await new Promise(done=>server.listen(0,'127.0.0.1',done));const base=`http://127.0.0.1:${server.address().port}`;
 let browser,lifecycleBrowser;const evidence={status:'failed',stage:'launch',scenarios:[],completedStages:[],diagnostics:[],scope:'Actual Chromium; local origin, events backend; no mobile/provider/Internet claim'};
-async function stage(name,run){
+async function stage(name,run,timeoutMs=25000){
   evidence.stage=name;console.log(`Browser qualification: ${name}`);let timer;
-  try{const result=await Promise.race([run(),new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error(`Browser stage timed out: ${name}`)),25000);})]);
+  try{const result=await Promise.race([run(),new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error(`Browser stage timed out: ${name}`)),timeoutMs);})]);
     evidence.completedStages.push(name);return result;
   }finally{clearTimeout(timer);}
 }
@@ -192,7 +192,8 @@ try{
         await two.waitForFunction(async()=>!(await navigator.locks.query()).held.some(lock=>lock.name===`chronolog-owner:${window.ownerProfile}`));
         await two.reload();const reopened=await two.evaluate(()=>window.ready);
         assert.equal(reopened.publicKey,a.publicKey);assert.notEqual(reopened.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).inspect()).materialized.outcome),'accepted');
+        // A reopened session warms its materialization independently; wait for the original operation's outcome.
+        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).materialized({timeoutMs:15000})).outcome),'accepted');
       });
     }else{
       await stage('elected:local-detach-preserves-sibling',async()=>{
@@ -204,11 +205,29 @@ try{
       await stage('elected:physical-owner-page-close-and-reopen',async()=>{
         // Physical page death can terminate its dedicated Worker. A retired
         // local attachment alone must not do so while an authenticated sibling lives.
-        await one.close();await two.waitForFunction(()=>window.session.status.phase==='closed');
+        // Owner loss is detected only through the follower's bounded liveness
+        // contract: a 15s silence fence, with one pending finite call (the 5s
+        // heartbeat's 20s ping) allowed to run to its own deadline, so the documented
+        // bound is below 45s. Never shorten that contract or assume page close killed the owner.
+        const workers=async()=>{const cdp=await browser.newBrowserCDPSession();try{return(await cdp.send('Target.getTargets')).targetInfos.filter(target=>target.type==='worker').length;}finally{await cdp.detach().catch(()=>{});}};
+        const snapshot=()=>two.evaluate(async()=>{const locks=await navigator.locks.query();return{visibility:document.visibilityState,status:window.session.status,attachment:window.session.attachmentState,aborted:window.session.signal.aborted,
+          boundedRequest:window.session.boundedRequest,ownerInstanceId:window.session.endpoint?.ownerInstanceId,held:locks.held.map(lock=>lock.name),pending:locks.pending.map(lock=>lock.name)};}).catch(error=>({unreadable:String(error)}));
+        const workersBefore=await workers(),started=Date.now();
+        try{
+          await one.close();
+          // Prove the physical owner Worker actually died with its page; closing a document is not assumed to do it.
+          for(let index=0;index<100&&await workers()>=workersBefore;index++)await new Promise(resolve=>setTimeout(resolve,100));
+          assert.ok(await workers()<workersBefore,'The closed page must take its dedicated owner Worker with it');
+          evidence.ownerLoss={workersBefore,workersAfterClose:await workers(),workerGoneAfterMs:Date.now()-started};
+          await two.waitForFunction(()=>window.session.status.phase==='closed',null,{timeout:50000,polling:250});
+          evidence.ownerLoss.detectedAfterMs=Date.now()-started;
+          assert.ok(evidence.ownerLoss.detectedAfterMs<45000,'Owner loss exceeded the documented fence plus one bounded request grace');
+        }catch(error){evidence.ownerLoss={...evidence.ownerLoss,failedAfterMs:Date.now()-started,cachedStateAndLocks:await snapshot()};throw error;}
         await two.reload();const reopened=await two.evaluate(()=>window.ready);assert.equal(reopened.publicKey,a.publicKey);
         assert.notEqual(reopened.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).inspect()).materialized.outcome),'accepted');
-      });
+        // A reopened session warms its materialization independently; wait for the original operation's outcome.
+        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).materialized({timeoutMs:15000})).outcome),'accepted');
+      },60000);
     }
     evidence.scenarios.push({mode,oneSigner:true,twoDocuments:true,duplicateViewFenced:true,localAuthoringAvailable:true,signedLocalSignals:true,
       concurrentCommands:true,independentDrafts:true,...(mode==='shared'?{otherWorkerVersionAttaches:true}:{}),samePageReattachKeepsOwner:true,suspendResume:true,automaticChromiumFreezeResume:qualifyLifecycle,frozenDiscardCapacityReclaimed:qualifyLifecycle,frozenDiscardCount:qualifyLifecycle?6:0,detachPreservesSibling:true,detachOrCrashReopen:true,
@@ -217,4 +236,4 @@ try{
   }
   evidence.stage='complete';evidence.status='passed';console.log(JSON.stringify(evidence,null,2));
 }catch(error){evidence.failure??=error.stack??String(error);console.error(JSON.stringify(evidence,null,2));throw error;
-}finally{clearTimeout(deadline);if(lifecycleBrowser)await lifecycleBrowser.close();else await browser?.close();await new Promise(done=>server.close(done));await writeFile(join(root,'.results/collaboration-browser.json'),JSON.stringify(evidence,null,2)+'\n');}
+}finally{clearTimeout(deadline);if(lifecycleBrowser)await lifecycleBrowser.close();else await browser?.close();await new Promise(done=>server.close(done));await writeFile(join(reportRoot,'collaboration-browser.json'),JSON.stringify(evidence,null,2)+'\n');}

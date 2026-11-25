@@ -87,6 +87,8 @@ A read view captures a `local` (or, with finality, `final`) view and a revision 
 
 A late operation with an earlier author time can revise outcomes that were previously reported, and a configured closed-time frontier can exclude a first-seen older operation (`inspect().excluded`). The operation keeps its original signed intent and evidence. Expose the revision change and rederive from a coherent snapshot. There is no reapplication API. If intent is still wanted, the person reviews and submits a new operation, and the old one is never silently retimestamped.
 
+For a complete native `changes()` → `readView()` → `readEvents()` loop with `await view.release()` in `finally`, cancellation and handled checkpoints, see [native event-consumer lifetime](AGENT_RESTART.md#native-event-reads-and-captured-view-lifetime). Read events from the captured view, not `session.readEvents()`, and acquire a new view after invalidation; a captured view is not an updating subscription.
+
 ## Host authority connection
 
 The host exposes signed authority metadata and publications through `tendril.host.peers` (see [Authority records and signed publications](AUTHORITY_AND_PUBLICATIONS.md)). A session verifies and retains that evidence with `session.mergeAuthority(bundle)`, and code release uses the independent publisher flow. Local authoring, materialization and peer replication continue while the host is unavailable. Host availability affects only fetching newer authority evidence, enrollment and publication.

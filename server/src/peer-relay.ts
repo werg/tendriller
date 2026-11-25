@@ -136,13 +136,6 @@ async function refreshSession(t: Tendril, session: string, state: Refresh): Prom
     const allowed = await policyCheck(state, () => pageAccessAllowed(t));
     refreshMembers(t, session, state);
     if (!allowed) throw new Error('Peer host access revoked');
-    const setupPrincipals = new Map(values.flatMap(value => value.principal.kind === 'agent' && value.principal.name === 'setup'
-      ? [[value.principal.credentialHash, value.principal] as const] : []));
-    for (const principal of setupPrincipals.values()) {
-      const allowed = await policyCheck(state, () => freshPrincipal(t, principal));
-      refreshMembers(t, session, state);
-      if (!allowed) throw new Error('Peer setup grant revoked');
-    }
     // The page-policy join already checks its owner account. Other participants
     // need their own policy read, shared across that account's two lanes.
     const accounts = new Set(values.flatMap(value => value.principal.kind === 'page' && value.principal.accountId &&

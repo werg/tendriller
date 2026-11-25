@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createObservationSource } from '../../docs/tutorial/observation/browser.mjs';
-import { mountObservations } from '../../docs/tutorial/observation/panel.mjs';
-import { serveObservations } from '../../docs/tutorial/observation/receiver.mjs';
-import { TOPICS, fresh } from '../../docs/tutorial/observation/protocol.mjs';
+import { createObservationSource } from '../../docs/tutorial/shared/observation/browser.mjs';
+import { mountObservations } from '../../docs/tutorial/shared/observation/panel.mjs';
+import { serveObservations } from '../../docs/tutorial/shared/observation/receiver.mjs';
+import { TOPICS, fresh } from '../../docs/tutorial/shared/observation/protocol.mjs';
 
 const app = 'a'.repeat(64), browser = 'b'.repeat(64), native = 'c'.repeat(64);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -317,4 +317,25 @@ test('peer retention and finality update the pending operation without a materia
   assert.equal(hub.active, 0, 'Close releases the fact subscription.');
   hub.publish(operationId, { ...facts(operationId), retained: [], finalized: false });
   await sleep(15); assert.match($('#observation-result').textContent, /Finalized: true/, 'No update is applied after close.');
+});
+
+test('connectivity comes only from the public session count; a nested participation claim is never consulted, and a count is not remote presence', async t => {
+  const net = network(), track = runtime(), document = Object.assign(new EventTarget(), { visibilityState: 'visible' }), window = new EventTarget();
+  const session = net.endpoint(browser);
+  // A stale facade claiming the native peer is connected must not make a disconnected session look connected.
+  session.participation = { status: { connectedPeers: [native] }, onStatus: () => () => {} };
+  net.disconnect();
+  const source = createObservationSource({ session, runtime: track, nativeDeviceId: native, document, window, coalesceMs: 100 });
+  t.after(() => source.close());
+  assert.equal(source.snapshot().receiver, 'disconnected');
+  assert.throws(() => source.start({ isTrusted: false }, 'simulated'), /deliberate local/, 'sensor consent still needs a deliberate local action');
+  net.reconnect();
+  await until(() => source.snapshot().receiver === 'waiting');
+  // A connection permits an attempt only. Without an authenticated native acknowledgement, the receiver is never reported accepted.
+  source.start({ isTrusted: true }, 'simulated');
+  await until(() => net.sent.some(value => value.topic === TOPICS.sample));
+  await sleep(30);
+  assert.notEqual(source.snapshot().receiver, 'accepted');
+  net.disconnect(); await until(() => source.snapshot().receiver === 'disconnected');
+  assert.equal(source.snapshot().sharing, false, 'losing the count stops physical sharing');
 });

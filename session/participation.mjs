@@ -1,6 +1,6 @@
 import { createPeerIntroductions } from '../contract/introductions.mjs';
 import { authorityRecordBytes } from '../contract/authority.mjs';
-import { decodeRecord } from '@chronolog/authority';
+import { decodeRecord } from '@chronolog/peer-session';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { PEER_TRANSPORT_POLICY } from '../contract/transport-policy.mjs';
 export { PEER_TRANSPORT_POLICY };

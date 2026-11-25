@@ -1,13 +1,13 @@
 import { expect, type Page } from '@playwright/test';
 import { build } from 'esbuild';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checklist, intake } from './specimens/sql-domains.mjs';
-import type { createClient } from '../../dist/sdk/client.mjs';
+import type { PageClient } from '../../dist/sdk/client.mjs';
 
-type Peers = ReturnType<typeof createClient>['peers'];
+type Peers = PageClient['peers'];
 type Fixture = { page: Page; name: string; id: string };
 type CapabilityReport = {
   secureContext: boolean;
@@ -24,7 +24,7 @@ export async function openBrowserSqlSpecimen(options: {
   const { consumer, engineDirectory, peers, pageUrl, applicationId, pages, isPrivate } = options;
   const packageRoot = resolve(consumer, 'node_modules/@chronolog/peer-session');
   const load = (path: string) => import(pathToFileURL(resolve(packageRoot, path)).href);
-  const [log, sql, native] = await Promise.all([load('index.mjs'), load('sql.mjs'), load('sql-native.mjs')]);
+  const [log, sqlBrowser] = await Promise.all([load('index.mjs'), load('sql-browser.mjs')]);
   const source = 'test/e2e/specimens';
   const common = { bundle: true, platform: 'browser' as const, format: 'esm' as const, write: false,
     minify: true,
@@ -32,6 +32,9 @@ export async function openBrowserSqlSpecimen(options: {
     // browser bundles to the same SQL package used by the native fixture.
     alias: {
       '@tendriller/core/peers': resolve('dist/sdk/peers.mjs'),
+      '@tendriller/core/authority': resolve('dist/sdk/authority.mjs'),
+      '@tendriller/core/browser-owner': resolve('session/browser.mjs'),
+      '@tendriller/core/worker-owner': resolve('session/worker.mjs'),
       '@chronolog/peer-session': resolve(packageRoot, 'index.mjs'),
       '@chronolog/peer-session/browser': resolve(packageRoot, 'browser.mjs'),
       '@chronolog/peer-session/worker': resolve(packageRoot, 'worker.mjs'),
@@ -87,26 +90,22 @@ export async function openBrowserSqlSpecimen(options: {
     }
   }
   const [first, second] = fixtures;
-  const signer = await log.createPeerIdentity();
+  // Authority is not configured by this harness. The host signs it from the first enrolling browser's own
+  // proof (that device becomes the root and administrator; an additional account-bound device enrolls into
+  // the existing membership with the same explicitly test-provisioned data key), so the harness only
+  // prepares publication: the independent publisher, the exact execution graph and the declared tools.
+  const signer = await log.createSigningIdentity();
   const definition = isPrivate ? intake(log, first.id) : checklist(log);
   const key = new Uint8Array(randomBytes(32));
-  const signedSchema = await sql.prepareSqlApplication({ engine: native.createNativeSqlEngine(), applicationId,
-    definition, schemaAdministrator: signer });
-  const authority = await peers.configureApplication({ historyId: isPrivate ? 'browser-intake' : 'browser-checklist',
-    definition: log.describeApplication(definition), schema: signedSchema.schema,
-    executionManifestDigest: signedSchema.binding.executionManifestDigest, schemaAdministrator: signer.publicKey,
-    epoch: 0, keyDigest: await log.bytesDigest(key),
-    members: [
-      { grant: { ...log.controlParticipantGrant(signer.publicKey), administrator: false, recovery: false, publisher: true } },
-      { grant: log.participantGrant(first.id) },
-      { grant: log.participantGrant(second.id), accountId: options.guestAccount },
-    ],
-  });
-  expect(authority.controls[0].payload.grants.filter(grant => grant.reader).map(grant => grant.publicKey).sort())
-    .toEqual([first.id, second.id].sort());
-  const descriptor = authority.descriptor.payload;
-  await peers.administerGeneration({ expectedGeneration: null, coordinator: first.id, controlRevision: 0,
-    base: null, reason: 'create', transitionId: randomUUID() });
+  const engineManifest = JSON.parse(await readFile(resolve(engineDirectory, 'manifest.json'), 'utf8'));
+  const execution = sqlBrowser.createDoltLiteExecutionManifest({ engineDigest: sqlBrowser.digestEngineManifest(engineManifest.nativeManifest) });
+  const executionManifestDigest = log.bytesToHex((await log.executionManifestArtifacts(execution)).executionManifestDigest);
+  const prepared = await peers.prepare({ executionManifestDigest, executionProfile: 'sql', publisherKeys: [signer.publicKey],
+    tools: log.describeApplication(definition) });
+  expect(prepared.selection.id).toBe(applicationId);
+  expect(prepared.publicationAuthority.publisherKeys).toEqual([signer.publicKey]);
+  expect(prepared.authority, 'No browser has enrolled yet, so no data authority exists').toBeNull();
+  const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
   const assetTypes = { 'manifest.json': 'application/json', 'sqlite3.mjs': 'text/javascript',
     'sqlite3.wasm': 'application/wasm', 'sqlite3-opfs-async-proxy.js': 'text/javascript' };
@@ -121,13 +120,12 @@ export async function openBrowserSqlSpecimen(options: {
   const files = [], assets = [];
   for (const path of Object.keys(input).sort()) {
     const { type, bytes } = input[path];
-    const hash = await log.bytesDigest(bytes);
+    const hash = sha256(bytes);
     files.push({ path, type, hash, size: bytes.length });
     assets.push({ hash, bytes: Buffer.from(bytes).toString('base64') });
   }
-  const publication = await log.signPublicationManifest({ applicationId, historyId: descriptor.historyId,
-    profile: descriptor.profile, controlRevision: 0, author: signer.publicKey, operationId: randomUUID(), revision: 0,
-    previous: null, definitionDigest: descriptor.definitionDigest, executionManifestDigest: descriptor.executionManifestDigest,
+  const publication = await log.signPublicationManifest({ applicationId, membershipId: prepared.publicationAuthority.grantId,
+    author: signer.publicKey, operationId: randomUUID(), revision: 0, previous: null, executionManifestDigest,
     entry: 'index.html', files }, signer);
   await peers.publish(publication, assets);
   await Promise.all(pages.map(page => expect(page.getByRole('heading', { name: 'Shared work' })).toBeVisible({ timeout: 25_000 })));
@@ -138,11 +136,16 @@ export async function openBrowserSqlSpecimen(options: {
   // Canonical session participation owns discovery, bounded attempts and failure
   // backoff for asymmetric startup; this barrier is not a product readiness rule
   // or a substitute for qualification of that controller.
-  await Promise.all(fixtures.map(async fixture => {
+  // The first fixture must enroll first: it becomes the root device. Each device keeps its own bounded
+  // metadata budget, so preparing them one after another cannot consume a peer's opening deadline.
+  for (const fixture of fixtures) {
     await fixture.page.waitForFunction(() => typeof (window as any).prepareAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).prepareAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
       { name: fixture.name, key: Array.from(key), respondent: isPrivate ? first.id : undefined });
-  }));
+  }
+  // Tables are created by an ordinary authorized DDL transaction on the root device before any live view
+  // exists; opening then synchronizes it to the other device before that device's single initial read.
+  await first.page.evaluate(() => (window as any).initializeAcceptanceApplication());
   const open = async (fixture: Fixture, remote?: string, channel?: string) => {
     await fixture.page.waitForFunction(() => typeof (window as any).openAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).openAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
@@ -154,6 +157,11 @@ export async function openBrowserSqlSpecimen(options: {
     return Promise.all([open(first, second.id, channel), open(second, first.id, channel)]);
   };
   await pair();
+  const enrolled = await peers.application();
+  const bundle = log.decodeRecord(Uint8Array.from(Buffer.from(enrolled.authority.record, 'hex')));
+  expect(bundle.descriptor.payload.rootPrincipal).toBe(first.id);
+  expect(bundle.memberships.at(-1).payload.members.filter((member: { reader: boolean }) => member.reader).map((member: { publicKey: string }) => member.publicKey).sort())
+    .toEqual([first.id, second.id].sort());
   return {
     async reopenFirst() {
       const context = first.page.context();

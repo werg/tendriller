@@ -41,7 +41,7 @@ test.beforeAll(async () => {
       builder.onLoad({ filter: /.*/, namespace: 'voice-fixture' }, () => ({ contents: voiceAdapter, loader: 'js' }));
     } }],
   });
-  const dashboard = await build({ entryPoints: [new URL('../../docs/tutorial/ui/dashboard.mjs', import.meta.url).pathname], bundle: true, format: 'esm', write: false });
+  const dashboard = await build({ entryPoints: [new URL('../../docs/tutorial/shared/ui/dashboard.mjs', import.meta.url).pathname], bundle: true, format: 'esm', write: false });
   server = createServer((request, response) => {
     if (request.url === '/chat.js' || request.url === '/dashboard.js') {
       response.writeHead(200, { 'Content-Type': 'text/javascript' });

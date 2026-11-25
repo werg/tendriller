@@ -55,7 +55,7 @@ export function loadObserverConfig(path, request) {
   if (!inside(realpathSync(request.project), project)) throw new MeasurementError('native-project-outside-this-run', 'failed');
   const applicationId = need(config.applicationId, 'application-id');
   if (!/^[a-f0-9]{64}$/.test(applicationId)) throw new MeasurementError('application-id-format', 'failed');
-  let deviceId, modulePath;
+  let deviceId;
   const descriptorRef = config.descriptor;
   const descriptor = descriptorRef ? recordFile(project, descriptorRef).value : undefined;
   if (descriptor?.record !== undefined) {
@@ -67,19 +67,22 @@ export function loadObserverConfig(path, request) {
   if (config.native) {
     deviceId = typeof config.native.deviceId === 'string' ? config.native.deviceId : recordFile(project, config.native.deviceId).value;
     if (!/^[a-f0-9]{64}$/.test(need(deviceId, 'native-device-id'))) throw new MeasurementError('native-device-id-format', 'failed');
-    modulePath = realpathSync(resolve(project, config.native.module ?? 'session.mjs'));
-    if (!inside(project, modulePath)) throw new MeasurementError('native-module-outside-project', 'failed');
+    if (config.native.module !== undefined || config.native.export !== undefined || config.native.profile !== undefined)
+      throw new MeasurementError('native-workspace-attachment-required', 'failed');
   }
-  const handle = recordFile(project, need(config.handle, 'host-handle')).value;
-  same(handle.application?.id, applicationId, 'handle-application');
-  same(handle.api, request.origin + '/api/t/' + handle.id, 'handle-origin-and-page');
-  if (!/^[a-z2-7]{12}$/.test(handle.id ?? '')) throw new MeasurementError('handle-page-id', 'failed');
-  need(handle.token, 'host-credential');
+  const savedPage = recordFile(project, need(config.handle, 'host-page-record')).value;
+  same(savedPage.application?.id, applicationId, 'handle-application');
+  if (!/^[a-z2-7]{12}$/.test(savedPage.id ?? '')) throw new MeasurementError('handle-page-id', 'failed');
+  const credential = recordFile(project, need(config.credential, 'agent-credential')).value;
+  same(credential.service, request.origin, 'credential-origin');
+  if (!/^ta_[a-z2-7]{32}$/.test(credential.token ?? '')) throw new MeasurementError('host-credential', 'failed');
+  const handle = { ...savedPage, api: request.origin + '/api/agent/pages/' + savedPage.id };
+  if (Object.hasOwn(savedPage, 'token')) throw new MeasurementError('page-record-must-not-hold-agent-credential', 'failed');
   const page = new URL(handle.page_url);
   if (page.protocol !== 'https:' || page.username || page.password || page.search || page.hash ||
       !page.hostname.startsWith(handle.id + '.') && !page.hostname.startsWith(handle.id + '--p-') ||
       !/^\/s\/[a-z2-7]{26}\/$/.test(page.pathname)) throw new MeasurementError('handle-page-url', 'failed');
-  return { ...config, project, native: config.native ? { ...config.native, project, modulePath, deviceId } : undefined, descriptor, handle };
+  return { ...config, project, native: config.native ? { ...config.native, project, deviceId } : undefined, descriptor, handle, credential };
 }
 
 /** Linux birth token prevents accepting an unrelated process after PID reuse. No signals are sent. */

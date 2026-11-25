@@ -1,51 +1,23 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { authenticateAgent, authenticateAgentToken, readPageSession } from '../src/access';
+import { AGENT_HEADER, AGENT_SCOPES_HEADER, authenticateAgent, readPageSession } from '../src/access';
 import type { Tendril } from '../src/tendril';
-import { api, apiJson, create, inDO, ownerHeaders, req } from './helpers';
+import { agentPrincipal, api, create, inDO, ownerHeaders, req } from './helpers';
 
-it('resolves agent identity without activity side effects and immediately honors revocation', async () => {
+it('resolves the agent from internal headers and its local grant mirror only', async () => {
   const h = await create();
   await inDO(h.id, async t => {
-    const before = t.db.all('SELECT name,last_used FROM tokens');
-    const principal = await authenticateAgent(t, new Request(h.api, { headers: { Authorization: `Bearer ${h.token}` } }));
-    expect(await authenticateAgentToken(t, h.token)).toEqual(principal);
-    expect(t.db.all('SELECT name,last_used FROM tokens')).toEqual(before);
+    const scopes = agentPrincipal(t, h).scopes.join(' ');
+    const internal = (agent: string, granted = scopes) => new Request('https://tendril.internal/agent', { headers: { [AGENT_HEADER]: agent, [AGENT_SCOPES_HEADER]: granted } });
+    expect(authenticateAgent(t, internal(h.agent.id))).toEqual(agentPrincipal(t, h));
+    expect(() => authenticateAgent(t, new Request('https://tendril.internal/agent', { headers: { Authorization: `Bearer ${h.token}` } }))).toThrow('Agent credential required');
+    expect(() => authenticateAgent(t, internal('ag_' + 'b'.repeat(26)))).toThrow('No such granted page');
+    expect(() => authenticateAgent(t, internal(h.agent.id, 'host:read'))).toThrow('grant changed');
   });
   expect((await api(h, 'GET', '')).status).toBe(200);
-  expect((await api(h, 'DELETE', 'tokens/main')).status).toBe(204);
-  expect((await api(h, 'GET', '')).status).toBe(401);
-});
-it('delegates additive scoped bindings, rotates without changing identity, and revokes only the selected agent', async () => {
-  const owner = await create();
-  const first = await apiJson(owner, 'POST', 'tokens', { name: 'reviewer', scopes: ['host:read', 'participants:connect'] });
-  const second = await apiJson(owner, 'POST', 'tokens', { name: 'planner', scopes: ['host:read'] });
-  const reviewer = { ...owner, token: first.token }, planner = { ...owner, token: second.token };
-  expect(first.binding.id).not.toBe(second.binding.id);
-  expect(await apiJson(reviewer, 'GET', 'self')).toMatchObject({ name: 'reviewer', authority: 'host-access-only', binding: first.binding });
-  expect((await api(reviewer, 'GET', '')).status).toBe(200);
-  expect((await api(reviewer, 'PATCH', '', { name: 'forged administrator' })).status).toBe(403);
-  expect((await api(reviewer, 'POST', 'tokens', { name: 'escalated' })).status).toBe(403);
-  expect((await api(planner, 'GET', 'peers/bootstrap')).status).toBe(403);
-  const rotated = await apiJson(reviewer, 'POST', 'tokens/reviewer/rotate');
-  expect(rotated.binding.id).toBe(first.binding.id);
-  expect(rotated.binding.revision).toBe(first.binding.revision + 1);
-  expect((await api(reviewer, 'GET', '')).status).toBe(401);
-  expect((await api({ ...reviewer, token: rotated.token }, 'GET', '')).status).toBe(200);
-  expect((await api(owner, 'DELETE', 'tokens/reviewer')).status).toBe(204);
-  expect((await api({ ...reviewer, token: rotated.token }, 'GET', '')).status).toBe(401);
-  expect((await api(planner, 'GET', '')).status).toBe(200);
-  expect((await api(owner, 'GET', '')).status).toBe(200);
-});
-it('a delegating agent cannot expand its scopes or revoke a more privileged binding', async () => {
-  const owner = await create();
-  const delegated = await apiJson(owner, 'POST', 'tokens', { name: 'delegate', scopes: ['host:read', 'agents:delegate'] });
-  const agent = { ...owner, token: delegated.token };
-  expect((await api(agent, 'POST', 'tokens', { name: 'observer', scopes: ['host:read'] })).status).toBe(201);
-  expect((await api(agent, 'POST', 'tokens', { name: 'administrator', scopes: ['host:manage'] })).status).toBe(403);
-  expect((await api(agent, 'DELETE', 'tokens/main')).status).toBe(403);
-  expect((await api(agent, 'POST', 'tokens/main/rotate')).status).toBe(403);
-  expect((await api(owner, 'GET', '')).status).toBe(200);
+  // A forged internal header from the client never reaches the page object.
+  const forged = await req(h.api, { anonymous: true, headers: { [AGENT_HEADER]: h.agent.id, [AGENT_SCOPES_HEADER]: 'host:read' } });
+  expect(forged.status).toBe(401);
 });
 it.each(['session revoked', 'session expired', 'link revoked', 'owner deleting'])(
   'refuses host metadata when %s', async reason => {

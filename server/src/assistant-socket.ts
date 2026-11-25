@@ -1,14 +1,15 @@
 import type { Tendril } from './tendril';
 import { activeAdapters, freshAdapters } from './assistant-admission';
 import { ADAPTER_KEY, ASSISTANT_PROTOCOL, ASSISTANT_SOCKET_TAG, REQUEST_LIMIT, fields } from './assistant-shared';
-import { pagePolicy } from './access';
+import { currentPrincipal, pagePolicy, type AgentPrincipal } from './access';
 import { HttpError } from './http';
 import { safeEqual, sha256Hex } from './ids';
 import { withAssistantAuthority } from './authority';
 import { ingestAssistantEvent } from './assistant-events';
 import { providerBindingId } from './assistant-bindings';
 
-type Attachment = { tag: typeof ASSISTANT_SOCKET_TAG; adapterHash: string; deviceId: string; connectionEpoch: number };
+/** The adapter key authorizes the approved exposure; the stream is bound to the agent whose grant opened it. */
+type Attachment = { tag: typeof ASSISTANT_SOCKET_TAG; adapterHash: string; deviceId: string; connectionEpoch: number; agentId: string; principal: AgentPrincipal };
 type Inflight = { socket: WebSocket; consumerId: string; resolve: (value: unknown) => void; reject: (error: Error) => void };
 const inflight = new WeakMap<Tendril, Map<string, Inflight>>();
 const invalid = () => new HttpError(502, 'invalid_adapter_response');
@@ -20,14 +21,14 @@ export function isAssistantAdapter(ws: WebSocket): boolean {
   return attachment(ws)?.tag === ASSISTANT_SOCKET_TAG;
 }
 
-export async function upgradeAssistantAdapter(t: Tendril, req: Request) {
+export async function upgradeAssistantAdapter(t: Tendril, req: Request, principal: AgentPrincipal) {
   if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket')
     throw new HttpError(426, 'websocket_required');
   const protocols = req.headers.get('Sec-WebSocket-Protocol')?.split(',').map(s => s.trim()) ?? [];
   const credential = protocols.find(token => ADAPTER_KEY.test(token));
   const deviceId = protocols.find(token => /^td_device_[a-f0-9]{64}$/u.test(token))?.slice('td_device_'.length);
   if (!protocols.includes(ASSISTANT_PROTOCOL) || !credential || !deviceId) throw new HttpError(401, 'adapter_not_approved');
-  const adapterHash = await sha256Hex(credential), allowed = () => activeAdapters(t).some(hash => safeEqual(hash, adapterHash));
+  const adapterHash = await sha256Hex(credential), allowed = () => !!currentPrincipal(t, principal) && activeAdapters(t).some(hash => safeEqual(hash, adapterHash));
   if (!(await freshAdapters(t)).some(hash => safeEqual(hash, adapterHash))) throw new HttpError(401, 'adapter_not_approved');
   if (await pagePolicy(t) !== 'active') throw new HttpError(403, 'forbidden');
   await withAssistantAuthority(t, async canUseDevice => {
@@ -45,7 +46,7 @@ export async function upgradeAssistantAdapter(t: Tendril, req: Request) {
     if (attachment(ws)?.adapterHash === adapterHash) ws.close(4000, 'Replaced by reconnected participant');
   }
   t.ctx.acceptWebSocket(server, [ASSISTANT_SOCKET_TAG]);
-  server.serializeAttachment({ tag: ASSISTANT_SOCKET_TAG, adapterHash, deviceId, connectionEpoch } satisfies Attachment);
+  server.serializeAttachment({ tag: ASSISTANT_SOCKET_TAG, adapterHash, deviceId, connectionEpoch, agentId: principal.agentId, principal } satisfies Attachment);
   return new Response(null, { status: 101, headers: { 'Sec-WebSocket-Protocol': ASSISTANT_PROTOCOL }, webSocket: client });
 }
 
@@ -55,7 +56,8 @@ export function closeAssistantAdapter(t: Tendril, socket: WebSocket) {
 
 export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame: string | ArrayBuffer) {
   const attached = attachment(socket);
-  if (!attached || !(await freshAdapters(t)).includes(attached.adapterHash)) { socket.close(4003, 'Application grant revoked'); return; }
+  if (!attached || !currentPrincipal(t, attached.principal)) { socket.close(4003, 'Agent access revoked'); return; }
+  if (!(await freshAdapters(t)).includes(attached.adapterHash)) { socket.close(4003, 'Application grant revoked'); return; }
   if (attached.connectionEpoch !== t.db.get('assistant_adapter_epoch:' + attached.adapterHash, 0)) {
     socket.close(4000, 'Provider connection superseded'); return;
   }
@@ -95,7 +97,7 @@ export async function onlineAssistantAdapters(t: Tendril): Promise<{ hash: strin
   const sockets = t.ctx.getWebSockets(ASSISTANT_SOCKET_TAG);
   return (await freshAdapters(t)).flatMap(hash => {
     const socket = sockets.find(ws => ws.readyState === WebSocket.READY_STATE_OPEN && attachment(ws)?.adapterHash === hash &&
-      attachment(ws)?.connectionEpoch === t.db.get('assistant_adapter_epoch:' + hash, 0));
+      attachment(ws)?.connectionEpoch === t.db.get('assistant_adapter_epoch:' + hash, 0) && !!currentPrincipal(t, attachment(ws)!.principal));
     return socket ? [{ hash, bindingId: providerBindingId(hash), deviceId: attachment(socket)!.deviceId,
       connectionEpoch: attachment(socket)!.connectionEpoch, socket }] : [];
   });
@@ -103,7 +105,7 @@ export async function onlineAssistantAdapters(t: Tendril): Promise<{ hash: strin
 
 export async function callAssistantAdapter(t: Tendril, ws: WebSocket, input: object, signal: AbortSignal, consumerId = 'oauth_client'): Promise<unknown> {
   const attached = attachment(ws);
-  if (!attached || !(await freshAdapters(t)).includes(attached.adapterHash) || ws.readyState !== WebSocket.READY_STATE_OPEN ||
+  if (!attached || !currentPrincipal(t, attached.principal) || !(await freshAdapters(t)).includes(attached.adapterHash) || ws.readyState !== WebSocket.READY_STATE_OPEN ||
       attached.connectionEpoch !== t.db.get('assistant_adapter_epoch:' + attached.adapterHash, 0)) throw offline();
   let pending = inflight.get(t);
   if (!pending) inflight.set(t, pending = new Map());

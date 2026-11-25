@@ -4,9 +4,9 @@ import { mkdtemp, mkdir, readFile, writeFile, access, rm } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tutorial/sql/ui-state.mjs';
-import { buildPage } from '../../docs/tutorial/sql/build.mjs';
-import { registerLifecycleFlush } from '../../docs/tutorial/helpers/diagnostics-panel.mjs';
+import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tutorial/templates/inventory/ui-state.mjs';
+import { buildPage } from '../../docs/tutorial/templates/inventory/build.mjs';
+import { registerLifecycleFlush } from '../../docs/tutorial/shared/helpers/diagnostics-panel.mjs';
 
 const snapshot = () => ({ revision: { digest: 'reviewed', view: 'local', executionManifestDigest: 'engine', policyDigest: 'none' }, value: { stock: [{ id: 'source', units: 10 }, { id: 'destination', units: 0 }] } });
 const reference = { applicationId: 'app', author: 'device', operationId: 'op', proposalId: 'proposal' };
@@ -31,36 +31,45 @@ test('uncertain pre-storage retry retains original inputs/ID, while stored retry
 test('build requires setup and exact engine graph, removes stale or partial output', async t => {
   const directory = await mkdtemp(tmpdir() + '/sql-ui-build-'), root = pathToFileURL(directory + '/');
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const output = new URL('page/', root), engine = new URL('engine/', root);
+  const output = new URL('dist/', root), engine = new URL('engine/', root);
   await mkdir(engine); await writeFile(new URL('index.html', root), '<html>SQL</html>');
   const wasm = Buffer.from('fixture-engine'), manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex'), loaderSha256: createHash('sha256').update('module').digest('hex') };
   for (const [name, bytes] of Object.entries({ 'manifest.json': JSON.stringify(manifest), 'sqlite3.wasm': wasm, 'sqlite3.mjs': 'module', 'sqlite3-opfs-async-proxy.js': 'proxy' })) await writeFile(new URL(name, engine), bytes);
   const records = { 'handle.json': { application: { id: 'app' }, page_url: 'https://page.example/', privateCredential: 'never publish' },
-    'host-configuration.json': { executionManifestDigest: 'engine-digest' }, 'initialized.json': { applicationId: 'app', publisherKey: 'independent-publisher' } };
+    'host-configuration.json': { executionManifestDigest: 'engine-digest' },
+    'prepared.json': { applicationId: 'app', publisherKey: 'independent-publisher', executionManifestDigest: 'engine-digest' } };
+  const build = options => buildPage({ readPrivate: options.readPrivate, signer: { publicKey: 'independent-publisher' },
+    page: { applicationId: 'app', pageUrl: 'https://page.example/', slug: 'stock' } }, options);
   const opts = { root, readPrivate: async name => records[name], verifyWasmBuild: (bytes, meta) => { assert.deepEqual(bytes, wasm); assert.deepEqual(meta, manifest); }, bundle: async () => {} };
-  await buildPage(opts);
+  const retained = structuredClone(records);
+  await build(opts);
+  assert.deepEqual(records, retained, 'a build never rewrites retained host configuration or preparation');
   assert.equal((await readFile(new URL('engine/sqlite3.wasm', output))).toString(), wasm.toString());
   const config = JSON.parse(await readFile(new URL('configuration.json', output)));
   assert.deepEqual(Object.keys(config).sort(), ['applicationId', 'executionManifestDigest', 'page_url']);
+  assert.equal(config.executionManifestDigest, 'engine-digest');
+  // Building needs host configuration and preparation only: no initialization marker, schema or native device.
+  assert.equal(Object.hasOwn(records, 'initialized.json'), false);
   for (const failure of [
     { readPrivate: async () => { throw Error('missing setup'); } },
-    { readPrivate: async name => name === 'initialized.json' ? { applicationId: 'other' } : records[name] },
+    { readPrivate: async name => name === 'prepared.json' ? { ...records[name], applicationId: 'other' } : records[name] },
+    { readPrivate: async name => name === 'prepared.json' ? { ...records[name], publisherKey: 'another-signer' } : records[name] },
     { verifyWasmBuild: () => { throw Error('unsupported profile'); } },
     { bundle: async () => { throw Error('bundle failed'); } },
   ]) {
     await mkdir(output, { recursive: true }); await writeFile(new URL('stale', output), 'stale');
-    await assert.rejects(buildPage({ ...opts, ...failure }), /no publishable page/);
+    await assert.rejects(build({ ...opts, ...failure }), /no publishable dist/);
     await assert.rejects(access(output), { code: 'ENOENT' });
   }
   await writeFile(new URL('sqlite3.mjs', engine), 'mismatched loader');
-  await assert.rejects(buildPage(opts), /loader does not match/);
+  await assert.rejects(build(opts), /loader does not match/);
   await assert.rejects(access(output), { code: 'ENOENT' });
   await writeFile(new URL('sqlite3.mjs', engine), 'module');
   await writeFile(new URL('sqlite3.wasm', engine), 'wrong');
-  await assert.rejects(buildPage(opts), /does not match/);
+  await assert.rejects(build(opts), /does not match/);
   await assert.rejects(access(output), { code: 'ENOENT' });
   await rm(new URL('manifest.json', engine));
-  await assert.rejects(buildPage(opts), /no publishable page/);
+  await assert.rejects(build(opts), /no publishable dist/);
 });
 
 test('lifecycle notifications contain async flush and error-reporter rejections, and unregister', async t => {
@@ -76,7 +85,7 @@ test('lifecycle notifications contain async flush and error-reporter rejections,
 });
 
 test('local signing/storage readiness permits Save without peers, SQL readiness or a successful current view', async () => {
-  const { createSubmissionState } = await import('../../docs/tutorial/helpers/submission-state.mjs');
+  const { createSubmissionState } = await import('../../docs/tutorial/shared/helpers/submission-state.mjs');
   const state = createSubmissionState(); state.update({ attached: true });
   state.application({ canAuthor: true, phase: 'ready', database: 'opening', connectedPeers: 0, materializationError: 'query table missing' });
   assert.equal(state.snapshot.canSubmit, true);
@@ -84,7 +93,7 @@ test('local signing/storage readiness permits Save without peers, SQL readiness 
   state.application({ canAuthor: false, phase: 'ready', database: 'ready', connectedPeers: 8 }); assert.equal(state.snapshot.canSubmit, false);
 });
 test('SQL schema and column grants are ordinary programs, never immutable definition schema', async () => {
-  const { definition, deriveInventory } = await import('../../docs/tutorial/sql/domain.mjs');
+  const { definition, deriveInventory } = await import('../../docs/tutorial/templates/inventory/domain.mjs');
   assert.equal(Object.hasOwn(definition, 'schema'), false);
   const initial = definition.commands.initialize.prepare(null); assert.ok(initial.steps.some(step => typeof step.sql === 'string' && step.sql.startsWith('CREATE TABLE')));
   const grant = definition.commands.grantBinWrites.prepare({ publicKey: '11'.repeat(32) });

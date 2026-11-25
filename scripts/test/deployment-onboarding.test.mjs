@@ -30,8 +30,8 @@ function fixture() {
     base, runtime: runtime.id, readiness,
     tools: [{ name: 'get_application_delivery' }, { name: 'tendril_guide' }],
     guide: { topic: 'start', serviceOrigin: base, build, readiness,
-      onboarding: { interfaces: { create_page: { url: base + '/api/tendrils' } } },
-      text: `Node 24: create at ${base}/api/tendrils` },
+      onboarding: { interfaces: { register_agent: { url: base + '/api/agents' }, create_page: { url: base + '/api/agent/pages' } } },
+      text: `Node 24: register at ${base}/api/agents` },
     service: { contract: CONTRACT_VERSION, core_release: CORE_RELEASE, limits: { participant: {} } },
     onboarding: { serviceOrigin: base, interfaces: { readiness: base + '/api/readiness' },
       start_here: base + '/docs/BUILD_AN_APP.md', starter: base + '/downloads/tendriller-first-app.tgz',
@@ -65,7 +65,7 @@ globalThis.fetch = async (input, init = {}) => {
   const path = url.pathname; calls.push(path);
   if (path === '/health') return Response.json({ ok: true });
   if (path === '/status') return new Response('Operational');
-  if (path === '/api/t/aaaaaaaaaaaa') return Response.json({ error: { message: 'No such tendril' } }, { status: 404 });
+  if (path === '/auth/page' && url.searchParams.get('tendril') === 'aaaaaaaaaaaa') return Response.json({ error: { message: 'No such tendril' } }, { status: 404 });
   if (path === '/api/service') return Response.json(fixture.service);
   if (path === '/api/readiness') return Response.json(fixture.readiness, { status: fixture.readinessStatus ?? 200 });
   if (path === '/.well-known/tendriller.json') return Response.json(fixture.onboarding);
@@ -144,7 +144,7 @@ test('assistant smoke uses the structured creation URL rather than incidental gu
   const value = fixture();
   value.guide.text = 'Use Node 24 and follow the build guide for account-bound setup.';
   runSmoke(value, { assistant: true, attested: true });
-  value.guide.onboarding.interfaces.create_page.url = 'https://another.example/api/tendrils';
+  value.guide.onboarding.interfaces.create_page.url = 'https://another.example/api/agent/pages';
   assert.throws(() => runSmoke(value, { assistant: true, attested: true }), failure => {
     assert.match(String(failure.stderr), /app-building guidance/); return true;
   });

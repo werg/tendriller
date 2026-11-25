@@ -1,7 +1,7 @@
 # Re-arm consumers after publishing or restarting
 
-A running native participant, an attached agent listener and a browser view have
-separate lifetimes. Publishing a page does not start an agent, migrate a listener
+The running agent program (`tendril agent run`), an attached agent listener and a
+browser view have separate lifetimes. Publishing a page does not start an agent, migrate a listener
 to a new application, or wake an existing conversation. Include this checklist in
 the application's handoff and supervisor runbook.
 
@@ -18,38 +18,41 @@ definition merely to satisfy this restart checklist.
 | --- | --- | --- |
 | Publish a new UI for the **same application** | Application identity, enrolled device profiles, signed journal attempts/history, retained work checkpoints | Load the new page; recreate its views and signal subscriptions. A still-running compatible native owner/listener keeps its existing lifetime. |
 | Reload or close a page | Its existing profile/storage and native participant remain independent of the document | The new document installs its views and subscriptions. Signals sent while it was absent are not replayed; query durable state. |
-| Restart/replace the native owner process using the **same retained profile** | Signing identity, journal, operation IDs, authority and retained native bindings | Restart every attach client, `watch`, `mcp-stdio` process and app-owned consumer; recreate their signal subscriptions. Attach clients do **not** reconnect automatically to the new owner. |
-| Upgrade the browser/native package composition | Retained storage and identity, when following the matching migration procedure | Upgrade both sides, publish the signed UI, close old app tabs/owners, reopen the same profiles and restart listeners. A surviving SharedWorker keeps its old running code. |
+| Restart/replace the agent program using the **same workspace** | Shared signing identity, each page's journal, operation IDs, authority and retained attach binding | Restart every attach client, `watch`, `mcp-stdio` process and app-owned consumer; recreate their signal subscriptions. Attach clients do **not** reconnect automatically to the new program. The hub connection and every page owner reopen by themselves. |
+| Change the browser/native package composition | Retained storage and identity | Rebuild and publish the signed UI, close old app tabs/owners, reopen the same profiles and restart listeners. A surviving SharedWorker keeps its old running code. |
 | Rotate a native attachment credential | The stable binding's operation namespace and retained attempts | Read the replacement private credential and reconnect the affected clients. Revocation disconnects that binding; restart alone cannot restore revoked permission. |
-| Revoke host access or replace/delete the application | Private old profiles/checkpoints remain evidence for their **old** identity | Resolve access or intentionally provision the replacement, then enroll/start its consumers. Old sockets, tokens and cursors do not migrate to a new application ID. |
+| Revoke the agent, remove its page grant, or delete the page | Private page folders and checkpoints remain evidence for their **old** identity | The program closes that page (`revoked`, `closed`) and keeps running the others. Resolve access with the owner or intentionally provision a replacement page, then start its consumers. Old sockets, tokens and cursors do not carry to a new application ID. |
 
 A UI release does not rewrite the signed application definition. Preserve the
 same retained profile names and native owner directory when continuing an
 existing application. Do not create a new signer, clear storage, or point an old
 profile at a replacement application merely to make an attach error disappear.
 Keep uncertain signed attempts and work/checkpoint files through the restart.
-See [package migration](MIGRATION_RC16_RC17.md) for a deliberate composition or
-host-storage cutover.
 
 Peer participation may reconnect transient transports inside an existing live
 session. That is different from replacing the session owner. The latter ends
-its local attachments and requires a new `attachSession` call. Live signals are
+its local attachments and requires a new attach (`attachPage`). Live signals are
 disposable and have no retained cursor; request history and answers belong in
 declared commands/queries when they must survive absence.
 
 ## After a republish or participant restart
 
-1. Record the intended application ID, service origin, retained native/browser
-   profile, signed publication and exact package composition. Determine whether
-   this is a UI-only release, owner restart or intentionally new application.
+For a UI-only publication, keep an already-running compatible native owner and
+consumer alive. Reload and verify the new page as below. Perform the stop/start
+and cursor-resume steps only for processes that are actually being restarted or
+replaced; publishing UI code alone does not require a new owner incarnation.
+
+1. Record the intended application ID, service origin, retained workspace
+   and browser profile, signed publication and exact package composition. Determine whether
+   this is a UI-only release, agent program restart or intentionally new application.
 2. Stop the superseded consumer process and preserve its **handled** event cursor,
    pending operation IDs, exact inputs and durable work results. Keep evidence
    of uncertain external effects. Do not advance the checkpoint to the latest
    cursor just to make pending work disappear.
-3. Start the retained owner, then check `tendril --session ./session.mjs --mode
-   attach self` and `doctor`. Verify the expected application, signer, definition
-   and new owner incarnation. An unavailable owner is a failure, not permission
-   to fall back to `--mode own` under a second signer.
+3. Start the workspace's agent program (`npm run agent`), then check `tendril
+   --page <slug> self` and `doctor`. Verify the expected application, signer,
+   definition and new owner incarnation. An unavailable agent program is a
+   failure, not permission to open the page device under a second signer.
 4. Start a new listener against that owner. Recreate app-owned signal listeners,
    event readers, query views and any local stdio MCP process. An account-linked
    assistant provider also needs its own running participant component and the
@@ -72,26 +75,124 @@ declared commands/queries when they must survive absence.
    Do not claim future wake of a conversation unless that host explicitly
    supports and has established it.
 
+## Native event reads and captured-view lifetime
+
+Use `session.changes({ signal })` to learn that data may have changed, then
+`await session.readView()` to capture one coherent materialized revision. Read events with
+`await view.readEvents(...)` and always `await view.release()` in `finally`.
+There is no session-level `readEvents()` or captured-view `close()`. Awaiting
+the release works for both an in-process native session and an attached facade.
+
+The following function runs against the selected public session API. Pass the
+existing native session or `attached.session` returned by `attachPage`
+(`@tendriller/tools/workspace`); it never opens a second signer. For Shared Notes use
+`topics: ['note']`; for the request pattern use its unchanged declared topics.
+
+```js
+// native-event-consumer-example
+export async function consumeNativeEvents(session, { topics, loadCursor, commitBatch, signal }) {
+  const stopped = new AbortController();
+  const lifetime = AbortSignal.any([session.signal, stopped.signal, ...[signal].filter(Boolean)]);
+  const selectedTopics = [...topics]; // Keep checkpoint scope stable for this run.
+  // Subscribe first. `changes()` sends no initial notification, so the first
+  // pending next() must exist BEFORE the coherent initial read; a change that
+  // lands during or after that read then wakes the loop instead of being lost.
+  const iterator = session.changes({ signal: lifetime })[Symbol.asyncIterator]();
+  let pending = iterator.next();
+  pending.catch(() => {}); // Observed below; avoids an unhandled rejection while a read is in progress.
+  try {
+    let cursor = await loadCursor(); // Last durably HANDLED cursor, or undefined for a deliberate first scan.
+    for (;;) {
+      const view = await session.readView(); // One coherent materialized revision per pass.
+      try {
+        for (;;) {
+          lifetime.throwIfAborted();
+          // A cursor from a different projection fails honestly (EVENT_CURSOR_STALE);
+          // it is never rewritten, retimestamped or skipped here.
+          const batch = await view.readEvents({ topics: selectedTopics, limit: 64,
+            ...(cursor === undefined ? {} : { cursor }) });
+          lifetime.throwIfAborted();
+          if (batch.hasMore && batch.cursor === cursor) throw Error('Event cursor did not advance.');
+          // Application-owned local transaction: durable results/handled identities
+          // and this batch.cursor commit together. Roll back on failure/cancellation.
+          await commitBatch(batch, { signal: lifetime });
+          lifetime.throwIfAborted();
+          cursor = batch.cursor;
+          if (!batch.hasMore) break;
+        }
+      } finally { await view.release(); }
+      // Wait on the single pending next(); re-arm it before the next read so
+      // changes arriving during that read coalesce into one more pass.
+      const step = await pending;
+      lifetime.throwIfAborted(); // Cancellation may end the stream instead of rejecting it.
+      if (step.done) throw Error('Event observation ended. Inspect the owner before restarting this consumer.');
+      pending = iterator.next();
+      pending.catch(() => {});
+    }
+  } finally {
+    stopped.abort();
+    await iterator.return?.().catch(() => {}); // Cancels the pending next(); the caller owns the session itself.
+  }
+}
+```
+
+`loadCursor` and `commitBatch` are adapters to the application's existing durable
+consumer store, not extra Chronolog methods. `commitBatch` must preserve stable
+event/request identities and atomically save its results with the handled cursor;
+it must honor the supplied signal before committing. A failed or cancelled batch
+does not advance the function's cursor. If cancellation races an
+already completed commit, its retained receipts and checkpoint remain evidence
+for reconciliation. Do not replace these adapters with an in-memory set or a
+stdout watermark. Keep this local transaction bounded; external effects require
+their original provider idempotency reference and receipt reconciliation.
+
+`changes()` sends no initial notification and coalesces later invalidations; they are
+not an event replay stream. That is why the function starts its single pending
+`next()` before the first coherent read: the initial pass needs no change, and any
+change during or after it wakes the next pass. Each pass pages one captured
+revision. A long-lived view does not update when another peer writes: release it
+and capture another after the next invalidation. Ordinary errors and cancellation
+release the current view and the iterator; an unexpected stream end is a consumer
+failure. The caller still owns its native session or attachment lifetime and
+closes/detaches it in its own `finally`. An empty pass still commits its (unchanged)
+cursor, so adapters should treat that commit as idempotent.
+
+A late operation with an earlier signed author time can revise which events are effective, so an event cursor is bound to the materialized projection that produced it. A cursor from another projection fails with `EVENT_CURSOR_STALE` (or `EVENT_CURSOR_INVALID`), which the function propagates with the handled checkpoint unchanged. The caller's adapters then perform the coherent reset described below; `change.revisedProposalIds` names the operations whose outcomes changed. Neither the CLI nor a consumer rewrites the cursor or silently skips to the newest event. Follow [revised-projection review](#review-a-revised-projection-before-resuming). For delivery to a separate service, the public `forwardSessionEvents` helper already supplies a bounded event-forwarding loop. Neither pattern promises exactly-once external effects.
+
+## Review a revised projection before resuming
+
+An operation with an earlier author time arriving late, a missing dependency becoming available, or a closed-time exclusion can change effective events without any recovery or generation transition. A cursor bound to the earlier projection can then fail as above, and events you already handled may no longer be effective.
+
+1. Stop work from the superseded view. Retain the old **handled** cursor, pending signed operations and durable effect receipts. Record the error evidence and `revisedProposalIds`.
+2. Rebuild the application's declared inbox query, or deliberately open a fresh coherent view and rescan the selected projection using the same topic filters. Keep this rescan separate from claiming the old cursor translated safely.
+3. Reconcile work by the application's stable request/operation references. Commit a new handled checkpoint only with durable results. For external effects, reuse the original provider idempotency reference or inspect its existing receipt; an uncertain result is not permission to repeat the effect.
+
+Use the application's durable inbox/result records or an existing bounded checkpoint/effect journal for this reconciliation. A process-local set of every event ID is neither durable evidence nor a bounded solution. Represent retracted or excluded work explicitly rather than claiming a complete replay. Provisional events are not finality or authority for irreversible effects.
+
 ## Supervise the current CLI
 
 The maintained CLI is the `tendril` binary from the selected host's exact tools
-archive. Keep the owner running separately and attach:
+archive. Keep the agent program running separately and attach to one page with `--page`:
 
 ```sh
 # Query invalidations; useful when the consumer re-reads a declared query.
-npx tendril --session ./session.mjs --mode attach watch
+npx tendril --page notes watch
 
 # Retained event batches with an opaque cursor on every emitted batch.
-npx tendril --session ./session.mjs --mode attach watch --events \
+npx tendril --page notes watch --events \
   --topics '["agent/request"]'
 
 # On restart, pass the last cursor durably committed with handled work.
-npx tendril --session ./session.mjs --mode attach watch --events \
+npx tendril --page notes watch --events \
   --topics '["agent/request"]' --cursor "$HANDLED_CURSOR"
 
 # Or explicitly fetch one batch from that same checkpoint.
-npx tendril --session ./session.mjs --mode attach events \
+npx tendril --page notes events \
   --topics '["agent/request"]' --cursor "$HANDLED_CURSOR"
+
+# Without --page, one combined stream covers every initialized page; its
+# --cursor is a JSON object of page id to cursor.
+npx tendril watch --events --cursor '{"PAGE_ID":"'"$HANDLED_CURSOR"'"}'
 ```
 
 Plain `watch` preserves its coalesced change output; it is not a journal event
@@ -115,34 +216,6 @@ A deliberately bounded watch (`--timeout 120`) exits successfully at its deadlin
 its supervisor must schedule another invocation if continued observation was
 intended. Do not combine that deadline with restart-on-failure and assume it
 will stay armed forever.
-
-## Retired bridge binaries (rc.8 to rc.17)
-
-[The common-session tooling change](https://github.com/werg/tendriller/commit/ecf3851957d8089075fa95ff19c4eb3b08941363)
-removed the old host event/socket bridge architecture and these eight executable
-entries. Current tools ship only `tendril` and `tendril-preview`.
-
-| Removed binary | Current route and behavioral difference |
-| --- | --- |
-| `tendril-wait` | `tendril --session APP --mode attach watch` for query invalidations, or `watch --events` for retained event batches. Owner failure exits nonzero; there is no old agent-socket reconnect loop. |
-| `tendril-events` | `tendril ... events --cursor CURSOR`, or `watch --events`. Keep a consumer-owned handled cursor; old numeric pending/ack checkpoints and host wake probes are not compatible. |
-| `tendril-watch` | `tendril ... watch` / `watch --events`. Output is the documented change/batch stream, not old count-only wake notifications. |
-| `codex-bridge` | For direct tools, configure `tendril ... mcp-stdio`; for asynchronous work, run a supervised application consumer over retained events. There is no replacement that queues a model turn in an existing Codex conversation. |
-| `claude-channel` | Use the public session or `tendril ... mcp-stdio` for supported direct tools, plus an explicitly supported agent host for future work. No drop-in conversation-channel/wake adapter is shipped. |
-| `hermes-bridge` | Use a native consumer or the public stdio MCP interface where that agent supports it. Model process lifetime and wake belong to that host. |
-| `openclaw-bridge` | Use a native consumer or the public stdio MCP interface where that agent supports it. No old bridge checkpoint/socket migration is implicit. |
-| `tendril-stream` | Send disposable telemetry through the owned session's signals, and record durable observations with declared commands. The old standalone host collector/configuration is not shipped or automatically converted. |
-
-`agent-socket.mjs` was an internal helper, not another binary. Old `TENDRIL_API`
-and `TENDRIL_TOKEN` values do not configure the current application's owned
-session; use its bootstrap module and retained credentials.
-
-The rc.8 `tendril-wait` retry loop can run indefinitely and hides the reason an
-upgrade failed. It has been removed, not patched in the immutable rc.8 archive.
-Stop that obsolete listener, migrate the application/package composition, and
-start the supported fail-fast session watch. Merely copying its old `.mjs` file
-into an rc.17 installation keeps the defective old transport. Historical scripts
-that must be retained as evidence should not be treated as active consumers.
 
 The [request lifecycle pattern](AGENT_REQUESTS.md) adds durable receipts, answers
 and last-seen consumer announcements so a page can verify that its intended

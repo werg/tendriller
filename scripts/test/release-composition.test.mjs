@@ -8,6 +8,7 @@ import test from 'node:test';
 import { prepareRelease, REQUIRED_SDK_EXPORTS, sourceIdentity, verifyReleaseArtifacts } from '../release-composition.mjs';
 import { runtimeManifest } from '../runtime-manifest.mjs';
 import { TUTORIAL_FILES, tutorialSource, copyTutorialSources } from '../onboarding.mjs';
+import { REVIEW_FIXTURE_FILES } from '../review/fixture.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + '\n');
@@ -55,11 +56,13 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
   pack('authority', { 'package.json': { name: '@chronolog/authority', version: '0.0.0-gaaaaaaaa',
     exports: Object.fromEntries(['.', './control', './metadata', './participant', './publication', './finality'].map(key => [key, './control.mjs'])) },
     'control.mjs': 'authority fixture', 'provenance.json': authorityProof }, join(root, 'authority.tgz'));
-  for (const file of ['plugin.json', 'mcp.json', 'skills/connect-tendriller/SKILL.md', 'review-app.mjs', 'review-domain.mjs', 'review-assistant.mjs',
-    'review-local.mjs', 'review-page.mjs', 'review-worker.mjs', 'review-index.html']) {
-    const target = join(root, 'plugin', file);
+  // Copy only the enumerated public plugin sources: the authoritative review fixture list plus the manifest files.
+  // Nothing is wildcard-copied, so private device state or generated data can never enter the ZIP inventory.
+  for (const source of [...['plugin.json', 'mcp.json', 'skills/connect-tendriller/SKILL.md'].map(file => `plugin/${file}`),
+    ...REVIEW_FIXTURE_FILES.map(([, file]) => file)]) {
+    const target = join(root, source);
     mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(resolve(import.meta.dirname, '../../plugin', file), target);
+    copyFileSync(resolve(import.meta.dirname, '../..', source), target);
   }
   mkdirSync(join(root, 'docs/assets'), { recursive: true });
   copyFileSync(resolve(import.meta.dirname, '../../docs/assets/tendriller-icon-180.png'), join(root, 'docs/assets/tendriller-icon-180.png'));
@@ -212,10 +215,10 @@ test('release rejects a stale served starter even with a matching core version',
   mkdirSync(directory);
   for (const file of TUTORIAL_FILES) {
     mkdirSync(dirname(join(directory, file)), { recursive: true });
-    writeFileSync(join(directory, file), file === 'assistant.mjs' ? 'stale' : readFileSync(tutorialSource(f.root, file)));
+    writeFileSync(join(directory, file), file === 'templates/notes/assistant.mjs' ? 'stale' : readFileSync(tutorialSource(f.root, file)));
   }
   execFileSync('tar', ['-czf', join(f.root, 'server/public/downloads/tendriller-first-app.tgz'), '-C', directory, ...TUTORIAL_FILES]);
-  assert.throws(f.prepare, /Starter source is stale: assistant.mjs/);
+  assert.throws(f.prepare, /Starter source is stale: templates\/notes\/assistant.mjs/);
 });
 
 test('first-app composition rejects dirty or SQL-only companion packages', t => {
@@ -276,11 +279,13 @@ test('source-qualified graph carries the current plugin guidance and detects ZIP
     readFileSync(join(f.root, 'plugin', skill)));
   assert.deepEqual(execFileSync('unzip', ['-Z1', join(f.root, 'dist', plugin.file)], { encoding: 'utf8' }).trim().split('\n'),
     ['review/review-app.mjs', 'review/review-domain.mjs', 'review/review-assistant.mjs',
-      'review/review-local.mjs', 'review/review-page.mjs', 'review/review-worker.mjs', 'review/review-index.html',
-      'review/support/participant-lifecycle.mjs', 'review/support/native-session.mjs', 'review/support/cli-lifetime.mjs',
-      'review/support/prepare-host.mjs', 'review/support/browser-bootstrap.mjs', 'review/support/browser-profile.mjs',
-      'review/support/provisioning-view.mjs', 'plugin.json', 'mcp.json', 'assets/icon.png', skill]);
-  assert.deepEqual(execFileSync('unzip', ['-p', join(f.root,'dist',plugin.file), 'review/support/participant-lifecycle.mjs']), readFileSync(join(f.root,'docs/tutorial/helpers/participant-lifecycle.mjs')));
+      'review/review-local.mjs', 'review/review-agent.mjs', 'review/review-setup.mjs', 'review/review-page.mjs',
+      'review/review-worker.mjs', 'review/review-index.html',
+      'review/support/participant-lifecycle.mjs', 'review/support/native-page.mjs', 'review/support/prepare-host.mjs',
+      'review/support/publish.mjs', 'review/support/page-provisioning.mjs', 'review/support/browser-bootstrap.mjs',
+      'review/support/browser-profile.mjs', 'review/support/provisioning-view.mjs',
+      'plugin.json', 'mcp.json', 'assets/icon.png', skill]);
+  assert.deepEqual(execFileSync('unzip', ['-p', join(f.root,'dist',plugin.file), 'review/support/participant-lifecycle.mjs']), readFileSync(join(f.root,'docs/tutorial/shared/participant-lifecycle.mjs')));
   writeFileSync(join(f.root, 'dist', plugin.file), 'stale or altered guidance');
   assert.throws(() => verifyReleaseArtifacts(f.root, manifest), /does not match manifest/);
 });
@@ -323,8 +328,8 @@ test('release rejects a stale deployment launcher in the served starter before s
   const f = fixture(t), directory = join(f.root, '.build/stale-deploy');
   for (const file of TUTORIAL_FILES) {
     mkdirSync(dirname(join(directory, file)), { recursive: true });
-    writeFileSync(join(directory, file), file === 'deploy/participant.mjs' ? 'stale launcher' : readFileSync(tutorialSource(f.root, file)));
+    writeFileSync(join(directory, file), file === 'deploy/tendriller.service' ? 'stale launcher' : readFileSync(tutorialSource(f.root, file)));
   }
   execFileSync('tar', ['-czf', join(f.root, 'server/public/downloads/tendriller-first-app.tgz'), '-C', directory, ...TUTORIAL_FILES]);
-  assert.throws(f.prepare, /Starter source is stale: deploy\/participant\.mjs/);
+  assert.throws(f.prepare, /Starter source is stale: deploy\/tendriller\.service/);
 });

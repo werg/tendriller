@@ -35,12 +35,9 @@ const delay = (ms, signal) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
   signal.addEventListener('abort', abort, { once: true });
 });
-const socketUrl = api => {
-  const url = new URL(api + '/assistant/adapter');
-  if (url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash &&
-      /^\/api\/t\/[a-z2-7]{12}\/assistant\/adapter$/u.test(url.pathname)) url.protocol = 'wss:';
-  else throw error('ASSISTANT_REQUIRES_HTTPS');
-  return url.href;
+const requirePage = page => {
+  if (!page || typeof page.request !== 'function' || typeof page.socket !== 'function') throw error('ASSISTANT_REQUIRES_PAGE_CLIENT');
+  return page;
 };
 
 export function createAssistantKey() {
@@ -54,34 +51,31 @@ export function createApplicationAgentKey(bindingId = crypto.randomUUID()) {
   return 'td_c_' + bindingId + '.' + hex(crypto.getRandomValues(new Uint8Array(32)));
 }
 
-export async function proposeApplicationAssistant({ api, token, key, backupKeys = [], label, queries = [], commands = [], events = [], signal, fetcher = fetch }) {
+export async function proposeApplicationAssistant({ page, key, backupKeys = [], label, queries = [], commands = [], events = [], signal }) {
   const keys = [key, ...backupKeys];
   if (keys.length > 3 || keys.some(value => !keyFormat.test(value)) || new Set(keys).size !== keys.length)
     throw error('INVALID_ASSISTANT_KEY');
-  socketUrl(api);
+  requirePage(page);
   const adapterHashes = await Promise.all(keys.map(async value =>
     hex(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))))));
-  const response = await fetcher(api + '/assistant/propose', {
-    method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label, adapterHashes, queries, commands, events }), signal, redirect: 'manual',
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw error(body?.error?.code ?? 'ASSISTANT_PROPOSAL_FAILED');
+  try {
+    return await page.request('/assistant/propose', { method: 'POST', body: { label, adapterHashes, queries, commands, events }, signal });
+  } catch (cause) {
+    if (signal?.aborted) throw cause;
+    throw error(typeof cause?.code === 'string' && cause.code !== 'http_error' ? cause.code : 'ASSISTANT_PROPOSAL_FAILED');
   }
-  return response.json();
 }
 
 /** The existing participant executes approved native tools. The socket is inert when idle. */
-export function connectApplicationAssistant({ api, key, session, tools, onStatus = () => {},
-  openSocket = (url, protocols) => new WebSocket(url, protocols), initialConnectTimeoutMs = 600_000, signal }) {
+export function connectApplicationAssistant({ page, key, session, tools, onStatus = () => {},
+  openSocket = (path, protocols) => requirePage(page).socket(path, protocols), initialConnectTimeoutMs = 600_000, signal }) {
   if (!keyFormat.test(key)) throw error('INVALID_ASSISTANT_KEY');
   if (!Number.isSafeInteger(initialConnectTimeoutMs) || initialConnectTimeoutMs < 1000 || initialConnectTimeoutMs > 600_000)
     throw error('INVALID_ASSISTANT_STARTUP_TIMEOUT');
   if (typeof tools?.execute !== 'function' || typeof tools?.operationId !== 'function') throw error('INVALID_ASSISTANT_TOOLS');
   const deviceId = session.identity?.publicKey;
   if (!hexDigest(deviceId)) throw error('INVALID_ASSISTANT_DEVICE');
-  const url = socketUrl(api), stop = new AbortController();
+  const stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, session.signal, ...(signal ? [signal] : [])]);
   const acknowledgements = new Map(), waitingForOpen = new Set();
   let socket, active = 0;
@@ -135,7 +129,7 @@ export function connectApplicationAssistant({ api, key, session, tools, onStatus
       if (remaining <= 0) { onStatus({ state: 'disconnected', reason: 'startup_timeout' }); break; }
       let transport, terminal = false, openedAt = 0;
       try {
-        transport = openSocket(url, [PROTOCOL, key, 'td_device_' + deviceId]);
+        transport = openSocket('assistant/adapter', [PROTOCOL, key, 'td_device_' + deviceId]);
         socket = transport;
         const connected = new AbortController();
         const code = await new Promise(resolve => {

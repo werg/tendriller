@@ -17,7 +17,7 @@ import { defineApplication, defineCommand, defineQuery, emit, program, type Appl
 import { connectApplicationAssistant, createAssistantKey, createApplicationAgentKey, createAssistantEventDelivery, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
 import { peerApiJson } from './peer-exchange';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
-import { advance, create, inDO, runAlarm, stub, apiJson } from './helpers';
+import { advance, create, inDO, runAlarm, stub, apiJson, grantAgent, joinAccountAgent } from './helpers';
 
 class MemoryBytesStore {
   private readonly bytes = new Map<string, Uint8Array>();
@@ -127,13 +127,13 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(start.readiness).toMatchObject({ serviceOrigin: origin, mode: 'open', creation: { available: true } });
   expect(start.setup.readinessUrl).toBe(origin + '/api/readiness');
   expect(start.text).toContain('Node 24');
-  expect(start.text).toContain('prepare_tendril_setup');
-  expect(start.text).toContain('inspect_tendril_setup');
-  expect(start.text).toContain('setup:finish');
+  expect(start.text).toContain('register_agent');
+  expect(start.text).toContain('tendril workspace adopt');
+  expect(start.text).not.toContain('prepare_tendril_setup');
   expect(start.text).not.toContain('https://tendriller.dev');
-  expect(start.onboarding.interfaces.create_page.url).toBe(origin + '/api/tendrils');
+  expect(start.onboarding.interfaces.create_page.url).toBe(origin + '/api/agent/pages');
   const build = await readGuide({ topic: 'build' });
-  expect(build.text).toContain('npm run create');
+  expect(build.text).toContain('npm run page:new');
   expect(build.text).toContain(origin + '/downloads/tendriller-first-app.tgz');
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
   try {
@@ -208,7 +208,7 @@ it('prepares assistant permissions before claim and activates their review only 
     const approved = await inDO(h.id, t => t.db.get('assistant_connection', null));
     const reconnect = async () => {
       const response = await request(new URL(h.api).pathname + '/assistant/adapter', settings, { headers: {
-        Upgrade: 'websocket', 'Sec-WebSocket-Protocol': ['tendriller.application-mcp.v1', key, 'td_device_' + device.publicKey].join(', '),
+        Upgrade: 'websocket', 'Sec-WebSocket-Protocol': ['tendriller.application-mcp.v1', key, 'td_device_' + device.publicKey, h.token].join(', '),
       } });
       expect(response.status).toBe(101);
       const socket = response.webSocket!; socket.accept();
@@ -226,7 +226,7 @@ it('prepares assistant permissions before claim and activates their review only 
       expect(result.proposed).not.toBe(prepared.proposed); expect(result.approved).toBe(false);
     }
     expect(await (await prepare()).json()).toMatchObject({ proposed: prepared.proposed, approved: true });
-    const delegated = await apiJson<{ token: string }>(h, 'POST', 'tokens', { name: 'different-credential', scopes: ['assistant:manage', 'participants:connect'] });
+    const delegated = await grantAgent({ ...h, account: f.subject }, await joinAccountAgent(f.page, 'different-credential'), ['assistant:manage', 'participants:connect']);
     const differentCredential = await (await prepare(input, delegated.token)).json() as { proposed: string; approved: boolean };
     expect(differentCredential.proposed).not.toBe(prepared.proposed); expect(differentCredential.approved).toBe(false);
     await prepare();
@@ -542,14 +542,25 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     const extraQuery = f === a ? ['privateNotes'] : [];
     const blueprints = { queries: [query, ...extraQuery], commands: [command],
       events: [{ name: eventName, description: 'An approved app event.' }] };
-    const proposal = await proposeApplicationAssistant({ api: f.page.api, token: f.page.token, key,
-      backupKeys: backupDevice ? [backupKey] : [], label: f.page.name,
-      ...blueprints, fetcher: (url, init) => request(new URL(String(url)).pathname, bind, init) });
+    // A page client as createAgentClient().page(id) provides, over this test's request helper.
+    const page = {
+      async request(path: string, options: { method?: string; body?: unknown } = {}) {
+        const response = await request(pagePath + path, bind, { method: options.method ?? 'GET',
+          headers: { Authorization: 'Bearer ' + f.page.token, ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+          ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) });
+        const result = await response.json() as any;
+        if (!response.ok) throw Object.assign(new Error(result?.error?.message ?? 'request failed'), { status: response.status, code: result?.error?.code });
+        return result;
+      },
+      socket() { throw new Error('This test supplies openSocket'); },
+    };
+    const proposal = await proposeApplicationAssistant({ page, key,
+      backupKeys: backupDevice ? [backupKey] : [], label: f.page.name, ...blueprints });
     expect(proposal.approved).toBe(false);
     expect(proposal.reviewUrl).toBe(ISSUER + reviewPath);
     await checkStatus(request(reviewPath, bind, { headers: { Cookie: f === a ? b.cookie : a.cookie } }), 404);
     const upgrade = (protocols: string[]) => request(pagePath + '/assistant/adapter', bind, { headers: {
-      Upgrade: 'websocket', 'Sec-WebSocket-Protocol': protocols.join(', '),
+      Upgrade: 'websocket', 'Sec-WebSocket-Protocol': [...protocols, f.page.token].join(', '),
     } });
     await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + session.identity.publicKey]), 401);
     const review = async (queries: string[], origin = ISSUER) => {
@@ -570,7 +581,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await checkStatus(review(blueprints.queries), 303);
     let dropNextResult = false, droppedResult: Record<string, any> | null = null;
     const start = (whichKey = key, peer = session) => {
-      const adapter = connectApplicationAssistant({ api: f.page.api, key: whichKey, session: peer, tools: createScopedApplicationTools(peer, blueprints),
+      const adapter = connectApplicationAssistant({ page, key: whichKey, session: peer, tools: createScopedApplicationTools(peer, blueprints),
         openSocket: (_url, protocols) => {
           const socket = testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous'), send = socket.send.bind(socket);
           socket.send = data => {
@@ -678,7 +689,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     const announcement = (await first.tool('open_application_inbox', { applicationId: first.id })).result;
     expect(announcement.structuredContent).not.toHaveProperty('activity');
     const proof = announcement._meta.activity.proof;
-    const mount = (pageId: string, token: string) => request('/api/t/' + pageId + '/assistant/activity', bind, { headers: {
+    const mount = (pageId: string, token: string) => request('/api/assistant/pages/' + pageId + '/activity', bind, { headers: {
       Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.application-activity.v1, td_watch.' + token,
     } });
     await checkStatus(mount(b.page.id, proof), 401);
@@ -1033,4 +1044,49 @@ it('reserves application routing only for enabled pages in the same account', as
   expect((await resolveConnection(env, b.subject, applicationId)).pageId).toBe(b.page.id);
   await expect(env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1 WHERE page_id=?').bind(pendingPage.id).run())
     .rejects.toThrow(/UNIQUE constraint failed/);
+});
+
+it('register_agent creates or rotates an account agent for an OAuth-linked assistant and list_tendrils is paged', async () => {
+  const base = await hostFixture(), settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource: RESOURCE, clients: [
+    { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read', 'tendrils:create', 'tendrils:list'] },
+  ] }) });
+  const f = { ...base, settings };
+  const approved = await authorization(f, { scope: 'tendrils:create tendrils:list' });
+  const response = await serviceForm('/oauth/token', { client_id: 'chatgpt', grant_type: 'authorization_code', resource: RESOURCE,
+    redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier }, settings);
+  expect(response.status).toBe(200);
+  const { access_token } = await response.json() as { access_token: string };
+  const call = async (name: string, args: Record<string, unknown>) =>
+    (await (await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, settings, access_token)).json()) as any;
+  const listed = await (await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, settings, access_token)).json() as any;
+  const names = listed.result.tools.map((tool: { name: string }) => tool.name);
+  expect(names).toContain('register_agent');
+  expect(names.some((name: string) => /setup/.test(name))).toBe(false);
+  const publicKey = 'A'.repeat(43);
+  const first = (await call('register_agent', { name: 'chat-agent', publicKey })).result.structuredContent;
+  expect(first).toMatchObject({ rotated: false, agent: { name: 'chat-agent', claimed: true, public_key: publicKey }, service: ISSUER });
+  expect(first.token).toMatch(/^ta_[a-z2-7]{32}$/);
+  const self = await request('/api/agent', settings, { headers: { Authorization: 'Bearer ' + first.token } });
+  expect(await self.json()).toMatchObject({ agent: { id: first.agent.id }, account: { claimed: true }, grants: 0 });
+  const page = await request('/api/agent/pages', settings, { method: 'POST', headers: { Authorization: 'Bearer ' + first.token, 'Content-Type': 'application/json' }, body: '{}' });
+  expect(page.status).toBe(201);
+  const created = await page.json() as { id: string; claimed: boolean };
+  expect(created.claimed).toBe(true);
+  expect(await env.ACCOUNTS.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(created.id).first()).toEqual({ owner_account: base.subject });
+  const rotated = (await call('register_agent', { name: 'chat-agent', publicKey: 'B'.repeat(43) })).result.structuredContent;
+  expect(rotated).toMatchObject({ rotated: true, agent: { id: first.agent.id, public_key: 'B'.repeat(43) } });
+  expect((await request('/api/agent', settings, { headers: { Authorization: 'Bearer ' + first.token } })).status).toBe(401);
+  const pages = await (await request('/api/agent/pages', settings, { headers: { Authorization: 'Bearer ' + rotated.token } })).json() as any;
+  expect(pages).toMatchObject({ pages: [{ id: created.id, granted_by: 'creator' }], next_cursor: null });
+  expect(await inDO(created.id, t => t.db.one('SELECT public_key FROM agent_grants WHERE agent_id=?', first.agent.id))).toEqual({ public_key: 'B'.repeat(43) });
+  // The review fixture's own register_agent request, sent through this actual MCP route with the same linked-account token.
+  // @ts-expect-error plugin sources are plain JavaScript consumer files without declarations
+  const { registerAgentThroughMcp } = await import('../../plugin/review-setup.mjs') as { registerAgentThroughMcp: (origin: string, token: string, args: object, options: { fetch: typeof fetch }) => Promise<any> };
+  const viaFixture = await registerAgentThroughMcp(ISSUER, access_token, { name: 'review-fixture', publicKey: 'C'.repeat(43) },
+    { fetch: ((url: string, init: RequestInit) => request(new URL(url).pathname, settings, { ...init, redirect: 'manual' })) as typeof fetch });
+  expect(viaFixture).toMatchObject({ rotated: false, agent: { name: 'review-fixture', claimed: true, public_key: 'C'.repeat(43) }, service: ISSUER });
+  expect(viaFixture.token).toMatch(/^ta_[a-z2-7]{32}$/);
+  const apps = (await call('list_tendrils', {})).result.structuredContent;
+  expect(apps).toMatchObject({ applications: [], nextCursor: null });
+  expect((await call('register_agent', { name: 'bad name!', publicKey })).error ?? (await call('register_agent', { name: 'bad name!', publicKey })).result?.isError).toBeTruthy();
 });

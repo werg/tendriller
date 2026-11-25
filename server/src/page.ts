@@ -11,7 +11,7 @@ import { emojiIconSvg, iconSvg, maskableEmojiIconSvg, maskableIconSvg } from "./
 import { serviceDescriptor } from "./descriptor";
 import { accountActive, allows, authenticateLocalPage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
-import { agentInviteResponse, issueAgentInvite } from "./sharing";
+import { currentIconRaster, iconRasterResponse, iconRasterTag, remoteIconSize, storeIconRaster } from "./icon-raster";
 import { addActivity } from "./activity";
 import { brandHead, brandMark, brandStyle } from "./brand";
 import { serviceStyle } from "./accounts/ui";
@@ -149,25 +149,6 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return new Response(null, { status: 204 });
   }
 
-  if (sub === "agents" && m === "GET") {
-    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
-    return json({ agents: t.db.all("SELECT name, created_at, last_used FROM tokens ORDER BY created_at") });
-  }
-  if (sub === "agents" && m === "POST") {
-    if (!allows(principal, "page.owner") || !principal.accountId) throw new HttpError(403, "forbidden");
-    const b = await readJson(req, 4096);
-    const invite = await issueAgentInvite(t, principal.accountId, b.name, b.scopes, () => {
-      if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
-    });
-    return json(agentInviteResponse(invite, t.db.get("name", "Tendril")), 201);
-  }
-  const disconnect = /^agents\/([A-Za-z0-9_.@-]{1,64})\/disconnect$/.exec(sub);
-  if (disconnect && m === "POST") {
-    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
-    if (!t.db.one("SELECT 1 AS x FROM tokens WHERE name = ?", disconnect[1])) throw new HttpError(404, "not_found", "No such agent token");
-    t.db.run("DELETE FROM tokens WHERE name = ?", disconnect[1]);
-    return json({ ok: true });
-  }
   if (sub === "guests" && m === "GET") {
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
     const pending = t.db.all<{ account_id: string; link_id: string; created_at: number }>("SELECT account_id, link_id, created_at FROM guest_accounts WHERE approved = 0 ORDER BY created_at");
@@ -242,7 +223,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       display: "standalone",
       theme_color: meta.theme_color ?? DEFAULT_THEME_COLOR,
       background_color: meta.background_color ?? "#ffffff",
-      icons: pageIcons(base, meta.icon),
+      icons: pageIcons(base, meta.icon, {
+        rasterTag: currentIconRaster(t) ? iconRasterTag(currentIconRaster(t)!.key) : null,
+        customSize: meta.icon && /^https:\/\//.test(meta.icon) ? await remoteIconSize(t, meta.icon, new URL(base, req.url).href) : null,
+      }),
     };
     if (meta.shortcuts && meta.shortcuts.length > 0) {
       body.shortcuts = resolveShortcuts(meta.shortcuts, base);
@@ -272,6 +256,17 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return new Response(m === "HEAD" ? null : svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
   }
 
+  if ((sub === "icon-512.png" || sub === "icon-maskable-512.png") && (m === "GET" || m === "HEAD")) {
+    const response = iconRasterResponse(t, sub === "icon-512.png" ? "any" : "maskable", m === "HEAD");
+    if (!response) throw new HttpError(404, "not_found", "No rendered icon yet");
+    return response;
+  }
+  if (sub === "icon-raster" && m === "POST") {
+    // The owner's browser draws the page's own icon SVGs into PNGs (it has the emoji font).
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
+    storeIconRaster(t, await readJson(req, 1_200_000));
+    return new Response(null, { status: 204 });
+  }
   if (sub === "icon-maskable.svg" && (m === "GET" || m === "HEAD")) {
     const icon = t.db.get<string | null>("icon", null);
     const themeColor = t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR;

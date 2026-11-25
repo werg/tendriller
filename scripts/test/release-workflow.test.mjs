@@ -45,7 +45,7 @@ test('branch and PR qualification cannot cancel each other at the same source co
     assert.notEqual(concurrency(name, trigger({ event: 'pull_request', number: 95, sourceRepo: 'other/tendriller' })).group, pr.group);
   }
   assert.notEqual(concurrency('service', push).group, concurrency('agent-onboarding', push).group);
-  for (const name of ['check', 'artifacts', 'browser', 'native-owner', 'sql-starter', 'network-qualification'])
+  for (const name of ['check', 'artifacts', 'browser', 'feedback-qualification', 'native-owner', 'sql-starter', 'network-qualification'])
     assert.doesNotMatch(graph[name], /^    if:/m, `${name} must qualify both event contexts`);
 });
 
@@ -59,7 +59,7 @@ test('master push and manual promotion stay serialized without PR cancellation',
 });
 
 test('trusted publication joins every qualification, and staging/production depend on publication', () => {
-  assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'native-owner', 'sql-starter', 'network-qualification', 'artifacts'].sort());
+  assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'feedback-qualification', 'native-owner', 'sql-starter', 'network-qualification', 'artifacts'].sort());
   for (const job of ['publish', 'staging', 'production']) {
     assert.match(graph[job], /github\.ref == 'refs\/heads\/master'/);
     assert.match(graph[job], /github\.event_name == 'push'/);
@@ -147,4 +147,15 @@ test('native owner qualification installs tools dependencies after restoring pub
   assert(restore >= 0 && install > restore && qualify > install,
     'The source CLI imports @tendriller/core from tools/node_modules, installed from the restored SDK');
   assert.match(graph.artifacts, /dist\/tendriller-chatgpt-plugin.zip/);
+});
+
+test('focused live feedback qualification uses the sealed graph and gates publication', () => {
+  const feedback = graph['feedback-qualification'];
+  assert.deepEqual(needs('feedback-qualification'), ['artifacts']);
+  assert.ok(needs('publish').includes('feedback-qualification'));
+  assert.match(feedback, /name: public-packages/);
+  assert.match(feedback, /node scripts\/deployment-bundle\.mjs/);
+  assert.match(feedback, /TENDRILLER_EXPECTED_MANIFEST_SHA256/);
+  assert.match(feedback, /test:first-app:feedback -- --first-app-archive/);
+  assert.doesNotMatch(feedback, /npm run build|npm run release:artifacts/);
 });

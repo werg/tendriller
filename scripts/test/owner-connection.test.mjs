@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOwnerConnection, describeConnectionError } from '../../docs/tutorial/connection.mjs';
+import { createOwnerConnection, describeConnectionError } from '../../docs/tutorial/shared/connection.mjs';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t, connect, origin = 'https://page.example') {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');

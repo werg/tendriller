@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { superviseParticipant } from '../../docs/tutorial/helpers/participant-lifecycle.mjs';
+import { superviseParticipant } from '../../docs/tutorial/shared/participant-lifecycle.mjs';
 import { watchApplicationSetup } from '../../contract/setup-watch.mjs';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const approved = (revision = 'approval-1') => ({ type: 'setup', version: 1, assistant: { proposalId: 'a'.repeat(64), approved: true, revision } });
@@ -221,16 +221,17 @@ test('a missing application keeps reporting setup failures without closing the c
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let probes = 0, ended = false;
   const f = fixture({ watch: callbacks => watchApplicationSetup({
-    api: 'https://service.example/api/t/aaaaaaaaaaaa', token: 'tk_' + 'a'.repeat(32), ...callbacks,
+    page: { socket() { throw Error('unused'); }, async request() {
+      probes++; throw Object.assign(Error('No such tendril'), { status: 404, code: 'not_found' });
+    } }, ...callbacks,
     openSocket() { throw Error('upgrade rejected'); },
-    fetcher: async () => { probes++; return Response.json({ error: { code: 'not_found', message: 'No such tendril' } }, { status: 404 }); },
   }) });
   f.lifecycle.done.then(() => { ended = true; });
   await flush(); t.mock.timers.tick(1000); await flush();
   const failures = f.reports.filter(x => x.setup?.state === 'application_not_found');
   assert.equal(probes, 2); assert.equal(failures.length, 2); assert.equal(ended, false);
   assert.deepEqual(failures.map(x => x.setup.retryInMs), [1000, 2000]);
-  assert(failures.every(x => /Recreate the application/.test(x.setup.next)));
+  assert(failures.every(x => /tendril page new/.test(x.setup.next)));
   assert(!f.reports.some(x => x.state === 'setup_channel_closed' || x.setup?.state === 'access_revoked'));
   assert(!JSON.stringify(f.reports).includes('Restore this retained host credential'));
   await f.lifecycle.close(); assert.equal(ended, true);
@@ -244,4 +245,61 @@ test('an unexpectedly closed setup channel preserves missing-application recover
   assert.equal(status.reason, 'application_not_found'); assert.match(status.next, /Recreate the application/);
   assert(!status.next.includes('credential'));
   await f.lifecycle.close();
+});
+
+test('consent waits coalesce, resume on notices and never poll; no pre-claim or pairing wait exists', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = { ...approved(), assistant: { proposalId: 'a'.repeat(64), approved: false, revision: null } };
+  const f = fixture();
+  t.after(() => f.lifecycle.close());
+  f.notice(pending); await flush();
+  f.notice(pending); await flush();
+  f.status({ state: 'connected' }); f.notice(pending); await flush();
+  assert.equal(f.reports.filter(x => x.state === 'awaiting_assistant_consent').length, 1, 'repeated unapproved notices are one visible wait');
+  assert.equal(f.adapters.length, 0, 'an unapproved proposal never starts the adapter');
+  const idle = f.reports.length;
+  t.mock.timers.tick(48 * 3600000); await flush();
+  assert.equal(f.reports.length, idle, 'waiting for consent adds no polling, retry or report');
+  assert.equal(f.adapters.length, 0);
+
+  f.notice(approved()); await flush(); await flush();
+  assert.equal(f.adapters.length, 1, 'only the owner-approved notice resumes the adapter');
+  f.notice(approved()); await flush();
+  assert.equal(f.adapters.length, 1, 'a repeated approval does not start another adapter');
+  f.notice(pending); await flush(); await flush();
+  assert.equal(f.adapters[0].closes, 1);
+  assert.equal(f.reports.filter(x => x.state === 'awaiting_assistant_consent').length, 2, 'a real approval transition reports the new wait');
+  f.status({ state: 'access_revoked', next: 'Restore this retained host credential and reconnect.' }); await flush();
+  assert(f.reports.some(x => x.state === 'assistant_stopped' && x.reason === 'access_revoked' && x.participantRunning === true));
+  // Browser-first: the page never waits for an owner claim, and no pairing process or retry exists.
+  assert(!f.reports.some(x => ['awaiting_owner_claim', 'pairing_unavailable', 'setup_retry'].includes(x.state)));
+});
+
+test('adapter retry deadlines coalesce, changed failures stay visible, and a terminal failure stops only the optional component', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let code = 'NETWORK_UNAVAILABLE', starts = 0;
+  const f = fixture({ startAdapter({ signal }) {
+    starts++;
+    const closed = new Promise(() => {});
+    return { closed, waitUntilOnline: async () => { throw Object.assign(Error(code), { code }); }, close() {} };
+  } });
+  t.after(() => f.lifecycle.close());
+  f.notice(approved()); await flush(); await flush();
+  assert.equal(starts, 1);
+  f.notice(approved()); f.notice(approved()); await flush();
+  assert.equal(starts, 1, 'notices during a pending retry are coalesced into its single deadline');
+  code = 'ADAPTER_TRANSPORT_UNAVAILABLE'; t.mock.timers.tick(10); await flush(); await flush();
+  assert.equal(starts, 2);
+  t.mock.timers.tick(20); await flush(); await flush();
+  assert.equal(starts, 3, 'the capped deadline fires once');
+  assert.deepEqual(f.reports.filter(x => x.state === 'adapter_offline').map(x => x.code),
+    ['NETWORK_UNAVAILABLE', 'ADAPTER_TRANSPORT_UNAVAILABLE', 'ADAPTER_TRANSPORT_UNAVAILABLE']);
+  assert.deepEqual(f.reports.filter(x => x.state === 'assistant_retry').map(x => x.retryInMs), [10, 20, 20]);
+  code = 'forbidden'; t.mock.timers.tick(20); await flush(); await flush();
+  assert(f.reports.some(x => x.state === 'adapter_offline' && x.code === 'forbidden'));
+  assert(f.reports.some(x => x.state === 'assistant_stopped' && x.reason === 'forbidden' && x.participantRunning === true));
+  const stopped = starts;
+  t.mock.timers.tick(3600000); f.notice(approved()); await flush();
+  assert.equal(starts, stopped, 'a terminal failure never retries');
+  assert(!f.reports.some(x => x.state === 'pairing_unavailable' || x.state === 'setup_retry'));
 });

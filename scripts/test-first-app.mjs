@@ -20,6 +20,7 @@ import { readBrowserRtcEvidence, hasNonTurnTraffic } from './first-app-rtc-evide
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
 import { FIRST_APP_PROFILES } from './release-composition.mjs';
+import {prepareWorkspaceQualification,qualifyFirstAppWorkspace,qualifyFirstAppSqlWorkspace} from './first-app-workspace.mjs';
 import { CONTRACT_VERSION } from '../contract/index.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -28,6 +29,7 @@ const execute = promisify(execFile);
 const { values } = parseArgs({ options: {
   'session-archive': { type: 'string' }, 'authority-archive': { type: 'string' }, 'first-app-archive': { type: 'string' },
   profile: { type: 'string' }, 'ux-second-pass': { type: 'boolean' }, 'browser-finalizer': { type: 'boolean' }, diagnostic: { type: 'boolean' },
+  'native-workspace':{type:'boolean'},'native-only':{type:'boolean'},'sql-native-only':{type:'boolean'},'feedback-qualification':{type:'boolean'},'network-lab-profile':{type:'string'},
   report: { type: 'string' }, keep: { type: 'boolean' }, transport: { type: 'string', default: 'direct' },
 } });
 if (!values['session-archive'] && !values['first-app-archive']) throw Error('Use --first-app-archive FILE or explicit --session-archive FILE --authority-archive FILE. Explicit source qualification may select --profile events|sql; exact kits select their own profile.');
@@ -41,6 +43,12 @@ const profileSpec = FIRST_APP_PROFILES[selectedProfile];
 assert.ok(profileSpec, 'Select the supported events or sql profile');
 if (selectedKitProfile) assert.deepEqual(selectedKitProfile, { profile: selectedProfile, ...profileSpec }, 'The kit profile must name the exact selected package roles');
 const sqlBrowser = selectedProfile === 'sql';
+const feedbackQualification=Boolean(values['feedback-qualification']),networkLab=values['network-lab-profile'];
+const nativeWorkspace=Boolean(values['native-workspace']||values['native-only']||values['sql-native-only']||feedbackQualification||networkLab);
+if(values['native-only']&&sqlBrowser||values['sql-native-only']&&!sqlBrowser)throw Error('Choose native-only for events or sql-native-only with the exact full SQL composition');
+if(nativeWorkspace&&sqlBrowser&&values['first-app-archive'])throw Error('Native SQL qualification needs the explicit clean full SQL archive; the immutable browser SQL kit deliberately omits native capability');
+if((feedbackQualification||networkLab)&&sqlBrowser)throw Error('Feedback/network qualification requires the events notes profile');
+if(networkLab&&(process.env.TENDRILLER_NETWORK_LAB!=='1'||values.transport!=='direct'||!values['first-app-archive']))throw Error('Network lab requires an isolated container, real RTC and an immutable first-app kit');
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
 const reportPath = resolve(values.report ?? join(root, `.results/${sqlBrowser ? 'first-app-sql-browser' : 'first-app'}.json`));
 const directory = await mkdtemp(join(tmpdir(), 'tfa-'));
@@ -56,12 +64,12 @@ const report = { status: 'running', qualification: sqlBrowser ? 'isolated-browse
   limits: ['Synthetic local owner sessions; no live OAuth provider tested.',
     'Two separate Chromium profiles, real browser RTC/forced relay; no Internet NAT or physical mobile qualification.',
     'Scripted desktop/320px tutorial; not an unaided fresh-agent usability result.',
-    'Optional agent/inference and native process features are not exercised by this browser-first journey.',
+    nativeWorkspace?'Optional native workspace is explicitly qualified after the complete browser-first baseline; physical inputs/external providers remain unqualified.':'Optional agent/inference and native process features are not exercised by this browser-first journey.',
     ...(values.diagnostic ? ['DIRTY DIAGNOSTIC ONLY: not release or finality qualification.'] : []),
     'A test-only WebSocket forwarding boundary isolates workerd close-handshake behavior; packed host code is unchanged.'], steps: [] };
 if(values['ux-second-pass'])report.ux_second_pass={freshProfiles:true,viewports:[1280,320],checks:[],limits:[sqlBrowser?'SQL has no photo workflow; local file preview/consent/removal is exercised in the separate events UX run.':'Local file-picker preview/removal is tested; no physical camera/microphone or real inference provider.']};
 const uxPassed=text=>{report.ux_second_pass.checks.push(text);passed('SECOND UX: '+text);};
-let host, browser, page, stage = 'preflight';
+let host, browser, labBrowser, page, stage = 'preflight';
 const browserProfiles=[], browserNetwork=[];
 const noteNetwork=value=>{if(browserNetwork.length===96)browserNetwork.shift();browserNetwork.push(value);};
 
@@ -292,7 +300,7 @@ try {
   assert.equal(authorityProof.sourceTree, sessionProof.sourceTree, 'Authority and session must share a source tree');
   report.chronolog = { source: sessionProof.source, dirty: sessionProof.dirty, sha256: sha256(await readFile(sessionArchive)) };
   report.profile = selectedProfile;
-  if (sqlBrowser) { assert.deepEqual(sessionProof.sqlEngines, ['browser'], 'The SQL kit is a portable browser profile, not a native SQL install'); assert.ok(sessionProof.wasmEngine); report.chronolog.wasmEngine = sessionProof.wasmEngine; }
+  if (sqlBrowser) { if(nativeWorkspace){assert.ok(sessionProof.sqlEngines?.includes('native')&&sessionProof.sqlEngines.includes('browser'),'Explicit native SQL qualification requires the full native+browser archive');}else assert.deepEqual(sessionProof.sqlEngines,['browser'],'The SQL kit is a portable browser profile, not a native SQL install'); assert.ok(sessionProof.wasmEngine); report.chronolog.wasmEngine = sessionProof.wasmEngine; }
 
 
   const preload = join(directory, 'local-network.mjs');
@@ -325,50 +333,53 @@ export async function closeLocalTransport() {
   await dispatcher.close();
 }
 `);
-  const project = sqlBrowser ? join(app, 'sql') : app;
-  const node = async args => run(process.execPath, ['--import', preload, ...args], { cwd: project });
-  passed('domain-served tutorial and independently installed public SDK/authority/session packages');
-  checkpoint('create, prepare and publish before any browser data key exists');
-  {
-    const preparation = JSON.parse(await node(['account-setup.mjs', 'prepare', SERVICE, sqlBrowser ? 'First-app SQL browser qualification' : 'First-app browser qualification']));
-    const privateIntent = await jsonFile(join(project, '.tendriller/account-setup.json'));
-    assert.equal(JSON.stringify(preparation).includes(privateIntent.credential), false);
-    const mcp = async (name, args) => {
-      const response = await fetch(SERVICE + '/mcp', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
-        headers: { Authorization: 'Bearer ' + oauthToken, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
-      assert.equal(response.status, 200); const reply = await response.json(); assert.ok(reply.result && !reply.result.isError); return reply.result.structuredContent;
-    };
-    const ready = await mcp(preparation.prepare.tool, preparation.prepare.arguments);
-    const recovered = await mcp(preparation.inspect.tool, preparation.inspect.arguments);
-    assert.equal(recovered.pageId, ready.pageId); assert.equal(recovered.state, 'ready');
-    assert.equal(JSON.stringify(recovered).includes(privateIntent.credential), false);
-    const resultPath = join(project, '.tendriller/account-setup-result.json'); await writeFile(resultPath, JSON.stringify(recovered), { mode: 0o600, flag: 'wx', flush: true });
-    await node(['account-setup.mjs', 'finish', resultPath]); await node(['account-setup.mjs', 'finish', resultPath]);
-    assert.equal((await jsonFile(join(project, '.tendriller/handle.json'))).token, privateIntent.credential);
-    passed('account-linked setup with retained private intent and actual lost-reply inspection');
-  }
-  const handle = await jsonFile(join(project, '.tendriller/handle.json'));
-  const requestHost = async (path, init = {}) => {
-    const response = await fetch(handle.api + '/' + path, { ...init, headers: { Authorization: 'Bearer ' + handle.token, ...init.headers } });
-    const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
-  };
-  await node(['setup.mjs', 'init', ...(values['browser-finalizer'] ? ['--browser-finalizer'] : [])]);
-  const beforeBrowser = await requestHost('application'); assert.equal(beforeBrowser.authority, null);
-  await node(['build.mjs']);
-  const publication = JSON.parse(await node(['publish.mjs'])); assert.match(publication.publicationId, /^[a-f0-9]{64}$/);
-  assert.equal((await requestHost('application')).authority, null, 'Publishing must not invent a data root/native device');
-  assert.equal(JSON.parse(await node(['publish.mjs'])).publicationId, publication.publicationId, 'Exact signed publication retry');
-  for (const path of await files(join(project, 'page'))) assert.doesNotMatch(path, /\.tendriller|device\.sqlite|publisher\.json/);
+  const slug=sqlBrowser?'stock':'notes',project=join(app,'pages',slug);
+  const node=async(args,options={})=>run(process.execPath,['--import',preload,...args],{cwd:app,...options});
+  const cli=join(app,'node_modules/@tendriller/tools/bin/tendril.mjs');
+  const tendril=async(args,options)=>JSON.parse(await node([cli,...args],options));
+  const setup=async args=>JSON.parse(await node([join(app,'setup.mjs'),...args]));
+  passed('domain-served workspace templates/shared helpers and independently installed exact public packages');
+  checkpoint('register one workspace agent, grant pages, prepare and publish before browser roots or native agent');
+  const enrolled=await tendril(['workspace','init','--service',SERVICE,'--owner','owner@example.test','--name','first-app']);
+  const workspaceFile=await jsonFile(join(app,'tendriller.json')),credential=await jsonFile(join(app,'.tendriller/agent/credential.json'));
+  assert.match(credential.token,/^ta_[a-z2-7]{32}$/);assert.equal(JSON.stringify(enrolled).includes(credential.token),false);assert.equal(JSON.stringify(workspaceFile).includes(credential.token),false);
+  const created=await setup(['new',slug,'--template',sqlBrowser?'inventory':'notes','--name',sqlBrowser?'SQL browser qualification':'Browser qualification']);
+  const resumed=await setup(['new',slug,'--template',sqlBrowser?'inventory':'notes']);assert.equal(resumed.id,created.id);
+  const journal=await setup(['new','journal','--template','notes','--name','Second explicitly granted workspace page']);
+  await setup(['init','journal']);const journalPublication=await setup(['deploy','journal']);assert.match(journalPublication.publicationId,/^[a-f0-9]{64}$/);
+  const pageRecord=await jsonFile(join(app,'.tendriller/pages',created.id,'page.json'));
+  const handle={id:pageRecord.id,application:pageRecord.application,page_url:pageRecord.page_url};
+  const requestHost=async(path,init={})=>{const response=await fetch(SERVICE+'/api/agent/pages/'+handle.id+'/'+path,{...init,headers:{Authorization:'Bearer '+credential.token,...init.headers}});const value=await response.json();assert.ok(response.ok,JSON.stringify(value));return value;};
+  if(nativeWorkspace&&!sqlBrowser)await prepareWorkspaceQualification({app,slug,feedback:feedbackQualification,network:networkLab});
+  await setup(['init',slug,...(values['browser-finalizer']?['--browser-finalizer']:[])]);
+  assert.equal((await requestHost('application')).authority,null,'Preparation may not create a native data root');
+  const prepared=await jsonFile(join(app,'.tendriller/pages',created.id,'prepared.json')),secondPrepared=await jsonFile(join(app,'.tendriller/pages',journal.id,'prepared.json'));
+  assert.equal(prepared.publisherKey,secondPrepared.publisherKey,'Every page uses the SAME registered workspace signer, never per-page signing keys');
+  const publication=await setup(['deploy',slug]);assert.match(publication.publicationId,/^[a-f0-9]{64}$/);
+  assert.equal((await requestHost('application')).authority,null,'Publication must precede the first authorized browser data key');
+  assert.equal((await setup(['deploy',slug])).publicationId,publication.publicationId,'Lost/uncertain publication replies reuse the original signed graph');
+  for(const path of await files(join(project,'dist')))assert.doesNotMatch(path,/\.tendriller|device\.sqlite|identity\.sqlite|publisher\.json/);
+  report.workspace={agentId:workspaceFile.agent.id,pages:[created.id,journal.id],oneSharedPublisher:true,nativeProcessBeforeBrowser:false};
+  passed('one account-agent credential, explicit page grants, shared opaque signer and signed pages without running native agent');
+  // Independently qualify the current linked-account registration route, never
+  // fall back to removed per-page credentials or copy an OAuth token into assets.
+  const linked=join(directory,'linked-workspace');await mkdir(linked);
+  const key=await tendril(['workspace','key','--service',SERVICE,'--name','linked-agent'],{cwd:linked});
+  const response=await fetch(SERVICE+'/mcp',{method:'POST',redirect:'error',signal:AbortSignal.timeout(30000),headers:{Authorization:'Bearer '+oauthToken,'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'register_agent',arguments:key.register_agent}})});
+  assert.equal(response.status,200);const reply=await response.json();assert.ok(reply.result&&!reply.result.isError);const registered=reply.result.structuredContent;
+  const record=join(linked,'registration.json');await writeFile(record,JSON.stringify(registered),{mode:0o600,flag:'wx',flush:true});
+  await tendril(['workspace','adopt','--service',SERVICE,'--credential',record],{cwd:linked});
+  passed('account-linked register_agent and private workspace adoption preserve the selected service and shared signer');
   report.publication_id = publication.publicationId; passed('independent signed code publication and exact retry before first data root');
 
   checkpoint('launch real fresh browser profiles with no native data process');
   const certificatePin = await localCertificatePin();
-  browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-    args: [`--host-resolver-rules=MAP *.localhost:443 127.0.0.1:${PORT}, MAP *.localhost 127.0.0.1`, `--ignore-certificate-errors-spki-list=${certificatePin}`] });
+  const browserOptions={executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH||undefined,args:[`--host-resolver-rules=MAP *.localhost:443 127.0.0.1:${PORT}, MAP *.localhost 127.0.0.1`,`--ignore-certificate-errors-spki-list=${certificatePin}`]};
+  if(networkLab){const{launchNetworkBrowser}=await import('../test/e2e/network-qualification/browser-launch.mjs');labBrowser=await launchNetworkBrowser(browserOptions);browser=labBrowser.browser;}else browser=await chromium.launch(browserOptions);
   report.browser = browser.version(); report.browser_checks = 'running'; report.screenshots = {};
   async function profile(viewport) {
-    const context = await browser.newContext({ viewport });
+    const context=labBrowser&&browserProfiles.length===0?labBrowser.context:await browser.newContext({viewport});
+    await context.setViewportSize(viewport);
     await context.addCookies([{ name: '__Host-tendriller', value: ownerToken, domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
     await context.addInitScript(({ relay }) => {
       const Native = globalThis.RTCPeerConnection; globalThis.__firstAppRtcPeers = [];
@@ -629,8 +640,13 @@ export async function closeLocalTransport() {
   assert.equal(await second.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, '320px must not horizontally scroll');
   await second.page.reload(); await expect(saveButton(second.page)).toBeEnabled({ timeout: 60_000 }); await expect(second.page.locator('#public-key')).toHaveValue(secondKey);
   passed('fresh desktop/320px profiles, long-lived identity and materialized state after second-device reload');
-  report.native_checks = 'not-required'; report.browser_checks = 'passed'; report.status = values.diagnostic ? 'diagnostic-passed' : 'passed'; report.qualified = !values.diagnostic;
-  console.log('Browser-first journey completed without a native data process. Exact evidence and explicit limits are in the report.');
+  if(nativeWorkspace){
+    const primary={...handle,application:pageRecord.application};
+    const common={app,slug,primary,journal,publicKey:prepared.publisherKey,first,second,profile,setup,tendril,node,cli,preload,expect,report,service:SERVICE,transportCounters,transport:values.transport,feedback:feedbackQualification,network:networkLab,checkpoint,passed,sha256};
+    if(sqlBrowser)await qualifyFirstAppSqlWorkspace(common);else await qualifyFirstAppWorkspace(common);
+  }
+  report.native_checks = nativeWorkspace?'passed':'not-required'; report.browser_checks = 'passed'; report.status = values.diagnostic ? 'diagnostic-passed' : 'passed'; report.qualified = !values.diagnostic;
+  console.log(nativeWorkspace?'Browser-first baseline plus explicitly requested optional workspace qualification completed. Exact evidence and process lifetimes are recorded.':'Browser-first journey completed without a native data process. Exact evidence and explicit limits are in the report.');
 } catch (error) {
   report.status = 'failed'; report.failed_stage = stage; report.error = error.message;
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
@@ -654,7 +670,7 @@ export async function closeLocalTransport() {
   }
   if (error.stdout) process.stderr.write(error.stdout); if (error.stderr) process.stderr.write(error.stderr); throw error;
 } finally {
-  await browser?.close().catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
+  await (labBrowser?labBrowser.close():browser?.close())?.catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
   await mkdir(dirname(reportPath), { recursive: true }); await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
   if (values.keep) console.log(`Private test directory retained: ${directory}`); else await rm(directory, { recursive: true, force: true });
 }

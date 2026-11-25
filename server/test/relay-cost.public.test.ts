@@ -106,7 +106,7 @@ it.each(['token', 'link', 'session', 'guest approval', 'disabled', 'owner'] as c
     try {
       await p.exchange();
       await inDO(p.id, t => {
-        if (reason === 'token') t.db.run('DELETE FROM tokens');
+        if (reason === 'token') t.db.run('DELETE FROM agent_grants');
         if (reason === 'link') t.db.all("DELETE FROM links WHERE role='guest' RETURNING id");
         if (reason === 'session') t.db.one("DELETE FROM page_sessions WHERE role='guest' RETURNING hash");
         if (reason === 'guest approval') t.db.run('UPDATE guest_accounts SET approved=0');
@@ -150,10 +150,11 @@ it('drops both positive and negative local authorization snapshots on transactio
         throw new Error('roll back revocation');
       })).toThrow('roll back revocation');
       expect(currentPrincipal(t, guest)).not.toBeNull();
-      const temporary: Principal = { kind: 'agent', name: 'temporary', credentialHash: '12'.repeat(32) };
+      const temporary: Principal = { kind: 'agent', agentId: 'ag_' + 'a'.repeat(26), scopes: ['participants:connect'], revision: 999 };
       expect(currentPrincipal(t, temporary)).toBeNull();
       expect(() => t.transaction(() => {
-        t.db.run('INSERT INTO tokens(name,hash,created_at) VALUES(?,?,?)', temporary.name, temporary.credentialHash, t.now());
+        t.db.run('INSERT INTO agent_grants(agent_id,public_key,scopes,revision,granted_by,granted_at) VALUES(?,?,?,?,?,?)',
+          temporary.agentId, 'k'.repeat(43), JSON.stringify(temporary.scopes), temporary.revision, 'owner', t.now());
         expect(currentPrincipal(t, temporary)).not.toBeNull();
         throw new Error('roll back grant');
       })).toThrow('roll back grant');

@@ -1,9 +1,15 @@
 import type { ApplicationSession } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 export declare const DIAGNOSTIC_PROTOCOL:'tendriller.diagnostics.v1';
+export interface TransportCauseSummary {
+  readonly codes:readonly string[];readonly truncated:boolean;
+}
+/** Bounded known transport codes only; contains no messages or private network details. */
+export declare function transportCauseSummary(error:unknown):TransportCauseSummary|undefined;
 export interface DiagnosticFinding {
   readonly code:string;readonly severity:'info'|'warning'|'error';readonly scope:Readonly<Record<string,string>>;
   readonly state:Readonly<Record<string,string|number|boolean>>;readonly retrySafe:boolean;readonly nextAction:string;
+  readonly transportCauses?:TransportCauseSummary;
 }
 export interface DiagnosticEndpoint {
   readonly ownerInstanceId?:string;readonly endpointId?:string;readonly endpointIncarnation?:string;readonly state?:string;

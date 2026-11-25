@@ -1,5 +1,5 @@
 [Unit]
-Description=Tendriller Application Participant
+Description=Tendriller agent program (every page in the workspace)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=tendriller
 WorkingDirectory=/srv/tendriller-app
-ExecStart=/usr/bin/node /srv/tendriller-app/deploy/participant.mjs --session /srv/tendriller-app/session.mjs
+ExecStart=/usr/bin/node /srv/tendriller-app/node_modules/@tendriller/tools/bin/tendril.mjs agent run
 Restart=on-failure
 RestartSec=5
 KillSignal=SIGTERM

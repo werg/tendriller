@@ -8,17 +8,21 @@ export const REVIEW_FIXTURE_FILES = [
   ['review-domain.mjs', 'plugin/review-domain.mjs'],
   ['review-assistant.mjs', 'plugin/review-assistant.mjs'],
   ['review-local.mjs', 'plugin/review-local.mjs'],
+  ['review-agent.mjs', 'plugin/review-agent.mjs'],
+  ['review-setup.mjs', 'plugin/review-setup.mjs'],
   ['review-page.mjs', 'plugin/review-page.mjs'],
   ['review-worker.mjs', 'plugin/review-worker.mjs'],
   ['review-index.html', 'plugin/review-index.html'],
-  // Canonical starter helpers, copied byte-for-byte; never maintain a second lifecycle, bootstrap or provisioning stack.
-  ['support/participant-lifecycle.mjs', 'docs/tutorial/helpers/participant-lifecycle.mjs'],
-  ['support/native-session.mjs', 'docs/tutorial/helpers/native-session.mjs'],
-  ['support/cli-lifetime.mjs', 'docs/tutorial/helpers/cli-lifetime.mjs'],
-  ['support/prepare-host.mjs', 'docs/tutorial/helpers/prepare-host.mjs'],
-  ['support/browser-bootstrap.mjs', 'docs/tutorial/helpers/browser-bootstrap.mjs'],
-  ['support/browser-profile.mjs', 'docs/tutorial/helpers/browser-profile.mjs'],
-  ['support/provisioning-view.mjs', 'docs/tutorial/helpers/provisioning-view.mjs'],
+  // Canonical shared starter helpers, copied byte-for-byte; never maintain a second lifecycle, bootstrap,
+  // preparation, publication or workspace stack. The workspace itself comes from the installed @tendriller/tools archive.
+  ['support/participant-lifecycle.mjs', 'docs/tutorial/shared/participant-lifecycle.mjs'],
+  ['support/native-page.mjs', 'docs/tutorial/shared/native-page.mjs'],
+  ['support/prepare-host.mjs', 'docs/tutorial/shared/helpers/prepare-host.mjs'],
+  ['support/publish.mjs', 'docs/tutorial/shared/publish.mjs'],
+  ['support/page-provisioning.mjs', 'docs/tutorial/shared/helpers/page-provisioning.mjs'],
+  ['support/browser-bootstrap.mjs', 'docs/tutorial/shared/helpers/browser-bootstrap.mjs'],
+  ['support/browser-profile.mjs', 'docs/tutorial/shared/helpers/browser-profile.mjs'],
+  ['support/provisioning-view.mjs', 'docs/tutorial/shared/helpers/provisioning-view.mjs'],
 ];
 export function installReviewFixtureSources(root, project) {
   for (const [file, source] of REVIEW_FIXTURE_FILES) {
@@ -35,23 +39,59 @@ export function restoreFixtureCreationMode(db) {
   }
 }
 
-/** Recover a saved handle even when the create child failed after persisting it. */
+/**
+ * The workspace's retained agent credential and its one page, as the cleanup handle. `id` is null when the agent
+ * was registered but its page was never created or registered. Throws when no credential was retained.
+ */
+export function readFixtureHandle(project, slug = 'review') {
+  const config = JSON.parse(readFileSync(resolve(project, 'tendriller.json'), 'utf8'));
+  const credential = JSON.parse(readFileSync(resolve(project, '.tendriller/agent/credential.json'), 'utf8'));
+  const id = config.pages?.[slug]?.id ?? null;
+  let page = {};
+  if (id !== null) try { page = JSON.parse(readFileSync(resolve(project, '.tendriller/pages', id, 'page.json'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  let intent = null;
+  try { intent = JSON.parse(readFileSync(resolve(project, '.tendriller/page-intents/' + slug + '/intent.json'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  return { id, service: credential.service, token: credential.token, signerPublicKey: credential.publicKey, intendedApplicationId: intent?.applicationId ?? null,
+    api: id === null ? null : credential.service + '/api/agent/pages/' + id,
+    ...(page.page_url ? { page_url: page.page_url, name: page.name, application: page.application } : {}) };
+}
+
+/** Recover the retained workspace handle even when a setup child failed after persisting it. */
 export async function cleanupFixturePage({ project, origin, creationAttempted, handle, fetch: fetcher = globalThis.fetch }) {
   if (!handle && !creationAttempted) return [];
   if (!handle) {
-    try { handle = JSON.parse(readFileSync(resolve(project, '.private/handle.json'), 'utf8')); }
+    try { handle = readFixtureHandle(project); }
     catch { return ['Creation outcome is unknown; retain the private fixture for operator reconciliation']; }
   }
   try {
-    const api = new URL(handle.api);
-    if (api.origin !== origin || api.username || api.password || api.search || api.hash ||
-        !/^[a-z2-7]{12}$/.test(handle.id ?? '') || api.pathname !== '/api/t/' + handle.id ||
-        typeof handle.token !== 'string' || !handle.token) {
+    const api = handle.id === null ? null : new URL(handle.api);
+    if (api && (api.origin !== origin || api.username || api.password || api.search || api.hash ||
+        !/^[a-z2-7]{12}$/.test(handle.id ?? '') || api.pathname !== '/api/agent/pages/' + handle.id) ||
+        typeof handle.token !== 'string' || !/^ta_[a-z2-7]{32}$/.test(handle.token) || (handle.service ?? origin) !== origin) {
       return ['Saved fixture handle does not match the selected deployment; no cleanup request was sent'];
     }
-    const response = await fetcher(api.href, { method: 'DELETE', redirect: 'error',
+    const remove = url => fetcher(url, { method: 'DELETE', redirect: 'error',
       headers: { Authorization: 'Bearer ' + handle.token }, signal: AbortSignal.timeout(15000) });
-    if (!response.ok) return ['Could not delete the qualification-owned synthetic page'];
+    if (api) {
+      const response = await remove(api.href);
+      if (!response.ok) return ['Could not delete the qualification-owned synthetic page'];
+    } else if (handle.intendedApplicationId) {
+      // Creation may have succeeded behind a lost reply. Only the exact retained application ID identifies that page.
+      const found = [];
+      for (let cursor = '', pages = 0; pages < 10; pages++) {
+        const listed = await fetcher(origin + '/api/agent/pages' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), { redirect: 'error',
+          headers: { Authorization: 'Bearer ' + handle.token }, signal: AbortSignal.timeout(15000) });
+        if (!listed.ok) return ['Could not inspect granted pages for the possibly created synthetic page'];
+        const body = await listed.json();
+        found.push(...body.pages.filter(page => page.application?.id === handle.intendedApplicationId && /^[a-z2-7]{12}$/.test(page.id ?? '')));
+        if (!body.next_cursor) break; cursor = body.next_cursor;
+      }
+      if (found.length > 1) return ['More than one page has the retained synthetic application ID; nothing was deleted'];
+      if (found.length === 1 && !(await remove(origin + '/api/agent/pages/' + found[0].id)).ok) return ['Could not delete the qualification-owned synthetic page'];
+    }
+    // The workspace agent is revoked with its only page.
+    const revoked = await remove(origin + '/api/agent');
+    if (!revoked.ok) return ['Could not revoke the qualification-owned synthetic agent'];
     return [];
   } catch { return ['Could not delete the qualification-owned synthetic page']; }
 }

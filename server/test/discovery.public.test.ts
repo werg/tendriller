@@ -73,7 +73,7 @@ it('requires the same participant incarnation and excludes revoked routes on the
   const native = await subscribe(h, 'peer-a');
   try {
     expect((await peerApi(h, 'discovery/advertise', { advertisement: advertisement() })).status).toBe(200);
-    await inDO(h.id, t => t.db.run('DELETE FROM tokens'));
+    await inDO(h.id, t => t.db.run('DELETE FROM agent_grants'));
     const directory = await (await peerOwnerApi(h, 'discovery/read')).json() as { peers: unknown[] };
     expect(directory.peers).toEqual([]);
   } finally { native.close(); }

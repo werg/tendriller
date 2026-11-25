@@ -2,14 +2,15 @@
 import type { Role } from "../../contract/index.mjs";
 import type { Link, Tendril } from "./tendril";
 import { HttpError } from "./http";
-import { safeEqual, sha256Hex } from "./ids";
-import { SETUP_SCOPES, setupCredentialActive, type SetupCredentialBinding } from './setup-credential';
-import { publicBase } from './urls';
+import { AGENT_ID_RE, sha256Hex } from "./ids";
 
-export const AGENT_SCOPES = ['host:read', 'host:manage', 'agents:delegate', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage', 'notifications:send'] as const;
+export const AGENT_SCOPES = ['host:read', 'host:manage', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage', 'notifications:send'] as const;
 export type AgentScope = typeof AGENT_SCOPES[number];
-export interface AgentBinding { id: string; scopes: AgentScope[]; revision: number }
-export interface AgentPrincipal { kind: "agent"; name: string; credentialHash: string; binding?: AgentBinding }
+/** Internal headers the service router (or an agent hub) sets after its D1 grant check. */
+export const AGENT_HEADER = 'x-tendril-agent';
+export const AGENT_SCOPES_HEADER = 'x-tendril-agent-scopes';
+/** A maintenance agent acting on this page through a mirrored owner or creator grant. */
+export interface AgentPrincipal { kind: "agent"; agentId: string; scopes: AgentScope[]; revision: number }
 export interface PagePrincipal {
   kind: "page"; name: string; role: Role; accountId: string | null; linkId: string;
   sessionHash: string | null;
@@ -24,69 +25,51 @@ export function allows(principal: Principal, action: AccessAction): boolean {
     case 'page.write': return principal.kind === 'page' && principal.role !== 'display';
   }
 }
-export function agentBinding(t: Tendril, name: string): AgentBinding | null {
-  return t.db.get<AgentBinding | null>('agent_binding:' + name, null);
-}
 export function hasAgentScope(principal: AgentPrincipal, scope: AgentScope): boolean {
-  // Principals without a binding are historical bootstrap credentials. New
-  // credentials always carry explicit scopes, including the initial owner key.
-  return !principal.binding || principal.binding.scopes.includes(scope);
+  return principal.scopes.includes(scope);
 }
 export function requireAgentScope(principal: AgentPrincipal, scope: AgentScope): void {
-  if (!hasAgentScope(principal, scope)) throw new HttpError(403, 'agent_scope_required', `This agent binding requires ${scope}.`);
+  if (!hasAgentScope(principal, scope)) throw new HttpError(403, 'agent_scope_required', `This agent grant requires ${scope}.`);
 }
+/** Parses a requested scope list into canonical order. Duplicates and unknown scopes are rejected. */
 export function agentScopes(value: unknown, fallback: readonly AgentScope[] = AGENT_SCOPES): AgentScope[] {
   if (value === undefined) return [...fallback];
   if (!Array.isArray(value) || value.length > AGENT_SCOPES.length || !value.length || new Set(value).size !== value.length ||
       value.some(scope => !AGENT_SCOPES.includes(scope))) throw new HttpError(400, 'invalid_agent_scopes');
-  return value as AgentScope[];
+  return AGENT_SCOPES.filter(scope => value.includes(scope));
 }
 export function requireAccess(principal: Principal, action: AccessAction): void {
   if (!allows(principal, action)) throw new HttpError(403, 'forbidden');
 }
 
+/** The page's synchronous mirror of one agent grant. D1 remains the routing index. */
+export interface LocalAgentGrant { agent_id: string; public_key: string; scopes: AgentScope[]; revision: number; granted_by: string; granted_at: number }
+export function localAgentGrant(t: Tendril, agentId: string): LocalAgentGrant | null {
+  return t.db.cached(`access:agent:${agentId}`, () => {
+    const row = t.db.one<Omit<LocalAgentGrant, 'scopes'> & { scopes: string }>(
+      'SELECT agent_id,public_key,scopes,revision,granted_by,granted_at FROM agent_grants WHERE agent_id=?', agentId);
+    return row ? Object.freeze({ ...row, scopes: JSON.parse(row.scopes) as AgentScope[] }) : null;
+  });
+}
+
 // Cache immutable row snapshots only within this live object. Db invalidates
 // every snapshot on local writes and rollback; time-dependent checks stay below.
-const localToken = (t: Tendril, hash: string) => t.db.cached(`access:token:${hash}`, () =>
-  t.db.one<{ name: string; hash: string }>("SELECT name,hash FROM tokens WHERE hash=?", hash));
 const localSession = (t: Tendril, hash: string) => t.db.cached(`access:session:${hash}`, () =>
   t.db.one<{ account_id: string; role: Role; expires_at: number }>("SELECT account_id,role,expires_at FROM page_sessions WHERE hash=?", hash));
 
-function localSetupBinding(t: Tendril, principal: AgentPrincipal): SetupCredentialBinding | null {
-  const setup = t.db.get<SetupCredentialBinding | null>('account_setup', null), binding = principal.binding;
-  if (!setup || !binding || typeof binding.id !== 'string' || !binding.id || binding.revision !== 1 ||
-      !Array.isArray(binding.scopes) || binding.scopes.length !== SETUP_SCOPES.length ||
-      SETUP_SCOPES.some(scope => !binding.scopes.includes(scope)) ||
-      setup.page !== t.tid || setup.service_origin !== publicBase(t.env) ||
-      setup.commitment !== principal.credentialHash || typeof setup.digest !== 'string' || !/^[a-f0-9]{64}$/.test(setup.digest) ||
-      !Number.isSafeInteger(setup.expires_at) || setup.expires_at <= t.now() ||
-      ['account_id', 'client_id', 'grant_id'].some(key => typeof setup[key as keyof SetupCredentialBinding] !== 'string' || !setup[key as keyof SetupCredentialBinding]))
-    return null;
-  return setup;
-}
-
-/** Inspect the fixed setup binding without promoting a damaged record to legacy authority. */
-export function setupCredentialBinding(t: Tendril, credentialHash: string): SetupCredentialBinding | null {
-  if (localToken(t, credentialHash)?.name !== 'setup') return null;
-  const binding = agentBinding(t, 'setup');
-  return localSetupBinding(t, { kind: 'agent', name: 'setup', credentialHash, ...(binding ? { binding } : {}) });
-}
-
-export async function authenticateAgentToken(t: Tendril, token: string): Promise<AgentPrincipal> {
-  const hash = await sha256Hex(token);
-  const row = localToken(t, hash);
-  if (!row || !safeEqual(row.hash, hash)) throw new HttpError(401, "unauthorized", "Invalid or revoked token");
-  const binding = agentBinding(t, row.name);
-  const principal: AgentPrincipal = { kind: "agent", name: row.name, credentialHash: hash, ...(binding ? { binding } : {}) };
-  if (row.name === 'setup' && !await freshPrincipal(t, principal))
-    throw new HttpError(401, 'setup_binding_inactive', 'The fixed setup credential expired, changed, or lost its admitting account/client grant. Use the owner’s reviewed delegation route.');
-  return principal;
-}
-
-export async function authenticateAgent(t: Tendril, req: Request): Promise<AgentPrincipal> {
-  const token = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization") ?? "")?.[1];
-  if (!token) throw new HttpError(401, "unauthorized", "Missing Authorization: Bearer <token>");
-  return authenticateAgentToken(t, token);
+/**
+ * Resolves the agent named by the router's internal headers against the local
+ * grant mirror. The router already checked the credential and its D1 grant; a
+ * missing or changed mirror fails closed.
+ */
+export function authenticateAgent(t: Tendril, req: Request): AgentPrincipal {
+  const agentId = req.headers.get(AGENT_HEADER) ?? '', scopes = (req.headers.get(AGENT_SCOPES_HEADER) ?? '').split(' ').filter(Boolean);
+  if (!AGENT_ID_RE.test(agentId)) throw new HttpError(401, 'unauthorized', 'Agent credential required');
+  const grant = localAgentGrant(t, agentId);
+  if (!grant) throw new HttpError(404, 'not_found', 'No such granted page');
+  if (grant.scopes.length !== scopes.length || grant.scopes.some(scope => !scopes.includes(scope)))
+    throw new HttpError(409, 'agent_grant_changed', 'This page grant changed; retry the request.');
+  return { kind: 'agent', agentId, scopes: [...grant.scopes], revision: grant.revision };
 }
 
 /** Check page-owner and optional visitor account policy in one primary read. */
@@ -150,28 +133,17 @@ function localPagePrincipal(t: Tendril, identity: Omit<PagePrincipal, "kind" | "
 export function currentPrincipal(t: Tendril, principal: Principal, pageKey?: string): Principal | null {
   if (t.db.get("disabled", false)) return null;
   if (principal.kind === "page") return localPagePrincipal(t, principal, pageKey);
-  if (localToken(t, principal.credentialHash)?.name !== principal.name) return null;
-  const binding = agentBinding(t, principal.name);
-  if (JSON.stringify(binding) !== JSON.stringify(principal.binding ?? null)) return null;
-  if (principal.name === 'setup' && !localSetupBinding(t, principal)) return null;
-  return principal;
+  return localAgentGrant(t, principal.agentId)?.revision === principal.revision ? principal : null;
 }
 
-/** Refresh external setup-grant policy before work; synchronous commits still recheck local expiry/revocation. */
+/** Grants are mirrored locally and revoked by the page object itself, so freshness is local. */
 export async function freshPrincipal(t: Tendril, principal: Principal, pageKey?: string): Promise<Principal | null> {
-  const current = currentPrincipal(t, principal, pageKey);
-  if (!current) return null;
-  if (current.kind === 'agent' && current.name === 'setup') {
-    const setup = localSetupBinding(t, current);
-    if (!setup || !await setupCredentialActive(t.env, setup)) return null;
-    return currentPrincipal(t, current, pageKey);
-  }
-  return current;
+  return currentPrincipal(t, principal, pageKey);
 }
 
-/** Route ownership retains the exact credential incarnation for narrow revocation.
- * Capacity belongs to the human account (or the unclaimed page), so adding or
- * rotating a named agent never multiplies its delegating principal's budget. */
+/** Route ownership retains the agent identity for narrow revocation. Capacity
+ * belongs to the human account (or, before claim, the creating agent), so adding
+ * agents never multiplies an account's budget. */
 export function participantIdentity(t: Tendril, principal: Principal): { route: string; budget: string } {
   const current = currentPrincipal(t, principal);
   if (!current || current.kind === 'page' && (current.role === 'display' || !current.accountId))
@@ -179,7 +151,7 @@ export function participantIdentity(t: Tendril, principal: Principal): { route: 
   if (current.kind === 'agent') {
     requireAgentScope(current, 'participants:connect');
     const owner = t.db.get<string | null>('owner_account', null);
-    return { route: `agent:${current.credentialHash}`, budget: owner ? `account:${owner}` : `page:${t.tid}` };
+    return { route: `agent:${current.agentId}`, budget: owner ? `account:${owner}` : `agent:${current.agentId}` };
   }
   return { route: `account:${current.accountId}`, budget: `account:${current.accountId}` };
 }

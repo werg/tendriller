@@ -20,7 +20,7 @@ async function bundles() {
     plugins: [{ name: 'public-transport', setup(builder) {
       builder.onResolve({ filter: /session\/transport-diagnostics\.mjs$/ }, () => ({ path: root + 'dist/sdk/session/transport-diagnostics.mjs' }));
     } }] });
-  const page = await build({ entryPoints: [root + 'docs/tutorial/page.mjs'], bundle: true, write: false, format: 'esm', platform: 'browser',
+  const page = await build({ entryPoints: [root + 'docs/tutorial/templates/notes/page.mjs'], bundle: true, write: false, format: 'esm', platform: 'browser',
     plugins: [{ name: 'current-contract-fixture', setup(builder) {
       builder.onResolve({ filter: /^@tendriller\/core\/browser-owner$/ }, args => ({ path: args.path, namespace: 'fixture' }));
       builder.onResolve({ filter: /^@tendriller\/core\/authority$/ }, () => ({ path: root + 'contract/authority.mjs' }));
@@ -104,7 +104,7 @@ async function bundles() {
         }
       ` }));
     } }] });
-  return { transport: transport.outputFiles[0].text, page: page.outputFiles[0].text, html: await readFile(root + 'docs/tutorial/index.html') };
+  return { transport: transport.outputFiles[0].text, page: page.outputFiles[0].text, html: await readFile(root + 'docs/tutorial/templates/notes/index.html') };
 }
 
 const built = await bundles();

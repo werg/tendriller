@@ -66,19 +66,20 @@ There are two separate approvals in this example:
   for analysis. The result remains an editable suggestion.
 
 Obtain the **browser device public key** displayed by the connected page. It is
-the signer enrolled with `npm run enroll -- BROWSER_PUBLIC_KEY`, not an account
-email, agent bearer token, page ID or the native device key. The inference
+the signer enrolled with `npm run enroll -- <slug> BROWSER_PUBLIC_KEY`, not an account
+email, agent token, page ID or the native device key. The inference
 allowlist is an additional permission to use the native provider budget.
 
-Stop the ordinary `npm run peer` process with Ctrl-C. The inference launcher
-opens the same native session and signer, so it **replaces** that process. Two
-processes must not open the same exclusive device store.
+Keep `npm run agent` running. The inference launcher **attaches** to one page of
+that program and never opens a signer or the page's exclusive device store.
+Ctrl-C detaches the launcher only.
 
-In the extracted starter directory, supply the credential through the native
+In the extracted starter workspace, supply the credential through the native
 environment or secret manager, select an image-capable model explicitly, and run:
 
 ```sh
-node media/inference-peer.mjs \
+node shared/media/inference-peer.mjs \
+  --page notes \
   --model YOUR_EXPLICIT_IMAGE_CAPABLE_MODEL \
   --allow-device BROWSER_PUBLIC_KEY \
   --max-requests 1
@@ -319,9 +320,30 @@ const voice = createVoiceController({
   onStatus: renderVoiceStatus,
 });
 await voice.prepare(trustedPrepareEvent); // Selected resources; no microphone.
-await voice.start(trustedRecordEvent, { context });
+await voice.start(trustedRecordEvent, {
+  context,
+  language: languagePicker.value || undefined, // Optional regional tag, e.g. de-DE.
+});
 voice.finish(); // Produces an editable transcript candidate, never a command.
 ```
+
+The application owns its language picker. `start` captures that choice and the
+task context before loading or consent; changing the picker cannot alter the
+pending attempt. A new deliberate `start` cancels the old attempt and suppresses
+its late transcript. Omit `language` to retain the adapter's saved/device default.
+The same adapter validates and canonicalizes explicit tags, persists the choice,
+and checks model support; malformed tags fail validation and unsupported model
+languages leave the microphone stopped with an error and typed input available.
+No language is silently replaced with English. Use `createVoice` directly if
+your application needs the broader adapter API.
+
+Read `voice.snapshot().microphoneActive`, also included in every `onStatus`
+snapshot, for actual microphone use. It is false before the adapter exists and
+during loading or permission waiting, true only while the adapter owns active
+capture, and false after finish, cancellation, a hidden-page stop or disposal.
+`phase` and `detail` describe preparation, transcription and errors separately;
+preparing speech assets does not mean the microphone is recording. These lifecycle
+checks do not establish multilingual recognition accuracy on a physical device.
 
 Typed input remains available while resources load or transcription fails. The
 starter's **Dictate a draft note** controls use this sequence: select **Allow voice

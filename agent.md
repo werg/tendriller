@@ -1,6 +1,6 @@
 # Build a Tendriller application
 
-The deliverable is a working signed page, not a preview or an installed adapter. Start with [Build an app](docs/BUILD_AN_APP.md), [capabilities](docs/CAPABILITIES.md), [session bootstrap](docs/SESSION_BOOTSTRAP.md), and [delivery](docs/AGENT_DELIVERY.md).
+The deliverable is a working signed page, not a preview or an installed adapter. One **agent** (one `ta_` credential and one signing key) maintains many pages from one workspace and one optional local program; see [multi-page agents](docs/MULTI_PAGE_AGENTS.md) and [agent credentials and grants](docs/AGENT_BINDINGS.md). Start with [Build an app](docs/BUILD_AN_APP.md), [capabilities](docs/CAPABILITIES.md), [session bootstrap](docs/SESSION_BOOTSTRAP.md), and [delivery](docs/AGENT_DELIVERY.md).
 
 For account-linked tools, follow the [MCP agent guide](docs/MCP_AGENT_GUIDE.md).
 
@@ -10,13 +10,15 @@ Use the exact service origin supplied by the person or account-linked connector,
 
 ## Browser-first route
 
-1. **Create** and retain the private host handle. Account-linked setup uses `setup:prepare` → `prepare_tendril_setup` → `setup:finish`; use `inspect_tendril_setup` on the same operation after a lost reply. The host derives its verified owner.
+1. **Register the agent once, then create the page.** With account-linked MCP, run `tendril workspace key`, call `register_agent` with its public arguments and retain the result with `tendril workspace adopt`; the host derives the verified owner. From a domain, run `tendril workspace init --owner EMAIL`; with a dashboard join code, `tendril workspace join`. The workspace holds one credential and one signing key for every page. `npm run page:new` (`tendril page new <slug>`) creates a page and grants it to the creating agent automatically; an existing page needs the owner's explicit per-agent grant (dashboard checkbox, then `tendril page grant`). Retain the private workspace (`.tendriller/`).
 2. **Define state and choose policy.** Ordinary offline-first apps use finality `none`. Commands, queries and optional tool declarations describe application behavior; they do not freeze SQL schema.
-3. **Prepare and publish before the first browser key is known.** The starter creates an independent publisher key and prepares `HostAppConfig`. `npm run deploy` signs and publishes the entire authored asset graph without creating a data device.
-4. **Give the ready page URL to the owner.** They complete their own sign-in. Do not ask for a claimed reply or require a native participant.
+3. **Prepare and publish before the first browser key is known.** `npm run init -- <slug>` prepares only the publisher policy and `HostAppConfig`, using the workspace's one opaque shared signer as the publisher (no per-page key, and no device, data root or epoch key). `npm run deploy -- <slug>` signs and publishes the entire authored asset graph without creating a data device. The agent program opens a page only after the explicit native `sign-enrollment`, `provisioning-request` and `import-provisioning` steps have verified its reader grant and current epoch key and written `initialized.json`; the browser-first route needs no agent process.
+4. **Give the ready page URL to the owner.** They complete their own sign-in. Do not ask for a claimed reply or require the agent program or any native participant.
 5. **Initialize locally.** The first browser's signed key proof initializes `rootPrincipal`, initial membership and an epoch-key commitment. The actual epoch key is durably retained only in the browser. The host neither receives keys nor executes application programs.
 6. **Add another device explicitly.** It proves its key and creates a retained recipient request. The owner reviews exact independent rights, grants crypto membership, and an existing device wraps keys to that recipient. A fresh keyless browser cannot read old data merely by signing in. SQL row/object/namespace permissions remain separate ordinary transactions.
 7. **Verify local authoring, offline reload, replication and signatures.** Report actual process lifetime and resume prerequisites.
+
+`tendril agent run` (`npm run agent`) is the workspace's one optional local program: one hub connection carries every page's control traffic (setup notices, introductions, invitations, WebRTC negotiation) and it opens one Chronolog session per initialized page with the shared agent key. Per-page sync data keeps per-page connections. CLI commands address a page with `--page <slug|id>`. Browser reads and durable writes never depend on it; an unreachable program is `OWNER_UNREACHABLE` for native attach, never a reason to open a second signer.
 
 ## Data contract
 

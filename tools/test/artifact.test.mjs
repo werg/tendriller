@@ -21,12 +21,16 @@ test('the core tools archive serves public libraries and commands without a chec
   const pkg = JSON.parse(readFileSync(join(installed, 'package.json')));
   assert.equal(pkg.name, '@tendriller/tools');
   assert.equal(pkg.tendriller.runtime, manifest.runtime);
-  assert.deepEqual(Object.keys(pkg.exports).sort(), ['./pack', './preview', './session']);
+  assert.deepEqual(Object.keys(pkg.exports).sort(), ['./pack', './preview', './session', './workspace']);
+  assert.deepEqual(Object.keys(pkg.peerDependencies).sort(), ['@chronolog/peer-session', '@tendriller/core']);
   assert.equal(pkg.dependencies, undefined, 'operational runtime dependencies are bundled');
   assert.doesNotMatch(readFileSync(join(installed, 'THIRD_PARTY_NOTICES.txt'), 'utf8'), /ws@|@modelcontextprotocol/);
   assert.deepEqual(Object.keys(pkg.bin).sort(), ['tendril', 'tendril-preview']);
   const help = execFileSync(process.execPath, [join(installed, pkg.bin.tendril), '--help'], { cwd: root, encoding: 'utf8' });
-  assert.match(help, /publish <directory>/);
+  assert.match(help, /publish <directory>/); assert.match(help, /agent run/);
+  // Commands that never touch a session run without Chronolog or the core package installed.
+  const guide = JSON.parse(execFileSync(process.execPath, [join(installed, pkg.bin.tendril), 'guide', '--server', 'https://staging.example'], { cwd: root, encoding: 'utf8' }));
+  assert.equal(guide.service, 'https://staging.example');
   assert.doesNotMatch(help, /scaffold|assets sync|recipes/);
   const page = join(root, 'page'); mkdirSync(page);
   writeFileSync(join(page, 'index.html'), '<!doctype html><title>Independent authored page</title>');

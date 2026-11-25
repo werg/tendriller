@@ -13,14 +13,15 @@ export async function importReviewPackages(project) {
 }
 
 /**
- * The exact public archives of the one qualified composition: SDK, authority and session. The helpers copied into the
- * fixture import @chronolog/authority directly, so it is installed from the same composition rather than resolved
- * through a registry, a guessed path or an optional fallback.
+ * The exact public archives of the one qualified composition: SDK, tools, authority and session. The fixture is an agent
+ * workspace that imports the public @tendriller/tools/workspace helpers, and its copied helpers import @chronolog/authority
+ * directly, so every one is installed from the same composition rather than resolved through a registry, a guessed path
+ * or an optional fallback.
  */
 export function reviewInstallArguments(composition) {
   const paths = composition?.packagePaths;
-  for (const role of ['sdk', 'authority', 'session']) assert(typeof paths?.[role] === 'string' && paths[role].endsWith('.tgz'), 'The qualified composition must name its ' + role + ' archive');
-  return ['install', '--ignore-scripts', '--no-audit', '--no-fund', paths.sdk, paths.authority, paths.session];
+  for (const role of ['sdk', 'tools', 'authority', 'session']) assert(typeof paths?.[role] === 'string' && paths[role].endsWith('.tgz'), 'The qualified composition must name its ' + role + ' archive');
+  return ['install', '--ignore-scripts', '--no-audit', '--no-fund', paths.sdk, paths.tools, paths.authority, paths.session];
 }
 
 /** After installation, the actual packages must come from the composition's clean Chronolog checkpoint. */
@@ -35,5 +36,11 @@ export function verifyInstalledReviewPackages(project, composition) {
     assert.equal(proof.sourceTree, composition.session.sourceTree, name + ' source tree differs from the qualified composition');
     identities[name] = { source: proof.source, sourceTree: proof.sourceTree };
   }
+  // The tools archive carries the runtime it was built against; it must be this composition's, not another release's.
+  const tools = JSON.parse(readFileSync(resolve(project, 'node_modules/@tendriller/tools/package.json'), 'utf8'));
+  assert.equal(tools.name, '@tendriller/tools', 'The installed tools package identity differs');
+  assert.equal(tools.version, composition.build.coreRelease, 'The installed tools release differs from the qualified composition');
+  assert.equal(tools.tendriller?.runtime, composition.build.runtimeId, 'The installed tools runtime differs from the qualified composition');
+  identities.tools = { version: tools.version, runtime: tools.tendriller.runtime };
   return identities;
 }

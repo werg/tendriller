@@ -15,7 +15,7 @@ import { readReviewAccess, authorizeReview } from './access.mjs';
 import { provisionNative } from './provision.mjs';
 import { recordReview } from './record.mjs';
 import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
-import { cleanupFixturePage, installReviewFixtureSources, validateReviewProposal } from './fixture.mjs';
+import { cleanupFixturePage, installReviewFixtureSources, readFixtureHandle, validateReviewProposal } from './fixture.mjs';
 import { sourceIdentity } from '../release-composition.mjs';
 import { createReviewDiagnostics, reviewError, reviewNativeError, waitForReviewProvider } from './diagnostics.mjs';
 
@@ -41,7 +41,7 @@ try {
   fixtureSources = Object.fromEntries(installReviewFixtureSources(consumerRoot, project).map(file => [file, createHash('sha256').update(readFileSync(join(project, file))).digest('hex')]));
   execFileSync('npm', reviewInstallArguments(composition), { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
   installedPackages = verifyInstalledReviewPackages(project, composition);
-  const { core: { createClient } } = await importReviewPackages(project);
+  const { core: { createAgentClient } } = await importReviewPackages(project);
   // Admission may change during package installation. Observe it again without
   // overriding a pause; the setup request still enforces any subsequent race.
   await preflightReviewDeployment(access.origin, composition);
@@ -53,17 +53,20 @@ try {
   phase = 'create fixture';
   creationAttempted = true;
   run(['setup', access.origin, 'Qualification checklist'], { REVIEW_ACCESS_TOKEN: authorized.token });
-  handle = JSON.parse(readFileSync(join(project, '.private/handle.json')));
+  handle = readFixtureHandle(project);
+  assert(handle.id && handle.page_url && handle.application?.id, 'Setup must retain one granted page in the workspace');
   phase = 'prepare and publish before browser key';
   run(['init']); run(['build'], { REVIEW_ESBUILD_MODULE: pathToFileURL(createRequire(import.meta.url).resolve('esbuild')).href }); run(['publish']);
-  const host = createClient(handle, { applicationId: handle.application.id });
+  const host = createAgentClient({ service: access.origin, token: handle.token }).page(handle.id, { applicationId: handle.application.id });
   const publication = await readWithAdmissionRetry(() => host.peers.publication());
   assert(publication, 'Verify the committed publication on the actual host');
   const prepared = await readWithAdmissionRetry(() => host.peers.application());
   assert.equal(prepared.authority, null, 'No browser root or data authority may exist before the signed page is published');
-  assert(prepared.publicationAuthority, 'The independent publisher policy must exist');
+  assert(prepared.publicationAuthority, 'The publication policy must exist');
+  assert(prepared.publicationAuthority.publisherKeys.includes(handle.signerPublicKey), 'Publication is signed by the workspace\'s one shared agent key; no separate page publisher exists');
+  assert.notEqual((await host.info()).owner_account_id, null, 'An account-linked agent creates a page already owned by that account');
   const proposal = validateReviewProposal(JSON.parse(run(['propose'])));
-  diagnostics = createReviewDiagnostics({ origin: access.origin, pageUrl: handle.page_url, reviewUrl: proposal.reviewUrl, apiUrl: handle.api });
+  diagnostics = createReviewDiagnostics({ origin: access.origin, pageUrl: handle.page_url, reviewUrl: proposal.reviewUrl, apiUrl: host.base });
   diagnostics.attach(context, page);
   phase = 'initialize browser';
   try {
@@ -82,7 +85,9 @@ try {
     phase = 'start optional participant';
     diagnostics.step('start-participant');
     const state = openSync(join(project, 'participant-state-private.log'), 'w', 0o600), diagnostic = openSync(join(project, 'participant-private.log'), 'w', 0o600);
-    try { child = spawn(process.execPath, ['review-app.mjs', 'run'], { cwd: project, stdio: ['ignore', state, diagnostic] }); }
+    // The one long-running local program is the installed tools archive's agent: it opens this provisioned page's optional native owner.
+    try { child = spawn(process.execPath, [join(project, 'node_modules/@tendriller/tools/bin/tendril.mjs'), 'agent', 'run'],
+      { cwd: project, env: { ...process.env, TENDRIL_WORKSPACE: project }, stdio: ['ignore', state, diagnostic] }); }
     finally { closeSync(state); closeSync(diagnostic); }
     let participantError;
     child.once('error', () => { participantError = true; });
@@ -90,7 +95,7 @@ try {
     for (;;) {
       assert(Date.now() < deadline, 'Participant start deadline');
       assert(!participantError && child.exitCode === null, 'Optional participant must remain running');
-      if (readFileSync(join(project, 'participant-state-private.log'), 'utf8').includes('participant_running')) break;
+      if (readFileSync(join(project, 'participant-state-private.log'), 'utf8').split('\n').some(line => { try { const value = JSON.parse(line); return value.page === handle.id && value.state === 'running'; } catch { return false; } })) break;
       await delay();
     }
     phase = 'review permissions';
@@ -116,6 +121,7 @@ try {
   report.publishedBeforeBrowserKey = true;
   report.browserWithoutNativeProcess = true;
   report.approvalSurvivesReplay = true;
+  report.workspace = { credential: 'account-level register_agent through the linked account', signer: 'one shared workspace key', pageAccess: 'creator grant', publisher: 'the shared key', participant: 'tendril agent run, optional' };
   report.fixtureSources = fixtureSources;
   report.installedPackages = installedPackages;
   report.consumerSource = consumerSource;
