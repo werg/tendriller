@@ -104,8 +104,11 @@ test('actual SQL inventory page: signed publication, browser-first initializatio
     expect(native.identity.publicKey).toBe(app.nativePublicKey);
     await test.step('the online browser admits the agent from its signed grant and wraps the page keys (nothing copied)', async () => {
       await expect.poll(() => native.status.canAuthor, { timeout: 60_000 }).toBe(true);
-      await expect(page.locator('#devices')).toContainText('New agent signed in', { timeout: 30_000 });
-      const memberships = await page.evaluate(async () => (await (window as any).tendril.application.backend.readAuthority()).memberships.map((item: any) => item.payload));
+      // The browser may admit the agent before it starts (its grant attestation exists from page creation),
+      // so the signed member list, not an ephemeral notice, is the browser-side evidence.
+      const key = app.nativePublicKey;
+      await expect(page.locator('#devices .admission-members')).toContainText(`agent · key ${key.slice(0, 8)}…${key.slice(-4)}`, { timeout: 30_000 });
+      const memberships = native.authority.bundle().memberships.map((item: any) => item.payload);
       const admissions = memberships.flatMap((item: any) => item.admitted.map((entry: any) => [entry.publicKey, entry.via]));
       expect(admissions).toContainEqual([app.nativePublicKey, 'attested']);
       expect(memberships.at(-1).members.find((member: any) => member.publicKey === app.nativePublicKey)?.wrapKey).toMatch(/^[a-f0-9]{64}$/);
