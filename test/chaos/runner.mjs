@@ -277,7 +277,7 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
   }
   const messages = classifyMessages(runtime.messages, config.allowlist);
   return { entries, violations, convergence, snapshots, model, runtime, invariantChecks,
-    recoveries: runtime.recoveries, provisioning: runtime.provisioning,
+    recoveries: runtime.recoveries, admissions: runtime.admissions,
     messages: { pageErrors: messages.failures, consoleErrors: messages.other.slice(0, 200), consoleErrorCount: messages.other.length,
       allowlisted: Object.entries(Object.groupBy(messages.allowlisted, item => item.rule)).map(([rule, items]) => ({ rule, count: items.length })) },
     notes: allNotes(model).map(({ text, ...note }) => ({ ...note, textLength: text?.length ?? null })) };

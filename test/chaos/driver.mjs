@@ -30,7 +30,7 @@ export async function poll(read, done, { timeoutMs, intervalMs = 250 }) {
 
 /** Runtime handles beside the model: contexts, pages, device keys and collected messages. */
 export function createRuntime() {
-  return { profiles: new Map(), knownDevices: new Set(), deviceOf: new Map(), messages: [], recoveries: [], provisioning: [], step: 0, traces: [] };
+  return { profiles: new Map(), knownDevices: new Set(), deviceOf: new Map(), messages: [], recoveries: [], admissions: [], step: 0, traces: [] };
 }
 
 const pageUrl = (world, slug) => world.golden.pages[slug].page_url;
@@ -65,54 +65,44 @@ async function recordDevice(runtime, page, profileId, slug) {
   return key;
 }
 
-const openDetails = async locator => { if (!await locator.evaluate(node => node.open)) await locator.locator(':scope > summary').click(); };
-
 /**
- * The candidate has no agent-driven browser enrollment: an additional browser
- * needs explicit recipient-bound key provisioning from an existing authorized
- * device. The existing device is the harness owner profile that initialized the
- * page in the golden fixture; it is launched only for this review/grant and closed again.
+ * A new owner-account browser is admitted automatically: any online member (the
+ * agent program or another open profile) verifies its host attestation, signs the
+ * admission and wraps the page keys. Nothing is copied. When no member is online
+ * the harness owner profile (the page creator) is opened until it has admitted the
+ * newcomer, then closed again.
  */
-async function provisionFromOwner(world, runtime, page, slug) {
+async function admitFromOnlineMember(world, runtime, page, slug) {
   const started = Date.now();
   const recipientKey = await page.locator('#public-key').inputValue();
-  const owner = await launchProfile(world, OWNER_PROFILE, { trace: false });
-  try {
-    const grantor = owner.pages()[0] ?? await owner.newPage();
-    watchPage(runtime, grantor, `${OWNER_PROFILE}/${slug}`);
-    await grantor.goto(pageUrl(world, slug), { timeout: 60_000 });
-    const ready = await poll(() => grantor.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 60_000 });
-    if (!ready.ok) throw Error(`Owner device not ready to grant on ${slug}: ${JSON.stringify(await readyState(grantor).catch(error => error.message))}`);
-    for (const target of [page, grantor]) await openDetails(target.locator('#provisioning'));
-    await page.locator('[data-provisioning=request]').click();
-    const request = await poll(() => page.locator('[data-provisioning=out]').inputValue(), value => /"record"/.test(value ?? ''), { timeoutMs: 30_000 });
-    if (!request.ok) throw Error(`Recipient request not created: ${await page.locator('[data-provisioning=status]').textContent().catch(() => '')}`);
-    await grantor.locator('[data-provisioning=in]').fill(request.value);
-    await grantor.locator('[data-provisioning=review]').click();
-    const reviewed = await poll(() => grantor.locator('[data-provisioning=status]').textContent(), text => (text ?? '').includes(recipientKey), { timeoutMs: 30_000 });
-    if (!reviewed.ok) throw Error(`Owner review failed: ${reviewed.value?.error ?? reviewed.value}`);
-    await grantor.locator('[data-provisioning=grant]').click();
-    const granted = await poll(() => grantor.locator('[data-provisioning=status]').textContent(), text => /Recipient-bound encrypted key package created/.test(text ?? ''), { timeoutMs: 30_000 });
-    if (!granted.ok) throw Error(`Owner grant failed: ${granted.value?.error ?? granted.value}`);
-    await page.locator('[data-provisioning=in]').fill(await grantor.locator('[data-provisioning=out]').inputValue());
-    await page.locator('[data-provisioning=import]').click();
-    const imported = await poll(() => page.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 30_000 });
-    if (!imported.ok) throw Error(`Recipient import did not enable Save: ${await page.locator('[data-provisioning=status]').textContent().catch(() => '')}`);
-    await page.locator('#provisioning > summary').click().catch(() => {});
-  } finally { await owner.close().catch(() => {}); }
-  runtime.provisioning.push({ slug, recipient: recipientKey, step: runtime.step, ms: Date.now() - started });
+  let via = 'online-member';
+  const admitted = await poll(() => page.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 20_000 });
+  if (!admitted.ok) {
+    via = 'owner-profile';
+    const owner = await launchProfile(world, OWNER_PROFILE, { trace: false });
+    try {
+      const member = owner.pages()[0] ?? await owner.newPage();
+      watchPage(runtime, member, `${OWNER_PROFILE}/${slug}`);
+      await member.goto(pageUrl(world, slug), { timeout: 60_000 });
+      const ready = await poll(() => member.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 60_000 });
+      if (!ready.ok) throw Error(`Owner device not ready to admit on ${slug}: ${JSON.stringify(await readyState(member).catch(error => error.message))}`);
+      const enabled = await poll(() => page.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 60_000 });
+      if (!enabled.ok) throw Error(`Automatic admission did not enable Save on ${slug}: ${await page.locator('#devices').textContent().catch(() => '')}`);
+    } finally { await owner.close().catch(() => {}); }
+  }
+  runtime.admissions.push({ slug, recipient: recipientKey, via, step: runtime.step, ms: Date.now() - started });
 }
 
-/** Navigate a page to a slug; a browser not yet authorized there is provisioned explicitly from the owner device. */
+/** Navigate a page to a slug; a browser not yet admitted there is admitted automatically by an online member. */
 async function openSlug(world, runtime, page, profileId, slug, { enrollMs = 90_000, readyMs = 60_000 } = {}) {
   await page.goto(pageUrl(world, slug), { timeout: 60_000 });
   const known = runtime.deviceOf.has(`${profileId}/${slug}`);
   if (!known) {
     const key = await poll(() => page.locator('#public-key').inputValue({ timeout: 2_000 }), value => /^[a-f0-9]{64}$/.test(value ?? ''), { timeoutMs: 30_000 });
     if (!key.ok) throw Error('Browser device key did not appear');
-    // A brand-new device on this page origin cannot author until provisioned.
+    // A brand-new device on this page origin cannot author until an online member admits it.
     const authorized = await poll(() => readyState(page), value => AUTHOR_READY.test(value.connection ?? ''), { timeoutMs: 5_000 });
-    if (!authorized.ok) await provisionFromOwner(world, runtime, page, slug);
+    if (!authorized.ok) await admitFromOnlineMember(world, runtime, page, slug);
   }
   await waitReady(page, known ? readyMs : enrollMs);
   const key = await recordDevice(runtime, page, profileId, slug);

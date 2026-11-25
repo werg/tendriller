@@ -25,7 +25,7 @@ async function publishedGraph(page: Page, app: { publication: any; publicationVe
     path: file.path, sha256: file.hash, size: file.size, type: file.type,
   })).sort(byPath));
 }
-// A freshly provisioned native participant opens its own local store at once and replicates the browser's
+// A freshly admitted native participant opens its own local store at once and replicates the browser's
 // history in the background. Until the initializing DDL arrives its `inventory` view has no table to read, which
 // the starter reports as an explicit view error (here SQL_PREPARE_FAILED), not an empty or failed result. Poll
 // that error as a value so convergence is awaited and a view that never converges still reports its last error.
@@ -53,8 +53,9 @@ async function proposalOf(page: Page) {
 
 // The workspace starter's inventory template: its own createPage, init (host preparation), build, deploy and
 // agent page module, signed by the workspace's one agent key. Browser-first: the owner's first authorized browser
-// initializes local identity, keys and authority; the native participant is optional and explicitly provisioned.
-test('actual SQL inventory page: signed publication, browser-first initialization, explicit native provisioning, replication and exact retained retry', async ({ page, context }, testInfo) => {
+// creates the page's local identity, keys and authority; the optional native participant is admitted automatically
+// by that online browser from the host's signed attestation for its grant.
+test('actual SQL inventory page: signed publication, browser-first initialization, automatic agent admission, replication and exact retained retry', async ({ page, context }, testInfo) => {
   // This scenario has its own fixed overall budget. Existing asymmetric/cold
   // SQL startup tests and their operation deadlines remain unchanged.
   test.setTimeout(240_000);
@@ -89,29 +90,8 @@ test('actual SQL inventory page: signed publication, browser-first initializatio
     await expect(page.locator('#summary')).toContainText('2 bins · 10 total units');
     await expect(page.locator('#summary')).toHaveText(/local snapshot [a-f0-9]{12} \(revisable\)/);
 
-    await test.step('explicit native provisioning: account-bound proof, recipient-bound request and wrapped keys', async () => {
-      await page.locator('#provisioning > summary').click();
-      await page.getByText('Prove an optional native/external device key').click();
-      await page.getByLabel('Public signing key from that retained device').fill(app.nativePublicKey);
-      await page.getByRole('button', { name: 'Create account-bound challenge for this key' }).click();
-      const out = page.locator('[data-provisioning="out"]'), incoming = page.locator('[data-provisioning="in"]'), status = page.locator('[data-provisioning="status"]');
-      await expect(out).toHaveValue(/"challenge"/);
-      const challenge = JSON.parse(await out.inputValue());
-      expect(challenge.publicKey).toBe(app.nativePublicKey);
-      await incoming.fill(JSON.stringify(await app.signEnrollment(challenge)));
-      await page.getByRole('button', { name: 'Record external signed enrollment proof from incoming field' }).click();
-      await expect(status).toContainText('External key proof recorded');
-      await incoming.fill(JSON.stringify(await app.provisioningRequest()));
-      await page.locator('[data-provisioning="writer"]').check();
-      await page.locator('[data-provisioning="review"]').click();
-      await expect(status).toContainText(`Review recipient fingerprint: ${app.nativePublicKey}`);
-      await page.locator('[data-provisioning="grant"]').click();
-      await expect(status).toContainText('Recipient-bound encrypted key package created');
-      expect(JSON.stringify(await out.inputValue())).not.toContain('privateKey');
-      await app.importProvisioning(JSON.parse(await out.inputValue()));
-    });
     await test.step('explicit SQL grant for the native key through the starter\'s ordinary permission transaction', async () => {
-      // Key provisioning and the crypto writer grant authorize no SQL; without this the native transfer is rejected
+      // Page admission and the crypto writer grant authorize no SQL; without this the native transfer is rejected
       // with policy:inventory:update. The browser's root principal grants units updates and receipt inserts.
       const previous = await proposalOf(page);
       await page.locator('#sql-grantee').fill(app.nativePublicKey);
@@ -120,8 +100,16 @@ test('actual SQL inventory page: signed publication, browser-first initializatio
       await expect(page.locator('#result')).toContainText('Stored locally: true', { timeout: 30_000 });
       await expect(page.locator('#result')).toContainText('Materialized locally: accepted', { timeout: 30_000 });
     });
-    let native = await app.start(); // The page's optional owner from pages/stock/agent.mjs, opened from cached keys.
+    let native = await app.start(); // The page's optional owner from pages/stock/agent.mjs, pinned to the browser-created authority.
     expect(native.identity.publicKey).toBe(app.nativePublicKey);
+    await test.step('the online browser admits the agent from its signed grant and wraps the page keys (nothing copied)', async () => {
+      await expect.poll(() => native.status.canAuthor, { timeout: 60_000 }).toBe(true);
+      await expect(page.locator('#devices')).toContainText('New agent signed in', { timeout: 30_000 });
+      const memberships = await page.evaluate(async () => (await (window as any).tendril.application.backend.readAuthority()).memberships.map((item: any) => item.payload));
+      const admissions = memberships.flatMap((item: any) => item.admitted.map((entry: any) => [entry.publicKey, entry.via]));
+      expect(admissions).toContainEqual([app.nativePublicKey, 'attested']);
+      expect(memberships.at(-1).members.find((member: any) => member.publicKey === app.nativePublicKey)?.wrapKey).toMatch(/^[a-f0-9]{64}$/);
+    });
     await expect.poll(() => nativeStock(native), { timeout: 30_000 })
       .toEqual([{ id: 'destination', units: 0 }, { id: 'source', units: 10 }]);
 

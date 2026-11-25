@@ -64,8 +64,8 @@ function renderAnswer({ value: rows }) {
   el('current').dataset.revision = String(revision);
 }
 
-// This diagnostic is explicit. Opening the page/reading status never enrolls
-// a device, selects its record backend or instantiates the SQL engine.
+// This diagnostic is explicit. Opening the page/reading status never creates
+// page data, selects its record backend or instantiates the SQL engine.
 window.inspectAcceptanceBrowserCapabilities = () => new Promise((resolve, reject) => {
   const worker = new Worker(new URL('./browser-sql-worker.mjs', import.meta.url), { type: 'module' });
   const timer = setTimeout(() => finish(reject, new Error('Capability probe timed out')), 20_000);
@@ -81,7 +81,7 @@ window.inspectAcceptanceBrowserCapabilities = () => new Promise((resolve, reject
   worker.postMessage({ type: 'capabilities' });
 });
 
-// Test deployments supply enrollment from outside the signed code graph. The owner Worker owns commands,
+// Test deployments supply the data key and page members from outside the signed code graph. The owner Worker owns commands,
 // signing, the relay and the pinned record backend; SQL owns a distinct OPFS VFS. The page attaches only
 // through the public browser-owner protocol and observes the Worker's fixture progress on a channel.
 class StartupWatch extends EventTarget {
@@ -125,7 +125,7 @@ window.prepareAcceptanceSession = options => preparation ??= (async () => {
   };
   // Test provisioning rides in the Worker URL fragment, which is never sent to any server.
   const fixture = { name: preparedOptions.name, base: window.tendril.identity.base, applicationId: window.__TENDRIL__.application.id,
-    key: Array.from(key), respondent: preparedOptions.respondent, remote, channel };
+    key: Array.from(key), respondent: preparedOptions.respondent, members: preparedOptions.members, remote, channel };
   const workerUrl = new URL('./browser-sql-worker.mjs', import.meta.url); workerUrl.hash = encodeURIComponent(JSON.stringify(fixture));
   workerControl = control(preparedOptions.name);
   const watch = new StartupWatch(preparedOptions.name, signal => openBrowserOwner({ workerUrl, profileId: preparedOptions.name,
@@ -145,7 +145,7 @@ window.prepareAcceptanceSession = options => preparation ??= (async () => {
     if (outcome.outcome !== 'accepted') throw new Error(`initialize rejected: ${outcome.rejectionCode ?? outcome.outcome}`);
     return outcome.outcome;
   };
-  // An ordinary SQL permission transaction by the root; crypto enrollment alone grants no SQL rights.
+  // An ordinary SQL permission transaction by the root; page membership alone grants no SQL rights.
   window.grantAcceptanceMember = async publicKey => {
     const operation = await session.command('grantMember', { publicKey }, { operationId: crypto.randomUUID() });
     const outcome = await operation.materialized({ signal: AbortSignal.timeout(15_000) });

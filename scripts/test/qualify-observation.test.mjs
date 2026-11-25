@@ -30,7 +30,7 @@ test('Root observation composition uses installed public sessions and the select
   assert.match(worker, /from '@chronolog\/peer-session\/worker'/);
 });
 
-test('an owning Worker retains signer/key provisioning and attaches a restricted MessagePort facade', () => {
+test('an owning Worker retains its signer and fixture keys and attaches a restricted MessagePort facade', () => {
   assert.match(worker, /openBrowserDevice\(\{name:'observation-qualification',create:true\}\)/);
   assert.match(worker, /createApplicationSession\(\{device,definition,authority,epochKeys:/);
   assert.match(worker, /createApplicationOwner\(session\)/);

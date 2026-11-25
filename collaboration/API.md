@@ -4,10 +4,11 @@ Optional import: `@tendriller/core/collaboration`. Consumers provide the matchin
 public `@chronolog/peer-session` package. The module never enters the host/kernel.
 
 `createCollaborationDefinition({id, version, administrators: [signerIds], members: [signerIds], limits?})`
-returns `{definition, initializationProgram}`. Enroll the root principal, then submit
+returns `{definition, initializationProgram}`. Create the page as its root principal, then submit
 `initializationProgram` as an ordinary root-authored transaction with a retained
 operation ID. It creates the journal and grants the explicitly named `members`
-table INSERT permission. Crypto enrollment alone does not grant SQL permissions.
+table INSERT permission. Page admission (signed membership and wrapped keys) alone
+does not grant SQL permissions.
 Later DDL and grant/revoke programs use the same ordinary transaction path; there
 is no special signed schema initializer. All tools use closed input schemas.
 Requests are tasks: `taskId` is the original `interactionId`.

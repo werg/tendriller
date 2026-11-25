@@ -16,7 +16,7 @@ test('local session readiness is independent from zero peers, native process or 
   await f.controller.start(); assert.equal(f.controller.state.phase, 'connected'); assert.equal(calls, 1);
   assert.match(f.controller.state.detail, /zero peers/); f.controller.close(); assert.equal(closed, 1);
 });
-test('a keyless attachment remains usable for explicit provisioning without creating replacement identities', async t => {
+test('a keyless attachment remains usable while it waits for admission, without creating replacement identities', async t => {
   let observe, calls = 0;
   const f = fixture(t, async () => { calls++; return { status: { canAuthor: false }, onStatus(fn) { observe = fn; fn({ canAuthor: false }); return () => {}; } }; });
   await f.controller.start(); assert.equal(f.controller.state.phase, 'key-required'); assert.equal(calls, 1);

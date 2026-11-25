@@ -4,7 +4,9 @@ import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
 import { participateApplication } from '@tendriller/core/participation';
 import { browserProfileId } from './support/browser-profile.mjs';
-import { bootstrapBrowser } from './support/browser-bootstrap.mjs';
+import { admitBrowserSession, bootstrapBrowser } from './support/browser-bootstrap.mjs';
+import { hostedMcpExtensions } from './support/hosted-mcp.mjs';
+import { composeOwnerExtensions } from '@tendriller/core/admission';
 import { definition } from './review-domain.mjs';
 serveBrowserOwner({ async load({ signal }) {
   const response = await fetch(new URL('./configuration.json', import.meta.url), { signal });
@@ -15,14 +17,16 @@ serveBrowserOwner({ async load({ signal }) {
     async openSession({ signal, openDirectConnection }) {
       // create:true initializes an empty profile only; a retained signer or binding mismatch fails closed.
       const device = await openBrowserDevice({ name: profileId, create: true });
-      let session, participation;
+      let session, participation, admission;
       try {
-        const { authority, peers } = await bootstrapBrowser({ configuration, device, signal });
+        // The first browser creates the page data; later devices and the agent are admitted by an online member.
+        const { authority, peers, wrapKey } = await bootstrapBrowser({ configuration, device, signal });
         session = await createApplicationSession({ device, definition, authority });
-        participation = participateApplication(session, { peers, openDirectConnection });
+        admission = admitBrowserSession(session, { peers, wrapKey });
+        participation = participateApplication(session, { peers, openDirectConnection, onNotification: () => void admission.refresh() });
         Object.defineProperty(session, 'participation', { value: participation });
-        return { session, async close() { await participation.close(); } };
-      } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
+        return { session, extensions: composeOwnerExtensions(admission.extensions, hostedMcpExtensions({ session, admission })), async close() { admission.close(); await participation.close(); } };
+      } catch (error) { admission?.close(); if (session) await session.close(); else await device.close(); throw error; }
     },
   };
 } });

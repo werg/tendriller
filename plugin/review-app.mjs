@@ -1,9 +1,9 @@
 // Run this public-package consumer from its own private working directory. The directory is one agent
 // workspace: one account-level agent credential, one shared signing key and this one explicitly granted
 // page. It adapts the current starter: a complete signed browser page is published BEFORE any browser
-// key exists, explicit native provisioning follows the owner's browser initialization, and the native MCP
-// participant is OPTIONAL (`tendril agent run`). The signed page reads and writes with its own browser
-// identity; no native process is a prerequisite.
+// key exists, the owner's first browser creates the page data (browser-first), and the native MCP
+// participant is OPTIONAL (`tendril agent run`): an online member admits it from its signed host grant.
+// The signed page reads and writes with its own browser identity; no native process is a prerequisite.
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -13,12 +13,12 @@ import { adoptWorkspace, workspaceKey } from '@tendriller/tools/workspace';
 import { definition } from './review-domain.mjs';
 import { createReviewPage, registerAgentThroughMcp } from './review-setup.mjs';
 import * as local from './review-local.mjs';
-import { provisionPage } from './support/page-provisioning.mjs';
+import { initializePageData } from './support/page-data.mjs';
 import { prepareHost } from './support/prepare-host.mjs';
 import { publishPage } from './support/publish.mjs';
 
 const mode = process.argv[2], root = fileURLToPath(new URL('.', import.meta.url));
-const modes = ['setup', 'init', 'build', 'publish', 'signer-key', 'sign-enrollment', 'provisioning-request', 'import-provisioning'];
+const modes = ['setup', 'init', 'build', 'publish'];
 if (!modes.includes(mode)) throw Error('Choose ' + modes.join(', ') + '. Run the optional participant with: tendril agent run');
 
 if (mode === 'setup') {
@@ -48,7 +48,10 @@ const print = value => console.log(JSON.stringify(value));
 
 if (mode === 'init') {
   const executionManifestDigest = bytesToHex((await executionManifestArtifacts(await eventExecutionManifest())).executionManifestDigest);
-  print(await prepareHost(context, { definition, executionManifestDigest, executionProfile: 'events' }));
+  // Browser-first: preparation only; the owner's first browser creates the descriptor, membership and keys.
+  // The marker lets `tendril agent run` open the page and wait until a member admits it from its signed grant.
+  const prepared = await prepareHost(context, { definition, executionManifestDigest, executionProfile: 'events' });
+  print({ ...prepared, ...await initializePageData(context, { executionManifestDigest, browserFirst: true }) });
   process.exit(0);
 }
 if (mode === 'build') {
@@ -76,11 +79,3 @@ if (mode === 'publish') {
   process.exit(0);
 }
 
-// Explicit, optional native provisioning. The browser owner never receives the native private key.
-if (mode === 'signer-key') {
-  // The page device signs with the workspace's one shared agent key; the browser owner grants exactly this public key.
-  print({ publicKey: context.signer.publicKey,
-    next: 'In the owner browser, create an account-bound challenge for this public key. Sign it here with sign-enrollment CHALLENGE.json, then record that proof in the browser.' });
-  process.exit(0);
-}
-if (['sign-enrollment', 'provisioning-request', 'import-provisioning'].includes(mode)) { print(await provisionPage(context, mode, process.argv[3])); process.exit(0); }

@@ -43,7 +43,8 @@ const service=serveBrowserOwner({async load(){
       const descriptor=await signAppDescriptor({applicationId,rootPrincipal:device.identity.publicKey,authorityPublicKey:host.publicKey,
         executionManifestDigest:bytesToHex(execution.executionManifestDigest),finalityPolicy:{kind:'none'}},host);
       const membership=await signMembership({applicationId,revision:0,previous:null,authorTimeAfterMs:-1n,epoch:0,
-        epochKeyDigest:await epochKeyCommitment(applicationId,0,key),members:[{publicKey:device.identity.publicKey,reader:true,writer:true,administrator:true,publisher:false,finalizer:false}]},host);
+        epochKeyDigest:await epochKeyCommitment(applicationId,0,key),members:[{publicKey:device.identity.publicKey,wrapKey:null,reader:true,writer:true,administrator:true,publisher:false,finalizer:false}],
+        admission:{mode:'strict',hostKey:host.publicKey,accounts:[],grant:{reader:true,writer:true}},admitted:[],invites:[]},host);
       raw=encodeRecord({descriptor,memberships:[membership]});await device.store.put('test/authority',raw);
     }
     if(!(key instanceof Uint8Array)||key.length!==32)throw Error('RETAINED_FIXTURE_EPOCH_KEY_MISSING');

@@ -389,19 +389,19 @@ test('two browsers can open the same unclaimed page as its intended owner', asyn
 });
 
 
-test('a publication whose app cannot enroll this browser gets an explicit update and retains its original bootstrap key and local draft', async ({ page, context }) => {
+test('a publication whose app cannot initialize this browser\'s page data gets an explicit update and retains its original genesis and local draft', async ({ page, context }) => {
   const handle = await createPage();
   try {
     await signInFixture(context); await claim(context, handle);
-    // Exercise the maintained public browser bootstrap, profile and draft consumers. The host receives the
-    // real challenge request, but the enrollment reply is lost (the request is aborted before it leaves the
-    // browser), so the released app cannot finish initializing this device.
+    // Exercise the maintained public browser bootstrap, profile and draft consumers. The first browser creates
+    // the page genesis, but its initialize request is lost (aborted before it leaves the browser), so the
+    // released app cannot finish creating the page data.
     const fixture = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'publication-notice-fixture.mjs', contents: `
       import { browserProfileId } from './docs/tutorial/shared/helpers/browser-profile.mjs';
       import { bootstrapBrowser } from './docs/tutorial/shared/helpers/browser-bootstrap.mjs';
       import { createViewStore } from '@chronolog/peer-session/browser';
       import { createSigningIdentity, exportSigningIdentity, importSigningIdentity, decodeRecord } from '@chronolog/authority';
-      const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
+      const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base,executionManifestDigest:null};
       const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view', identityKey=profileId+':identity', storeKey=profileId+':store:';
       const viewId=sessionStorage.getItem(viewKey)||crypto.randomUUID();sessionStorage.setItem(viewKey,viewId);
       const view=createViewStore({storage:localStorage,applicationId:configuration.applicationId,profileId,viewId});
@@ -416,35 +416,40 @@ test('a publication whose app cannot enroll this browser gets an explicit update
       const input=document.querySelector('textarea');input.value=view.readDraft('draft')||'';
       input.addEventListener('input',()=>view.writeDraft(input.value,'draft'));
       document.querySelector('button').onclick=async()=>{
-        try{await bootstrapBrowser({configuration,device:{identity,store},signal:AbortSignal.timeout(20_000)});}
-        catch{document.querySelector('#enrollment').textContent='Enrollment unavailable; original bootstrap retained';}
+        try{
+          // The prepared execution graph this publication runs, as the signed page's own configuration would carry it.
+          configuration.executionManifestDigest??=(await window.tendril.host.peers.application()).configuration.executionManifestDigest;
+          await bootstrapBrowser({configuration,device:{identity,store},signal:AbortSignal.timeout(20_000)});
+        }
+        catch{document.querySelector('#enrollment').textContent='Initialization unavailable; original genesis retained';}
       };
       window.fixture={async snapshot(){
-        const raw=await store.get('starter/bootstrap/'+configuration.applicationId),intent=raw&&decodeRecord(raw);
+        const raw=await store.get('tendriller/admission/genesis/'+configuration.applicationId),intent=raw&&decodeRecord(raw);
         return {profileId,viewId,device:identity.publicKey,draft:view.readDraft('draft'),
-          bootstrap:intent&&{publicKey:intent.publicKey,epochKey:Array.from(intent.epochKey)}};
+          bootstrap:intent&&{publicKey:intent.bundle.descriptor.payload.rootPrincipal,epochKey:Array.from(intent.epochKey)}};
       }};
     ` }, alias: { '@tendriller/core/peers': join(process.cwd(), 'dist/sdk/peers.mjs'),
-      '@tendriller/core/authority': join(process.cwd(), 'dist/sdk/authority.mjs') }, bundle: true,
+      '@tendriller/core/authority': join(process.cwd(), 'dist/sdk/authority.mjs'),
+      '@tendriller/core/admission': join(process.cwd(), 'dist/sdk/session/admission.mjs') }, bundle: true,
       format: 'esm', platform: 'browser', write: false });
     const assets = (version: string) => ({
-      'index.html': { type: 'text/html', body: '<!doctype html><title>Unenrolled publication</title><meta name="tendriller-updates" content="careful"><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="enrollment">Not enrolled</p><script type="module" src="./page.mjs"></script>' },
+      'index.html': { type: 'text/html', body: '<!doctype html><title>Uninitialized publication</title><meta name="tendriller-updates" content="careful"><h1>'+version+'</h1><label>Local draft<textarea></textarea></label><button>Connect this device</button><p id="enrollment">Not initialized</p><script type="module" src="./page.mjs"></script>' },
       'page.mjs': { type: 'text/javascript', body: fixture.outputFiles[0].text },
     });
-    const first=await publishFiles(handle,assets('Unenrollable v1'));
+    const first=await publishFiles(handle,assets('Uninitializable v1'));
     const requests: string[]=[];let sentFrames=0;
     page.on('request',request=>{if(request.url().includes('/_tendril/'))requests.push(request.method()+' '+new URL(request.url()).pathname);});
     page.on('websocket',socket=>{if(socket.url().endsWith('/_tendril/publication-ready'))socket.on('framesent',()=>sentFrames++);});
-    await page.route('**/_tendril/peers/enrollment',route=>route.request().postDataJSON()?.action==='enroll'?route.abort('failed'):route.continue());
+    await page.route('**/_tendril/peers/enrollment',route=>route.request().postDataJSON()?.action==='initialize'?route.abort('failed'):route.continue());
     const initial=page.waitForEvent('websocket',socket=>socket.url().endsWith('/_tendril/publication-ready'))
       .then(socket=>socket.waitForEvent('framereceived',frame=>JSON.parse(String(frame.payload)).current===first.version));
     await openClaimed(page,handle);await initial;
-    await expect(page.getByRole('heading',{name:'Unenrollable v1'})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'Uninitializable v1'})).toBeVisible();
     await page.getByRole('textbox',{name:'Local draft'}).fill('Retain this unresolved local draft');
     await page.getByRole('button',{name:'Connect this device'}).click();
-    await expect(page.locator('#enrollment')).toHaveText('Enrollment unavailable; original bootstrap retained');
+    await expect(page.locator('#enrollment')).toHaveText('Initialization unavailable; original genesis retained');
     const before=await page.evaluate(()=>(window as any).fixture.snapshot());
-    // The bootstrap key was durably retained before the first enrollment proof, and is this device's own key.
+    // The exact genesis and its epoch key were durably retained before the first initialize request, signed by this device's own key.
     expect(before.bootstrap.publicKey).toBe(before.device);expect(before.bootstrap.epochKey).toHaveLength(32);
     expect(before.draft).toBe('Retain this unresolved local draft');
     expect(await page.evaluate(()=>(window as any).tendril.application.available)).toBe(false);
@@ -461,7 +466,7 @@ test('a publication whose app cannot enroll this browser gets an explicit update
     await expect(update).toHaveAttribute('href',localPageUrl(handle));
     await update.click();await expect(page.getByRole('heading',{name:'Repaired v2'})).toBeVisible();
     await expect(page.getByRole('textbox')).toHaveValue(before.draft);
-    // The resumed document keeps the same device and original bootstrap key; no update retries enrollment or replaces it.
+    // The resumed document keeps the same device and original genesis; no update retries initialization or replaces it.
     expect(await page.evaluate(()=>(window as any).fixture.snapshot())).toEqual(before);
     expect(enrollmentRequests()).toBe(enrollmentBefore);
     await expect(page.getByRole('status',{name:'Publication update'})).toBeHidden();

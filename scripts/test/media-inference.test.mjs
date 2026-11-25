@@ -249,7 +249,8 @@ test('recorder MIME parameters cross actual public-session content and signal AP
   const descriptor = await authority.signAppDescriptor({ applicationId: app, rootPrincipal: workerDevice.identity.publicKey, authorityPublicKey: host.publicKey,
     executionManifestDigest: peer.bytesToHex(manifest.executionManifestDigest), finalityPolicy: { kind: 'none' } }, host);
   const membership = await authority.signMembership({ applicationId: app, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0, epochKeyDigest: await authority.epochKeyCommitment(app, 0, key),
-    members: [workerDevice, pageDevice].map(device => ({ publicKey: device.identity.publicKey, reader: true, writer: true, administrator: device === workerDevice, publisher: false, finalizer: false })) }, host);
+    members: [workerDevice, pageDevice].map(device => ({ publicKey: device.identity.publicKey, wrapKey: null, reader: true, writer: true, administrator: device === workerDevice, publisher: false, finalizer: false })),
+    admission: { mode: 'strict', hostKey: host.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [] }, host);
   const bundle = { descriptor, memberships: [membership] };
   const [pageSession, workerSession] = await Promise.all([pageDevice, workerDevice].map(device => peer.createApplicationSession({ device, definition, authority: bundle, epochKeys: new Map([[0, key]]) })));
   cleanup.push(() => pageSession.close(), () => workerSession.close());

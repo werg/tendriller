@@ -5,7 +5,7 @@
 // arrives earlier in authored time simply revises the derived rows.
 //
 // Rows are owned by the application's `group` collective, which only its admin (the root) may update by
-// default. Crypto enrollment confers no SQL rights (nor DDL), so another member claims and finishes tasks
+// default. Page membership confers no SQL rights (nor DDL), so another member claims and finishes tasks
 // only after the root's explicit `grantMember` permission transaction; only `initialize` creates objects.
 export function checklist(log) {
   const group = log.bytesToHex(log.GROUP_COLLECTIVE_ID);

@@ -2,7 +2,7 @@
 // first-app workspace with N notes pages, one agent program, and persistent
 // Chromium profiles. Setup is done once into a "golden" directory (pages created,
 // prepared and published v1, initialized by the harness owner browser, the agent
-// signer explicitly provisioned, then the agent and host stopped);
+// admitted by that browser from its signed host grant, then the agent and host stopped);
 // every run (and every shrink trial) starts from a fresh copy of it.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
@@ -44,10 +44,10 @@ async function run(command, args, options = {}) {
 // events profile kit packages (sdk/tools/authority/session) extracted and verified;
 // register the workspace agent; per page `new`/`init`/`deploy` (signed v1 before any
 // browser key); the first authorized browser (a dedicated harness "owner" profile kept
-// in the golden copy) initializes local data; the agent's shared signer is then
-// provisioned per page through the explicit sign-enrollment / provisioning-request /
-// import-provisioning steps; the agent program is started once to verify every page
-// opens, then stopped cleanly.
+// in the golden copy) creates each page's data (`init --browser-first`); the agent
+// program is then started while those tabs stay online, the owner browser admits
+// the agent from its signed host grant and wraps the page keys to it (no copied
+// artifacts), every page is verified open and authoring, then it is stopped cleanly.
 export async function prepareGolden({ root, firstAppArchive, directory, port, pages: pageCount = 2, log = console.log }) {
   const profile = 'events', profileSpec = FIRST_APP_PROFILES[profile];
   const version = (await jsonFile(join(root, 'package.json'))).version;
@@ -135,7 +135,7 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
     for (const slug of PAGE_SLUGS.slice(0, pageCount)) {
       log(`chaos setup: create, prepare and publish page ${slug} v1 (before any browser key)`);
       const created = await setup(['new', slug, '--template', 'notes', '--name', `Chaos ${slug}`]);
-      await setup(['init', slug]);
+      await setup(['init', slug, '--browser-first']);
       const prepared = await jsonFile(join(app, '.tendriller/pages', created.id, 'prepared.json'));
       // The build copies the page's index.html; mark it so v1 is an observable version.
       await markUiVersion(join(app, 'pages', slug), 1);
@@ -145,13 +145,14 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
         built: join('pages', slug, 'dist') };
     }
 
-    log('chaos setup: owner browser initializes each page, then provisions the agent signer explicitly');
+    log('chaos setup: owner browser initializes each page, then admits the agent from its signed grant');
     const certificatePin = await localCertificatePin(port);
     const setupWorld = { browserOptions: { ...fixtureBrowserOptions({ certificatePin, port }), headless: true }, transport: 'direct', trace: false,
       profileDirectory: id => join(directory, 'profiles', id) };
     owner = await launchProfile(setupWorld, OWNER_PROFILE);
+    const tabs = [];
     for (const page of Object.values(pages)) {
-      const tab = await owner.newPage();
+      const tab = await owner.newPage(); tabs.push(tab);
       const messages = [];
       tab.on('console', message => { if (messages.length < 40) messages.push(`${message.type()}: ${message.text().slice(0, 300)}`); });
       tab.on('pageerror', error => { if (messages.length < 40) messages.push(`pageerror: ${String(error?.stack ?? error).slice(0, 600)}`); });
@@ -159,21 +160,21 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
       try {
       await tab.goto(page.page_url, { timeout: 60_000 });
       await waitFor(() => tab.locator('#submit').isEnabled(), Boolean, 60_000, `owner browser ready on ${page.slug}`);
-      await provisionNativeSigner({ page: tab, slug: page.slug, publicKey: page.nativeDeviceId, app, setup });
       page.ownerDeviceId = await tab.locator('#public-key').inputValue();
       } catch (error) { log(`chaos setup: owner tab diagnostics ${page.slug}: url=${tab.url()} hasRuntime=${await tab.evaluate(() => Boolean(window.tendril)).catch(e => e.message)} hasConfig=${await tab.evaluate(() => Boolean(window.__TENDRIL__)).catch(e => e.message)}\n${messages.join('\n')}`); throw error; }
-      await tab.close();
     }
-    await owner.close(); owner = undefined;
 
     const events = [];
     agent = startAgentProgram({ cwd: app, preload, cli, events });
     await agent.waitFor(value => value.hub === 'connected', 'a hub connection');
     for (const slug of Object.keys(pages)) {
-      await agent.waitFor(value => value.page === pages[slug].id && value.state === 'running', `page ${slug} running`);
+      // The online owner tab verifies the host attestation for the granted agent, signs its admission and wraps the keys.
+      await agent.waitFor(value => value.page === pages[slug].id && value.canAuthor === true, `page ${slug} agent admitted`, 90_000);
       const self = await tendril(['--page', slug, 'self']);
       assert.equal(self.identity?.publicKey, pages[slug].nativeDeviceId, 'The agent page owner must use the shared workspace signer.');
     }
+    for (const tab of tabs) await tab.close();
+    await owner.close(); owner = undefined;
     const stopped = await agent.stop(); agent = undefined;
     assert.deepEqual(stopped, { code: 0, signal: null }, 'Setup agent program must exit cleanly.');
     const golden = { format: 'tendriller-chaos-golden-v2', port, service: SERVICE, version, agentId: workspaceFile.agent.id, pages,
@@ -190,7 +191,7 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
   }
 }
 
-/** The harness profile that initialized every page; it is the existing authorized device that reviews and grants new browsers. */
+/** The harness profile that created every page (its administrator); new owner-account browsers are admitted automatically by any online member. */
 export const OWNER_PROFILE = 'owner';
 
 async function waitFor(read, done, timeoutMs, label) {
@@ -202,35 +203,6 @@ async function waitFor(read, done, timeoutMs, label) {
     if (Date.now() >= deadline) throw Error(`Timed out waiting for ${label}: ${JSON.stringify(value)?.slice(0, 400)}`);
     await new Promise(resolve => setTimeout(resolve, 250));
   }
-}
-const openDetails = async locator => { if (!await locator.evaluate(node => node.open)) await locator.locator(':scope > summary').click(); };
-
-/** The kit's explicit native key proof + recipient-bound provisioning (as scripts/first-app-workspace.mjs). */
-async function provisionNativeSigner({ page, slug, publicKey, app, setup }) {
-  await waitFor(() => page.evaluate(() => ({ mounted: Boolean(document.querySelector('#provisioning details')),
-    connection: document.getElementById('connection-status')?.textContent, count: document.getElementById('count')?.textContent })),
-  value => value.mounted === true, 60_000, `provisioning view mounted on ${slug}`);
-  await openDetails(page.locator('#provisioning'));
-  const external = page.locator('#provisioning details');
-  await openDetails(external);
-  await external.locator('input').fill(publicKey);
-  await external.getByRole('button', { name: 'Create account-bound challenge for this key', exact: true }).click();
-  const out = page.locator('[data-provisioning="out"]'), incoming = page.locator('[data-provisioning="in"]'), status = page.locator('[data-provisioning="status"]');
-  await waitFor(async () => { try { return JSON.parse(await out.inputValue()).publicKey; } catch { return null; } }, value => value === publicKey, 30_000, 'native challenge');
-  const challengeFile = join(app, '.tendriller', `chaos-${slug}-challenge.json`);
-  await writeFile(challengeFile, await out.inputValue(), { mode: 0o600, flag: 'wx' });
-  const proof = await setup(['sign-enrollment', slug, challengeFile]);
-  await incoming.fill(JSON.stringify(proof));
-  await external.getByRole('button', { name: 'Record external signed enrollment proof from incoming field', exact: true }).click();
-  await waitFor(() => status.textContent(), text => /External key proof recorded/.test(text ?? ''), 30_000, 'native key proof');
-  const request = await setup(['provisioning-request', slug]);
-  await incoming.fill(JSON.stringify(request)); await page.locator('[data-provisioning="review"]').click();
-  await waitFor(() => status.textContent(), text => (text ?? '').includes(publicKey), 30_000, 'native request review');
-  await page.locator('[data-provisioning="writer"]').check(); await page.locator('[data-provisioning="grant"]').click();
-  await waitFor(() => status.textContent(), text => /Recipient-bound encrypted key package created/.test(text ?? ''), 30_000, 'native key package');
-  const packageFile = join(app, '.tendriller', `chaos-${slug}-package.json`);
-  await writeFile(packageFile, await out.inputValue(), { mode: 0o600, flag: 'wx' });
-  assert.equal((await setup(['import-provisioning', slug, packageFile])).provisioned, true);
 }
 
 /** Replace the chaos UI marker in a built page so each publication is a distinct, observable version. */

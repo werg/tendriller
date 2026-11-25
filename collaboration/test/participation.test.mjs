@@ -69,7 +69,7 @@ test('real keyless-to-reader authority changes retry routing admission, without 
     await until(() => controller.status.error === 'advertise:routing_admission_unavailable'); await flush();
     assert.equal(session.status.canAuthor, false); assert.equal(session.authority.epochKey(0), null);
     const membership = await p.signMembership({ ...authority.memberships[0].payload, revision: 1, previous: await p.recordDigest(authority.memberships[0]), authorTimeAfterMs: 0n,
-      members: [...authority.memberships[0].payload.members, { publicKey: recipient.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false }] }, root.identity);
+      members: [...authority.memberships[0].payload.members, { publicKey: recipient.identity.publicKey, wrapKey: null, reader: true, writer: true, administrator: false, publisher: false, finalizer: false }] }, root.identity);
     admitted = true;
     await session.mergeAuthority({ ...authority, memberships: [...authority.memberships, membership] });
     await until(() => server.advertisements.length === 1);
