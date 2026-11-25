@@ -8,8 +8,12 @@ import { pathToFileURL } from 'node:url';
 import { ARCHIVE_METADATA } from './archive-metadata.mjs';
 import { verifyReleaseArtifacts } from './release-composition.mjs';
 
-// runtime-release.json is a gitignored build output that source-bundled Workers import.
+// The only paths a sealed deployment contains. runtime-release.json is a gitignored
+// build output that source-bundled Workers import.
 const paths = ['dist/engine', 'dist/runtime', 'dist/sdk', 'dist/tools', 'server/public', 'server/src/runtime-release.json'];
+/** Whether an archive entry belongs to the sealed deployment: one of `paths` or inside one. */
+export const isDeploymentPath = path => !path.split('/').includes('..') &&
+  paths.some(prefix => path === prefix || path.startsWith(prefix + '/'));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const pack = (root, file, exclude = []) => execFileSync('tar', [...ARCHIVE_METADATA,
   ...exclude.map(path => '--exclude=' + path), '-czf', file, '-C', root, ...paths]);
@@ -51,7 +55,7 @@ export function restoreDeployment(root, expectedHash) {
   // links and any path outside them before extracting even authenticated bytes.
   const archive = join(root, 'dist', artifact.file);
   const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n');
-  if (entries.some(path => path.split('/').includes('..') || !paths.some(prefix => path === prefix || path.startsWith(prefix + '/'))))
+  if (entries.some(path => !isDeploymentPath(path)))
     throw Error('Deployment archive contains an unexpected path.');
   const listing = execFileSync('tar', ['-tvzf', archive], { encoding: 'utf8' }).trim().split('\n');
   if (listing.some(line => !['-', 'd'].includes(line[0]))) throw Error('Deployment archive contains a link or special file.');
