@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runInNewContext } from 'node:vm';
-import { createSignalRequests, serveSignalRequests, sendPieces, whenConnected } from '../../docs/tutorial/helpers/signal-request.mjs';
+import { createSignalRequests, serveSignalRequests, sendPieces, whenConnected } from '../../docs/tutorial/shared/helpers/signal-request.mjs';
 import { memoryAvailableGb, installSoakObserver, installStateSignalObservers } from '../first-app-peer.mjs';
 
 // Two sessions on one in-memory live-signal bus. `faults` lets a test drop or refuse

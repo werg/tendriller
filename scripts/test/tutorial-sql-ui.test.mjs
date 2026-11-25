@@ -4,11 +4,11 @@ import { mkdtemp, mkdir, readFile, writeFile, access, rm } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
-import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tutorial/sql/ui-state.mjs';
-import { buildPage } from '../../docs/tutorial/sql/build.mjs';
+import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tutorial/templates/inventory/ui-state.mjs';
+import { buildPage } from '../../docs/tutorial/templates/inventory/build.mjs';
 import { applicationDefinitionDigest } from '@chronolog/peer-session';
-import { definition as inventoryDefinition } from '../../docs/tutorial/sql/domain.mjs';
-import { registerLifecycleFlush } from '../../docs/tutorial/helpers/diagnostics-panel.mjs';
+import { definition as inventoryDefinition } from '../../docs/tutorial/templates/inventory/domain.mjs';
+import { registerLifecycleFlush } from '../../docs/tutorial/shared/helpers/diagnostics-panel.mjs';
 
 const snapshot = () => ({ revision: { generation: 'g1', point: { sequence: 7 } },
   value: { stock: [{ id: 'source', units: 10 }, { id: 'destination', units: 0 }] } });
@@ -64,21 +64,23 @@ test('saved retry uses signed journal; applied rejection resolves; exclusions ne
 test('build requires setup and exact engine graph, removes stale or partial output', async t => {
   const directory = await mkdtemp(tmpdir() + '/sql-ui-build-'), root = pathToFileURL(directory + '/');
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const output = new URL('page/', root), engine = new URL('engine/', root);
+  const output = new URL('dist/', root), engine = new URL('engine/', root);
   await mkdir(engine); await writeFile(new URL('index.html', root), '<html>SQL</html>');
   const wasm = Buffer.from('fixture-engine'), manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex'), loaderSha256: createHash('sha256').update('module').digest('hex') };
   for (const [name, bytes] of Object.entries({ 'manifest.json': JSON.stringify(manifest), 'sqlite3.wasm': wasm, 'sqlite3.mjs': 'module', 'sqlite3-opfs-async-proxy.js': 'proxy' })) await writeFile(new URL(name, engine), bytes);
   const definition = { ...inventoryDefinition, id: 'warehouse', version: '3', queries: { stock: inventoryDefinition.queries.inventory } };
   const records = { 'handle.json': { application: { id: 'app' }, page_url: 'https://page.example/', privateCredential: 'never publish' },
     'descriptor.json': { payload: { applicationId: 'app', definitionDigest: await applicationDefinitionDigest(definition) } }, 'initialized.json': { applicationId: 'app', deviceId: 'native' } };
+  const build = options => buildPage({ readPrivate: options.readPrivate,
+    page: { applicationId: 'app', pageUrl: 'https://page.example/', slug: 'stock' } }, options);
   const opts = { root, definition, readPrivate: async name => records[name], verifyWasmBuild: (bytes, meta) => { assert.deepEqual(bytes, wasm); assert.deepEqual(meta, manifest); }, bundle: async () => {} };
-  await buildPage(opts);
+  await build(opts);
   assert.equal((await readFile(new URL('engine/sqlite3.wasm', output))).toString(), wasm.toString());
   const config = JSON.parse(await readFile(new URL('configuration.json', output)));
   assert.deepEqual(Object.keys(config).sort(), ['applicationId', 'definitionId', 'definitionVersion', 'descriptor', 'page_url']);
   assert.equal(config.definitionId, definition.id); assert.equal(config.definitionVersion, definition.version);
   const retained = structuredClone(records);
-  await assert.rejects(buildPage({ ...opts, definition: { ...definition, version: '4' } }), /retained initialized descriptor/);
+  await assert.rejects(build({ ...opts, definition: { ...definition, version: '4' } }), /retained initialized descriptor/);
   assert.deepEqual(records, retained, 'a rebuild never rewrites retained initialization');
   await assert.rejects(access(output), { code: 'ENOENT' });
   for (const failure of [
@@ -88,18 +90,18 @@ test('build requires setup and exact engine graph, removes stale or partial outp
     { bundle: async () => { throw Error('bundle failed'); } },
   ]) {
     await mkdir(output, { recursive: true }); await writeFile(new URL('stale', output), 'stale');
-    await assert.rejects(buildPage({ ...opts, ...failure }), /no publishable page/);
+    await assert.rejects(build({ ...opts, ...failure }), /no publishable dist/);
     await assert.rejects(access(output), { code: 'ENOENT' });
   }
   await writeFile(new URL('sqlite3.mjs', engine), 'mismatched loader');
-  await assert.rejects(buildPage(opts), /loader does not match/);
+  await assert.rejects(build(opts), /loader does not match/);
   await assert.rejects(access(output), { code: 'ENOENT' });
   await writeFile(new URL('sqlite3.mjs', engine), 'module');
   await writeFile(new URL('sqlite3.wasm', engine), 'wrong');
-  await assert.rejects(buildPage(opts), /does not match/);
+  await assert.rejects(build(opts), /does not match/);
   await assert.rejects(access(output), { code: 'ENOENT' });
   await rm(new URL('manifest.json', engine));
-  await assert.rejects(buildPage(opts), /no publishable page/);
+  await assert.rejects(build(opts), /no publishable dist/);
 });
 
 test('lifecycle notifications contain async flush and error-reporter rejections, and unregister', async t => {
@@ -116,8 +118,8 @@ test('lifecycle notifications contain async flush and error-reporter rejections,
 
 test('page wiring retains before command, renders bins, locks edited input and retries after reload', async () => {
   const { runInNewContext } = await import('node:vm');
-  const { createSubmissionState } = await import('../../docs/tutorial/helpers/submission-state.mjs');
-  const source = (await readFile(new URL('../../docs/tutorial/sql/page.mjs', import.meta.url), 'utf8'))
+  const { createSubmissionState } = await import('../../docs/tutorial/shared/helpers/submission-state.mjs');
+  const source = (await readFile(new URL('../../docs/tutorial/templates/inventory/page.mjs', import.meta.url), 'utf8'))
     .replace(/^import .*;\n/gm, '').replaceAll('import.meta.url', JSON.stringify('https://page.example/page.mjs'));
   const journal = new Map(), contexts = new Map();
   const calls = [];

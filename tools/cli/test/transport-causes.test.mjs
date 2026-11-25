@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const run = promisify(execFile), cli = fileURLToPath(new URL('../bin/tendril.mjs', import.meta.url));
+const run = promisify(execFile), cli = fileURLToPath(new URL('./support/run-cli.mjs', import.meta.url));
 // Resolve the public export here so a bootstrap in an isolated temp directory
 // uses the same installed public SDK as the CLI, without source-private imports.
 const diagnostics = import.meta.resolve('@tendriller/core/diagnostics');
@@ -72,8 +72,7 @@ function open(attached) {
   };
   return { session:{}, control, ...(attached ? { detach:close } : { close }) };
 }
-export const openSession = () => open(false);
-export const attachSession = () => open(true);
+export const attach = () => open(true);
 `);
   return { bootstrap, page, log };
 }
@@ -81,7 +80,7 @@ export const attachSession = () => open(true);
 async function invoke(fixture, mode) {
   let failure;
   try {
-    await run(process.execPath, [cli, '--session', fixture.bootstrap, '--mode', mode,
+    await run(process.execPath, [cli, '--fixture', fixture.bootstrap, '--page', 'fixture',
       'publish', fixture.page, '--operation', operationId]);
   } catch (error) { failure = error; }
   assert.ok(failure, 'The failed publication must exit nonzero.');
@@ -92,11 +91,10 @@ async function invoke(fixture, mode) {
   return { result, calls:JSON.parse(await readFile(fixture.log, 'utf8')) };
 }
 
-test('CLI preserves transport causes and distinct publication evidence in own and serialized attached failures', async t => {
+test('CLI preserves transport causes and distinct publication evidence in serialized attached failures', async t => {
   for (const stage of ['preparation', 'submission', 'selection']) await t.test(stage, async () => {
-    const f = await fixture(t, stage), own = await invoke(f, 'own'), attached = await invoke(f, 'attach');
-    assert.deepEqual(attached.result, own.result, 'The same sanitized evidence must survive the owner boundary.');
-    const { error, diagnostic, publication } = own.result;
+    const f = await fixture(t, stage), attached = await invoke(f, 'attach');
+    const { error, diagnostic, publication } = attached.result;
     const code = stage === 'preparation' ? 'APPLICATION_CONTROL_TIMEOUT'
       : stage === 'submission' ? 'APPLICATION_PUBLICATION_OUTCOME_UNKNOWN' : 'APPLICATION_PUBLICATION_SELECTION_UNAVAILABLE';
     assert.deepEqual(error, { code, message:code + ': fetch failed' });
@@ -108,14 +106,13 @@ test('CLI preserves transport causes and distinct publication evidence in own an
     assert.equal(publication.outcome, stage === 'preparation' ? 'not_submitted' : stage === 'submission' ? 'unknown' : 'committed');
     assert.deepEqual(publication.receipt, stage === 'selection' ? { publicationId, version:7 } : null);
     const calls = ['head', { prepare:operationId }, ...(stage === 'preparation' ? [] : [{ publish:publicationId, operation:operationId, assets:1 }])];
-    assert.deepEqual(own.calls, [...calls, 'close']);
     assert.deepEqual(attached.calls, [...calls, 'detach']);
   });
 });
 
 test('CLI marks bounded aggregate summaries without changing uncertain publication or retry safety', async t => {
   const f = await fixture(t, 'submission', 'bounded');
-  for (const mode of ['own', 'attach']) {
+  for (const mode of ['attach']) {
     const { result } = await invoke(f, mode);
     assert.deepEqual(result.diagnostic.transportCauses, { codes:expectedCodes, truncated:true });
     assert.ok(Buffer.byteLength(JSON.stringify(result.diagnostic.transportCauses)) < 512);
@@ -125,7 +122,7 @@ test('CLI marks bounded aggregate summaries without changing uncertain publicati
 
 test('unrecognized transport details remain absent from CLI diagnostics', async t => {
   const f = await fixture(t, 'preparation', 'unknown');
-  for (const mode of ['own', 'attach']) {
+  for (const mode of ['attach']) {
     const { result } = await invoke(f, mode);
     assert.equal(Object.hasOwn(result.diagnostic, 'transportCauses'), false);
     assert.equal(result.error.code, 'APPLICATION_CONTROL_TIMEOUT');

@@ -1,5 +1,5 @@
 export interface AssistantEventDefinition { name: string; description: string }
-export interface AssistantEndpoint { api: string; key: string }
+export interface AssistantEndpoint { page: Pick<import('./client.mjs').PageClient, 'request' | 'socket'>; key: string }
 export interface AssistantExposure { queries?: readonly string[]; commands?: readonly string[] }
 export interface AssistantCallerContext {
   account: string; agentBindingId: string; bindingRevision: number;
@@ -40,13 +40,13 @@ export interface AssistantToolRequest {
 export function createAssistantKey(): string;
 export function createApplicationAgentKey(bindingId?: string): string;
 export function proposeApplicationAssistant(options: AssistantEndpoint & AssistantExposure & {
-  token: string; backupKeys?: readonly string[]; label: string; events?: readonly AssistantEventDefinition[]; signal?: AbortSignal; fetcher?: typeof fetch;
+  backupKeys?: readonly string[]; label: string; events?: readonly AssistantEventDefinition[]; signal?: AbortSignal;
 }): Promise<{ applicationId: string; proposed: string; approved: boolean; reviewUrl: string }>;
 export function connectApplicationAssistant(options: AssistantEndpoint & {
   session: AssistantSession;
   tools: { execute(call: AssistantToolRequest, options?: { signal?: AbortSignal; caller?: Readonly<AssistantCallerContext> }): Promise<unknown> };
   onStatus?: (status: { state: string; reason?: string; retryInMs?: number }) => void;
-  openSocket?: (url: string, protocols: string[]) => WebSocket;
+  openSocket?: (path: 'assistant/adapter', protocols: string[]) => import('./peers.mjs').PeerSocket;
   /** Initial sign-in/consent window, 1000–600000 ms; defaults to ten minutes. */
   initialConnectTimeoutMs?: number;
   signal?: AbortSignal;

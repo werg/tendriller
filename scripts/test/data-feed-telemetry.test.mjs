@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { serveDataFeeds, useDataFeed } from '../../docs/tutorial/helpers/data-feed.mjs';
-import { mountDevTelemetry, collectDevTelemetry } from '../../docs/tutorial/helpers/dev-telemetry.mjs';
+import { serveDataFeeds, useDataFeed } from '../../docs/tutorial/shared/helpers/data-feed.mjs';
+import { mountDevTelemetry, collectDevTelemetry } from '../../docs/tutorial/shared/helpers/dev-telemetry.mjs';
 import {
   announceAgentPresence,
   watchAgentPresence,
   streamAgentReply,
   watchAgentStream,
-} from '../../docs/tutorial/helpers/agent-requests.mjs';
+} from '../../docs/tutorial/shared/helpers/agent-requests.mjs';
 
 function createMockSignalPair() {
   const subscribers = [];

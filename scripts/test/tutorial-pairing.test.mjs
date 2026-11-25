@@ -6,7 +6,7 @@ import * as p from '@chronolog/peer-session';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 async function module(name, workerUrl) {
-  const result = await build({ entryPoints: [root + 'docs/tutorial/' + name], bundle: true, write: false,
+  const result = await build({ entryPoints: [root + 'docs/tutorial/shared/' + name], bundle: true, write: false,
     platform: 'node', format: 'esm', logLevel: 'silent', ...(workerUrl ? { define: { 'import.meta.url': JSON.stringify(workerUrl) } } : {}), plugins: [{ name: 'test-private-boundary', setup(builder) {
       builder.onResolve({ filter: /^\.\/local\.mjs$/ }, () => ({ path: 'private', namespace: 'fixture' }));
       builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents:
@@ -219,7 +219,7 @@ test('browser lost reply retains its original request, and replacement review is
 
 
 test('pairing Worker distinguishes a changed storage profile from the wrong page origin before opening a signer', async t => {
-  const { browserProfileId } = await import('../../docs/tutorial/helpers/browser-profile.mjs');
+  const { browserProfileId } = await import('../../docs/tutorial/shared/helpers/browser-profile.mjs');
   const applicationId = 'ab'.repeat(32), profileId = browserProfileId(applicationId);
   const originalSelf = globalThis.self, originalFetch = globalThis.fetch;
   t.after(() => { globalThis.self = originalSelf; globalThis.fetch = originalFetch; });

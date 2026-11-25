@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createObservationSource } from '../../docs/tutorial/observation/browser.mjs';
-import { mountObservations } from '../../docs/tutorial/observation/panel.mjs';
-import { serveObservations } from '../../docs/tutorial/observation/receiver.mjs';
-import { TOPICS, fresh } from '../../docs/tutorial/observation/protocol.mjs';
+import { createObservationSource } from '../../docs/tutorial/shared/observation/browser.mjs';
+import { mountObservations } from '../../docs/tutorial/shared/observation/panel.mjs';
+import { serveObservations } from '../../docs/tutorial/shared/observation/receiver.mjs';
+import { TOPICS, fresh } from '../../docs/tutorial/shared/observation/protocol.mjs';
 
 const app = 'a'.repeat(64), browser = 'b'.repeat(64), native = 'c'.repeat(64);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));

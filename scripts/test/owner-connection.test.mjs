@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-const result = await build({ entryPoints: ['docs/tutorial/connection.mjs'], bundle: true, write: false, platform: 'node', format: 'esm', plugins: [{ name: 'public-storage', setup(b) {
+const result = await build({ entryPoints: ['docs/tutorial/shared/connection.mjs'], bundle: true, write: false, platform: 'node', format: 'esm', plugins: [{ name: 'public-storage', setup(b) {
   b.onResolve({filter: /^@tendriller\/core\/browser-owner$/}, () => ({path:'storage',namespace:'fixture'}));
   b.onLoad({filter: /.*/,namespace:'fixture'}, () => ({contents:'export const requestPersistentStorage=async()=>false;'}));
 }}] });

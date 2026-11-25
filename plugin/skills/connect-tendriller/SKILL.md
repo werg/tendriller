@@ -26,14 +26,14 @@ repeat creation blindly or fall back to production. Follow the build guide and
 the discovery descriptor's `firstApp.release` to verify and install the immutable
 first-app kit and its exact local packages against the host identity.
 
-For linked-account creation, run `npm run setup:prepare -- SERVICE_ORIGIN NAME`
-in the retained starter project. Call `prepare_tendril_setup` with its printed
-public arguments using this connector's existing `tendrils:create` grant. The
-server resolves the owner; the local raw setup credential and OAuth credentials
-do not enter tool arguments. Save the public ready result and run `setup:finish`
-to reconstruct the same private handle. On a lost reply, inspect the original
-`operationId` with `inspect_tendril_setup`; never generate a replacement intent
-or fall back to anonymous creation. Follow the maintained build guide when the
+For linked-account creation, run `npx tendril workspace key --service SERVICE_ORIGIN`
+in the retained starter workspace. Call `register_agent` with its printed public
+`name` and `publicKey` through this connector. The server resolves the owner;
+OAuth credentials never enter the workspace and the signing key never leaves it.
+Save the result privately and run `npx tendril workspace adopt --service
+SERVICE_ORIGIN --credential FILE`, then `npm run page:new -- <slug>`. Calling
+`register_agent` again with the same name rotates the token; adopt the newest
+result and never fall back to anonymous registration. Follow the maintained build guide when the
 catalog or granted scope needs an update.
 
 Check that your

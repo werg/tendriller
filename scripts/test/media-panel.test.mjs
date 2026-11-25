@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
-import { mountReviewedMedia } from '../../docs/tutorial/media/panel.mjs';
+import { mountReviewedMedia } from '../../docs/tutorial/shared/media/panel.mjs';
 
 function deferred() {
   let resolve, reject;

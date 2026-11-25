@@ -59,15 +59,14 @@ email, account credentials or application keys.
    inspection, not a matching package composition. Use the supplied files;
    do not invent a deployment module or substitute a separate backend merely
    because the session is not configured yet.
-5. Use the linked account's `tendrils:create` permission. Run the starter's
-   `npm run setup:prepare -- SERVICE_ORIGIN "App name"`, then call
-   `prepare_tendril_setup` with its exact public `prepare.arguments`. The native
-   project has already retained the private credential; only its commitment
-   enters MCP. The host derives the intended owner without asking for an email.
-   Save the public ready result and run `npm run setup:finish -- RESULT.json`
-   to reconstruct the same private handle. For a lost reply, call
-   `inspect_tendril_setup` for the original operation. Never generate a new intent
-   or use anonymous creation to replace an uncertain setup. A missing creation
+5. Register the workspace agent through the linked account. Run
+   `npx tendril workspace key --service SERVICE_ORIGIN` in the starter workspace,
+   then call `register_agent` with its exact public `name` and `publicKey`. The
+   signing key stays local; only its public key enters MCP. The host derives the
+   intended owner without asking for an email. Save the result privately and run
+   `npx tendril workspace adopt --service SERVICE_ORIGIN --credential FILE`, then
+   `npm run page:new -- <slug>`. Calling `register_agent` again with the same name
+   rotates the token; never use anonymous registration to replace it. A missing creation
    scope or tool needs the matching deployment/catalog/consent update.
    Initialize, build and publish the first signed version before asking the
    person to sign in at `page_url`. Do not stop for a "claimed" reply. Keep private

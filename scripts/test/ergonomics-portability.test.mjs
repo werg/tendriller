@@ -289,11 +289,12 @@ test('local Stdio MCP handler and ServerlessHostAdapter execute unified five-ste
   };
 
   // Stdio MCP
-  const init = await handleStdioMcpMessage({ session: fakeSession, mode: 'own' }, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  const pages = { list: async () => [{ slug: 'notes' }], open: async page => { assert.equal(page, 'notes'); return { session: fakeSession }; } };
+  const init = await handleStdioMcpMessage(pages, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   assert.equal(init.result.serverInfo.name, 'tendriller-local-stdio');
-  const batch = await handleStdioMcpMessage({ session: fakeSession, mode: 'own' }, {
+  const batch = await handleStdioMcpMessage(pages, {
     jsonrpc: '2.0', id: 2, method: 'tools/call',
-    params: { name: 'command_submit_batch', arguments: { commands: [
+    params: { name: 'command_submit_batch', arguments: { page: 'notes', commands: [
       { command: 'add', input: { a: 1 }, operationId: 'stdio-1' },
       { command: 'add', input: { a: 2 }, operationId: 'stdio-2' },
     ] } },

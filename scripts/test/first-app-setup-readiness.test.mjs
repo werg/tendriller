@@ -53,7 +53,7 @@ test('terminal closure and finite readiness timeout fail closed', async () => {
 });
 
 test('real participant supervisor drives the readiness barrier through reconnect reconciliation', async () => {
-  const { superviseParticipant } = await import('../../docs/tutorial/helpers/participant-lifecycle.mjs');
+  const { superviseParticipant } = await import('../../docs/tutorial/shared/participant-lifecycle.mjs');
   const stopped = new AbortController(), closed = Promise.withResolvers();
   let callbacks, read;
   const owned = {

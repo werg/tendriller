@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSubmissionState } from '../../docs/tutorial/helpers/submission-state.mjs';
+import { createSubmissionState } from '../../docs/tutorial/shared/helpers/submission-state.mjs';
 const status = { phase: 'ready', database: 'ready', generation: 'g' };
 const read = { revision: { generation: 'g' }, value: [] };
 function ready(ui) {

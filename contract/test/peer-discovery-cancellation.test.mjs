@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setImmediate } from 'node:timers/promises';
-import { createClient } from '../client.mjs';
+import { createAgentClient } from '../client.mjs';
 import { createPeersClient, createParticipantResponse } from '../peers.mjs';
 
 const applicationId = 'ab'.repeat(32);
@@ -12,7 +12,7 @@ const json = value => new Response(JSON.stringify(value), { headers: { 'Content-
 test('unpinned application cancellation aborts its HTTP discovery and a later call can retry', { timeout: 2_000 }, async () => {
   const entered = Promise.withResolvers(), caller = new AbortController(), reason = Error('window closed');
   let discoverySignal, lookups = 0, reads = 0;
-  const host = createClient({ api: 'https://host.test/api/t/aaaaaaaaaaaa', token: 'synthetic-test-token' }, {
+  const host = createAgentClient({ service: 'https://host.test', token: 'ta_' + 'a'.repeat(32) }, {
     fetch: async (url, options) => {
       if (url.endsWith('/application')) {
         lookups++;
@@ -21,11 +21,11 @@ test('unpinned application cancellation aborts its HTTP discovery and a later ca
         entered.resolve();
         return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
       }
-      assert.equal(url, 'https://host.test/api/t/aaaaaaaaaaaa/peers/participant');
+      assert.equal(url, 'https://host.test/api/agent/pages/aaaaaaaaaaaa/peers/participant');
       reads++;
       return json(createParticipantResponse(JSON.parse(options.body), bundle));
     },
-  });
+  }).page('aaaaaaaaaaaa');
   const rejected = assert.rejects(host.peers.application({ signal: caller.signal }), error => error === reason);
   await entered.promise;
   assert.ok(discoverySignal instanceof AbortSignal);

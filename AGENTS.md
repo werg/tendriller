@@ -16,10 +16,10 @@ Read `/api/readiness` before downloading or installing packages. Require open
 creation readiness at that origin; stop on a pause, unavailable or unsupported
 readiness and report its next action. Follow `firstApp.release` and the build
 guide for the immutable kit and exact local package composition.
-With account-linked MCP, use the starter's `setup:prepare`, call
-`prepare_tendril_setup` with its public arguments, and use `setup:finish` with
-the exact ready result. Retain the original private intent and use
-`inspect_tendril_setup` after a lost reply; the host derives the verified owner.
+With account-linked MCP, run `tendril workspace key`, call `register_agent`
+with its public arguments, and retain the result with `tendril workspace adopt`;
+the host derives the verified owner. One workspace agent then creates and runs
+every page (`npm run page:new`, `npm run agent`).
 For browser pairing, keep the existing native participant running. Its
 bounded helper durably pauses ordering and stages the exact signed member-only
 proposal; the host approves it automatically for the signed-in owner or an

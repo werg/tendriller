@@ -51,6 +51,21 @@ export function createNativeSessionSupervisor(options: {
   maxClients?: number; maxClientsPerBinding?: number; maxBindings?: number; handshakeTimeoutMs?: number;
   preferredTransport?: 'auto' | 'loopback-tcp'; signal?: AbortSignal;
 }): Promise<NativeSessionSupervisor>;
+export interface NativeWorkspaceSupervisor extends Omit<NativeSessionSupervisor, 'profile' | 'ownerInstanceId' | 'endpoints'> {
+  readonly workspaceId: string;
+  /** Admit an opened page owner; its profile pins signer, application and definition. */
+  addPage(pageId: string, owner: NativeSessionOwner): Promise<NativeSessionSupervisor['profile']>;
+  removePage(pageId: string): Promise<boolean>;
+  pages(): { page: string; profile: NativeSessionSupervisor['profile']; ownerInstanceId: string }[];
+  endpoints(pageId: string): readonly unknown[];
+}
+/** One local attach socket for every page an agent workspace owns; clients name a page. */
+export function createNativeWorkspaceSupervisor(options: {
+  directory: string; workspaceId: string;
+  bindings?: readonly { id: string; token: string; policy?: NativeAttachmentPolicy }[];
+  maxClients?: number; maxClientsPerBinding?: number; maxBindings?: number; handshakeTimeoutMs?: number;
+  preferredTransport?: 'auto' | 'loopback-tcp'; signal?: AbortSignal;
+}): Promise<NativeWorkspaceSupervisor>;
 export interface NativeAttachedSession { readonly signal: AbortSignal; detach(): Promise<void> }
 /** Stable authenticated binding namespace; the supervisor separately enforces it. */
 export interface NativeOperationScope { readonly scopeOperationId:(localOperationId:string)=>string }
@@ -59,6 +74,8 @@ export function attachNativeSession<Session extends NativeAttachedSession>(optio
   connect(endpoint: NativeEndpoint, options: { applicationId: string; definitionId: string; definitionVersion: string;
     context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal }): Promise<Session>;
   applicationId: string; definitionId: string; definitionVersion: string;
+  /** Required for a workspace supervisor; omitted for a single-profile supervisor. */
+  page?: string;
   context?: NativeAttachmentPolicy['context']; preserveOperationId?: boolean; timeoutMs?: number; signal?: AbortSignal;
 }): Promise<{ session: Session&NativeOperationScope; control: NativeControlProxy; mode: 'attach'; transport: string; detach(): Promise<void> }>;
 export function connectOrStartNativeSession<Session extends NativeAttachedSession>(options: {

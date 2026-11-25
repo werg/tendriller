@@ -9,7 +9,7 @@ import { dirname, join, resolve, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Agent, WebSocket, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { TUTORIAL_FILES } from '../../scripts/onboarding.mjs';
-import { buildPage } from '../../docs/tutorial/sql/build.mjs';
+import { buildPage } from '../../docs/tutorial/templates/inventory/build.mjs';
 import { client, localPageUrl, type Handle } from './local-helpers';
 
 export async function prepareSqlTutorial(handle: Handle, consumer: string, engineDirectory: string) {

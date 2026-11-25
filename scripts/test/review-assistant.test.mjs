@@ -14,7 +14,7 @@ async function fixture(t, { forwardingError, expectedProposalId = proposalId, pr
   t.after(() => rmSync(project, { recursive: true, force: true }));
   const files = installReviewFixtureSources(root, project);
   assert.equal(files.length, 4);
-  assert.deepEqual(readFileSync(join(project,'support/participant-lifecycle.mjs')), readFileSync(join(root,'docs/tutorial/helpers/participant-lifecycle.mjs')));
+  assert.deepEqual(readFileSync(join(project,'support/participant-lifecycle.mjs')), readFileSync(join(root,'docs/tutorial/shared/participant-lifecycle.mjs')));
   const { superviseReviewAssistant, retainedReviewProposal } = await import(pathToFileURL(join(project,'review-assistant.mjs')).href);
   const native = new AbortController(), channel = Promise.withResolvers(), adapters = [], forwarded = [], reports = [];
   let callbacks;

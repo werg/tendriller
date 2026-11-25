@@ -7,9 +7,9 @@
   <key>ProgramArguments</key>
   <array>
     <string>/usr/local/bin/node</string>
-    <string>/Users/Shared/tendriller-app/deploy/participant.mjs</string>
-    <string>--session</string>
-    <string>/Users/Shared/tendriller-app/session.mjs</string>
+    <string>/Users/Shared/tendriller-app/node_modules/@tendriller/tools/bin/tendril.mjs</string>
+    <string>agent</string>
+    <string>run</string>
   </array>
   <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
   <key>RunAtLoad</key><true/>

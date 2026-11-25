@@ -5,7 +5,7 @@ import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import { RUNTIME_FEATURES } from '../../runtime/resources.mjs';
 
-const sources = { Camera: '../../docs/tutorial/media/camera.mjs', VoiceControls: '../../docs/tutorial/media/voice.mjs',
+const sources = { Camera: '../../docs/tutorial/shared/media/camera.mjs', VoiceControls: '../../docs/tutorial/shared/media/voice.mjs',
   Sensors: '../../runtime/src/sensors.ts', Voice: '../../runtime/src/voice/index.ts' };
 const bundles = await Promise.all(Object.entries(sources).map(async ([name, path]) => {
   const result = await build({ entryPoints: [new URL(path, import.meta.url).pathname], bundle: true,

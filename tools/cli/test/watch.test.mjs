@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const run = promisify(execFile);
-const cli = process.env.TENDRILLER_TOOLS_TEST_CLI ?? fileURLToPath(new URL('../bin/tendril.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('./support/run-cli.mjs', import.meta.url));
 const revision = { historyId: 'history', generation: 'generation', index: 1 };
 const change = { kind: 'applied', revision, recovery: null };
 
@@ -107,7 +107,7 @@ test('stalled pagination fails with its last cursor instead of spinning forever'
 
 test('watch CLI rejects event options without event mode before importing a bootstrap', async () => {
   for (const flags of [['--cursor', 'old'], ['--topics', '[]'], ['--limit', '2'], ['--events', '--limit', '0'], ['--events', '--topics', '{}']]) {
-    await assert.rejects(run(process.execPath, [cli, 'watch', '--session', 'missing.mjs', ...flags]),
+    await assert.rejects(run(process.execPath, [cli, '--fixture', 'missing.mjs', 'watch', '--page', 'fixture', ...flags]),
       error => error.code === 64 && !error.stderr.includes('ERR_MODULE_NOT_FOUND'));
   }
 });
@@ -116,14 +116,14 @@ test('watch CLI timeout succeeds with progress after cleanup; unexpected end and
   const directory = await mkdtemp(join(tmpdir(), 'tendril-watch-')), module = join(directory, 'session.mjs');
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(module, `
-export async function attachSession({signal}) {
+export async function attach({signal}) {
   return {session:{async *changes(){
     yield {kind:'applied',revision:{generation:'one'},recovery:null};
     if(process.env.FIXTURE_END)return;
     await new Promise((resolve,reject)=>{if(signal.aborted)reject(signal.reason);else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});
   }},detach(){if(process.env.FIXTURE_CLEANUP_FAIL)throw Object.assign(Error('detach failed'),{code:'CLEANUP_FAILED'});}};
 }`);
-  const args = [cli, 'watch', '--session', module, '--mode', 'attach', '--timeout', '1'];
+  const args = [cli, '--fixture', module, 'watch', '--page', 'fixture', '--timeout', '1'];
   const result = await run(process.execPath, args);
   assert.deepEqual(JSON.parse(result.stderr), { watch: {
     mode: 'changes', cursor: null, revision: { generation: 'one' }, reason: 'timeout',
@@ -175,7 +175,7 @@ test('event watch CLI timeout cannot hide failed view cleanup or its primary rea
   const directory = await mkdtemp(join(tmpdir(), 'tendril-watch-release-')), module = join(directory, 'session.mjs');
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(module, `
-export async function attachSession({signal}) {
+export async function attach({signal}) {
   return {session:{async *changes(){yield {kind:'applied',revision:{generation:'one'},recovery:null};},
     readView:async()=>({
       readEvents:()=>new Promise((resolve,reject)=>{
@@ -186,7 +186,7 @@ export async function attachSession({signal}) {
       release(){throw Object.assign(Error('view release failed'),{code:'VIEW_RELEASE_FAILED'});}
     })},detach(){}};
 }`);
-  const args = [cli, 'watch', '--events', '--cursor', 'previous', '--session', module, '--mode', 'attach', '--timeout', '1'];
+  const args = [cli, '--fixture', module, 'watch', '--page', 'fixture', '--events', '--cursor', 'previous', '--timeout', '1'];
   for (const readFails of [false, true]) {
     await assert.rejects(run(process.execPath, args, { env: { ...process.env, FIXTURE_ABORT_READ_FAILURE: readFails ? '1' : '' } }), error => {
       const result = JSON.parse(error.stderr);
@@ -245,15 +245,15 @@ test('watch CLI preserves a read error when its deadline expires during successf
   const directory = await mkdtemp(join(tmpdir(), 'tendril-watch-cancel-race-')), module = join(directory, 'session.mjs');
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(module, `
-export async function attachSession({signal}) {
+export async function attach({signal}) {
   return {session:{async *changes(){yield {kind:'applied',revision:{generation:'one'},recovery:null};},
     readView:async()=>({
       readEvents(){throw Object.assign(Error('cursor recovered before the deadline'),{code:'CURSOR_RECOVERED'});},
       release:()=>new Promise(resolve=>{if(signal.aborted)resolve();else signal.addEventListener('abort',resolve,{once:true});})
     })},detach(){}};
 }`);
-  await assert.rejects(run(process.execPath, [cli, 'watch', '--events', '--cursor', 'previous',
-    '--session', module, '--mode', 'attach', '--timeout', '1']), error => {
+  await assert.rejects(run(process.execPath, [cli, '--fixture', module, 'watch', '--page', 'fixture', '--events', '--cursor', 'previous',
+    '--timeout', '1']), error => {
     const result = JSON.parse(error.stderr);
     assert.equal(error.code, 1); assert.equal(result.error.code, 'CURSOR_RECOVERED');
     assert.deepEqual(result.watch, { mode: 'events', cursor: 'previous', revision: null });
@@ -287,14 +287,14 @@ test('watch CLI preserves verified recovery evidence and the old emitted cursor'
   t.after(() => rm(directory, { recursive: true, force: true }));
   const nextRevision = { historyId: 'history', generation: 'next', index: 2 };
   const recovery = { reason: 'control-change', adopted: { generation: 'previous', sequence: 1, root: 'ab'.repeat(32) }, unknownLoss: false };
-  await writeFile(module, 'export async function attachSession() { return { session: {'
+  await writeFile(module, 'export async function attach() { return { session: {'
     + 'async *changes() { yield { kind:"recovery", revision:' + JSON.stringify(nextRevision)
     + ', recovery:' + JSON.stringify(recovery) + '}; },'
     + 'async readView() { return { readEvents() { throw Object.assign(Error("cursor belongs to the earlier generation"), {'
     + 'code:process.env.RECOVERY_CODE,revision:' + JSON.stringify(nextRevision) + ',recovery:' + JSON.stringify(recovery)
     + '}); }, release() {} }; } }, detach() {} }; }');
   for (const code of ['APPLICATION_VIEW_RECOVERED', 'EVENT_FORWARDER_REVIEW_RECOVERY']) {
-    await assert.rejects(run(process.execPath, [cli, 'watch', '--session', module, '--events', '--cursor', 'handled-old'],
+    await assert.rejects(run(process.execPath, [cli, '--fixture', module, 'watch', '--page', 'fixture', '--events', '--cursor', 'handled-old'],
       { env: { ...process.env, RECOVERY_CODE: code } }), error => {
         assert.equal(error.code, 1);
         assert.equal(error.stdout, '');
