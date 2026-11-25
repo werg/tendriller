@@ -11,10 +11,10 @@ tendril service --server https://tendriller.dev --pretty
 ```
 
 The first command prints the workflow and same-service documentation links
-without network access or a saved handle. The second reads the public host
+without network access or a workspace. The second reads the public host
 contract without credentials. Follow
-[Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md) to create and claim a
-page, define state, build the UI, connect the session, and publish signed code.
+[Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md) to register a workspace
+agent (`tendril workspace init`), create and claim a page, define state, build the UI, connect the session, and publish signed code.
 Page creation alone does not configure a session. The guide names required
 authority and device setup so a missing bootstrap has a concrete next step.
 
@@ -27,7 +27,7 @@ their caller's process lifetime.
 
 | Entry | Purpose |
 | --- | --- |
-| `tendril` | Domain commands and coherent queries, exact operations, explicit recovery, signed publication, and host lifecycle administration |
+| `tendril` | The agent workspace (`workspace`, `page`, `status`, `agent run`, `mcp-stdio`), domain commands and coherent queries per page, exact operations, explicit recovery, signed publication, and host lifecycle administration |
 | `tendril-preview` | Serve complete authored assets or run them with an explicitly supplied real application bootstrap |
 | `@tendriller/tools/session` | The same operational adapter for an already owned public session |
 | `@tendriller/tools/preview` | Authored asset server and optional Playwright browser harness |

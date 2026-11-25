@@ -31,6 +31,19 @@ tendril workspace init --service https://YOUR_HOST --owner owner@example.com [--
 tendril workspace join --service https://YOUR_HOST --code CODE [--name laptop]
 ```
 
+With an account-linked MCP connector, create the shared key first and register it
+through the connector instead:
+
+```sh
+tendril workspace key --service https://YOUR_HOST [--name laptop]
+# prints the public register_agent arguments {name, publicKey}; call the tool with exactly those,
+# save its result privately, then retain it:
+tendril workspace adopt --service https://YOUR_HOST --credential FILE
+```
+
+`adopt` verifies the returned token against `GET /api/agent` before saving it. The
+host derives the owner from the linked account, so no email is needed.
+
 `workspace init` checks readiness and the host contract, creates the shared
 signing key in `.tendriller/agent/identity.sqlite`, registers an unclaimed agent
 for that owner (`POST /api/agents`) and saves its `ta_` token in

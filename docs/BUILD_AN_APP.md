@@ -24,16 +24,14 @@ enrollment, signed publication, reopen and exact retry. The source is in
 [first-app source archive](/downloads/tendriller-first-app.tgz).
 There is no missing `deployment.mjs` to invent.
 
-**Upgrading an existing app?** Read the
-[rc.16 to rc.17 migration guide](MIGRATION_RC16_RC17.md) for host storage resets,
-changed SDK imports, participation and starter helpers. A `404` `not_found`
-(`No such tendril`) from the original application's authenticated `self` endpoint
-means that handle's application is absent; restoring a credential cannot recreate
-it. Confirm the service origin and follow the guide's
-[recreation procedure](MIGRATION_RC16_RC17.md#recreate-after-a-host-storage-reset),
-preserving the original private project and using a fresh directory for the
-replacement. Do not treat an uncertain request or ordinary access failure as a
-confirmed deletion.
+**Several pages, one agent.** The kit is a workspace: one agent credential and
+one signing key serve every page you create, and a single page is a workspace
+with one page. See [multi-page agents](MULTI_PAGE_AGENTS.md) for the model. A
+`404` `not_found` (`No such granted page`) from `/api/agent/pages/<id>/...` means
+the agent holds no grant for that page or the page is gone; restoring a
+credential cannot recreate it. Confirm the service origin and ask the owner to
+grant the page, or create a new page. Do not treat an uncertain request or
+ordinary access failure as a confirmed deletion.
 
 To test an app against a release before touching production, use the
 [local release host](LOCAL_HOST.md). It provides a verified host and synthetic
@@ -215,7 +213,8 @@ Complete the full UX pass before final delivery; production owner sign-in is not
 blocked on a synthetic preview.
 Keep the published page as the verification target for the actual account,
 device enrollment and session. Enrollment requires `owner_account_id` in the
-host's authenticated agent `info()` response; absence is a host upgrade boundary.
+host's authenticated page `info()` response; absence means the host lacks the
+matching onboarding contract.
 
 For unreleased core development, commit a clean matching checkout, run `npm ci`,
 `npm run build:artifacts` and `npm run release:artifacts`, then qualify its exact
@@ -703,7 +702,7 @@ mobile suspension.
 | Agent `revoked` or the hub reports `replaced` | The owner revoked the agent, or another agent program runs for the same credential. Stop duplicates; a revoked agent needs the owner to add it again. Preserve the signer and page records. |
 | `peer_application_unconfigured` | Run `npm run init -- <slug>`; a created page alone has no application authority. |
 | `PEER_NO_SELECTED_GENERATION` | Complete the saved first `create` transition before opening the session. |
-| Missing `owner_account_id` | The host lacks this onboarding update. Upgrade it; do not guess an account binding. |
+| Missing `owner_account_id` | The host lacks the matching onboarding contract. Use a host and kit of the same release; do not guess an account binding. |
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
 | `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. CLI commands attach to the running agent program; only one agent program may own a workspace. |
 | Browser is not enrolled | Request access from its retained browser device, and keep the agent program running to stage the exact proposal; the host approves it automatically. Check committed status before connecting. Account login and device grants are separate. |

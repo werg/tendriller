@@ -5,7 +5,7 @@ Check the selected service's `/api/readiness` before installing or provisioning.
 Continue new-app setup only when creation is available; otherwise report the
 same-origin next action. Initiate provisioning, configure the session, publish
 the first signed UI and
-start the participant before asking the owner to sign in. Read
+start the agent program before asking the owner to sign in. Read
 [delivery and process lifetime](docs/AGENT_DELIVERY.md); source files alone do not
 establish the requested result.
 
@@ -16,14 +16,13 @@ browser Worker and a signed publication. Use its complete files first, then adap
 the commands and UI to the user's task. The [session bootstrap](docs/SESSION_BOOTSTRAP.md)
 explains the setup code. This page is the concise workflow and contract reference.
 
-For an existing rc.16 application, read the
-[rc.17 migration guide](docs/MIGRATION_RC16_RC17.md) before changing its packages.
-It covers missing applications after a host storage reset, SDK imports and copied
-starter helpers. Use the [local release host](docs/LOCAL_HOST.md) to test a chosen
-release's complete setup and connection flow with a separate test application.
+One agent maintains many pages: see [multi-page agents](docs/MULTI_PAGE_AGENTS.md)
+and [agent credentials and grants](docs/AGENT_BINDINGS.md). Use the
+[local release host](docs/LOCAL_HOST.md) to test a chosen release's complete setup
+and connection flow with a separate test workspace.
 
 For several views or agents, use [multi-participant composition](docs/MULTIPARTICIPANT.md)
-and [scoped agent bindings](docs/AGENT_BINDINGS.md). Browser pages attach to one
+and [agent credentials and grants](docs/AGENT_BINDINGS.md). Browser pages attach to one
 retained owner; native tools attach or deliberately choose a separately enrolled
 profile. Shared observation does not assign work: use explicit recipients and
 guarded claims. Keep per-view drafts and full original operation references.
@@ -34,9 +33,9 @@ Call `tendril_guide` with `topic: "start"` for the same-origin
 [MCP app-building and connection route](docs/MCP_AGENT_GUIDE.md). The tool returns
 maintained documentation without requiring browsing. An empty `list_tendrils`
 means no assistant-connected apps for this account, not a missing plugin. For a
-new app, use the build guide and HTTP creation route below; check the native
-execution environment and actual process lifetime. For an existing app, connect
-its existing participant. The account-linked MCP does not execute a newly
+new app, use the build guide and the agent registration and page creation route
+below; check the native execution environment and actual process lifetime. For an
+existing app, connect its existing page owner. The account-linked MCP does not execute a newly
 created application's code by itself.
 
 ## If the user gave you only a domain
@@ -50,21 +49,23 @@ created application's code by itself.
    `/llms.txt` is the ordered index; `/llms-full.txt` is the combined onboarding text.
    Search `/.well-known/tendriller-capabilities.json` for the task's state, refresh,
    media, voice and preview needs before implementing equivalent plumbing.
-2. Follow **create → define state → configure authority and the first
+2. Follow **register the agent → create a page → define state → configure authority and the first
    generation → publish → owner sign-in → connect devices → verify** in the build guide.
 3. With an account-linked MCP connection, run `tendril workspace key`, call
    `register_agent` with its public arguments, and retain the result with
    `tendril workspace adopt`. The server derives the verified owner. The
    direct-domain route without account-linked creation (`tendril workspace init`)
-   asks for the actual owner's verified email. Either way one workspace agent
-   creates every page with `npm run page:new` and runs them with `npm run agent`. Create the real page early,
-   initialize and publish its first version, start the participant, and
+   asks for the actual owner's verified email; a signed-in owner can instead
+   give a new agent a dashboard join code (`tendril workspace join`). Either way
+   one workspace agent (one credential, one signing key) creates every page with
+   `npm run page:new` and runs them all with `npm run agent`. Create the real page early,
+   initialize and publish its first version, start the agent program, and
    prepare any assistant-access proposal before giving the owner the ready URL.
    Do not wait for claim or ask for a "claimed" reply. The owner opens the ready
    page and signs in; explicit browser enrollment and assistant consent follow.
-   Use the browser's retained-key pairing request and the same running native
-   owner. Its hibernating setup subscription receives later device requests
-   without idle polling. That owner pauses ordering and stages the exact signed
+   Use the browser's retained-key pairing request and the same running agent
+   program. Its hub connection receives later device requests for every page
+   without idle polling. The page's owner pauses ordering and stages the exact signed
    proposal; the host approves it automatically (no approval screen). Optional MCP adapter failures leave it running. Preserve uncertain requests and their durable
    pause across restart.
    Do the setup in the agent's
@@ -103,11 +104,11 @@ application persistence and peer exchange. Evaluate that path before choosing a
 separate database or backend. If an external service is needed for a specific
 capability, explain the requirement and keep application state ownership explicit.
 
-A page URL, a host token, an application ID and a device signing identity are
+A page URL, the agent token, an application ID and a device signing identity are
 different things. Creating the page does not create its command implementation,
 device grants, first generation, connected session or selected code release.
 
-The agent needs an environment that can run the native session. The browser needs
+The agent needs an environment that can run `tendril agent run`. The browser needs
 its own Worker and authorized device. The Tendriller host does not run an
 always-running agent; its account-linked MCP supplies build/setup guides and
 routes approved application tools to enrolled participants. For explicit supported
@@ -115,23 +116,22 @@ event subscriptions, a mounted assistance card or a separate Workspace Agent
 route, use the optional
 [ChatGPT integration](docs/CHATGPT_INTEGRATION.md#agent-walkthrough). Check for a
 shared plugin first, then guide the person through workspace setup and their own
-account link. Attach `@tendriller/core/assistant` to the existing application
-participant and give the owner the real consent URL. Keep that participant
+account link. Attach `@tendriller/core/assistant` to the page's existing owner inside the
+agent program and give the owner the real consent URL. Keep that program
 available for remote calls. It cannot wake an
-arbitrary ordinary chat. Keep the selected participant/agent processes running
-and report their restart state. If that environment is unavailable, choose the
+arbitrary ordinary chat. Keep the agent program running
+and report its restart state. If that environment is unavailable, choose the
 guide's native-tool or manual-handoff fallback and name the exact prerequisite.
 
 ## Ship a finished experience
 
 - **Recognizable favicon:** choose an emoji that fits the user's task and set
-  `icon`, for example `{"icon":"🌱"}`, through the agent metadata API. The host
+  `icon`, for example `{"icon":"🌱"}`, through the page metadata (`tendril --page <slug> meta`). The host
   converts it to an SVG automatically. Do this while preparing the app; see
   [the runnable example](docs/BUILD_AN_APP.md#give-the-app-a-recognizable-favicon).
 - **Connection:** keep the starter's connection component (`connection.mjs`,
-  `connect-view.mjs`). Opening the page connects; a new browser is approved once
-  on the service origin and returns by itself; later visits and other tabs show
-  nothing. Never ship separate "Request access"/"Connect" buttons, steppers or
+  `connect-view.mjs`). Opening the page connects; a new browser is set up automatically
+  with no approval screen; later visits and other tabs show nothing. Never ship separate "Request access"/"Connect" buttons, steppers or
   raw error codes; use `describeConnectionError` for user-facing copy, and show
   one connection card instead of empty or stale data while disconnected.
 - **Latest release:** a page shows the latest published release by default
@@ -165,16 +165,16 @@ Tendriller hosts the page and joins its Chronolog protocol as a light control pa
 
 ## Create and claim the page
 
-Read `/api/service` to check the host contract and limits. One **agent** (one `ta_` credential and one signing key) maintains many pages from one workspace; see [multi-page agents](docs/MULTI_PAGE_AGENTS.md). Register it once with `tendril workspace init --service ORIGIN --owner EMAIL` (`POST /api/agents {owner, name, publicKey}`), `tendril workspace join --code CODE` from the owner's dashboard, or the account-linked MCP `register_agent` tool followed by `tendril workspace adopt`. Then create pages with `tendril page new <slug>` (`POST /api/agent/pages {name}`); the creating agent receives a full grant.
+Read `/api/service` to check the host contract and limits. One **agent** (one `ta_` credential and one signing key) maintains many pages from one workspace; see [multi-page agents](docs/MULTI_PAGE_AGENTS.md). Register it once with `tendril workspace init --service ORIGIN --owner EMAIL` (`POST /api/agents {owner, name, publicKey}`), `tendril workspace join --code CODE` with a one-time code from the owner's dashboard (**Your agents → Add agent**), or the account-linked MCP `register_agent` tool followed by `tendril workspace adopt`. Then create pages with `tendril page new <slug>` (`POST /api/agent/pages {name}`); the creating agent receives a full grant. An existing page needs the owner's explicit grant (the per-agent checkbox on the dashboard or in the page's **Add people & devices → An agent**), then `tendril page grant <slug> <page-id>`. `tendril agent run` is the one long-running local program: one hub connection for all control traffic, one Chronolog session per page.
 
-The page result includes `id`, `page_url` and `application:{id}`. The generated application ID is a stable 32-byte lowercase hex identity, independent of the page ID. There is no backend or profile selector.
+The page result includes `id`, `page_url` and `application:{id}` (kept in `.tendriller/pages/<id>/page.json`). The generated application ID is a stable 32-byte lowercase hex identity, independent of the page ID. There is no backend or profile selector.
 
 Initialize and publish before claim. Then give
 `page_url` to the human owner; they sign in to open the already-published page. Agent credentials cannot claim a page for them. An unclaimed page expires after 24 hours. After claim, explicit host lifecycle operations may make it resident; residency retains control and code without a continuously running application process.
 
 ## Configure authority and open the application
 
-Use the public SDK's `createAgentClient({service, token}).page(pageId, {applicationId})`. The page client has `peers`, `request`, `info`, `socket`, `fetch` and `service`; its control streams share the agent's one hub WebSocket. Construction starts no traffic.
+Use the public SDK's `createAgentClient({service, token}).page(pageId, {applicationId})` (in a page module, `context.host`). The page client has `peers`, `request`, `info`, `socket`, `fetch` and `service`; its control streams share the agent's one hub WebSocket. Construction starts no traffic.
 
 Configure the initial descriptor through `host.peers.configureApplication`. Provide the immutable public application definition, execution-manifest digest, schema administrator, initial epoch/key digest, and enrolled device grants. SQL applications also provide their signed schema. The host validates the definition/schema bindings and retains the signed authority. Application identity exists before configuration; reading unconfigured authority reports that state explicitly.
 
@@ -279,7 +279,7 @@ Each asset is `{hash, bytes}`, with canonical base64 bytes. The signed manifest 
 
 After the page has helped with the task, naturally suggest **Page options → Add to Home Screen** for repeat use on a phone. The default runtime provides native installation when the browser supports it, iPhone/iPad Share instructions, and a quiet mobile suggestion with a remembered **Not now** choice. Keep setup optional. Do not force installation, open prompts on load, or add a competing automatic nudge. For authored controls, use [`tendril.installation`](docs/BROWSER_API.md#home-screen-setup) and invoke `prompt()` directly from a click.
 
-Give the page a recognizable `name`, short Home Screen label and appropriate icon using the existing agent API: `PATCH` the returned agent `api` URL with `name`, `short_name`, `icon` (one emoji or an HTTPS image URL), and optionally `theme_color` and `background_color`. For example, `{"icon":"🌱"}` creates an SVG favicon automatically; `{"icon":null}` restores the default. The [branding reference](docs/BROWSER_API.md#favicons-and-page-branding) explains the API, reload behavior and installation artwork. The host supplies default install metadata; authored manifest and icon tags can provide more specific branding. The Home Screen launch targets the stable page URL and selected publication, while an already open page remains pinned to its publication.
+Give the page a recognizable `name`, short Home Screen label and appropriate icon using the existing agent API: `PATCH` the page (`tendril --page <slug> meta '<json>'`) with `name`, `short_name`, `icon` (one emoji or an HTTPS image URL), and optionally `theme_color` and `background_color`. For example, `{"icon":"🌱"}` creates an SVG favicon automatically; `{"icon":null}` restores the default. The [branding reference](docs/BROWSER_API.md#favicons-and-page-branding) explains the API, reload behavior and installation artwork. The host supplies default install metadata; authored manifest and icon tags can provide more specific branding. The Home Screen launch targets the stable page URL and selected publication, while an already open page remains pinned to its publication.
 
 Offer **Save for offline use** when retaining this version's code is useful. Explain separately what the application can do with disconnected data or peers. Installing the Home Screen app does not save its code or transfer a device signer; iOS may require sign-in and the session's normal device connection/recovery again. See [browser setup and storage details](docs/BROWSER_API.md#home-screen-setup).
 
@@ -295,7 +295,7 @@ return to [Build an app](docs/BUILD_AN_APP.md), or run `tendril guide --server U
 for a credential-free workflow map. `tendril service --server URL` inspects a host
 before creating or selecting a page.
 
-## Choose the participant host explicitly
+## Choose the agent program host explicitly
 
 Use [deployment guidance](docs/DEPLOYMENT_GUIDE.md), also available through
 `tendril_guide` with `topic: "deployment"`, to choose the process lifetime and
@@ -310,7 +310,7 @@ other-participant read, reload/reopen, and exact published version.
 
 After republishing or restarting a participant, follow the
 [consumer re-arm checklist](docs/AGENT_RESTART.md). Restart attach clients against
-the retained owner and resume from handled cursors. For apps with a request
+the restarted agent program and resume from handled cursors. For apps with a request
 consumer, verify its heartbeat and request/receipt/answer flow where those
 capabilities are declared; report missing support explicitly. Otherwise verify
 the app's ordinary domain command/read and reload behavior. Use the

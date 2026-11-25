@@ -4,9 +4,8 @@ One maintenance agent maintains many pages. It has one account-level identity
 and credential, runs one local program, and keeps one connection to the host
 for all control traffic. A single page is a workspace with one page.
 
-There is no backward compatibility and no state migration. Page tokens, adopt
-codes, setup credentials, per-page agent routes, per-page project folders and
-the `~/.config/tendril/*.json` handle store are removed, not kept alongside.
+The workspace is the only model: one credential and one signing key per agent,
+and page access by grant.
 
 ## Decisions
 
@@ -39,8 +38,6 @@ agent_join_codes(code_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL,
                  scopes TEXT NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER)
 ```
 
-The old `account_setup*` tables and their triggers are deleted from `0001`.
-
 ### Credential
 
 - Token `ta_<32 base32>`; only its SHA-256 is stored.
@@ -58,7 +55,7 @@ The old `account_setup*` tables and their triggers are deleted from `0001`.
 |---|---|---|
 | `POST /api/agents {owner, name, publicKey}` | a new agent, unauthenticated, creation rate limits | unclaimed agent + token. The owner claims it by signing in to any page it created. |
 | `POST /api/agents/join {code, name, publicKey}` | an agent given a paste-ready blurb | agent under the inviting account + token |
-| Dashboard → Agents → Add agent | signed-in owner | one-time join code (10 min) and paste-ready blurb |
+| Dashboard → Your agents → Add agent | signed-in owner | one-time join code (10 min) and paste-ready blurb |
 | MCP `register_agent {name, publicKey}` | an OAuth-linked assistant | agent under the account; calling again with the same name rotates the token |
 
 ### Agent API (service origin)
@@ -70,13 +67,10 @@ The old `account_setup*` tables and their triggers are deleted from `0001`.
   owned by `owner_email` (claimed on owner sign-in, which also claims the
   agent). Claimed agents create pages already owned by the account. The
   creator receives a full grant.
-- `/api/agent/pages/<id>/<rest>` — every former `/api/t/<id>/<rest>` route
-  (metadata, release, links, activity, application, assistant/propose, push,
-  setup/watch, peers/*). The router authenticates the token in D1, requires a
+- `/api/agent/pages/<id>/<rest>` — the page routes (metadata, release, links,
+  activity, application, assistant/propose, push, setup/watch, peers/*). The router authenticates the token in D1, requires a
   grant for `<id>`, and forwards to the page object with internal headers
   `x-tendril-agent` (agent id) and `x-tendril-agent-scopes`.
-- `/api/t/*`, `/api/adopt`, `/api/setup`, page `tokens` routes, `/join/agent`
-  and `_tendril/agents` are removed.
 
 The page object keeps a local mirror of its grants (`agent_grants` table:
 agent id, public key, scopes, revision) written through internal routes when a
@@ -115,7 +109,7 @@ One `AgentHub` Durable Object per agent (`idFromName(agentId)`).
 ### Limits
 
 Rate limits and peer budgets are keyed per agent and per account, not per page
-token. `list` caps of 20 become paged listings.
+token. `list` results are paged listings.
 
 ## Client contract (`contract/`)
 
@@ -127,8 +121,6 @@ token. `list` caps of 20 become paged listings.
     a WebSocket-compatible object for the existing `openSocket` and `socket`
     factories (`setup-watch`, `discovery-watch`, `peers`, `assistant`), and
     `events(listener)`.
-- `createClient({api, token})`, `createPage(service, body)` and page-token
-  handling are removed.
 
 ## Local program and workspace
 
@@ -144,9 +136,12 @@ my-pages/
 ```
 
 - `tendril workspace init --service <origin> --owner <email>` creates the
-  workspace, the shared signing key and the agent credential.
+  workspace, the shared signing key and an unclaimed agent credential;
+  `workspace join --code <code>` joins an account with a dashboard code;
+  `workspace key` then `workspace adopt --credential <file>` registers through
+  an account-linked MCP `register_agent`.
 - `tendril page new <slug>` creates a page and its source folder.
-- `tendril page grant` / `tendril page list` / `tendril status`.
+- `tendril page grant <slug> <page-id>` / `tendril page list` / `tendril status`.
 - `tendril agent run` is the only long-running local program: one hub
   connection, one Chronolog session per granted page (each with its own device
   store and the shared signer), one local socket for attach clients that name
@@ -161,10 +156,3 @@ my-pages/
 - A store pool serves many native stores from one worker thread.
 - `mergeSessionChanges(sessions)` combines change feeds with a cursor per
   application; the per-session exit listener is removed.
-
-## What breaks
-
-Running agents and native participants stop connecting at the deploy. Existing
-agent projects are set up fresh in a workspace. Native device stores are not
-converted; data only a native participant held is lost unless a browser
-re-syncs it. Pages keep loading for people.
