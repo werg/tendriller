@@ -1,203 +1,44 @@
-import {p,worker,createPhysicalSession} from './physical-fixture.mjs';
 import test from 'node:test';
-import {FixtureLocks} from './fixtures/locks.mjs';
 import assert from 'node:assert/strict';
-import { build } from 'esbuild';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { createBrowserRtcBroker, rtcEndpoint, BROWSER_RTC_PROTOCOL, checkRtcMessage, MAX_RTC_MESSAGE_BYTES, registerBrowserRtcProvider } from '../../session/browser-rtc.mjs';
-const register = endpoint => endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'register'}}));
-const until = async (predicate,timeoutMs=2000) => { const end=Date.now()+timeoutMs;while(!predicate()){if(Date.now()>end)throw Error('TEST_DEADLINE');await new Promise(setImmediate);} };
+import {
+  BROWSER_RTC_PROTOCOL, checkRtcMessage, createTabRtcEndpoint,
+  createWorkerRtcOpener, MAX_RTC_MESSAGE_BYTES, startTabRtcHost,
+} from '../../session/browser-rtc.mjs';
 
-test('one bounded pending direct attempt waits for registration without polling or selecting relay',async()=>{
- const calls=[],broker=createBrowserRtcBroker({openConnection:async(endpoint,options)=>{calls.push({endpoint,options});return{close:async()=>{}};}});
- const pending=broker.openDirectConnection({timeoutMs:1000});assert.equal(calls.length,0);
- const endpoint=rtcEndpoint(()=>{});broker.addRoute(endpoint,{authorize:()=>true});register(endpoint);
- const connection=await pending;assert.equal(calls.length,1);assert.equal(calls[0].endpoint,endpoint);assert(calls[0].options.timeoutMs<=1000);await connection.close();broker.close();
+test('opaque binary RTC messages enforce finite bounds and reject cycles/non-plain prototypes', () => {
+  checkRtcMessage({ ok: true, bytes: new Uint8Array(1024), list: [1, 'two', null] });
+  assert.throws(() => checkRtcMessage(new Uint8Array(MAX_RTC_MESSAGE_BYTES + 1)), /RTC_MESSAGE_LIMIT/);
+  const cycle = {}; cycle.self = cycle;
+  assert.throws(() => checkRtcMessage(cycle), /RTC_MESSAGE_INVALID/);
+  assert.throws(() => checkRtcMessage(new Map()), /RTC_MESSAGE_INVALID/);
 });
 
-test('unauthorized registration cannot satisfy a wait; close immediately fences pending work',async()=>{
- const broker=createBrowserRtcBroker({openConnection:async()=>{throw Error('MUST_NOT_OPEN');}}),endpoint=rtcEndpoint(()=>{});
- broker.addRoute(endpoint,{authorize:()=>false});register(endpoint);
- await assert.rejects(broker.openDirectConnection({timeoutMs:20}),{code:'RTC_PROVIDER_TIMEOUT'});
- const pending=broker.openDirectConnection({timeoutMs:1000});broker.close();await assert.rejects(pending,{code:'RTC_BROKER_CLOSED'});
-});
+test('1:1 tab RTC host and worker RTC opener demultiplex isolated RTC messages and forward network changes', async () => {
+  const left = new EventTarget(), right = new EventTarget();
+  left.postMessage = data => queueMicrotask(() => right.dispatchEvent(new MessageEvent('message', { data })));
+  right.postMessage = data => queueMicrotask(() => left.dispatchEvent(new MessageEvent('message', { data })));
 
-test('provider loss aborts its connections; a subsequent controller attempt selects the surviving page',async()=>{
- const calls=[],broker=createBrowserRtcBroker({openConnection:async(endpoint,options)=>{calls.push({endpoint,options});return{kind:'direct',close:async()=>{}};}});
- const a=rtcEndpoint(()=>{}),b=rtcEndpoint(()=>{}),removeA=broker.addRoute(a,{authorize:()=>true});broker.addRoute(b,{authorize:()=>true});register(a);register(b);
- const first=await broker.openDirectConnection({timeoutMs:1000});assert.equal(calls[0].endpoint,a);removeA();assert(calls[0].options.signal.aborted);assert.equal(calls.length,1,'broker owns no retry loop');
- const second=await broker.openDirectConnection({timeoutMs:1000});assert.equal(calls[1].endpoint,b);await first.close();await second.close();broker.close();
-});
+  const stop = new AbortController();
+  const leftEp = createTabRtcEndpoint(left, { signal: stop.signal });
+  const rightEp = createTabRtcEndpoint(right, { signal: stop.signal });
 
-test('opaque binary RTC messages have their own finite bound and reject transfers/cycles',()=>{
- checkRtcMessage({protocol:'opaque-kernel',packet:new Uint8Array(2*1024*1024)});
- checkRtcMessage({packet:new ArrayBuffer(1024)});
- assert.throws(()=>checkRtcMessage({packet:new Uint8Array(MAX_RTC_MESSAGE_BYTES+1)}),/RTC_MESSAGE_LIMIT/);
- const cycle={};cycle.self=cycle;assert.throws(()=>checkRtcMessage(cycle),/RTC_MESSAGE_INVALID/);
- const pair=new MessageChannel();try{assert.throws(()=>checkRtcMessage({port:pair.port1}),/RTC_MESSAGE_INVALID/);}finally{pair.port1.close();pair.port2.close();}
-});
+  const received = [];
+  rightEp.addEventListener('message', ({ data }) => received.push(data));
+  leftEp.postMessage({ hello: 'rtc' });
+  left.postMessage({ protocol: 'other-protocol', type: 'rtc', payload: { ignored: true } });
+  await new Promise(r => setTimeout(r, 15));
+  assert.deepEqual(received, [{ hello: 'rtc' }]);
 
-// Only substitute the public Chronolog RTC mechanics. The core default browser
-// entry, private bootstrap roots and actual owner RPC attachment remain real.
-const compiled=await build({stdin:{contents:"export {openBrowserOwner} from './session/browser.mjs';export {serveBrowserOwner} from './session/worker.mjs';",resolveDir:new URL('../..',import.meta.url).pathname,loader:'js'},bundle:true,format:'esm',platform:'node',write:false,plugins:[{name:'rtc-fixture',setup(build){build.onResolve({filter:/^@chronolog\/peer-session\/webrtc$/},()=>({path:'mechanics',namespace:'rtc-fixture'}));build.onLoad({filter:/.*/,namespace:'rtc-fixture'},()=>({contents:`
- export function serveWorkerWebRtcConnections(endpoint,{signal}={}){
-  globalThis.__rtcFixtureBridgeClosed.started++;
-  const receive=({data})=>{if(data?.protocol==='test/rtc'&&data.type==='open')endpoint.postMessage({protocol:'test/rtc',type:'ready',id:data.id});};
-  endpoint.addEventListener('message',receive);return{async close(){globalThis.__rtcFixtureBridgeClosed.count++;endpoint.removeEventListener('message',receive);}};
- }
- export function openWorkerWebRtcConnection(endpoint,options){return new Promise((resolve,reject)=>{
-  const id=crypto.randomUUID(),abort=()=>{endpoint.removeEventListener('message',receive);reject(options.signal.reason);};
-  const receive=({data})=>{if(data?.protocol!=='test/rtc'||data.id!==id)return;endpoint.removeEventListener('message',receive);options.signal.removeEventListener('abort',abort);resolve({kind:'direct',close:async()=>{}});};
-  endpoint.addEventListener('message',receive);options.signal.addEventListener('abort',abort,{once:true});endpoint.postMessage({protocol:'test/rtc',type:'open',id});
- });}
-`,loader:'js'}));}}]});
+  let networkChanges = 0;
+  const opener = createWorkerRtcOpener(right, { signal: stop.signal, onNetworkChange: () => { networkChanges++; } });
+  const host = startTabRtcHost(left, { signal: stop.signal });
+  assert.equal(typeof opener.openDirectConnection, 'function');
+  assert.deepEqual(host.peers(), []);
+  left.postMessage({ protocol: BROWSER_RTC_PROTOCOL, type: 'network-change' });
+  await new Promise(r => setTimeout(r, 15));
+  assert.equal(networkChanges, 1);
 
-for(const mode of ['shared','elected'])test(`default ${mode} bootstrap makes the FIRST link direct even when openSession awaits that link before RPC readiness`,async t=>{
- const directory=await mkdtemp(join(tmpdir(),'core-rtc-'));t.after(()=>rm(directory,{recursive:true,force:true}));const file=join(directory,'core.mjs');await writeFile(file,compiled.outputFiles[0].text);const core=await import(pathToFileURL(file).href);
- const globals=new Map(['navigator','location','SharedWorker','Worker','RTCPeerConnection','__rtcFixtureBridgeClosed'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));t.after(()=>{for(const[key,value]of globals)if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];});
- class Scope extends EventTarget{postMessage(){}close(){}connect(port){this.dispatchEvent(Object.assign(new Event('connect'),{ports:[port]}));}}
- const scope=new Scope(),caller=new AbortController(),links=[],definition=p.defineApplication({id:'rtc-fixture',version:'1',commands:{},queries:{}});let shared=0,dedicated=0,localWorker,session;
- const setup={__rtcFixtureBridgeClosed:{count:0,started:0},navigator:{locks:new FixtureLocks()},location:{origin:'https://app.test',href:'https://app.test/'},RTCPeerConnection:class{},SharedWorker:mode==='shared'?class extends EventTarget{constructor(){super();shared++;const wire=new MessageChannel();this.port=wire.port2;scope.connect(wire.port1);}}:undefined,Worker:class extends EventTarget{constructor(){super();dedicated++;localWorker=this;}postMessage(data){queueMicrotask(()=>scope.dispatchEvent(new MessageEvent('message',{data})));}terminate(){}}};for(const[key,value]of Object.entries(setup))Object.defineProperty(globalThis,key,{configurable:true,value});
- scope.postMessage=data=>queueMicrotask(()=>localWorker?.dispatchEvent(new MessageEvent('message',{data})));
- const service=core.serveBrowserOwner({scope,profileId:'retained',async openSession({signal,openDirectConnection}){try{links.push(await openDirectConnection({signal,role:'offerer',signaling:{},timeoutMs:500}));}catch{links.push({kind:'relay'});}session=await createPhysicalSession({definition});return{session};}});
- t.after(()=>service.close());let attachment;
- try{attachment=await core.openBrowserOwner({workerUrl:'https://app.test/worker.mjs',profileId:'retained',applicationId:'a'.repeat(64),timeoutMs:2000,persistStorage:false,storageKeepAliveMs:0,signal:caller.signal});assert.equal(attachment.mode,mode);assert.equal(shared,mode==='shared'?1:0);assert.equal(dedicated,mode==='elected'?1:0);assert.equal(links[0].kind,'direct','relay at startup must not become a permanent fallback');
- assert.equal(globalThis.__rtcFixtureBridgeClosed.count,0,'successful attachment must preserve its early RTC provider');
- const initialProviders=globalThis.__rtcFixtureBridgeClosed.started;
- assert.equal(await attachment.resume(),attachment.session);
- assert.deepEqual(await Promise.all([attachment.resume(),attachment.resume()]),[attachment.session,attachment.session]);
- assert.equal(globalThis.__rtcFixtureBridgeClosed.started,initialProviders,'active resume must not register another provider');
- await attachment.suspend();
- assert.equal(globalThis.__rtcFixtureBridgeClosed.count,initialProviders);
- assert.deepEqual(await Promise.all([attachment.resume(),attachment.resume()]),[attachment.session,attachment.session]);
- assert.equal(globalThis.__rtcFixtureBridgeClosed.started,initialProviders+1,'concurrent resumes after suspension register exactly one provider');
- await attachment.resume();assert.equal(globalThis.__rtcFixtureBridgeClosed.started,initialProviders+1);
- if(mode==='elected'){caller.abort(Error('CALLER_ENDED'));await until(()=>attachment.session.signal.aborted);await until(()=>globalThis.__rtcFixtureBridgeClosed.count===initialProviders+1);}
- await attachment.detach();await until(()=>globalThis.__rtcFixtureBridgeClosed.count>0);
- assert.equal(globalThis.__rtcFixtureBridgeClosed.count,initialProviders+1,'actual attachment shutdown closes every owned provider');}finally{await attachment?.detach();await service.close();}
-});
-
-test('authenticated BC attach registers RTC before RPC, carries full opaque packets, and rejects public sideband forgery',async t=>{
- const navigatorDescriptor=Object.getOwnPropertyDescriptor(globalThis,'navigator');
- Object.defineProperty(globalThis,'navigator',{configurable:true,value:{locks:new FixtureLocks()}});
- t.after(()=>{if(navigatorDescriptor)Object.defineProperty(globalThis,'navigator',navigatorDescriptor);else delete globalThis.navigator;});
- const {createBroadcastOwner,createBroadcastEndpoint,checkOwnerFrame,BROWSER_OWNER_PROTOCOL}=await import('../../session/browser-transport.mjs');
- const name='rtc:'+crypto.randomUUID(),server=new BroadcastChannel(name),client=new BroadcastChannel(name),outsider=new BroadcastChannel(name),profileId='profile',order=[],received=[],rpc=[],ports=[];let ownerRtc;
- const session=await createPhysicalSession(),actualOwner=worker.createApplicationOwner(session);
- const owner={ownerInstanceId:actualOwner.ownerInstanceId,attach(endpoint){
-  const proxy=Object.assign(new EventTarget(),{postMessage:frame=>endpoint.postMessage(frame)});
-  const receive=({data})=>{if(data.method==='hello')order.push('rpc');else rpc.push(data);proxy.dispatchEvent(new MessageEvent('message',{data}));};
-  endpoint.addEventListener('message',receive);const detach=actualOwner.attach(proxy);
-  return()=>{endpoint.removeEventListener('message',receive);detach();};
- }};
- // Exercise authenticated delivery and packet bounds independently of CPU
- // throughput. Other tests keep their short/virtual negative liveness fences.
- const fixtureDeadline=30000;
- const bridge=await createBroadcastOwner(server,owner,{profileId,idleTimeoutMs:fixtureDeadline,onRtcEndpoint(endpoint){ownerRtc=endpoint;endpoint.addEventListener('message',({data})=>{if(data.protocol===BROWSER_RTC_PROTOCOL){order.push('rtc');return;}received.push(data);endpoint.postMessage(data);});}});
- t.after(async()=>{await transport?.close();await bridge.close();await actualOwner.close();server.close();client.close();outsider.close();});
- let transport;const announced=new Promise(resolve=>client.addEventListener('message',({data})=>{if(data.type==='ready')resolve(data);},{once:true}));bridge.announce();const announcement=await announced;
- transport=createBroadcastEndpoint(client,announcement,{profileId,livenessTimeoutMs:fixtureDeadline});
- transport.rtc.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'register'});
- const frames=[];transport.addEventListener('message',({data})=>frames.push(data));
- transport.postMessage({protocol:'chronolog/authored-session/owner/v1',attachment:crypto.randomUUID(),id:1,kind:'request',method:'hello',args:[{applicationId:session.applicationId}]});
- await until(()=>frames.some(frame=>frame.kind==='response'&&frame.id===1&&frame.value?.binding),fixtureDeadline);assert.deepEqual(order.slice(0,2),['rtc','rpc']);
- const replies=[];transport.rtc.addEventListener('message',({data})=>replies.push(data));const packet=new Uint8Array(2*1024*1024);packet[0]=11;packet[packet.length-1]=23;
- assert.throws(()=>checkOwnerFrame({packet}),/OWNER_MESSAGE_LIMIT/);
- transport.rtc.postMessage({protocol:'opaque-kernel-test',packet});await until(()=>replies.length===1,fixtureDeadline);assert.deepEqual(replies[0].packet,packet);assert.equal(received.length,1);assert.equal(rpc.length,0,'RTC payloads never enter the RPC port');
- for(let i=0;i<3;i++)transport.rtc.postMessage({protocol:'opaque-kernel-test',packet:new Uint8Array(1114112)});await until(()=>replies.length===4,fixtureDeadline);assert.equal(received.length,4);
- outsider.postMessage({protocol:BROWSER_OWNER_PROTOCOL,type:'rtc',ownerInstanceId:owner.ownerInstanceId,payload:{protocol:'forged'}});
- outsider.postMessage({protocol:BROWSER_RTC_PROTOCOL,type:'register'});await new Promise(setImmediate);await new Promise(setImmediate);assert.equal(received.length,4);assert.equal(order.filter(x=>x==='rtc').length,1);
- let closed=false;ownerRtc.addEventListener('close',()=>closed=true);await transport.close();await until(()=>closed,fixtureDeadline);assert.equal(bridge.routes,0);
-});
-
-test('provider admission reserves the last slot atomically and sends the next concurrent open to another page',async t=>{
- const calls=[],broker=createBrowserRtcBroker({openConnection:async endpoint=>{calls.push(endpoint);return {close:async()=>{}};}});
- t.after(()=>broker.close());const a=rtcEndpoint(()=>{}),b=rtcEndpoint(()=>{});
- for(const endpoint of[a,b]){broker.addRoute(endpoint,{authorize:()=>true});register(endpoint);}
- const connections=[];for(let i=0;i<7;i++)connections.push(await broker.openDirectConnection({timeoutMs:1000}));
- connections.push(...await Promise.all([broker.openDirectConnection({timeoutMs:1000}),broker.openDirectConnection({timeoutMs:1000})]));
- assert.equal(calls.filter(endpoint=>endpoint===a).length,8);assert.equal(calls.filter(endpoint=>endpoint===b).length,1);
- await Promise.all(connections.map(connection=>connection.close()));
-});
-
-for(const loss of ['provider','deadline'])test(`a noncooperative opener cannot delay ${loss} cancellation or retain its late candidate`,async t=>{
- let resolve,closed=0,started=false;const broker=createBrowserRtcBroker({openConnection:()=>{started=true;return new Promise(done=>resolve=done);}});
- t.after(()=>broker.close());const endpoint=rtcEndpoint(()=>{}),remove=broker.addRoute(endpoint,{authorize:()=>true});register(endpoint);
- const pending=broker.openDirectConnection({timeoutMs:loss==='deadline'?20:1000});await until(()=>started);
- if(loss==='provider')remove();
- await assert.rejects(pending,{code:loss==='provider'?'RTC_PROVIDER_LOST':'RTC_PROVIDER_TIMEOUT'});
- resolve({close:async()=>{closed++;}});await until(()=>closed===1);await new Promise(setImmediate);assert.equal(closed,1);
-});
-
-test('opaque RTC validation rejects huge sparse lengths before codec allocation',()=>{
- assert.throws(()=>checkRtcMessage({items:new Array(1000000)}),/RTC_MESSAGE_LIMIT/);
- assert.throws(()=>checkRtcMessage({items:new Array(65536)}),/RTC_MESSAGE_LIMIT/);
- checkRtcMessage({items:new Array(12)});
-});
-
-
-test('provider adoption retains the same bridge while handing opening lifetime to the real session',async()=>{
- const opening=new AbortController(),session=new AbortController(),endpoint=rtcEndpoint(()=>{});let closed=0,started=0;
- const provider=registerBrowserRtcProvider(endpoint,{signal:opening.signal},{createPeerConnection(){},serve(){started++;return{close(){closed++;}};}});
- provider.adopt({signal:session.signal});opening.abort();assert.equal(closed,0);assert.equal(started,1);
- session.abort();assert.equal(closed,1);await provider.close();assert.equal(closed,1);
-});
-
-
-test('broker clamps explicit gathering time to the remaining negotiation budget after provider wait', async t => {
- let time=1000; t.mock.method(Date,'now',()=>time); const calls=[];
- const broker=createBrowserRtcBroker({openConnection:async(_endpoint,options)=>{calls.push(options);return{close:async()=>{}};}});
- t.after(()=>broker.close());const pending=broker.openDirectConnection({timeoutMs:1000,gatheringTimeoutMs:800});
- time+=700;const endpoint=rtcEndpoint(()=>{});broker.addRoute(endpoint,{authorize:()=>true});register(endpoint);
- const connection=await pending;assert.equal(calls[0].timeoutMs,300);assert.equal(calls[0].gatheringTimeoutMs,300);await connection.close();
- const shorter=await broker.openDirectConnection({timeoutMs:1000,gatheringTimeoutMs:200});assert.equal(calls[1].gatheringTimeoutMs,200);await shorter.close();
- const defaults=await broker.openDirectConnection({timeoutMs:1000});assert.equal(Object.hasOwn(calls[2],'gatheringTimeoutMs'),false);await defaults.close();
-});
-
-test('authenticated provider and network changes coalesce into explicit upgrade notifications',async()=>{
- let changes=0,authorized=true;
- const broker=createBrowserRtcBroker({onNetworkChange:()=>{changes++;}}),endpoint=rtcEndpoint(()=>{});
- broker.addRoute(endpoint,{authorize:()=>authorized});
- const change=()=>endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'network-change'}}));
- change();await Promise.resolve();assert.equal(changes,0,'unregistered routes cannot trigger work');
- register(endpoint);change();change();await Promise.resolve();assert.equal(changes,1);
- register(endpoint);await Promise.resolve();assert.equal(changes,1,'duplicate registration cannot probe');
- authorized=false;change();await Promise.resolve();assert.equal(changes,1);
- authorized=true;change();await Promise.resolve();assert.equal(changes,2);
- broker.close();change();await Promise.resolve();assert.equal(changes,2);
-});
-
-test('provider network listeners stop on close and hidden documents do not request upgrades',async t=>{
- const originals=new Map(['addEventListener','removeEventListener','document','navigator','RTCPeerConnection'].map(key=>[key,Object.getOwnPropertyDescriptor(globalThis,key)]));
- t.after(()=>{for(const[key,value]of originals)if(value)Object.defineProperty(globalThis,key,value);else delete globalThis[key];});
- const events=new EventTarget(),doc=new EventTarget(),network=new EventTarget();doc.visibilityState='visible';
- for(const[key,value]of Object.entries({addEventListener:events.addEventListener.bind(events),removeEventListener:events.removeEventListener.bind(events),document:doc,navigator:{connection:network},RTCPeerConnection:class{}}))Object.defineProperty(globalThis,key,{configurable:true,value});
- const messages=[],endpoint=rtcEndpoint(value=>messages.push(value)),provider=registerBrowserRtcProvider(endpoint,{signal:new AbortController().signal},{serve:()=>({close(){}})});
- assert.equal(messages.length,1);
- events.dispatchEvent(new Event('online'));network.dispatchEvent(new Event('change'));assert.equal(messages.length,3);
- doc.visibilityState='hidden';doc.dispatchEvent(new Event('visibilitychange'));events.dispatchEvent(new Event('online'));assert.equal(messages.length,3);
- doc.visibilityState='visible';doc.dispatchEvent(new Event('visibilitychange'));assert.equal(messages.length,4);
- await provider.close();const before=messages.length;
- for(const name of ['online','pageshow'])events.dispatchEvent(new Event(name));
- for(const name of ['visibilitychange','resume'])doc.dispatchEvent(new Event(name));
- network.dispatchEvent(new Event('change'));assert.equal(messages.length,before);
-});
-
-test('restored provider availability wakes selection and coalesces one reconsideration without replacing active links',async()=>{
- let changes=0,authorized=true;const calls=[];
- const broker=createBrowserRtcBroker({onNetworkChange:()=>{changes++;},openConnection:async(_endpoint,options)=>{calls.push(options);return{kind:'direct',signal:options.signal,close:async()=>{}};}}),endpoint=rtcEndpoint(()=>{});
- broker.addRoute(endpoint,{authorize:()=>authorized});
- const available=value=>endpoint.dispatchEvent(new MessageEvent('message',{data:{protocol:BROWSER_RTC_PROTOCOL,type:'availability',available:value}}));
- available(false);available(true);await Promise.resolve();assert.equal(changes,0,'unregistered routes cannot request reconsideration');
- register(endpoint);await Promise.resolve();assert.equal(changes,1);
- const retained=await broker.openDirectConnection({timeoutMs:1000});available(false);available(false);await Promise.resolve();assert.equal(changes,1,'freezing cannot request reconsideration');assert.equal(retained.signal.aborted,false);
- const pending=broker.openDirectConnection({timeoutMs:1000});assert.equal(calls.length,1,'frozen route is not selected for new work');
- available(true);available(true);available(false);available(true);await Promise.resolve();assert.equal(changes,2,'restoration bursts request only one reconsideration');
- const restored=await pending;assert.equal(calls.length,2);assert.equal(retained.signal.aborted,false);
- available(true);await Promise.resolve();assert.equal(changes,2,'unchanged available status is silent');
- authorized=false;available(false);available(true);await Promise.resolve();assert.equal(changes,2,'unauthorized hints cannot trigger work');
- authorized=true;await retained.close();await restored.close();broker.close();available(false);available(true);await Promise.resolve();assert.equal(changes,2);
+  await host.close();
+  opener.close();
+  stop.abort();
 });

@@ -50,6 +50,10 @@ export { mountVoiceControls } from "./controls";
 export type { VoiceControlsOptions } from "./controls";
 export { mountAgentChat } from "./chat";
 export type { AgentChatOptions, AgentChatMessage, AgentChatHandle, AgentChatPresence } from "./chat";
+export { createStreamTranscriber } from "./transcriber";
+export type { StreamTranscriber, StreamTranscriberOptions, StreamTranscriptSegment, StreamTranscriberStatus } from "./transcriber";
+export { ContinuousPcmSegmenter, PcmResampler, PcmVoiceSegmenter } from "./pcm";
+export type { ContinuousPcmSegment } from "./pcm";
 export { SPEECH_DOWNLOAD_BYTES, SPEECH_MODEL_BYTES, SPEECH_LANGUAGES } from "./resources";
 
 type InputSession = { kind: "capture" | WakeMode; epoch: number; abort: AbortController; lease?: MicrophoneSession; released: boolean };

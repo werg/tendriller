@@ -64,7 +64,7 @@ export function participateApplication(session, { peers, openDirectConnection,
       opening.get(peer.identity)?.abort(new Error('PEER_CONNECTION_SUPERSEDED'));
       if (!upgrade) retire(peer.identity);
     }
-    if (opening.has(peer.identity) && invitation === undefined || links.size + opening.size >= 8) return;
+    if (opening.has(peer.identity) && invitation === undefined || links.size + opening.size >= 16) return;
     if (upgrade ? !links.has(peer.identity) || promote && descriptions.get(peer.identity)?.kind !== 'relay' : links.has(peer.identity)) return;
     // Exactly one side proactively dials; the other always accepts its invitation.
     // Either side may promote its own relay link after a local network change.

@@ -26,7 +26,8 @@ Use the selected service's `/.well-known/tendriller-capabilities.json` and [Buil
 | Multi-agent `@handles` & hosted MCP | `tendril.agents`, `shared/helpers/agent-requests.mjs`, [hosted MCP](CLOUDFLARE_ASSISTANT.md) | Self-chosen `@handles`, one optional primary agent per page, and opt-in OAuth-token-wrapped hosted MCP with zero plaintext keys at rest |
 | Signals/presence/progress | `session.signals`; `shared/helpers/signal-request.mjs` | Disposable authenticated live updates, not durable ordering or private recipient authorization |
 | Reviewed photos/content | `session.content`, `shared/helpers/reviewed-input.mjs`, `shared/media/camera.mjs` | Acquisition and inference suggestions never commit automatically; explicit local consent/review required |
-| Sensors/voice | `tendril.capabilities/sensors`, optional `@tendriller/runtime/voice` | Trusted gestures and tracked cancellation; API presence does not prove permission/hardware/provider availability |
+| WebRTC video/audio, custom streams & agent call following | `shared/media/call-room.mjs`, `shared/ui/call-room.mjs`, `shared/media/call-agent.mjs`, `shared/media/native-audio.mjs`, `shared/helpers/call-domain.mjs`, `templates/call/` | Direct authenticated WebRTC links carry RTP tracks & `app:*` binary DataChannels via in-band Perfect Negotiation; relay links degrade media honestly while keeping sync & per-person on-device transcripts active |
+| Sensors/voice | `tendril.capabilities/sensors`, optional `@tendriller/runtime/voice` (`createVoice`, `createStreamTranscriber`) | Trusted gestures and tracked cancellation; API presence does not prove permission/hardware/provider availability |
 | Local diagnostics | `@tendriller/core/diagnostics`, transport/error inspectors | Observations are not command success, retention, finality or future process wake guarantees |
 
 ## Use the correct package and layer

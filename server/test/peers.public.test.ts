@@ -23,6 +23,10 @@ it('exposes real authenticated rendezvous and observed host traffic to independe
     const first = offerer.messages[Symbol.asyncIterator](), second = answerer.messages[Symbol.asyncIterator]();
     await offerer.send(offer); expect((await second.next()).value).toEqual(offer);
     await answerer.send(answer); expect((await first.next()).value).toEqual(answer);
+    const ice = { candidate: 'candidate:1 1 udp 2122260223 127.0.0.1 49152 typ host', sdpMid: '0', sdpMLineIndex: 0 };
+    await offerer.send({ kind: 'candidate', candidate: ice });
+    expect((await second.next()).value).toEqual({ kind: 'candidate', candidate: ice });
+    await offerer.send({ kind: 'connected' });
     expect((await first.next()).done).toBe(true); expect((await second.next()).done).toBe(true);
     const traffic = page.hostTraffic;
     expect(traffic.httpRequests).toBe(3);
@@ -59,6 +63,7 @@ it('introduces authorized peers, exchanges exactly two descriptions, and retires
   const pageReader = page.connection.messages[Symbol.asyncIterator](), agentReader = agent.connection.messages[Symbol.asyncIterator]();
   await agent.connection.send(offer); expect((await pageReader.next()).value).toEqual(offer);
   await page.connection.send(answer); expect((await agentReader.next()).value).toEqual(answer);
+  await agent.connection.send({ kind: 'connected' });
   expect((await pageReader.next()).done).toBe(true); expect((await agentReader.next()).done).toBe(true);
   expect((await agent.closed).code).toBe(1000); expect((await page.closed).code).toBe(1000);
   expect(agent.connection.stats.sentDescriptions + page.connection.stats.sentDescriptions).toBe(2);

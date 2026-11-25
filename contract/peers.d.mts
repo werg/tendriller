@@ -15,6 +15,16 @@ export declare class PeerConnectionError extends Error { readonly code: string; 
 export declare function validatePeerBootstrap(value: unknown): PeerBootstrap;
 
 export interface PeerDescription { readonly type: 'offer' | 'answer'; readonly sdp: string }
+export interface PeerIceCandidate {
+  readonly candidate: string;
+  readonly sdpMid?: string | null;
+  readonly sdpMLineIndex?: number | null;
+  readonly usernameFragment?: string | null;
+}
+export type PeerRendezvousMessage =
+  | PeerDescription
+  | { readonly kind: 'candidate'; readonly candidate: PeerIceCandidate | null }
+  | { readonly kind: 'connected' };
 export interface PeerRendezvousOptions {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
@@ -22,9 +32,9 @@ export interface PeerRendezvousOptions {
 }
 export interface PeerRendezvous {
   readonly ready: Promise<Readonly<{ session: string; role: 'offerer' | 'answerer' }>>;
-  readonly messages: AsyncIterable<PeerDescription>;
-  readonly stats: Readonly<{ sentBytes: number; receivedBytes: number; sentDescriptions: number; receivedDescriptions: number; closed: boolean }>;
-  send(description: PeerDescription): Promise<void>;
+  readonly messages: AsyncIterable<PeerRendezvousMessage>;
+  readonly stats: Readonly<{ sentBytes: number; receivedBytes: number; sentDescriptions: number; receivedDescriptions: number; sentCandidates: number; receivedCandidates: number; closed: boolean }>;
+  send(message: PeerRendezvousMessage): Promise<void>;
   close(): void;
 }
 export interface PeersClient extends AuthorityClient {
@@ -48,9 +58,10 @@ export interface PeersClient extends AuthorityClient {
   /** Two isolated binary lanes through the authenticated opaque relay. */
   relay(channel: string, peerId: string, options: PeerRelayOptions): PeerRelay;
 }
-export declare const PEER_RENDEZVOUS_PROTOCOL: 'tendriller.rendezvous.v1';
-export declare const PEER_RENDEZVOUS_LIMITS: Readonly<{ descriptionBytes: number; messageBytes: number; sessions: number; lifetimeMs: number }>;
+export declare const PEER_RENDEZVOUS_PROTOCOL: 'tendriller.rendezvous.v2';
+export declare const PEER_RENDEZVOUS_LIMITS: Readonly<{ descriptionBytes: number; candidateBytes: number; maxCandidates: number; messageBytes: number; sessions: number; lifetimeMs: number }>;
 export declare function validatePeerDescription(value: unknown): PeerDescription;
+export declare function validatePeerIceCandidate(value: unknown): PeerIceCandidate | null;
 export declare function createPeerRendezvous(socket: PeerSocket, options?: PeerRendezvousOptions): PeerRendezvous;
 export declare function createPeersClient(options: {
   readonly base: string;

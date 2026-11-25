@@ -13,6 +13,7 @@ const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {
   constructor(code, message) { super(message); this.name = 'PeerConnectionError'; this.code = code; }
 }
+const isLoopbackHost = hostname => hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '[::1]';
 const fail = (code, message) => { throw code === 'invalid_discovery_watch'
   ? new PeerDiscoveryWatchError(code, message) : new PeerConnectionError(code, message); };
 export function validatePeerBootstrap(value) {
@@ -23,7 +24,7 @@ export function validatePeerBootstrap(value) {
     if (!endpoint || typeof endpoint.url !== 'string' || endpoint.url.length > 2048 ||
         Object.keys(endpoint).some(key => key !== 'url')) fail('invalid_bootstrap', 'Invalid introduction endpoint');
     let url; try { url = new URL(endpoint.url); } catch { fail('invalid_bootstrap', 'Invalid peer endpoint URL'); }
-    const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    const local = isLoopbackHost(url.hostname);
     if (url.username || url.password || url.hash || url.search || url.href.length > 2048 ||
         !(url.protocol === 'https:' || url.protocol === 'http:' && local))
       fail('invalid_bootstrap', 'Introduction endpoints require HTTPS without credentials, query or fragment (HTTP is limited to loopback tests)');
@@ -33,10 +34,16 @@ export function validatePeerBootstrap(value) {
   });
   return Object.freeze({ version: 2, endpoints: Object.freeze(endpoints) });
 }
-// Rendezvous is a bounded introduction, never an application transport.
-export const PEER_RENDEZVOUS_PROTOCOL = 'tendriller.rendezvous.v1';
-export const PEER_RENDEZVOUS_LIMITS = Object.freeze({ descriptionBytes: 64 * 1024,
-  messageBytes: 128 * 1024, sessions: 16, lifetimeMs: 60_000 });
+// Rendezvous v2: bounded offer/answer plus bounded trickle ICE candidates until connected.
+export const PEER_RENDEZVOUS_PROTOCOL = 'tendriller.rendezvous.v2';
+export const PEER_RENDEZVOUS_LIMITS = Object.freeze({
+  descriptionBytes: 64 * 1024,
+  candidateBytes: 2048,
+  maxCandidates: 32,
+  messageBytes: 128 * 1024,
+  sessions: 32,
+  lifetimeMs: 60_000,
+});
 const utf8Bytes = value => new TextEncoder().encode(value).byteLength;
 export function validatePeerDescription(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value) ||
@@ -45,13 +52,41 @@ export function validatePeerDescription(value) {
     fail('invalid_description', 'Expected one bounded WebRTC offer or answer');
   return { type: value.type, sdp: value.sdp };
 }
+export function validatePeerIceCandidate(value) {
+  if (value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    fail('invalid_candidate', 'Expected a bounded WebRTC ICE candidate or null');
+  for (const key of Object.keys(value)) {
+    if (!['candidate', 'sdpMid', 'sdpMLineIndex', 'usernameFragment'].includes(key))
+      fail('invalid_candidate', 'Unexpected field on WebRTC ICE candidate');
+  }
+  if (typeof value.candidate !== 'string' || utf8Bytes(value.candidate) > PEER_RENDEZVOUS_LIMITS.candidateBytes)
+    fail('invalid_candidate', 'Expected a bounded ICE candidate string');
+  const sdpMid = value.sdpMid === undefined || value.sdpMid === null
+    ? null
+    : (typeof value.sdpMid === 'string' && value.sdpMid.length <= 128 ? value.sdpMid : fail('invalid_candidate', 'Invalid sdpMid'));
+  const sdpMLineIndex = value.sdpMLineIndex === undefined || value.sdpMLineIndex === null
+    ? null
+    : (typeof value.sdpMLineIndex === 'number' && Number.isSafeInteger(value.sdpMLineIndex) && value.sdpMLineIndex >= 0 && value.sdpMLineIndex <= 1024
+      ? value.sdpMLineIndex : fail('invalid_candidate', 'Invalid sdpMLineIndex'));
+  const usernameFragment = value.usernameFragment === undefined || value.usernameFragment === null
+    ? null
+    : (typeof value.usernameFragment === 'string' && value.usernameFragment.length <= 256
+      ? value.usernameFragment : fail('invalid_candidate', 'Invalid usernameFragment'));
+  return {
+    candidate: value.candidate,
+    ...(sdpMid !== null ? { sdpMid } : {}),
+    ...(sdpMLineIndex !== null ? { sdpMLineIndex } : {}),
+    ...(usernameFragment !== null ? { usernameFragment } : {}),
+  };
+}
 
-/** A session carries exactly one complete description in each direction. */
+/** A rendezvous session carries one description plus bounded trickle ICE candidates per side until connected. */
 export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVOUS_LIMITS.lifetimeMs } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > PEER_RENDEZVOUS_LIMITS.lifetimeMs)
     fail('invalid_rendezvous', 'Invalid rendezvous timeout');
   let ended = false, failure, pairing, sent = false, received = false, complete = false, reading = false, waiting;
-  let sentBytes = 0, receivedBytes = 0, resolveReady, rejectReady;
+  let sentBytes = 0, receivedBytes = 0, sentCandidates = 0, receivedCandidates = 0, resolveReady, rejectReady;
   const queue = [];
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   void ready.catch(() => {});
@@ -72,11 +107,11 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
     if (ended) return;
     try {
       if (typeof event.data !== 'string' || utf8Bytes(event.data) > PEER_RENDEZVOUS_LIMITS.messageBytes)
-        fail('invalid_rendezvous', 'Rendezvous accepts bounded JSON descriptions only');
+        fail('invalid_rendezvous', 'Rendezvous accepts bounded JSON signaling only');
       const value = JSON.parse(event.data);
       receivedBytes += utf8Bytes(event.data);
       if (!value || typeof value !== 'object' || Array.isArray(value)) fail('invalid_rendezvous', 'Invalid rendezvous message');
-      if (value.t === 'ready' && !pairing && Object.keys(value).length === 4 && value.version === 1 &&
+      if (value.t === 'ready' && !pairing && Object.keys(value).length === 4 && value.version === 2 &&
           typeof value.session === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(value.session) && ['offerer', 'answerer'].includes(value.role)) {
         pairing = Object.freeze({ session: value.session, role: value.role }); resolveReady(pairing); return;
       }
@@ -85,6 +120,10 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
         const description = validatePeerDescription(value.description);
         if (description.type !== (pairing.role === 'offerer' ? 'answer' : 'offer')) fail('invalid_description', 'Description conflicts with the assigned role');
         received = true; queue.push(description); waiting?.(); waiting = undefined; return;
+      }
+      if (value.t === 'candidate' && received && receivedCandidates < PEER_RENDEZVOUS_LIMITS.maxCandidates && Object.keys(value).length === 3) {
+        const candidate = validatePeerIceCandidate(value.candidate);
+        receivedCandidates += 1; queue.push({ kind: 'candidate', candidate }); waiting?.(); waiting = undefined; return;
       }
       if (value.t === 'complete' && Object.keys(value).length === 2 && sent && received && !complete) {
         complete = true; close(); return;
@@ -102,9 +141,9 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
   if (signal?.aborted) cancelled();
   else if (socket.readyState > 1) disconnected();
   return Object.freeze({ ready,
-    get stats() { return Object.freeze({ sentBytes, receivedBytes, sentDescriptions: Number(sent), receivedDescriptions: Number(received), closed: ended }); },
+    get stats() { return Object.freeze({ sentBytes, receivedBytes, sentDescriptions: Number(sent), receivedDescriptions: Number(received), sentCandidates, receivedCandidates, closed: ended }); },
     messages: { async *[Symbol.asyncIterator]() {
-      if (reading) fail('reader_exists', 'Rendezvous has one description reader');
+      if (reading) fail('reader_exists', 'Rendezvous has one signaling reader');
       reading = true;
       try {
         while (true) {
@@ -115,16 +154,28 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
       } finally { reading = false; }
     } },
     async send(input) {
-      const description = validatePeerDescription(input);
       const assigned = await ready;
       if (ended || socket.readyState !== 1) throw failure || new PeerConnectionError('rendezvous_closed', 'Rendezvous is closed');
-      if (sent || description.type !== (assigned.role === 'offerer' ? 'offer' : 'answer'))
-        fail('invalid_description', 'Send exactly one description for the assigned role');
-      const encoded = JSON.stringify({ t: 'description', session: assigned.session, description });
-      if (utf8Bytes(encoded) > PEER_RENDEZVOUS_LIMITS.messageBytes) fail('invalid_description', 'Encoded description exceeds the wire limit');
-      sent = true;
+      let encoded;
+      if (input && typeof input === 'object' && input.kind === 'candidate') {
+        if (!sent) fail('invalid_candidate', 'Send SDP description before trickle ICE candidates');
+        if (sentCandidates >= PEER_RENDEZVOUS_LIMITS.maxCandidates) return;
+        const candidate = validatePeerIceCandidate(input.candidate);
+        encoded = JSON.stringify({ t: 'candidate', session: assigned.session, candidate });
+        sentCandidates += 1;
+      } else if (input && typeof input === 'object' && input.kind === 'connected') {
+        if (!sent || !received || complete) return;
+        encoded = JSON.stringify({ t: 'connected', session: assigned.session });
+      } else {
+        const description = validatePeerDescription(input);
+        if (sent || description.type !== (assigned.role === 'offerer' ? 'offer' : 'answer'))
+          fail('invalid_description', 'Send exactly one description for the assigned role');
+        encoded = JSON.stringify({ t: 'description', session: assigned.session, description });
+        sent = true;
+      }
+      if (utf8Bytes(encoded) > PEER_RENDEZVOUS_LIMITS.messageBytes) fail('invalid_description', 'Encoded signaling exceeds the wire limit');
       try { socket.send(encoded); sentBytes += utf8Bytes(encoded); }
-      catch (error) { close(new PeerConnectionError('rendezvous_failed', 'Description delivery failed')); throw error; }
+      catch (error) { close(new PeerConnectionError('rendezvous_failed', 'Signaling delivery failed')); throw error; }
     },
     close() { close(); },
   });
@@ -140,7 +191,7 @@ export function createPeersClient({ base, request: dispatch, applicationId, init
     const url = new URL(prefix + '/' + path);
     if (!['https:', 'http:'].includes(url.protocol) || url.search) fail(code, 'Expected an HTTP service base without query parameters');
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    if (url.username || url.password || url.hash || url.protocol === 'ws:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+    if (url.username || url.password || url.hash || url.protocol === 'ws:' && !isLoopbackHost(url.hostname))
       fail(code, 'Peer introductions require a secure URL without credentials');
     return url;
   };

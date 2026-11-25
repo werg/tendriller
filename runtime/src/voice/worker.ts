@@ -74,10 +74,10 @@ scope.onmessage = async (event: MessageEvent) => {
       scope.postMessage({ id, ready: true });
       return;
     }
-    if (action !== "transcribe" && action !== "detect") throw new Error("Unknown speech action");
+    if (action !== "transcribe" && action !== "detect" && action !== "transcribe-segment") throw new Error("Unknown speech action");
     if (!engine) throw new Error("Speech model is not loaded");
     const buffer = event.data.samples;
-    const maximum = 16_000 * (action === "detect" ? 8 : 30);
+    const maximum = 16_000 * (action === "detect" ? 8 : action === "transcribe-segment" ? 12 : 30);
     if (!(buffer instanceof ArrayBuffer) || !buffer.byteLength || buffer.byteLength % 4 || buffer.byteLength > maximum * 4) throw new Error("Speech audio exceeds its bounded window");
     const samples = new Float32Array(buffer);
     const language = event.data.language;

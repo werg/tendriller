@@ -108,7 +108,7 @@ it('delivers a live reply of several hundred KB in order through the negotiated 
 it('requires authenticated protocol admission and exact reciprocal peer/lane pairing', async () => {
   const h = await create({ listener: false });
   expect((await req(`${h.api}/${path('auth')}`, { headers, anonymous: true })).status).toBe(401);
-  expect((await api(h, 'GET', path('auth'), undefined, { ...headers, 'Sec-WebSocket-Protocol': 'tendriller.rendezvous.v1' })).status).toBe(400);
+  expect((await api(h, 'GET', path('auth'), undefined, { ...headers, 'Sec-WebSocket-Protocol': 'tendriller.rendezvous.v2' })).status).toBe(400);
   const response = await req(`${h.api}/${path('auth')}`, { anonymous: true,
     headers: { ...headers, 'Sec-WebSocket-Protocol': `${PEER_RELAY_PROTOCOL}, ${h.token}` } });
   expect(response.status).toBe(101); response.webSocket!.accept();

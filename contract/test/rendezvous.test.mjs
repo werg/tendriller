@@ -8,23 +8,32 @@ class Socket extends EventTarget {
   receive(value) { this.dispatchEvent(new MessageEvent('message', { data: typeof value === 'string' ? value : JSON.stringify(value) })); }
   close(code, reason) { this.closes.push({ code, reason }); this.readyState = 3; this.dispatchEvent(new Event('close')); }
 }
-const pairing = (socket, role = 'offerer', session = 'session-1') => socket.receive({ t: 'ready', version: 1, session, role });
+const pairing = (socket, role = 'offerer', session = 'session-1') => socket.receive({ t: 'ready', version: 2, session, role });
 const offer = { type: 'offer', sdp: 'v=0\r\n' }, answer = { type: 'answer', sdp: 'v=0\r\n' };
+const ice = { candidate: 'candidate:1 1 udp 2122260223 127.0.0.1 49152 typ host', sdpMid: '0', sdpMLineIndex: 0 };
 
-test('rendezvous exchanges one complete SDP per peer and closes independently of application work', async () => {
+test('rendezvous v2 exchanges SDP and bounded trickle ICE candidates until connected', async () => {
   const socket = new Socket(), session = createPeerRendezvous(socket);
   pairing(socket);
   assert.deepEqual(await session.ready, { session: 'session-1', role: 'offerer' });
   await session.send(offer);
-  assert.deepEqual(socket.sent, [{ t: 'description', session: 'session-1', description: offer }]);
+  await session.send({ kind: 'candidate', candidate: ice });
+  assert.deepEqual(socket.sent, [
+    { t: 'description', session: 'session-1', description: offer },
+    { t: 'candidate', session: 'session-1', candidate: ice },
+  ]);
   socket.receive({ t: 'description', session: 'session-1', description: answer });
+  socket.receive({ t: 'candidate', session: 'session-1', candidate: ice });
+  await session.send({ kind: 'connected' });
   socket.receive({ t: 'complete', session: 'session-1' });
   const messages = [];
   for await (const value of session.messages) messages.push(value);
-  assert.deepEqual(messages, [answer]);
+  assert.deepEqual(messages, [answer, { kind: 'candidate', candidate: ice }]);
   assert.equal(session.stats.closed, true);
   assert.equal(session.stats.sentDescriptions, 1);
   assert.equal(session.stats.receivedDescriptions, 1);
+  assert.equal(session.stats.sentCandidates, 1);
+  assert.equal(session.stats.receivedCandidates, 1);
   session.close(); assert.equal(socket.closes.length, 1);
   await assert.rejects(session.send(offer), { code: 'rendezvous_closed' });
 });
@@ -72,7 +81,7 @@ test('binary or excessive incoming data cannot become a peer application relay',
 });
 
 test('client construction is quiet and agent credentials stay in the protocol header', async () => {
-  const calls = [], sockets = [], headers = ['tendriller.rendezvous.v1', 'agent-token'];
+  const calls = [], sockets = [], headers = ['tendriller.rendezvous.v2', 'agent-token'];
   const client = createPeersClient({ base: 'https://example.test/api/agent/pages/id', protocols: headers,
     request: async (...args) => { calls.push(args); return { version: 2, endpoints: [] }; },
     socket: (url, protocols) => { sockets.push({ url, protocols }); return new Socket(); } });

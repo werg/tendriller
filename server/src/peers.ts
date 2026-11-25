@@ -1,4 +1,4 @@
-import { PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL, validatePeerBootstrap, validatePeerDescription } from '../../contract/peers.mjs';
+import { PEER_RENDEZVOUS_LIMITS as LIMITS, PEER_RENDEZVOUS_PROTOCOL, validatePeerBootstrap, validatePeerDescription, validatePeerIceCandidate } from '../../contract/peers.mjs';
 import { participantIdentity, requireAgentScope, pageAccessAllowed, accountActive, freshPrincipal } from './access';
 import type { Principal } from './access';
 import { HttpError, json, readJson } from './http';
@@ -17,7 +17,7 @@ export function peerBootstrap(t: Tendril) {
 }
 interface PeerAttachment {
   kind: 'rendezvous'; channel: string; session: string; peerId: string; principal: Principal;
-  role: 'offerer' | 'answerer'; expiresAt: number; ready: boolean; sent: boolean; complete: boolean;
+  role: 'offerer' | 'answerer'; expiresAt: number; ready: boolean; sent: boolean; candidates: number; complete: boolean;
 }
 function attachment(ws: WebSocket): PeerAttachment | null {
   const value = ws.deserializeAttachment() as PeerAttachment | null;
@@ -98,84 +98,131 @@ export async function handlePeers(t: Tendril, req: Request, url: URL, path: stri
     throw new HttpError(429, 'peer_quota', 'Too many pending rendezvous for this account or application');
   const [client, server] = Object.values(new WebSocketPair());
   const first = existing.length ? attachment(existing[0])! : null;
-  const value: PeerAttachment = { kind: 'rendezvous', channel, session: first?.session ?? crypto.randomUUID(), peerId, principal,
+  const value: PeerAttachment = {
+    kind: 'rendezvous', channel, session: first?.session ?? crypto.randomUUID(), peerId, principal,
     role: first ? 'answerer' : 'offerer', expiresAt: first?.expiresAt ?? t.now() + LIMITS.lifetimeMs,
-    ready: !!first, sent: false, complete: false };
+    ready: !!first, sent: false, candidates: 0, complete: false,
+  };
   t.ctx.acceptWebSocket(server, ['rendezvous']);
   server.serializeAttachment(value);
   if (first) {
     existing[0].serializeAttachment({ ...first, ready: true });
-    existing[0].send(JSON.stringify({ t: 'ready', version: 1, session: value.session, role: first.role }));
-    server.send(JSON.stringify({ t: 'ready', version: 1, session: value.session, role: value.role }));
+    existing[0].send(JSON.stringify({ t: 'ready', version: 2, session: value.session, role: first.role }));
+    server.send(JSON.stringify({ t: 'ready', version: 2, session: value.session, role: value.role }));
   }
   t.scheduleAlarm();
   return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PEER_RENDEZVOUS_PROTOCOL } });
 }
 
-// Only one message may be waiting for authorization. There is no data-plane
-// queue or application-frame parsing, and a second send retires this session.
-const pending = new WeakSet<WebSocket>();
+// Serialize per-socket authorization checks with a bounded in-memory queue for trickle ICE bursts.
+const queues = new WeakMap<WebSocket, { pending: string[]; running: boolean; sawDescription: boolean }>();
 export async function handlePeerMessage(t: Tendril, ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
   if (ws.readyState !== WebSocket.READY_STATE_OPEN) return;
   if (typeof message !== 'string' || new TextEncoder().encode(message).byteLength > LIMITS.messageBytes) {
-    ws.close(1009, 'Rendezvous accepts bounded SDP only'); return;
+    ws.close(1009, 'Rendezvous accepts bounded SDP/ICE signaling only'); return;
   }
-  if (pending.has(ws)) { ws.close(1008, 'Only one description is allowed'); return; }
-  pending.add(ws);
-  try { await forwardDescription(t, ws, message); }
-  catch {
-    // An authorization/storage/send failure must not leave a half-used session
-    // resident. Both peers retry with a new session and original application IDs.
+  let state = queues.get(ws);
+  if (!state) queues.set(ws, state = { pending: [], running: false, sawDescription: attachment(ws)?.sent === true });
+  try {
+    const peek = JSON.parse(message);
+    if (peek && typeof peek === 'object' && peek.t === 'description') {
+      if (state.sawDescription) {
+        state.pending.length = 0;
+        ws.close(1008, 'Only one description is allowed');
+        return;
+      }
+      state.sawDescription = true;
+    }
+  } catch { /* Handled below. */ }
+  if (state.pending.length >= LIMITS.maxCandidates + 2) {
+    ws.close(1008, 'Too many queued rendezvous messages'); return;
+  }
+  state.pending.push(message);
+  if (state.running) return;
+  state.running = true;
+  try {
+    while (state.pending.length && ws.readyState === WebSocket.READY_STATE_OPEN) {
+      const next = state.pending.shift()!;
+      await forwardSignaling(t, ws, next);
+    }
+  } catch {
     closePeer(t, ws);
     if (ws.readyState === WebSocket.READY_STATE_OPEN) ws.close(1011, 'Rendezvous failed');
+  } finally {
+    state.running = false;
+    if (!state.pending.length) queues.delete(ws);
   }
-  finally { pending.delete(ws); }
 }
-async function forwardDescription(t: Tendril, ws: WebSocket, message: string): Promise<void> {
+
+async function forwardSignaling(t: Tendril, ws: WebSocket, message: string): Promise<void> {
   let value = attachment(ws);
   if (!value || value.complete || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
-  if (!value.ready || value.sent || value.expiresAt <= t.now()) { ws.close(1008, 'Invalid rendezvous state'); return; }
-  let description;
+  if (!value.ready || value.expiresAt <= t.now()) { ws.close(1008, 'Invalid rendezvous state'); return; }
+  let parsed: { kind: 'description'; description: { type: 'offer' | 'answer'; sdp: string } }
+    | { kind: 'candidate'; candidate: ReturnType<typeof validatePeerIceCandidate> }
+    | { kind: 'connected' };
   try {
     const input = JSON.parse(message);
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length !== 3 ||
-        input.t !== 'description' || input.session !== value.session) throw new Error('session');
-    description = validatePeerDescription(input.description);
-    if (description.type !== (value.role === 'offerer' ? 'offer' : 'answer')) throw new Error('role');
-  } catch { ws.close(1008, 'Invalid or repeated WebRTC description'); return; }
+    if (!input || typeof input !== 'object' || Array.isArray(input) || input.session !== value.session) throw new Error('session');
+    if (input.t === 'description' && Object.keys(input).length === 3 && !value.sent) {
+      const description = validatePeerDescription(input.description);
+      if (description.type !== (value.role === 'offerer' ? 'offer' : 'answer')) throw new Error('role');
+      parsed = { kind: 'description', description };
+    } else if (input.t === 'candidate' && Object.keys(input).length === 3 && value.sent && value.candidates < LIMITS.maxCandidates) {
+      parsed = { kind: 'candidate', candidate: validatePeerIceCandidate(input.candidate) };
+    } else if (input.t === 'connected' && Object.keys(input).length === 2 && value.sent) {
+      parsed = { kind: 'connected' };
+    } else {
+      throw new Error('frame');
+    }
+  } catch { ws.close(1008, 'Invalid or repeated WebRTC signaling'); return; }
+
   if (!authorized(t, value.principal) || !await freshPrincipal(t, value.principal) || !await pageAccessAllowed(t) ||
       value.principal.kind === 'page' && value.principal.accountId && !await accountActive(t, value.principal.accountId)) {
     ws.close(4003, 'Peer host access revoked'); return;
   }
   const other = peers(t, value.channel).find(peer => peer !== ws && attachment(peer)?.session === value!.session);
   if (!other) { ws.close(1013, 'Rendezvous peer disconnected'); return; }
-  const candidate = attachment(other)!;
-  if (!await freshPrincipal(t, candidate.principal) || candidate.principal.kind === 'page' && candidate.principal.accountId && !await accountActive(t, candidate.principal.accountId)) {
+  const candidatePeer = attachment(other)!;
+  if (!await freshPrincipal(t, candidatePeer.principal) || candidatePeer.principal.kind === 'page' && candidatePeer.principal.accountId && !await accountActive(t, candidatePeer.principal.accountId)) {
     other.close(4003, 'Peer host access revoked'); ws.close(1013, 'Rendezvous peer disconnected'); return;
   }
-  // Account lookups can yield to a revocation, expiry or replacement session.
   value = attachment(ws)!;
   const recipient = attachment(other)!;
   if (ws.readyState !== WebSocket.READY_STATE_OPEN || other.readyState !== WebSocket.READY_STATE_OPEN ||
-      value.complete || value.sent || recipient.complete || recipient.session !== value.session || value.expiresAt <= t.now() ||
+      value.complete || recipient.complete || recipient.session !== value.session || value.expiresAt <= t.now() ||
       !authorized(t, value.principal) || !authorized(t, recipient.principal)) {
     ws.close(4003, 'Rendezvous is no longer authorized'); return;
   }
-  if (value.role === 'answerer' && !recipient.sent) { ws.close(1008, 'An answer requires a delivered offer'); return; }
-  ws.serializeAttachment({ ...value, sent: true });
-  other.send(JSON.stringify({ t: 'description', session: value.session, description }));
-  if (recipient.sent) {
-    // Mark both attachments before close events can run. A completed session
-    // never closes a new pair that happens to use the same channel name.
-    ws.serializeAttachment({ ...value, sent: true, complete: true });
-    other.serializeAttachment({ ...recipient, complete: true });
-    const done = JSON.stringify({ t: 'complete', session: value.session });
-    try { ws.send(done); other.send(done); }
-    finally {
-      if (ws.readyState === WebSocket.READY_STATE_OPEN) ws.close(1000, 'Rendezvous complete');
-      if (other.readyState === WebSocket.READY_STATE_OPEN) other.close(1000, 'Rendezvous complete');
-      t.scheduleAlarm();
+
+  if (parsed.kind === 'description') {
+    if (value.sent || (value.role === 'answerer' && !recipient.sent)) {
+      ws.close(1008, 'An answer requires a delivered offer'); return;
     }
+    ws.serializeAttachment({ ...value, sent: true });
+    other.send(JSON.stringify({ t: 'description', session: value.session, description: parsed.description }));
+    return;
+  }
+  if (parsed.kind === 'candidate') {
+    if (!value.sent || value.candidates >= LIMITS.maxCandidates) {
+      ws.close(1008, 'ICE candidate limit exceeded'); return;
+    }
+    ws.serializeAttachment({ ...value, candidates: value.candidates + 1 });
+    other.send(JSON.stringify({ t: 'candidate', session: value.session, candidate: parsed.candidate }));
+    return;
+  }
+  // `connected`: both descriptions must be exchanged before closing as complete.
+  if (!value.sent || !recipient.sent) {
+    ws.close(1008, 'Connected requires exchanged descriptions'); return;
+  }
+  ws.serializeAttachment({ ...value, complete: true });
+  other.serializeAttachment({ ...recipient, complete: true });
+  const done = JSON.stringify({ t: 'complete', session: value.session });
+  try { ws.send(done); other.send(done); }
+  finally {
+    if (ws.readyState === WebSocket.READY_STATE_OPEN) ws.close(1000, 'Rendezvous complete');
+    if (other.readyState === WebSocket.READY_STATE_OPEN) other.close(1000, 'Rendezvous complete');
+    t.scheduleAlarm();
   }
 }
 export function closePeer(t: Tendril, ws: WebSocket): void {

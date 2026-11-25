@@ -68,7 +68,7 @@ test('hub streams are WebSocket-compatible: open, text and binary data, close ha
   const hub = fakeHub(), events = [];
   const agent = createAgentHub({ service, token: TOKEN, WebSocket: hub.WebSocket });
   t.after(() => agent.close());
-  const stream = agent.socket(PAGE, 'peers/rendezvous?channel=room&peerId=me', ['tendriller.rendezvous.v1']);
+  const stream = agent.socket(PAGE, 'peers/rendezvous?channel=room&peerId=me', ['tendriller.rendezvous.v2']);
   assert.equal(stream.readyState, 0);
   assert.throws(() => stream.send('early'), { name: 'InvalidStateError' });
   const connection = hub.last;
@@ -76,13 +76,13 @@ test('hub streams are WebSocket-compatible: open, text and binary data, close ha
   assert.deepEqual(connection.protocols, ['tendriller.hub.v1', TOKEN]);
   connection.accept();
   const [open] = connection.frames('open');
-  assert.deepEqual(open, { t: 'open', s: 1, page: PAGE, path: 'peers/rendezvous?channel=room&peerId=me', protocols: ['tendriller.rendezvous.v1'] });
+  assert.deepEqual(open, { t: 'open', s: 1, page: PAGE, path: 'peers/rendezvous?channel=room&peerId=me', protocols: ['tendriller.rendezvous.v2'] });
   stream.onopen = () => events.push('onopen');
   stream.addEventListener('open', () => events.push('open'));
   stream.addEventListener('message', event => events.push(event.data));
   stream.onclose = event => events.push(['close', event.code, event.reason]);
-  connection.push({ t: 'opened', s: 1, protocol: 'tendriller.rendezvous.v1' });
-  assert.equal(stream.readyState, 1); assert.equal(stream.protocol, 'tendriller.rendezvous.v1');
+  connection.push({ t: 'opened', s: 1, protocol: 'tendriller.rendezvous.v2' });
+  assert.equal(stream.readyState, 1); assert.equal(stream.protocol, 'tendriller.rendezvous.v2');
   connection.push({ t: 'data', s: 1, text: '{"t":"ready"}' });
   connection.push({ t: 'data', s: 1, base64: btoa('\x01\x02') });
   stream.send('hello'); stream.send(new Uint8Array([3, 4]));

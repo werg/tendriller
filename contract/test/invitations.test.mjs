@@ -60,7 +60,7 @@ test('acknowledgement failures retain their cause even when closing the transpor
 
 test('the public client preserves private protocol credentials and only posts on demand', async () => {
   const calls = [], sockets = [];
-  const client = createPeersClient({ base: 'https://host.test/api/app', applicationId: 'ab'.repeat(32), protocols: ['tendriller.rendezvous.v1', 'private-token'],
+  const client = createPeersClient({ base: 'https://host.test/api/app', applicationId: 'ab'.repeat(32), protocols: ['tendriller.rendezvous.v2', 'private-token'],
     request: async (path, options) => { calls.push({ path, options }); return { invited: options.body.peerId, channel: options.body.channel }; },
     socket: (url, protocols) => { const socket = new Socket(); sockets.push({ url, protocols, socket }); return socket; } });
   assert.equal(calls.length + sockets.length, 0);

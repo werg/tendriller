@@ -1,9 +1,39 @@
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
-export interface BrowserOwnerOptions {workerUrl:string|URL;profileId:string;applicationId:string;context?:{viewId?:string;documentPath?:string;publicationId?:string;runId?:string};mode?:'auto'|'shared'|'elected';requiresDedicatedWorker?:boolean;signal?:AbortSignal;timeoutMs?:number;livenessTimeoutMs?:number;/** Ask the browser to keep this origin's storage out of best-effort eviction (default true). */persistStorage?:boolean;/** Default 240000; 0 disables. While this page is visible and storage is not persisted, open the OPFS record directory handles this often, so in-memory (private-window) storage is not dropped after ~10 idle minutes. */storageKeepAliveMs?:number;onOwnerReplaced?:(context:{previous:string;current?:string;reason?:string})=>void}
-export declare function openBrowserOwner(options:BrowserOwnerOptions):Promise<{readonly session:WorkerApplicationSession;readonly mode:'shared'|'elected';/** Whether the browser keeps this origin's storage durable (null: unsupported). */readonly storagePersisted:Promise<boolean|null>;suspend():Promise<void>;resume():Promise<WorkerApplicationSession>;detach():Promise<void>}>;
-export declare function createBrowserIdentity(options:Pick<BrowserOwnerOptions,'workerUrl'|'profileId'|'signal'|'timeoutMs'|'persistStorage'>):Promise<string>;
+import type { RtcPeerConnection, WorkerWebRtcServer } from '@chronolog/peer-session/webrtc';
 
-/** Ask the browser to keep this origin's storage out of best-effort eviction. Never throws; null when unsupported. */
-export declare function requestPersistentStorage():Promise<boolean|null>;
-/** Opens each `chronolog-*` OPFS record directory handle every intervalMs while the page is visible and storage is not persisted; returns a stop function. */
-export declare function keepStorageInUse(options?:{intervalMs?:number;storagePersisted?:Promise<boolean|null>|boolean|null;now?:()=>number;onTick?:(tick:{ms:number;directories:number})=>void}):()=>void;
+export interface BrowserOwnerOptions {
+  workerUrl: string | URL;
+  profileId: string;
+  applicationId: string;
+  context?: { viewId?: string; documentPath?: string; publicationId?: string; runId?: string };
+  /** Take over the single-active-tab lock from another open tab via BroadcastChannel handoff. */
+  takeover?: boolean;
+  /** Compatibility hint (all sessions run in a private 1:1 dedicated Worker). */
+  mode?: 'auto' | 'dedicated' | 'elected';
+  requiresDedicatedWorker?: boolean;
+  createPeerConnection?: (configuration: RTCConfiguration) => RtcPeerConnection;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /** Ask the browser to keep this origin's storage out of best-effort eviction (default true). */
+  persistStorage?: boolean;
+  /** Default 240000; 0 disables. Keeps Chromium in-memory OPFS record directories active while visible. */
+  storageKeepAliveMs?: number;
+  onOwnerReplaced?: (context: { previous: string; current?: string; reason?: string }) => void;
+}
+
+export interface BrowserOwnerAttachment {
+  readonly session: WorkerApplicationSession;
+  readonly mode: 'dedicated';
+  /** Direct tab-owned WebRTC peer handles (media tracks + custom `app:*` DataChannels, zero Worker hop). */
+  readonly rtc: WorkerWebRtcServer;
+  readonly storagePersisted: Promise<boolean | null>;
+  suspend(): Promise<void>;
+  resume(): Promise<WorkerApplicationSession>;
+  detach(): Promise<void>;
+}
+
+export declare const TAB_OWNER_PROTOCOL: 'tendriller/tab-owner/v2';
+export declare function openBrowserOwner(options: BrowserOwnerOptions): Promise<BrowserOwnerAttachment>;
+export declare function createBrowserIdentity(options: Pick<BrowserOwnerOptions, 'workerUrl' | 'profileId' | 'signal' | 'timeoutMs' | 'persistStorage'>): Promise<string>;
+export declare function requestPersistentStorage(): Promise<boolean | null>;
+export declare function keepStorageInUse(options?: { intervalMs?: number; storagePersisted?: Promise<boolean | null> | boolean | null; now?: () => number; onTick?: (tick: { ms: number; directories: number }) => void }): () => void;
