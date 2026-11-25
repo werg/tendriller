@@ -1,12 +1,9 @@
-// Qualification-only portable decoder. The packed host independently enforces
-// its publisher grant and head; this validates cryptographic envelope integrity
-// solely so the private request gate can match the signed public intent.
-import { decodeRecord, hexToBytes, verifyPublicationManifest, PUBLICATION_LIMITS } from '@chronolog/authority';
-export async function decodeFirstAppPublication(record) {
-  if (!record || typeof record !== 'object' || Array.isArray(record) ||
-      Object.keys(record).length !== 1 || typeof record.record !== 'string' ||
-      record.record.length > 2 * (PUBLICATION_LIMITS.manifestBytes + 2048)) throw Error('Invalid publication fixture record');
-  const publication = decodeRecord(hexToBytes(record.record));
+// Qualification-only verifier for the actual raw SignedPublication JSON wire
+// value. The packed host independently enforces its publisher grant and head;
+// this checks envelope integrity solely to match the signed public intent.
+import { verifyPublicationManifest, encodeRecord, PUBLICATION_LIMITS } from '@chronolog/authority';
+export async function decodeFirstAppPublication(publication) {
+  if (encodeRecord(publication).length > PUBLICATION_LIMITS.manifestBytes + 2048) throw Error('Publication fixture envelope exceeds its bound');
   const payload = publication?.payload;
   await verifyPublicationManifest(publication, {
     applicationId: payload?.applicationId,

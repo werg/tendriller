@@ -197,7 +197,8 @@ operation.applied();
 void viewKind;
 `);
   writeFileSync(join(directory, 'worker.mts'), `
-import worker, {Admission, Tendril} from '@tendriller/engine';
+import worker, {Admission, Tendril, AgentHub} from '@tendriller/engine';
+void AgentHub;
 import {initializeTestService, createTestPage} from '@tendriller/engine/testing';
 void initializeTestService([{name:'empty.sql',queries:[]}]);
 async function test() {
