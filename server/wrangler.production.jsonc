@@ -43,8 +43,8 @@
   "d1_databases": [
     {
       "binding": "ACCOUNTS",
-      "database_name": "tendriller-production-s12-accounts",
-      "database_id": "053e4676-08a8-42e2-9a94-e5144de547c0",
+      "database_name": "tendriller-production-s14-accounts",
+      "database_id": "0a5d94db-f381-4ec1-a363-2e62eee76ef1",
       "migrations_dir": "migrations"
     }
   ],

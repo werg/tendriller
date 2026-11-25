@@ -54,8 +54,8 @@
   "d1_databases": [
     {
       "binding": "ACCOUNTS",
-      "database_name": "tendriller-staging-s12-accounts",
-      "database_id": "982bb2cf-51c9-43cf-b40f-4986bd0cbda1",
+      "database_name": "tendriller-staging-s14-accounts",
+      "database_id": "10a257c2-eb29-400e-a86f-c7217e78df2a",
       "migrations_dir": "migrations"
     }
   ],

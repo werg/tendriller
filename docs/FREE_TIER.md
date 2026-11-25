@@ -53,7 +53,7 @@ The implementation targets repeated host work, while preserving the existing pro
 | Metadata retries | Conditional UPSERTs skip writes when serialized values are unchanged | Actual changes still persist and invalidate caches |
 | Orphan-file cleanup | Build the retained-hash reference set once with `NOT IN`, replacing a correlated lookup per stored file | Retained signed publications still protect all referenced files; the query rewrite itself adds no index or schema change |
 
-These reduce different meters; none establishes a fixed number of supportable users. Local regression results below establish avoided work and unchanged access behavior, not Cloudflare billing measurements. The current baseline uses Durable Object schema revision 13 and the unified `0001_accounts.sql` account schema. See [host operations](OPERATIONS.md).
+These reduce different meters; none establishes a fixed number of supportable users. Local regression results below establish avoided work and unchanged access behavior, not Cloudflare billing measurements. The current baseline uses Durable Object schema revision 14 and the unified `0001_accounts.sql` account schema. See [host operations](OPERATIONS.md).
 
 Setup and admission add bounded lifecycle work: retained allocation/request journals, current account/grant checks, proof verification, host attestations, membership revisions and key wraps (pending admissions and wraps are capped per page and recipient). They do not store application operation payloads. Include this traffic, review retries and failed authentication in measured budgets rather than counting only replicated application edits.
 
