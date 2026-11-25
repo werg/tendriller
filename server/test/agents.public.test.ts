@@ -115,7 +115,34 @@ it('removes page tokens, adoption, setup and per-page agent routes outright', as
       ...(method === 'POST' ? { body: '{}' } : {}) });
     expect(response.status, `${method} ${path}`).toBe(404);
   }
-  expect((await req(h.page_url + '_tendril/agents')).status).toBe(404);
+});
+
+it('lets the page owner grant and remove account agents from the page itself', async () => {
+  const h = await create();
+  const helper = await joinAccountAgent(h, 'helper');
+  const json = { 'Content-Type': 'application/json' };
+  const listed = await (await req(h.page_url + '_tendril/agents')).json() as { agents: { id: string; name: string; granted: boolean }[]; dashboard: string };
+  expect(listed.dashboard).toBe('https://tendriller.dev/dashboard#agents');
+  expect(listed.agents.find(agent => agent.id === h.agent.id)).toMatchObject({ granted: true });
+  expect(listed.agents.find(agent => agent.id === helper.agent.id)).toEqual({ id: helper.agent.id, name: 'helper', granted: false });
+  expect((await agentReq(helper.token, 'GET', `/api/agent/pages/${h.id}`)).status).toBe(404);
+
+  const grant = await req(h.page_url + '_tendril/agents', { method: 'POST', headers: json, body: JSON.stringify({ agent: helper.agent.id, granted: true }) });
+  expect(grant.status).toBe(200);
+  expect((await agentReq(helper.token, 'GET', `/api/agent/pages/${h.id}`)).status).toBe(200);
+  const after = await (await req(h.page_url + '_tendril/agents')).json() as { agents: { id: string; granted: boolean }[] };
+  expect(after.agents.find(agent => agent.id === helper.agent.id)?.granted).toBe(true);
+
+  const remove = await req(h.page_url + '_tendril/agents', { method: 'POST', headers: json, body: JSON.stringify({ agent: helper.agent.id, granted: false }) });
+  expect(remove.status).toBe(200);
+  expect((await agentReq(helper.token, 'GET', `/api/agent/pages/${h.id}`)).status).toBe(404);
+
+  const stranger = await req(h.page_url + '_tendril/agents', { method: 'POST', headers: json, body: JSON.stringify({ agent: 'ag_' + 'a'.repeat(26), granted: true }) });
+  expect(stranger.status).toBe(404);
+  // Visitors without the owner's session get the page's sign-in screen, never the agent list.
+  const visitor = await req(h.page_url + '_tendril/agents', { anonymous: true });
+  expect(visitor.headers.get('content-type')).toMatch(/^text\/html/);
+  expect(await visitor.text()).not.toContain(helper.agent.id);
 });
 
 it('enforces scopes per grant and closes an agent’s page sockets when its grant or the agent is revoked', async () => {

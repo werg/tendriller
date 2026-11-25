@@ -15,7 +15,7 @@ export async function initializeTestService(migrations: Parameters<typeof applyD
 /** Fresh synthetic identities exercise the real session and module authorization paths. */
 export async function createTestPage(options: { application?: { id: string }; lifetime?: 'ad_hoc' | 'resident' } = {}) {
   const { lifetime, ...selection } = options;
-  const handle = await create({ mode: 'dashboard', listener: false, ...selection });
+  const handle = await create({ listener: false, ...selection });
   if (lifetime === 'resident') {
     const response = await api(handle, 'PATCH', '', { lifetime });
     if (!response.ok) throw new Error(`Resident test page setup failed: ${response.status} ${await response.text()}`);

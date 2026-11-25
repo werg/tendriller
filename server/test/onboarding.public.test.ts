@@ -25,6 +25,7 @@ const documents = [
   ['/docs/APP_PATTERNS.md', 'text/markdown'],
   ['/docs/AI_INPUT.md', 'text/markdown'],
   ['/docs/STATE_MODELS.md', 'text/markdown'],
+  ['/docs/MULTI_PAGE_AGENTS.md', 'text/markdown'],
   ['/docs/tools/PREVIEW.md', 'text/markdown'],
 ] as const;
 
@@ -51,12 +52,14 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
       full: origin + '/llms-full.txt',
       bootstrap: origin + '/docs/SESSION_BOOTSTRAP.md',
       troubleshooting: origin + '/docs/TROUBLESHOOTING.md',
+      multi_page_agents: origin + '/docs/MULTI_PAGE_AGENTS.md',
     },
     interfaces: {
       service_descriptor: origin + '/api/service',
       readiness: origin + '/api/readiness',
       contract: origin + '/contract/v3.json',
       register_agent: { method: 'POST', url: origin + '/api/agents', required: ['owner', 'name', 'publicKey'] },
+      join_agent: { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'name', 'publicKey'] },
       create_page: { method: 'POST', url: origin + '/api/agent/pages', authorization: 'agent token' },
     },
   });
@@ -316,7 +319,7 @@ describe('onboarding after page creation', () => {
     expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configuration: null, publicationAuthority: null, authority: null });
   });
 
-  it('does not expose a legacy per-page MCP route on the tendril API', async () => {
+  it('does not expose a per-page MCP route on the tendril API', async () => {
     const h = await create({ claim: false });
     const response = await req(h.api + '/mcp', {
       method: 'POST',

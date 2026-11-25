@@ -107,7 +107,7 @@ A resolved `send` means the signal was accepted by a route (or echoed to local
 views with `localEcho`), not that a particular peer received it. Right after
 connecting, the answering peer may not be connected yet; a request sent then is
 only echoed locally. For on-demand answers use the starter's
-`helpers/signal-request.mjs`: it waits until `session.status.connectedPeers` reports
+`shared/helpers/signal-request.mjs`: it waits until `session.status.connectedPeers` reports
 a connection (a count; the authenticated reply from the named peer is what proves the
 answerer), re-sends the same request ID until the
 complete reply arrives, and splits and reassembles bounded replies larger than one

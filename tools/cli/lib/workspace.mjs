@@ -76,15 +76,12 @@ export async function openSharedSigner(path, { create = false } = {}) {
   try { return device.identity; } finally { await device.close(); }
 }
 
-/** One page device: its own native store, always signed by the shared agent key. */
+/** One page device: its own native store, always signed by the shared agent key.
+ * Every store is served by Chronolog's one pooled SQLite worker for this process. */
 export async function openPageDevice({ path, signer, create = false }) {
-  const [{ NativeBytesStore }, { openApplicationDevice }] = await Promise.all([
-    import('@chronolog/peer-session/native'), import('@chronolog/peer-session')]);
+  const { openNativeDevice } = await import('@chronolog/peer-session/native');
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const store = await NativeBytesStore.open(path);
-  try {
-    return await openApplicationDevice({ store, managedSigner: signer, ...(create ? { create: true } : {}), close: () => store.close() });
-  } catch (error) { await store.close(); throw error; }
+  return openNativeDevice({ path, managedSigner: signer, ...(create ? { create: true } : {}) });
 }
 
 const agentName = value => {
@@ -139,7 +136,7 @@ export async function initWorkspace(root, { service, owner, name, kit, signal } 
   if (!existsSync(workspacePaths(root).credential)) requireCreationReady(await describeReadiness(origin, { signal }), { service: origin });
   return enroll(root, { service: origin, name, kit, signal }, (origin, body, options) => registerAgent(origin, { owner, ...body }, options));
 }
-/** Join the inviting account with a one-time code from Dashboard -> Agents -> Add agent. */
+/** Join the inviting account with a one-time code from Dashboard -> Your agents -> Add agent. */
 export async function joinWorkspace(root, { service, code, name, kit, signal } = {}) {
   if (typeof code !== 'string' || !code.trim()) throw failure('invalid_join_code', 'workspace join requires --code from the owner dashboard', 64);
   return enroll(root, { service, name, kit, signal }, (origin, body, options) => joinAgent(origin, { code: code.trim(), ...body }, options));

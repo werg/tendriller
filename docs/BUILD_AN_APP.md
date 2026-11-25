@@ -131,7 +131,7 @@ Register an unclaimed agent for the intended owner's actual verified login email
 npx tendril workspace init --service "$TENDRILLER_ORIGIN" --owner owner@example.com --name notes-agent
 ```
 
-The owner claims the agent, and every page it created, by signing in to any of those pages. A signed-in owner can instead create a one-time code under **Dashboard → Agents → Add agent**; then use `npx tendril workspace join --service "$TENDRILLER_ORIGIN" --code CODE`. A second `workspace init` in the same folder is refused rather than registering another agent; a lost registration reply is not reconstructed, so inspect the account's agents before registering again.
+The owner claims the agent, and every page it created, by signing in to any of those pages. A signed-in owner can instead create a one-time code under **Dashboard → Your agents → Add agent**; then use `npx tendril workspace join --service "$TENDRILLER_ORIGIN" --code CODE`. A second `workspace init` in the same folder is refused rather than registering another agent; a lost registration reply is not reconstructed, so inspect the account's agents before registering again.
 
 ### Create the page
 
@@ -153,7 +153,7 @@ The host converts the emoji to an SVG favicon automatically. An HTTPS image URL 
 
 ### Continue after a lost credential or device
 
-`.tendriller/agent/` (credential and shared signer) and `.tendriller/pages/PAGE_ID/` (publisher identity, descriptor and device store) are the workspace's private checkpoint. Restore them from a verified checkpoint; there is no converter from older single-page projects and no reissue of a lost key. If only the token is lost or revoked, the owner can add the agent again from the dashboard and `workspace join` a fresh folder; a new key also needs explicit signed membership and key provisioning from surviving authorized devices.
+`.tendriller/agent/` (credential and shared signer) and `.tendriller/pages/PAGE_ID/` (publisher identity, descriptor and device store) are the workspace's private checkpoint. Restore them from a verified checkpoint; there is no reissue of a lost key. If only the token is lost or revoked, the owner can add the agent again from the dashboard and `workspace join` a fresh folder; a new key also needs explicit signed membership and key provisioning from surviving authorized devices.
 
 ## 4. Choose policy, prepare and publish before owner sign-in
 

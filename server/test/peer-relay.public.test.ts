@@ -106,7 +106,7 @@ it('delivers a live reply of several hundred KB in order through the negotiated 
 });
 
 it('requires authenticated protocol admission and exact reciprocal peer/lane pairing', async () => {
-  const h = await create({ mode: 'dashboard', listener: false });
+  const h = await create({ listener: false });
   expect((await req(`${h.api}/${path('auth')}`, { headers, anonymous: true })).status).toBe(401);
   expect((await api(h, 'GET', path('auth'), undefined, { ...headers, 'Sec-WebSocket-Protocol': 'tendriller.rendezvous.v1' })).status).toBe(400);
   const response = await req(`${h.api}/${path('auth')}`, { anonymous: true,
@@ -119,7 +119,7 @@ it('requires authenticated protocol admission and exact reciprocal peer/lane pai
 });
 
 it('reserves bounded control credit and rejects reliable overflow without retaining payloads', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'bound');
+  const h = await create({ listener: false }), p = await pair(h, 'bound');
   try {
     await inDO(h.id, async t => {
       const sender = t.ctx.getWebSockets('peer-relay').find(ws => { const a = ws.deserializeAttachment(); return a.peerId === left && a.lane === 'reliable'; })!;
@@ -135,7 +135,7 @@ it('reserves bounded control credit and rejects reliable overflow without retain
 });
 
 it('requires an unpredictable recipient receipt before releasing send credit', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'receipt');
+  const h = await create({ listener: false }), p = await pair(h, 'receipt');
   try {
     p.a.reliable.socket.send(packet(1));
     await expect.poll(() => p.b.reliable.messages.length).toBe(2);
@@ -149,7 +149,7 @@ it('requires an unpredictable recipient receipt before releasing send credit', a
 });
 
 it('drops excess disposable packets without stalling the reliable lane', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'live');
+  const h = await create({ listener: false }), p = await pair(h, 'live');
   try {
     for (let sequence = 1; sequence <= LIMITS.livePendingPackets + 1; sequence++) p.a.live.socket.send(packet(sequence));
     p.a.reliable.socket.send(packet(1));
@@ -161,7 +161,7 @@ it('drops excess disposable packets without stalling the reliable lane', async (
 });
 
 it('bounds pending sessions per principal and expires unpaired and stalled relay sockets', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), pending = [];
+  const h = await create({ listener: false }), pending = [];
   for (let index = 0; index < LIMITS.sessionsPerPrincipal; index++) pending.push(await open(h, `quota:${index}`, left, right, 'reliable'));
   expect((await api(h, 'GET', path('quota:overflow'), undefined, headers)).status).toBe(429);
   await advance(h.id, LIMITS.pairingMs + 1); await runAlarm(h.id);
@@ -175,17 +175,17 @@ it('bounds pending sessions per principal and expires unpaired and stalled relay
 });
 
 it('fences local revocation on every packet and rechecks account policy before expired traffic', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'revoked');
+  const h = await create({ listener: false }), p = await pair(h, 'revoked');
   await inDO(h.id, t => t.db.run('DELETE FROM agent_grants'));
   p.a.reliable.socket.send(packet(1)); expect(await p.a.live.closed).toBe(1008);
   expect(p.b.reliable.messages.length).toBe(1); p.close();
-  const second = await create({ mode: 'dashboard', listener: false }), q = await pair(second, 'account');
+  const second = await create({ listener: false }), q = await pair(second, 'account');
   const account = await inDO(second.id, t => t.db.get('owner_account', ''));
   await env.ACCOUNTS.prepare('UPDATE accounts SET suspended_at=? WHERE id=?').bind(Date.now(), account).run();
   await advance(second.id, LIMITS.authorizationMs + 1);
   q.a.reliable.socket.send(packet(1));
   expect(await q.a.reliable.closed).toBe(4003); expect(await q.b.live.closed).toBe(4003); q.close();
-  const third = await create({ mode: 'dashboard', listener: false }), r = await pair(third, 'policy-outage');
+  const third = await create({ listener: false }), r = await pair(third, 'policy-outage');
   await advance(third.id, LIMITS.authorizationMs + 1);
   await inDO(third.id, async t => {
     const original = t.env.ACCOUNTS;
@@ -197,7 +197,7 @@ it('fences local revocation on every packet and rechecks account policy before e
 });
 
 it('does no idle authorization work and retains only actual relay deadlines', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'lifetime');
+  const h = await create({ listener: false }), p = await pair(h, 'lifetime');
   let checks = 0;
   const restore = await policy(h.id, async (_query, read) => { checks++; return read(); });
   try {
@@ -224,7 +224,7 @@ it('does no idle authorization work and retains only actual relay deadlines', as
 });
 
 it('shares one traffic-triggered policy read across a full bidirectional burst and preserves lane order and receipts', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'burst-refresh');
+  const h = await create({ listener: false }), p = await pair(h, 'burst-refresh');
   const started = deferred(), release = deferred();
   let checks = 0;
   const restore = await policy(h.id, async (_query, read) => {
@@ -276,7 +276,7 @@ it('shares one traffic-triggered policy read across a full bidirectional burst a
 
 it.each(['local revocation', 'owner change', 'authorization window', 'disconnect'] as const)(
   'discards a pending renewal after %s and ignores its late policy result', async reason => {
-    const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, `late-${reason.replaceAll(' ', '-')}`);
+    const h = await create({ listener: false }), p = await pair(h, `late-${reason.replaceAll(' ', '-')}`);
     const started = deferred(), release = deferred();
     const restore = await policy(h.id, async (_query, read) => {
       const result = await read(); started.resolve(); await release.promise; return result;
@@ -360,7 +360,7 @@ it('uses the page-policy owner check for both lanes of an owner participant', as
 });
 
 it('counts a timely receipt during authorization and only releases credit after approval', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'receipt-during-refresh');
+  const h = await create({ listener: false }), p = await pair(h, 'receipt-during-refresh');
   const started = deferred(), release = deferred();
   try {
     p.a.reliable.socket.send(packet(1));
@@ -388,7 +388,7 @@ it('counts a timely receipt during authorization and only releases credit after 
 });
 
 it('times out stalled reauthorization, settles waiting traffic, and cannot forward a late D1 result', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'refresh-timeout');
+  const h = await create({ listener: false }), p = await pair(h, 'refresh-timeout');
   const started = deferred(), release = deferred(), returned = deferred();
   const restore = await policy(h.id, async (_query, read) => {
     const result = await read(); started.resolve(); await release.promise; returned.resolve(); return result;
@@ -413,7 +413,7 @@ it('times out stalled reauthorization, settles waiting traffic, and cannot forwa
 
 it('bounds queued events and bytes while a shared policy request is stalled', async () => {
   for (const size of [1, LIMITS.packetBytes]) {
-    const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, `refresh-bound-${size}`);
+    const h = await create({ listener: false }), p = await pair(h, `refresh-bound-${size}`);
     const release = deferred();
     let checks = 0;
     const restore = await policy(h.id, async (_query, read) => {
@@ -437,7 +437,7 @@ it('bounds queued events and bytes while a shared policy request is stalled', as
 });
 
 it('reconstructs expired admission from hibernation attachments and reauthorizes on the next traffic', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'hibernate-refresh');
+  const h = await create({ listener: false }), p = await pair(h, 'hibernate-refresh');
   try {
     // Persist an expired lease in the attachment, then really evict the object.
     await inDO(h.id, t => {
@@ -458,7 +458,7 @@ it('reconstructs expired admission from hibernation attachments and reauthorizes
 });
 
 it('retains the live window and outstanding receipts across hibernation', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'hibernate-live');
+  const h = await create({ listener: false }), p = await pair(h, 'hibernate-live');
   // Real Worker socket delivery shares the test transport with all parallel suites.
   // Allow the same 5-second observation budget as the full-window burst test;
   // production authorization, progress and lifetime deadlines stay unchanged.
@@ -486,7 +486,7 @@ it('retains the live window and outstanding receipts across hibernation', async 
 
 it('rejects oversized and out-of-order packets before forwarding their payloads', async () => {
   for (const invalid of [packet(1, LIMITS.packetBytes + 1), packet(2)]) {
-    const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'invalid');
+    const h = await create({ listener: false }), p = await pair(h, 'invalid');
     try {
       p.a.reliable.socket.send(invalid);
       expect(await p.b.reliable.closed).toBe(1008); expect(p.b.reliable.messages.length).toBe(1);
@@ -495,7 +495,7 @@ it('rejects oversized and out-of-order packets before forwarding their payloads'
 });
 
 it('closes all lanes on disconnect and isolates stale close events from a reused channel', async () => {
-  const h = await create({ mode: 'dashboard', listener: false }), p = await pair(h, 'reused');
+  const h = await create({ listener: false }), p = await pair(h, 'reused');
   let retired!: WebSocket;
   await inDO(h.id, t => { retired = t.ctx.getWebSockets('peer-relay')[0]; });
   p.a.reliable.socket.close(); await Promise.all(p.all.map(value => value.closed));

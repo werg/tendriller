@@ -12,8 +12,8 @@ it('creates an independent stable application identity and leaves authority expl
   expect(await apiJson(h, 'GET', 'application')).toEqual(unprepared);
   const other = await create(); expect(other.application.id).not.toBe(h.application.id);
 });
-it.each(['interactive', 'dashboard'])('uses the same owned application contract for %s pages', async mode => {
-  const application = { id: '12'.repeat(32) }, h = await create({ application, mode });
+it('keeps a supplied application identity through creation and serving', async () => {
+  const application = { id: '12'.repeat(32) }, h = await create({ application });
   expect(h.application).toEqual(application);
   const created = h as unknown as { next_step: string; api: string; claimed: boolean };
   expect(created.api).toBe(`https://tendriller.dev/api/agent/pages/${h.id}`); expect(created.claimed).toBe(false);

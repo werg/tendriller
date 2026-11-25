@@ -653,8 +653,8 @@ test('one workspace socket attaches to pages that share one managed signer but k
   const signerDevice = await native.openNativeDevice({ path: join(root, 'identity.sqlite'), create: true });
   const signer = signerDevice.identity; await signerDevice.close();
   const openPage = async (applicationId, create) => {
-    const store = await native.NativeBytesStore.open(join(root, applicationId.slice(0, 4), 'device.sqlite'));
-    return p.openApplicationDevice({ store, managedSigner: signer, ...(create ? { create: true } : {}), close: () => store.close() });
+    await mkdir(join(root, applicationId.slice(0, 4)), { recursive: true });
+    return native.openNativeDevice({ path: join(root, applicationId.slice(0, 4), 'device.sqlite'), managedSigner: signer, ...(create ? { create: true } : {}) });
   };
   const pages = {};
   for (const [page, applicationId] of [['aaaaaaaaaaaa', '74'.repeat(32)], ['bbbbbbbbbbbb', '75'.repeat(32)]]) {

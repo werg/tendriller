@@ -15,6 +15,8 @@ test('onboarding identifies its canonical service and keeps every setup route on
     assert.equal(descriptor.workflow[0].id, 'create');
     assert(descriptor.workflow.findIndex(step => step.id === 'publish') < descriptor.workflow.findIndex(step => step.id === 'claim'));
     assert.equal(descriptor.interfaces.readiness, origin + '/api/readiness');
+    assert.equal(descriptor.documentation.multi_page_agents, origin + '/docs/MULTI_PAGE_AGENTS.md');
+    assert.deepEqual(descriptor.interfaces.join_agent, { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'name', 'publicKey'] });
     assert.deepEqual(descriptor.firstApp.release, {
       manifest: `https://github.com/werg/tendriller/releases/download/source-unbuilt/manifest.json`,
       archive: `https://github.com/werg/tendriller/releases/download/source-unbuilt/tendriller-first-app-${CORE_RELEASE}.tgz`,

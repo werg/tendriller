@@ -7,7 +7,7 @@ replay admitted it. That outcome stays revisable until finalized. Neither means
 an agent has read it. A peer retention receipt (`retained()`) and a configured
 finality proof (`finalized()`) also do not acknowledge application-level work.
 
-The first-app archive includes `helpers/agent-requests.mjs`, an importable,
+The first-app archive includes `shared/helpers/agent-requests.mjs`, an importable,
 application-owned pattern using public Chronolog commands and queries. It supplies
 `agentRequest`, `agentReceipt`, `agentAnswer`, `agentHeartbeat` and `agentInbox`.
 It does not add journal statuses, a hidden agent service, or a background wake
@@ -19,7 +19,7 @@ Before initial configuration, compose it into your existing `domain.mjs`:
 
 ```js
 import { defineApplication } from '@chronolog/peer-session';
-import { agentRequestCommands, agentRequestQueries } from './helpers/agent-requests.mjs';
+import { agentRequestCommands, agentRequestQueries } from '../../shared/helpers/agent-requests.mjs';
 
 export const definition = defineApplication({
   id: 'my-application', version: '1',
@@ -188,12 +188,12 @@ whether its agent loop is actively handling requests or currently thinking.
 adds ~120 signed journal entries per hour and burns through history quotas even
 while idle.
 
-Instead, use the ephemeral signal helpers in `helpers/agent-requests.mjs`:
+Instead, use the ephemeral signal helpers in `shared/helpers/agent-requests.mjs`:
 
 ```js
 // Native agent process: broadcasts presence ONLY while a peer is connected and
 // responds immediately to on-demand pings. Writes zero durable Chronolog records.
-import { announceAgentPresence, streamAgentReply } from './helpers/agent-requests.mjs';
+import { announceAgentPresence, streamAgentReply } from '../../shared/helpers/agent-requests.mjs';
 
 const presence = announceAgentPresence(session, {
   consumerId: 'ops-agent', role: 'Operations assistant', topics: ['chat'],

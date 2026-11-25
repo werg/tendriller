@@ -62,7 +62,7 @@ test('contract discovery uses the same validated origin and refuses redirects', 
 test('service origin validation rejects credentials, paths and non-loopback HTTP without leaking input', () => {
   assert.equal(requireServiceOrigin(origin + '/'), origin);
   assert.equal(requireServiceOrigin('http://127.0.0.1:3000'), 'http://127.0.0.1:3000');
-  for (const value of ['https://user:private@example.test', origin + '/api/t/private', origin + '?token=private', 'http://example.test', 'not a URL']) {
+  for (const value of ['https://user:private@example.test', origin + '/api/agent/pages/private', origin + '?token=private', 'http://example.test', 'not a URL']) {
     assert.throws(() => requireServiceOrigin(value), error => error.code === 'invalid_service_origin' && !error.message.includes('private'));
   }
 });

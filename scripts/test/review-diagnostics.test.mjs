@@ -51,7 +51,7 @@ test('diagnostic response history is bounded and never retains URL or arbitrary 
 });
 
 test('native child diagnostics expose only allowlisted codes or numeric exit status', () => {
-  assert.equal(reviewNativeError("code: 'tk_PRIVATE_TOKEN'", null), 'REDACTED_NATIVE_ERROR');
+  assert.equal(reviewNativeError("code: 'ta_PRIVATE_TOKEN'", null), 'REDACTED_NATIVE_ERROR');
   assert.equal(reviewNativeError("code: 'ERR_MODULE_NOT_FOUND' PRIVATE_BODY", null), 'ERR_MODULE_NOT_FOUND');
   assert.equal(reviewNativeError('PRIVATE_BODY', 1), 'EXIT_1');
   assert.equal(reviewNativeError('PRIVATE_BODY', null), undefined);

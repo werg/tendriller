@@ -46,20 +46,31 @@ async function mountUtility(page: Page) {
     });
   });
 }
+/** Opens Page options → Add people & devices → An agent, whose grant checkboxes are utility inputs. */
+async function openAgentGrants(page: Page) {
+  await page.route('**/t/example/_tendril/links', route => route.fulfill({ json: { name: 'Example', links: [] } }));
+  await page.route('**/t/example/_tendril/agents', route => route.request().method() === 'POST'
+    ? route.fulfill({ json: { ok: true } })
+    : route.fulfill({ json: { dashboard: 'https://service.test/dashboard#agents', agents: [
+      { id: 'ag_' + 'a'.repeat(26), name: 'builder', granted: true }, { id: 'ag_' + 'b'.repeat(26), name: 'reviewer', granted: false }] } }));
+  await page.getByRole('button', { name: 'Add people & devices', exact: true }).click();
+  await page.getByRole('tab', { name: 'An agent', exact: true }).click();
+  await expect(page.locator('tendril-utility input[type=checkbox]')).toHaveCount(2);
+}
 
-test('fresh utility permission defaults do not block an idle publication switch', async ({ page }) => {
+test('saved agent grants in the utility do not block an idle publication switch', async ({ page }) => {
   const notice = await policy(page);
-  await mountUtility(page);
+  await mountUtility(page); await openAgentGrants(page);
   expect(await page.locator('tendril-utility input[type=checkbox]').evaluateAll(inputs => inputs.map(input => {
     const box = input as HTMLInputElement; return [box.checked, box.defaultChecked];
-  }))).toEqual([[true, true], [true, true], [false, false], [false, false], [false, false]]);
+  }))).toEqual([[true, true], [false, false]]);
   await notice(2);
   expect(await reloads(page)).toBe(1);
 });
 
-test('edited utility permissions still protect a blurred draft until restored', async ({ page }) => {
+test('an unsaved utility checkbox change still protects a blurred draft until restored', async ({ page }) => {
   const notice = await policy(page);
-  await mountUtility(page);
+  await mountUtility(page); await openAgentGrants(page);
   await page.evaluate(() => {
     const box = document.querySelector('tendril-utility')!.shadowRoot!.querySelector('input[type=checkbox]') as HTMLInputElement;
     box.checked = false;

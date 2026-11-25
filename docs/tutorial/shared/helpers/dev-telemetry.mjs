@@ -1,6 +1,6 @@
 // Ephemeral page-to-agent error & health telemetry over authenticated live signals.
 // Writes zero durable Chronolog records: diagnostics stream live when connected
-// (inspectable via `tendril --mode attach logs`) and drop cleanly when offline.
+// (inspectable via `tendril --page <slug> logs`) and drop cleanly when offline.
 
 const DEFAULT_TOPIC = 'dev/telemetry';
 const DEFAULT_MAX_PER_MINUTE = 30;

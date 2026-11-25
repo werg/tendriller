@@ -12,14 +12,11 @@ export class StorageSchemaError extends Error {
   }
 }
 
-const AGENT_GRANTS_TABLE = `CREATE TABLE IF NOT EXISTS agent_grants (agent_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, scopes TEXT NOT NULL,
-  revision INTEGER NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL);`;
-const ADDITIVE_SCHEMA = AGENT_GRANTS_TABLE;
-
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS participant_records (key TEXT PRIMARY KEY, value BLOB NOT NULL);
-${AGENT_GRANTS_TABLE}
+CREATE TABLE IF NOT EXISTS agent_grants (agent_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, scopes TEXT NOT NULL,
+  revision INTEGER NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS links (id TEXT PRIMARY KEY, key TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL,
   label TEXT, created_at INTEGER NOT NULL, expires_at INTEGER, created_by_agent INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS guest_accounts (account_id TEXT NOT NULL, link_id TEXT NOT NULL, approved INTEGER NOT NULL,
@@ -110,9 +107,6 @@ export class Db {
         catch { throw new StorageSchemaError('the schema identity is malformed'); }
         if (rows.length !== 1 || rows[0].id !== 1 || rows[0].revision !== STORAGE_SCHEMA_REVISION)
           throw new StorageSchemaError('the stored schema identity does not match this release');
-        // Tables added within this revision. Existing pages keep their data;
-        // the retired tokens table is simply no longer read.
-        this.run(ADDITIVE_SCHEMA);
         return;
       }
       if (objects.length) throw new StorageSchemaError('existing application tables have no schema identity');

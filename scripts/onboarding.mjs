@@ -89,7 +89,7 @@ export const TUTORIAL_FILES = Object.freeze([
   'deploy/Dockerfile',
   'deploy/Dockerfile.dockerignore',
   'deploy/tendriller.service',
-  'deploy/dev.tendriller.participant.plist',
+  'deploy/dev.tendriller.agent.plist',
   'deploy/install-windows-task.ps1',
 ]);
 // Root deploy/ is the single maintained source; only its explicit public files ship.

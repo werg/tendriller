@@ -191,32 +191,28 @@ for (const width of [1280, 320]) {
     await page.screenshot({ path: testInfo.outputPath('share-invite-created.png') });
   });
 
-  test(`the nav button opens add people & devices and issues a paste-ready agent invitation at ${width}px`, async ({ page }, testInfo) => {
+  test(`the nav button opens add people & devices and grants account agents this page at ${width}px`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 800 }); await fixture(page);
-    let agentBody: unknown;
+    const posted: unknown[] = [];
     await page.route('https://layout.test/_tendril/links**', route => route.fulfill({ json: { name: 'Test page', links: [] } }));
     await page.route('https://layout.test/_tendril/agents', async route => {
-      agentBody = route.request().postDataJSON();
-      await route.fulfill({ status: 201, json: { name: 'reviewer', blurb: 'Please join my Tendriller page "Test page" as the agent "reviewer".\nPOST https://tendriller.dev/api/adopt', link_blurb: 'Please join: https://tendriller.dev/join/agent?code=x' } });
+      if (route.request().method() === 'POST') { posted.push(route.request().postDataJSON()); return route.fulfill({ json: { ok: true } }); }
+      await route.fulfill({ json: { dashboard: 'https://tendriller.dev/dashboard#agents',
+        agents: [{ id: 'ag_' + 'a'.repeat(26), name: 'builder', granted: true }, { id: 'ag_' + 'b'.repeat(26), name: 'reviewer', granted: false }] } });
     });
-    let copied = '';
-    await page.exposeFunction('recordCopy', (text: string) => { copied = text; });
-    await page.evaluate(() => {
-      Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
-      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => (window as any).recordCopy(text) } });
-      const w = window as any; w.disposeUtility(); w.mount();
-    });
+    await page.evaluate(() => { const w = window as any; w.disposeUtility(); w.mount(); });
     await page.getByRole('button', { name: 'Add people & devices', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'My device', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('img', { name: 'Scan to open this page on another device' })).toBeVisible();
     await page.getByRole('tab', { name: 'An agent', exact: true }).click();
-    await page.getByRole('textbox', { name: 'Agent name', exact: true }).fill('reviewer');
-    await page.getByRole('button', { name: 'Create agent invitation', exact: true }).click();
-    await expect(page.getByRole('textbox', { name: 'Agent invitation to paste' })).toHaveValue(/api\/adopt/);
-    expect(agentBody).toEqual({ name: 'reviewer', scopes: ['host:read', 'participants:connect'] });
-    await page.getByRole('button', { name: 'Copy invitation', exact: true }).click();
-    await expect.poll(() => copied).toContain('as the agent "reviewer"');
-    await page.screenshot({ path: testInfo.outputPath('agent-invite-created.png') });
+    await expect(page.getByRole('checkbox', { name: 'builder', exact: true })).toBeChecked();
+    const reviewer = page.getByRole('checkbox', { name: 'reviewer', exact: true });
+    await expect(reviewer).not.toBeChecked();
+    await reviewer.check();
+    await expect.poll(() => posted).toEqual([{ agent: 'ag_' + 'b'.repeat(26), granted: true }]);
+    await expect(page.getByText('reviewer can now maintain this page.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Add an agent on your dashboard', exact: true })).toHaveAttribute('href', 'https://tendriller.dev/dashboard#agents');
+    await page.screenshot({ path: testInfo.outputPath('agent-grants.png') });
   });
 }
 

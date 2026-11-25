@@ -4,9 +4,9 @@ Start with [browser-first setup](BUILD_AN_APP.md), [ownership/bootstrap](SESSION
 
 ## Connect the browser
 
-`worker.mjs` opens retained identity/authority/keys locally, then `createApplicationSession`. `page.mjs` uses `openBrowserOwner` and installs `createApplicationBackend(session)` into the runtime. `helpers/browser-profile.mjs` supplies the same stable profile for every document. Never gate Save on network/discovery/native-provider/finalizer reachability.
+`worker.mjs` opens retained identity/authority/keys locally, then `createApplicationSession`. `page.mjs` uses `openBrowserOwner` and installs `createApplicationBackend(session)` into the runtime. `shared/helpers/browser-profile.mjs` supplies the same stable profile for every document. Never gate Save on network/discovery/native-provider/finalizer reachability.
 
-The first owner browser initializes local data keys after actual sign-in/key proof. A fresh second browser stays keyless until explicit reviewed crypto membership and recipient-bound wrapped-key transfer. Use `helpers/provisioning-view.mjs`; no ordering pause or native-prepared prefix exists. SQL permission grants remain ordinary transactions, separate from crypto membership.
+The first owner browser initializes local data keys after actual sign-in/key proof. A fresh second browser stays keyless until explicit reviewed crypto membership and recipient-bound wrapped-key transfer. Use `shared/helpers/provisioning-view.mjs`; no ordering pause or native-prepared prefix exists. SQL permission grants remain ordinary transactions, separate from crypto membership.
 
 ### Match an application-owned palette
 
@@ -39,19 +39,19 @@ colors only; connection actions, accessibility and reduced motion are unchanged.
 
 - **List/detail with stable IDs:** the event notes page derives complete rows from one captured materialized event snapshot. Links select `#note=ID`; the detail is an inspector, while the editor owns separate local drafts per entity. Reordered snapshots do not overwrite textarea values.
 - **Relational list/detail/catalog:** the SQL page derives inventory balances, transfer receipts and schema introspection from one captured view. It recomputes counts and detail text; incoming ALTER exposes current fields without publishing code. Missing tables/columns leave the last successful snapshot visible and explicitly **not current**.
-- **Reviewed comparison/edit:** use `ui/` list/detail, inspector and reviewed-edit examples for long domain content. Put previous/current/reviewed values beside one another. Submission captures the reviewed guard values; a new snapshot never silently edits the person's pending guard/draft.
+- **Reviewed comparison/edit:** use `shared/ui/` list/detail, inspector and reviewed-edit examples for long domain content. Put previous/current/reviewed values beside one another. Submission captures the reviewed guard values; a new snapshot never silently edits the person's pending guard/draft.
 - **View-state persistence:** `createViewStore({storage,applicationId,profileId,viewId})` stores independent drafts and original operation references. Wrap unavailable/quota-failing browser storage with an honest visible fallback; do not claim a volatile draft survives reload.
 
-The first-app archive includes `ui/patterns.mjs` and a complete, dependency-free
-`ui/showcase.html` / `ui/showcase.mjs` example. Serve the extracted starter over
-local HTTP and open `/ui/showcase.html`; it uses synthetic training episodes to
+The first-app archive includes `shared/ui/patterns.mjs` and a complete, dependency-free
+`shared/ui/showcase.html` / `shared/ui/showcase.mjs` example. Serve the extracted starter over
+local HTTP and open `/shared/ui/showcase.html`; it uses synthetic training episodes to
 show useful actions before long system context, named related links and reviewed
 inline changes. It is a UI specimen, not a connected or persistent application.
 
 ```js
 import {
   mountListDetail, mountInspector, mountComparison, mountInlineReview, mountViewState,
-} from './ui/patterns.mjs';
+} from '../../shared/ui/patterns.mjs';
 ```
 
 | Pattern | Interface | Behavior and application responsibility |
@@ -198,7 +198,7 @@ do not add a second coordinator alongside it:
 
 ```js
 // submission-controls-example
-import { createSubmissionState } from './helpers/submission-state.mjs';
+import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
 
 export function createWriteControls(root) {
   const eligibility = { submit: 'canSubmit', retry: 'canRetry' };
@@ -251,7 +251,7 @@ closure is not an operation token: an early call followed by a second call in
 original operation; finishing this UI lifecycle does not cancel, retry or declare
 the command accepted. Materialized outcomes remain revisable.
 
-`helpers/submission-state.mjs` deliberately has no peer, current-global-read or finalizer gate. Use `helpers/cli-lifetime.mjs`/owned signals for optional native process cleanup. Detaching a view cancels observation, not the durable proposal.
+`shared/helpers/submission-state.mjs` deliberately has no peer, current-global-read or finalizer gate. Use `shared/cli-lifetime.mjs`/owned signals for optional native process cleanup. Detaching a view cancels observation, not the durable proposal.
 
 ## 4. Ordinary schema and permission edits
 
@@ -261,28 +261,28 @@ A late earlier DDL transaction can revise an already displayed SQL outcome. Do n
 
 ## 5. Optional finality, providers and reviewed media
 
-`helpers/finality-view.mjs` exposes an explicit local browser provider action, not an automatic write gate. Warn before closing author time: unseen genuine offline work behind the frontier may be excluded. Fixed-validator quorums require actual votes. Configuration alone is not qualified provider availability.
+`shared/helpers/finality-view.mjs` exposes an explicit local browser provider action, not an automatic write gate. Warn before closing author time: unseen genuine offline work behind the frontier may be excluded. Fixed-validator quorums require actual votes. Configuration alone is not qualified provider availability.
 
-Camera/file preview and analysis are separate stages. Keep explicit consent before sharing content with a named inference provider, permit cancellation, and let the person edit suggestions before a declared domain command. Missing agents disable only their tools/analysis. Session signals are disposable previews/progress; they do not persist domain state or establish exclusivity. Provisional claims are not authority for irreversible effects. See [reviewed input](AI_INPUT.md), [sensors](SENSORS.md), [signals](APPLICATION_SIGNALS.md), and optional `ui/`/`media/` modules.
+Camera/file preview and analysis are separate stages. Keep explicit consent before sharing content with a named inference provider, permit cancellation, and let the person edit suggestions before a declared domain command. Missing agents disable only their tools/analysis. Session signals are disposable previews/progress; they do not persist domain state or establish exclusivity. Provisional claims are not authority for irreversible effects. See [reviewed input](AI_INPUT.md), [sensors](SENSORS.md), [signals](APPLICATION_SIGNALS.md), and optional `shared/ui/`/`shared/media/` modules.
 
 ## Full-duplex dashboards and data feeds
 
 For dashboards where an agent runs on a cloud server or home server and the user
-opens the page on a phone, tablet or laptop, compose `ui/dashboard.mjs`,
-`helpers/data-feed.mjs`, `ui/chat-session.mjs`, and `helpers/dev-telemetry.mjs`:
+opens the page on a phone, tablet or laptop, compose `shared/ui/dashboard.mjs`,
+`shared/helpers/data-feed.mjs`, `shared/ui/chat-session.mjs`, and `shared/helpers/dev-telemetry.mjs`:
 
 ```js
 // Agent program (secrets & local API access stay strictly native; optional for ordinary browser Save):
-import { serveDataFeeds } from './helpers/data-feed.mjs';
+import { serveDataFeeds } from '../../shared/helpers/data-feed.mjs';
 const feeds = serveDataFeeds(session, {
   cpu: { pollMs: 5_000, fetch: async () => readHostMetrics() },
   orders: { maxAgeMs: 10_000, fetch: async (query) => fetchPrivateApi(query) },
 });
 
 // Browser page:
-import { useDataFeed } from './helpers/data-feed.mjs';
-import { mountDashboardShell, mountMetricCard, mountFeedbackCard } from './ui/dashboard.mjs';
-import { mountDevTelemetry } from './helpers/dev-telemetry.mjs';
+import { useDataFeed } from '../../shared/helpers/data-feed.mjs';
+import { mountDashboardShell, mountMetricCard, mountFeedbackCard } from '../../shared/ui/dashboard.mjs';
+import { mountDevTelemetry } from '../../shared/helpers/dev-telemetry.mjs';
 
 const shell = mountDashboardShell(document.querySelector('#app'), {
   title: 'Home Server', session,
@@ -301,7 +301,7 @@ const telemetry = mountDevTelemetry({ session, runtime: window.tendril });
 
 `serveDataFeeds` polls only while a peer is connected, skips unchanged snapshots,
 caches in RAM, broadcasts deltas over `session.signals` (`feed/<name>`), and serves
-on-demand or large (>10 KiB, up to 4 MiB) pulls via `helpers/signal-request.mjs`—all
+on-demand or large (>10 KiB, up to 4 MiB) pulls via `shared/helpers/signal-request.mjs`—all
 with **zero durable Chronolog writes**. Reserve Chronolog commands for durable user
 decisions, chat turns, and retained observations.
 

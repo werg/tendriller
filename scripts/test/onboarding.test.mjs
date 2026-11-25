@@ -169,7 +169,7 @@ test('building a starter excludes nested private state, provider secrets, genera
 });
 
 // Tool discovery is scope-filtered: a packaged connection must actually request
-// the permission used by the documented account-bound setup path.
+// the permission that register_agent needs on the documented account-linked route.
 test('the installable MCP connection requests account setup permission explicitly', () => {
   const manifest = JSON.parse(readFileSync(join(root, 'plugin/mcp.json'), 'utf8'));
   const auth = manifest.mcpServers.tendriller.extensions['com.openai'].auth;
@@ -213,7 +213,7 @@ test('live views have one SDK implementation and the starter page uses bounded i
 
 test('deployment template paths resolve to maintained root sources and guide links are public routes', () => {
   const files = ['Dockerfile', 'Dockerfile.dockerignore',
-    'tendriller.service', 'dev.tendriller.participant.plist', 'install-windows-task.ps1'];
+    'tendriller.service', 'dev.tendriller.agent.plist', 'install-windows-task.ps1'];
   for (const name of files) {
     const path = `deploy/${name}`;
     assert(TUTORIAL_FILES.includes(path), `Unshipped deployment file: ${path}`);

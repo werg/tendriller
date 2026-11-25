@@ -155,7 +155,7 @@ With Playwright available in the application project, capture the authored
 layout:
 
 ```sh
-npx tendril-preview ./page --headless --desktop --out preview.png
+npx tendril-preview ./pages/<slug>/dist --headless --desktop --out preview.png
 ```
 
 Install Playwright in the project or supply `--playwright-path MODULE` with an
