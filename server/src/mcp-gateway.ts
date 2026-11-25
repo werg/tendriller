@@ -52,14 +52,15 @@ const tools = [
       required: ['id'],
     },
   },
-  tool('register_agent', 'Register a workspace maintenance agent under this linked account. Choose a short, speakable lowercase handle (e.g. atlas, reviewer) and optional bio, generate an Ed25519 signing key first, and send only its base64url public key. Returns a private agent token once; calling again with the same handle rotates the token and key.',
+  tool('register_agent', 'Register a workspace maintenance agent under this linked account. Choose a short, speakable lowercase handle (e.g. atlas, reviewer) and optional bio, generate an Ed25519 signing key and an X25519 key-wrap key pair first (`tendril workspace key` prints both public keys), and send only the public keys. Returns a private agent token once; calling again with the same handle rotates the token and keys.',
     'tendrils:create',
     {
       handle: { type: 'string', pattern: handlePattern, description: 'Self-chosen lowercase handle (2-32 chars: a-z, 0-9, _, -).' },
       bio: { type: 'string', maxLength: 160, description: 'Optional short summary of this agent’s role or capabilities.' },
       publicKey: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' },
+      wrapKey: { type: 'string', pattern: '^[0-9a-f]{64}$', description: 'X25519 key-wrap public key (64 lowercase hex) that page members seal data keys to.' },
     },
-    ['handle', 'publicKey'], false),
+    ['handle', 'publicKey', 'wrapKey'], false),
   tool('list_tendrils', 'List applications opted into hosted MCP for this OAuth grant, 100 per call.',
     'tendrils:list', { cursor: { type: 'string', pattern: '^[a-z2-7]{12}$' } }, []),
   tool('describe_application', 'Inspect allowed commands, queries, page agent @handle roster, and primary-agent status.',
@@ -352,7 +353,7 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
       if (selected.scope) requireScope(principal, selected.scope);
       const args = fields(params.arguments ?? {}, Object.keys(selected.inputSchema.properties), selected.inputSchema.required);
       if (selected.name === 'register_agent') {
-        return complete(toolResult(await registerAccountAgent(env, principal.account, args.handle, args.publicKey, args.bio)));
+        return complete(toolResult(await registerAccountAgent(env, principal.account, args.handle, args.publicKey, args.wrapKey, args.bio)));
       }
       if (selected.name === 'get_profile') {
         return complete(toolResult({

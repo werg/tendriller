@@ -1,7 +1,7 @@
 // SQLite storage for the Tendril Durable Object (PROTOCOL section 3).
 
 /** Persistent host storage identity, independent of runtime and application releases. */
-export const STORAGE_SCHEMA_REVISION = 13;
+export const STORAGE_SCHEMA_REVISION = 14;
 
 export class StorageSchemaError extends Error {
   readonly code = 'storage_schema_mismatch';
@@ -16,7 +16,12 @@ export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS participant_records (key TEXT PRIMARY KEY, value BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS agent_grants (agent_id TEXT PRIMARY KEY, handle TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '',
-  public_key TEXT NOT NULL, scopes TEXT NOT NULL, revision INTEGER NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL);
+  public_key TEXT NOT NULL, wrap_key TEXT NOT NULL, scopes TEXT NOT NULL, revision INTEGER NOT NULL, granted_by TEXT NOT NULL, granted_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS admission_attestations (public_key TEXT PRIMARY KEY, record BLOB NOT NULL, issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS invite_redemptions (invite_id TEXT NOT NULL, account_id TEXT NOT NULL, public_key TEXT NOT NULL,
+  redeemed_at INTEGER NOT NULL, PRIMARY KEY (invite_id, account_id));
+CREATE TABLE IF NOT EXISTS key_wraps (recipient TEXT NOT NULL, signer TEXT NOT NULL, max_epoch INTEGER NOT NULL, record BLOB NOT NULL,
+  stored_at INTEGER NOT NULL, PRIMARY KEY (recipient, signer, max_epoch));
 CREATE TABLE IF NOT EXISTS mcp_store (k TEXT PRIMARY KEY, v BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS mcp_connections (grant_id TEXT PRIMARY KEY, handle TEXT NOT NULL, bio TEXT NOT NULL DEFAULT '',
   public_key TEXT NOT NULL, wrapped_keys BLOB NOT NULL, label TEXT NOT NULL, capabilities TEXT NOT NULL,

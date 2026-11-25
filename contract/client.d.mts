@@ -67,11 +67,11 @@ export function validateHubPath(path: string): string;
 export function createAgentHub(options: AgentHubOptions): AgentHub;
 export class ApiError extends Error { status: number; code: string; details?: ValidationIssue[]; error?: Partial<PublicError>; constructor(status: number, error?: Partial<PublicError>) }
 export function createAgentClient(credential: { service: string; token: string }, options?: ClientOptions): AgentClient;
-export function registerAgent(service: string, body: { owner: string; handle: string; bio?: string; publicKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
+export function registerAgent(service: string, body: { owner: string; handle: string; bio?: string; publicKey: string; wrapKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
 /** Normalizes the host's {agent, token} registration answer (also an MCP register_agent result). */
 export function agentCredential(result: unknown): AgentCredential;
-export function joinAgent(service: string, body: { code: string; handle: string; bio?: string; publicKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
-export interface ServiceDescriptor { contract: number; core_release: string; limits: Record<string, unknown> }
+export function joinAgent(service: string, body: { code: string; handle: string; bio?: string; publicKey: string; wrapKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
+export interface ServiceDescriptor { contract: number; core_release: string; limits: Record<string, unknown>; /** Host attestation public key (hex) pages pin in their admission policy; null when unconfigured. */ attestationKey: string | null }
 export function describeService(service: string, options?: ClientOptions & { signal?: AbortSignal }): Promise<ServiceDescriptor>;
 export function requireService(descriptor: ServiceDescriptor, requirements?: { contract?: number }): ServiceDescriptor;
 export function requireServiceOrigin(service: string): string;

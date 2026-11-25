@@ -52,7 +52,7 @@ test('contract discovery uses the same validated origin and refuses redirects', 
   let calls = 0;
   const fetch = async (url, options) => {
     calls++; assert.equal(url, origin + '/api/service'); assert.equal(options.redirect, 'error');
-    return Response.json({ contract: 3, core_release: 'test', limits: {} });
+    return Response.json({ contract: 3, core_release: 'test', limits: {}, attestationKey: 'ab'.repeat(32) });
   };
   await describeService(origin, { fetch });
   await assert.rejects(describeService(origin + '/api/private', { fetch }), { code: 'invalid_service_origin' });

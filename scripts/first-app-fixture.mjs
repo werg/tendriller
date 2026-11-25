@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { packedEngineModules } from './packed-engine-modules.mjs';
+import { createAttestationKey } from './attestation-key.mjs';
 import { once } from 'node:events';
 import { connect as connectTls } from 'node:tls';
 import { Agent } from 'undici';
@@ -128,6 +129,8 @@ export async function startPackedHost({ root, engine, directory, kit, port = DEF
   const oauthJwk = { ...await crypto.subtle.exportKey('jwk', oauthKey.privateKey), alg: 'ES256', kid: 'first-app-test' };
   const oauthConfiguration = { resource: SERVICE + '/mcp', clients: [{ id: 'first-app-test', name: 'First app test',
     redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: ['tendrils:create', 'tendrils:list'] }] };
+  // Pages pin the host attestation key; restart() keeps the same identity with the same storage.
+  const attestationKey = JSON.stringify(createAttestationKey());
   const engineModules = await packedEngineModules(join(engine, 'package'));
   const options = () => ({ ...convertV4MiniflareOptions({
     host: '127.0.0.1', port, https: true, cf: false,
@@ -137,7 +140,7 @@ export async function startPackedHost({ root, engine, directory, kit, port = DEF
       { ...workerOptions, name: 'first-app-packed-host',
         ...engineModules,
         bindings: { ...workerOptions.bindings, PUBLIC_BASE: SERVICE, PAGE_BASE_DOMAIN: 'pages.localhost',
-          OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration),
+          OAUTH_SIGNING_JWK: JSON.stringify(oauthJwk), OAUTH_CONFIG_JSON: JSON.stringify(oauthConfiguration), HOST_ATTESTATION_KEY: attestationKey,
           ...(kit ? { SERVICE_SOURCE_COMMIT: kit.composition.core.source, SERVICE_COMPOSITION_ID: kit.composition.id } : {}) } },
     ],
   }), resourcePersistencePath: join(directory, 'host-state'), resourceTmpPath: join(directory, 'host-tmp'),

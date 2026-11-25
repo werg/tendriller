@@ -50,4 +50,6 @@ export interface Env {
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;
+  /** Host attestation signing identity JSON `{publicKey, privateKey}` (hex), a Worker secret. Pages pin its public key in their signed admission policy. */
+  HOST_ATTESTATION_KEY?: string;
 }

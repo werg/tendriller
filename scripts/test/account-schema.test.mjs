@@ -34,9 +34,9 @@ test('the account schema holds OAuth, assistant and agent tables, and agent rows
   assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'account_setup%'").get(), undefined);
   db.exec("INSERT INTO accounts(id,created_at,email) VALUES('owner',1,'owner@example.test')");
   db.exec("INSERT INTO tendrils(id,owner_account,created_at) VALUES('aaaaaaaaaaaa','owner',1)");
-  db.exec("INSERT INTO agents(id,account_id,handle,bio,token_hash,public_key,created_at) VALUES('ag_one','owner','maintainer','Keeps notes','hash-1','key',1)");
-  assert.throws(() => db.exec("INSERT INTO agents(id,account_id,handle,token_hash,public_key,created_at) VALUES('ag_two','owner','Maintainer','hash-2','key',1)"), /UNIQUE/);
-  assert.throws(() => db.exec("INSERT INTO agents(id,handle,token_hash,public_key,created_at) VALUES('ag_three','orphan','hash-3','key',1)"), /CHECK/);
+  db.exec("INSERT INTO agents(id,account_id,handle,bio,token_hash,public_key,wrap_key,created_at) VALUES('ag_one','owner','maintainer','Keeps notes','hash-1','key','abababababababababababababababababababababababababababababababab',1)");
+  assert.throws(() => db.exec("INSERT INTO agents(id,account_id,handle,token_hash,public_key,wrap_key,created_at) VALUES('ag_two','owner','Maintainer','hash-2','key','abababababababababababababababababababababababababababababababab',1)"), /UNIQUE/);
+  assert.throws(() => db.exec("INSERT INTO agents(id,handle,token_hash,public_key,wrap_key,created_at) VALUES('ag_three','orphan','hash-3','key','abababababababababababababababababababababababababababababababab',1)"), /CHECK/);
   db.exec("INSERT INTO agent_grants(agent_id,page_id,scopes,granted_at,granted_by) VALUES('ag_one','aaaaaaaaaaaa','[]',1,'creator')");
   db.exec("DELETE FROM tendrils WHERE id='aaaaaaaaaaaa'");
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM agent_grants').get().n, 0);

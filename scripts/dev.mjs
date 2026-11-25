@@ -2,6 +2,8 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { existsSync, readFileSync, appendFileSync } from "node:fs";
+import { createAttestationKey } from "./attestation-key.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const children = new Set();
@@ -24,7 +26,16 @@ function stop(code) {
   process.exitCode = code;
 }
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => stop(0));
+/** Local pages pin the host attestation key in signed admission policy, so keep one stable key in server/.dev.vars (gitignored). */
+function ensureAttestationKey() {
+  const vars = join(root, "server/.dev.vars"), current = existsSync(vars) ? readFileSync(vars, "utf8") : "";
+  if (/^HOST_ATTESTATION_KEY=/m.test(current)) return;
+  const key = createAttestationKey();
+  appendFileSync(vars, `${current && !current.endsWith("\n") ? "\n" : ""}HOST_ATTESTATION_KEY='${JSON.stringify(key)}'\n`, { mode: 0o600 });
+  console.log(`Generated a local host attestation key in server/.dev.vars (public key ${key.publicKey}).`);
+}
 try {
+  ensureAttestationKey();
   await run(["scripts/build.mjs"]);
   await run(["node_modules/wrangler/bin/wrangler.js", "d1", "migrations", "apply", "ACCOUNTS", "--local", "--config", "server/wrangler.jsonc"]);
   if (!stopping) {

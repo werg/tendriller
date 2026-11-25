@@ -47,7 +47,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
         const has = !!localAgentGrant(t, agent.id);
         if (checked.has(agent.id) && !has) {
           await commit(() => {});
-          await putAgentGrant(t, principal.accountId!, agent.id, agent.handle, agent.bio, agent.public_key, [...AGENT_SCOPES]); granted++;
+          await putAgentGrant(t, principal.accountId!, agent.id, agent.handle, agent.bio, agent.public_key, agent.wrap_key, [...AGENT_SCOPES]); granted++;
         } else if (!checked.has(agent.id) && has) {
           await commit(() => {});
           await deleteAgentGrant(t, agent.id, `owner:${principal.accountId}`); removed++;

@@ -43,11 +43,11 @@ export function requireAccess(principal: Principal, action: AccessAction): void 
 }
 
 /** The page's synchronous mirror of one agent grant. D1 remains the routing index. */
-export interface LocalAgentGrant { agent_id: string; handle: string; bio: string; public_key: string; scopes: AgentScope[]; revision: number; granted_by: string; granted_at: number }
+export interface LocalAgentGrant { agent_id: string; handle: string; bio: string; public_key: string; wrap_key: string; scopes: AgentScope[]; revision: number; granted_by: string; granted_at: number }
 export function localAgentGrant(t: Tendril, agentId: string): LocalAgentGrant | null {
   return t.db.cached(`access:agent:${agentId}`, () => {
     const row = t.db.one<Omit<LocalAgentGrant, 'scopes'> & { scopes: string }>(
-      'SELECT agent_id,handle,bio,public_key,scopes,revision,granted_by,granted_at FROM agent_grants WHERE agent_id=?', agentId);
+      'SELECT agent_id,handle,bio,public_key,wrap_key,scopes,revision,granted_by,granted_at FROM agent_grants WHERE agent_id=?', agentId);
     return row ? Object.freeze({ ...row, scopes: JSON.parse(row.scopes) as AgentScope[] }) : null;
   });
 }

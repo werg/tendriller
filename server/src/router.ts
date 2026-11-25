@@ -16,6 +16,7 @@ import { CORS_HEADERS, errorResponse, json, toErrorResponse, withCors } from "./
 import { landingPage } from "./inject";
 import { internalHeaders, routeAgentApi } from "./agents";
 import { serviceDescriptor } from "./descriptor";
+import { hostAttestationKey } from "./host-attestation";
 import { onboardingDescriptor, onboardingLinks } from "./onboarding";
 import { capabilityCatalog } from "./capability-catalog";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
@@ -174,7 +175,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     });
   }
   if (path === "/.well-known/tendriller.json" && publicRead) {
-    const response = json(onboardingDescriptor(publicBase(env)), 200, { Link: onboardingLinks(publicBase(env)) });
+    const response = json({ ...onboardingDescriptor(publicBase(env)), attestationKey: hostAttestationKey(env) }, 200, { Link: onboardingLinks(publicBase(env)) });
     return req.method === "HEAD" ? new Response(null, response) : response;
   }
   if (path === "/.well-known/tendriller-capabilities.json" && publicRead) {
@@ -244,7 +245,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   const path = url.pathname;
   try {
     if (path === "/api/service" && req.method === "GET")
-      return json(serviceDescriptor(), 200, { Link: onboardingLinks(publicBase(env)) });
+      return json(serviceDescriptor(env), 200, { Link: onboardingLinks(publicBase(env)) });
     if (path === "/api/readiness") {
       if (req.method !== 'GET' && req.method !== 'HEAD') return errorResponse(405, 'method_not_allowed', 'Readiness is read-only');
       const readiness = await serviceReadiness(env);

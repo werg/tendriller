@@ -86,7 +86,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (sub === 'mcp/grants' || sub === 'mcp/connect' || sub === 'mcp/rekey' || sub === 'mcp/sync' || /^mcp\/[A-Za-z0-9_-]{1,128}$/.test(sub)) {
     return handlePageMcp(t, req, sub, principal);
   }
-  if (sub === 'service' && m === 'GET') return json(serviceDescriptor());
+  if (sub === 'service' && m === 'GET') return json(serviceDescriptor(t.env));
   if (sub === "trust-version" && m === "POST") {
     if (!allows(principal, "page.owner") || !session?.account_id) throw new HttpError(403, "forbidden");
     const form = new URLSearchParams(new TextDecoder().decode(await readBody(req, 4096)));
@@ -154,7 +154,7 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (b.granted) {
       const agent = (await listAccountAgents(t.env, principal.accountId)).find(row => row.id === b.agent);
       if (!agent) throw new HttpError(404, "not_found", "No such agent on your account");
-      await putAgentGrant(t, principal.accountId, agent.id, agent.handle, agent.bio, agent.public_key, [...AGENT_SCOPES]);
+      await putAgentGrant(t, principal.accountId, agent.id, agent.handle, agent.bio, agent.public_key, agent.wrap_key, [...AGENT_SCOPES]);
     } else await deleteAgentGrant(t, b.agent, `owner:${principal.accountId}`);
     return json({ agent: b.agent, granted: b.granted, roster: pageAgents(t) });
   }

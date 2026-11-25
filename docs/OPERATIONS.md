@@ -4,32 +4,38 @@ Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendrille
 
 ## Fresh storage baseline
 
-Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 13** (consolidated page, signed authority, publication, agent handle and hosted MCP participant tables). A mismatched existing schema is rejected before mutation, so provision a fresh Durable Object namespace.
+Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 14** (consolidated page, member-signed authority, host admission attestations, invite redemptions, key wraps, publication, agent handle/wrap key and hosted MCP participant tables). A mismatched existing schema is rejected before mutation, so provision a fresh Durable Object namespace.
 
 This pre-release target uses fresh matching storage only — there are no legacy migration paths or compatibility readers:
 1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and the ordered `server/migrations/0001_accounts.sql` (accounts, OAuth, assistant connections) and `0002_agents.sql` (agents, page grants, join codes) migrations (exported as `@tendriller/engine/accounts-schema`). Verify `d1_migrations` records both; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This initializes new storage only; it is not conversion of an older database.
-2. Provision fresh `Tendril`, `Admission` and `AgentHub` Durable Object namespaces (`Tendril` and `Admission` matching revision 13; `AgentHub` is one object per agent, holding its single control-traffic connection).
+2. Provision fresh `Tendril`, `Admission` and `AgentHub` Durable Object namespaces (`Tendril` and `Admission` matching revision 14; `AgentHub` is one object per agent, holding its single control-traffic connection).
 3. Missing or mismatched storage fails closed without mutating existing records.
 
 `scripts/provision.mjs` plans and provisions fresh named Worker, D1, R2, and domain resources and writes a complete Wrangler config. Review resource names and page-domain isolation before deploying.
 
-## Storage revision 13 in the existing s11 Workers
+## Storage revision 14 in the existing s11 Workers
 
-Revision 13 keeps the `tendriller-{staging,production}-s11` Worker scripts, their
+Revision 14 keeps the `tendriller-{staging,production}-s11` Worker scripts, their
 secrets, public routes and `FILES` buckets (content-addressed runtime files). It
-binds fresh storage instead: D1 `tendriller-{staging,production}-s12-accounts`
-(created for this cutover before the revision moved to 13; the name is only a
-label) and the Durable Object classes `TendrilS13`, `AdmissionS13` and
-`AgentHubS13` (migration tag `storage-13`). The engine exports the same implementations under
-both names; the unrevisioned `Tendril`/`Admission`/`AgentHub` namespaces are no
-longer bound, so their revision-11 data stays inert and is never read, migrated
-or deleted. A later storage revision repeats this with new class names and a
-fresh D1, instead of moving routes to a new Worker.
+binds fresh storage instead: a fresh D1 database `tendriller-{staging,production}-s14-accounts`
+(the `agents` table now carries each agent's `wrap_key`) and the Durable Object classes
+`TendrilS14`, `AdmissionS14` and `AgentHubS14` (migration tag `storage-14`). The engine
+exports the same implementations under every earlier name; those namespaces are no
+longer bound, so their data stays inert and is never read, migrated or deleted. Pages
+and agents registered before revision 14 do not open; owners create them again.
 
-For each environment: apply the D1 migrations to the fresh database, set its
-`*_STORAGE_SCHEMA` variable to `13`, deploy through the normal workflow, verify
-readiness and the deployment checks, and only then reopen creation with the
-conditional update below.
+For each environment:
+
+1. `npx wrangler d1 create tendriller-<env>-s14-accounts`, then put the returned
+   `database_name`/`database_id` in the `ACCOUNTS` binding of
+   `server/wrangler.<env>.jsonc` (the committed config still names the revision-13
+   database, which lacks `agents.wrap_key`; do not deploy against it).
+2. Apply the D1 migrations to the fresh database and set its `*_STORAGE_SCHEMA`
+   variable to `14`.
+3. Set the host attestation key (see the `HOST_ATTESTATION_KEY` section below).
+4. Deploy through the normal workflow, verify readiness (including
+   `attestation.available`) and the deployment checks, and only then reopen creation
+   with the conditional update below.
 
 ## Required s10 → fresh s11 cutover precondition
 
@@ -189,10 +195,39 @@ no data export, namespace transfer, resource deletion or local process restart.
 ## Configuration and secrets
 
 - **Origin isolation:** keep `PUBLIC_BASE` (service origin) strictly separate from page hostnames (`*.pages.example`). Configure wildcard page routes/certificates so every page gets its own browser origin and storage boundary.
-- **Secrets:** store OAuth provider secrets, `OAUTH_SIGNING_JWK`, `ASSISTANT_STORE_KEY` (32 random bytes base64 for webhook secret encryption and inbox tickets), and anti-abuse secrets in the platform secret store. Never embed secrets in logs, source, or published assets.
+- **Secrets:** store `HOST_ATTESTATION_KEY` (see above), OAuth provider secrets, `OAUTH_SIGNING_JWK`, `ASSISTANT_STORE_KEY` (32 random bytes base64 for webhook secret encryption and inbox tickets), and anti-abuse secrets in the platform secret store. Never embed secrets in logs, source, or published assets.
 - **Optional OAuth & `/mcp`:** disabled when `OAUTH_CONFIG_JSON` is absent. Configure exact `resource` (`<PUBLIC_BASE>/mcp`), registered clients, `OAUTH_SIGNING_JWK`, and optional `ASSISTANT_CALLBACK_ORIGINS` (space-separated allowed HTTPS webhook origins). See [OAuth setup](INTEGRATION_OAUTH.md) and [Cloudflare assistant setup](CLOUDFLARE_ASSISTANT.md).
 - **Initial mode:** fresh deployments start in `creation_paused`. Verify sign-in, page claim, origin isolation, and signed publication before opening creation.
 - **Agent ledger integrity:** `agents`, `agent_grants` and `agent_join_codes` hold only SHA-256 hashes of agent tokens and join codes, public keys and per-page grants. Never delete grant rows by hand to clear a limit; revoke the agent or remove the grant through the dashboard so page objects close its sockets. Restore a verified backup if storage is inconsistent.
+
+## Host attestation key (`HOST_ATTESTATION_KEY`)
+
+The host signs **host attestations**, which are evidence that a signed-in account (or a granted agent) proved possession of a device or agent key for one page. It never signs descriptors or memberships and never sees epoch keys. Every page's genesis membership pins the attestation public key as `admission.hostKey`, and members admit attested devices automatically only under that pinned key.
+
+The secret is JSON `{"publicKey":"<64 hex>","privateKey":"<PKCS#8 hex>"}` (the `@chronolog/authority` `exportSigningIdentity` format). If it is missing or invalid, browser `enroll`, agent `enroll-agent` and `initialize` fail with `503 attestation_unconfigured`, and `/api/readiness` reports `attestation.available: false`.
+
+Set it once per environment, before opening creation:
+
+```sh
+# Generate and install in one step. The generator writes the secret JSON to stdout (piped straight
+# into Wrangler, never to disk or logs) and prints the public key to stderr. Record that public key.
+node scripts/attestation-key.mjs | npx wrangler secret put HOST_ATTESTATION_KEY --config server/wrangler.staging.jsonc
+node scripts/attestation-key.mjs | npx wrangler secret put HOST_ATTESTATION_KEY --config server/wrangler.production.jsonc
+```
+
+Staging and production are separate Wrangler configs (`server/wrangler.staging.jsonc` → Worker `tendriller-staging-s11`, `server/wrangler.production.jsonc` → `tendriller-production-s11`), not `--env` sections of one file. Use `--config` with the matching file, or `--name <worker>` for generated `server/*.deploy.jsonc` configs. Each environment gets its own independent key.
+
+Verify after the next deployment, or immediately, because secrets apply without a redeploy:
+
+```sh
+curl -s https://staging.tendriller.dev/.well-known/tendriller.json | jq -r .attestationKey
+curl -s https://staging.tendriller.dev/api/service | jq -r .attestationKey
+curl -s https://staging.tendriller.dev/api/readiness | jq .attestation   # {"available": true, "key": "<hex>", ...}
+```
+
+All three must show the same 64-hex public key the generator printed. Page application metadata (`GET …/application`) shows it as `hostAttestationKey`.
+
+**Rotation consequences.** Rotating the secret changes the published key immediately. Existing pages keep pinning the old key in their signed admission policy, so attestations signed by the new key do not verify for them. New browsers and agents on those pages cannot be auto-admitted (attested or invited) until an administrator member signs an admission-policy revision on **every page** that sets `admission.hostKey` to the new key. Already-admitted members, their data and their keys are unaffected. Explicit approvals verify attestations against the pinned key too, so the per-page change comes first: on an administrator device or the owner's agent, `admission.pinHostKey` (`session.extensions.call('admission.pinHostKey', [])`) signs the host's currently published key into the policy. Rotate only when the key is compromised, and plan the per-page policy updates. Local hosts generate their own key: `npm run dev` writes one into `server/.dev.vars` (gitignored), and `npm run dev:host` keeps one in its state directory. Delete it only together with the local page state that pins it.
 
 ## Traffic budgets and Free-tier operation
 

@@ -4,10 +4,13 @@ import { addActivity } from './activity';
 import { HttpError, json, readJson } from './http';
 import { AGENT_ID_RE } from './ids';
 import { notifyAgentsWatchers } from './publication-watch';
+import { agentKeyHex, attestGrantedAgent, dropPendingAdmission } from './admissions';
 import type { Tendril } from './tendril';
 
 export type AgentEventKind = 'grant' | 'revoked' | 'page-deleted' | 'publication' | 'agents-changed';
 export const AGENT_PUBLIC_KEY_RE = /^[A-Za-z0-9_-]{43}$/;
+/** X25519 key-wrap public key, 64 lowercase hex (Chronolog encoding). */
+export const AGENT_WRAP_KEY_RE = /^[0-9a-f]{64}$/;
 export const AGENT_HANDLE_RE = /^[a-z][a-z0-9_-]{1,31}$/;
 export const AGENT_BIO_MAX = 160;
 
@@ -148,14 +151,15 @@ export function writeLocalGrant(
   handle: string,
   bio: string,
   publicKey: string,
+  wrapKey: string,
   scopes: AgentScope[],
   grantedBy: 'creator' | 'owner',
 ): LocalAgentGrant {
   const revision = nextRevision(t);
-  t.db.run(`INSERT INTO agent_grants(agent_id,handle,bio,public_key,scopes,revision,granted_by,granted_at) VALUES(?,?,?,?,?,?,?,?)
-    ON CONFLICT(agent_id) DO UPDATE SET handle=excluded.handle,bio=excluded.bio,public_key=excluded.public_key,
+  t.db.run(`INSERT INTO agent_grants(agent_id,handle,bio,public_key,wrap_key,scopes,revision,granted_by,granted_at) VALUES(?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(agent_id) DO UPDATE SET handle=excluded.handle,bio=excluded.bio,public_key=excluded.public_key,wrap_key=excluded.wrap_key,
       scopes=excluded.scopes,revision=excluded.revision,granted_by=excluded.granted_by,granted_at=excluded.granted_at`,
-    agentId, handle, bio, publicKey, JSON.stringify(scopes), revision, grantedBy, t.now());
+    agentId, handle, bio, publicKey, wrapKey, JSON.stringify(scopes), revision, grantedBy, t.now());
   if (!t.db.get<string | null>('primary_agent_id', null)) {
     t.db.set('primary_agent_id', agentId);
   }
@@ -193,18 +197,20 @@ export async function putAgentGrant(
   handle: string,
   bio: string,
   publicKey: string,
+  wrapKey: string,
   scopes: AgentScope[],
 ): Promise<LocalAgentGrant> {
   if (account !== t.db.get<string | null>('owner_account', null)) throw new HttpError(403, 'forbidden', 'Only the page owner can grant agents');
   if (!AGENT_ID_RE.test(agentId)) throw new HttpError(400, 'invalid_agent');
   if (!AGENT_PUBLIC_KEY_RE.test(publicKey)) throw new HttpError(400, 'invalid_public_key');
+  if (!AGENT_WRAP_KEY_RE.test(wrapKey)) throw new HttpError(400, 'invalid_wrap_key');
   const cleanHandle = validAgentHandle(handle);
   const cleanBio = validAgentBio(bio);
   const previous = localAgentGrant(t, agentId);
   const previousPrimary = t.db.get<string | null>('primary_agent_id', null);
   const grant = t.transaction(() => {
     if (account !== t.db.get<string | null>('owner_account', null)) throw new HttpError(403, 'forbidden');
-    const next = writeLocalGrant(t, agentId, cleanHandle, cleanBio, publicKey, scopes, previous?.granted_by === 'creator' ? 'creator' : 'owner');
+    const next = writeLocalGrant(t, agentId, cleanHandle, cleanBio, publicKey, wrapKey, scopes, previous?.granted_by === 'creator' ? 'creator' : 'owner');
     if (!previous) addActivity(t, { kind: 'agent_grant', summary: `The owner granted @${cleanHandle} access`, by: `owner:${account}` });
     return next;
   });
@@ -215,7 +221,7 @@ export async function putAgentGrant(
   } catch (error) {
     t.transaction(() => {
       if (localAgentGrant(t, agentId)?.revision !== grant.revision) return;
-      if (previous) writeLocalGrant(t, agentId, previous.handle, previous.bio, previous.public_key, previous.scopes, previous.granted_by as 'creator' | 'owner');
+      if (previous) writeLocalGrant(t, agentId, previous.handle, previous.bio, previous.public_key, previous.wrap_key, previous.scopes, previous.granted_by as 'creator' | 'owner');
       else t.db.run('DELETE FROM agent_grants WHERE agent_id=?', agentId);
       if (previousPrimary) t.db.set('primary_agent_id', previousPrimary);
       else t.db.del('primary_agent_id');
@@ -223,6 +229,8 @@ export async function putAgentGrant(
     throw error;
   }
   closeAgentSockets(t, agentId, 'Agent grant changed', grant.revision);
+  // Every new or changed grant carries fresh host evidence for the agent's keys.
+  await attestGrantedAgent(t, agentId);
   void notifyAgentHub(t, agentId, 'grant', { scopes: grant.scopes });
   notifyRosterChanged(t);
   return grant;
@@ -248,6 +256,7 @@ export async function deleteAgentGrant(t: Tendril, agentId: string, by: string):
     const existing = localAgentGrant(t, agentId);
     if (!existing) return false;
     t.db.run('DELETE FROM agent_grants WHERE agent_id=?', agentId);
+    dropPendingAdmission(t, agentKeyHex(existing.public_key));
     reconcilePrimaryAgent(t);
     addActivity(t, { kind: 'agent_grant', summary: `Agent @${existing.handle} lost access`, by });
     return true;
@@ -275,7 +284,8 @@ export async function handleAgentGrants(t: Tendril, req: Request, url: URL): Pro
   if (url.pathname === '/agent-grant/put') {
     if (!account) throw new HttpError(403, 'forbidden', 'Only the page owner can grant agents');
     if (typeof body.publicKey !== 'string') throw new HttpError(400, 'invalid_public_key');
-    const grant = await putAgentGrant(t, account, body.agentId, body.handle, body.bio, body.publicKey, agentScopes(body.scopes));
+    if (typeof body.wrapKey !== 'string') throw new HttpError(400, 'invalid_wrap_key');
+    const grant = await putAgentGrant(t, account, body.agentId, body.handle, body.bio, body.publicKey, body.wrapKey, agentScopes(body.scopes));
     return json({ agentId: body.agentId, handle: grant.handle, bio: grant.bio, page: t.tid, scopes: grant.scopes, revision: grant.revision, granted_by: grant.granted_by });
   }
   if (url.pathname === '/agent-grant/profile') {

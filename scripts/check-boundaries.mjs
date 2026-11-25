@@ -11,7 +11,7 @@ const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelco
 // Opt-in hosted MCP participants (`server/src/mcp-*.ts`) use portable `@chronolog/peer-session`
 // + in-memory DoltLite WASM + QuickJS WASM without storing plaintext keys at rest.
 const authorityImports = new Set([
-  'server/src/authority.ts', 'server/src/authority-identity.ts',
+  'server/src/authority.ts', 'server/src/admissions.ts', 'server/src/host-attestation.ts',
   'server/src/peer-publications.ts', 'server/src/peer-participant.ts',
 ]);
 const hostedMcpImports = new Set([

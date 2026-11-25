@@ -60,8 +60,8 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
       service_descriptor: origin + '/api/service',
       readiness: origin + '/api/readiness',
       contract: origin + '/contract/v3.json',
-      register_agent: { method: 'POST', url: origin + '/api/agents', required: ['owner', 'handle', 'publicKey'] },
-      join_agent: { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'handle', 'publicKey'] },
+      register_agent: { method: 'POST', url: origin + '/api/agents', required: ['owner', 'handle', 'publicKey', 'wrapKey'] },
+      join_agent: { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'handle', 'publicKey', 'wrapKey'] },
       create_page: { method: 'POST', url: origin + '/api/agent/pages', authorization: 'agent token' },
     },
   });
@@ -274,7 +274,7 @@ describe('public application onboarding', () => {
     expect(response.headers.get('Access-Control-Expose-Headers')).toContain('Link');
     const value = await response.json();
     expect(() => assertValid('serviceDescriptor', value)).not.toThrow();
-    expect(Object.keys(value as object).sort()).toEqual(['contract', 'core_release', 'limits']);
+    expect(Object.keys(value as object).sort()).toEqual(['attestationKey', 'contract', 'core_release', 'limits']);
   });
 });
 
@@ -318,7 +318,8 @@ describe('onboarding after page creation', () => {
     expect(result.error.code).toBe('application_unprepared');
     expect(result.error.message).toContain('host.peers.prepare');
     expect(result.error.message).toContain(guidePath);
-    expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configuration: null, publicationAuthority: null, authority: null });
+    expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configuration: null, publicationAuthority: null, authority: null,
+      hostAttestationKey: expect.stringMatching(/^[0-9a-f]{64}$/), admissionAccounts: [h.account, expect.stringMatching(/^email:owner-/)] });
   });
 
   it('does not expose a per-page MCP route on the tendril API', async () => {

@@ -1,6 +1,6 @@
 import type { RuntimeConfiguration, RuntimeApi, AgentRegistration } from '../index.mjs';
 import { createAgentClient, registerAgent } from '../client.mjs';
-const create: AgentRegistration = { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey: 'A'.repeat(43) };
+const create: AgentRegistration = { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey: 'A'.repeat(43), wrapKey: 'ab'.repeat(32) };
 const cfg: RuntimeConfiguration = { id: 'page', application: { id: '12'.repeat(32) }, base: '/p/', version: 0, documentPath: null, features: { speech: null, shared_by: 'Owner' } };
 declare const runtime: RuntimeApi;
 void runtime.application.ready(); void runtime.signals.ready(); void runtime.host.peers.application();

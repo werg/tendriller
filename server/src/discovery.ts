@@ -45,6 +45,9 @@ function notify(t: Tendril, except?: string) {
   });
 }
 
+/** Admission, key-wrap and membership changes wake every current discovery watcher to re-read host state. */
+export function notifyDiscoveryWatchers(t: Tendril): void { notify(t); }
+
 /** Presence is retained by an inbound hibernating socket, without TTL renewals. */
 export async function handleDiscoveryWatch(t: Tendril, req: Request, url: URL, principal: Principal): Promise<Response> {
   if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new HttpError(426, 'upgrade_required');

@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { HttpError } from "./http";
 import { serviceIdentity } from './service-identity';
+import { hostAttestationKey, loadHostAttestationIdentity } from './host-attestation';
 import ipaddr from "ipaddr.js";
 
 export type ServiceMode = "open" | "creation_paused" | "read_only";
@@ -11,6 +12,13 @@ export async function serviceMode(env: Env): Promise<ServiceMode> {
     throw new HttpError(503, "unavailable", "Service state is not initialized");
   }
   return row.mode;
+}
+
+/** Device and agent admission need a valid host attestation key; pages pin its public key. */
+async function attestationReadiness(env: Env) {
+  const available = await loadHostAttestationIdentity(env) !== null;
+  return { available, key: available ? hostAttestationKey(env) : null, code: available ? null : 'attestation_unconfigured' as const,
+    nextAction: available ? null : 'Ask the operator to install the HOST_ATTESTATION_KEY Worker secret (docs/OPERATIONS.md); browser and agent enrollment are unavailable until then.' };
 }
 
 /** An advisory service-level preflight; creation still checks live state and admission. */
@@ -38,6 +46,7 @@ export async function serviceReadiness(env: Env) {
       available: mode === 'open' || mode === 'creation_paused',
       code: mode === 'unavailable' ? 'unavailable' : mode === 'read_only' ? 'read_only' : null,
     },
+    attestation: await attestationReadiness(env),
     readinessUrl: origin + '/api/readiness',
     statusUrl: origin + '/status',
     checkedAt: new Date().toISOString(),

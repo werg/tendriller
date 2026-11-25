@@ -57,7 +57,7 @@ function host(origin, document, { status = 200, serviceRelease = document.build.
     assert.equal(options.headers?.Authorization, undefined);
     if (url === origin + '/api/readiness') return Response.json(document, { status });
     assert.equal(url, origin + '/api/service');
-    return Response.json({ contract: 3, core_release: serviceRelease, limits: {} });
+    return Response.json({ contract: 3, core_release: serviceRelease, limits: {}, attestationKey: 'ab'.repeat(32) });
   } };
 }
 

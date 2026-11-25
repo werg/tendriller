@@ -18,7 +18,7 @@ test('onboarding identifies its canonical service and keeps every setup route on
     assert.equal(descriptor.documentation.multi_page_agents, origin + '/docs/MULTI_PAGE_AGENTS.md');
     assert.equal(descriptor.documentation.conversation_delivery, origin + '/docs/CONVERSATION_DELIVERY.md');
     assert.match(descriptor.execution.conversation, /second request after the first turn ends/);
-    assert.deepEqual(descriptor.interfaces.join_agent, { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'handle', 'publicKey'] });
+    assert.deepEqual(descriptor.interfaces.join_agent, { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'handle', 'publicKey', 'wrapKey'] });
     assert.deepEqual(descriptor.firstApp.release, {
       manifest: `https://github.com/werg/tendriller/releases/download/source-unbuilt/manifest.json`,
       archive: `https://github.com/werg/tendriller/releases/download/source-unbuilt/tendriller-first-app-${CORE_RELEASE}.tgz`,
