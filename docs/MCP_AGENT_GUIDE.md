@@ -61,8 +61,8 @@ email, account credentials or application keys.
    because the session is not configured yet.
 5. Register the workspace agent through the linked account. One agent has one
    credential and one signing key for all of its pages. Run
-   `npx tendril workspace key --service SERVICE_ORIGIN` in the starter workspace,
-   then call `register_agent` with its exact public `name` and `publicKey`. The
+   `npx tendril workspace key --service SERVICE_ORIGIN --handle HANDLE` in the starter workspace,
+   then call `register_agent` with its exact public `handle`, `bio` and `publicKey`. The
    signing key stays local; only its public key enters MCP. The host derives the
    intended owner without asking for an email. Save the result privately and run
    `npx tendril workspace adopt --service SERVICE_ORIGIN --credential FILE`, then
@@ -77,8 +77,8 @@ email, account credentials or application keys.
    Initialize, build and publish the first signed version before asking the
    person to sign in at `page_url`. Do not stop for a "claimed" reply. Keep private
    workspace records, tokens and keys out of chat and published HTML. Without a
-   linked creation account, `tendril workspace init --owner EMAIL` or a dashboard
-   join code (`workspace join`) registers the agent; see the build guide.
+   linked creation account, `tendril workspace init --owner EMAIL --handle HANDLE` or a dashboard
+   join code (`workspace join --handle HANDLE`) registers the agent; see the build guide.
 6. Follow **register agent → create page → choose finality/availability policy →
    publish signed UI → owner sign-in → initialize the browser locally → author and
    replicate → verify**.

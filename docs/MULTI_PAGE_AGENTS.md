@@ -143,9 +143,9 @@ my-pages/
     pages/<page-id>/       # device.sqlite, descriptor, cursors, page.json, initialized.json once enrolled
 ```
 
-- `tendril workspace init --service <origin> --owner <email>` creates the
+- `tendril workspace init --service <origin> --owner <email> --handle <handle>` creates the
   workspace, the shared signing key and an unclaimed agent credential;
-  `workspace join --code <code>` joins an account with a dashboard code;
+  `workspace join --code <code> --handle <handle>` joins an account with a dashboard code;
   `workspace key` then `workspace adopt --credential <file>` registers through
   an account-linked MCP `register_agent`.
 - `tendril page new <slug>` creates a page and its source folder.

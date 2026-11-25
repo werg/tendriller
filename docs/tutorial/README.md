@@ -19,14 +19,14 @@ Use Node 24. Read the chosen origin's `/api/service`, discovery and `/api/readin
 ## Create → prepare → publish → browser sign-in
 
 ```sh
-npx tendril workspace init --service https://YOUR_HOST --owner owner@example.com
+npx tendril workspace init --service https://YOUR_HOST --owner owner@example.com --handle notes-agent
 npm run page:new -- notes --template notes --name "Shared notes"
 npm run init -- notes
 npm run deploy -- notes
 # Give the ready page_url now. Do NOT start or wait for a native agent.
 ```
 
-Alternatively use the account-linked route: `tendril workspace key --service ORIGIN`, call `register_agent` with its public arguments, retain the result privately, then `tendril workspace adopt --service ORIGIN --credential FILE`. The account and explicit per-page grants are independent of data roles and keys. Join an existing owner-approved agent with `workspace join`; existing pages need the dashboard's explicit agent grant and `tendril page grant <slug> <id>`. Keep the same service origin, credential and shared key across uncertain replies; never create another agent merely to retry.
+Alternatively use the account-linked route: `tendril workspace key --service ORIGIN --handle HANDLE`, call `register_agent` with its public arguments, retain the result privately, then `tendril workspace adopt --service ORIGIN --credential FILE`. The account and explicit per-page grants are independent of data roles and keys. Join an existing owner-approved agent with `workspace join`; existing pages need the dashboard's explicit agent grant and `tendril page grant <slug> <id>`. Keep the same service origin, credential and shared key across uncertain replies; never create another agent merely to retry.
 
 `page:new` refuses nonempty source folders. `init` prepares execution/finality policy and the independent publication grant for the existing shared agent key. It creates NO page device, epoch key, schema or selected history. `deploy` signs and saves the exact authored graph before submission, directly through the granted page client; it does not attach to a running native program. Only `pages/<slug>/dist/` is publishable.
 

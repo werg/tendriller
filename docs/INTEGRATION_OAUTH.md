@@ -74,7 +74,7 @@ Access tokens are `at+jwt` JWTs containing `iss`, `sub` (Tendriller account ID),
 
 ## Account-bound agent registration
 
-With `tendrils:create`, `register_agent {name, publicKey}` registers an agent under the caller's linked account. The client generates and retains an Ed25519 signing key and sends only its base64url public key; the result carries the agent's `ta_` credential once. Calling it again with the same name rotates the token and key. The agent creates pages with `POST /api/agent/pages`, and the owner grants any existing page from the dashboard. See [Agents and grants](AGENT_BINDINGS.md).
+With `tendrils:create`, `register_agent {handle, bio?, publicKey}` registers an agent under the caller's linked account. The client generates and retains an Ed25519 signing key and sends only its base64url public key; the result carries the agent's `ta_` credential once. Calling it again with the same name rotates the token and key. The agent creates pages with `POST /api/agent/pages`, and the owner grants any existing page from the dashboard. See [Agents and grants](AGENT_BINDINGS.md).
 
 ## Security invariants
 

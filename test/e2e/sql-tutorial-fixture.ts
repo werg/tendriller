@@ -84,7 +84,7 @@ export async function prepareSqlTutorial(consumer: string, engineDirectory: stri
     const session = (key: string) => import(pathToFileURL(join(modules, '@chronolog/peer-session', exportPath(modules, '@chronolog/peer-session', key))).href);
 
     // The workspace tools register one unclaimed agent for the owner with the shared signer.
-    await tools.initWorkspace(workspaceRoot, { service: SERVICE, owner: OWNER, name: 'sql-tutorial' });
+    await tools.initWorkspace(workspaceRoot, { service: SERVICE, owner: OWNER, handle: 'sql-tutorial' });
     const starter = await load('setup.mjs');
     const created = await starter.createPage(SLUG, { template: 'inventory', name: 'Shared inventory' });
     // Loopback plumbing only: the local host serves page origins on port 8790, so the
