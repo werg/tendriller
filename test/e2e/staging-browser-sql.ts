@@ -41,6 +41,7 @@ export async function openBrowserSqlSpecimen(options: {
       '@chronolog/peer-session/sql': resolve(packageRoot, 'sql.mjs'),
       '@chronolog/peer-session/sql-browser': resolve(packageRoot, 'sql-browser.mjs'),
       '@chronolog/peer-session/websocket': resolve(packageRoot, 'websocket.mjs'),
+      '@chronolog/peer-session/webrtc': resolve(packageRoot, 'webrtc.mjs'),
     } };
   const [worker, ui] = await Promise.all([
     build({ ...common, entryPoints: [`${source}/browser-sql-worker.mjs`] }),

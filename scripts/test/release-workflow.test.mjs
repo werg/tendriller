@@ -65,7 +65,9 @@ test('trusted publication joins every qualification, and staging/production depe
     assert.match(graph[job], /github\.event_name == 'push'/);
   }
   for (const job of ['staging', 'production']) assert(needs(job).includes('publish'));
-  for (const gate of ['staging_acceptance', 'staging_mcp_qualification']) assert(needs('production').includes(gate));
+  assert(needs('production').includes('staging_acceptance'));
+  // Temporarily reported, not a production gate (see service.yml).
+  assert(!needs('production').includes('staging_mcp_qualification'));
   assert.match(service, /permissions:\n  contents: read/);
   const release = workflow('release');
   assert.match(release, /workflow_call:/);
