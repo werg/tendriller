@@ -305,9 +305,11 @@ uses the workspace's shared signer, so move the whole `.tendriller/agent/` folde
 acknowledge application work or start a Codex/ChatGPT turn. The first-app kit
 ships `consumers/request-worker.mjs` for actual declared request handling and
 `consumers/codex-queue.mjs` for admitting reference-only notices from several
-pages to one exact existing Codex thread. Both attach to the running workspace
-owner and retain private, scoped state. Use the
+pages to one exact existing Codex thread: it inspects thread state, steers a
+running turn and uses queue/resume while idle or unloaded. Plain `codex queue`
+waits for a running turn to finish and does not provide active injection. Both
+consumers attach to the running workspace owner and retain private, scoped state. Use the
 [runnable worker](../AGENT_REQUESTS.md#run-a-supervised-consumer-with-a-handled-checkpoint)
 and [conversation guide](../CONVERSATION_DELIVERY.md) for exact commands,
-uncertain-result recovery and the live two-request qualification. A queue receipt
-is not a durable application receipt/answer or evidence of model execution.
+uncertain-result recovery and live active/idle qualification. A steer or queue
+receipt is not a durable application receipt/answer or evidence of model execution.

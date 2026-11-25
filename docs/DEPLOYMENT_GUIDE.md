@@ -150,8 +150,11 @@ while the native owner stays connected.
 
 For requests to the same existing conversation after a turn ends, use
 [same-conversation delivery](CONVERSATION_DELIVERY.md). The supplied multi-page
-Codex queue bridge targets an exact thread through an explicitly selected daemon;
-queue admission still requires actual turn and durable-answer qualification.
+Codex receiver targets an exact thread through an explicitly selected daemon.
+It steers a running turn and uses queue/resume while idle or unloaded. Plain
+`codex queue` waits while a turn runs, so deploying only that command does not
+satisfy active injection. Steer/queue admission still requires observed handling
+and durable-answer qualification in the intended thread.
 Keep uncertain admission/effect records and stop for reconciliation rather than
 allowing a supervisor to repeat them. A one-shot waiter that exits normally
 requires explicit re-arming; `Restart=on-failure` alone does not keep it armed.

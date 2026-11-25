@@ -142,7 +142,10 @@ Inspect this session's subscription or existing-thread execution capability;
 a missing subscription tool, reauthentication and refused host admission are
 separate failures. An inbox card supports an explicit user action where available.
 A mounted card, native owner or event waiter does not establish future wake.
-Verify two requests in the same existing thread after successive turn completions. A stopped participant cannot execute
+For Codex, verify injection into the same currently active turn through the
+receiver's steering route; plain `codex queue` waits for that turn to finish.
+Also verify two idle wake requests in the same existing thread after successive
+turn completions. A stopped participant cannot execute
 new queries or commands: resume it from its retained store.
 
 The agent program stays running while the owner signs in or reviews access.

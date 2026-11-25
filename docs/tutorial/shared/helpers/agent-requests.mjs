@@ -145,7 +145,7 @@ export function announceAgentPresence(session, {
   topics = ['chat'],
   state = 'listening',
   intervalMs = 15_000,
-  ttlMs = 45_000,
+  ttlMs = 30_000,
   topic = PRESENCE_TOPIC,
   pingTopic = PRESENCE_PING_TOPIC,
   signal,
@@ -238,7 +238,7 @@ export function watchAgentPresence(session, {
   requestTopic,
   topic = PRESENCE_TOPIC,
   pingTopic = PRESENCE_PING_TOPIC,
-  staleAfterMs = 45_000,
+  staleAfterMs = 30_000,
   onChange,
   signal,
 } = {}) {

@@ -238,6 +238,11 @@ can show transient progress. `watchAgentStream` supplies previews to
 before clearing its preview, and return to listening only if the worker will
 continue handling requests. Streaming and presence never replace durable answers.
 
+Presence defaults to a 15-second announcement interval and a 30-second signed
+lifetime, within the public session's default signal limit. Workers use distinct
+signal streams, and observers respect the signed expiry as well as their local
+freshness bound. A late retained frame never starts another full lifetime.
+
 ## Run a supervised consumer with a handled checkpoint
 
 The starter ships `consumers/request-worker.mjs` and
@@ -294,8 +299,10 @@ Verify a first request, stop only this worker with the native owner still
 connected, and submit a second request. The worker indicator must become stopped
 or stale; the second request remains awaiting acknowledgement. Restart with the
 same checkpoint and confirm its receipt/answer. For conversation delivery, also
-perform the [two-request host rehearsal](CONVERSATION_DELIVERY.md#two-request-same-conversation-rehearsal)
-after successive conversation turns end.
+perform the [host rehearsal](CONVERSATION_DELIVERY.md#two-request-same-conversation-rehearsal):
+verify an incoming Codex request reaches the currently active turn before it
+ends, then verify two idle wake requests across successive turn completions.
+Steering or queue acceptance remains separate from the durable receipt/answer.
 
 ## Optional durable listener checkpoints
 

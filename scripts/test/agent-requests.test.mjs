@@ -268,3 +268,87 @@ test('a fresh worker checkpoint does not repeat a request already answered in re
   assert.equal(request.answers.length, 1);
   assert.equal(request.receipts.length, 0);
 });
+
+test('worker presence uses the pinned public session default signal TTL and stream contract', { timeout: 20000 }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-presence-route-')), cleanup = [];
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  t.after(async () => { for (const close of cleanup.reverse()) await close(); });
+  const devices = [];
+  for (const name of ['worker', 'page']) {
+    const device = await openNativeDevice({ path: join(directory, name + '.sqlite'), create: true });
+    devices.push(device); cleanup.push(() => device.close());
+  }
+  const [workerDevice, pageDevice] = devices;
+  const signer = await p.createPeerIdentity(), epochKey = crypto.getRandomValues(new Uint8Array(32));
+  const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest());
+  const descriptor = await p.signApplicationDescriptor({
+    applicationId: '76'.repeat(32), historyId: 'agent-presence-route',
+    profile: 'peer-generation-v1', policy: 'eligible-members-v1',
+    controlPublicKey: signer.publicKey, schemaAdministrator: workerDevice.identity.publicKey,
+    definitionDigest: await p.applicationDefinitionDigest(definition),
+    executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), schemaDigest: null,
+  }, signer);
+  const control = await p.signControlRevision({
+    applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
+    policy: descriptor.payload.policy, revision: 0, previous: null, epoch: 0,
+    keyDigest: await p.bytesDigest(epochKey), recoveryFloor: null,
+    grants: [p.participantGrant(workerDevice.identity.publicKey, { administrator: true }),
+      p.participantGrant(pageDevice.identity.publicKey)],
+  }, signer);
+  const registry = await p.createGenerationRegistry({
+    store: new p.MemoryBytesStore(), descriptor, controls: [control], signer,
+  });
+  await registry.select(await p.signTransitionRequest({
+    applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
+    policy: descriptor.payload.policy, transitionId: 'initial', expectedGeneration: null,
+    coordinator: workerDevice.identity.publicKey, requester: workerDevice.identity.publicKey,
+    controlRevision: 0, reason: 'create', base: null,
+  }, workerDevice.identity));
+  const authority = await registry.read(), sessions = [];
+  for (const device of devices) {
+    const session = await openNativeApplication({
+      device, definition, authority, epochKeys: new Map([[0, epochKey]]),
+    });
+    sessions.push(session); cleanup.push(() => session.close());
+  }
+  const [workerSession, pageSession] = sessions;
+  const link = await p.connectApplications(workerSession, pageSession);
+  cleanup.push(() => link.close());
+  const sent = [], failures = [];
+  const { announceAgentPresence, watchAgentPresence } = await import('../../docs/tutorial/shared/helpers/agent-requests.mjs');
+  const presence = announceAgentPresence({
+    deviceId: workerSession.deviceId, signal: workerSession.signal,
+    signals: {
+      subscribe: workerSession.signals.subscribe.bind(workerSession.signals),
+      async send(...args) {
+        try { const frame = await workerSession.signals.send(...args); sent.push(frame); return frame; }
+        catch (error) {
+          // Closing the worker may cancel an in-flight response to the observer's
+          // presence ping. Preserve every failure except that exact cancellation.
+          if (!args[2]?.signal?.aborted || error !== args[2].signal.reason) failures.push(error);
+          throw error;
+        }
+      },
+    },
+  }, { consumerId: 'assistant', topics: ['chat'] });
+  cleanup.push(() => presence.close());
+  const watcher = watchAgentPresence(pageSession, {
+    peer: workerSession.deviceId, consumerId: 'assistant', requestTopic: 'chat',
+  });
+  cleanup.push(() => watcher.close());
+  await eventually(() => sent.length > 0 || failures.length > 0);
+  assert.deepEqual(failures, [], 'default presence must not silently fail SIGNAL_TTL_INVALID');
+  await eventually(() => watcher.snapshot().status === 'available');
+  assert.equal(sent[0].expiresAtMs - sent[0].issuedAtMs, 30_000);
+  assert.equal(sent[0].stream.streamId, 'assistant');
+  assert.equal(watcher.snapshot().consumer.author, workerSession.deviceId);
+  await presence.close();
+  await presence.done;
+  await eventually(() => watcher.snapshot().status === 'stopped');
+  assert.equal(sent.at(-1).payload.state, 'stopped');
+  assert.deepEqual(failures, []);
+  assert.equal(workerSession.signal.aborted, false);
+  assert.equal(pageSession.signal.aborted, false);
+  assert.deepEqual((await workerSession.query('agentInbox', null)).value.requests, [],
+    'stopping worker presence leaves the native application owner usable');
+});

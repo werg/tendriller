@@ -325,6 +325,9 @@ For one conversation handling several pages after a turn ends, read
 [same-conversation delivery](docs/CONVERSATION_DELIVERY.md), also available through
 `tendril_guide` with `topic: "conversation"`. Inspect the current host's actual
 execution/admission mechanism and retain one handled checkpoint per page.
-Verify two requests in the same existing thread across turn completion before
-promising unattended responses; a one-shot waiter or accepted webhook alone
-does not establish them.
+For Codex, the receiver steers an active turn and uses queue/resume when idle
+or unloaded. Plain `codex queue` waits while a turn is running and does not
+satisfy active injection. Preserve an explicitly interrupted thread. Verify a
+request reaching the same active turn before completion, then two requests
+across idle turn completions; a successful host admission or webhook alone
+does not establish handling.

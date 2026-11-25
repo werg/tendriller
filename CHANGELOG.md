@@ -17,9 +17,10 @@ and kit, as described in [Build an app](docs/BUILD_AN_APP.md).
   remains connected. See [agent requests](docs/AGENT_REQUESTS.md). Fixes #121.
 - **Same-conversation delivery.** The canonical `conversation` guide and setup
   notice distinguish native participation, worker handling and actual host turn
-  admission. A supervised multi-page Codex queue bridge targets one exact thread,
-  retains uncertain admission evidence and never treats queue acceptance as a
-  receipt or answer. The host matrix, restart/recovery and two-request rehearsal
+  admission. A supervised multi-page Codex receiver targets one exact thread,
+  steers its active turn and uses queue/resume while idle or unloaded. It retains
+  uncertain admission evidence and never treats steer/queue acceptance as a
+  receipt or answer. The host matrix, restart/recovery and active/idle rehearsal
   document qualification for the selected Codex/ChatGPT host. See
   [conversation delivery](docs/CONVERSATION_DELIVERY.md). Addresses #122 without
   claiming live model-turn acceptance from deterministic bridge tests.

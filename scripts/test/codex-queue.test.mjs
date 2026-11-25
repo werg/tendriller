@@ -3,16 +3,48 @@ import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
+import { WebSocketServer } from 'ws';
+import { openCodexRpc } from '../../docs/tutorial/shared/helpers/codex-rpc.mjs';
 import { checkCodexQueueSupport, consumeCodexRequests, runCodexQueueBridge } from '../../docs/tutorial/consumers/codex-queue.mjs';
 import { openConsumerCheckpoint } from '../../docs/tutorial/shared/helpers/agent-consumer.mjs';
 
 const threadId = '01234567-89ab-4cde-8fab-0123456789ab';
 const deviceId = '11'.repeat(32), author = '22'.repeat(32);
-const options = { threadId, cwd: '/workspace/project', requestTopics: ['chat'], remote: 'unix://' };
+const options = { threadId, cwd: '/workspace/project', requestTopics: ['chat'], remote: 'unix://',
+  connect: async () => rpcFor().client };
 const page = { id: 'page-one', slug: 'notes' };
 const request = (id, overrides = {}) => ({ id, author, operationId: id, topic: 'agent/request',
   payload: { recipient: deviceId, topic: 'chat', text: 'Private authored request text.' }, ...overrides });
 const ack = id => ({ stdout: `Queued message ${id} for thread ${threadId}.\n`, stderr: '' });
+
+const rpcError = (message, extra = {}) => Object.assign(Error('Rejected'), {
+  code: 'CODEX_RPC_REJECTED', rpcCode: -32600, rpcMessage: message, ...extra,
+});
+function rpcFor({ snapshots = [{ runtime: 'idle', status: 'completed', id: 'turn-old' }],
+  steer = async params => ({ turnId: params.expectedTurnId }), cwd = options.cwd } = {}) {
+  const calls = []; let read = -1, closed = 0;
+  const client = {
+    async request(method, params) {
+      calls.push({ method, params });
+      assert.equal(params.threadId, threadId);
+      if (method === 'thread/read') {
+        assert.equal(params.includeTurns, false); read++;
+        const snapshot = snapshots[Math.min(read, snapshots.length - 1)];
+        return { thread: { id: threadId, cwd, status: { type: snapshot.runtime }, canAcceptDirectInput: true } };
+      }
+      if (method === 'thread/turns/list') {
+        assert.deepEqual(params, { threadId, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded' });
+        const snapshot = snapshots[Math.min(read, snapshots.length - 1)];
+        return { data: snapshot.id ? [{ id: snapshot.id, status: snapshot.status, items: [], itemsView: 'notLoaded' }] : [] };
+      }
+      if (method === 'turn/steer') return steer(params);
+      throw Error('Unexpected RPC method');
+    },
+    async close() { closed++; },
+  };
+  return { client, calls, get closed() { return closed; } };
+}
 
 function sessionFor(events, { answers = [], wait = false } = {}) {
   const owner = new AbortController();
@@ -42,7 +74,7 @@ function sessionFor(events, { answers = [], wait = false } = {}) {
 
 async function durable(t) {
   const directory = await mkdtemp(join(tmpdir(), 'codex-queue-'));
-  const path = join(directory, 'checkpoint.json'), scope = { ...options, page: page.id };
+  const path = join(directory, 'checkpoint.json'), scope = { threadId, cwd: options.cwd, page: page.id };
   let current = await openConsumerCheckpoint(path, { scope });
   t.after(async () => { await current.close(); await rm(directory, { recursive: true, force: true }); });
   return { get checkpoint() { return current; }, directory,
@@ -179,4 +211,213 @@ test('malformed outbox and altered request references stop before any delivery o
   await state.checkpoint.save(altered); await state.reopen();
   await assert.rejects(consume(sessionFor(events).session, state.checkpoint, { execute }), { code: 'CODEX_QUEUE_REVIEW_HISTORY' });
   assert.equal(calls, 0);
+});
+
+test('active input is steered into the observed current turn with persisted identity and no queue invocation', async t => {
+  const state = await durable(t), notices = [];
+  let sent, queued = 0;
+  const f = rpcFor({ snapshots: [{ runtime: 'active', status: 'inProgress', id: 'turn-active' }],
+    steer: async params => {
+      sent = params;
+      const row = state.checkpoint.read().pending.requests[0];
+      assert.equal(row.status, 'invoking'); assert.equal(row.source, 'turn/steer');
+      assert.equal(row.expectedTurnId, 'turn-active'); assert.equal(row.clientUserMessageId, params.clientUserMessageId);
+      assert.deepEqual(row.input, params.input);
+      return { turnId: params.expectedTurnId };
+    } });
+  await assert.rejects(consume(sessionFor([request('during-turn')]).session, state.checkpoint, {
+    connect: async () => f.client, execute: async () => { queued++; return ack('unexpected'); },
+    onState: value => notices.push(value),
+  }), /AGENT_CONSUMER_STREAM_ENDED/);
+  assert.equal(sent.threadId, threadId); assert.equal(sent.expectedTurnId, 'turn-active');
+  assert.equal(queued, 0); assert.equal(f.closed, 1);
+  assert.equal(notices[0].state, 'steered'); assert.equal(notices[0].source, 'turn/steer');
+  assert.equal(notices[0].workerReceipt, false); assert.equal(notices[0].wakeVerified, false);
+});
+
+test('known turn completion before steer re-reads metadata and queues only the original retained notice', async t => {
+  const state = await durable(t), f = rpcFor({
+    snapshots: [{ runtime: 'active', status: 'inProgress', id: 'turn-a' }, { runtime: 'idle', status: 'completed', id: 'turn-a' }],
+    steer: async () => { throw rpcError('no active turn to steer'); },
+  });
+  let queued = 0, notice;
+  await assert.rejects(consume(sessionFor([request('race')]).session, state.checkpoint, {
+    connect: async () => f.client, execute: async (_binary, argv) => {
+      queued++; assert.ok(argv.includes('--resume'));
+      assert.equal(argv[argv.indexOf('--message') + 1], state.checkpoint.read().pending.requests[0].input[0].text);
+      return ack('race-queue');
+    }, onState: value => { notice = value; },
+  }), /AGENT_CONSUMER_STREAM_ENDED/);
+  assert.equal(queued, 1); assert.equal(notice.state, 'queued'); assert.equal(notice.source, 'thread/queue/add');
+  assert.equal(f.calls.filter(call => call.method === 'thread/read').length, 2);
+});
+
+test('changed active turn gets one freshly observed steering attempt with the same admission identity', async t => {
+  const state = await durable(t), steers = [];
+  const f = rpcFor({
+    snapshots: [{ runtime: 'active', status: 'inProgress', id: 'turn-a' }, { runtime: 'active', status: 'inProgress', id: 'turn-b' }],
+    steer: async params => {
+      steers.push(params);
+      if (steers.length === 1) throw rpcError('expected active turn id `turn-a` but found `turn-b`');
+      return { turnId: params.expectedTurnId };
+    },
+  });
+  await assert.rejects(consume(sessionFor([request('new-turn')]).session, state.checkpoint, {
+    connect: async () => f.client, execute: async () => { assert.fail('A fresh active turn must be steered, not queued.'); },
+  }), /AGENT_CONSUMER_STREAM_ENDED/);
+  assert.deepEqual(steers.map(params => params.expectedTurnId), ['turn-a', 'turn-b']);
+  assert.equal(steers[0].clientUserMessageId, steers[1].clientUserMessageId);
+  assert.deepEqual(steers[0].input, steers[1].input);
+});
+
+test('interrupted threads and pending stop races remain queued without resume', async t => {
+  for (const scenario of [
+    { snapshots: [{ runtime: 'notLoaded', status: 'interrupted', id: 'stopped' }] },
+    { snapshots: [{ runtime: 'active', status: 'inProgress', id: 'stopping' }],
+      steer: async () => { throw rpcError('no active turn to steer'); } },
+  ]) {
+    const state = await durable(t), f = rpcFor(scenario); let queued = 0;
+    await assert.rejects(consume(sessionFor([request('preserve-stop')]).session, state.checkpoint, {
+      connect: async () => f.client, execute: async (_binary, argv) => {
+        queued++; assert.ok(!argv.includes('--resume')); return ack('paused');
+      },
+    }), /AGENT_CONSUMER_STREAM_ENDED/);
+    assert.equal(queued, 1);
+  }
+});
+
+test('uncertain or unqualified steering never falls back to queue, including after restart', async t => {
+  for (const outcome of [
+    async () => { throw Object.assign(Error('deadline'), { code: 'CODEX_RPC_TIMEOUT' }); },
+    async () => { throw rpcError('direct app-server input is not allowed for multi-agent v2 sub-agents'); },
+    async () => { throw rpcError('no active turn to steer', { rpcData: { unknown: true } }); },
+    async () => ({ turnId: 'unexpected-other-turn' }),
+  ]) {
+    const state = await durable(t); let steers = 0, queued = 0;
+    const f = rpcFor({ snapshots: [{ runtime: 'active', status: 'inProgress', id: 'turn-a' }],
+      steer: async params => { steers++; return outcome(params); } });
+    const selected = { connect: async () => f.client, execute: async () => { queued++; return ack('unexpected'); } };
+    await assert.rejects(consume(sessionFor([request('uncertain-steer')]).session, state.checkpoint, selected),
+      { code: 'CODEX_QUEUE_DELIVERY_UNCERTAIN' });
+    const retained = state.checkpoint.read().pending.requests[0];
+    assert.equal(retained.status, 'uncertain'); assert.equal(retained.source, 'turn/steer');
+    assert.ok(retained.clientUserMessageId); assert.ok(retained.input[0].text);
+    await state.reopen();
+    await assert.rejects(consume(sessionFor([request('uncertain-steer')]).session, state.checkpoint, selected),
+      { code: 'CODEX_QUEUE_REVIEW_REQUIRED' });
+    assert.equal(steers, 1); assert.equal(queued, 0);
+  }
+});
+
+test('bounded active-turn churn stops with retained known rejection instead of steering stale input', async t => {
+  const state = await durable(t); let steers = 0;
+  const f = rpcFor({
+    snapshots: ['a', 'b', 'c'].map(id => ({ runtime: 'active', status: 'inProgress', id: 'turn-' + id })),
+    steer: async params => {
+      const next = ['turn-b', 'turn-c'][steers++];
+      throw rpcError('expected active turn id `' + params.expectedTurnId + '` but found `' + next + '`');
+    },
+  });
+  await assert.rejects(consume(sessionFor([request('churn')]).session, state.checkpoint, {
+    connect: async () => f.client, execute: async () => assert.fail('Churn is not permission to enqueue.'),
+  }), { code: 'CODEX_QUEUE_REVIEW_REQUIRED' });
+  assert.equal(steers, 2); assert.equal(state.checkpoint.read().pending.requests[0].status, 'steer-rejected');
+});
+
+test('selected workspace mismatch stops before any mutation and keeps prepared input', async t => {
+  const state = await durable(t), f = rpcFor({ cwd: '/another/workspace' });
+  await assert.rejects(consume(sessionFor([request('wrong-workspace')]).session, state.checkpoint, {
+    connect: async () => f.client, execute: async () => assert.fail('Wrong workspace must not queue.'),
+  }), { code: 'CODEX_QUEUE_THREAD_UNAVAILABLE' });
+  assert.equal(state.checkpoint.read().pending.requests[0].status, 'prepared');
+  assert.ok(!f.calls.some(call => call.method === 'turn/steer'));
+});
+
+test('Unix RPC performs a real WebSocket handshake on the selected socket with read-only daemon discovery', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'codex-rpc-'));
+  const socketPath = join(directory, 'a socket.sock'), server = createServer();
+  const websocket = new WebSocketServer({ server });
+  const methods = [], discovery = [];
+  websocket.on('connection', (socket, request) => {
+    assert.equal(request.url, '/rpc'); assert.equal(request.headers.authorization, undefined);
+    socket.on('message', data => {
+      const message = JSON.parse(data); methods.push(message.method);
+      if (message.id !== undefined) socket.send(JSON.stringify({ id: message.id,
+        result: message.method === 'initialize' ? {} : { turnId: 'synthetic-turn' } }));
+    });
+  });
+  await new Promise(resolve => server.listen(socketPath, resolve));
+  t.after(async () => {
+    for (const socket of websocket.clients) socket.terminate();
+    await new Promise(resolve => websocket.close(resolve));
+    await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+  const execute = async (binary, argv, settings) => {
+    discovery.push({ binary, argv, settings });
+    return { stdout: JSON.stringify({ status: 'running', socketPath }), stderr: '' };
+  };
+  for (const remote of ['unix://' + socketPath, 'unix://']) {
+    const rpc = await openCodexRpc({ cwd: process.cwd(), remote, timeoutMs: 2000, execute });
+    try { assert.deepEqual(await rpc.request('turn/steer', { synthetic: true }), { turnId: 'synthetic-turn' }); }
+    finally { await rpc.close(); }
+  }
+  assert.equal(discovery.length, 1); assert.equal(discovery[0].binary, 'codex');
+  assert.deepEqual(discovery[0].argv, ['app-server', 'daemon', 'version']);
+  assert.equal(discovery[0].settings.shell, false); assert.equal(discovery[0].settings.maxBuffer, 64 * 1024);
+  assert.deepEqual(methods, ['initialize', 'initialized', 'turn/steer', 'initialize', 'initialized', 'turn/steer']);
+  await assert.rejects(openCodexRpc({ remote: 'unix://', cwd: process.cwd(),
+    execute: async () => ({ stdout: JSON.stringify({ status: 'running', socketPath: 'relative.sock' }) }) }),
+    { code: 'CODEX_RPC_SOCKET_INVALID' });
+  await assert.rejects(openCodexRpc({ remote: 'unix://', cwd: process.cwd(), remoteAuthTokenEnv: 'TOKEN' }),
+    { code: 'CODEX_RPC_AUTH_UNSUPPORTED' });
+});
+
+test('WebSocket RPC retains remote bearer routing and rejects server-initiated interactions', async t => {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await new Promise(resolve => server.once('listening', resolve));
+  const messages = [];
+  server.on('connection', (socket, request) => {
+    assert.equal(request.headers.authorization, 'Bearer synthetic-token');
+    socket.on('message', data => {
+      const message = JSON.parse(data); messages.push(message);
+      if (message.method === 'initialize') socket.send(JSON.stringify({ id: message.id, result: {} }));
+      if (message.method === 'thread/read') socket.send(JSON.stringify({ id: 991, method: 'item/commandExecution/requestApproval', params: {} }));
+    });
+  });
+  const previous = process.env.TENDRILLER_CODEX_TEST_TOKEN;
+  process.env.TENDRILLER_CODEX_TEST_TOKEN = 'synthetic-token';
+  t.after(async () => {
+    if (previous === undefined) delete process.env.TENDRILLER_CODEX_TEST_TOKEN;
+    else process.env.TENDRILLER_CODEX_TEST_TOKEN = previous;
+    for (const socket of server.clients) socket.terminate();
+    await new Promise(resolve => server.close(resolve));
+  });
+  const rpc = await openCodexRpc({ cwd: process.cwd(), remote: 'ws://127.0.0.1:' + server.address().port,
+    remoteAuthTokenEnv: 'TENDRILLER_CODEX_TEST_TOKEN', timeoutMs: 2000 });
+  try { await assert.rejects(rpc.request('thread/read', { synthetic: true }), { code: 'CODEX_RPC_INTERACTION_REQUIRED' }); }
+  finally { await rpc.close(); }
+  assert.deepEqual(messages.map(message => message.method), ['initialize', 'initialized', 'thread/read']);
+  await assert.rejects(openCodexRpc({ cwd: process.cwd(), remote: 'ws://example.com',
+    remoteAuthTokenEnv: 'TENDRILLER_CODEX_TEST_TOKEN' }), { code: 'CODEX_RPC_AUTH_INSECURE' });
+});
+
+test('one bridge serializes all page admissions through connection close', async t => {
+  const state = await durable(t), cancellation = new AbortController();
+  let active = 0, maximum = 0, queued = 0;
+  const pages = ['one', 'two'].map(slug => ({ id: slug, slug, attach: sessionFor([request(slug)], { wait: true }).attach }));
+  const connect = async () => {
+    active++; maximum = Math.max(maximum, active);
+    const rpc = rpcFor().client;
+    return { request: rpc.request, async close() { await rpc.close(); active--; } };
+  };
+  await assert.rejects(runCodexQueueBridge({ ...options, connect, pages,
+    stateDirectory: join(state.directory, 'serialized'), signal: cancellation.signal,
+    execute: async (_binary, argv) => {
+      if (argv.includes('--help')) return { stdout: '--thread --message --resume --remote', stderr: '' };
+      queued++; await new Promise(resolve => setTimeout(resolve, 15)); return ack('serialized-' + queued);
+    },
+    onState: value => { if (value.state === 'queued' && queued === 2) cancellation.abort(Error('serialized done')); },
+  }), /serialized done/);
+  assert.equal(queued, 2); assert.equal(maximum, 1); assert.equal(active, 0);
 });

@@ -223,5 +223,9 @@ Keep the last handled cursor, request references and uncertain operation inputs.
 Do not resubmit a request, switch to the latest thread or create a replacement
 application to hide the failure. Stop only the worker while leaving its native
 owner connected to check that the assistant indicator becomes stopped or stale.
-After repairing/rearming the selected route, repeat the two-request rehearsal
-in the same existing conversation, including a request after the first turn ends.
+After repairing/rearming the selected route, verify active-turn injection for
+Codex and repeat the idle two-request rehearsal in the same existing conversation.
+If notices wait until a busy turn completes, inspect whether the configured
+receiver is using `turn/steer`; plain `codex queue` intentionally waits and cannot
+satisfy active delivery. Preserve explicit interruption and uncertain admissions
+rather than starting a competing turn or silently repeating the notice.

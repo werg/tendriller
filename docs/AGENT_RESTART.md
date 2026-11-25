@@ -79,8 +79,10 @@ replaced; publishing UI code alone does not require a new owner incarnation.
 8. Report which owner and consumer processes must remain running, where their
    private checkpoints live, how to restart them, and the verified publication.
    For an existing conversation, qualify the actual host admission mechanism
-   and a second request after the first turn ends using
-   [same-conversation delivery](CONVERSATION_DELIVERY.md). Retain one handled
+   with active-turn injection for Codex, then idle wake and a second request
+   after the first turn ends using
+   [same-conversation delivery](CONVERSATION_DELIVERY.md). A busy thread requires
+   steering; a queue that waits for it to finish is not active delivery. Retain one handled
    checkpoint per page and the same private thread binding; neither an owner
    restart nor a one-shot waiter recreates that host receiver automatically.
 

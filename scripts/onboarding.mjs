@@ -19,7 +19,8 @@ export const ONBOARDING_IMAGES = Object.freeze([
 ]);
 export const TUTORIAL_FILES = Object.freeze([
   '.gitignore', 'README.md', 'package.json', 'setup.mjs',
-  'consumers/request-worker.mjs', 'consumers/codex-queue.mjs', 'shared/helpers/agent-consumer.mjs',
+  'consumers/request-worker.mjs', 'consumers/codex-queue.mjs',
+  'shared/helpers/agent-consumer.mjs', 'shared/helpers/codex-rpc.mjs',
   'shared/local.mjs', 'shared/native-page.mjs', 'shared/pairing-native.mjs', 'shared/participant-lifecycle.mjs', 'shared/cli-lifetime.mjs',
   'shared/connection.mjs', 'shared/connect-view.mjs', 'shared/pairing-browser.mjs', 'shared/pairing-worker.mjs',
   'shared/helpers/browser-profile.mjs', 'shared/helpers/submission-state.mjs',

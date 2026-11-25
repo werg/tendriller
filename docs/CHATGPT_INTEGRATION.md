@@ -179,7 +179,11 @@ For one existing conversation serving several pages, read
 [same-conversation delivery](CONVERSATION_DELIVERY.md) (`tendril_guide`,
 `topic: "conversation"`). Inspect the actual installed host tools and route,
 retain separate handled cursors per application/history, and test a second
-request after the first turn ends in that same thread. A missing subscription
+request after the first turn ends in that same thread. For a Codex receiver,
+also verify a request is injected into its currently active turn before
+completion; plain `codex queue` waits for completion and cannot establish that
+behavior. The selected receiver uses steering while active and queue/resume
+while idle or unloaded. A missing subscription
 tool in a Codex session is not evidence that a supported subscription failed;
 inspect its documented existing-thread execution mechanisms separately.
 Reauthentication blocks tools belonging to that account connection; a local

@@ -226,7 +226,7 @@ const capabilities = [
     owner: 'Agent host and owned Chronolog session', availability: 'host-integration-required',
     imports: ['@chronolog/peer-session'], api: ['createApplicationTools', 'serveApplicationToolLines', 'session.changes'],
     guide: '/docs/AGENT_DELIVERY.md', example: 'pages/<slug>/agent.mjs',
-    boundary: 'The native owner, actual request worker and conversation receiver have separate lifetimes. Presence belongs to the worker and its handled topics. Existing-thread wake requires a configured host admission mechanism and two requests across turn completion; consult the conversation guide. A watcher or accepted delivery alone does not qualify it.' },
+    boundary: 'The native owner, actual request worker and conversation receiver have separate lifetimes. Presence belongs to the worker and its handled topics. Existing-thread delivery requires a configured host admission mechanism, active-turn injection and two requests across turn completion; consult the conversation guide. A watcher or accepted delivery alone does not qualify it.' },
   { id: 'chatgpt-application-tools', title: 'Remote application tools and a mounted assistance card',
     keywords: ['ChatGPT', 'MCP', 'assistant', 'OAuth', 'widget', 'account linking', 'remote commands'],
     owner: 'Tendriller Worker and enrolled application participant', availability: 'deployment-and-consent-required',

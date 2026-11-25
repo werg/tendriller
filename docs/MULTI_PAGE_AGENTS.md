@@ -168,9 +168,12 @@ when that is the user's goal; an extra agent per page changes that goal.
 Use [same-conversation delivery](CONVERSATION_DELIVERY.md) to select and qualify
 the actual host route. Preserve a handled cursor per application/history and
 stable request references; a combined stream's observed cursor map is not a
-record of handled work. Serialize work admitted to one conversation, re-arm its
-receiver after bounded waits, and recreate attachments after owner replacement.
-Verify one request from each of two pages in the same thread across turn ends.
+record of handled work. Serialize receiver dispatch to the configured thread,
+not by waiting for its running turn to end: steer requests into the active Codex
+turn, and use queue/resume while idle or unloaded. Re-arm after bounded waits
+and recreate attachments after owner replacement. Verify a request from another
+page is injected into the same active turn before it finishes, then verify idle
+requests from both pages in that thread across turn ends.
 
 Bind [ephemeral presence](AGENT_REQUESTS.md) to each actual worker's lifetime and
 implemented topics. Several workers may share the agent signer, so browser

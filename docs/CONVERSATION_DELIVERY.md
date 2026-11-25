@@ -1,7 +1,7 @@
 # Connect requests to the same agent conversation
 
 Use this guide when a user asks one existing conversation to handle requests
-from one or several Tendriller pages after its current turn ends. Read it during
+from one or several Tendriller pages during and after its current turn. Read it during
 setup through `tendril_guide` with `topic: "conversation"`. A connected native
 participant, forwarded event, webhook receipt or terminal line does not establish
 that the intended conversation can receive another turn.
@@ -12,7 +12,7 @@ Keep three lifetimes separate:
 | --- | --- | --- |
 | Workspace agent program / page owner | Retain the signer, page sessions, transport and declared application tools | Correct application/history and a successful declared query |
 | Request worker | Read the implemented request topics, acknowledge work and retain answers | Worker-owned live presence plus durable receipt/answer on the original request |
-| Conversation receiver | Ask the actual host to start a turn in the selected existing thread | Host admission and a completed turn in that same thread after the previous turn ended |
+| Conversation receiver | Ask the host to admit input to the selected current turn or start another turn in that thread | Active-turn input and repeated completed turns in the same thread |
 
 The workspace still uses one agent identity and one page owner per application.
 An additional agent per page does not satisfy a request to continue the existing
@@ -32,7 +32,7 @@ origin.
 | Actual host capability | Route | Same-conversation claim |
 | --- | --- | --- |
 | Supported ChatGPT Work host exposes an event-subscription tool | Subscribe to approved `application.event` entries for the selected applications; retain and inspect delivery receipts | Conditional on subscription success and the two-request rehearsal below |
-| Codex exposes the documented `codex queue` command and the intended thread on its daemon | Use the bundled multi-page queue bridge with the exact thread UUID and explicit remote endpoint | Queue admission is supported; qualify actual same-thread turn execution and results as below |
+| Codex exposes App Server steering, the documented `codex queue` command and the intended thread on its daemon | Use the bundled multi-page bridge with the exact thread UUID and explicit remote endpoint | Steer an observed active turn; queue idle work; qualify both active injection and repeated same-thread execution as below |
 | A host exposes another existing-thread execution API | A supervised receiver admits work to that exact thread and waits for the resulting turn/outcome | Qualify thread identity, concurrent-turn policy and restart handling before selecting this route |
 | Only `read_application_events` is available | Catch up during a turn initiated by the user or an independently supported host mechanism | No unattended wake established |
 | A compatible host exposes `open_application_inbox` | The user chooses **Check inbox in this chat** on the mounted card | Explicit user action; mounting the card is not automatic wake |
@@ -46,24 +46,35 @@ missing callback admission and unknown thread identity as separate setup stages.
 Finish the available page/session work and retain requests while resolving them.
 Use [ChatGPT setup](CHATGPT_INTEGRATION.md) for that host's concrete event route.
 
-## Codex mechanisms and the supplied queue bridge
+## Codex mechanisms and the supplied conversation bridge
 
-Codex has a concrete existing-thread admission mechanism: the documented
-`codex queue --thread ... --message ... --resume` command. Its queue can retain
-work while a turn is busy and dispatch it when that thread becomes eligible.
-The `--resume` option attempts to load an existing unloaded thread. It does not
-promise to unpause an already loaded, interrupted thread. Queue admission and
-turn completion remain different outcomes.
+The supplied `consumers/codex-queue.mjs` bridge selects the admission route from
+the actual thread state. When the selected conversation is running, it sends the
+retained notice to that **current turn** with App Server `turn/steer`. Accepted
+input becomes available at the next applicable continuation boundary; it does
+not cancel an already running tool or promise immediate interruption of an
+emitted response. When the conversation is idle or unloaded, the bridge uses
+`codex queue` and, where appropriate, `--resume`.
 
-Primary sources for this route are the
+Plain `codex queue` by itself waits for a running turn to become eligible; it
+does not inject into that active turn. The bridge adds steering explicitly.
+Admission still differs from the model reading the request, acknowledging work,
+or saving an answer.
+
+Primary sources for the installed `0.172.0` protocol include the
+[App Server reference](https://developers.openai.com/codex/app-server),
+[turn steering implementation](https://github.com/openai/codex/blob/rust-v0.172.0/codex-rs/app-server/src/request_processors/turn_processor.rs),
+[atomic active-turn admission](https://github.com/openai/codex/blob/rust-v0.172.0/codex-rs/core/src/session/turn_input.rs),
+[turn metadata schema](https://github.com/openai/codex/blob/rust-v0.172.0/codex-rs/app-server-protocol/schema/typescript/v2/ThreadTurnsListParams.ts),
 [Codex CLI reference](https://developers.openai.com/codex/cli/reference),
-[queue command implementation](https://github.com/openai/codex/blob/main/codex-rs/tui/src/session_queue_commands.rs)
-and [queue lifecycle tests](https://github.com/openai/codex/blob/main/codex-rs/app-server/tests/suite/v2/thread_queue.rs).
-Inspect `codex --version` and `codex queue --help` in the actual execution
-environment: available capabilities may differ by version or selected host.
+[queue implementation](https://github.com/openai/codex/blob/rust-v0.172.0/codex-rs/tui/src/session_queue_commands.rs)
+and [queue lifecycle tests](https://github.com/openai/codex/blob/rust-v0.172.0/codex-rs/app-server/tests/suite/v2/thread_queue.rs).
+Inspect `codex --version`, `codex queue --help` and
+`codex app-server daemon version` in the actual execution environment; capabilities
+may differ by version or selected host.
 
-The starter includes `consumers/codex-queue.mjs`. With the workspace's native
-owner already running and both selected pages declaring the request pattern:
+With the workspace's native owner already running and both selected pages
+declaring the request pattern:
 
 ```sh
 node consumers/codex-queue.mjs --workspace /absolute/workspace \
@@ -72,27 +83,69 @@ node consumers/codex-queue.mjs --workspace /absolute/workspace \
 ```
 
 Select the exact UUID of the **intended existing Codex thread**, and verify that
-its UI uses the same daemon and retained thread store. Do not choose `--last`,
-an ambiguous name or a newly created thread. `unix://` requests Codex's existing
-local daemon endpoint explicitly. An explicit `--remote` avoids a silent
-embedded fallback; another supported endpoint must be deliberately configured.
-For authenticated remote endpoints the bridge accepts
-`--remote-auth-token-env ENV_NAME`; keep that credential in the environment.
-A cloud ChatGPT conversation ID is not a Codex thread UUID or proof of access to
-this local daemon.
+its UI uses the same daemon and retained thread store. The bridge also checks
+that the thread's recorded working directory matches the configured workspace.
+Do not choose `--last`, an ambiguous name or a newly created thread. A cloud
+ChatGPT conversation ID is not a Codex thread UUID or proof of access to this
+local daemon.
 
-One bridge serves every page listed in `--pages` and one thread. It attaches to
+For `unix://`, the bridge discovers the running daemon's absolute socket path
+with the bounded read-only `codex app-server daemon version` command. An explicit
+`unix:///absolute/socket` selects that socket directly. The bridge's explicit
+`ws` dependency performs a WebSocket handshake over the Unix socket at `/rpc`,
+matching Codex's
+[remote client](https://github.com/openai/codex/blob/rust-v0.172.0/codex-rs/app-server-client/src/remote.rs).
+It never starts a separate daemon. The raw `codex app-server proxy` copies bytes;
+it does not translate JSON lines into WebSocket messages. For `ws://` or
+`wss://`, the bridge connects to that same configured endpoint. `--remote-auth-token-env ENV_NAME` supplies a bearer token
+from the environment for authenticated remote endpoints. Tokens require TLS or
+a loopback WebSocket address, matching Codex's transport policy. Unix sockets
+use local socket authority and reject the bearer-token option. The CLI queue
+path uses the same endpoint and credential-variable name. Server-initiated
+approval/tool requests on this admission-only connection stop it; the bridge
+cannot grant approvals on the user's behalf.
+
+One bridge serves every page listed in `--pages` and one thread. It serializes
+metadata reads and admission through connection cleanup across its pages, and
+checks cancellation before the next admission. It attaches to
 the existing owner, filters addressed requests by implemented topic, and keeps a
 bounded private outbox/checkpoint per page. Its default state lives under
-`.tendriller/consumers/codex-queue/THREAD_UUID` in the workspace. The queue notice
+`.tendriller/consumers/codex-queue/THREAD_UUID` in the workspace. The notice
 contains request references and instructions to read the declared inbox, rather
-than copying private request text into an unsolicited wake message. The resumed
-conversation reads `agentInbox`, acknowledges actual work with `agentReceipt`,
-performs its authorized work and retains `agentAnswer`. Already answered requests
-are skipped. The bridge itself neither announces assistant presence nor writes
-a receipt or answer on the conversation's behalf.
+than copying private request text. The conversation reads `agentInbox`,
+acknowledges actual work with `agentReceipt`, performs its authorized work and
+retains `agentAnswer`. Already answered requests are skipped. The bridge itself
+neither announces assistant presence nor writes a receipt or answer.
 
-Internally the bridge invokes this documented CLI shape with argument boundaries
+### Active-turn steering and race handling
+
+Before admission, the bridge reads `thread/read` with `includeTurns:false`,
+then `thread/turns/list` with `limit:1`, `sortDirection:"desc"` and
+`itemsView:"notLoaded"`. The latter includes the live current-turn header
+without loading conversation items. A loaded `inProgress` turn is steered with
+its exact `expectedTurnId`, the retained `clientUserMessageId`, and the original
+retained notice. The server checks the expected identity atomically before
+appending input. The bridge requires the acknowledged `turnId` to match.
+
+A turn can finish or change between the read and the steering call. Only the
+qualified `NotSubmitted` rejections—exact `-32600` no-active-turn or
+expected-turn-mismatch responses without additional error data—allow a fresh
+route decision. A generic invalid-request error is insufficient. The bridge
+re-reads metadata: it gives a genuinely new active turn one additional steering
+attempt, or queues if the conversation is now idle/unloaded. Continuous turn
+churn stops with a retained `steer-rejected` record for review. A same-turn
+no-active rejection can indicate a pending stop; the bridge queues without
+requesting resume in that case.
+
+A timeout, disconnect, malformed acknowledgement, or unqualified steering
+rejection leaves an `uncertain` admission and stops. It never causes an automatic
+queue fallback. The retained original input, client identity and observed turn
+identity remain available for reconciliation. A client message ID helps identify
+input; it is not an exactly-once execution guarantee.
+
+### Idle queueing and preserved interruption
+
+The idle route invokes this documented CLI shape with argument boundaries
 preserved:
 
 ```sh
@@ -100,28 +153,38 @@ codex queue --thread EXACT_THREAD_UUID --message SAFE_PENDING_NOTICE \
   --resume --remote unix://
 ```
 
-The CLI generates a fresh queued-message identity on every invocation, so blind
-retries can duplicate an admission. The bridge durably records `invoking` before
-calling it. A timeout, failed command or unrecognized acknowledgement leaves an
-uncertain admission and stops; after restart it refuses to resend that record.
-A successful exit can still include a resume warning, which is retained as
-`resume-unconfirmed` and also stops. Inspect the intended thread's queue/history
-and reconcile the existing admission before any deliberate retry. A clean queue
-receipt is not evidence that the turn ran or the request was answered.
+The explicit remote avoids an embedded-server fallback. If the latest turn is
+interrupted, the bridge omits `--resume`, including for an unloaded thread.
+It does not invoke `thread/queue/start` or override a user stop. A new turn can
+begin after the metadata read; queue admission remains safe in that race and
+the queue waits for eligibility. Thread state and subsequent turn execution
+must therefore be observed during host qualification.
 
-A loaded interrupted thread requires the host's explicit start/resume decision;
-the App Server exposes `thread/queue/start` for that control. Preserve the user's
-interruption and pending queue instead of silently overriding it. Queue draining
-also depends on the daemon and receiver lifetime. The bridge's exclusive lock,
-scoped checkpoints and selected-history verification prevent concurrent outbox
-owners and automatic cross-generation continuation. After an abrupt kill, review
-the stale lock and ensure its old owner is gone before removing it.
+The CLI generates a fresh queued-message identity on every invocation, so blind
+retries can duplicate admission. The bridge durably records `invoking` before
+either steering or queueing. A successful queue command can still include a
+resume warning, which is retained as `resume-unconfirmed` and stops. Inspect the
+intended thread's queue/history and reconcile the existing admission before any
+deliberate retry.
+
+JSON status output distinguishes `steered` with `source:"turn/steer"` and its
+turn/client identity from `queued` with `source:"thread/queue/add"` and its queue
+identity. Both explicitly report `workerReceipt:false` and
+`wakeVerified:false`. Neither admission status is a handled checkpoint or
+proof of a completed model turn.
+
+The exclusive lock, scoped checkpoints and selected-history verification prevent
+concurrent outbox owners and automatic cross-generation continuation. After an
+abrupt kill, review the stale lock and ensure its old owner is gone before
+removing it. Queue draining still depends on the selected daemon and receiver
+lifetime.
 
 ### Alternative mechanisms and their limits
 
 | Mechanism | What it can do | Qualification boundary |
 | --- | --- | --- |
-| `codex queue` | Queue a message to an exact existing thread; optionally attempt to load it | Queue admission, busy/interrupted behavior and actual second-turn execution must all be observed |
+| Supplied active-first bridge | Steer the exact observed running turn; queue idle/unloaded work | Qualify active input at the next continuation boundary, preserved stops and repeated same-thread execution |
+| Plain `codex queue` | Queue a message to an exact existing thread; optionally attempt to load it | A busy turn waits; queue admission alone does not establish active injection or second-turn execution |
 | Codex App Server `thread/resume` and `turn/start`, or `thread/queue/*` | Drive an explicit thread through a structured host API | Use the actual host's version/schema, authority and concurrent-turn policy; do not assume a separate app-server instance controls the selected desktop UI |
 | `codex exec resume` | Run a noninteractive continuation of a selected stored session | Sharing a session ID does not itself prove that the intended UI/daemon owns that execution or will display a live turn; avoid concurrent uncoordinated writers |
 | Async hooks / outbound completion notifications | Run supporting work or report a completed turn | They are not an inbound idle wake route by themselves |
@@ -146,9 +209,11 @@ MCP notification starts a new turn. The public
 documents verified webhook callbacks. Qualify the actual host integration
 instead of treating either transport as a universal conversation wake API.
 
-The shipped bridge's deterministic tests qualify filtering, scoped durable
-state, uncertain admission and restart behavior. They do not run a model or
-claim that a particular desktop/cloud thread resumed. During the 2026-11-25
+The shipped bridge's deterministic tests qualify active steering, exact-turn
+preconditions, bounded race handling, paused threads, remote transport, filtering,
+scoped durable state, uncertain admission and restart behavior. Synthetic Unix
+and loopback WebSocket tests exercise actual handshake/framing and authentication
+boundaries. They do not run a model or claim that a particular desktop/cloud thread resumed. During the 2026-11-25
 implementation review, the installed Codex CLI and local daemon both reported
 version `0.172.0`. A separate synthetic loopback WebSocket server exercised the
 installed CLI's `initialize → initialized → thread/queue/add → thread/read →
@@ -241,27 +306,33 @@ unit tests, a mock host or the native MCP tool qualification do not run it.
 1. Establish the selected host route and owner-approved access. Start the real
    worker/receiver with its retained checkpoints and confirm a declared inbox
    query succeeds. Do not announce assistant readiness from the page owner.
-2. Finish the current conversation turn. From a page, submit request A with a
+2. While the selected conversation has an active turn, submit a harmless
+   request with a unique operation ID. Confirm `steered` admission names that
+   same turn and that the conversation reads and answers it at its next
+   applicable continuation boundary. Confirm no duplicate queued turn is created.
+   Also exercise completion during admission and preserve a deliberately stopped
+   turn; neither timeout nor unknown acknowledgement may duplicate the input.
+3. Finish the current conversation turn. From a page, submit request A with a
    unique operation ID and retain its full request reference. Confirm a new turn
    begins in the **same existing thread**, reads that request and records its
    durable receipt and answer. Verify the originating page displays the answer.
-3. Let that turn end. Submit request B, preferably from a second page in the
+4. Let that turn end. Submit request B, preferably from a second page in the
    workspace. Confirm the same thread starts another turn without a manual
    message, receives B and leaves B's durable receipt/answer. Confirm A is not
    handled again. This catches receivers that worked only once.
-4. Stop only the request worker/receiver while keeping `tendril agent run` and
+5. Stop only the request worker/receiver while keeping `tendril agent run` and
    the browser connected. The assistant presence must become stopped or stale,
    even if the native owner still announces its own implemented work. Submit C:
    it remains retained and awaiting acknowledgement, without a false Live badge.
-5. Restart the worker/receiver with its original identity and handled checkpoint.
+6. Restart the worker/receiver with its original identity and handled checkpoint.
    Confirm C is handled once under the retained idempotency policy. Simulate a
    duplicate wake and a crash after an answer but before checkpointing; reconcile
    the existing answer instead of submitting changed input under the same ID.
-6. Exercise authentication/refused admission and owner replacement. Confirm the
+7. Exercise authentication/refused admission and owner replacement. Confirm the
    delivery panel names the blocked stage, pending work survives, and restoring
    access does not invent a new thread or skip an unhandled page.
 
-If step 2 or 3 cannot run in the actual host, report **same-conversation wake not
+If step 2, 3 or 4 cannot run in the actual host, report **same-conversation wake not
 qualified**, with the exact missing mechanism or observed refusal. The page,
 on-demand tools and runnable worker can still be verified independently. Do not
 record a simulated turn or webhook acceptance as a successful conversation test.

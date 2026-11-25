@@ -40,7 +40,7 @@ export function assistantSetup(origin: string, empty?: boolean) {
     readinessUrl: onboarding.interfaces.readiness,
     conversationGuide: onboarding.documentation.conversation_delivery,
     conversationWake: 'not-established',
-    conversationNextAction: 'For requests after this turn ends, read the conversation guide, inspect the current host admission mechanism and verify two requests in the same existing thread. A connected page owner or forwarded event is not an active assistant worker.',
+    conversationNextAction: 'Read the conversation guide and verify injection into the exact active turn plus two requests in the same existing thread across turn completion. A connected page owner or forwarded event is not an active assistant worker.',
     starter: onboarding.starter,
     originPolicy: 'same-origin-only',
     guideUnavailableAction: `If tendril_guide is missing from the installed tools, read ${origin + assistantGuides.start} directly, or use ${origin}/.well-known/tendriller.json. Refresh the installed plugin's tool catalog when possible. Keep all setup on ${origin}; do not substitute another service origin.`,

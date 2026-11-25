@@ -6,6 +6,8 @@ Tendriller exposes one account-linked `/mcp` endpoint on the service origin. Eac
 
 Call `tendril_guide` with `topic: "start"` for the [MCP workflow](MCP_AGENT_GUIDE.md), `topic: "build"` to create a new app, or `topic: "connect"` to read this guide inside MCP. An empty `list_tendrils` means no assistant-connected apps exist for the linked account, not a missing plugin. All links use the connected `serviceOrigin`. For replies after this turn ends,
 read `topic: "conversation"` and follow [same-conversation delivery](CONVERSATION_DELIVERY.md).
+For Codex, additionally verify active-turn steering when a request arrives while
+the conversation is running; plain queued delivery waits until that turn ends.
 Qualify the actual host's existing-thread admission mechanism; account linking,
 the adapter and event forwarding do not establish a running request worker.
 

@@ -104,9 +104,15 @@ and recovery choices, not a silent identity reset.
 Read [same-conversation delivery](CONVERSATION_DELIVERY.md), available through
 `tendril_guide` with `topic: "conversation"`, during setup. It maps actual host
 mechanisms, per-page handled checkpoints, authentication and failure visibility.
-Qualify the selected existing thread with a real request after the current turn
-ends and a second request after the answering turn ends. A one-shot waiter or
-accepted webhook does not establish either result.
+For Codex, first qualify a real request arriving during a running turn: it must
+reach that same active turn through `turn/steer`, without waiting for completion.
+Steering adds input for the next applicable continuation boundary; it does not
+preempt a running tool or bypass approval.
+Then qualify idle wake with a real request after the turn ends and another after
+the answering turn ends. The receiver uses queue/resume only when the thread is
+idle or unloaded; plain `codex queue` alone waits while a turn is running.
+A one-shot waiter or accepted steer/queue/webhook does not establish actual
+handling. Preserve explicit interruption and report admission failures.
 
 A user saying “connect this app to this conversation” has asked for an additional
 host integration. The ordinary Tendriller MCP endpoint administers host/control

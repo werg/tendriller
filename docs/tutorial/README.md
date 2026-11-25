@@ -141,7 +141,12 @@ The workspace owner, an actual request worker and the surrounding conversation
 have separate lifetimes. A connected owner or `tendril watch --events` output
 does not start another conversation turn. Before promising that behavior, read
 the selected service's `/docs/CONVERSATION_DELIVERY.md` and qualify its exact host
-route with two requests across turn completion in the same existing thread.
+route in the same existing thread. The supplied `consumers/codex-queue.mjs`
+receiver steers a running Codex turn and uses queue/resume while idle or unloaded.
+Plain `codex queue` waits for a running turn to finish. Verify an incoming request
+is injected into the active turn before completion, then verify two idle wake
+requests across turn completion. Neither host admission nor a queue receipt
+proves the request was handled.
 
 Use `shared/helpers/agent-requests.mjs` for durable requests, receipts and answers,
 and worker-owned ephemeral presence. Only a worker handling the advertised topics

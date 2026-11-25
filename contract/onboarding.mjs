@@ -78,7 +78,7 @@ export function onboardingDescriptor(base) {
       host: 'Tendriller hosts authenticated code, signed controls and bounded introductions. It does not run a resident application or agent process.',
       browser: 'Browser views attach to one profile owner using SharedWorker or a fenced elected Worker. Each view retains its own draft and original operation references. Runtime installation alone does not establish connectivity.',
       agents: 'Approved consumer bindings, native profile ownership and application grants are independent. Addressed claims select execution; observing shared history does not claim work.',
-      conversation: 'Same-conversation wake is not established by page residency, a connected owner, event forwarding or account linking. Qualify the current host admission mechanism and a second request after the first turn ends. Presence belongs only to the worker handling the advertised topics.',
+      conversation: 'Same-conversation wake is not established by page residency, a connected owner, event forwarding or account linking. Qualify the current host admission mechanism, injection into the exact active turn, and a second request after the first turn ends. Presence belongs only to the worker handling the advertised topics.',
     },
     sources: {
       core: 'https://github.com/werg/tendriller',

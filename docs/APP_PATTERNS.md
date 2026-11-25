@@ -289,8 +289,11 @@ Show saved/applied journal state separately from seen/answered work, and keep
 stopped/stale worker status visible. Verify that stopping only the worker removes
 its availability while the native owner stays connected. After a release or owner
 replacement, follow the [consumer restart checklist](AGENT_RESTART.md). If the
-existing conversation must respond after its turn ends, additionally qualify the
-actual host through [same-conversation delivery](CONVERSATION_DELIVERY.md).
+existing conversation must receive requests while working or after its turn
+ends, additionally qualify the actual host through
+[same-conversation delivery](CONVERSATION_DELIVERY.md). For Codex this includes
+injection into the active turn as well as idle wake; deferred queue admission
+alone does not satisfy the active case.
 
 ## 1. A coherent live query
 

@@ -56,6 +56,9 @@ presence only to the worker and topics it handles; a connected native owner or
 event forwarder cannot advertise an absent assistant. For an existing Codex or
 ChatGPT conversation, qualify the actual host route and a second request after
 the first turn ends using [same-conversation delivery](docs/CONVERSATION_DELIVERY.md).
+For a running Codex conversation, inject requests into its active turn through
+the verified steering route; a queue that waits for completion does not satisfy
+active delivery. Verify both active-turn injection and idle wake.
 Page residency and MCP alone do not establish that handoff.
 
 ## Verify the user experience

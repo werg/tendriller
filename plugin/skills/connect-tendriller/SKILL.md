@@ -110,14 +110,17 @@ Verify a relevant query. Execute a write when requested and verify its applied
 result with a fresh read. Retain original operation IDs and inputs for uncertain
 retries. If the app is offline, resume its enrolled participant from the existing
 device store. Use `read_application_events` to catch up and keep its cursor.
-For future replies in the same conversation, read `tendril_guide` with
+For page requests to the same conversation, during a turn or while idle, read `tendril_guide` with
 `topic: "conversation"` (or the same-origin `/docs/CONVERSATION_DELIVERY.md`).
 Inspect the current host's subscription or exact existing-thread execution
 mechanism, authentication and owner-approved event. Use its retained thread
 binding and per-page handled checkpoints; never choose the latest thread or a
-new agent per page as a substitute. Verify a request after the current turn ends
-and a second request after the answering turn ends in that same thread, with
-durable receipts and answers. A missing subscription tool, reauthentication or
+new agent per page as a substitute. For Codex, inspect current thread state:
+use the verified steering route for an active turn and queue/resume for idle or
+unloaded state. Plain `codex queue` waits while a turn runs and does not satisfy
+active delivery. Respect explicit interruption. Verify a request injected into
+the same active turn before completion, then a request after the turn ends and
+another after the answering turn ends, with durable receipts and answers. A missing subscription tool, reauthentication or
 refused thread admission leaves that stage unqualified; retain pending requests.
 A connected page owner, event forwarder or mounted card alone does not establish
 future conversation wake.
