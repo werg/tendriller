@@ -218,6 +218,10 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       }, icon.src);
       expect(size).toEqual({ type: 'image/png', width: 512, height: 512 });
     }
+    // iOS reads apple-touch-icon, not the manifest: the opaque drawn PNG.
+    await page.reload();
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', emojiIcons[1]!.src);
+    await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('sizes', '512x512');
     const maskableSize = await page.evaluate(async url => {
       const image = new Image(); image.src = url; await image.decode();
       return { width: image.naturalWidth, height: image.naturalHeight };
@@ -261,6 +265,8 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       ]);
       expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
       expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();
+      // iOS can use PNG; WebP keeps the Tendriller PNG.
+      await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', format === 'png' ? customIcon : '/_tendril/brand/icon-180.png');
     }
     expect((await agent(handle, '', 'PATCH', { icon: null })).status).toBe(200);
     await page.reload();

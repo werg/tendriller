@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import { create, apiJson, req } from './helpers';
-import { imageSize } from '../src/icon-raster';
+import { create, apiJson, inDO, req } from './helpers';
+import { appleTouchIcon, imageSize } from '../src/icon-raster';
 
 function png(width: number, height: number): string {
   const bytes = new Uint8Array(33);
@@ -26,12 +26,16 @@ it('owner pages draw emoji icons into sized PNGs that the manifest offers to And
   const icons = await manifest();
   expect(icons[0]).toMatchObject({ sizes: '512x512', type: 'image/png', purpose: 'any' });
   expect(icons[1]).toMatchObject({ sizes: '512x512', type: 'image/png', purpose: 'maskable' });
+  // iOS gets the opaque full-bleed PNG (it turns transparency black).
+  const base = new URL(h.page_url).pathname;
+  expect(await inDO(h.id, t => appleTouchIcon(t, base, h.page_url))).toEqual({ href: icons[1]!.src, sizes: '512x512' });
   const served = await req(new URL(icons[0]!.src, h.page_url).href);
   expect(served.status).toBe(200); expect(served.headers.get('content-type')).toBe('image/png');
   // A different emoji or theme makes the stored pair stale until the owner's page redraws it.
   await apiJson(h, 'PATCH', '', { theme_color: '#112233' });
   expect((await manifest()).some(icon => icon.type === 'image/png')).toBe(false);
   expect((await req(h.page_url + '_tendril/icon-512.png')).status).toBe(404);
+  expect(await inDO(h.id, t => appleTouchIcon(t, base, h.page_url))).toBeNull();
 });
 
 it('only the owner may store home-screen icons', async () => {

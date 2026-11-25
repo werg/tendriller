@@ -63,6 +63,24 @@ export function iconRasterResponse(t: Tendril, which: "any" | "maskable", head: 
   return new Response(head ? null : bytes, { headers: { "Content-Type": "image/png", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
 }
 
+/**
+ * iOS home-screen icon. Safari ignores manifest icons and SVG, and turns
+ * transparency black, so emoji pages use the opaque full-bleed PNG; custom
+ * images are used when they are PNG or JPEG (by extension or measured type).
+ */
+export async function appleTouchIcon(t: Tendril, base: string, requestBase: string): Promise<{ href: string; sizes?: string } | null> {
+  const icon = t.db.get<string | null>("icon", null);
+  if (!icon) return null;
+  if (isEmojiIcon(icon)) {
+    const raster = currentIconRaster(t);
+    return raster ? { href: `${base}_tendril/icon-maskable-512.png?v=${iconRasterTag(raster.key)}`, sizes: "512x512" } : null;
+  }
+  if (!/^https:\/\//.test(icon)) return null;
+  if (/\.png(?:$|[?#])/i.test(icon)) return { href: icon };
+  const size = await remoteIconSize(t, icon, requestBase);
+  return size && (size.type === "image/png" || size.type === "image/jpeg") ? { href: icon, sizes: `${size.width}x${size.height}` } : null;
+}
+
 /** Pixel size of a PNG, GIF, WebP or JPEG from its leading bytes. */
 export function imageSize(b: Uint8Array): { type: string; width: number; height: number } | null {
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength), ascii = (at: number, n: number) => String.fromCharCode(...b.subarray(at, at + n));

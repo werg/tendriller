@@ -4,6 +4,8 @@ export interface PageBranding {
   shortName?: string | null;
   themeColor?: string | null;
   icon?: string | null;
+  /** Resolved iOS home-screen icon (PNG/JPEG), when one is known. */
+  appleIcon?: { href: string; sizes?: string } | null;
 }
 
 export const DEFAULT_THEME_COLOR = "#2d6a4f";

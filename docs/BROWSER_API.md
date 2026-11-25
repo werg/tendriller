@@ -145,6 +145,11 @@ host measures the image (reading it from the publication when it is one of the
 page's own files) and lists its real size. Use a square PNG or WebP of at least
 192px; otherwise Android may fall back to a generic icon.
 
+iOS ignores manifest icons and SVGs; Safari's Add to Home Screen uses the
+page's `apple-touch-icon`. Emoji pages use the drawn PNG (on its theme-colour
+background, since iOS fills transparency with black); image icons are used
+when they are PNG or JPEG. Otherwise iOS shows the Tendriller icon.
+
 ## Page options placement
 
 The hosted utility starts at the bottom right. The person can drag the bar to
