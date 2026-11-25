@@ -408,8 +408,9 @@ try {
   await expect(page.locator('#devices')).toContainText('New device signed in', { timeout: 30_000 });
   await expect(page.locator('#devices')).toContainText(`${secondKey.slice(0, 8)}…${secondKey.slice(-4)}`);
   await expect(second.page.locator(sqlBrowser ? '#stock' : '#notes')).toContainText(sqlBrowser ? 'offline-bin' : 'offline durable note', { timeout: 60_000 });
-  const admittedVia = await second.page.evaluate(async () => (await window.tendril.application.backend.readAuthority()).memberships.at(-1).payload.admitted.map(item => item.via));
-  assert.deepEqual(admittedVia, ['attested']);
+  // Both replicas list both devices from the signed membership; the phone marks itself.
+  for (const target of [page, second.page]) for (const key of [firstKey, secondKey]) await expect(target.locator('#devices .admission-members')).toContainText(`key ${key.slice(0, 8)}…${key.slice(-4)}`, { timeout: 30_000 });
+  await expect(second.page.locator('#devices .admission-members')).toContainText('(this device)');
   report.second_device = { admission: 'attested', copiedArtifacts: 0 };
   let uxDeniedOperation;
   if (sqlBrowser) {

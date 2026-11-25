@@ -93,9 +93,9 @@ export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, pu
 
     checkpoint('optional workspace: agent-first page; the owner browser is admitted by the running agent');
     journalProfile = await opened(journal); await save(journalProfile.page, 'Journal browser operation');
-    const journalAuthority = await journalProfile.page.evaluate(async () => (await window.tendril.application.backend.readAuthority()));
-    assert.equal(journalAuthority.descriptor.payload.rootPrincipal, publicKey, 'the agent created the journal page keys');
-    assert.equal(journalAuthority.memberships.at(-1).signer, publicKey, 'the agent signed the browser admission');
+    // The signed membership names the agent as the page creator; the browser joined without any copied artifact.
+    await expect(journalProfile.page.locator('#devices .admission-members')).toContainText(`creator · key ${publicKey.slice(0, 8)}…${publicKey.slice(-4)}`, { timeout: 30000 });
+    await expect(journalProfile.page.locator('#devices .admission-members')).toContainText('(this device)');
     assert.equal((await tendril(['--page', 'journal', 'self'])).identity.publicKey, publicKey);
     assert.notEqual((await notes(['self'])).applicationId, (await tendril(['--page', 'journal', 'self'])).applicationId);
     await expect.poll(async () => (await tendril(['--page', 'journal', 'query', 'notes', 'null'])).value.map(row => row.text), { timeout: 30000 }).toContain('Journal browser operation');
