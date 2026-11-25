@@ -1,40 +1,28 @@
-// Test-only loopback plumbing around the actual tutorial, never a replacement
-// page, Worker, domain, session implementation, command bridge or SQL engine.
-import { build, type Plugin } from 'esbuild';
-import { access, mkdtemp, mkdir, copyFile, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+// Test-only loopback plumbing around the actual starter workspace and its inventory
+// template, never a replacement page, Worker, domain, session implementation,
+// command bridge or SQL engine.
+//
+// A private workspace is assembled in a temporary folder: the starter files, plus a
+// node_modules tree holding real copies (no symlinks, so every import resolves inside
+// this one graph) of the built SDK and tools and of the job's combined SQL session
+// consumer. The workspace's own tools register its agent with the workspace signer,
+// the starter creates the inventory page, and the template's setup, build, enroll and
+// agent modules run unchanged in this process through their page context.
+import { build } from 'esbuild';
+import { access, cp, mkdtemp, mkdir, copyFile, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Agent, WebSocket, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { TUTORIAL_FILES } from '../../scripts/onboarding.mjs';
-import { buildPage } from '../../docs/tutorial/templates/inventory/build.mjs';
-import { client, localPageUrl, type Handle } from './local-helpers';
+import { SERVICE, OWNER, localPageUrl, type Handle } from './local-helpers';
 
-export async function prepareSqlTutorial(handle: Handle, consumer: string, engineDirectory: string) {
-  const packageRoot = resolve(consumer, 'node_modules/@chronolog/peer-session');
-  const sdkRoot = resolve('dist/sdk');
-  const metadata = async (root: string) => JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
-  const [sdk, sessionPackage] = await Promise.all([metadata(sdkRoot), metadata(packageRoot)]);
-  const directory = await mkdtemp(join(tmpdir(), 'sql-tutorial-browser-')), project = join(directory, 'sql');
-  function exported(root: string, pkg: any, name: string) {
-    const key = name === pkg.name ? '.' : '.' + name.slice(pkg.name.length);
-    const target = pkg.exports[key];
-    const path = typeof target === 'string' ? target : target?.import;
-    if (typeof path !== 'string') throw Error(`Required public import unavailable: ${name}`);
-    return resolve(root, path);
-  }
-  const imports = (native: boolean): Plugin => ({ name: 'exact-public-graph', setup(builder) {
-    builder.onResolve({ filter: /^@tendriller\/core(?:\/|$)/ }, ({ path }) => ({ path: exported(sdkRoot, sdk, path) }));
-    builder.onResolve({ filter: /^@chronolog\/peer-session(?:\/|$)/ }, ({ path }) => ({
-      path: exported(packageRoot, sessionPackage, path), external: native,
-    }));
-  } });
-  // The SDK has an events-only workspace dependency. Every native and browser
-  // session import must instead resolve to this job's combined SQL public graph.
-  const load = (name: string) => import(pathToFileURL(exported(packageRoot, sessionPackage, name)).href);
-  const previousDispatcher = getGlobalDispatcher(), previousWebSocket = globalThis.WebSocket;
+const SLUG = 'stock';
+
+export async function prepareSqlTutorial(consumer: string, engineDirectory: string) {
+  const directory = await mkdtemp(join(tmpdir(), 'sql-tutorial-browser-')), workspaceRoot = join(directory, 'workspace');
+  const previousDispatcher = getGlobalDispatcher(), previousWebSocket = globalThis.WebSocket, previousFetch = globalThis.fetch;
   const dispatcher = new Agent({ connect: { rejectUnauthorized: false, lookup(hostname, options, callback) {
     if (hostname !== 'localhost' && !hostname.endsWith('.localhost')) return callback(Error('Non-loopback SQL test request'), '', 4);
     if (options?.all) callback(null, [{ address: '127.0.0.1', family: 4 }]);
@@ -53,12 +41,24 @@ export async function prepareSqlTutorial(handle: Handle, consumer: string, engin
       super(url, { protocols, dispatcher });
     }
   } as typeof globalThis.WebSocket;
-  let owned: any;
-  async function stop() { const current = owned; owned = undefined; await current?.close(); }
+  // The local host rate-limits unauthenticated agent registration per client address.
+  const clientAddress = `198.19.${Math.floor(Math.random() * 250)}.${Math.floor(Math.random() * 250) + 1}`;
+  globalThis.fetch = ((input: any, init: any = {}) => {
+    const url = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url);
+    if (url.origin !== SERVICE) return previousFetch(input, init);
+    const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+    headers.set('CF-Connecting-IP', clientAddress);
+    return previousFetch(input, { ...init, headers });
+  }) as typeof fetch;
+  let owned: any, ownedLifetime: AbortController | undefined;
+  async function stop() {
+    const current = owned; owned = undefined;
+    try { await current?.close(); } finally { ownedLifetime?.abort(); ownedLifetime = undefined; }
+  }
   async function cleanup() {
     try { await stop(); }
     finally {
-      globalThis.WebSocket = previousWebSocket; setGlobalDispatcher(previousDispatcher);
+      globalThis.WebSocket = previousWebSocket; globalThis.fetch = previousFetch; setGlobalDispatcher(previousDispatcher);
       // The native supervisor and SQL close above must succeed. Dispose this
       // harness-owned loopback agent afterwards: workerd's external TCP Close
       // handshake is a separate first-app qualification (issue #8185).
@@ -67,56 +67,66 @@ export async function prepareSqlTutorial(handle: Handle, consumer: string, engin
     }
   }
   try {
-    for (const path of TUTORIAL_FILES.filter(path => path.startsWith('sql/') || path.startsWith('helpers/'))) {
-      const target = join(directory, path); await mkdir(dirname(target), { recursive: true });
+    for (const path of TUTORIAL_FILES.filter(path => !path.startsWith('deploy/'))) {
+      const target = join(workspaceRoot, path); await mkdir(dirname(target), { recursive: true });
       await copyFile(resolve('docs/tutorial', path), target);
     }
-    const privateDirectory = join(project, '.tendriller'); await mkdir(privateDirectory, { mode: 0o700 });
-    await writeFile(join(privateDirectory, 'handle.json'), JSON.stringify({ ...handle, page_url: localPageUrl(handle) }), { mode: 0o600 });
-    // Bundle tutorial source without changing it. Its import.meta.url continues
-    // to identify this private copied project; optional native modules remain
-    // at their installed public-package paths (including native binary assets).
-    const nativeFile = join(project, 'native-fixture.mjs');
-    await build({ stdin: { contents: `export { initializeProject, enrollBrowser } from './setup.mjs';
-      export { openSession } from './session.mjs'; export { readPrivate } from './local.mjs';
-      export { definition } from './domain.mjs';`, resolveDir: project },
-      outfile: nativeFile, bundle: true, platform: 'node', format: 'esm', target: 'node24', plugins: [imports(true)] });
-    const tutorial = await import(pathToFileURL(nativeFile).href);
-    const log = await load('@chronolog/peer-session'), native = await load('@chronolog/peer-session/native');
-    if (typeof native.NativeBytesStore?.prototype.putAllIfEmpty !== 'function')
-      throw Error('SQL checkpoint qualification requires the matching public NativeBytesStore atomic-restore API.');
-    const browserSql = await load('@chronolog/peer-session/sql-browser');
-    await tutorial.initializeProject();
-    await mkdir(join(project, 'engine'));
-    for (const name of ['manifest.json', 'sqlite3.mjs', 'sqlite3.wasm', 'sqlite3-opfs-async-proxy.js'])
-      await copyFile(resolve(engineDirectory, name), join(project, 'engine', name));
-    await buildPage({ root: pathToFileURL(project + '/'), readPrivate: tutorial.readPrivate, definition: tutorial.definition,
-      verifyWasmBuild: browserSql.verifyWasmBuild,
-      bundle: (options: any) => build({ ...options, plugins: [imports(false)] }) });
+    // Real copies of the public packages: the SDK and tools import the combined SQL
+    // session from this workspace, never the checkout's events-only dependency.
+    const modules = join(workspaceRoot, 'node_modules');
+    await cp(resolve(consumer, 'node_modules'), modules, { recursive: true, dereference: true });
+    await cp(resolve('dist/sdk'), join(modules, '@tendriller/core'), { recursive: true, dereference: true });
+    await cp(resolve('dist/tools'), join(modules, '@tendriller/tools'), { recursive: true, dereference: true });
+    const load = (path: string) => import(pathToFileURL(join(workspaceRoot, path)).href);
+    const tools = await load('node_modules/@tendriller/tools/lib/workspace.mjs');
+    const session = (key: string) => import(pathToFileURL(join(modules, '@chronolog/peer-session', exportPath(modules, '@chronolog/peer-session', key))).href);
+    const log = await session('.');
 
-    const peers = client(handle).peers, authority = await peers.application();
-    const verified = await log.verifyAuthorityBundle(authority, await tutorial.readPrivate('descriptor.json'));
+    // The workspace tools register one unclaimed agent for the owner with the shared signer.
+    await tools.initWorkspace(workspaceRoot, { service: SERVICE, owner: OWNER, name: 'sql-tutorial' });
+    const starter = await load('setup.mjs');
+    const created = await starter.createPage(SLUG, { template: 'inventory', name: 'Shared inventory' });
+    // Loopback plumbing only: the local host serves page origins on port 8790, so the
+    // private page record names that served origin (as the browser sees it).
+    const recordPath = join(workspaceRoot, '.tendriller/pages', created.id, 'page.json');
+    const saved = JSON.parse(await readFile(recordPath, 'utf8'));
+    await writeFile(recordPath, JSON.stringify({ ...saved, page_url: localPageUrl(saved) }), { mode: 0o600 });
+    const { pageContext } = await load('shared/local.mjs');
+    const pageModule = (name: string) => load(`pages/${SLUG}/${name}`);
+    const context = await pageContext(SLUG);
+    const credential = JSON.parse(await readFile(join(workspaceRoot, '.tendriller/agent/credential.json'), 'utf8'));
+    const handle: Handle = { id: created.id, page_url: created.page_url, api: `${SERVICE}/api/agent/pages/${created.id}`,
+      token: credential.token, agent: credential.agent, application: saved.application };
+    await (await pageModule('setup.mjs')).initializePage(context);
+    await mkdir(join(context.page.source, 'engine'));
+    for (const name of ['manifest.json', 'sqlite3.mjs', 'sqlite3.wasm', 'sqlite3-opfs-async-proxy.js'])
+      await copyFile(resolve(engineDirectory, name), join(context.page.source, 'engine', name));
+    const built = await (await pageModule('build.mjs')).buildPage(context, { bundle: build });
+
+    // Sign the built graph with this page's device (the shared agent key) before claim.
+    const peers = context.host.peers, authority = await peers.application();
+    const verified = await log.verifyAuthorityBundle(authority, await context.readPrivate('descriptor.json'));
     const descriptor = authority.descriptor.payload;
-    const initial = await tutorial.readPrivate('initial-input.json');
-    const device = await native.openNativeDevice({ path: join(privateDirectory, 'device.sqlite') });
+    const initial = await context.readPrivate('initial-input.json');
     let publication: any, publicationVersion = 0;
+    const device = await context.openDevice();
     try {
       const files: any[] = [], assets = new Map();
-      async function collect(directory: string) {
-        for (const entry of await readdir(directory, { withFileTypes: true })) {
-          const path = join(directory, entry.name);
+      async function collect(folder: string) {
+        for (const entry of await readdir(folder, { withFileTypes: true })) {
+          const path = join(folder, entry.name);
           if (entry.isDirectory()) { await collect(path); continue; }
           const bytes = await readFile(path), hash = await log.bytesDigest(bytes);
-          if (bytes.includes(Buffer.from(handle.token)) || bytes.includes(Buffer.from(initial.epochKey)))
-            throw Error('Private tutorial setup credential entered the authored graph');
-          const name = relative(join(project, 'page'), path).replaceAll('\\', '/');
+          if (bytes.includes(Buffer.from(credential.token)) || bytes.includes(Buffer.from(initial.epochKey)))
+            throw Error('Private workspace credential or epoch key entered the authored graph');
+          const name = relative(built, path).replaceAll('\\', '/');
           const type = name.endsWith('.html') ? 'text/html' : name.endsWith('.json') ? 'application/json'
             : name.endsWith('.wasm') ? 'application/wasm' : 'text/javascript';
           files.push({ path: name, type, hash, size: bytes.length });
           assets.set(hash, { hash, bytes: bytes.toString('base64') });
         }
       }
-      await collect(join(project, 'page')); files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+      await collect(built); files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
       publication = await log.signPublicationManifest({ applicationId: handle.application.id, historyId: descriptor.historyId,
         profile: descriptor.profile, controlRevision: verified.control.payload.revision, author: device.identity.publicKey,
         operationId: 'sql-tutorial-ui-publication', revision: 0, previous: null,
@@ -131,70 +141,58 @@ export async function prepareSqlTutorial(handle: Handle, consumer: string, engin
       if (served?.publication.id !== publication.id || served.version !== publicationVersion)
         throw Error('Host did not retain the exact signed tutorial graph and host version mapping');
     } finally { await device.close(); }
-    const movedDirectory = join(privateDirectory, 'profiles/moved');
+
+    const pageDirectory = context.page.directory, devicePath = context.devicePath;
+    const materialized = context.privatePath('materialized.sqlite');
     async function exists(path: string) {
       try { await access(path); return true; }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
     }
+    // Keep a retired store's files for inspection; they are never reopened.
+    async function setAside(path: string, suffix: string) {
+      for (const name of await readdir(pageDirectory))
+        if (join(pageDirectory, name) === path || name.startsWith(relative(pageDirectory, path) + '-'))
+          await rename(join(pageDirectory, name), join(pageDirectory, name + suffix));
+    }
     return {
-      publication, publicationVersion,
-      sessionProvenance: JSON.parse(await readFile(join(packageRoot, 'provenance.json'), 'utf8')),
-      async enroll(publicKey: string) { await tutorial.enrollBrowser(publicKey); },
-      async start(profile = 'main') {
-        if (owned) throw Error('Stop the current SQL tutorial owner before starting a retained profile.');
-        owned = await tutorial.openSession({ profile, signal: new AbortController().signal });
+      handle, publication, publicationVersion,
+      sessionProvenance: JSON.parse(await readFile(join(modules, '@chronolog/peer-session/provenance.json'), 'utf8')),
+      // The template's explicit administrator enrollment; the page owner is stopped.
+      async enroll(publicKey: string) {
+        if (owned) throw Error('Stop the page owner before enrollment; it owns the page device.');
+        await (await pageModule('setup.mjs')).enrollBrowser(await pageContext(SLUG), publicKey);
+      },
+      // This page's part of the agent program: pages/stock/agent.mjs openPage(context).
+      async start() {
+        if (owned) throw Error('Stop the current page owner before starting it again.');
+        ownedLifetime = new AbortController();
+        owned = await (await pageModule('agent.mjs')).openPage(await pageContext(SLUG, { signal: ownedLifetime.signal }));
         return owned.session;
       },
-      async moveCheckpoint() {
-        if (owned) throw Error('Stop the SQL tutorial owner before checkpoint export.');
-        if (await exists(movedDirectory)) throw Error('SQL checkpoint restore requires a fresh moved profile directory.');
-        // A real source materialization exists, but must never be supplied to
-        // this device-only handoff. The moved owner will derive SQL from history.
-        if (!(await exists(join(privateDirectory, 'materialized.sqlite'))))
-          throw Error('SQL checkpoint scenario requires an existing source materialization.');
-        const checkpointFile = join(directory, 'private-device-move.clcp');
-        const source = join(privateDirectory, 'device.sqlite');
-        const destination = join(movedDirectory, 'device.sqlite');
-        const env: NodeJS.ProcessEnv = { ...process.env, TENDRILLER_CHECKPOINT_SECRET: randomBytes(32).toString('hex') };
-        const cli = resolve('dist/tools/bin/tendril.mjs');
-        // No secret in argv, stdout, errors, attachments or global process.env.
-        // Capture and parse only CLI metadata; never propagate raw child output
-        // or child error objects (which retain stdout/stderr) to Playwright.
-        const run = (action: 'export' | 'restore', device: string): Promise<any> => new Promise((resolveResult, reject) => {
-          execFile(process.execPath, [cli, 'checkpoint', action, checkpointFile, '--device', device,
-            '--project', resolve(consumer)], { env, timeout: 30_000, maxBuffer: 64 * 1024, windowsHide: true }, (error, stdout) => {
-            if (error) { reject(Error(`SQL tutorial checkpoint CLI ${action} failed; private child output withheld.`)); return; }
-            try { resolveResult(JSON.parse(stdout)); }
-            catch { reject(Error(`SQL tutorial checkpoint CLI ${action} returned invalid metadata; private output withheld.`)); }
-          });
-        });
-        try {
-          const expectedDeviceId = (await tutorial.readPrivate('initialized.json')).deviceId;
-          const exported = await run('export', source);
-          if (exported.retiredSource !== true || exported.metadata?.deviceId !== expectedDeviceId || exported.metadata?.hasSqlDatabase !== false)
-            throw Error('SQL checkpoint export metadata did not confirm a device-only move of the original signer.');
-          if ((await stat(checkpointFile)).mode & 0o077) throw Error('SQL checkpoint output is not private.');
-          let sourceRetired = false;
-          try { const reopened = await native.openNativeDevice({ path: source }); await reopened.close(); }
-          catch (error) {
-            if ((error as { code?: string }).code !== 'DEVICE_RETIRED_BY_CHECKPOINT')
-              throw Error('SQL checkpoint source retirement verification failed.');
-            sourceRetired = true;
-          }
-          if (!sourceRetired) throw Error('SQL checkpoint export did not fence the original signer.');
-          const restored = await run('restore', destination);
-          if (restored.materialization !== 'rebuild-on-open' || restored.metadata?.deviceId !== expectedDeviceId)
-            throw Error('SQL checkpoint restore metadata did not confirm the original signer and derived SQL rebuild.');
-          // Only validated public identity and fixed metadata fields leave here.
-          return { exported: { retiredSource: true, deviceId: expectedDeviceId, hasSqlDatabase: false },
-            restored: { materialization: 'rebuild-on-open', deviceId: expectedDeviceId }, sourceRetired };
-        } finally { delete env.TENDRILLER_CHECKPOINT_SECRET; }
+      // The checkpoint CLI moves one standalone device store that holds its own signing
+      // identity. A workspace page store is signed by the shared agent key and holds
+      // none, so that move does not apply here. The derived SQL file is still
+      // disposable: set it aside and let the reopened owner rebuild it from history.
+      async discardMaterialization() {
+        if (owned) throw Error('Stop the page owner before removing its derived SQL state.');
+        if (!(await exists(materialized))) throw Error('SQL rebuild scenario requires an existing source materialization.');
+        await setAside(materialized, '.source');
+        return { sourceSetAside: !(await exists(materialized)), deviceKept: await exists(devicePath) };
       },
-      movedMaterializationExists: () => exists(join(movedDirectory, 'materialized.sqlite')),
+      materializationExists: () => exists(materialized),
       stop, cleanup,
     };
   } catch (error) {
     try { await cleanup(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], 'SQL tutorial preparation and cleanup failed'); }
     throw error;
   }
+}
+
+function exportPath(modules: string, name: string, key: string) {
+  // Resolved from the copied package's own exports map.
+  const pkg = JSON.parse(readFileSync(join(modules, name, 'package.json'), 'utf8'));
+  const target = pkg.exports[key];
+  const path = typeof target === 'string' ? target : target?.import ?? target?.default;
+  if (typeof path !== 'string') throw Error(`Required public import unavailable: ${name}${key.slice(1)}`);
+  return path;
 }
