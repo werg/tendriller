@@ -17,7 +17,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
   });
   const bundle = await build({ entryPoints: ['docs/tutorial/templates/notes/page.mjs'], bundle: true, write: false, format: 'esm',
     plugins: [{ name: 'session-fixture', setup(build) {
-      build.onResolve({ filter: /^(?:@tendriller\/core\/browser-owner|@chronolog\/peer-session\/tendriller|\.\/pairing-browser\.mjs)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
+      build.onResolve({ filter: /^(?:@tendriller\/core\/browser-owner|@chronolog\/peer-session\/tendriller|(?:\.\.?\/)+(?:shared\/)?pairing-browser\.mjs)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `
         export const createApplicationBackend = () => ({});
         export const requestPersistentStorage = async () => null;
@@ -150,11 +150,12 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
     key.includes(':operation:') && JSON.parse(value).reference.operationId === id), cancelledId);
   assert.deepEqual(remaining, [], 'A verified applied result resolves the retained reference, even when its waiter was cancelled.');
   await page.evaluate(() => fixture.cancelApplied(false));
-  await page.evaluate(() => {fixture.hold(); fixture.connection('recovering');});
-  assert.equal(await enabled('#submit'), false); assert.equal(await enabled('#media-file'), false);
+  // Losing the agent connection keeps local saving (AGENTS.md: Save never waits on the
+  // network or agent); photo evidence, analyzed by the connected agent, waits.
+  await page.evaluate(() => fixture.connection('recovering'));
+  assert.equal(await enabled('#submit'), true); assert.equal(await enabled('#media-file'), false);
   await page.evaluate(() => fixture.connection('following'));
-  assert.equal(await enabled('#submit'), false);
-  await page.evaluate(() => fixture.release()); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  await page.waitForFunction(() => !document.querySelector('#media-file').disabled);
   await page.evaluate(() => {fixture.hold(); fixture.recovery();}); assert.equal(await enabled('#submit'), false);
   await page.evaluate(() => fixture.release()); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
   assert.equal(await page.locator('#note').getAttribute('aria-describedby'), 'draft-help submission-status');

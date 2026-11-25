@@ -199,7 +199,13 @@ export function createAgentHub({ service, token, WebSocket: Socket = globalThis.
     });
     current.addEventListener('message', message => { if (socket === current && typeof message.data === 'string') onFrame(message.data); });
     current.addEventListener('close', closed => { void lost(closed.code); });
-    current.addEventListener('error', () => { try { current.close(); } catch {} void lost(1006); });
+    // Some WebSocket implementations (Node 22.15's undici) fire 'error' again,
+    // synchronously, from close() on a failed connection; handle it once.
+    let failed = false;
+    current.addEventListener('error', () => {
+      if (failed) return; failed = true;
+      try { current.close(); } catch {} void lost(1006);
+    });
   }
   function allocate() {
     for (let tries = 0; tries <= streams.size; tries++) {

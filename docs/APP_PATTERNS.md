@@ -454,7 +454,7 @@ do not add a second coordinator alongside it:
 
 ```js
 // submission-controls-example
-import { createSubmissionState } from './helpers/submission-state.mjs';
+import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
 
 export function createWriteControls(root) {
   const eligibility = { submit: 'canSubmit', retry: 'canRetry', reapply: 'canReapply' };
