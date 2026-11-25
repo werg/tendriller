@@ -24,6 +24,8 @@ export type InjectConfig = {
   features: Features;
   application: import("../../contract/application.mjs").ApplicationSelection;
   peerBootstrap?: import("../../contract/peers.mjs").PeerBootstrap;
+  /** Asks the owner's page to draw missing home-screen PNG icons (owner only). */
+  iconRaster?: { key: string };
   /** Server-rendered install branding, not part of the runtime configuration. */
   branding?: PageBranding;
 } & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
@@ -48,7 +50,7 @@ export function runtimeTags(cfg: InjectConfig, installTags = `<link rel="manifes
   const documentBase = publication ? publication.base + directory.split("/").map(encodeURIComponent).join("/") : cfg.base;
   const runtimeBase = publication?.runtime.base ?? `/_tendril/runtime/${runtimeRelease.id}/`;
   const conf = { id: cfg.id, base: cfg.base, version: cfg.version, documentPath: cfg.documentPath,
-    application: cfg.application, peerBootstrap: cfg.peerBootstrap,
+    application: cfg.application, peerBootstrap: cfg.peerBootstrap, ...(cfg.iconRaster ? { iconRaster: cfg.iconRaster } : {}),
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +

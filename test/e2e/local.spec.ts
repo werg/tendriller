@@ -202,12 +202,22 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       text: emoji, parseError: false });
     expect(rendered.width).toBeGreaterThan(0);
     expect(rendered.height).toBe(rendered.width);
-    const emojiManifest = await cdp.send('Page.getAppManifest');
-    expect(emojiManifest.errors).toEqual([]);
-    expect(JSON.parse(emojiManifest.data!).icons).toEqual([
-      { src: generatedIcon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
-      maskableIcon,
-    ]);
+    // Android installs ignore SVG icons. The owner's page draws the emoji into
+    // 512px PNGs once; the manifest then lists them first.
+    await expect.poll(async () => {
+      const current = await cdp.send('Page.getAppManifest');
+      return current.errors.length === 0 ? JSON.parse(current.data!).icons.map((icon: { type: string; purpose: string; sizes: string }) => `${icon.type} ${icon.purpose} ${icon.sizes}`) : current.errors;
+    }, { timeout: 15_000 }).toEqual(['image/png any 512x512', 'image/png maskable 512x512', 'image/svg+xml any any', 'image/svg+xml maskable any']);
+    const emojiIcons = JSON.parse((await cdp.send('Page.getAppManifest')).data!).icons as { src: string }[];
+    expect(emojiIcons.slice(2)).toEqual([{ src: generatedIcon, sizes: 'any', type: 'image/svg+xml', purpose: 'any' }, maskableIcon]);
+    for (const icon of emojiIcons.slice(0, 2)) {
+      const size = await page.evaluate(async url => {
+        const response = await fetch(url, { cache: 'no-store' });
+        const image = new Image(); image.src = URL.createObjectURL(await response.blob()); await image.decode();
+        return { type: response.headers.get('Content-Type'), width: image.naturalWidth, height: image.naturalHeight };
+      }, icon.src);
+      expect(size).toEqual({ type: 'image/png', width: 512, height: 512 });
+    }
     const maskableSize = await page.evaluate(async url => {
       const image = new Image(); image.src = url; await image.decode();
       return { width: image.naturalWidth, height: image.naturalHeight };
@@ -245,9 +255,9 @@ test('Chromium reads authenticated per-page install metadata and launches the la
       await expect(favicon).toHaveAttribute('href', customIcon);
       await expect(favicon).toHaveAttribute('type', `image/${format}`);
       const branded = await cdp.send('Page.getAppManifest');
+      // The published icon's real size, so Android uses it instead of drawing a letter.
       expect(JSON.parse(branded.data!).icons).toEqual([
-        { src: customIcon, sizes: 'any', type: `image/${format}`, purpose: 'any' },
-        maskableIcon,
+        { src: customIcon, sizes: '192x192', type: `image/${format}`, purpose: 'any' },
       ]);
       expect((await cdp.send('Page.getInstallabilityErrors')).installabilityErrors).toEqual([]);
       expect((await cdp.send('Page.getManifestIcons')).primaryIcon).toBeTruthy();

@@ -7,6 +7,7 @@ import { HttpError, json } from "./http";
 import { sha256Hex } from "./ids";
 import runtimeRelease from "./runtime-release.json";
 import { holdingPage, injectRuntime, type PublicationManifest } from "./inject";
+import { iconRasterRequest } from "./icon-raster";
 import { MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
 import { assetResponse, etagMatches, immutableObject } from "./immutable-cache";
@@ -272,7 +273,7 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     // the publication or adding a discovery poll to a running application.
     headers.set("Cache-Control", "private, no-cache");
     if (req.method === 'HEAD') return new Response(null, { headers });
-    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base), branding: branding() });
+    const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base), branding: branding(), iconRaster: iconRasterRequest(t, role) });
     return new Response(html, { headers });
   }
   headers.set("Content-Length", String(file.size));

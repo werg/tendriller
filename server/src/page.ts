@@ -11,6 +11,7 @@ import { emojiIconSvg, iconSvg, maskableEmojiIconSvg, maskableIconSvg } from "./
 import { serviceDescriptor } from "./descriptor";
 import { accountActive, allows, authenticateLocalPage, currentPrincipal } from "./access";
 import { handleManagement } from "./management";
+import { currentIconRaster, iconRasterResponse, iconRasterTag, remoteIconSize, storeIconRaster } from "./icon-raster";
 import { agentInviteResponse, issueAgentInvite } from "./sharing";
 import { addActivity } from "./activity";
 import { brandHead, brandMark, brandStyle } from "./brand";
@@ -242,7 +243,10 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
       display: "standalone",
       theme_color: meta.theme_color ?? DEFAULT_THEME_COLOR,
       background_color: meta.background_color ?? "#ffffff",
-      icons: pageIcons(base, meta.icon),
+      icons: pageIcons(base, meta.icon, {
+        rasterTag: currentIconRaster(t) ? iconRasterTag(currentIconRaster(t)!.key) : null,
+        customSize: meta.icon && /^https:\/\//.test(meta.icon) ? await remoteIconSize(t, meta.icon, new URL(base, req.url).href) : null,
+      }),
     };
     if (meta.shortcuts && meta.shortcuts.length > 0) {
       body.shortcuts = resolveShortcuts(meta.shortcuts, base);
@@ -272,6 +276,17 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return new Response(m === "HEAD" ? null : svg, { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff" } });
   }
 
+  if ((sub === "icon-512.png" || sub === "icon-maskable-512.png") && (m === "GET" || m === "HEAD")) {
+    const response = iconRasterResponse(t, sub === "icon-512.png" ? "any" : "maskable", m === "HEAD");
+    if (!response) throw new HttpError(404, "not_found", "No rendered icon yet");
+    return response;
+  }
+  if (sub === "icon-raster" && m === "POST") {
+    // The owner's browser draws the page's own icon SVGs into PNGs (it has the emoji font).
+    if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
+    storeIconRaster(t, await readJson(req, 1_200_000));
+    return new Response(null, { status: 204 });
+  }
   if (sub === "icon-maskable.svg" && (m === "GET" || m === "HEAD")) {
     const icon = t.db.get<string | null>("icon", null);
     const themeColor = t.db.get<string | null>("theme_color", null) ?? DEFAULT_THEME_COLOR;

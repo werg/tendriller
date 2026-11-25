@@ -81,23 +81,35 @@ export function resolveShortcuts(shortcuts: PageShortcut[], base: string): PageS
   }));
 }
 
-export function pageIcons(base: string, icon: string | null) {
+/**
+ * Manifest icons. Android installs only use PNG/WebP icons with real dimensions,
+ * so emoji pages list the owner-drawn 512px PNGs (`rasterTag`) first, and custom
+ * images carry their measured size. SVGs remain for platforms that use them.
+ */
+export function pageIcons(base: string, icon: string | null, extra: { rasterTag?: string | null; customSize?: { type: string; width: number; height: number } | null } = {}) {
   const maskable = { src: `${base}_tendril/icon-maskable.svg`, sizes: "any", type: "image/svg+xml", purpose: "maskable" };
+  const brand = { src: "/_tendril/brand/icon-180.png", sizes: "180x180", type: "image/png", purpose: "any" };
   if (icon && isEmojiIcon(icon)) {
+    const raster = extra.rasterTag ? [
+      { src: `${base}_tendril/icon-512.png?v=${extra.rasterTag}`, sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: `${base}_tendril/icon-maskable-512.png?v=${extra.rasterTag}`, sizes: "512x512", type: "image/png", purpose: "maskable" },
+    ] : [];
     return [
+      ...raster,
       { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
       maskable,
     ];
   }
-  const type = icon ? iconMediaType(icon) : undefined;
-  if (icon && (type === "image/png" || type === "image/webp" || type === "image/svg+xml")) {
-    // Chromium skips entries without sizes and prefers a sized default over a
-    // custom raster candidate marked "any". Let it decode and size the custom
-    // asset without claiming pixel dimensions that the URL cannot establish.
-    return [{ src: icon, sizes: "any", type, purpose: "any" }, maskable];
+  const type = icon ? extra.customSize?.type ?? iconMediaType(icon) : undefined;
+  if (icon && (extra.customSize || type === "image/png" || type === "image/webp" || type === "image/svg+xml")) {
+    // A measured raster icon is usable for Android installs. Do not add the
+    // generated letter as a maskable icon: launchers prefer maskable icons.
+    const size = extra.customSize;
+    const custom = { src: icon, sizes: size ? `${size.width}x${size.height}` : "any", type, purpose: "any" };
+    return size && Math.min(size.width, size.height) >= 144 ? [custom] : [custom, brand];
   }
   return [
-    { src: "/_tendril/brand/icon-180.png", sizes: "180x180", type: "image/png", purpose: "any" },
+    brand,
     { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
     maskable,
   ];

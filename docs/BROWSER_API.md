@@ -138,6 +138,13 @@ manifest also suppresses host icon defaults, so update that authored branding
 when it is present. Before the first publication, the holding page retains the
 Tendriller icon.
 
+Android home-screen installs use only PNG or WebP icons with known dimensions.
+For an emoji icon, the owner's next visit draws it into 512px PNG icons once,
+in the background, and the manifest lists those first. For an image URL, the
+host measures the image (reading it from the publication when it is one of the
+page's own files) and lists its real size. Use a square PNG or WebP of at least
+192px; otherwise Android may fall back to a generic icon.
+
 ## Page options placement
 
 The hosted utility starts at the bottom right. The person can drag the bar to

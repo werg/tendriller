@@ -1,0 +1,45 @@
+// Android home-screen installs need PNG icons; the page's emoji icon exists only as
+// SVG. When the host asks (owner pages only), draw the page's own icon SVGs into
+// 512px PNGs with this device's emoji font and store them once. Failures are silent:
+// the SVG icons keep working everywhere else.
+import type { TendrilConfig } from "./types";
+
+const SIZE = 512;
+
+async function draw(url: string): Promise<string> {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = url;
+  await image.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = SIZE;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("No 2D canvas");
+  context.drawImage(image, 0, 0, SIZE, SIZE);
+  const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/png"));
+  if (!blob) throw new Error("PNG encoding failed");
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
+}
+
+export function rasterizeHomeScreenIcon(cfg: TendrilConfig): void {
+  const request = cfg.iconRaster;
+  if (!request || typeof document === "undefined" || typeof fetch !== "function") return;
+  const run = async () => {
+    const base = new URL(cfg.base, location.href);
+    const [any, maskable] = await Promise.all([draw(new URL("_tendril/icon.svg", base).href), draw(new URL("_tendril/icon-maskable.svg", base).href)]);
+    const response = await fetch(new URL("_tendril/icon-raster", base).href, {
+      method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: request.key, any, maskable }),
+    });
+    if (!response.ok) return;
+    // Let the browser pick up the new icons without a reload.
+    const link = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
+    if (link) { const href = new URL(link.href); href.searchParams.set("icons", String(Date.now())); link.href = href.href; }
+  };
+  const start = () => { run().catch(() => { /* Keep the SVG icons. */ }); };
+  const idle = (window as { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => void }).requestIdleCallback;
+  if (idle) idle(start, { timeout: 5000 }); else setTimeout(start, 1500);
+}
