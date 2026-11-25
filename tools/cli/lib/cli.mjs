@@ -6,7 +6,8 @@ import { diagnosticFinding } from '@tendriller/core/diagnostics';
 import { describeReadiness, describeService } from '@tendriller/core';
 import { probeCapabilities } from '@tendriller/core/probe';
 import { serveStdioMcp } from './mcp-stdio.mjs';
-import { exportSourceHandoff, exportNativeCheckpoint, restoreNativeCheckpoint } from './handoff.mjs';
+import { exportSourceHandoff } from './handoff.mjs';
+import { exportWorkspaceCheckpoint, restoreWorkspaceCheckpoint } from './checkpoint.mjs';
 import { adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, workspaceKey } from './workspace.mjs';
 import { attachPage, runAgent } from './agent.mjs';
 
@@ -18,7 +19,6 @@ Start with a service origin (no workspace required):
   service --server URL                  Read the public host contract and limits
   readiness --server URL                Check current creation availability before setup
   handoff source <out.tgz> [--project DIR]  Pack non-secret source files for another sandbox
-  checkpoint export|restore <file> --device <path> [--secret-env VAR] [--project DIR]
 
 Workspace (one agent credential and signing key for many pages):
   workspace init --service URL --owner VERIFIED_EMAIL [--name AGENT]   Register a new agent in this empty folder
@@ -31,6 +31,11 @@ Workspace (one agent credential and signing key for many pages):
   status                                Workspace, agent, grants and the agent program
   agent run                             The only long-running program: hub, one session per page, attach socket
   mcp-stdio                             Local MCP server for every page; each tool takes page
+  checkpoint export <file> [--secret-env VAR]   Move this stopped workspace's private state (agent key,
+                                        credential, every page device and record) into one encrypted file;
+                                        this copy is retired once the file is durable
+  checkpoint restore <file> [--secret-env VAR]  Recreate that private state in an empty folder (this one or
+                                        --workspace DIR); page source moves with handoff source
 
 Page host (--page <slug|id>; optional when the workspace has one page):
   info [--show-url] | meta <json> | release | link list | create <json> | rotate <id> | remove <id>
@@ -69,7 +74,7 @@ const flagsByCommand = {
   logs: ['topics', 'latest'],
   signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
-  handoff: ['project'], checkpoint: ['device', 'secret-env', 'project'],
+  handoff: ['project'], checkpoint: ['secret-env'],
   readiness: ['server'], service: ['server'],
   workspace: ['service', 'owner', 'name', 'code', 'kit', 'credential'], page: ['name'], agent: [], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
@@ -81,7 +86,7 @@ const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0
   'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
   readiness: [0, 0], service: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], 'mcp-stdio': [0, 0],
   info: [0, 0], meta: [1, 1], release: [0, 0], link: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
-const workspaceFree = new Set(['guide', 'probe', 'handoff', 'checkpoint', 'readiness', 'service']);
+const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service']);
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
@@ -96,15 +101,6 @@ async function publicCommand(command, args, flags, signal) {
     if (args[0] !== 'source') throw invalid('Use: tendril handoff source <output.tgz> [--project DIR]');
     return exportSourceHandoff(flags.project ?? process.cwd(), args[1]);
   }
-  if (command === 'checkpoint') {
-    const secretVar = flags['secret-env'] ?? 'TENDRILLER_CHECKPOINT_SECRET';
-    const secret = process.env[secretVar];
-    if (!secret) throw invalid(`Set environment variable ${secretVar} (64-hex key or >=12-char passphrase).`);
-    if (!flags.device) throw invalid('Supply --device <path/to/device.sqlite>');
-    if (args[0] === 'export') return exportNativeCheckpoint({ devicePath: flags.device, outputPath: args[1], secret, projectDir: flags.project ?? process.cwd() });
-    if (args[0] === 'restore') return restoreNativeCheckpoint({ inputPath: args[1], devicePath: flags.device, secret, projectDir: flags.project ?? process.cwd() });
-    throw invalid('Use: tendril checkpoint export|restore <file> --device <path>');
-  }
   if (!flags.server && !process.env.TENDRIL_SERVER) throw invalid(`${command} requires --server or TENDRIL_SERVER with the selected connector service origin`);
   const server = publicServiceOrigin(serverBase(process.env, flags));
   if (command === 'readiness') return describeReadiness(server, { signal });
@@ -112,6 +108,13 @@ async function publicCommand(command, args, flags, signal) {
 }
 
 async function workspaceCommand(command, args, flags, signal, emit, { workspaceDir }) {
+  if (command === 'checkpoint') {
+    const secretVar = flags['secret-env'] ?? 'TENDRILLER_CHECKPOINT_SECRET', secret = process.env[secretVar];
+    if (!secret) throw invalid(`Set environment variable ${secretVar} (64-hex key or >=12-char passphrase).`);
+    if (args[0] === 'export') return exportWorkspaceCheckpoint({ root: workspaceDir ?? findWorkspace(), outputPath: args[1], secret });
+    if (args[0] === 'restore') return restoreWorkspaceCheckpoint({ root: workspaceDir ?? process.cwd(), inputPath: args[1], secret });
+    throw invalid('Use: tendril checkpoint export|restore <file> [--secret-env VAR]');
+  }
   if (command === 'workspace') {
     const root = workspaceDir ?? process.cwd();
     if (args[0] === 'init') {

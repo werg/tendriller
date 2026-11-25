@@ -149,6 +149,11 @@ my-pages/
   a page, one combined request/event stream with a cursor per page, automatic
   reconnection.
 - `tendril mcp-stdio` serves every page; each tool takes `page`.
+- `tendril checkpoint export <file>` moves the stopped workspace's private state
+  (`tendriller.json`, the agent key and credential, every page's device
+  checkpoint and private records) into one encrypted file and retires the
+  source; `tendril checkpoint restore <file>` recreates it in an empty folder.
+  Page source moves with `tendril handoff source`.
 - Every CLI command takes `--page <slug|id>` where it acts on one page.
 
 ## Chronolog
