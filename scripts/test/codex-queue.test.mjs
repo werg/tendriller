@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
@@ -381,7 +381,10 @@ test('selected workspace mismatch stops before any mutation and keeps prepared i
 
 test('Unix RPC performs a real WebSocket handshake on the selected socket with read-only daemon discovery', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'codex-rpc-'));
-  const socketPath = join(directory, 'a socket.sock'), server = createServer();
+  // Keep the Unix socket under this scratch directory without exceeding sockaddr_un.
+  const directoryHandle = process.platform === 'linux' ? await open(directory, 'r') : undefined;
+  const socketDirectory = directoryHandle ? `/proc/${process.pid}/fd/${directoryHandle.fd}` : directory;
+  const socketPath = join(socketDirectory, 'a socket.sock'), server = createServer();
   const websocket = new WebSocketServer({ server });
   const methods = [], discovery = [];
   websocket.on('connection', (socket, request) => {
@@ -397,7 +400,7 @@ test('Unix RPC performs a real WebSocket handshake on the selected socket with r
     for (const socket of websocket.clients) socket.terminate();
     await new Promise(resolve => websocket.close(resolve));
     await new Promise(resolve => server.close(resolve));
-    await rm(directory, { recursive: true, force: true });
+    try { await directoryHandle?.close(); } finally { await rm(directory, { recursive: true, force: true }); }
   });
   const execute = async (binary, argv, settings) => {
     discovery.push({ binary, argv, settings });
