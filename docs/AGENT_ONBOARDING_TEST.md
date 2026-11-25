@@ -72,6 +72,16 @@ useful evidence but is not an unassisted completion.
 | User experience | The app uses domain views appropriate to its main tasks. A separate second pass walks every main flow in fresh desktop and phone-sized profiles, checks navigation/keyboard/long content and empty/loading/error states, and records before/after screenshots and fixes using the [delivery matrix](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable). |
 | Explain | The final report gives the working page, what was exercised, how to resume, which peer/process must remain available, and material unverified limits. It distinguishes published code from a connected application. |
 
+The prompt asks to see the list from the agent session, so the native participant
+stages above are requested features of this evaluation, not prerequisites of the
+browser-first stages: Prepare, Publish and the browser's local Save, reload and
+offline work must pass without a native process. The agent's shared key joins the
+page's data session only through the explicit `sign-enrollment`,
+`provisioning-request` and `import-provisioning` steps after the owner reviews
+its exact rights; a host token alone never grants data access. If the evaluation
+omits an agent-session requirement from the prompt, mark those two stages not
+applicable instead of failing the attempt.
+
 Keep the native session alive for the part of the evaluation that requires it.
 The claim that an agent can receive page interactions requires an actual running
 consumer or supported wake integration. A resident hosted page does not prove

@@ -17,7 +17,7 @@ The metadata chain is evidence for a session's verified authority cache. It does
 
 ## Host SDK operations
 
-The host's authority client transports canonical records as `{record: lowercaseHexBytes}`. It does not verify them. Callers verify signatures with `@chronolog/authority` before trusting a result.
+The host's authority client encodes signed authority and finality records as canonical CBOR `{record: lowercaseHexBytes}`; JSON enrollment action envelopes carry these in their signed `proof` or `bundle` fields, while challenge and grant inputs remain ordinary JSON. It does not verify returned signed records. Publication is the exception: `publish(publication, assets)` sends the raw `SignedPublication` JSON with canonical base64 asset bytes, and `publication(id?)` returns a JSON `{publication, version}` receipt (see [protocol](PROTOCOL.md)). Callers verify signatures with `@chronolog/authority` before trusting a result.
 
 | Method | Purpose |
 | --- | --- |
@@ -42,5 +42,7 @@ Operation identities, author times and signed bytes belong to the session. A `st
 ## Code chain
 
 A publisher key signs `signPublicationManifest(...)` from `@chronolog/authority`. The manifest binds the application, publisher grant, execution manifest digest, author, operation ID, monotonic revision, predecessor, entry and file list. `publish(signed, assets)` verifies files and compare-and-set against the release head. The signed code chain lives outside application operations, and data operations never require a new release.
+
+The signed digests describe authored files. Served HTML additionally carries deliberate runtime injection, so verify the signed manifest and authored asset hashes; the rendered document's digest is expected to differ.
 
 The host retains signed publication records and their complete code graph. `publication()` returns the head, and `publication(id)` returns an exact historical receipt. Exact retries can return an older receipt without selecting it again. Restore is a new signed release. A stale tab or diagnostics cannot silently rewind the code head.
