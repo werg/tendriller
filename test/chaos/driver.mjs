@@ -119,11 +119,13 @@ export const EXECUTORS = {
     }
     const settled = await poll(async () => ({ id: await page.locator('#operation-id').inputValue(),
       result: await page.locator('#result').textContent(), status: await page.locator('#operation-status').textContent() }),
-    value => value.id && value.id !== before && /^[0-9a-f-]{36}$/.test(value.id) && !/Waiting for applied execution/.test(value.result ?? '')
-      && /Saved on this device as|Applied: |Retained operation|Error|failed|unavailable/i.test(value.result ?? ''), { timeoutMs: 30_000 });
+    // Only text naming this attempt's operation ID counts: #result keeps the
+    // previous outcome until the new command settles.
+    value => value.id && value.id !== before && /^[0-9a-f-]{36}$/.test(value.id) && (value.result ?? '').includes(value.id)
+      && !/Waiting for applied execution/.test(value.result ?? ''), { timeoutMs: 30_000 });
     const { id, result, status } = settled.value;
     const operationId = id && id !== before ? id : null;
-    const saved = Boolean(operationId) && (/Saved on this device as|Applied: accepted/.test(result ?? '')
+    const saved = Boolean(operationId) && ((result ?? '').includes(operationId) && /Saved on this device as|Saved locally as|Applied: accepted/.test(result ?? '')
       || new RegExp(`${operationId}: (Saved on this device|Applied: accepted)`).test(status ?? ''));
     return { operationId, saved, retained, retainedLength: retained.length, typedLength: typed.length, result: result?.slice(0, 300), status: status?.slice(0, 300), settled: settled.ok };
   },

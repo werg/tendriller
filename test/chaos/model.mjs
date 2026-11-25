@@ -39,6 +39,18 @@ export function bump(model, kind, id) {
   if (Number.isSafeInteger(n)) model.counters[kind] = Math.max(model.counters[kind], n + 1);
 }
 
-/** Every note the model requires to converge on `slug` (saved = a signed attempt was confirmed). */
-export const requiredNotes = (model, slug) => model.notes[slug].filter(note => note.status === 'saved');
+/**
+ * Every note the model requires to converge on `slug` (saved = a signed attempt
+ * was confirmed). A browser attempt lives in that profile's local journal for
+ * the page's origin; it can only be delivered while the profile has a tab open
+ * on that page. Unless it was already seen applied (`applied(note)`), such a
+ * *parked* note is not required until a tab of its profile shows the page again.
+ */
+export function requiredNotes(model, slug, applied = () => false) {
+  return model.notes[slug].filter(note => note.status === 'saved'
+    && (note.origin !== 'browser' || applied(note) || hasLiveTab(model, note.profile, slug)));
+}
+export const parkedNotes = (model, slug, applied = () => false) => model.notes[slug].filter(note => note.status === 'saved'
+  && note.origin === 'browser' && !applied(note) && !hasLiveTab(model, note.profile, slug));
+export const hasLiveTab = (model, profileId, slug) => liveTabs(model).some(({ profile, tab }) => profile.id === profileId && tab.slug === slug);
 export const allNotes = model => Object.entries(model.notes).flatMap(([slug, notes]) => notes.map(note => ({ ...note, slug })));

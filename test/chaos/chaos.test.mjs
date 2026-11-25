@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { createRng, parseSeed } from './prng.mjs';
 import { generateNoteText, expectedRetainedText, NOTE_MAX_LENGTH, TEXT_KINDS, tokenOf, noteToken, padTo } from './text.mjs';
 import { ACTIONS, applyEntry, chooseAction, eligibleActions, paramsStillValid } from './actions.mjs';
-import { createModel, liveTabs, requiredNotes } from './model.mjs';
+import { createModel, liveTabs, requiredNotes, parkedNotes } from './model.mjs';
 import { createPlanner, runIdForSeed } from './planner.mjs';
 import { checkViewSafety, createAppliedTracker, missingFrom, classifyMessages, INVARIANTS, INJECTED_FAULTS } from './invariants.mjs';
 import { ddmin } from './shrink.mjs';
@@ -100,6 +100,22 @@ test('the model records notes from results and distinguishes saved from uncertai
   assert.equal(model.notes.notes.length, 2);
   assert.equal(model.counters.note, 3);
   assert.equal(model.notes.notes[0].text, 'chaos-x-0 a');
+});
+
+test('a browser note is parked while no tab of its profile shows its page', () => {
+  const model = createModel({ pages: ['notes', 'journal'], browsers: 1 });
+  applyEntry(model, { name: 'browser.enroll', params: { profile: 'b0', tab: 't0', slug: 'journal' } });
+  applyEntry(model, { name: 'browser.addNote', params: { profile: 'b0', tab: 't0', slug: 'journal', n: 0, token: 'chaos-p-0', text: 'chaos-p-0' } },
+    { operationId: 'op-0', saved: true, retained: 'chaos-p-0' });
+  applyEntry(model, { name: 'agent.command', params: { slug: 'journal', n: 1, token: 'chaos-p-1', text: 'chaos-p-1', operation: 'x' } }, { outcome: 'accepted' });
+  assert.deepEqual(requiredNotes(model, 'journal').map(note => note.token), ['chaos-p-0', 'chaos-p-1']);
+  applyEntry(model, { name: 'browser.navigate', params: { profile: 'b0', tab: 't0', from: 'journal', slug: 'notes' } });
+  assert.deepEqual(requiredNotes(model, 'journal').map(note => note.token), ['chaos-p-1']);
+  assert.deepEqual(parkedNotes(model, 'journal').map(note => note.token), ['chaos-p-0']);
+  // Once seen applied, delivery no longer depends on the browser.
+  assert.deepEqual(requiredNotes(model, 'journal', note => note.operationId === 'op-0').map(note => note.token), ['chaos-p-0', 'chaos-p-1']);
+  applyEntry(model, { name: 'browser.secondTab', params: { profile: 'b0', tab: 't1', slug: 'journal' } });
+  assert.deepEqual(parkedNotes(model, 'journal'), []);
 });
 
 test('replayed entries that no longer fit the model are skipped, not applied', () => {

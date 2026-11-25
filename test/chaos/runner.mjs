@@ -1,7 +1,7 @@
 // Executes a chaos plan (generated from a seed, or replayed from a log) against
 // an opened world, checking safety after every action and liveness at heals.
 import { ACTIONS, applyEntry, paramsStillValid } from './actions.mjs';
-import { createModel, liveTabs, requiredNotes, allNotes } from './model.mjs';
+import { createModel, liveTabs, requiredNotes, parkedNotes, allNotes } from './model.mjs';
 import { checkViewSafety, createAppliedTracker, missingFrom, classifyMessages, INJECTED_FAULTS } from './invariants.mjs';
 export { INJECTED_FAULTS };
 import { EXECUTORS, CONNECTED, createRuntime, watchPage, poll, readAgentRows, readTabRows, readTabState, waitReady } from './driver.mjs';
@@ -112,7 +112,9 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
     }
     const t0 = Date.now(), deadline = config.healDeadlineMs;
     const pages = model.config.pages;
-    const required = Object.fromEntries(pages.map(slug => [slug, requiredNotes(model, slug)]));
+    const applied = slug => note => note.operationId && tracker.has(slug, note.operationId);
+    const required = Object.fromEntries(pages.map(slug => [slug, requiredNotes(model, slug, applied(slug))]));
+    const parked = pages.flatMap(slug => parkedNotes(model, slug, applied(slug)).map(note => ({ slug, token: note.token, profile: note.profile })));
     let agentAt = null, tabsAt = null, connectedAt = null, uiAt = null, last;
     const check = async () => {
       const state = { agentMissing: {}, tabMissing: {}, notConnected: {}, staleUi: {} };
@@ -189,7 +191,7 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
     const uncertain = allNotes(model).filter(note => note.status === 'uncertain');
     const timing = { step: entry.index, ok: converged.ok, ms: convergedAt, msAgent: agentAt, msTabs: tabsAt, msConnected: connectedAt, msUi: uiAt,
       msReloadPersist: persistedAt, required: Object.fromEntries(pages.map(slug => [slug, required[slug].length])),
-      uncertainNotes: uncertain.length, tabs: liveTabs(model).length };
+      uncertainNotes: uncertain.length, parkedNotes: parked, tabs: liveTabs(model).length };
     convergence.push(timing);
     log(`chaos heal at #${entry.index}: ${converged.ok ? `converged in ${convergedAt}ms` : 'NOT converged'} agent=${agentAt}ms tabs=${tabsAt}ms connected=${connectedAt}ms ui=${uiAt}ms reload=${persistedAt}ms`);
     return { ...result, timing };

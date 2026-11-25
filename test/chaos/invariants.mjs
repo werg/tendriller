@@ -68,6 +68,7 @@ export function createAppliedTracker() {
       return violations;
     },
     size(slug) { return seen.get(slug)?.size ?? 0; },
+    has(slug, operationId) { return Boolean(seen.get(slug)?.has(operationId)); },
   };
 }
 

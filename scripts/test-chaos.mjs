@@ -110,6 +110,9 @@ async function runOnce({ label, replay, injectFault, saveEvidence }) {
     await world.startAgent();
     const planner = replay ? undefined : createPlanner({ seed, runId: runIdForSeed(seed), healEvery: config.healEvery });
     outcome = await runChaos({ world, config, planner, replay, injectFault });
+    // Host relay counters since the last host (re)start: relay mode must show relay bytes.
+    evidence.transport = await fetch(`${world.host.service}/__first_app_transport`, { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : null).catch(() => null);
     const anyContext = [...outcome.runtime.profiles.values()].find(handle => handle.context)?.context;
     browserVersion = anyContext?.browser()?.version() ?? null;
     if (saveEvidence && outcome.violations.length) {

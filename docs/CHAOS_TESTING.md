@@ -92,8 +92,12 @@ and no packet fault is active. Within `--heal-deadline`:
 - `converges`: every note the model recorded as saved is in the agent query and in every
   open tab of its page. A browser note counts as saved once its signed attempt was
   confirmed (`Saved on this device`, `Saved locally` or `Applied: accepted`, or the
-  operation status shows it). The `#result` text alone is not trusted for application.
-  Uncertain attempts are reported and not required.
+  operation status shows it). The `#result` text alone is not trusted for application,
+  and only text that names the attempt's own operation ID counts. Uncertain attempts are
+  reported and not required. A browser attempt that has not yet been seen applied is
+  *parked* while no tab of its profile shows that page: it waits in that profile's local
+  journal for the page origin, which is expected. Parked notes are listed in
+  `convergence[].parkedNotes`, and become required again once such a tab is open.
 - `not-stuck-connecting`: every tab shows `Connection: connected/following/coordinating`
   and `application: ready`.
 - `live-update`: every tab with no typed draft shows the latest confirmed publication.
