@@ -31,6 +31,8 @@ function retainedPending() {
 const diagnostics = mountDiagnosticsPanel($('#app-content') ?? document.body, { appName: 'Shared notes' });
 registerLifecycleFlush(() => { /* Persist local draft/pending operation state before tab suspension. */ });
 let attachment, session, liveView, operationView, observedOperation, media, telemetry;
+// The operation whose result line still says "saved on this device"; its applied outcome replaces it.
+let savedOnDevice = null;
 const submission = createSubmissionState(renderSubmission);
 function renderSubmission(state) {
   $('#submit').disabled = !state.canSubmit;
@@ -118,6 +120,10 @@ function observeOperation(id, operation) {
       retainObservedReference(state);
       if (id === submission.snapshot.selected) submission.update({ observed: state });
       acceptedOrRejected(state);
+      if (state?.status === 'applied' && id === savedOnDevice) {
+        savedOnDevice = null;
+        $('#result').textContent = `Applied: ${state.outcome}. Operation ${id}. Retained coverage is separate; explicit recovery can exclude applied work.`;
+      }
       const label = !state ? 'No saved attempt visible; preserve the original input and ID.'
         : state.status === 'saved' ? 'Saved on this device; waiting for applied execution.'
         : state.status === 'applied' ? `Applied: ${state.outcome}${state.rejectionCode ? ` (${state.rejectionCode})` : ''}.`
@@ -234,12 +240,15 @@ $('#form').addEventListener('submit', async event => {
     savePending({ id: operationId, command: 'addNote', input: { text }, basedOn: before.revision });
     original = pending;
     const operation = await session.command('addNote', { text }, { operationId, basedOn: before.revision });
+    const offline = !submission.snapshot.connected;
+    savedOnDevice = offline ? operationId : null;
     observeOperation(operationId, operation);
-    if (!submission.snapshot.connected) {
+    if (offline) {
       // Local-first: the signed attempt is in this device's journal. Chronolog applies
       // and shares it when the agent program is reachable; the operation view reports it.
       if ($('#note').value.trim() === text) { $('#note').value = ''; writeLocal('draft', ''); }
-      $('#result').textContent = `Saved on this device as ${operationId}. It is applied and shared when the agent program is reachable; keep or reopen this page.`;
+      // The operation view replaces this line with the applied outcome as soon as a peer applies it.
+      if (savedOnDevice === operationId) $('#result').textContent = `Saved on this device as ${operationId}. It is applied and shared when the agent program is reachable; keep or reopen this page.`;
       return;
     }
     $('#result').textContent = `Saved locally as ${operationId}. Waiting for applied execution…`;
