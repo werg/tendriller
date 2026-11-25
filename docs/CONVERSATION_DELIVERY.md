@@ -351,14 +351,14 @@ record a simulated turn or webhook acceptance as a successful conversation test.
 | Worker active but no qualified host admission route | Worker available for its implemented work; conversation requests need manual invocation or a qualified receiver |
 | OAuth requires reauthentication | Reconnect this account on the same service origin; retain existing work identities |
 | Approved app/event missing or permission revoked | Review the app's connection/grants; do not create a replacement application |
-| Webhook pending, blocked or failed | Inspect `get_application_delivery`, callback origin and subscription; distinguish retryable delivery from terminal refusal |
+| Webhook pending, blocked or failed | Inspect `agent_feed` receipts, callback origin and subscription; distinguish retryable delivery from terminal refusal |
 | Webhook accepted, no thread turn observed | Host delivery accepted; conversation execution unverified |
 | Turn started, no durable application receipt | Conversation admitted; request not yet acknowledged |
 | Receipt exists, answer missing | Seen; inspect worker outcome and reconcile pending effects |
 | Answer exists | Display the answer on its original request; keep any newer draft intact |
 
-The host delivery panel and `get_application_delivery` expose forwarding
-outcomes; the application's declared inbox exposes actual work. Link the two
+The host delivery panel exposes forwarding outcomes; `agent_feed` receipts
+and replies expose actual work. Link the two
 in the runbook without presenting one as proof of the other.
 
 ## Tracked integration boundary

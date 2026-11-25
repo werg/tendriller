@@ -152,8 +152,8 @@ if (assistant) {
   const catalog = await call('tools/list');
   const tools = (await catalog.json()).result?.tools;
   if (!catalog.ok || !Array.isArray(tools) ||
-      ['get_application_delivery', 'tendril_guide'].some(name => !tools.some(tool => tool.name === name)))
-    throw new Error('Assistant tool discovery failed: get_application_delivery and tendril_guide must both appear in tools/list');
+      ['agent_feed', 'tendril_guide'].some(name => !tools.some(tool => tool.name === name)))
+    throw new Error('Assistant tool discovery failed: agent_feed and tendril_guide must both appear in tools/list');
   await deploymentConvergence(async () => {
     const guideResponse = await call('tools/call', { name: 'tendril_guide', arguments: {} });
     const guide = (await guideResponse.json()).result?.structuredContent;

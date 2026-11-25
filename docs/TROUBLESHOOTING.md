@@ -89,8 +89,8 @@ mounted UI handoff and the optional Workspace Agent route, use the separate
 Read [same-conversation delivery](CONVERSATION_DELIVERY.md) and identify the exact
 blocked stage: worker absent, host admission unavailable, reauthentication,
 subscription/callback failure, admitted turn without receipt, or receipt without
-answer. `get_application_delivery` reports forwarded delivery outcomes; the
-application's declared inbox reports actual acknowledgement and answers.
+answer. `agent_feed` shows each message with its receipts (seen, thinking, done,
+error) and replies, which is the actual acknowledgement and answer.
 
 Keep the last handled cursor, request references and uncertain operation inputs.
 Do not resubmit a request, switch to the latest thread or create a replacement

@@ -28,7 +28,7 @@ function fixture() {
     writes: { available: true, code: null }, readinessUrl: base + '/api/readiness', statusUrl: base + '/status' };
   return {
     base, runtime: runtime.id, readiness,
-    tools: [{ name: 'get_application_delivery' }, { name: 'tendril_guide' }],
+    tools: [{ name: 'agent_feed' }, { name: 'tendril_guide' }],
     guide: { topic: 'start', serviceOrigin: base, build, readiness,
       onboarding: { interfaces: { register_agent: { url: base + '/api/agents' }, create_page: { url: base + '/api/agent/pages' } } },
       text: `Node 24: register at ${base}/api/agents` },
