@@ -41,7 +41,7 @@ test('the agent client is inert until used and bases page routes at /api/agent/p
   };
   const client = createAgentClient({ service, token: TOKEN }, { fetch, WebSocket: hub.WebSocket });
   assert.equal(calls.length, 0); assert.equal(hub.connections.length, 0);
-  assert.deepEqual(Object.keys(client).sort(), ['close', 'hub', 'page', 'pages', 'request', 'self', 'service', 'updateProfile']);
+  assert.deepEqual(Object.keys(client).sort(), ['broadcastKeys', 'broadcasts', 'close', 'hub', 'page', 'pages', 'reportVersions', 'request', 'self', 'service', 'updateProfile']);
   assert.equal((await client.self()).grants, 2);
   assert.equal(calls[0].init.headers.Authorization, 'Bearer ' + TOKEN);
   await client.updateProfile({ handle: 'atlas', bio: 'Primary assistant' });

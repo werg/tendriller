@@ -7,6 +7,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { AGENT_HEADER, AGENT_SCOPES_HEADER } from './access';
 import { HUB_PROTOCOL } from './agents';
+import { listActiveBroadcasts, recordAgentVersions } from './broadcasts';
 import { HttpError, json, readJson, toErrorResponse } from './http';
 import { AGENT_ID_RE, AGENT_TOKEN_RE, TENDRIL_ID_RE } from './ids';
 
@@ -109,6 +110,7 @@ export class AgentHub extends DurableObject<Env> {
     catch { ws.close(1008, 'Invalid hub frame'); return; }
     if (frame.t === 'ping') { this.send({ t: 'pong' }, ws); return; }
     if (frame.t === 'pong') return;
+    if (frame.t === 'hello') { await this.hello(ws, frame); return; }
     const s = frame.s;
     if (!Number.isInteger(s) || (s as number) < 1 || (s as number) > 2 ** 31) { ws.close(1008, 'Invalid stream id'); return; }
     if (frame.t === 'open') { await this.open(ws, s as number, frame); return; }
@@ -119,6 +121,26 @@ export class AgentHub extends DurableObject<Env> {
       return;
     }
     ws.close(1008, 'Unknown hub frame type');
+  }
+
+  private async hello(ws: WebSocket, frame: Frame): Promise<void> {
+    const agentId = (ws.deserializeAttachment() as { agentId?: string } | null)?.agentId ?? '';
+    if (!AGENT_ID_RE.test(agentId)) return;
+    if (frame.versions !== undefined && frame.versions !== null) {
+      try { await recordAgentVersions(this.env, agentId, frame.versions); } catch { /* ignore invalid optional telemetry */ }
+    }
+    const since = Number.isSafeInteger(frame.last_broadcast_seq) && (frame.last_broadcast_seq as number) >= 0
+      ? (frame.last_broadcast_seq as number) : 0;
+    try {
+      const feed = await listActiveBroadcasts(this.env, { audience: 'agents', since });
+      this.send({
+        t: 'broadcasts',
+        issuer: feed.issuer,
+        keys: feed.keys,
+        latest_seq: feed.latest_seq,
+        broadcasts: feed.broadcasts,
+      }, ws);
+    } catch { /* non-fatal */ }
   }
 
   private async open(ws: WebSocket, s: number, frame: Frame): Promise<void> {

@@ -31,6 +31,12 @@ export interface Env {
   GITHUB_CLIENT_SECRET?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  /** Loopback-only passwordless local dev sign-in ("1"). Ignored on non-loopback origins. */
+  LOCAL_DEV_AUTH?: string;
+  /** Optional self-hosted passphrase hash (`pbkdf2_sha256$iterations$salt$derived`). */
+  LOCAL_PASSWORD_HASH?: string;
+  /** Email identity for `LOCAL_PASSWORD_HASH` (and default email for `LOCAL_DEV_AUTH`). */
+  LOCAL_OWNER_EMAIL?: string;
   /** Private test-account access configuration, provisioned by the operator. */
   TEST_ACCESS_JSON?: string;
   /** Optional first-party integration OAuth. Register exact clients and resource. */
@@ -50,4 +56,10 @@ export interface Env {
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;
+  /** Optional Ed25519 OKP private JWK for signing system broadcasts (falls back to D1 broadcast_keys). */
+  BROADCAST_SIGNING_JWK?: string;
+  /** Optional rotated public Ed25519 OKP JWKs JSON array retained for verifying earlier broadcasts. */
+  BROADCAST_PUBLIC_JWKS?: string;
+  /** Optional operator bearer token for CI/CLI access to /api/admin/broadcasts. */
+  BROADCAST_ADMIN_TOKEN?: string;
 }

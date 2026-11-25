@@ -67,10 +67,11 @@ test('stdio bounds individual input frames', async () => {
   input.end('x'.repeat(1024*1024+1));await assert.rejects(serving,/exceeds 1 MiB/);
 });
 
-test('every page tool requires a page and pages_list needs none', async () => {
+test('every page tool requires a page and global tools need none', async () => {
   const { TOOLS } = await import('../lib/mcp-stdio.mjs');
   for (const tool of TOOLS) {
     if (tool.name === 'pages_list') assert.deepEqual(tool.inputSchema.properties, {});
+    else if (tool.name === 'system_broadcasts') assert.deepEqual(Object.keys(tool.inputSchema.properties), ['acknowledgeId']);
     else assert(tool.inputSchema.required.includes('page'), tool.name);
   }
   const listed = await handleStdioMcpMessage(pagesOf({}), { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'pages_list', arguments: {} } });

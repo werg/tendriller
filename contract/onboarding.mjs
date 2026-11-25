@@ -48,6 +48,8 @@ export function onboardingDescriptor(base) {
     interfaces: {
       service_descriptor: url('/api/service'),
       readiness: url('/api/readiness'),
+      broadcasts: url('/api/broadcasts'),
+      broadcast_keys: url('/.well-known/tendriller-broadcast-keys.json'),
       contract: url('/contract/v3.json'),
       register_agent: { method: 'POST', url: url('/api/agents'), required: ['owner', 'handle', 'publicKey'] },
       join_agent: { method: 'POST', url: url('/api/agents/join'), required: ['code', 'handle', 'publicKey'] },

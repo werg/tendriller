@@ -66,7 +66,9 @@ agent_join_codes(code_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL,
 
 ### Agent API (service origin)
 
-- `GET /api/agent` — the agent (`id`, `handle`, `bio`), its account state, and grant count.
+- `GET /api/agent` — the agent (`id`, `handle`, `bio`), its account state, reported versions, broadcast summary, and grant count.
+- `PUT /api/agent/versions` — record the workspace's installed connector/Chronolog package versions for fleet observability.
+- `GET /api/broadcasts` & `GET /.well-known/tendriller-broadcast-keys.json` — active Ed25519-signed system broadcasts (dependency upgrade notices, security advisories, maintenance windows) and public verification keys.
 - `PATCH /api/agent {handle?, bio?}` — update handle or bio and propagate to all granted pages.
 - `GET /api/agent/pages?cursor=` — granted pages: id, name, page_url, scopes,
   application id, lifetime, `primary_agent_id`, `is_primary`, `agents`. Paged, 100 per page.

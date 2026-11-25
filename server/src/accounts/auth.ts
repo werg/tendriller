@@ -1,9 +1,11 @@
 import { servicePage } from "./ui";
+import { copyAttrs, renderCopyText, SITE_COPY } from "../site-copy";
 import type { Env } from "../env";
 import { errorResponse, json } from "../http";
 import { sha256Hex } from "../ids";
 import { publicBase } from "../urls";
 import { routeTestAccess, testAccountEnabled } from './test-access';
+import { authFormAction, readSessionCookie, renderAuthControls, routeLocalAuth, sessionCookieHeader } from "./local-auth";
 
 type Provider = "github" | "google";
 export interface AccountSession { accountId: string; email: string | null; createdAt: number; suspendedAt: number | null }
@@ -32,7 +34,7 @@ function safeReturn(value: string | null): string {
 
 export async function serviceSession(req: Request, env: Env, includeSuspended = false): Promise<AccountSession | null> {
   if (!env.ACCOUNTS) return null;
-  const cookie = /(?:^|;\s*)__Host-tendriller=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
+  const cookie = readSessionCookie(req, env);
   if (!cookie) return null;
   const hash = await sha256Hex(cookie);
   const row = await env.ACCOUNTS.prepare(`SELECT a.id AS accountId, a.email, a.created_at AS createdAt, a.suspended_at AS suspendedAt
@@ -41,15 +43,60 @@ export async function serviceSession(req: Request, env: Env, includeSuspended = 
   return row && testAccountEnabled(env, row.accountId) && (includeSuspended || !row.suspendedAt) ? row : null;
 }
 
+export function signInBody(returnTo: string, editable = false, env?: Env, error?: string | null): string {
+  const a = SITE_COPY.auth;
+  const c = (k: string, t: string) => copyAttrs(k, t, editable);
+  const controls = env
+    ? renderAuthControls(env, returnTo, { error })
+    : `<div class="actions"><a class="button lg" href="/auth/github?return_to=${encodeURIComponent(returnTo)}">Continue with GitHub</a><a class="button secondary lg" href="/auth/google?return_to=${encodeURIComponent(returnTo)}">Continue with Google</a></div>`;
+  return `<section class="card"><span class="eyebrow"${c("auth.eyebrow", a.eyebrow)}>${renderCopyText(a.eyebrow)}</span><h1${c("auth.title", a.title)}>${renderCopyText(a.title)}</h1><p class="lead"${c("auth.lead", a.lead)}>${renderCopyText(a.lead)}</p>${controls}</section>`;
+}
+
 export async function routeAuth(req: Request, env: Env, url: URL): Promise<Response> {
   const db = env.ACCOUNTS;
   if (!db) return errorResponse(503, "unavailable", "Accounts database is not configured");
   const path = url.pathname;
   if (path === '/auth/test') return routeTestAccess(req, env);
   if (path === "/auth" && req.method === "GET") {
-    const back = encodeURIComponent(safeReturn(url.searchParams.get("return_to")));
-    return servicePage("Sign in", `<section class="card"><span class="eyebrow">Account</span><h1>Sign in to Tendriller</h1><p class="lead">Sign in to open your apps and manage connected agents.</p><div class="actions"><a class="button lg" href="/auth/github?return_to=${back}">Continue with GitHub</a><a class="button secondary lg" href="/auth/google?return_to=${back}">Continue with Google</a></div></section>`);
+    const returnTo = safeReturn(url.searchParams.get("return_to"));
+    return servicePage("Sign in", signInBody(returnTo, false, env, url.searchParams.get("error")), "", 200, { formAction: authFormAction(env) });
   }
+  const localResp = await routeLocalAuth(req, env, path, {
+    safeReturn,
+    issueAccountSession: async (provider, email, returnTo) => {
+      const subject = email;
+      const existing = await db.prepare("SELECT account_id FROM identities WHERE provider = ? AND subject = ?")
+        .bind(provider, subject).first<{ account_id: string }>();
+      const account = existing ? await db.prepare("SELECT suspended_at, deleting_at FROM accounts WHERE id = ?").bind(existing.account_id)
+        .first<{ suspended_at: number | null; deleting_at: number | null }>() : null;
+      const blocked = await db.prepare("SELECT 1 FROM blocks WHERE kind = 'identity' AND value = ? AND (expires_at IS NULL OR expires_at > ?)")
+        .bind(`${provider}:${subject}`, Date.now()).first();
+      if (blocked && !account?.suspended_at) return errorResponse(403, "blocked", "This identity cannot sign in");
+      if (existing && (!account || account.deleting_at)) return errorResponse(403, "unavailable", "This account is unavailable");
+      let accountId = existing?.account_id;
+      const now = Date.now();
+      if (!accountId) {
+        accountId = crypto.randomUUID();
+        await db.batch([
+          db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(accountId, now, email),
+          db.prepare("INSERT INTO identities (provider, subject, account_id, login, email, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(provider, subject, accountId, email, email, now),
+        ]);
+      } else {
+        await db.prepare("UPDATE identities SET login = ?, email = ? WHERE provider = ? AND subject = ?")
+          .bind(email, email, provider, subject).run();
+      }
+      await db.batch([
+        db.prepare("DELETE FROM identity_emails WHERE provider = ? AND subject = ?").bind(provider, subject),
+        db.prepare("INSERT INTO identity_emails (provider, subject, email) VALUES (?, ?, ?)").bind(provider, subject, email),
+      ]);
+      const session = randomUrlToken();
+      await db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
+        .bind(await sha256Hex(session), accountId, now, now + 30 * 86_400_000).run();
+      return redirect(account?.suspended_at ? "/dashboard" : safeReturn(returnTo), sessionCookieHeader(session, 2592000, env));
+    },
+  });
+  if (localResp) return localResp;
   const begin = /^\/auth\/(link\/)?(github|google)$/.exec(path);
   if (begin && req.method === "GET") {
     const provider = begin[2] as Provider;
@@ -148,7 +195,7 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
     await db.prepare("INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
       .bind(await sha256Hex(session), accountId, Date.now(), Date.now() + 30 * 86_400_000).run();
     mark("account");
-    const response = redirect(account?.suspended_at ? "/dashboard" : safeReturn(pending.return_to), `__Host-tendriller=${session}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+    const response = redirect(account?.suspended_at ? "/dashboard" : safeReturn(pending.return_to), sessionCookieHeader(session, 2592000, env));
     response.headers.set("Server-Timing", [...phases, `total;dur=${(performance.now() - started).toFixed(1)}`].join(", "));
     return response;
   }
@@ -159,9 +206,9 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
   }
   if (path === "/auth/logout" && req.method === "POST") {
     if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) return errorResponse(403, "bad_origin", "Invalid logout origin");
-    const raw = /(?:^|;\s*)__Host-tendriller=([^;]+)/.exec(req.headers.get("Cookie") ?? "")?.[1];
+    const raw = readSessionCookie(req, env);
     if (raw) await db.prepare("DELETE FROM sessions WHERE hash = ?").bind(await sha256Hex(raw)).run();
-    return redirect("/", "__Host-tendriller=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0");
+    return redirect("/", sessionCookieHeader("", 0, env));
   }
   return errorResponse(404, "not_found", "Unknown auth route");
 }

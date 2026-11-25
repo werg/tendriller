@@ -13,6 +13,7 @@ const MAX_BOOTSTRAP_ENDPOINTS = 8;
 export class PeerConnectionError extends Error {
   constructor(code, message) { super(message); this.name = 'PeerConnectionError'; this.code = code; }
 }
+const isLoopbackHost = hostname => hostname === 'localhost' || hostname.endsWith('.localhost') || hostname === '127.0.0.1' || hostname === '[::1]';
 const fail = (code, message) => { throw code === 'invalid_discovery_watch'
   ? new PeerDiscoveryWatchError(code, message) : new PeerConnectionError(code, message); };
 export function validatePeerBootstrap(value) {
@@ -23,7 +24,7 @@ export function validatePeerBootstrap(value) {
     if (!endpoint || typeof endpoint.url !== 'string' || endpoint.url.length > 2048 ||
         Object.keys(endpoint).some(key => key !== 'url')) fail('invalid_bootstrap', 'Invalid introduction endpoint');
     let url; try { url = new URL(endpoint.url); } catch { fail('invalid_bootstrap', 'Invalid peer endpoint URL'); }
-    const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    const local = isLoopbackHost(url.hostname);
     if (url.username || url.password || url.hash || url.search || url.href.length > 2048 ||
         !(url.protocol === 'https:' || url.protocol === 'http:' && local))
       fail('invalid_bootstrap', 'Introduction endpoints require HTTPS without credentials, query or fragment (HTTP is limited to loopback tests)');
@@ -140,7 +141,7 @@ export function createPeersClient({ base, request: dispatch, applicationId, init
     const url = new URL(prefix + '/' + path);
     if (!['https:', 'http:'].includes(url.protocol) || url.search) fail(code, 'Expected an HTTP service base without query parameters');
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    if (url.username || url.password || url.hash || url.protocol === 'ws:' && !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+    if (url.username || url.password || url.hash || url.protocol === 'ws:' && !isLoopbackHost(url.hostname))
       fail(code, 'Peer introductions require a secure URL without credentials');
     return url;
   };

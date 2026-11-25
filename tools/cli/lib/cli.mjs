@@ -3,11 +3,11 @@ import { parseArgs, intFlag } from './args.mjs';
 import { jsonInput, runSessionCommand, watchPages, watchSession, watchSignals, withSession } from './session.mjs';
 import { onboardingGuide, publicServiceOrigin, serverBase } from './guide.mjs';
 import { diagnosticFinding } from '@tendriller/core/diagnostics';
-import { describeReadiness, describeService } from '@tendriller/core';
+import { describeReadiness, describeService, fetchBroadcasts } from '@tendriller/core';
 import { probeCapabilities } from '@tendriller/core/probe';
 import { serveStdioMcp } from './mcp-stdio.mjs';
 import { exportSourceHandoff, exportNativeCheckpoint, restoreNativeCheckpoint } from './handoff.mjs';
-import { adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, updateWorkspaceProfile, workspaceKey } from './workspace.mjs';
+import { acknowledgeWorkspaceBroadcast, adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, syncWorkspaceBroadcasts, updateWorkspaceProfile, workspaceKey } from './workspace.mjs';
 import { attachPage, runAgent } from './agent.mjs';
 
 export const usage = `Usage: tendril <command> [options]
@@ -17,6 +17,7 @@ Start with a service origin (no workspace required):
   probe [--server URL] [--check-network] [--project DIR]  Inspect local runtime, storage, IPC and network capabilities
   service --server URL                  Read the public host contract and limits
   readiness --server URL                Check current creation availability before setup
+  broadcasts [--server URL] [--audience A] [--all] [--ack ID]  Read & verify signed system broadcasts (dependency upgrades, security advisories)
   handoff source <out.tgz> [--project DIR]  Pack non-secret source files for another sandbox
   checkpoint export|restore <file> --device <path> [--secret-env VAR] [--project DIR]
 
@@ -70,7 +71,7 @@ const flagsByCommand = {
   signal: ['ttl'], finality: ['through'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['device', 'secret-env', 'project'],
-  readiness: ['server'], service: ['server'],
+  readiness: ['server'], service: ['server'], broadcasts: ['server', 'audience', 'all', 'ack'],
   workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name'], agent: ['handle', 'bio'], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
@@ -79,9 +80,9 @@ const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0
   'command-batch': [1, 1], operation: [1, 1], retry: [1, 1],
   events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], finality: [1, 2], definition: [0, 0], publication: [0, 0],
   'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
-  readiness: [0, 0], service: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], 'mcp-stdio': [0, 0],
+  readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], 'mcp-stdio': [0, 0],
   info: [0, 0], meta: [1, 1], release: [0, 0], link: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
-const workspaceFree = new Set(['guide', 'probe', 'handoff', 'checkpoint', 'readiness', 'service']);
+const workspaceFree = new Set(['guide', 'probe', 'handoff', 'checkpoint', 'readiness', 'service', 'broadcasts']);
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
@@ -104,6 +105,21 @@ async function publicCommand(command, args, flags, signal) {
     if (args[0] === 'export') return exportNativeCheckpoint({ devicePath: flags.device, outputPath: args[1], secret, projectDir: flags.project ?? process.cwd() });
     if (args[0] === 'restore') return restoreNativeCheckpoint({ inputPath: args[1], devicePath: flags.device, secret, projectDir: flags.project ?? process.cwd() });
     throw invalid('Use: tendril checkpoint export|restore <file> --device <path>');
+  }
+  if (command === 'broadcasts') {
+    const wsRoot = flags.workspace ?? (process.env.TENDRIL_WORKSPACE || (!flags.server ? findWorkspace() : null));
+    if (wsRoot && !flags.server) {
+      const workspace = await openWorkspace({ root: wsRoot });
+      if (typeof flags.ack === 'string') return acknowledgeWorkspaceBroadcast(workspace, flags.ack.trim());
+      return syncWorkspaceBroadcasts(workspace, { signal, all: Boolean(flags.all) });
+    }
+    if (!flags.server && !process.env.TENDRIL_SERVER) throw invalid('broadcasts requires a workspace or --server / TENDRIL_SERVER');
+    const server = publicServiceOrigin(serverBase(process.env, flags));
+    return fetchBroadcasts(server, {
+      ...(typeof flags.audience === 'string' ? { audience: flags.audience } : {}),
+      verifyKeys: 'discover',
+      signal,
+    });
   }
   if (!flags.server && !process.env.TENDRIL_SERVER) throw invalid(`${command} requires --server or TENDRIL_SERVER with the selected connector service origin`);
   const server = publicServiceOrigin(serverBase(process.env, flags));
@@ -175,6 +191,10 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
     };
     const pages = {
       self: () => workspace.config.agent,
+      broadcasts: async ({ acknowledgeId, signal: requestSignal } = {}) => {
+        if (acknowledgeId) return acknowledgeWorkspaceBroadcast(workspace, acknowledgeId);
+        return syncWorkspaceBroadcasts(workspace, { signal: requestSignal ?? signal });
+      },
       list: async () => {
         const local = await workspace.pages();
         const remoteById = new Map();
@@ -250,7 +270,7 @@ export async function main(argv, { attach } = {}) {
   if (!Object.hasOwn(flagsByCommand, cmd)) throw invalid(`Unknown command: ${cmd}`);
   const pageScoped = sessionCommands.has(cmd) || hostCommands.has(cmd) || cmd === 'status' && flags.page !== undefined;
   const session = sessionCommands.has(cmd) || cmd === 'status' && flags.page !== undefined;
-  const allowed = new Set(['pretty', 'timeout', ...(workspaceFree.has(cmd) ? [] : ['workspace']),
+  const allowed = new Set(['pretty', 'timeout', ...(workspaceFree.has(cmd) && cmd !== 'broadcasts' ? [] : ['workspace']),
     ...(pageScoped || cmd === 'status' ? ['page'] : []), ...flagsByCommand[cmd]]);
   for (const name of Object.keys(flags)) if (!allowed.has(name)) throw invalid(`${cmd} does not accept --${name}`);
   const [min, max] = arity[cmd];

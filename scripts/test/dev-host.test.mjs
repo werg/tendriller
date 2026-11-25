@@ -61,6 +61,8 @@ async function fixture(t) {
     ['dist/engine/testing-ratelimits.json', json({ ratelimits: [] })],
     ['dist/engine/migrations/0001_accounts.sql', Buffer.from('CREATE TABLE accounts(id TEXT PRIMARY KEY);')],
     ['dist/engine/migrations/0002_agents.sql', Buffer.from('CREATE TABLE agents(id TEXT PRIMARY KEY);')],
+    ['dist/engine/migrations/0003_broadcasts.sql', Buffer.from('CREATE TABLE system_broadcasts(seq INTEGER PRIMARY KEY);')],
+    ['dist/engine/migrations/0004_account_limits.sql', Buffer.from('SELECT 1;')],
     ['server/public/llms.txt', Buffer.from('Exact public guide.')],
   ]);
   const proof = { source, sourceTree: tree, dirty: false, storageSchemaRevision: 12,
