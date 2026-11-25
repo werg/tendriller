@@ -4,8 +4,9 @@
 // yet received that operation derives an empty view instead of failing, and a later operation that
 // arrives earlier in authored time simply revises the derived rows.
 //
-// Rows are owned by the application's `group` collective so every enrolled member can claim and finish
-// them; a member's crypto grant never confers DDL, so only `initialize` creates objects.
+// Rows are owned by the application's `group` collective, which only its admin (the root) may update by
+// default. Crypto enrollment confers no SQL rights (nor DDL), so another member claims and finishes tasks
+// only after the root's explicit `grantTaskUpdates` permission transaction; only `initialize` creates objects.
 export function checklist(log) {
   const group = log.bytesToHex(log.GROUP_COLLECTIVE_ID);
   const owner = `(SELECT id FROM chronolog_principals WHERE key=X'${group}')`;
@@ -38,6 +39,15 @@ export function checklist(log) {
           log.sqlStatement("SELECT chronolog_assert((SELECT claimed_by=lower(hex(chronolog_actor())) AND done=0 FROM tasks WHERE id=?),'claim_required')", [id]),
           log.sqlStatement('UPDATE tasks SET done=1 WHERE id=?', [id]),
           log.emit('task.finished', { id })),
+      }),
+      grantTaskUpdates: log.defineCommand({
+        description: 'Explicitly let one member key claim and finish group-owned tasks',
+        input: { type: 'object', properties: { publicKey: { type: 'string', minLength: 64, maxLength: 64 } }, required: ['publicKey'], additionalProperties: false },
+        prepare: ({ publicKey }) => {
+          if (!/^[0-9a-f]{64}$/.test(publicKey)) throw new Error('Invalid member key');
+          return log.program(log.platformOp.grant({ table: 'tasks', grantee: log.hexToBytes(publicKey),
+            operations: ['update'], columns: ['claimed_by', 'done'], grantor: log.GROUP_COLLECTIVE_ID }));
+        },
       }),
       reserve: log.defineCommand({
         description: 'Reserve a specific resource and time slot', input: { type: 'string', maxLength: 80 },

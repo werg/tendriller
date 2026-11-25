@@ -27,14 +27,14 @@ function fixture() {
     status(phase) { for (const fn of statuses) fn({phase}); }, get statusListeners() { return statuses.size; }, get returned() { return returned; } };
 }
 
-test('initial change precedes the only initial read; blocked read cannot expose Ready or trigger a post-Ready duplicate', async t => {
+test('the initial read starts once subscribed; a current change during the blocked read cannot expose Ready or trigger a post-Ready duplicate', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture(); let ready = false;
   f.view.ready.then(() => { ready = true; });
-  await setImmediate(); assert.equal(f.reads.length, 0);
-  f.change(0); await setImmediate(); assert.equal(f.reads.length, 1);
-  // A duplicate initial snapshot during the controlled 16s read is not another
-  // demand. No startup sleep or extra Worker RPC is used as a barrier.
+  // changes() reports only later revisions, so the observer reads the current snapshot without waiting for one.
+  await setImmediate(); assert.equal(f.reads.length, 1);
+  // A change naming the revision being read during the controlled 16s read is not another demand.
+  // No startup sleep or extra Worker RPC is used as a barrier.
   f.change(0); t.mock.timers.tick(16_000); await setImmediate();
   assert.equal(ready, false); assert.equal(f.reads.length, 1); assert.equal(f.rendered.length, 0);
   f.complete(0, 0); await f.view.ready; await setImmediate();
@@ -65,17 +65,17 @@ test('closing a blocked initial read rejects Ready, returns the subscription and
   assert.equal(f.returned, 1); f.complete(0, 0); await setImmediate(); assert.equal(f.rendered.length, 0);
 });
 
-test('a missing initial observation cannot leave readiness unbounded', async t => {
+test('an unanswered initial read cannot leave readiness unbounded', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture(), failed = assert.rejects(f.view.ready, /SQL_FIXTURE_VIEW_TIMEOUT/);
   t.mock.timers.tick(20_000); await failed; await setImmediate();
-  assert.equal(f.reads.length, 0); assert.equal(f.returned, 1);
+  assert.equal(f.reads.length, 1); assert.equal(f.returned, 1);
 });
 
 
 test('SQL initial materializer-unavailable read retains the observer until readiness, without a post-Ready duplicate', async () => {
   const f = fixture(); let ready = false; f.view.ready.then(() => { ready = true; });
-  f.change(0); await setImmediate(); f.reads[0].reject(Error('MATERIALIZATION_UNAVAILABLE')); await setImmediate();
+  await setImmediate(); f.reads[0].reject(Error('MATERIALIZATION_UNAVAILABLE')); await setImmediate();
   assert.equal(ready, false); assert.equal(f.returned, 0); assert.deepEqual(f.errors, []); assert.equal(f.reads.length, 1);
   f.status('ready'); await setImmediate(); assert.equal(f.reads.length, 2);
   f.complete(1, 0); await f.view.ready; f.change(0); await setImmediate(); assert.equal(f.reads.length, 2);

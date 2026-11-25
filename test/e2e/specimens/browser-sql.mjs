@@ -21,7 +21,7 @@ async function submit(command, input) {
       if (submitted === latestSubmission) status('Shared with another device.');
     }, () => { /* Local work remains visible while no retained copy is observed. */ });
   } else {
-    status('Change rejected. Review the current record and try again.');
+    status(`Change rejected${outcome.rejectionCode ? ` (${outcome.rejectionCode})` : ''}. Review the current record and try again.`);
   }
   return outcome.outcome === 'accepted';
 }
@@ -143,6 +143,13 @@ window.prepareAcceptanceSession = options => preparation ??= (async () => {
     const operation = await session.command('initialize', null, { operationId: crypto.randomUUID() });
     const outcome = await operation.materialized({ signal: AbortSignal.timeout(15_000) });
     if (outcome.outcome !== 'accepted') throw new Error(`initialize rejected: ${outcome.rejectionCode ?? outcome.outcome}`);
+    return outcome.outcome;
+  };
+  // An ordinary SQL permission transaction by the root; crypto enrollment alone grants no SQL rights.
+  window.grantAcceptanceTaskUpdates = async publicKey => {
+    const operation = await session.command('grantTaskUpdates', { publicKey }, { operationId: crypto.randomUUID() });
+    const outcome = await operation.materialized({ signal: AbortSignal.timeout(15_000) });
+    if (outcome.outcome !== 'accepted') throw new Error(`grantTaskUpdates rejected: ${outcome.rejectionCode ?? outcome.outcome}`);
     return outcome.outcome;
   };
   window.closeAcceptanceSession = async () => {

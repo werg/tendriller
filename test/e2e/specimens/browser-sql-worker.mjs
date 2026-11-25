@@ -25,6 +25,43 @@ async function connect(channel, remote) {
   await link.synchronize();
 }
 
+// The marker lets the acceptance harness delay exactly the measured opening Worker's metadata read, never
+// the page's own requests or the separate explicit enrollment below.
+function fixturePeers({ applicationId, base: page }, marked) {
+  const base = new URL('_tendril/', page);
+  return createPeersClient({ applicationId, base: base.href,
+    async request(path, { method = 'GET', body, signal } = {}) {
+      const response = await fetch(new URL(path, base), { method, signal, cache: 'no-store', credentials: 'same-origin',
+        headers: { ...(marked ? { 'X-SQL-Fixture-Read': path } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      const value = await response.json().catch(() => ({}));
+      if (!response.ok) throw Object.assign(new Error(value.error?.message ?? `Host request failed (${response.status})`), { code: value.error?.code, status: response.status });
+      return value;
+    },
+  });
+}
+
+// Hosts sign authority from this device's own enrollment proof; the data key is the explicit test-provisioned
+// one, so an additional device never invents a replacement key. Proof only binds the key to this account: an
+// additional device becomes a member (reader/writer) only through the owner's separate explicit grant.
+async function enroll(device, peers, applicationId, key) {
+  let metadata = await peers.application();
+  let epoch = 0, epochKeyDigest = await log.epochKeyCommitment(applicationId, 0, key);
+  if (metadata.authority !== null) {
+    const previous = log.decodeRecord(authorityRecordBytes(metadata.authority));
+    await log.verifyAuthorityBundle(previous);
+    ({ epoch, epochKeyDigest } = previous.memberships.at(-1).payload);
+  }
+  const challenge = await peers.challenge(device.identity.publicKey);
+  const proof = await log.signEnrollmentRequest({ applicationId: challenge.applicationId, publicKey: challenge.publicKey,
+    challenge: challenge.challenge, epoch, epochKeyDigest }, device.identity);
+  metadata = await peers.enroll(authorityRecord(log.encodeRecord(proof)));
+  if (!metadata.authority) throw new Error('The owner must sign in before this device is enrolled');
+  const bundle = log.decodeRecord(authorityRecordBytes(metadata.authority));
+  await log.verifyAuthorityBundle(bundle);
+  return bundle;
+}
+
 // The throwaway capability/identity Worker: a plain Worker of this same file answers these two messages
 // without ever receiving the owner boot protocol, so no session is opened by the probe.
 self.addEventListener('message', async ({ data }) => {
@@ -39,6 +76,17 @@ self.addEventListener('message', async ({ data }) => {
       const id = device.identity.publicKey;
       await device.close();
       self.postMessage({ type: 'identity', id });
+    } catch (error) { self.postMessage({ type: 'failure', message: error.message }); }
+    return;
+  }
+  // Explicit enrollment proof for an additional device, before its session opens. It caches no authority:
+  // the opening Worker reads the bundle again after the owner's grant.
+  if (data?.type === 'enroll') {
+    try {
+      const device = await openBrowserDevice({ name: data.name });
+      try { await enroll(device, fixturePeers(data, false), data.applicationId, new Uint8Array(data.key)); }
+      finally { await device.close(); }
+      self.postMessage({ type: 'enrolled' });
     } catch (error) { self.postMessage({ type: 'failure', message: error.message }); }
   }
 });
@@ -71,39 +119,13 @@ if (fixture) serveBrowserOwner({ async load() {
         // below is the authoritative SQL/VFS check. The enrolled identity already exists: never create one.
         device = await openBrowserDevice({ name: fixture.name });
         const definition = fixture.respondent ? intake(log, fixture.respondent) : checklist(log);
-        const base = new URL('_tendril/', fixture.base);
-        peers = createPeersClient({ applicationId: fixture.applicationId, base: base.href,
-          async request(path, { method = 'GET', body, signal } = {}) {
-            // The marker lets the acceptance harness delay exactly this Worker's metadata read, never the page's own.
-            const response = await fetch(new URL(path, base), { method, signal, cache: 'no-store', credentials: 'same-origin',
-              headers: { 'X-SQL-Fixture-Read': path, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-              ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-            const value = await response.json().catch(() => ({}));
-            if (!response.ok) throw Object.assign(new Error(value.error?.message ?? `Host request failed (${response.status})`), { code: value.error?.code, status: response.status });
-            return value;
-          },
-        });
+        peers = fixturePeers(fixture, true);
         const key = new Uint8Array(fixture.key);
         let authority;
         try { authority = await log.createAuthorityProvider({ store: device.store, applicationId: fixture.applicationId }); }
         catch (error) {
           if ((error.code ?? error.message) !== 'AUTHORITY_CACHE_MISSING') throw error;
-          // Hosts sign authority from this device's own enrollment proof; the data key is the explicit
-          // test-provisioned one, so an additional device never invents a replacement key.
-          let metadata = await peers.application();
-          let epoch = 0, epochKeyDigest = await log.epochKeyCommitment(fixture.applicationId, 0, key);
-          if (metadata.authority !== null) {
-            const previous = log.decodeRecord(authorityRecordBytes(metadata.authority));
-            await log.verifyAuthorityBundle(previous);
-            ({ epoch, epochKeyDigest } = previous.memberships.at(-1).payload);
-          }
-          const challenge = await peers.challenge(device.identity.publicKey);
-          const proof = await log.signEnrollmentRequest({ applicationId: challenge.applicationId, publicKey: challenge.publicKey,
-            challenge: challenge.challenge, epoch, epochKeyDigest }, device.identity);
-          metadata = await peers.enroll(authorityRecord(log.encodeRecord(proof)));
-          if (!metadata.authority) throw new Error('The owner must sign in before this device is enrolled');
-          const bundle = log.decodeRecord(authorityRecordBytes(metadata.authority));
-          await log.verifyAuthorityBundle(bundle);
+          const bundle = await enroll(device, peers, fixture.applicationId, key);
           authority = await log.createAuthorityProvider({ store: device.store, bundle, epochKeys: [[0, key]] });
         }
         session = await log.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, key]]),

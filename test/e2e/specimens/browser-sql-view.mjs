@@ -1,5 +1,5 @@
 // Fixture observer over public session APIs. Subscribe before the initial read;
-// changes() supplies its initial snapshot. Revisions are compared only by identity
+// changes() supplies only later revisions. Revisions are compared only by identity
 // (digest, view, execution manifest and policy), never ordered: an earlier operation
 // arriving later can produce a revision that sorts anywhere, and the view rederives it.
 const identity = revision => JSON.stringify([revision.digest, revision.view, revision.executionManifestDigest, revision.policyDigest]);
@@ -71,6 +71,9 @@ export function observeSqlFixture(session, { query, onSnapshot, onError = () => 
         }
       } catch (error) { fail(error); }
     })();
+    // changes() reports only later revisions, never a current one. Subscribed above, read the current
+    // snapshot now; a change that lands during this read is coalesced into a coherent reread.
+    dirty = true; void pump();
   }
   return { ready, close, get reads() { return reads; }, get snapshot() { return snapshot; } };
 }
