@@ -59,7 +59,8 @@ if (!/Operational|New page creation paused|Read-only or unavailable/.test(status
 // A code update can briefly return 500 while the object restarts. Apply the
 // same bounded read retries as the other probes; persistent storage failures
 // still block deployment, and only the exact missing-object response passes.
-const objectResponse = await get("/api/t/aaaaaaaaaaaa", undefined, 404);
+// The owner sign-in route reads the page object before any credential check.
+const objectResponse = await get(`/auth/page?tendril=aaaaaaaaaaaa&key=${"a".repeat(26)}`, undefined, 404);
 const objectResult = await objectResponse.json().catch(() => null);
 if (objectResponse.status !== 404 || objectResult?.error?.message !== "No such tendril") {
   throw new Error(`Durable Object storage readiness failed: HTTP ${objectResponse.status}`);
@@ -158,7 +159,8 @@ if (assistant) {
     const guide = (await guideResponse.json()).result?.structuredContent;
     if (!guideResponse.ok || guide?.topic !== 'start' || guide.serviceOrigin !== base ||
         guide.readiness?.serviceOrigin !== base ||
-        guide.onboarding?.interfaces?.create_page?.url !== `${base}/api/tendrils` ||
+        guide.onboarding?.interfaces?.register_agent?.url !== `${base}/api/agents` ||
+        guide.onboarding?.interfaces?.create_page?.url !== `${base}/api/agent/pages` ||
         !guide.text?.includes('Node 24'))
       throw new Error('Assistant app-building guidance is unavailable or targets another deployment');
     checkBuild(guide.build, 'Assistant guide');

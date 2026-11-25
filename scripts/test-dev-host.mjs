@@ -38,11 +38,17 @@ async function sdk(handle) {
   const program = `
 let text = ''; for await (const chunk of process.stdin) text += chunk;
 const input = JSON.parse(text);
-const { createPage, createClient } = await import(input.sdkUrl);
-const handle = input.handle ?? await createPage(input.serviceOrigin, { owner: input.owner, name: 'Local host smoke' });
-const client = createClient(handle);
-const [self, info] = await Promise.all([client.request('/self'), client.info()]);
-await (await import(input.undiciUrl)).getGlobalDispatcher().close();
+const { registerAgent, createAgentClient } = await import(input.sdkUrl);
+let handle = input.handle;
+if (!handle) {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
+  const agent = await registerAgent(input.serviceOrigin, { owner: input.owner, name: 'local-host-smoke', publicKey });
+  const created = await createAgentClient({ service: input.serviceOrigin, token: agent.token }).pages.create({ name: 'Local host smoke' });
+  handle = { ...created, token: agent.token };
+}
+const agent = createAgentClient({ service: input.serviceOrigin, token: handle.token });
+const [self, info] = await Promise.all([agent.self(), agent.page(handle.id).info()]);
 process.stdout.write(JSON.stringify({ handle, self, info }));
 `;
   const result = execute(process.execPath, ['--import', running.preload, '--input-type=module', '-e', program], {
@@ -77,7 +83,8 @@ async function claimAndCheck(page, handle, accountId) {
   const response = await page.goto(handle.page_url);
   assert(response?.ok()); assert.equal(page.url(), handle.page_url);
   const { self, info } = await sdk(handle);
-  assert.equal(self.applicationId, handle.application.id);
+  assert.equal(self.account.claimed, true, 'Owner sign-in to a created page claims its agent.');
+  assert.equal(info.application.id, handle.application.id);
   assert.equal(info.id, handle.id); assert.equal(info.owner_account_id, accountId);
   await page.goto(running.serviceOrigin + '/dashboard');
   assert.equal(await page.locator(`a[href="${handle.page_url}"]`).count() > 0, true);

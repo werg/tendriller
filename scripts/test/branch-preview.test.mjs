@@ -237,6 +237,6 @@ test("live smoke rejects an agent guide with a stale production service URL", as
     const path = new URL(url).pathname;
     if (path === "/health") return Response.json({ ok: true, preview: { commit } });
     if (path === "/api/service") return Response.json({ contract: 3 });
-    return new Response(path === "/agent.md" ? "Tendriller https://tendriller.dev/api/tendrils" : "Tendriller");
+    return new Response(path === "/agent.md" ? "Tendriller https://tendriller.dev/api/agents" : "Tendriller");
   } }), /Agent guide points at another environment/);
 });
