@@ -114,8 +114,16 @@ test('a browser note is parked while no tab of its profile shows its page', () =
   assert.deepEqual(parkedNotes(model, 'journal').map(note => note.token), ['chaos-p-0']);
   // Once seen applied, delivery no longer depends on the browser.
   assert.deepEqual(requiredNotes(model, 'journal', note => note.operationId === 'op-0').map(note => note.token), ['chaos-p-0', 'chaos-p-1']);
-  applyEntry(model, { name: 'browser.secondTab', params: { profile: 'b0', tab: 't1', slug: 'journal' } });
+  // Heal reopens a tab on the page that holds the undelivered operation.
+  const heal = ACTIONS.heal.plan(model);
+  assert.deepEqual(heal, { reopen: [{ profile: 'b0', slug: 'journal', tab: 't1' }] });
+  applyEntry(model, { name: 'heal', params: heal });
   assert.deepEqual(parkedNotes(model, 'journal'), []);
+  assert.deepEqual(requiredNotes(model, 'journal').map(note => note.token), ['chaos-p-0', 'chaos-p-1']);
+  assert.deepEqual(ACTIONS.heal.plan(model), { reopen: [] });
+  model.notes.journal[0].applied = true;
+  applyEntry(model, { name: 'browser.closeTab', params: { profile: 'b0', tab: 't1' } });
+  assert.deepEqual(ACTIONS.heal.plan(model), { reopen: [] }, 'Applied work needs no reopened tab.');
 });
 
 test('replayed entries that no longer fit the model are skipped, not applied', () => {
@@ -231,4 +239,21 @@ test('the injected test-only fault and report replay round trip', () => {
   const report = { format: REPORT_FORMAT, actions: [...entries, { index: 4, name: 'heal', params: {}, final: true }] };
   assert.deepEqual(replayEntries(report).map(entry => entry.name), ['browser.enroll', 'browser.draftReload', 'browser.offline', 'browser.draftReload']);
   assert.throws(() => replayEntries({ format: 'other' }));
+});
+
+test('shrinking normalizes candidates to the entries that would apply', async () => {
+  const { applicableEntries } = await import('./actions.mjs');
+  const log = [
+    { name: 'browser.enroll', params: { profile: 'b0', tab: 't0', slug: 'notes' } },
+    { name: 'agent.start', params: {} },
+    { name: 'browser.offline', params: { profile: 'b0' } },
+    { name: 'browser.reload', params: { profile: 'b0', tab: 't0', slug: 'notes' } },
+    { name: 'browser.online', params: { profile: 'b0' } }];
+  const kept = applicableEntries(log, { pages: ['notes'], browsers: 2 }, createModel).map(entry => entry.name);
+  assert.deepEqual(kept, ['browser.enroll', 'browser.offline', 'browser.online']);
+  let trials = 0;
+  const result = await ddmin(log, async subset => { trials++; return subset.some(entry => entry.name === 'browser.online'); },
+    { normalize: subset => applicableEntries(subset, { pages: ['notes'], browsers: 2 }, createModel) });
+  assert.deepEqual(result.minimal.map(entry => entry.name), ['browser.enroll', 'browser.offline', 'browser.online']);
+  assert.ok(trials < 10);
 });

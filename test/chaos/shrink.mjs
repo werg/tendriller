@@ -16,14 +16,17 @@ function split(items, n) {
 /**
  * @param {unknown[]} items Ordered entries (kept in original relative order).
  * @param {(subset: unknown[]) => Promise<boolean>} test
- * @param {{ budget?: number, key?: (item: unknown) => string, onTrial?: Function }} options
+ * @param {{ budget?: number, key?: (item: unknown) => string, normalize?: (subset: unknown[]) => unknown[], onTrial?: Function }} options
+ * `normalize` maps a candidate to what would actually run (for chaos: drop entries whose
+ * preconditions fail in a dry model run), so equivalent candidates share one trial.
  * @returns {Promise<{ minimal: unknown[], trials: number, exhausted: boolean, history: object[] }>}
  */
-export async function ddmin(items, test, { budget = Infinity, key = item => JSON.stringify(item), onTrial } = {}) {
+export async function ddmin(items, test, { budget = Infinity, key = item => JSON.stringify(item), normalize = subset => subset, onTrial } = {}) {
   const cache = new Map();
   const history = [];
   let trials = 0, exhausted = false;
-  const fails = async subset => {
+  const fails = async candidate => {
+    const subset = normalize(candidate);
     const id = subset.map(key).join('\u0000');
     if (cache.has(id)) return cache.get(id);
     if (trials >= budget) { exhausted = true; return false; }

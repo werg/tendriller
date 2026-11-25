@@ -11,6 +11,8 @@ import { createPlanner, runIdForSeed } from '../test/chaos/planner.mjs';
 import { runChaos, INJECTED_FAULTS } from '../test/chaos/runner.mjs';
 import { buildReport, harnessIdentity, replayEntries } from '../test/chaos/report.mjs';
 import { ddmin } from '../test/chaos/shrink.mjs';
+import { applicableEntries } from '../test/chaos/actions.mjs';
+import { createModel } from '../test/chaos/model.mjs';
 import { installLocalDispatcher, makeWorkDirectory, openWorld, prepareGolden } from '../test/chaos/environment.mjs';
 import { readTabState } from '../test/chaos/driver.mjs';
 
@@ -112,7 +114,11 @@ async function runOnce({ label, replay, injectFault, saveEvidence }) {
     outcome = await runChaos({ world, config, planner, replay, injectFault });
     // Host relay counters since the last host (re)start: relay mode must show relay bytes.
     evidence.transport = await fetch(`${world.host.service}/__first_app_transport`, { cache: 'no-store' })
-      .then(response => response.ok ? response.json() : null).catch(() => null);
+      .then(async response => {
+        if (!response.ok) return null;
+        const { requestActivity, ...counters } = await response.json();
+        return counters;
+      }).catch(() => null);
     const anyContext = [...outcome.runtime.profiles.values()].find(handle => handle.context)?.context;
     browserVersion = anyContext?.browser()?.version() ?? null;
     if (saveEvidence && outcome.violations.length) {
@@ -177,6 +183,9 @@ try {
         return false;
       } finally { Object.assign(config, savedConfig); }
     }, { budget: positive('shrink-budget', values['shrink-budget']),
+      // Entries a candidate cannot apply would be skipped anyway; equivalent candidates share a trial.
+      normalize: subset => applicableEntries(subset, { pages: Object.keys(golden.pages), browsers: config.browsers,
+        network: config.network, hostRestart: config.hostRestart }, createModel),
       onTrial: ({ trial, size, failed }) => console.log(`chaos shrink trial ${trial}: ${size} entries -> ${failed ? 'reproduces' : 'passes'}`) });
     report.shrink = { signature, original: candidates.length, minimal: shrunk.minimal, trials: shrunk.trials, exhausted: shrunk.exhausted, history: shrunk.history };
     const minimalPath = reportPath.replace(/\.json$/, '-minimal.json');

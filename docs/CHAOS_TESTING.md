@@ -59,7 +59,7 @@ against a model of the world. Its random choices are recorded as explicit parame
 | Races | `race.saveKill`: Save in a browser, and 0–400 ms later SIGKILL the agent program while the apply is in flight |
 | Publication | `publish`: a new signed UI version, marked `<!-- chaos-ui-vN -->`, while tabs are open |
 | Host and network | `host.restart` (dispose and reopen Miniflare on the same storage); `net.fault`/`net.restore` (with `--network` in the lab only); `wait` |
-| `heal` | Every `--heal-every` actions and at the end. Restores every actor, then checks liveness |
+| `heal` | Every `--heal-every` actions and at the end. Restores every actor, reopens tabs for undelivered browser work, then checks liveness |
 
 Navigation-type actions (reload, new tab, navigate) only pick online profiles: page
 code is not saved for offline use by default, so an offline navigation is expected to
@@ -94,10 +94,12 @@ and no packet fault is active. Within `--heal-deadline`:
   confirmed (`Saved on this device`, `Saved locally` or `Applied: accepted`, or the
   operation status shows it). The `#result` text alone is not trusted for application,
   and only text that names the attempt's own operation ID counts. Uncertain attempts are
-  reported and not required. A browser attempt that has not yet been seen applied is
-  *parked* while no tab of its profile shows that page: it waits in that profile's local
-  journal for the page origin, which is expected. Parked notes are listed in
-  `convergence[].parkedNotes`, and become required again once such a tab is open.
+  reported and not required. A browser delivers a page's saved operations only while that page
+  is open in one of its tabs. So before checking, heal reopens a tab for every (profile,
+  page) that holds a submitted browser operation not yet seen applied and has no tab
+  there. The reopened tabs are recorded in the heal entry (`params.reopen`,
+  `result.reopenedTabs`), and those operations are then required like any other.
+  `convergence[].parkedNotes` lists any that still had no tab (normally empty).
 - `not-stuck-connecting`: every tab shows `Connection: connected/following/coordinating`
   and `application: ready`.
 - `live-update`: every tab with no typed draft shows the latest confirmed publication.

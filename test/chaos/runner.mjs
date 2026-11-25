@@ -4,7 +4,7 @@ import { ACTIONS, applyEntry, paramsStillValid } from './actions.mjs';
 import { createModel, liveTabs, requiredNotes, parkedNotes, allNotes } from './model.mjs';
 import { checkViewSafety, createAppliedTracker, missingFrom, classifyMessages, INJECTED_FAULTS } from './invariants.mjs';
 export { INJECTED_FAULTS };
-import { EXECUTORS, CONNECTED, createRuntime, watchPage, poll, readAgentRows, readTabRows, readTabState, waitReady } from './driver.mjs';
+import { EXECUTORS, CONNECTED, createRuntime, watchPage, openTabOn, poll, readAgentRows, readTabRows, readTabState, waitReady } from './driver.mjs';
 import { uiMarker } from './environment.mjs';
 import { tokenOf } from './text.mjs';
 
@@ -62,6 +62,7 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
       count('applied-never-disappears'); count('single-application-per-intent');
       found.push(...checkViewSafety({ kind: 'agent', id: `agent/${slug}`, slug, rows }, context));
       found.push(...tracker.observe(slug, rows, entry.index));
+      markApplied(slug);
       found.push(...authorship(slug, rows, expected));
     }
     const errors = runtime.messages.filter(message => message.type === 'pageerror' && !message.reported);
@@ -70,6 +71,11 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
     count('no-page-errors');
     found.push(...classified.failures.map(message => ({ invariant: 'no-page-errors', tab: message.tab, message: message.text.slice(0, 600) })));
     fail(found, entry);
+  }
+
+  // Remember which browser notes the agent has applied (drives heal's tab reopening).
+  function markApplied(slug) {
+    for (const note of model.notes[slug]) if (note.operationId && tracker.has(slug, note.operationId)) note.applied = true;
   }
 
   function authorship(slug, rows, expected) {
@@ -98,7 +104,15 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
       if (!profile.open) { await EXECUTORS['browser.reopenProfile'](world, runtime, { profile: profile.id }, model); result.restored.push(`open:${profile.id}`); }
       else if (!profile.online) { await runtime.profiles.get(profile.id).context.setOffline(false); result.restored.push(`online:${profile.id}`); }
     }
-    ACTIONS.heal.effect(model);
+    // Older logs carry no reopen list: plan it now and record it, so replays are exact.
+    if (!Array.isArray(entry.params.reopen)) entry.params = { ...entry.params, ...ACTIONS.heal.plan(model) };
+    ACTIONS.heal.effect(model, entry.params);
+    result.reopenedTabs = [];
+    for (const item of entry.params.reopen) {
+      const opened = await openTabOn(world, runtime, item.profile, item.tab, item.slug).catch(error => ({ error: error.message }));
+      result.reopenedTabs.push({ ...item, ...(opened.error ? { error: opened.error.slice(0, 300) } : {}) });
+      if (opened.violation) fail([opened.violation], entry);
+    }
     // A tab whose earlier action failed (for example a navigation refused while
     // offline; already recorded as an action error) is put back on its page.
     for (const { profile, tab } of liveTabs(model)) {

@@ -259,15 +259,39 @@ export const ACTIONS = Object.freeze({
     weight: 0, // Scheduled, never drawn.
     description: 'Restore every actor (agent running, profiles open and online, no faults) and check liveness.',
     pre: () => true,
-    plan: () => ({}),
-    effect(model) {
+    // A browser delivers a page's saved operations only while that page is open in
+    // one of its tabs. Heal reopens a tab for every (profile, page) that holds a
+    // submitted, not-yet-seen-applied browser operation and has no tab there.
+    plan: model => ({ reopen: undeliveredWithoutTab(model).map(({ profile, slug }, i) =>
+      ({ profile, slug, tab: `t${model.counters.tab + i}` })) }),
+    effect(model, params = {}) {
       model.agent = 'running'; model.host = 'running'; model.network = null;
       for (const profile of model.profiles) Object.assign(profile, { open: true, online: true });
+      for (const item of params.reopen ?? []) {
+        bump(model, 'tab', item.tab);
+        const profile = profileById(model, item.profile);
+        if (!profile || profile.tabs.some(tab => tab.id === item.tab)) continue;
+        if (!profile.enrolled.includes(item.slug)) profile.enrolled.push(item.slug);
+        profile.tabs.push({ id: item.tab, slug: item.slug, draft: null });
+      }
     },
   },
 });
 
 export const actionNames = () => Object.keys(ACTIONS);
+
+/** [{ profile, slug }] with a submitted browser operation not yet seen applied and no tab of that profile on that page. */
+export function undeliveredWithoutTab(model) {
+  const out = [];
+  for (const [slug, notes] of Object.entries(model.notes)) for (const note of notes) {
+    if (note.origin !== 'browser' || note.applied || !note.operationId) continue;
+    if (out.some(item => item.profile === note.profile && item.slug === slug)) continue;
+    const profile = profileById(model, note.profile);
+    if (!profile || profile.tabs.some(tab => tab.slug === slug)) continue;
+    out.push({ profile: note.profile, slug });
+  }
+  return out;
+}
 
 export function eligibleActions(model, registry = ACTIONS, { exclude = [] } = {}) {
   return Object.entries(registry).filter(([name, action]) => !exclude.includes(name) && action.weight > 0 && action.pre(model))
@@ -287,6 +311,15 @@ export function applyEntry(model, entry, result, registry = ACTIONS) {
   if (!action.pre(model) || !paramsStillValid(model, entry)) return false;
   action.effect(model, entry.params, result);
   return true;
+}
+
+/** The entries of a log that would apply in a dry model run (results unknown). */
+export function applicableEntries(entries, { pages, browsers, network = false, hostRestart = true }, createModel) {
+  const model = createModel({ pages, browsers, network, hostRestart });
+  return entries.filter(entry => entry.name === 'heal'
+    ? (ACTIONS.heal.effect(model, entry.params ?? {}), true)
+    : applyEntry(model, entry, entry.name === 'browser.addNote' || entry.name === 'race.saveKill'
+      ? { operationId: `dry-${entry.params.n}`, saved: true, retained: entry.params.text } : undefined));
 }
 
 /** A replayed or shrunk entry may name a profile/tab that no longer exists in this model. */

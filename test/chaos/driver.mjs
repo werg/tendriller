@@ -86,6 +86,12 @@ async function newTab(runtime, profileId, tabId) {
   return page;
 }
 
+/** Open a new tab of an open profile on a page (used by heal to deliver parked work). */
+export async function openTabOn(world, runtime, profileId, tabId, slug) {
+  const page = await newTab(runtime, profileId, tabId);
+  return openSlug(world, runtime, page, profileId, slug);
+}
+
 async function stopTrace(world, runtime, profileId, reason) {
   const handle = runtime.profiles.get(profileId);
   if (!world.trace || !handle?.context) return;

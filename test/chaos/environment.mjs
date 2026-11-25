@@ -82,8 +82,18 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
       return join(directory, result[0].filename);
     };
     const buildDependencies = [await packDependency('esbuild'), await packDependency(`@esbuild/${process.platform}-${process.arch}`)];
-    await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--cache', npmCache,
-      archives.sdk, archives.tools, sessionArchive, ...buildDependencies], { cwd: app });
+    // The kit's packages resolve their own dependencies from the registry; retry a
+    // transient network failure once rather than failing the whole run in setup.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--cache', npmCache,
+          archives.sdk, archives.tools, sessionArchive, ...buildDependencies], { cwd: app });
+        break;
+      } catch (error) {
+        if (attempt >= 3 || !/ETIMEDOUT|ECONNRESET|EAI_AGAIN|network/i.test(String(error.stderr ?? error.message))) throw error;
+        log(`chaos setup: npm install failed (${attempt}), retrying`);
+      }
+    }
     const sessionProof = await jsonFile(join(app, 'node_modules/@chronolog/peer-session/provenance.json'));
     const preload = await writeLocalNetworkPreload(join(directory, 'local-network.mjs'));
     const cli = join(app, 'node_modules/@tendriller/tools/bin/tendril.mjs');
