@@ -379,7 +379,6 @@ export async function closeLocalTransport() {
   report.browser = browser.version(); report.browser_checks = 'running'; report.screenshots = {};
   async function profile(viewport) {
     const context=labBrowser&&browserProfiles.length===0?labBrowser.context:await browser.newContext({viewport});
-    await context.setViewportSize(viewport);
     await context.addCookies([{ name: '__Host-tendriller', value: ownerToken, domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
     await context.addInitScript(({ relay }) => {
       const Native = globalThis.RTCPeerConnection; globalThis.__firstAppRtcPeers = [];
@@ -391,6 +390,7 @@ export async function closeLocalTransport() {
     context.on('requestfailed',request=>{const url=new URL(request.url());if(url.pathname.includes('/peers/'))noteNetwork({profile:label,type:'failed',route:url.pathname.split('/peers/').at(-1).split('/').slice(0,2).join('/'),error:request.failure()?.errorText?.slice(0,160)});});
     context.on('console',message=>{if(message.type()==='warning'||message.type()==='error')noteNetwork({profile:label,type:'console',message:message.text().slice(0,240)});});
     const target = await context.newPage();
+    await target.setViewportSize(viewport);
     target.on('pageerror', error => { report.browser_errors ??= []; if (report.browser_errors.length < 12) report.browser_errors.push(error.message.slice(0, 300)); });
     browserProfiles.push({label,page:target});
     await target.goto(handle.page_url); return { context, page: target };
