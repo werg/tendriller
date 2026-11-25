@@ -151,12 +151,9 @@ checkpoint, then install `esbuild` for the one-time page build
    the dashboard) for the application ID in that record before deciding anything.
 2. Run `node review-app.mjs init`, `node review-app.mjs build` and
    `node review-app.mjs publish` to prepare publication with the shared key and
-   publish the complete signed page **before** the owner browser key exists. Run
-   `node review-app.mjs propose`; retain the private `assistant-proposal.json`
-   in the page's `.tendriller/pages/<id>/` records, which binds the returned
-   proposal ID to the adapter key hash. The participant never substitutes a
-   foreign observed proposal. Do not re-propose or reset consent merely to update
-   this code.
+   publish the complete signed page **before** the owner browser key exists. The
+   build also emits the signed `domain.js` bundle from which hosted MCP runs the
+   declared `checklist` query and `completeItem` command.
 3. The owner signs in with the static test-account form and opens the page. Its
    browser initializes identity, keys and storage locally; the checklist works
    with no native process.
@@ -169,14 +166,15 @@ checkpoint, then install `esbuild` for the one-time page build
    grant the reviewed rights and import the wrapped package with
    `node review-app.mjs import-provisioning FILE`. The native process never
    creates a root, membership or data key.
-5. Supervise `npx tendril agent run` in the workspace (the installed tools
-   archive's one long-running program). It opens only provisioned pages from their
-   cached stores. Setup notifications resume the existing proposal; only exact
-   owner approval starts the adapter and its checkpointed event forwarding.
-   Revocation or replacement stops that component without closing the native
-   application. Open the proposal URL and approve `checklist`, `completeItem` and
-   `item.completed`; verify the native signer is enrolled.
-6. Verify listing, description and the initial read without sending a command.
+5. Optionally supervise `npx tendril agent run` in the workspace (the installed
+   tools archive's one long-running program). It opens only provisioned pages from
+   their cached stores; it is not the MCP provider.
+6. Connect hosted MCP explicitly: in the page open **Page options → An agent**,
+   choose the linked OAuth client's card, keep or edit its handle and select
+   **Connect to this page**. The page enrolls a fresh hosted key, grants it
+   membership and wraps the current epoch keys to that grant; nothing connects
+   without this owner action, and **Disconnect** revokes it.
+7. Verify listing, description and the initial read without sending a command.
    Use the disposable qualification fixture for the mutation and denial tests.
 
 Do not delete this sample during qualification. Keep its optional native process and

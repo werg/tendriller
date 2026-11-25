@@ -14,7 +14,7 @@ import {
   hexToBytes,
   openApplicationDevice,
 } from '@chronolog/peer-session';
-import { decodeRecord, encodeRecord, recordDigest } from '@chronolog/authority';
+import { decodeRecord, encodeRecord, recordDigest, signEnrollmentRequest } from '@chronolog/authority';
 
 const authorityBytes = value => {
   if (!value || typeof value !== 'object' || typeof value.record !== 'string' || !/^[0-9a-f]+$/iu.test(value.record) || value.record.length % 2 !== 0) {
@@ -103,6 +103,12 @@ async function provisionHostedIdentityInRam({ session, peers, hostedIdentity, wr
   const head = bundle.memberships.at(-1);
   const existing = head.payload.members.find(m => m.publicKey === hostedIdentity.publicKey);
   if (!existing?.reader || (writer && !existing?.writer)) {
+    // The host grants membership only to a key that proved itself for this account: answer an
+    // account-bound challenge with the fresh hosted identity before requesting its grant.
+    const { applicationId } = bundle.descriptor.payload, { epoch, epochKeyDigest } = head.payload;
+    const challenge = await peers.challenge(hostedIdentity.publicKey);
+    const proof = await signEnrollmentRequest({ applicationId, publicKey: hostedIdentity.publicKey, challenge: challenge.challenge, epoch, epochKeyDigest }, hostedIdentity);
+    await peers.enroll({ record: bytesToHex(encodeRecord(proof)) });
     const intent = {
       requestId: crypto.randomUUID(),
       expectedMembershipId: await recordDigest(head),

@@ -15,9 +15,10 @@ import { readReviewAccess, authorizeReview } from './access.mjs';
 import { provisionNative } from './provision.mjs';
 import { recordReview } from './record.mjs';
 import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
-import { cleanupFixturePage, installReviewFixtureSources, readFixtureHandle, validateReviewProposal } from './fixture.mjs';
+import { cleanupFixturePage, installReviewFixtureSources, readFixtureHandle } from './fixture.mjs';
+import { connectHostedReview, readHostedGrants, reviewGrantId } from './hosted.mjs';
 import { sourceIdentity } from '../release-composition.mjs';
-import { createReviewDiagnostics, reviewError, reviewNativeError, waitForReviewProvider } from './diagnostics.mjs';
+import { createReviewDiagnostics, reviewError, reviewNativeError } from './diagnostics.mjs';
 
 const { values } = parseArgs({ options: { access: { type: 'string' }, config: { type: 'string' }, output: { type: 'string' }, 'artifact-root': { type: 'string' }, 'no-video': { type: 'boolean', default: false } } });
 if (!values.access || !values.config || !values.output) throw Error('Pass --access PRIVATE_JSON --config WRANGLER_CONFIG --output REPORT_DIRECTORY [--no-video] [--artifact-root EXACT_CLEAN_DEPLOYED_CHECKOUT]');
@@ -65,8 +66,8 @@ try {
   assert(prepared.publicationAuthority, 'The publication policy must exist');
   assert(prepared.publicationAuthority.publisherKeys.includes(handle.signerPublicKey), 'Publication is signed by the workspace\'s one shared agent key; no separate page publisher exists');
   assert.notEqual((await host.info()).owner_account_id, null, 'An account-linked agent creates a page already owned by that account');
-  const proposal = validateReviewProposal(JSON.parse(run(['propose'])));
-  diagnostics = createReviewDiagnostics({ origin: access.origin, pageUrl: handle.page_url, reviewUrl: proposal.reviewUrl, apiUrl: host.base });
+  assert(publication.publication.payload.files.some(file => file.path === 'domain.js'), 'Hosted MCP runs declared operations from the signed domain bundle');
+  diagnostics = createReviewDiagnostics({ origin: access.origin, pageUrl: handle.page_url, apiUrl: host.base });
   diagnostics.attach(context, page);
   phase = 'initialize browser';
   try {
@@ -98,30 +99,23 @@ try {
       if (readFileSync(join(project, 'participant-state-private.log'), 'utf8').split('\n').some(line => { try { const value = JSON.parse(line); return value.page === handle.id && value.state === 'running'; } catch { return false; } })) break;
       await delay();
     }
-    phase = 'review permissions';
-    const review = await context.newPage();
-    try {
-      diagnostics.step('open-permission-review'); await review.goto(proposal.reviewUrl);
-      diagnostics.step('select-permissions'); for (const checkbox of await review.getByRole('checkbox').all()) await checkbox.check();
-      diagnostics.step('approve-permissions'); await review.getByRole('button', { name: /^(Connect assistant|Save permissions)$/ }).click();
-      diagnostics.step('wait-native-signer');
-      await waitForReviewProvider({ request: context.request, url: proposal.reviewUrl, observe: value => {
-        diagnostics.provider(value); diagnostics.response(proposal.reviewUrl, value.status);
-      } });
-      diagnostics.step('replay-approved-proposal');
-      const replay = validateReviewProposal(JSON.parse(run(['propose'])));
-      assert.equal(replay.proposed, proposal.proposed, 'Replay must retain the exact proposal identity');
-      assert.equal(replay.approved, true, 'Replay must retain owner approval');
-      await diagnostics.capture(review);
-    } catch (error) { await diagnostics.capture(review); throw error; }
-    finally { await review.close(); }
+    phase = 'connect hosted MCP';
+    // The owner opts this page into hosted MCP for exactly this run's OAuth grant. The hosted participant uses its own
+    // enrolled key and wrapped epoch keys; the optional native participant above is not its provider.
+    const grantId = reviewGrantId(authorized.token);
+    await connectHostedReview({ page, grantId, handle: 'reviewer', step: value => diagnostics.step(value) });
+    diagnostics.step('verify-connection-after-reload');
+    await page.reload(); await page.getByText('Local signing and storage ready', { exact: false }).waitFor({ timeout: 60000 });
+    const retained = await readHostedGrants(page);
+    assert(retained.connections.some(row => row.grant === grantId && row.handle === 'reviewer'), 'The owner\'s hosted MCP opt-in survives reload');
+    await diagnostics.capture(page);
   } catch (error) { await diagnostics.capture(page); throw error; }
   phase = 'native MCP qualification';
   const report = await recordReview({ project, accessPath, output, composition, video: !values['no-video'], browser, context, page, token: authorized.token });
   report.publishedBeforeBrowserKey = true;
   report.browserWithoutNativeProcess = true;
-  report.approvalSurvivesReplay = true;
-  report.workspace = { credential: 'account-level register_agent through the linked account', signer: 'one shared workspace key', pageAccess: 'creator grant', publisher: 'the shared key', participant: 'tendril agent run, optional' };
+  report.hostedConnectionSurvivesReload = true;
+  report.workspace = { credential: 'account-level register_agent through the linked account', signer: 'one shared workspace key', pageAccess: 'creator grant', publisher: 'the shared key', participant: 'tendril agent run, optional', hostedMcp: 'owner opt-in for this run\'s OAuth grant' };
   report.fixtureSources = fixtureSources;
   report.installedPackages = installedPackages;
   report.consumerSource = consumerSource;

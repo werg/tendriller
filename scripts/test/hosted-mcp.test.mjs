@@ -20,6 +20,7 @@ import {
   recordDigest,
   signAppDescriptor,
   signMembership,
+  verifyEnrollmentRequest,
 } from '@chronolog/authority';
 import { authorityRecord } from '../../contract/authority.mjs';
 import {
@@ -103,9 +104,22 @@ async function openFixture(t) {
   });
   t.after(() => session.close());
 
+  // Like the host, membership is granted only to a key that answered this account's enrollment challenge.
+  const challenges = new Map(), proven = new Set();
   const peers = {
     async application() { return { authority: authorityRecord(encodeRecord(bundle)) }; },
+    async challenge(publicKey) { const challenge = crypto.randomUUID(); challenges.set(challenge, publicKey); return { applicationId: appId, publicKey, challenge }; },
+    async enroll(proof) {
+      const request = decodeRecord(Uint8Array.from(proof.record.match(/../g), byte => parseInt(byte, 16)));
+      await verifyEnrollmentRequest(request);
+      const head = bundle.memberships.at(-1).payload;
+      assert.equal(challenges.get(request.payload.challenge), request.payload.publicKey);
+      assert.equal(request.payload.applicationId, appId); assert.equal(request.payload.epoch, head.epoch); assert.equal(request.payload.epochKeyDigest, head.epochKeyDigest);
+      proven.add(request.payload.publicKey);
+      return { authority: authorityRecord(encodeRecord(bundle)) };
+    },
     async grant(intent) {
+      if (!proven.has(intent.grant.publicKey)) throw Object.assign(Error('member_key_proof_required'), { status: 403 });
       const prev = bundle.memberships.at(-1);
       const next = await signMembership({
         applicationId: appId,
@@ -120,7 +134,7 @@ async function openFixture(t) {
       return { authority: authorityRecord(encodeRecord(bundle)) };
     },
   };
-  return { appId, epochKey, session, peers, getBundle: () => bundle };
+  return { appId, epochKey, session, peers, getBundle: () => bundle, proveKey: publicKey => proven.add(publicKey) };
 }
 
 test('connectHostedMcpGrant provisions a revocable identity in RAM and X25519-seals epoch keys cleanly', async t => {
@@ -224,6 +238,7 @@ test('syncHostedMcpEnvelopes and enableHostedMcp exchange blind encrypted envelo
 
   // Second device/session (simulating hosted MCP) writes an op and pushes to DO store
   const peerDevice = await openApplicationDevice({ store: new MemoryStore(), create: true });
+  f.proveKey(peerDevice.identity.publicKey);
   await f.peers.grant({
     requestId: crypto.randomUUID(),
     expectedMembershipId: f.getBundle().memberships.at(-1).id,

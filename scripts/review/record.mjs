@@ -29,6 +29,7 @@ export async function recordReview({ project, accessPath, output, composition, v
     agentBehaviorEvaluated: false, chatgptWebVerified: false, usesModelTokens: false,
     ...reviewProvenance(composition, readiness), browserApplicationPeerQualified: false, firstAppKitQualified: false,
     nativeParticipant: 'optional; explicitly provisioned by the browser owner; not required for browser reads or writes',
+    hostedParticipant: 'owner opt-in for this OAuth grant; its own enrolled key with epoch keys wrapped to the grant',
     denialScope: 'Unlisted application ID rejected; no live second-account fixture is provisioned by this runner',
     origin: access.origin, applicationId: handle.application.id, cases: [], checks: [] };
   let client;
@@ -75,7 +76,8 @@ export async function recordReview({ project, accessPath, output, composition, v
     await positive(1, async () => {
       const result = await call('describe_application', app); assert(JSON.stringify(result.structuredContent).includes('completeItem'));
       const value = result.structuredContent;
-      return { queries: value.queries.map(item => item.name), commands: value.commands.map(item => item.name), events: value.events.map(item => item.name), provider: value.provider };
+      assert.equal(value.hostedParticipant.keyCustody, 'oauth-token-wrapped'); assert.equal(value.hasDomainBundle, true);
+      return { queries: value.queries.map(item => item.name), commands: value.commands.map(item => item.name), hostedParticipant: value.hostedParticipant.handle, keyCustody: value.hostedParticipant.keyCustody };
     });
     await positive(2, async () => { const value = await query(); assert.equal(value.find(item => item.id === 'check-labels').complete, false); return value; });
     const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: app.applicationId });
@@ -97,9 +99,9 @@ export async function recordReview({ project, accessPath, output, composition, v
     await positive(4, async () => {
       const deadline = Date.now() + 20000;
       for (;;) {
-        const result = await call('read_application_events', app);
-        const events = result.structuredContent.events.filter(event => event.data.payload.id === 'check-labels');
-        if (events.length) { assert.equal(events.length, 1); return { retainedEvents: events.map(event => ({ sourceEventId: event.sourceEventId, data: event.data })), duplicateEvents: 0 }; }
+        const result = await call('read_application_events', { ...app, topics: ['completed'] }); assert(!result.isError);
+        const events = result.structuredContent.value.events.filter(event => event.payload?.id === 'check-labels');
+        if (events.length) { assert.equal(events.length, 1); return { retainedEvents: events.map(event => ({ proposalId: event.proposalId, operationId: event.operationId, topic: event.topic, payload: event.payload })), duplicateEvents: 0 }; }
         assert(Date.now() < deadline); await new Promise(done => setTimeout(done, 200));
       }
     });

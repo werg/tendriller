@@ -288,7 +288,7 @@ test('source-qualified graph carries the current plugin guidance and detects ZIP
       'review/review-worker.mjs', 'review/review-index.html',
       'review/support/participant-lifecycle.mjs', 'review/support/native-page.mjs', 'review/support/prepare-host.mjs',
       'review/support/publish.mjs', 'review/support/page-provisioning.mjs', 'review/support/browser-bootstrap.mjs',
-      'review/support/browser-profile.mjs', 'review/support/provisioning-view.mjs',
+      'review/support/browser-profile.mjs', 'review/support/provisioning-view.mjs', 'review/support/hosted-mcp.mjs',
       'plugin.json', 'mcp.json', 'assets/icon.png', skill]);
   assert.deepEqual(execFileSync('unzip', ['-p', join(f.root,'dist',plugin.file), 'review/support/participant-lifecycle.mjs']), readFileSync(join(f.root,'docs/tutorial/shared/participant-lifecycle.mjs')));
   writeFileSync(join(f.root, 'dist', plugin.file), 'stale or altered guidance');

@@ -22,6 +22,7 @@ export const REVIEW_FIXTURE_FILES = [
   ['support/browser-bootstrap.mjs', 'docs/tutorial/shared/helpers/browser-bootstrap.mjs'],
   ['support/browser-profile.mjs', 'docs/tutorial/shared/helpers/browser-profile.mjs'],
   ['support/provisioning-view.mjs', 'docs/tutorial/shared/helpers/provisioning-view.mjs'],
+  ['support/hosted-mcp.mjs', 'docs/tutorial/shared/helpers/hosted-mcp.mjs'],
 ];
 export function installReviewFixtureSources(root, project) {
   for (const [file, source] of REVIEW_FIXTURE_FILES) {
@@ -95,10 +96,3 @@ export async function cleanupFixturePage({ project, origin, creationAttempted, h
   } catch { return ['Could not delete the qualification-owned synthetic page']; }
 }
 
-/** Reject missing identities before any approval or replay comparison. */
-export function validateReviewProposal(proposal) {
-  assert.equal(typeof proposal?.proposed, 'string', 'Proposal identity must be a hex64 string');
-  assert.match(proposal.proposed, /^[a-f0-9]{64}$/, 'Proposal identity must be a hex64 string');
-  assert.equal(typeof proposal.approved, 'boolean', 'Proposal approval must be boolean');
-  return proposal;
-}

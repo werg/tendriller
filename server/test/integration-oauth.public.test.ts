@@ -137,7 +137,7 @@ async function seedPageAuthorityAndDomain(
   const configurationDigest = await recordDigest(configuration);
   const domainBytes = new TextEncoder().encode(domainSource);
   const domainHash = await sha256Hex(domainSource);
-  await env.FILES.put(`t/${page.id}/f/${domainHash}`, domainBytes, { httpMetadata: { contentType: 'text/javascript; charset=utf-8' } });
+  await env.FILES.put(`t/${page.id}/files/${domainHash}`, domainBytes, { httpMetadata: { contentType: 'text/javascript; charset=utf-8' } });
   await inDO(page.id, t => {
     t.db.set('application_configuration', configuration);
     t.db.set('application_configuration_digest', configurationDigest);

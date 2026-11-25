@@ -19,7 +19,7 @@ import { addActivity } from './activity';
 import { notifyRosterChanged, pageAgents, reconcilePrimaryAgent, validAgentBio, validAgentHandle } from './agent-grants';
 import { selectedApplication } from './application';
 import { readAuthorityBundle } from './authority';
-import { servedVersion } from './files';
+import { fileKey, servedVersion } from './files';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { base64url } from './accounts/oauth-support';
 import { hexToBytes as parseHex, normalizeEd25519Pkcs8Hex, sealSqlCheckpoint, unbase64url, unsealHostedKeys, unsealSqlCheckpoint } from './mcp-crypto';
@@ -92,7 +92,7 @@ async function loadPublishedDomainBundle(t: Tendril): Promise<string | null> {
     "SELECT hash FROM version_files WHERE version=? AND path IN ('domain.js', '_domain.js', 'domain.mjs')", v,
   );
   if (!row) return null;
-  const obj = await t.env.FILES.get(`t/${t.tid}/f/${row.hash}`);
+  const obj = await t.env.FILES.get(fileKey(t, row.hash));
   if (!obj) return null;
   return await obj.text();
 }

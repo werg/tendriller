@@ -63,6 +63,9 @@ if (mode === 'build') {
     await copyFile(new URL('./review-index.html', import.meta.url), new URL('index.html', output));
     await build({ absWorkingDir: root, entryPoints: { page: 'review-page.mjs', worker: 'review-worker.mjs' }, outdir: fileURLToPath(output),
       bundle: true, splitting: true, format: 'esm', platform: 'browser', target: 'es2022', outExtension: { '.js': '.mjs' }, chunkNames: 'chunks/[name]-[hash]' });
+    // Hosted MCP runs declared queries and commands from this signed, self-contained domain bundle; Chronolog's DSL is provided by the host sandbox.
+    await build({ absWorkingDir: root, entryPoints: ['review-domain.mjs'], outfile: fileURLToPath(new URL('domain.js', output)),
+      bundle: true, format: 'esm', platform: 'neutral', target: 'es2022', external: ['@chronolog/peer-session'] });
   } catch (error) { await rm(output, { recursive: true, force: true }); throw error; }
   console.log('Built the complete page/ graph. Publish it before the owner browser key exists.');
   process.exit(0);
