@@ -173,12 +173,19 @@ export async function startPackedHost({ root, engine, directory, kit, port = DEF
     accounts.prepare('INSERT INTO identity_emails (provider, subject, email) VALUES (?, ?, ?)').bind('github', 'e2e-subject', 'owner@example.test'),
     accounts.prepare('INSERT INTO sessions (hash, account_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
       .bind(sha256(ownerToken), 'e2e-owner', now, now + 86_400_000),
-    accounts.prepare('INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at) VALUES(?,?,?,?,?,?,?)')
-      .bind(oauthGrant, 'e2e-owner', 'first-app-test', SERVICE + '/mcp', 'tendrils:create tendrils:list', now, now + 86_400_000),
+    // Each grant carries an X25519 wrap public key for opt-in hosted participants;
+    // this synthetic grant never connects one, so a fresh valid key suffices.
+    accounts.prepare('INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,wrap_public_key,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)')
+      .bind(oauthGrant, 'e2e-owner', 'first-app-test', SERVICE + '/mcp', 'tendrils:create tendrils:list', await syntheticWrapPublicKey(), now, now + 86_400_000),
     accounts.prepare('INSERT INTO integration_oauth_access(hash,grant_id,jti,scope,created_at,expires_at) VALUES(?,?,?,?,?,?)')
       .bind(sha256(oauthToken), oauthGrant, oauthJti, 'tendrils:create tendrils:list', now, now + 86_400_000),
   ]);
   return fixture;
+}
+
+async function syntheticWrapPublicKey() {
+  const pair = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+  return Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey)).toString('hex');
 }
 
 /**
