@@ -399,6 +399,8 @@ globalThis.WebSocket = class extends WebSocket {
       env: { ...process.env, ...(qualification ? { [QUALIFICATION_SOCKET_ENV]: qualificationSockets } : {}) } });
     let stderr = '';
     child.stderr.on('data', bytes => { stderr = (stderr + bytes.toString()).slice(-6_000); });
+    // A refused signal (some container profiles deny kill) must fail the step, not crash the report.
+    child.on('error', error => { stderr = (stderr + `\n[harness] ${error.code ?? error.message}`).slice(-6_000); });
     const waiters = new Set();
     createInterface({ input: child.stdout }).on('line', line => {
       let value; try { value = JSON.parse(line); } catch { return; }
