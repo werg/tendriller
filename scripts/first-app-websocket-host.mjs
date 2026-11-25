@@ -25,6 +25,8 @@ export function createFirstAppRequestActivity() {
   let sequence = 0;
   const methods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
   function category(path) {
+    // One agent program's multiplexed control connection for all of its pages.
+    if (path === '/api/agent/hub') return 'agent-hub';
     if (path.endsWith('/peers/discovery/watch')) return 'discovery-watch';
     if (path.endsWith('/peers/rendezvous')) return 'rendezvous';
     if (path.endsWith('/peers/invitations')) return 'invitations';

@@ -199,14 +199,17 @@ test('isolated host forwards WebSocket ownership and finishes the cold hibernata
 test('host activity keeps bounded receipt metadata, fixed labels and no private request material', () => {
   const activity = createFirstAppRequestActivity();
   const paths = [
-    ['/agent/private/peers/discovery/watch', 'discovery-watch'],
-    ['/agent/private/peers/rendezvous', 'rendezvous'],
-    ['/agent/private/peers/invitations', 'invitations'],
-    ['/agent/private/peers/relay', 'relay'],
-    ['/agent/private/setup/watch', 'setup-watch'],
+    ['/api/agent/hub', 'agent-hub'],
+    ['/api/agent/pages/private/peers/discovery/watch', 'discovery-watch'],
+    ['/api/agent/pages/private/peers/rendezvous', 'rendezvous'],
+    ['/api/agent/pages/private/peers/invitations', 'invitations'],
+    ['/api/agent/pages/private/peers/relay', 'relay'],
+    ['/api/agent/pages/private/setup/watch', 'setup-watch'],
     ['/s/private/publication-ready', 'publication-watch'],
-    ['/agent/private/peers/participant', 'peer-participant'],
-    ['/agent/private/peers/bootstrap', 'peer-bootstrap'],
+    ['/api/agent/pages/private/peers/participant', 'peer-participant'],
+    ['/api/agent/pages/private/peers/bootstrap', 'peer-bootstrap'],
+    ['/api/agent/pages/private/application', 'application-control'],
+    ['/api/agent/hubs', 'api-control'], ['/api/agent/pages', 'api-control'],
     ['/s/private/peers/pairing', 'peer-pairing'],
     ['/api/agent/pages/private/self', 'access-probe'],
     ['/s/private/application', 'application-control'],
@@ -232,7 +235,7 @@ test('host activity keeps bounded receipt metadata, fixed labels and no private 
     assert.ok(!JSON.stringify(snapshot).includes(secret));
   }
   snapshot.items[0].category = 'MUTATED';
-  assert.equal(activity.snapshot().items[0].category, 'discovery-watch');
+  assert.equal(activity.snapshot().items[0].category, 'agent-hub');
   for (let n = 0; n < 300; n++) activity.record(new Request('https://private-origin.invalid/secret'));
   const bounded = activity.snapshot();
   assert.equal(bounded.items.length, 256);
