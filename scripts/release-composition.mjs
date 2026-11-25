@@ -39,7 +39,7 @@ const fail = message => { throw Error(message); };
 const sha = /^[0-9a-f]{40}$/;
 const roles = ['sdk', 'runtime', 'engine', 'tools'];
 export const REQUIRED_SDK_EXPORTS = ['.', './contract', './onboarding', './setup', './authority', './application', './signals', './peers',
-  './assistant', './archive', './release-verify', './probe', './serverless',
+  './archive', './release-verify', './probe', './serverless',
   './browser-owner', './worker-owner', './native-owner', './ipc', './participation', './native-rtc',
   './transport-diagnostics', './diagnostics', './collaboration', './schema'];
 

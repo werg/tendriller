@@ -186,11 +186,11 @@ test('release rejects changed archives even when their version labels still matc
 
 test('release inspects packed advertised exports and their targets', t => {
   const f = fixture(t);
-  delete f.files.sdk['package.json'].exports['./assistant']; f.packAll();
+  delete f.files.sdk['package.json'].exports['./collaboration']; f.packAll();
   assert.throws(f.prepare, /SDK is missing an advertised public export/);
-  f.files.sdk['package.json'].exports['./assistant'] = { types: './index.mjs' }; f.packAll();
+  f.files.sdk['package.json'].exports['./collaboration'] = { types: './index.mjs' }; f.packAll();
   assert.throws(f.prepare, /SDK is missing an advertised public export/);
-  f.files.sdk['package.json'].exports['./assistant'] = './missing.mjs'; f.packAll();
+  f.files.sdk['package.json'].exports['./collaboration'] = './missing.mjs'; f.packAll();
   assert.throws(f.prepare, /SDK export points to an unpackaged file/);
 });
 
