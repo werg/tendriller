@@ -5,9 +5,9 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { checklist, intake } from './specimens/sql-domains.mjs';
-import type { createClient } from '../../dist/sdk/client.mjs';
+import type { PageClient } from '../../dist/sdk/client.mjs';
 
-type Peers = ReturnType<typeof createClient>['peers'];
+type Peers = PageClient['peers'];
 
 export async function runStagingSql({ consumer, handle, page, peers, privateIntake = false }: {
   consumer: string; handle: { application: { id: string } }; page: Page; peers: Peers; privateIntake?: boolean;

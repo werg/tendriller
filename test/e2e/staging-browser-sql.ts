@@ -5,9 +5,9 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { checklist, intake } from './specimens/sql-domains.mjs';
-import type { createClient } from '../../dist/sdk/client.mjs';
+import type { PageClient } from '../../dist/sdk/client.mjs';
 
-type Peers = ReturnType<typeof createClient>['peers'];
+type Peers = PageClient['peers'];
 type Fixture = { page: Page; name: string; id: string };
 type CapabilityReport = {
   secureContext: boolean;
