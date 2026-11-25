@@ -1,6 +1,6 @@
 # Browser API
 
-For the complete Worker, device enrollment and UI files, start with [Build an app](BUILD_AN_APP.md). This is the API reference after that bootstrap; `ready()` alone does not mean a peer is connected.
+For the complete Worker, device admission and UI files, start with [Build an app](BUILD_AN_APP.md). This is the API reference after that bootstrap; `ready()` alone does not mean a peer is connected.
 
 The browser runtime composes one application session with page-host services and local device utilities. It does not own a second application database, device signer, transport or delivery queue.
 
@@ -351,7 +351,7 @@ button.addEventListener('click', async () => {
 
 `prompt()` returns `accepted`, `dismissed` or `unavailable` and consumes a native event at most once. Calling it without a user gesture leaves the pending prompt available for a click. Acceptance is the user's choice, not confirmation that installation has completed. The headless kernel exposes the same API without instructions or suggestions; authored UI must supply its own manual help. Do not duplicate the default runtime's automatic suggestion.
 
-A Home Screen app may need sign-in or device connection again. On iOS/iPadOS, installation can copy cookies but does not copy localStorage or IndexedDB, and subsequent storage is separate. Preserve the owned session's explicit enrollment and key-provisioning flow; installing an icon does not transfer its device signer or application data. See [WebKit's storage behavior](https://webkit.org/blog/14787/webkit-features-in-safari-17-2/).
+A Home Screen app may need sign-in or device connection again. On iOS/iPadOS, installation can copy cookies but does not copy localStorage or IndexedDB, and subsequent storage is separate. The installed app is a new device: it signs in and is admitted by an online member like any other; installing an icon does not transfer its device signer or application data. See [WebKit's storage behavior](https://webkit.org/blog/14787/webkit-features-in-safari-17-2/).
 
 ## Connection lifecycle
 

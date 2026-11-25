@@ -1,6 +1,6 @@
 # Authority records and signed publications
 
-Tendriller hosts portable Chronolog authority records and signed code releases. It never orders, executes or reads application operations. Application data is an authored operation set that peers union and replay in canonical signed author-time order (see `docs/CRDT_CONTRACT.md` in the Chronolog repository). Authority and publication records answer different questions: who may hold keys, finalize or release code.
+Tendriller hosts portable Chronolog authority records and signed code releases. It never orders, executes or reads application operations. Application data is an authored operation set that peers union and replay in canonical signed author-time order (see `docs/CRDT_CONTRACT.md` in the Chronolog repository). Authority and publication records answer different questions: who may hold keys, finalize or release code. The host signs only short-lived admission attestations; it never signs descriptors or membership and never sees epoch keys.
 
 All applications use the common owned session. A fixed internal record format versions authenticated records. Application callers do not select alternate runtime profiles.
 
@@ -9,7 +9,9 @@ All applications use the common owned session. A fixed internal record format ve
 | Record | Meaning |
 | --- | --- |
 | Descriptor | `{applicationId, rootPrincipal, authorityPublicKey, executionManifestDigest, finalityPolicy}`. The execution manifest pins deterministic engine/platform semantics, not an application schema. |
-| Membership chain | Signed revisions with a predecessor digest, an exclusive author-time activation floor, independent grants and the epoch key commitment. |
+| Membership chain | Creator- or member-signed revisions with a predecessor digest, an exclusive author-time activation floor, independent grants with each member's wrap key, the epoch key commitment, the admission policy, admitted-member evidence and signed invites. |
+| Pending admissions | Host-signed `HostAttestation` records for keys that are not yet members (at most 64 per page, at most 60 minutes each). |
+| Key wraps | Member-signed `KeyWrap` records sealing epoch keys to one reader's wrap key (at most 4 per recipient). |
 | Publication chain | Signed monotonic UI/code releases and their immutable assets. |
 | Finality proofs | Optional signed admission and closed-time evidence, only when the descriptor's policy is not `none`. |
 
@@ -17,19 +19,21 @@ The metadata chain is evidence for a session's verified authority cache. It does
 
 ## Host SDK operations
 
-The host's authority client encodes signed authority and finality records as canonical tagged-JSON bytes from `@chronolog/authority.encodeRecord`, transported as `{record: lowercaseHexBytes}` (not CBOR); JSON enrollment action envelopes carry these in their signed `proof` or `bundle` fields, while challenge and grant inputs remain ordinary JSON. It does not verify returned signed records. Publication is the exception: `publish(publication, assets)` sends the raw `SignedPublication` JSON with canonical base64 asset bytes, and `publication(id?)` returns a JSON `{publication, version}` receipt (see [protocol](PROTOCOL.md)). Callers verify signatures with `@chronolog/authority` before trusting a result.
+The host's authority client encodes signed authority and finality records as canonical tagged-JSON bytes from `@chronolog/authority.encodeRecord`, transported as `{record: lowercaseHexBytes}` (not CBOR); JSON enrollment action envelopes carry these in their `proof`, `bundle`, `wrap` and `attestation` fields, while challenge, invite and recipient inputs remain ordinary JSON. It does not verify returned signed records. Publication is the exception: `publish(publication, assets)` sends the raw `SignedPublication` JSON with canonical base64 asset bytes, and `publication(id?)` returns a JSON `{publication, version}` receipt (see [protocol](PROTOCOL.md)). Callers verify signatures with `@chronolog/authority` before trusting a result.
 
 | Method | Purpose |
 | --- | --- |
-| `application()` | Read selection, prepared configuration, publication authority and the current authority record (null before data initialization). |
+| `application()` | Read selection, prepared configuration, publication authority, the current authority record (null before the creator initializes), `hostAttestationKey` and `admissionAccounts`. |
 | `prepare(configuration)` | Private setup credential: `{executionManifestDigest, executionProfile, publisherKeys, requestedFinality?, tools?}`. Identical retries are accepted; changed immutable setup is rejected. |
-| `challenge(publicKey)` / `enroll(proof)` | Authenticated account and exact page origin obtain a challenge. The browser's signed enrollment proof binds application, key, challenge, epoch and epoch-key digest. No plaintext key is accepted. |
-| `grant({requestId, expectedMembershipId, authorTimeAfterMs, grant})` | Explicit owner review of independent `reader`, `writer`, `administrator`, `publisher` and `finalizer` rights. The expected head is enrollment concurrency control, never a data-order input. Exact request-ID retries keep the original grant. |
-| `membership(bundle)` | An independently signed administrator extension, verified against the pinned descriptor and chain. |
+| `challenge(publicKey)` / `enroll(proof, invite?)` | A signed-in account at the exact page origin obtains a challenge and proves its device key and wrap key. The answer carries the host attestation; an optional `{inviteId, secret}` redeems an invite. |
+| `enrollAgent()` | A granted agent receives an attestation for its registered signing and wrap keys. |
+| `initialize(bundle)` | Store the creator's genesis once. |
+| `membership(bundle)` | Store a member-signed revision that extends the head by exactly one. |
+| `admissions()` / `wrap(wrap)` / `wraps(recipient)` | Read pending attestations and wrap coverage; deliver and fetch member-signed key wraps. |
 | `participant(record)` | A signed portable authority, publication or finality request. No application programs are accepted. |
 | `publication(id?)` / `publish(publication, assets)` | Read the head or an exact historical receipt, and publish a signed release with its assets. |
 
-[Session bootstrap](SESSION_BOOTSTRAP.md) gives the setup order and the starter's helper files.
+[Session bootstrap](SESSION_BOOTSTRAP.md#admission-wire-contract) gives the exact wire contract and [membership](MEMBERSHIP.md#admission) the admission rules.
 
 ## Verified opening and retries
 

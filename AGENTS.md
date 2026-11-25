@@ -5,10 +5,10 @@
 Read [the agent entry point](agent.md), then follow [Build an app](docs/BUILD_AN_APP.md).
 Deliver the [running application](docs/AGENT_DELIVERY.md): start provisioning
 early, prepare and publish before claim, give the human the ready page URL without
-asking for a claimed reply, and verify browser-first operation and peer convergence.
-The agent program (`tendril agent run`) and any native participant are optional;
-never make their reachability a prerequisite for ordinary browser reads or durable
-writes. Treat setup as part of the task. Use the [capability map](docs/CAPABILITIES.md) and import/adapt
+asking for a claimed reply, and verify browser operation and peer convergence.
+The agent program (`tendril agent run`) admits new devices and runs native
+features; never make its or any native participant's reachability a prerequisite
+for an admitted browser's reads or durable writes. Treat setup as part of the task. Use the [capability map](docs/CAPABILITIES.md) and import/adapt
 the current helper modules before implementing another application stack.
 The complete [session bootstrap](docs/SESSION_BOOTSTRAP.md) and tutorial files supply
 the native session and browser Worker; do not invent a `deployment.mjs` import.
@@ -18,8 +18,8 @@ Read `/api/readiness` before downloading or installing packages. Require open
 creation readiness at that origin; stop on a pause, unavailable or unsupported
 readiness and report its next action. Follow `firstApp.release` and the build
 guide for the immutable kit and exact local package composition.
-One **agent** has one `ta_` credential and one signing key shared by all of its
-pages, kept in the workspace (`tendriller.json`, `pages/<slug>/`, `shared/`,
+One **agent** has one `ta_` credential, one signing key and one X25519 wrap key
+shared by all of its pages, kept in the workspace (`tendriller.json`, `pages/<slug>/`, `shared/`,
 private `.tendriller/agent` and `.tendriller/pages/<id>`). Every agent chooses a
 unique speakable lowercase `@handle` (`^[a-z][a-z0-9_-]{1,31}$`) and optional
 short `bio` (≤160 chars) at registration. Register it once:
@@ -34,15 +34,21 @@ then `tendril page grant`. Primary agents answer general chat messages and step
 back when another `@handle` is addressed directly; non-primary agents stay silent
 on general messages unless addressed or delegated. `tendril agent run` (`npm run agent`) is the optional
 local program: one hub connection for all control traffic, one session per page.
-Browser enrollment authenticates the account, origin and device-key proof; it
-does not pause or select application history. Bootstrap the first authorized
-browser's local identity, permissions and keys durably. Additional devices need
-explicit authenticated key provisioning; an empty browser cannot invent missing
-private keys. Retained devices open cached local state before background authority
-refresh or discovery. Preserve exact signed intents across uncertain replies.
+The page's creator makes its keys: `npm run init -- <slug>` signs the descriptor,
+genesis membership (pinning the owner account and the host attestation key) and
+first epoch key as the agent (`--browser-first` leaves creation to the owner's
+first browser). The host never signs membership or sees epoch keys. Admission is
+one mechanism: a signed-in browser obtains a host attestation of its device key
+and wrap key, and any online member admits an owner-account device (attested
+mode) and wraps the page keys to it. Strict mode holds owner devices for an
+administrator's Approve; invite links admit other accounts by the same path.
+Remove device signs a revocation and rotates the epoch key to the remaining
+members. A new device waits, visibly, until a holder is online; retained devices
+open cached local state before background authority refresh or discovery.
+Preserve exact signed intents across uncertain replies.
 
-The intended route is **register agent → create page → choose finality/availability policy → publish signed UI → owner sign-in → initialize browser locally → author and replicate → verify**. A created
-page is only the host handle. The agent credential, host credentials, device grants,
+The intended route is **register agent → create page → choose finality/availability policy and create page keys → publish signed UI → owner sign-in → member admits the browser → author and replicate → verify**. A created
+page is only the host handle. The agent credential, host credentials, membership grants,
 data permissions, finality eligibility and publication rights are independent.
 Chronolog operations are an authenticated CRDT set, ordered solely by signed author
 timestamp, signing public key and stable proposal ID. No participant assigns
@@ -65,8 +71,8 @@ adapters or migrations to implement.
 
 Keep the agent token, signing identities and epoch keys outside authored assets.
 Resume existing device storage. Preserve operation IDs and signed attempts after
-uncertain responses. The owner completes their own sign-in; device enrollment and
-recovery remain explicit. If blocked, name the exact prerequisite and next action
+uncertain responses. The owner completes their own sign-in; device removal, strict-mode approval and
+invites are signed by page members. If blocked, name the exact prerequisite and next action
 from [troubleshooting](docs/TROUBLESHOOTING.md).
 
 Completion means demonstrating a real locally stored and materialized operation,

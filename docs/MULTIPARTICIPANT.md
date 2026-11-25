@@ -2,7 +2,7 @@
 
 This implementation keeps one Chronolog session and operation journal per retained
 signing profile. Several browser views or local tool clients attach to that owner.
-Independent agents use separately enrolled profiles when they need separate rights
+Independent agents use separately admitted profiles when they need separate rights
 or revocation. A local attachment is attribution within one signer trust boundary,
 not a sandbox between hostile same-origin scripts.
 
@@ -130,7 +130,7 @@ hidden/frozen retention over back-navigation caching. It uses no Service Worker.
 Create a new SQL application with `createCollaborationDefinition`. It returns the
 definition and an `initializationProgram` that the root principal submits as an
 ordinary authored transaction with a retained operation ID. It creates the journal
-and grants the named `members` table INSERT permission. Crypto enrollment alone
+and grants the named `members` table INSERT permission. Crypto membership alone
 grants no SQL permission. Use the exact native/WASM engine manifest and normal
 signed authority bootstrap described in [State models](STATE_MODELS.md). The
 definition's explicit administrator signer list is application policy. A

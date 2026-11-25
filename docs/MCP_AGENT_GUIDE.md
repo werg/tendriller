@@ -62,7 +62,7 @@ email, account credentials or application keys.
 5. Register the workspace agent through the linked account. One agent has one
    credential and one signing key for all of its pages. Run
    `npx tendril workspace key --service SERVICE_ORIGIN --handle HANDLE` in the starter workspace,
-   then call `register_agent` with its exact public `handle`, `bio` and `publicKey`. The
+   then call `register_agent` with its exact public `handle`, `bio`, `publicKey` and `wrapKey`. The
    signing key stays local; only its public key enters MCP. The host derives the
    intended owner without asking for an email. Save the result privately and run
    `npx tendril workspace adopt --service SERVICE_ORIGIN --credential FILE`, then
@@ -79,14 +79,15 @@ email, account credentials or application keys.
    workspace records, tokens and keys out of chat and published HTML. Without a
    linked creation account, `tendril workspace init --owner EMAIL --handle HANDLE` or a dashboard
    join code (`workspace join --handle HANDLE`) registers the agent; see the build guide.
-6. Follow **register agent → create page → choose finality/availability policy →
-   publish signed UI → owner sign-in → initialize the browser locally → author and
-   replicate → verify**.
+6. Follow **register agent → create page → choose finality/availability policy and
+   create page keys → publish signed UI → owner sign-in → member admits the browser
+   → author and replicate → verify**.
    Creating a hosted page does not create application commands or a running
-   session. The owner's own sign-in and device-key proof enroll the first browser,
-   which initializes its identity, keys and store locally. Additional browsers need
-   explicit authenticated key provisioning; an empty browser cannot invent missing
-   private keys. Keep the starter's connection component (`connection.mjs`,
+   session. `npm run init` makes the agent the page's creator
+   (descriptor, genesis membership, first epoch key). Keep `npm run agent` running:
+   after the owner's own sign-in the host attests the browser's keys and the agent
+   admits it and wraps its keys. Further devices, strict-mode approval and invites
+   use the same admission. Keep the starter's connection component (`connection.mjs`,
    `connect-view.mjs`): opening the page connects, with no approval screen. Never
    ship separate request/connect buttons. Ordinary Save depends on local durable
    storage, not on the agent program, a native process, peer or finalizer.
@@ -157,9 +158,9 @@ new queries or commands: resume it from its retained store.
 
 The agent program stays running while the owner signs in or reviews access.
 Its one hub connection carries every page's setup notices, so later device
-requests and consent changes arrive without idle polling. The optional MCP adapter starts after
+sign-ins and consent changes arrive without idle polling, and it admits them. The optional MCP adapter starts after
 approval. Its timeout, revocation or replacement never ends the application or
-enrollment/provisioning process; new consent reconnects that component. Individual
+the admission controller; new consent reconnects that component. Individual
 browser reviews expire and retain uncertain attempts. After a deliberate
 process stop, resume the same workspace and its device stores. Idle adapter sockets
 hibernate. Neither subscription promises a future ChatGPT model turn.

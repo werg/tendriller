@@ -1,12 +1,12 @@
 # Reuse the application helpers
 
-Start with [browser-first setup](BUILD_AN_APP.md), [ownership/bootstrap](SESSION_BOOTSTRAP.md), and [capabilities](CAPABILITIES.md). A rich application needs domain views, not a JSON editor or a form mirroring storage fields.
+Start with [setup](BUILD_AN_APP.md), [ownership/bootstrap](SESSION_BOOTSTRAP.md), and [capabilities](CAPABILITIES.md). A rich application needs domain views, not a JSON editor or a form mirroring storage fields.
 
 ## Connect the browser
 
 `worker.mjs` opens retained identity/authority/keys locally, then `createApplicationSession`. `page.mjs` uses `openBrowserOwner` and installs `createApplicationBackend(session)` into the runtime. `shared/helpers/browser-profile.mjs` supplies the same stable profile for every document. Never gate Save on network/discovery/native-provider/finalizer reachability.
 
-The first owner browser initializes local data keys after actual sign-in/key proof. A fresh second browser stays keyless until explicit reviewed crypto membership and recipient-bound wrapped-key transfer. Use `shared/helpers/provisioning-view.mjs`; no ordering pause or native-prepared prefix exists. SQL permission grants remain ordinary transactions, separate from crypto membership.
+`worker.mjs` also starts the one admission controller (`admitBrowserSession`) and returns its `extensions` with the session. A signed-in browser waits until an online member admits it and wraps its keys; mount `shared/helpers/devices-view.mjs` (`mountDevices({root, session, pageUrl})`) for the waiting banner, devices and agents list, New device notices, Remove device, pending Approve, the strict-mode switch, invites and invite-link redemption. It re-renders each coherent `{topic:'admission', state}` notice; actions run in the owner. No ordering pause exists. SQL permission grants remain ordinary transactions, separate from crypto membership.
 
 ### Match an application-owned palette
 

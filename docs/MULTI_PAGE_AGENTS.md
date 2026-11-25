@@ -4,7 +4,7 @@ One maintenance agent maintains many pages. It has one account-level identity
 and credential, runs one optional local program, and keeps one connection to the host
 for all control traffic. A single page is a workspace with one page.
 
-The workspace is the only model: one credential and one signing key per agent,
+The workspace is the only model: one credential, one signing key and one wrap key per agent,
 and page access by grant.
 
 ## Decisions
@@ -13,8 +13,11 @@ and page access by grant.
   handle (`^[a-z][a-z0-9_-]{1,31}$`, case-insensitively unique per account) and
   optional one-line `bio` (≤160 chars) at registration. Handles can be updated
   later via `PATCH /api/agent` (`tendril agent profile`).
-- **One signing key per agent**, shared by all of its pages. The public key is
-  registered with the agent and enrolled in each page's application grants.
+- **One signing key and one wrap key per agent**, shared by all of its pages.
+  Both public keys are registered with the agent. On a page it creates
+  (`npm run init`) the signing key is the root principal and first
+  administrator; on any other granted page the host attests it (with its wrap
+  key) and an online member admits it into membership and wraps the keys to it.
 - **Page access & primary selection:** pages an agent creates are granted to it
   automatically (and the first granted agent becomes the page's default primary
   agent). Existing pages need an explicit owner grant. Each page has at most one
@@ -36,6 +39,7 @@ agents(id TEXT PRIMARY KEY,            -- 'ag_' + 26 base32
        bio TEXT NOT NULL DEFAULT '',    -- optional <=160 char role description
        token_hash TEXT NOT NULL UNIQUE, -- sha256 hex of 'ta_' token
        public_key TEXT NOT NULL,        -- base64url Ed25519 signing key
+       wrap_key TEXT NOT NULL,          -- 64 hex X25519 key-wrap key
        created_at INTEGER NOT NULL, claimed_at INTEGER, revoked_at INTEGER)
 agent_grants(agent_id TEXT, page_id TEXT, scopes TEXT NOT NULL, -- JSON array
              granted_at INTEGER NOT NULL, granted_by TEXT NOT NULL, -- 'creator' | 'owner'
@@ -59,10 +63,10 @@ agent_join_codes(code_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL,
 
 | Route | Who | Result |
 |---|---|---|
-| `POST /api/agents {owner, handle, bio?, publicKey}` | a new agent, unauthenticated, creation rate limits | unclaimed agent + token. The owner claims it, and every page it created for that email, by signing in to any one of them. |
-| `POST /api/agents/join {code, handle, bio?, publicKey}` | an agent given a paste-ready blurb | agent under the inviting account + token |
+| `POST /api/agents {owner, handle, bio?, publicKey, wrapKey}` | a new agent, unauthenticated, creation rate limits | unclaimed agent + token. The owner claims it, and every page it created for that email, by signing in to any one of them. |
+| `POST /api/agents/join {code, handle, bio?, publicKey, wrapKey}` | an agent given a paste-ready blurb | agent under the inviting account + token |
 | Dashboard → Your agents → Add agent | signed-in owner | one-time join code (10 min) and paste-ready blurb |
-| MCP `register_agent {handle, bio?, publicKey}` | an OAuth-linked assistant | agent under the account; calling again with the same handle rotates the token |
+| MCP `register_agent {handle, bio?, publicKey, wrapKey}` | an OAuth-linked assistant | agent under the account; calling again with the same handle rotates the token |
 
 ### Agent API (service origin)
 
@@ -81,9 +85,11 @@ agent_join_codes(code_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL,
   `x-tendril-agent` (agent id) and `x-tendril-agent-scopes`.
 
 The page object keeps a local mirror of its grants (`agent_grants` table:
-agent id, public key, scopes, revision) written through internal routes when a
+agent id, public key, wrap key, scopes, revision) written through internal routes when a
 grant changes. `currentPrincipal` checks that mirror synchronously, so
-revocation applies at commit time without a D1 round trip.
+revocation applies at commit time without a D1 round trip. Creating a grant
+also issues the agent's host attestation into the page's pending admissions, so
+an online member admits it without further action.
 
 ### Hub
 
@@ -139,25 +145,27 @@ my-pages/
   shared/                  # shared domain helpers and components
   pages/<slug>/            # per-page source: domain.mjs, page.mjs, ... → dist/
   .tendriller/             # private, gitignored
-    agent/                 # identity.sqlite (shared signer), credential.json
-    pages/<page-id>/       # device.sqlite, descriptor, cursors, page.json, initialized.json once enrolled
+    agent/                 # identity.sqlite (shared signer), wrap-key.json (shared wrap key), credential.json
+    pages/<page-id>/       # device.sqlite, descriptor, cursors, page.json, initialized.json after npm run init
 ```
 
 - `tendril workspace init --service <origin> --owner <email> --handle <handle>` creates the
-  workspace, the shared signing key and an unclaimed agent credential;
+  workspace, the shared signing and wrap keys and an unclaimed agent credential;
   `workspace join --code <code> --handle <handle>` joins an account with a dashboard code;
   `workspace key` then `workspace adopt --credential <file>` registers through
   an account-linked MCP `register_agent`.
 - `tendril page new <slug>` creates a page and its source folder.
 - `tendril page grant <slug> <page-id>` / `tendril page list` / `tendril status`.
+- `tendril page devices|approve|remove-device|mode|invite|revoke-invite <slug>`
+  run admission actions inside the running agent program's page owner.
 - `tendril agent run` is the one optional local program: one hub
-  connection, one Chronolog session per granted page (each with its own device
-  store and the shared signer), one local socket for attach clients that name
+  connection, one Chronolog session per initialized page (each with its own device
+  store, the shared signer and wrap key, and one admission controller), one local socket for attach clients that name
   a page, one combined request/event stream with a cursor per page, automatic
   reconnection.
 - `tendril mcp-stdio` serves every page; each tool takes `page`.
 - `tendril checkpoint export <file>` moves the stopped workspace's private state
-  (`tendriller.json`, the agent key and credential, every page's device
+  (`tendriller.json`, the agent keys and credential, every page's device
   checkpoint and private records) into one encrypted file and retires the
   source; `tendril checkpoint restore <file>` recreates it in an empty folder.
   Page source moves with `tendril handoff source`.

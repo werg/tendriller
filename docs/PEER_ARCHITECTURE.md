@@ -12,11 +12,11 @@ The browser owns durable execution and replication in a Worker. A native agent o
 
 The host's common participant transport permits only signed authority and finality records, public code publication, bounded discovery and connection invitations. It rejects database operations and history, generic content chunks and live UI signals before dispatch. The SDK applies the same filter before HTTP.
 
-The host stores signed metadata and immutable code. Its separate relay transport forwards bounded opaque ciphertext without retaining application payloads or acquiring a reader grant. It keeps a persistent descriptor, so the creator is not a special bootstrap dependency. Code publication uses signed monotonic ancestry that is independent of application operations.
+The host stores signed metadata and immutable code. Its separate relay transport forwards bounded opaque ciphertext without retaining application payloads or acquiring a reader grant. It keeps a persistent descriptor and membership chain, so the creator is not a special bootstrap dependency once any other member is admitted. Code publication uses signed monotonic ancestry that is independent of application operations.
 
 ## Availability
 
-A resident page means authority metadata and code remain hosted. It does not require a permanent native process, an always-on peer or a finalizer. An initialized browser or native device stores and materializes operations locally with the host, peers and agents all unreachable. A fresh browser still needs enrollment and explicit key provisioning. Discovery records are expiring hints. Verify peers and operations through Chronolog.
+A resident page means authority metadata and code remain hosted. It does not require a permanent native process, an always-on peer or a finalizer. An initialized browser or native device stores and materializes operations locally with the host, peers and agents all unreachable. A fresh browser still needs admission by an online member holding the keys. Discovery records are expiring hints. Verify peers and operations through Chronolog.
 
 A hibernatable invitation listener receives only small on-demand connection requests without a heartbeat. Bounded rendezvous exchanges one offer and one answer, then closes. A failed direct attempt can open the dedicated relay, which pairs reliable and disposable lanes independently. Host transport receipts bound relay egress, and an alarm revalidates account admission at most every 30 seconds. The session owns reconnect for both transports.
 

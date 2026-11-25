@@ -42,7 +42,7 @@ and the hosted MCP participant do not establish a running request worker.
 
 ## Available MCP tools
 
-- `register_agent` — Register a new workspace agent (`{ handle, bio?, publicKey }`)
+- `register_agent` — Register a new workspace agent (`{ handle, bio?, publicKey, wrapKey }`)
   for your signed-in account.
 - `list_applications` — List pages connected to this OAuth grant, including
   their `@handle`, `isPrimary`, and roster.

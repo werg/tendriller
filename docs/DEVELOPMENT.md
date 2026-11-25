@@ -216,8 +216,8 @@ installs only public archives in a temporary consumer, and drives it as document
 `tendril workspace init` for the owner email, two notes pages from one agent
 (`page:new`, `init` and `build` with exact retries), one optional `tendril agent run`,
 signed publication through the attach socket before claim, one owner sign-in that
-claims the agent and every page it created and initializes the browser locally,
-attached CLI commands, explicit key provisioning for additional devices,
+claims the agent and every page it created and whose browser the agent admits,
+attached CLI commands, admission of additional devices,
 browser/agent convergence over the selected transport, local saving while the agent
 program is stopped with convergence after it restarts, a second page in another tab,
 a page initialized while the program runs, a clean SIGTERM exit, uncertain-operation
@@ -305,9 +305,9 @@ editing generated `agent.md` or `llms.txt` alone. Run the MCP-only cold-start
 scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavior;
 link and consistency checks do not prove that an unfamiliar agent can finish.
 
-Agent registration retains one credential and one signing key per workspace across retries; the agent's pages are granted automatically and an owner grants existing pages.
-Device enrollment uses the browser's own key proof and an explicit owner grant. Additional
-devices receive keys through explicit authenticated provisioning. Neither pauses or selects
+Agent registration retains one credential, one signing key and one wrap key per workspace across retries; the agent's pages are granted automatically and an owner grants existing pages.
+The page creator signs genesis; every later device is admitted from a host attestation by an
+online member, which wraps the keys to its own wrap key. Admission never pauses or selects
 application operations.
 The agent program receives setup notifications for every page over one hub connection without idle polling;
 individual requests expire after ten minutes. Its lifetime is independent of the

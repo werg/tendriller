@@ -7,7 +7,10 @@ The runnable [first-app tutorial](BUILD_AN_APP.md) supplies the actual compositi
 | Identity/authority | What it permits |
 | --- | --- |
 | Agent token (`ta_`) and page URL | The agent's one account-level host credential (explicit per-page grants and scopes; not data decryption) and one hosted page's address |
-| Workspace shared signer as publisher | The agent's one opaque signing key (shared by all its pages, not a per-page key) signs immutable UI/code under the prepared host publisher policy; the publisher right needs no reader/writer/root grant. It joins a page's data session only through explicit `sign-enrollment`, `provisioning-request` and `import-provisioning`, after which `initialized.json` records the verified reader grant and current epoch key |
+| Workspace shared signer as publisher | The agent's one opaque signing key (shared by all its pages, not a per-page key) signs immutable UI/code under the prepared host publisher policy; the publisher right needs no reader/writer/root grant. As creator (`npm run init`) the same key is the page's root principal and first administrator; `initialized.json` marks that this page's data store exists |
+| Workspace wrap key | The agent's one X25519 key-wrap key (`.tendriller/agent/wrap-key.json`, registered as `wrapKey`). Members wrap each page's epoch keys to it; its private half never leaves the workspace |
+| Device wrap key | Each browser device's own X25519 key-wrap key, kept in its device store (`deviceWrapKey(store)`) |
+| Host attestation key | The host's Ed25519 key. It signs short-lived account-bound `HostAttestation`s of device keys, which genesis pins as `admission.hostKey`; it never signs membership |
 | Browser/native signing identity | Authorship of exact durable proposals, with authenticated crypto membership. All of one agent's pages share its one signing key, each with its own device store |
 | `reader` / `writer` | Independent crypto/data-session eligibility; neither implies SQL object permissions |
 | `administrator` / `publisher` / `finalizer` | Separate explicit rights; writing grants none of these implicitly |
@@ -15,20 +18,20 @@ The runnable [first-app tutorial](BUILD_AN_APP.md) supplies the actual compositi
 | Profile owner lock | One physical signer/store on one device, not a global application-order authority |
 | View/agent binding | Bounded attachment and approved tool capability scope, independent from membership and caller labels |
 
-Descriptor: `{applicationId,rootPrincipal,authorityPublicKey,executionManifestDigest,finalityPolicy}`. Public cryptographic identifiers are lowercase hex. The execution manifest establishes deterministic engine/platform semantics, **not immutable application schema**. Membership records carry revision, predecessor digest, signed activation floor, independent grants, epoch and epoch-key commitment. This metadata chain never supplies SQL operation order or overwrites projected permission tables.
+Descriptor: `{applicationId,rootPrincipal,authorityPublicKey,executionManifestDigest,finalityPolicy}`. Public cryptographic identifiers are lowercase hex. The execution manifest establishes deterministic engine/platform semantics, **not immutable application schema**. Membership records carry revision, predecessor digest, signed activation floor, independent grants with each member's wrap key, epoch and epoch-key commitment, the admission policy `{mode,hostKey,accounts,grant}`, admitted-member evidence and signed invites. This metadata chain never supplies SQL operation order or overwrites projected permission tables.
 
 ## Fresh creation, in order
 
 1. Same-origin service/discovery/readiness and immutable kit verification.
 2. Register the workspace agent once (`tendril workspace init|join|key|adopt`; one credential and one signing key) and create the page (`npm run page:new -- <slug>`; the creating agent is granted it automatically). Retain the private workspace.
-3. `npm run init -- <slug>`: prepare `{executionManifestDigest,executionProfile,publisherKeys,requestedFinality?,tools?}`. Ordinary apps omit finality to choose `none`.
-4. `npm run deploy -- <slug>`: build and sign the complete UI before the first browser key is known. Publisher authorization is independent from the data descriptor/database schema.
-5. Give the person the ready page URL. Their own sign-in and device-key proof initialize the root and initial membership. The epoch key stays on the browser; only its commitment is signed and hosted.
-6. Additional devices prove their key and receive explicit grants plus recipient-bound wrapped keys. Account access alone never reconstructs unavailable old data keys.
+3. `npm run init -- <slug>`: prepare `{executionManifestDigest,executionProfile,publisherKeys,requestedFinality?,tools?}` (ordinary apps omit finality to choose `none`), then create the page data as its creator: `createPageGenesis` signs the descriptor, genesis membership and first epoch key with the shared signer and wrap key, `openPageAuthority` retains the exact bundle and key before `initialize`, and `initialized.json` is written. `--browser-first` (implied by `--browser-finalizer`) skips creation.
+4. `npm run deploy -- <slug>`: build and sign the complete UI. Publisher authorization is independent from the data descriptor/database schema.
+5. Give the person the ready page URL and keep `npm run agent` running. Their sign-in yields a host attestation of the browser's device key and wrap key; the agent admits that owner-account device and wraps the keys to it. On a browser-first page the first browser is the creator, and the agent is admitted from its signed host grant.
+6. Additional devices, agents and invited people use the same admission (see [membership](MEMBERSHIP.md#admission)). Account access alone never reconstructs a data key.
 
-An account login is not a device grant. The agent token is not a device signer. A publisher grant is independent of data access and control administration. A page release does not initialize or replace an application session. The agent's grant lets it configure authority and publish within the common publication capacity and the unclaimed page's 24-hour expiry; the owner later signs in to open the ready page, adopting existing keys and publications without reset.
+An account login is not a device grant. The agent token is not a device signer. A publisher grant is independent of data access and control administration. A page release does not initialize or replace an application session. The agent's grant lets it create the page keys and publish within the common publication capacity and the unclaimed page's 24-hour expiry; the owner later signs in to open the ready page, with its devices admitted into the existing membership without reset.
 
-See `setup.mjs`, `publish.mjs`, `helpers/prepare-host.mjs`, and `helpers/browser-bootstrap.mjs` in the tutorial. Private intents/signing identities/epoch keys remain outside `page/`.
+See `setup.mjs`, `publish.mjs`, `helpers/prepare-host.mjs`, `helpers/page-data.mjs`, `helpers/browser-bootstrap.mjs` and `helpers/devices-view.mjs` in the tutorial. Private intents/signing identities/epoch keys remain outside `page/`.
 
 ## Local opening before network discovery
 
@@ -44,7 +47,7 @@ const authority = await createAuthorityProvider({
 const session = await createApplicationSession({ device, definition, authority });
 ```
 
-The starter explicitly creates only an empty first device profile. A retained binding with missing/damaged private identity fails closed. On cache absence, first enrollment fetches authenticated host metadata, durably stores its original bootstrap key before sending the epoch-bound signed proof, then pins the returned verified descriptor. On an established device, local reopening does not wait for host refresh, discovery, peers or a finalizer.
+The starter explicitly creates only an empty first device profile. A retained binding with missing/damaged private identity fails closed. `openPageAuthority({store,identity,wrapKey,peers,applicationId,executionManifestDigest,create})` from `@tendriller/core/admission` opens the cached provider without the network. On cache absence it reads `GET application`: an uninitialized page is created by this device when `create` is set (the exact genesis and epoch key are stored before `initialize`; an uncertain reply resends the same bytes, and a lost race discards the unsent genesis), otherwise it fails `PAGE_UNINITIALIZED`; an initialized page is verified and pinned so the device can request admission. On an established device, local reopening does not wait for host refresh, discovery, peers or a finalizer.
 
 `createApplicationSession({device,definition,authority?,applicationId?,epochKeys?,createMaterializer?})` is the sole public factory. Do not invent a parallel `{descriptor,identity,store,runtime}` constructor. SQL supplies a lazy callback:
 
@@ -76,14 +79,30 @@ Read `session.status` for actual data state, including `connectedPeers` and
 `connectionRevision`, and observe it with `session.onStatus`. The optional
 participation controller you create with `participateApplication` (browser) or
 `participateNativeApplication` (native) separately reports discovery and
-connection progress through its own `status` and `onStatus`. A browser with a fresh grant can authenticate
-before acquiring history keys; `awaiting-keys` persists until an authorized
-reader supplies them through explicit recipient-bound provisioning. No participant
-needs to be reachable for local authoring.
+connection progress through its own `status` and `onStatus`. The admission controller's
+`state.phase` separately reports `waiting-admission`, `waiting-approval`,
+`waiting-keys`, `admitted` or `removed`. No participant needs to be reachable for
+local authoring on an admitted device.
 
-## Provision keys without distributing secrets
+## Admit devices without distributing secrets
 
-The first owner browser initializes root, membership and its epoch key locally after real sign-in and key proof; the host stores only signed commitments. Every additional device, including the agent's shared signer for a page, proves its key and creates a retained recipient request. An authorized device reviews its exact independent rights, signs crypto membership, and wraps the epoch keys to that recipient; the recipient imports the package. No host token, account login or ordering pause substitutes for that review. The published code never receives the agent token, native signer or plaintext epoch key; the browser uses its page's same-origin cookie for host access and its own device identity for the signed session. Keep a current reader available for initial key acquisition. Guest devices additionally require admitted guest account access and that guest's verified account ID.
+`createAdmission(session,{peers,wrapKey,store,subject:'device'|'agent'})` is the one admission controller, used by the browser Worker (`admitBrowserSession`) and every native agent page. As a newcomer it obtains and renews its host attestation (presenting a stored invite when there is one), waits, and installs the epoch keys members wrap to it. As a member holding the current key it verifies pending attestations against signed state, admits eligible ones in one signed revision, and keeps every reader's keys wrapped. The published code never receives the agent token, native signer or plaintext epoch key; the browser uses its page's same-origin cookie for host access and its own device identity for the signed session.
+
+The controller returns `{state,subscribe,refresh,extensions,call,close}`. Pass `extensions` to `createApplicationOwner(session,{extensions})` (the browser Worker's `openSession` returns `{session,extensions,close}`); views and the CLI call `session.extensions.call(name,args)`:
+
+| Action | Effect |
+| --- | --- |
+| `admission.state` / `admission.refresh` | Current `AdmissionState` (phase, mode, members, pending, invites, notices) |
+| `admission.approve(publicKey,{writer?,administrator?})` | Administrator: admit a pending device (strict mode, other accounts, previously removed keys) |
+| `admission.remove(publicKey)` | Administrator: sign the member's revocation and a new epoch wrapped only to the remaining members |
+| `admission.mode('attested'\|'strict')` | Administrator: auto-admit owner devices, or require approval |
+| `admission.grant(publicKey,{writer?,administrator?})` | Administrator: change a member's rights |
+| `admission.addKey(publicKey,wrapKey?,{writer?})` | Administrator: add a key no host attests, such as the hosted MCP identity an owner device creates (no wrap key means it never receives wrapped keys) |
+| `admission.invite({binding,role,expiresInMs})` | Administrator: sign an invite; returns `{inviteId,fragment}` for the link `PAGE_URL#invite=<id>.<secret>` |
+| `admission.revokeInvite(inviteId)` | Administrator: sign the invite revoked |
+| `admission.redeem(fragment)` | Newcomer: present an invite from the link fragment |
+
+Owner notices are `{topic:'admission',state}`; `state.notices` kinds are `new-device`, `pending` and `removed`. Pass `onNotification: () => admission.refresh()` to `participateApplication`/`participateNativeApplication` so host page notifications wake the controller.
 
 ## Compose the browser facade
 
@@ -126,24 +145,46 @@ The runtime matches `backend.applicationId` to `selection.id`. It requires durab
 
 ## Optional background participation
 
-`participateApplication(session,{peers,openDirectConnection})` runs after local opening and returns immediately. It uses existing direct RTC, isolated reliable/live lanes, encrypted relay fallback, account-bound introductions and bounded retry budgets. Metadata refresh is signed evidence verified into the cached authority provider. It never blocks Save. `participateNativeApplication` supplies optional Node RTC mechanics for an explicitly provisioned native device.
+`participateApplication(session,{peers,openDirectConnection})` runs after local opening and returns immediately. It uses existing direct RTC, isolated reliable/live lanes, encrypted relay fallback, account-bound introductions and bounded retry budgets. Metadata refresh is signed evidence verified into the cached authority provider. It never blocks Save. `participateNativeApplication` supplies optional Node RTC mechanics for an admitted native device.
 
-Open root locks before opening signer storage. Native tools attach to the existing private IPC supervisor or deliberately use a separately enrolled profile; an unavailable supervisor never authorizes another signer. Report its actual process lifetime. Optional agent/tool-provider dispatch and idempotency are not application ordering.
+Open root locks before opening signer storage. Native tools attach to the existing private IPC supervisor or deliberately use a separately admitted profile; an unavailable supervisor never authorizes another signer. Report its actual process lifetime. Optional agent/tool-provider dispatch and idempotency are not application ordering.
 
-## Enrollment and control DTOs
+## Admission wire contract
 
-Use `@tendriller/core/authority` for transport and `@chronolog/authority` for canonical record encoding/signature verification. `{record:lowercaseHexCanonicalBytes}` preserves bigint timestamps and bytes without JSON narrowing.
+Use `@tendriller/core/authority` (`createAuthorityClient`) for transport and `@chronolog/authority` for canonical record encoding/signature verification. `{record:lowercaseHexCanonicalBytes}` preserves bigint timestamps and bytes without JSON narrowing. Agent routes (`/api/agent/pages/<page>/peers/…`) and the page origin (`_tendril/peers/…`) share one implementation.
 
-- `GET application`: `{selection,configuration,publicationAuthority,authority}`; authority is a canonical record or null before data initialization.
+- `GET application`: `{selection,configuration,publicationAuthority,authority,hostAttestationKey,admissionAccounts}`. `authority` is the canonical bundle record or null before the creator initializes. `admissionAccounts` is what genesis must pin: the owner account ID once claimed, else `email:<intended owner>`.
 - `POST application`: `HostAppConfig`, authorized by host management scope. Identical preparation retries are accepted; changed immutable setup is rejected.
-- `POST peers/enrollment {action:'challenge',publicKey}`: authenticated browser account and exact page origin.
-- `{action:'enroll',proof}`: a signed `EnrollmentRequest` containing application/key/challenge/**epoch and epochKeyDigest**. No plaintext keys are accepted.
-- `{action:'grant',requestId,expectedMembershipId,authorTimeAfterMs,grant}`: explicit owner browser review, proved recipient account binding, active account, exact independent boolean rights. The expected signed metadata head is enrollment concurrency control, never a data-order input. Exact request-ID retries retain the original grant.
-- `{action:'membership',bundle}`: independently signed admin extension, verified against the pinned descriptor and existing chain/account proofs.
+
+`POST peers/enrollment` actions (all run under the page's authority mutation lock):
+
+| `action` | Caller | Input | Result |
+| --- | --- | --- | --- |
+| `challenge` | Signed-in browser account | `publicKey` | `{applicationId,publicKey,challenge,expiresAt}` |
+| `enroll` | Same | `proof` (signed `EnrollmentRequest {applicationId,publicKey,wrapKey,challenge}`), optional `invite:{inviteId,secret}` | Metadata plus `attestation`. Works before the page has authority |
+| `enroll-agent` | Agent with a page grant | none | Metadata plus an agent `attestation` (also issued automatically when the grant is created) |
+| `initialize` | Agent whose registered key is the genesis root, or the owner's browser account | `bundle` | Stores the genesis once (`application_initialized` 409 otherwise; an identical retry returns metadata) |
+| `membership` | Any principal that may read authority | `bundle` | Stores a chain extended by exactly one revision; `membership_head_changed` 409 when the stored head moved |
+| `admissions` | Any page principal | none | `{pending: record[], wrapped: {<recipient>: <max epoch>}}` |
+| `wrap` | Any page principal | `wrap` (signed `KeyWrap`) | Stores it when signer and recipient are reader members (at most 4 per recipient) |
+| `wraps` | Any page principal | `recipient` hex | `{wraps: record[]}` |
+
+`initialize` requires prepared configuration and checks: a verified bundle with exactly one membership; the selected `applicationId`; the configured `executionManifestDigest`; `authorityPublicKey == rootPrincipal`; the configured finality (`none` when omitted; `browser-signed-frontier` is a signed frontier whose signer is the root); `admission.hostKey` equal to the host attestation key; `admission.accounts` containing the owner principal; and a root member with reader, writer, administrator and a wrap key.
+
+Record shapes (hex keys, bigint milliseconds):
+
+- `HostAttestation {subject:'device'|'agent', pageId, applicationId, accountId, email (verified lowercase or null), publicKey, wrapKey, label (≤128), inviteId (32 hex or null), issuedAt, expiresAt (≤24 h window; devices get 60 min), nonce (64 hex)}`, signed by the host attestation key. An agent's attestation names the page owner account (or `pending:<pageId>` before claim) and its `@handle` label.
+- `AdmissionPolicy {mode:'attested'|'strict', hostKey, accounts: ('<accountId>'|'email:<email>')[], grant:{reader,writer}}`.
+- `MemberGrant {publicKey, wrapKey, reader, writer, administrator, publisher, finalizer}`; `MemberAdmission {publicKey, via:'attested'|'invited'|'approved', attestation}`.
+- `PageInvite {inviteId, role:'reader'|'writer'|'admin', binding:{kind:'email',email}|{kind:'open'}|{kind:'public',max}, expiresAt, secretDigest (sha256 of the 32 secret bytes), revoked}`.
+- `KeyWrap {applicationId, descriptorId, membershipId, recipient, wrapKey, epochs, authority, encrypted}`, signed by a member (`session.provisioning.wrapKeys(recipient)` / `.unwrapKeys(wrap, wrapPrivateKey)`).
+
+`enroll` with an invite checks, in the page transaction, that the head holds that invite unrevoked and unexpired, the secret digest, the email binding against the account's verified email, and redemptions (`open`/`email`: one account, idempotent for it; `public`: up to `max` accounts). Errors are `invite_invalid` (malformed), `invite_unknown`, `invite_revoked`, `invite_expired`, `invite_secret_invalid`, `invite_email_mismatch`, `invite_redeemed` and `invite_exhausted`. Without a configured attestation key the enrollment actions fail 503 `attestation_unconfigured`.
+
 - `POST peers/participant`: signed portable authority/publication/finality requests, canonically encoded as one bounded record. No application programs are accepted.
 - `POST peers/publication`: independent signed publisher manifests and referenced immutable code assets. Code-revision concurrency is separate from data chronology.
 
-After an explicit grant, `session.mergeAuthority(bundle)` verifies and retains public evidence without SQL membership overlays. Recipient keys use `session.provisioning.createProvisioningRequest()`, `.exportProvisioning(request)`, and `.importProvisioning(package)`. Agreement secrets stay in the original owning store. Review full recipient fingerprints before exporting.
+`session.mergeAuthority(bundle)` verifies and retains public evidence without SQL membership overlays.
 
 ## Own shutdown and uncertain operations
 

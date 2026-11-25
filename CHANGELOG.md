@@ -9,6 +9,24 @@ and kit, as described in [Build an app](docs/BUILD_AN_APP.md).
 
 ## Unreleased
 
+- **Page keys and one admission mechanism.** The page's creator signs its
+  descriptor, genesis membership and first epoch key: the agent by default
+  (`npm run init -- <slug>`), or the owner's first browser with `--browser-first`.
+  Every later device or agent joins one way: the host signs a short-lived
+  attestation of a signed-in account's device key and X25519 wrap key (or an
+  agent's registered keys), and any online member verifies it against the signed
+  admission policy, appends it to membership and wraps the epoch keys to it. The
+  host never signs membership or sees epoch keys. Owner-account devices are
+  admitted automatically in `attested` mode; `strict` mode holds them for an
+  administrator's Approve; signed invites (`email`, `open`, `public`) carry their
+  secret only in the link fragment. Remove device signs a revocation and rotates
+  the epoch key to the remaining members. Agents register a `wrapKey`; the host
+  publishes its `attestationKey` and needs `HOST_ATTESTATION_KEY` in deployed
+  environments. New `@tendriller/core/admission`, starter helpers `page-data.mjs`,
+  `browser-bootstrap.mjs` and `devices-view.mjs`, and `tendril page
+  devices|approve|remove-device|mode|invite|revoke-invite`. See
+  [membership](docs/MEMBERSHIP.md#admission) and the
+  [admission wire contract](docs/SESSION_BOOTSTRAP.md#admission-wire-contract).
 - Documentation follows the authored operation-set refactor: operations are signed, stored locally and unioned, and replicas order them only by signed author time, signing key and stable proposal ID. The docs drop generation, coordinator, takeover and reapplication guidance, and separate stored, materialized, retained and optionally finalized observations. This documentation entry records no release qualification.
 - **Worker-owned availability and durable consumption.** Presence can select the
   intended consumer and request topic even when workers share a signer. The

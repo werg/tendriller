@@ -24,7 +24,7 @@ npm run deploy -- stock
 
 `page:new` verifies the workspace's service origin, readiness and host contract, then loads the SQL engine and checks its execution manifest before creating any hosted page; a missing or unsupported engine fails there, before a page exists.
 
-The workspace's shared signer publishes code (a separate right from data access) before the first browser root exists; `init` creates no device, root or key. The owner signs in and initializes local data keys. Additional browsers remain keyless until exact key proof, explicit crypto grants and recipient-bound wrapping/import. The owning SQL Worker uses the supported dedicated Worker/VFS mode with the same retained local profile.
+The workspace's shared signer publishes code (a separate right from data access); `init` creates the page keys with the agent as creator. The owner signs in and the running agent admits the browser and wraps its keys; additional browsers are admitted the same way. The owning SQL Worker uses the supported dedicated Worker/VFS mode with the same retained local profile.
 
 ## Schema is an ordinary transaction
 
@@ -63,4 +63,4 @@ The optional exact author-time field demonstrates late earlier work. Choose and 
 
 ## Qualification
 
-Verify browser-only setup, offline CRUD/reload, separate-device key provisioning and convergence; ordinary authorized/denied DDL; mixed schema/data rollback; late earlier DDL revising later outcomes; schema-only reactive invalidation; stale query UI and preserved drafts/focus at desktop/320px. Native/WASM parity needs exact engine source/ABI/artifact evidence; a static or native-only test does not qualify browser SQL. Follow [delivery](AGENT_DELIVERY.md) and report exact tested boundaries.
+Verify owner-browser admission, offline CRUD/reload, separate-device admission and convergence; ordinary authorized/denied DDL; mixed schema/data rollback; late earlier DDL revising later outcomes; schema-only reactive invalidation; stale query UI and preserved drafts/focus at desktop/320px. Native/WASM parity needs exact engine source/ABI/artifact evidence; a static or native-only test does not qualify browser SQL. Follow [delivery](AGENT_DELIVERY.md) and report exact tested boundaries.

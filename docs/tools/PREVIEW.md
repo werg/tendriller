@@ -50,7 +50,7 @@ the release you intend to qualify. The runner verifies its sealed manifest,
 packed host, public assets and matching first-app kit. Use a fresh local
 workspace directory and the generated local network preload. Register its agent,
 create a page, initialize and publish the same application source, keep
-`npm run agent` running, then claim and enroll the browser through the synthetic
+`npm run agent` running, then sign in and have the agent admit the browser through the synthetic
 test account in the runner's Chromium profile. This is a separate development
 agent and page with their own keys and data.
 
@@ -96,7 +96,7 @@ new, follow the supplied [verification and second-device step](../BUILD_AN_APP.m
 then connect it. Verify a browser command in a native read (when the optional agent
 program is running), a native command in the browser, and same-device reopening.
 Ordinary local Save does not depend on the agent program; it is needed only for
-live native coordination or as an optional key-provisioning donor, and attached
+live native coordination and for admitting new devices, and attached
 publication does not replace it.
 
 The publication operation ID identifies the exact authored graph. After an
