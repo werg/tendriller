@@ -77,7 +77,9 @@ export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, pu
     assert.equal(primaryOpened.publicKey, publicKey);
     // The owner's online browser verifies the host attestation for the granted agent and signs its admission.
     await admittedAgent(program, primary.id, 'browser-first page');
-    await expect(first.page.locator('#devices')).toContainText('New agent signed in', { timeout: 30000 });
+    // The grant's attestation exists from page creation, so the open browser may admit the agent before it
+    // runs; the signed member list (not an ephemeral notice) is the evidence.
+    await expect(first.page.locator('#devices .admission-members')).toContainText(`agent · key ${publicKey.slice(0, 8)}…${publicKey.slice(-4)}`, { timeout: 30000 });
     // The agent-first journal page opened with its own creator keys.
     await admittedAgent(program, journal.id, 'agent-first page');
     peer = connectQualificationPeer(qualificationSocketPath(socketDirectory, slug));
