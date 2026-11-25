@@ -1,0 +1,127 @@
+name: Chaos (seeded monkey testing)
+
+# Not a required check: a nightly and on-demand exploration of the first-app
+# workspace under random agent/browser/publication faults. A failure is a lead
+# to investigate (replay the uploaded report), not a merge gate.
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: Space-separated 32-bit seeds (empty = three random seeds)
+        type: string
+        default: ''
+      steps:
+        description: Chaos actions per seed
+        type: string
+        default: '80'
+      transport:
+        description: direct (real RTC) or relay (RTC disabled in the browser)
+        type: choice
+        options: [direct, relay]
+        default: direct
+
+concurrency:
+  group: chaos-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  artifacts:
+    name: Public package artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      manifest_sha256: ${{ steps.composition.outputs.manifest_sha256 }}
+      seeds: ${{ steps.seeds.outputs.seeds }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build:artifacts
+      - run: npm run release:artifacts
+      - id: composition
+        run: echo "manifest_sha256=$(sha256sum dist/manifest.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Choose seeds
+        id: seeds
+        env:
+          SEEDS: ${{ inputs.seeds }}
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync } from 'node:fs';
+          import { randomInt } from 'node:crypto';
+          const given = (process.env.SEEDS ?? '').trim();
+          const seeds = given ? given.split(/[\s,]+/).map(Number) : [0, 1, 2].map(() => randomInt(0, 2 ** 32));
+          if (!seeds.length || seeds.some(seed => !Number.isSafeInteger(seed) || seed < 0 || seed > 0xffffffff)) throw Error('Invalid seed list');
+          appendFileSync(process.env.GITHUB_OUTPUT, `seeds=${JSON.stringify(seeds)}\n`);
+          JS
+      # Exactly the assets the release manifest lists, so this cannot drift from the release.
+      - name: Collect release assets
+        run: |
+          mkdir release-assets
+          node -e 'for (const a of require("./dist/manifest.json").artifacts) console.log(a.file)' |
+            while read -r file; do cp "dist/$file" release-assets/; done
+          cp dist/manifest.json dist/SHA256SUMS release-assets/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chaos-public-packages
+          if-no-files-found: error
+          retention-days: 7
+          path: release-assets/
+
+  chaos:
+    name: Chaos seed ${{ matrix.seed }}
+    needs: [artifacts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    container: mcr.microsoft.com/playwright:v1.65.0-noble@sha256:f6fe3cf9a493670b9a20f33597a807262abb25c40c31839ba4ac1dbc51fe7366
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ${{ fromJSON(needs.artifacts.outputs.seeds) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install native build tools
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends build-essential python3
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: chaos-public-packages
+          path: dist
+      - run: node scripts/deployment-bundle.mjs
+        env:
+          TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ needs.artifacts.outputs.manifest_sha256 }}
+      - run: npm --prefix tools ci
+      - name: Run seeded chaos
+        env:
+          SEED: ${{ matrix.seed }}
+          STEPS: ${{ inputs.steps || '80' }}
+          TRANSPORT: ${{ inputs.transport || 'direct' }}
+        run: |
+          npm run test:chaos -- --seed "$SEED" --steps "$STEPS" --transport "$TRANSPORT" \
+            --first-app-archive "dist/tendriller-first-app-$(node -p "require('./package.json').version").tgz" \
+            --report ".results/chaos/chaos-$SEED.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-report-${{ matrix.seed }}
+          path: .results/chaos/
+          include-hidden-files: true
+          if-no-files-found: ignore

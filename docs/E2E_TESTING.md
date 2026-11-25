@@ -13,6 +13,8 @@ Choose a test boundary that exercises the claim being made. Core browser composi
 | `npm run test:tools` | Session CLI, exact-file preview and extracted self-contained archive |
 | `npm run test:browser` | Browser code retention, sensor controls, local host claim/origin/signed-release flow, speech and preview |
 
+Beyond these gates, [seeded chaos testing](CHAOS_TESTING.md) (`npm run test:chaos`) drives the first-app workspace with random agent-program kills, pauses, offline browsers, reloads and live publications, checking safety continuously and authored-time convergence at heal phases. It finds bugs; it does not qualify a release.
+
 The runtime browser fixture serves immutable assets only. It does not emulate an application database or protocol executor. Application binding tests exercise installation; actual command/query/convergence semantics are tested with Chronolog sessions and independent contrib qualification.
 
 ## Local host and public fixture

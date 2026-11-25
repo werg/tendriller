@@ -13,6 +13,7 @@ Use Node 22.15 or newer and `npm ci`. Core builds independently of contrib. Ther
 | `npm run test:onboarding` | After a build: validate the discovery documentation graph, generated combined guide and safe tutorial archive. Any edit to an onboarding document (`llms.txt`, the guides listed in `scripts/onboarding.mjs`, the tutorial files) makes the generated `server/public/llms-full.txt` and starter archive stale until `npm run build` regenerates them; the test fails on that staleness rather than passing silently |
 | `npm run test:first-app -- --session-archive /absolute/path/to/chronolog-peer-session.tgz` | After `build:artifacts`: run the downloaded first-app tutorial against an isolated packed host and real Chromium |
 | `npm run test:first-app:feedback -- --first-app-archive /absolute/tendriller-first-app-VERSION.tgz` | Qualify resident signed publication, explicit enrollment recovery and signal freshness on the selected public composition |
+| `npm run test:chaos -- --seed N --steps 80` | After `release:artifacts`: seeded monkey testing of the first-app workspace (agent kills/pauses, offline browsers, reloads, publications) with replay and shrinking; see [chaos testing](CHAOS_TESTING.md) |
 | `npm run check` | Contract generation, types, build boundaries, Node/Worker tests, independent package consumer and tools |
 | `npm run check:release` | Core checks plus browser qualification |
 | `npm run test:e2e:voice-controls` | Chromium, Firefox, desktop WebKit and mobile WebKit controls plus real AudioWorklet fixtures; deterministic inference |
