@@ -174,6 +174,31 @@ export async function attachSession(){const device=await openNativeDevice({path:
   assert.equal(measured.deviceId, f.loaded.native.deviceId);
 });
 
+test('without native.module the probe attaches to the page owner through the project workspace tools', async t => {
+  const f = await fixture(t);
+  await f.session.close();
+  mkdirSync(join(f.project, 'node_modules/@chronolog'), { recursive: true });
+  symlinkSync(resolve(import.meta.dirname, '../../node_modules/@chronolog/peer-session'), join(f.project, 'node_modules/@chronolog/peer-session'));
+  mkdirSync(join(f.project, 'node_modules/@tendriller/core'), { recursive: true });
+  writeFileSync(join(f.project, 'node_modules/@tendriller/core/package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
+  writeFileSync(join(f.project, 'node_modules/@tendriller/core/index.mjs'), 'export const hostFixtureUnusedByNativeProbe = true;');
+  mkdirSync(join(f.project, 'node_modules/@tendriller/tools'), { recursive: true });
+  writeFileSync(join(f.project, 'node_modules/@tendriller/tools/package.json'), JSON.stringify({ type: 'module', exports: { './workspace': './workspace.mjs' } }));
+  writeFileSync(join(f.project, 'node_modules/@tendriller/tools/workspace.mjs'), `import {readFileSync} from 'node:fs';
+import {openNativeDevice,openNativeApplication} from '@chronolog/peer-session/native';
+import {definition} from ${JSON.stringify(new URL('../../docs/tutorial/templates/notes/domain.mjs', import.meta.url).href)};
+export async function openWorkspace({root}){return {root};}
+export async function attachPage(workspace,page){
+ if(workspace.root!==${JSON.stringify(f.project)}||page!==${JSON.stringify(f.loaded.handle.id)})throw Error('unexpected attach target');
+ const device=await openNativeDevice({path:workspace.root+'/device.sqlite'});
+ const session=await openNativeApplication({device,definition,authority:JSON.parse(readFileSync(workspace.root+'/authority.json'))});
+ return {session,detach:()=>session.close()};}`);
+  const { module: _module, modulePath: _path, ...native } = f.loaded.native;
+  const measured = await probe({ ...f.loaded, native: { ...native, modulePath: null } },
+    { operationId: 'stable-observer-op', author: f.loaded.native.deviceId, command: 'addNote' });
+  assert.equal(measured.deviceId, f.loaded.native.deviceId);
+});
+
 test('lost command wait keeps exact measured signed attempt, rejects replacement and requires the original checkpoint', async t => {
   const f = await fixture(t);
   f.config.commands['lost-command-response'] = f.config.commands['agent-to-browser']; f.save();

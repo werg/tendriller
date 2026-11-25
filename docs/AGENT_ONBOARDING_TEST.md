@@ -442,10 +442,11 @@ selected origin and whose `ta_` token authorizes `/api/agent/pages/<page-id>`. T
 are separate private files; the observer combines them in memory and never writes
 the token anywhere. The measured process is the workspace's one `tendril agent run`,
 which owns every page's device store; copy its actual argv from `/proc`.
-`native.module`/`native.export` name a module in the project whose export attaches
-to that running owner (`attachSession({ signal, profile })`); the workspace starter
-ships none, so native observations stay blocked until such an attach module is
-supplied for the run.
+By default the observer attaches to the handle's page owner inside that running
+program through the project's installed `@tendriller/tools/workspace`
+(`attachPage`); it never opens a second signer or store. `native.module` /
+`native.export` can instead name a project module whose export attaches
+(`attachSession({ signal, profile })`).
 `native.deviceId` can alternatively be the actual public key string; `process.pid`
 can be a JSON file reference. JSONL references accept `format: "jsonl"`, `line`
 (a zero-based index or `"last"`) and a pointer into that entry. The process check

@@ -1,7 +1,8 @@
 import { fork } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { importReviewPackages } from '../review/packages.mjs';
 import { at, need, same, MeasurementError, recordFile } from './observer-data.mjs';
 import { hash } from './evidence.mjs';
@@ -102,14 +103,28 @@ export function mcpOperationInspection(event, config, operationId, author) {
   return inspection;
 }
 
+/** The project's own installed tools package, resolved from the project like importReviewPackages. */
+async function importWorkspaceTools(project) {
+  const path = resolve(project, '.observer-imports-' + randomUUID() + '.mjs');
+  writeFileSync(path, "export { openWorkspace, attachPage } from '@tendriller/tools/workspace';\n", { flag: 'wx', mode: 0o600 });
+  try { return await import(pathToFileURL(path).href); }
+  finally { rmSync(path, { force: true }); }
+}
+
 /** Attach only. The observer never opens a second signer or silently replaces a store. */
 export async function probe(config, options) {
   const { session: sdk } = await importReviewPackages(config.native.project);
-  const module = await import(pathToFileURL(config.native.modulePath).href);
-  const hook = module[config.native.export ?? 'attachSession'];
-  if (typeof hook !== 'function') throw new MeasurementError('native-attach-export');
   const signal = AbortSignal.timeout(15000);
-  const attached = await hook({ signal, profile: config.native.profile ?? 'main' });
+  let attached;
+  if (config.native.modulePath) {
+    const module = await import(pathToFileURL(config.native.modulePath).href);
+    const hook = module[config.native.export ?? 'attachSession'];
+    if (typeof hook !== 'function') throw new MeasurementError('native-attach-export');
+    attached = await hook({ signal, profile: config.native.profile ?? 'main' });
+  } else {
+    const { openWorkspace, attachPage } = await importWorkspaceTools(config.native.project);
+    attached = await attachPage(await openWorkspace({ root: config.native.project }), config.handle.id, { signal });
+  }
   const session = need(attached?.session, 'attached-session');
   const detach = attached.detach?.bind(attached) ?? session.detach?.bind(session);
   if (!detach) throw new MeasurementError('native-detach-method');

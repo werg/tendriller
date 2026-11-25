@@ -73,8 +73,10 @@ export function loadObserverConfig(path, request) {
   if (pageUrl.protocol !== 'https:' || pageUrl.username || pageUrl.password || pageUrl.search || pageUrl.hash ||
       !pageUrl.hostname.startsWith(handle.id + '.') && !pageUrl.hostname.startsWith(handle.id + '--p-') ||
       !/^\/s\/[a-z2-7]{26}\/$/.test(pageUrl.pathname)) throw new MeasurementError('handle-page-url', 'failed');
-  const modulePath = realpathSync(resolve(project, config.native.module ?? 'session.mjs'));
-  if (!inside(project, modulePath)) throw new MeasurementError('native-module-outside-project', 'failed');
+  // Without native.module the observer attaches to the page owner inside the
+  // workspace's running `tendril agent run` through the installed tools package.
+  const modulePath = config.native.module === undefined ? null : realpathSync(resolve(project, config.native.module));
+  if (modulePath && !inside(project, modulePath)) throw new MeasurementError('native-module-outside-project', 'failed');
   return { ...config, native: { ...config.native, project, modulePath, deviceId }, descriptor, handle };
 }
 
