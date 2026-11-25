@@ -25,6 +25,14 @@ async function publishedGraph(page: Page, app: { publication: any; publicationVe
     path: file.path, sha256: file.hash, size: file.size, type: file.type,
   })).sort(byPath));
 }
+// A freshly provisioned native participant opens its own local store at once and replicates the browser's
+// history in the background. Until the initializing DDL arrives its `inventory` view has no table to read, which
+// the starter reports as an explicit view error (here SQL_PREPARE_FAILED), not an empty or failed result. Poll
+// that error as a value so convergence is awaited and a view that never converges still reports its last error.
+async function nativeStock(native: { query(name: string, input: null): Promise<{ value: any }> }) {
+  try { return (await native.query('inventory', null)).value.stock; }
+  catch (error) { return { viewError: (error as Error).message }; }
+}
 // The page retains each exact intent as a local draft before it asks the owner to store it, so a lost reply or a
 // reload between the two leaves the original operation ID and input to retry. Reproduce exactly that state through the
 // view store's own draft keys (chronolog:view:<application>:<profile>:<view>:draft:<name>).
@@ -102,9 +110,19 @@ test('actual SQL inventory page: signed publication, browser-first initializatio
       expect(JSON.stringify(await out.inputValue())).not.toContain('privateKey');
       await app.importProvisioning(JSON.parse(await out.inputValue()));
     });
+    await test.step('explicit SQL grant for the native key through the starter\'s ordinary permission transaction', async () => {
+      // Key provisioning and the crypto writer grant authorize no SQL; without this the native transfer is rejected
+      // with policy:inventory:update. The browser's root principal grants units updates and receipt inserts.
+      const previous = await proposalOf(page);
+      await page.locator('#sql-grantee').fill(app.nativePublicKey);
+      await page.locator('#sql-grant').click();
+      await expect.poll(() => proposalOf(page), { timeout: 30_000 }).not.toBe(previous);
+      await expect(page.locator('#result')).toContainText('Stored locally: true', { timeout: 30_000 });
+      await expect(page.locator('#result')).toContainText('Materialized locally: accepted', { timeout: 30_000 });
+    });
     let native = await app.start(); // The page's optional owner from pages/stock/agent.mjs, opened from cached keys.
     expect(native.identity.publicKey).toBe(app.nativePublicKey);
-    await expect.poll(async () => (await native.query('inventory', null)).value.stock, { timeout: 30_000 })
+    await expect.poll(() => nativeStock(native), { timeout: 30_000 })
       .toEqual([{ id: 'destination', units: 0 }, { id: 'source', units: 10 }]);
 
     await test.step('browser transfer is stored locally and read by the native participant', async () => {
