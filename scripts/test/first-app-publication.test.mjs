@@ -52,7 +52,10 @@ async function fixture(t, options = {}) {
   const cli = join(directory, 'cli.mjs'), preload = join(directory, 'preload.mjs');
   await writeFile(preload, '');
   await writeFile(cli, `process.on('SIGTERM', () => process.exit(${options.consumerExit ?? 0}));
-process.stdout.write(${JSON.stringify(JSON.stringify({ cursor: 'fixture', events: [{ payload: { text: browserText } }] }) + '\n')});
+// The independent consumer's current stream: a status line, then a snapshot of the current materialized projection.
+process.stdout.write(${JSON.stringify(JSON.stringify({ kind: 'status', status: { canAuthor: true, phase: 'ready' } }) + '\n'
+  + JSON.stringify({ kind: 'snapshot', revision: { digest: 'a'.repeat(64), view: 'local', executionManifestDigest: 'b'.repeat(64), policyDigest: 'c'.repeat(64) },
+    events: [{ payload: { text: browserText } }], cursor: 'fixture', hasMore: false }) + '\n')});
 setInterval(() => {}, 1000);`);
   const gate = createFirstAppPublicationGate({ decodePublication:decodeFirstAppPublication, timeoutMs: options.timeoutMs ?? 2_000 });
   const state = { trace: [], cleaned: false, publisherSettled: false, browserSettled: false };

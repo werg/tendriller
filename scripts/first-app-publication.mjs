@@ -5,6 +5,38 @@ import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
+/** Reset-aware view of the independent `watch --events` consumer's JSON lines. The stream carries `status` lines (no events),
+ * `snapshot` batches read from the current materialized projection, and `reset` markers: an earlier-authored operation
+ * revised the projection, so the cursor restarts from null and the current events are re-delivered by the following
+ * snapshots. Observed events therefore always mean "present in the current projection since the last reset"; a historical
+ * event that the revised projection no longer contains is never counted as observed. No legacy line shape is accepted. */
+export function createWatchConsumerView({ limit = 64 } = {}) {
+  const batches = [];
+  let current = [], resets = 0;
+  return {
+    accept(line) {
+      const value = typeof line === 'string' ? JSON.parse(line) : line;
+      assert.ok(value && typeof value === 'object' && !Array.isArray(value), 'The watch consumer emitted a non-object line');
+      if (value.kind === 'status') return null;
+      assert.ok(value.revision && typeof value.revision.digest === 'string', 'Every event line names its materialized revision');
+      if (value.kind === 'reset') {
+        assert.equal(value.reason, 'materialization-revised');
+        assert.ok(Array.isArray(value.events) && value.events.length === 0 && value.cursor === null, 'A reset carries no events and restarts at a null cursor');
+        current = []; resets++;
+      } else if (value.kind === 'snapshot') {
+        assert.ok(Array.isArray(value.events) && typeof value.cursor === 'string', 'A snapshot carries current events and an opaque cursor');
+        current.push(...value.events);
+      } else throw Error('PUBLICATION_CONSUMER_UNKNOWN_LINE_KIND');
+      if (batches.length >= limit) throw Error('PUBLICATION_CONSUMER_BATCH_LIMIT');
+      batches.push(value);
+      return value;
+    },
+    observed: text => current.some(event => event.payload?.text === text),
+    get batches() { return batches; },
+    get resets() { return resets; },
+  };
+}
+
 /** The actual packed CLI attaches to the page owner inside the running agent program
  * while another CLI consumer and the browser stay live. `pageDirectory` is the page's
  * built output (pages/<slug>/dist); `workspace` is the workspace root. */
@@ -29,7 +61,7 @@ export async function qualifyFirstAppPublication({ page, pageUrl, publicationGat
   const proofHash = createHash('sha256').update(proof).digest('hex');
   const child = spawn(process.execPath, ['--import', preload, cli, ...args,
     'watch', '--events', '--topics', '["note.put","note.deleted"]'], { cwd: workspace, stdio: ['ignore', 'pipe', 'pipe'] });
-  const batches = [];
+  const consumer = createWatchConsumerView(), batches = consumer.batches;
   let stderr = '', consumerFailure, consumerExit;
   const closed = new Promise(resolve => {
     child.once('error', error => { consumerFailure = error; });
@@ -38,18 +70,14 @@ export async function qualifyFirstAppPublication({ page, pageUrl, publicationGat
   child.stderr.on('data', bytes => { stderr = (stderr + bytes.toString()).slice(-6_000); });
   const lines = createInterface({ input: child.stdout });
   lines.on('line', line => {
-    try {
-      const batch = JSON.parse(line);
-      assert.ok(Array.isArray(batch.events) && typeof batch.cursor === 'string');
-      if (batches.length >= 64) throw Error('PUBLICATION_CONSUMER_BATCH_LIMIT');
-      batches.push(batch);
-    } catch (error) { consumerFailure = error; child.kill('SIGTERM'); }
+    try { consumer.accept(line); }
+    catch (error) { consumerFailure = error; child.kill('SIGTERM'); }
   });
   const alive = () => {
     if (consumerFailure) throw consumerFailure;
     assert.equal(consumerExit, undefined, 'The independent event consumer exited: ' + stderr);
   };
-  const observed = text => batches.some(batch => batch.events.some(event => event.payload?.text === text));
+  const observed = text => consumer.observed(text);
   let result, primaryFailure, primaryEvidence, diagnosticsAfter, heldDocument, gateStarted = false, progress;
   const cleanupErrors = [], gateId = crypto.randomUUID();
   const gate = async action => {

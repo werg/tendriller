@@ -18,9 +18,13 @@ function invocationFailure(error, signal) {
   });
 }
 
+/** How long a cancelled action may take to release its own attached resources (for example a captured read view)
+ * before the attachment is detached under it. */
+const ABORT_DETACH_GRACE_MS = 5000;
+
 /** Attach to one page of the running agent program for one invocation. `open`
  * returns { session, control?, detach() }; detaching never stops the agent. */
-export async function withSession(open, run, { signal } = {}) {
+export async function withSession(open, run, { signal, detachGraceMs = ABORT_DETACH_GRACE_MS } = {}) {
   if (typeof open !== 'function') throw Error('Supply the page attachment.');
   signal?.throwIfAborted();
   let owned;
@@ -30,14 +34,27 @@ export async function withSession(open, run, { signal } = {}) {
     : typeof owned?.session?.detach === 'function' ? () => owned.session.detach()
       : typeof owned?.close === 'function' ? () => owned.close() : undefined;
   if (!owned?.session || !dispose) throw Error('A page attachment must return { session, detach } with a local detach method; detaching must not stop the agent program.');
-  let closing;
+  let closing, actionSettled;
   const close = () => closing ??= Promise.resolve().then(dispose);
-  const abort = () => { void close().catch(() => {}); };
+  // Cancellation first lets the cooperative action finish releasing what it holds on the attachment (a view release is an
+  // owner request, so detaching beneath it would turn a clean stop into a cleanup failure). Only an action that ignores the
+  // signal is detached after the bounded grace, which also fails its pending owner requests.
+  const abort = () => {
+    void (async () => {
+      await Promise.resolve();
+      let timer;
+      const grace = new Promise(resolve => { timer = setTimeout(resolve, detachGraceMs); });
+      try { await Promise.race([actionSettled ?? Promise.resolve(), grace]); } finally { clearTimeout(timer); }
+      await close();
+    })().catch(() => {});
+  };
   signal?.addEventListener('abort', abort, { once: true });
   let result, failure;
   try {
     signal?.throwIfAborted();
-    result = await run({ ...owned, mode: 'attach' });
+    const action = run({ ...owned, mode: 'attach' });
+    actionSettled = Promise.resolve(action).then(() => {}, () => {});
+    result = await action;
   } catch (error) {
     failure = invocationFailure(error, signal);
   } finally {

@@ -67,6 +67,39 @@ test('a page attachment detaches on failed actions and cancellation', async () =
   assert.equal(detached, 2, 'cancellation detaches exactly once');
 });
 
+test('cancelling an event watch releases its captured view before the attachment detaches, so a clean stop has no cleanup failure', async () => {
+  const { watchSession } = await import('../lib/session.mjs');
+  const revision = { digest: 'a'.repeat(64), view: 'local', executionManifestDigest: 'b'.repeat(64), policyDigest: 'c'.repeat(64) };
+  const order = [], stop = new AbortController();
+  let detached = false;
+  const session = { signal: new AbortController().signal, status: { canAuthor: true },
+    async *changes({ signal }) { await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true })); },
+    async readView() { return { revision,
+      async readEvents() {
+        // The deadline lands while a read is in flight; the read completes and the view is released afterwards.
+        queueMicrotask(() => stop.abort(Object.assign(Error('Invocation timed out'), { code: 'invocation_timeout' })));
+        await new Promise(resolve => setTimeout(resolve, 15));
+        return { events: [], cursor: 'c', hasMore: false, revision };
+      },
+      // Releasing a view is an owner request: it fails if the attachment was already detached beneath it.
+      async release() { await new Promise(resolve => setTimeout(resolve, 25)); if (detached) throw Object.assign(Error('OWNER_UNREACHABLE'), { code: 'OWNER_UNREACHABLE' }); order.push('release'); } }; } };
+  const result = await withSession(async () => ({ session, async detach() { order.push('detach'); detached = true; } }),
+    owned => watchSession(owned, () => {}, { signal: stop.signal, events: true }), { signal: stop.signal });
+  assert.equal(result.reason, 'timeout', 'the deadline is a normal stop for a cooperative watch');
+  assert.deepEqual(order, ['release', 'detach'], 'the view is released while the attachment is still attached');
+});
+
+test('an action that ignores cancellation is detached after the bounded grace, failing its pending owner request', async () => {
+  const stop = new AbortController();
+  let reject, detached = 0;
+  const started = withSession(async () => ({ session: { query: () => new Promise((_, no) => { reject = no; }) }, async detach() { detached++; reject(Error('APPLICATION_SESSION_CLOSED')); } }),
+    owned => owned.session.query(), { signal: stop.signal, detachGraceMs: 40 });
+  await new Promise(resolve => setTimeout(resolve, 5));
+  stop.abort(Object.assign(Error('Invocation timed out'), { code: 'invocation_timeout' }));
+  await assert.rejects(started, error => error.code === 'invocation_timeout' && error.message === 'Invocation timed out' && error.cause?.message === 'APPLICATION_SESSION_CLOSED');
+  assert.equal(detached, 1, 'detached exactly once');
+});
+
 test('cleanup failure does not overwrite the original action or operation evidence', async () => {
   const open = async () => ({ session: {}, async detach() { throw Object.assign(Error('cleanup failed'), { code: 'CLOSE_FAILED' }); } });
   const original = Object.assign(Error('publication verification failed'), { code: 'PUBLICATION_UNVERIFIED',
