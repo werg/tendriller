@@ -83,7 +83,7 @@ reactive-view, operation-view, reviewed-input, camera and voice modules. The
 identify those files. Record which current implementations you used; reading
 contrib cookbooks without applying their public APIs is not integration evidence.
 
-Use `tendril-preview ./page` as soon as the authored UI exists. Static preview
+Use `tendril-preview ./pages/<slug>/dist` as soon as the authored UI exists. Static preview
 checks layout. Live preview needs an actual authored bootstrap and real enrolled
 session; see [Preview](docs/tools/PREVIEW.md). Verify the tutorial's connected
 behavior on its published page, whose authentication and device origin are real.

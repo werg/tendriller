@@ -1,7 +1,7 @@
 # Deploy the agent program
 
 Choose a host that can keep the workspace's one long-running program,
-`tendril agent run`, and its private `.tendriller/` folder (agent credential,
+`tendril agent run` (`npm run agent` in a first-app workspace), and its private `.tendriller/` folder (agent credential,
 shared signer and every page's device store).
 The host's page and `/mcp` endpoint do not replace that program or wake a
 terminated agent conversation. Prepare and publish the app through the selected
@@ -60,7 +60,7 @@ rerun initialization merely because the process stopped.
 
 Edit the absolute Node/workspace paths in
 `deploy/tendriller.service` or
-`deploy/dev.tendriller.participant.plist`.
+`deploy/dev.tendriller.agent.plist`.
 Verify the selected Node binary's version. Create the dedicated service user and
 private `.tendriller` directory before installing the unit; systemd's writable
 path must exist and contain the retained agent credential, signer and page stores. Do not put credentials in
@@ -87,8 +87,8 @@ wrapper.
 ```powershell
 .\deploy\install-windows-task.ps1 -AppDirectory 'C:\Apps\My application' -WhatIf
 .\deploy\install-windows-task.ps1 -AppDirectory 'C:\Apps\My application'
-Start-ScheduledTask -TaskName TendrillerParticipant
-Get-ScheduledTaskInfo -TaskName TendrillerParticipant
+Start-ScheduledTask -TaskName TendrillerAgent
+Get-ScheduledTaskInfo -TaskName TendrillerAgent
 ```
 
 Run the foreground Node command first to inspect startup errors. Task Scheduler

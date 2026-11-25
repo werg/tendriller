@@ -17,7 +17,7 @@ export interface DevicePairingPrepared { readonly request: SignedTransitionReque
 export type DevicePairingState = 'challenge' | 'pending' | 'approved' | 'committing' | 'committed' | 'expired' | 'denied' | 'stale' | 'revoked' | 'reconciliation_required';
 export interface DevicePairingStatus {
   readonly pairingId: string; readonly requestId: string; readonly state: DevicePairingState;
-  readonly challenge: DevicePairingChallenge; readonly expiresAt: number; readonly reviewUrl: string; readonly nextAction: string;
+  readonly challenge: DevicePairingChallenge; readonly expiresAt: number; readonly nextAction: string;
   readonly generation?: SignedGeneration; readonly preparedDigest?: string; readonly prepared?: DevicePairingPrepared;
 }
 export declare function validateDevicePairingChallenge(value: unknown): DevicePairingChallenge;

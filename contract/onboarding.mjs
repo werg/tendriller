@@ -42,12 +42,14 @@ export function onboardingDescriptor(base) {
       application: url('/docs/APPLICATION_BACKENDS.md'),
       browser: url('/docs/BROWSER_API.md'),
       cli: url('/docs/tools/CLI.md'),
+      multi_page_agents: url('/docs/MULTI_PAGE_AGENTS.md'),
     },
     interfaces: {
       service_descriptor: url('/api/service'),
       readiness: url('/api/readiness'),
       contract: url('/contract/v3.json'),
       register_agent: { method: 'POST', url: url('/api/agents'), required: ['owner', 'name', 'publicKey'] },
+      join_agent: { method: 'POST', url: url('/api/agents/join'), required: ['code', 'name', 'publicKey'] },
       create_page: { method: 'POST', url: url('/api/agent/pages'), authorization: 'agent token' },
     },
     workflow: [

@@ -20,7 +20,6 @@ import { reviewAssistant } from './assistant-admission';
 import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter } from './assistant-socket';
 import { nextAssistantDelivery, runAssistantDelivery } from './assistant-events';
 import { requireWritesOpen } from './service-state';
-import { reviewDevicePairing } from './device-pairing';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
 import { Db } from './db';
@@ -184,7 +183,6 @@ export class Tendril extends DurableObject<Env> {
       }
       if (kind === 'assistant' && req.method === 'POST') return await assistantRequest(this, req);
       if (kind === 'assistant-review') return await reviewAssistant(this, req);
-      if (kind === 'pairing-review') return await reviewDevicePairing(this, req);
       if (kind === 'agent-grant') return await handleAgentGrants(this, req, url);
       if (kind === 'agent-summary') {
         const agentId = req.headers.get(AGENT_HEADER) ?? '';
@@ -290,8 +288,6 @@ export class Tendril extends DurableObject<Env> {
     const body = await readJson(req, 64 * 1024);
     const name = body.name === undefined ? "Tendril" : validName(body.name);
     const owner = account ? null : validIntendedOwner(body.owner);
-    const mode = body.mode ?? "interactive";
-    if (mode !== "interactive" && mode !== "dashboard") throw new HttpError(400, "bad_request", "mode must be interactive or dashboard");
     const label = account ? await this.env.ACCOUNTS.prepare("SELECT login FROM identities WHERE account_id = ? ORDER BY created_at LIMIT 1")
       .bind(account).first<{ login: string }>() : null;
     const now = this.now();
@@ -306,7 +302,6 @@ export class Tendril extends DurableObject<Env> {
         if (label) this.db.set("owner_label", label.login.slice(0, 80));
       }
       this.db.set("lifetime", "ad_hoc");
-      this.db.set("mode", mode);
       this.db.set("application", applicationSelection(body.application ?? { id: Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("") }));
       this.db.set("created_at", now);
       this.db.set("next_cleanup", now + DAY);
@@ -332,7 +327,6 @@ export class Tendril extends DurableObject<Env> {
       page_url: this.mainPageUrl(),
       api: agentPageApi(this.env, this.tid),
       lifetime: this.db.get("lifetime", "ad_hoc"),
-      mode: this.db.get("mode", "interactive"),
       claimed,
       expires_at: this.expiresAt(),
       application,

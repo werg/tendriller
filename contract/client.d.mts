@@ -5,7 +5,7 @@ export interface AgentPageList { pages: AgentPage[]; next_cursor?: string | null
 export interface AgentCredential { id: string; name: string; token: string; account_state?: 'unclaimed' | 'claimed'; [key: string]: unknown }
 export interface ClientOptions { fetch?: typeof globalThis.fetch; WebSocket?: typeof globalThis.WebSocket; hub?: Partial<AgentHubOptions> }
 export interface RequestOptions { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }
-/** The former per-page client, based at /api/agent/pages/<id>. */
+/** A page client, based at /api/agent/pages/<id>. */
 export interface PageClient {
   readonly id: string;
   readonly base: string;

@@ -10,10 +10,6 @@ export function checkBrowserPairing(status, configuration, retained) {
       c.pageOrigin !== new URL(configuration.page_url).origin || c.requestId !== retained.requestId ||
       retained.publicKey && c.publicKey !== retained.publicKey || c.rights.reader !== true || c.rights.writer !== true)
     throw fail('PAIRING_SCOPE_MISMATCH', 'The request does not match this retained browser, application and selected service.');
-  const review = new URL(status.reviewUrl);
-  if (review.origin !== configuration.serviceOrigin || review.username || review.password || review.search || review.hash ||
-      review.pathname !== `/pairings/${configuration.pageId}/${c.pairingId}`)
-    throw fail('PAIRING_REVIEW_ORIGIN', 'Device review must open the exact authenticated service origin for this page.');
   if (retained.challenge && pairingProofBytes(retained.challenge).toString() !== pairingProofBytes(c).toString())
     throw fail('PAIRING_CHALLENGE_CHANGED', 'The retained challenge changed. Preserve this original request for inspection.');
   return status;

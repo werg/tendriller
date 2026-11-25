@@ -211,7 +211,7 @@ test('host activity keeps bounded receipt metadata, fixed labels and no private 
     ['/api/agent/pages/private/application', 'application-control'],
     ['/api/agent/hubs', 'api-control'], ['/api/agent/pages', 'api-control'],
     ['/s/private/peers/pairing', 'peer-pairing'],
-    ['/api/agent/pages/private/self', 'access-probe'],
+    ['/api/agent/pages/private', 'access-probe'],
     ['/s/private/application', 'application-control'],
     ['/s/private/_tendril/sw.js', 'service-worker'],
     ['/favicon.ico', 'favicon'],

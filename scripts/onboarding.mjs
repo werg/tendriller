@@ -34,7 +34,7 @@ export const TUTORIAL_FILES = Object.freeze([
   'templates/inventory/agent.mjs', 'templates/inventory/demo.mjs', 'templates/inventory/worker.mjs', 'templates/inventory/index.html',
   'templates/inventory/page.mjs', 'templates/inventory/build.mjs', 'templates/inventory/ui-state.mjs',
   'deploy/Dockerfile', 'deploy/Dockerfile.dockerignore',
-  'deploy/tendriller.service', 'deploy/dev.tendriller.participant.plist', 'deploy/install-windows-task.ps1',
+  'deploy/tendriller.service', 'deploy/dev.tendriller.agent.plist', 'deploy/install-windows-task.ps1',
 ]);
 // Root deploy/ is the single maintained source; only its explicit public files ship.
 export const TUTORIAL_SOURCES = Object.freeze(Object.fromEntries(TUTORIAL_FILES.map(file =>

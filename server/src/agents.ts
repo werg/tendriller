@@ -260,7 +260,7 @@ async function createAgentPage(req: Request, env: Env, agent: GrantedAgent): Pro
   if (env.CREATE_RATE && !(await env.CREATE_RATE.limit({ key: 'agent:' + agent.id })).success)
     throw new HttpError(429, 'rate_limited', 'Creation rate limit reached');
   const input = await body(req, 64 * 1024);
-  for (const key of Object.keys(input)) if (!['name', 'mode', 'application'].includes(key))
+  for (const key of Object.keys(input)) if (!['name', 'application'].includes(key))
     throw new HttpError(400, 'bad_request', `Unknown page field ${key}`);
   if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 200)) throw new HttpError(400, 'bad_request', 'name must be a string');
   if (input.application !== undefined && (!isPlainObject(input.application) || Object.keys(input.application).length !== 1 ||

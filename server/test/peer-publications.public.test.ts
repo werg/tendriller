@@ -138,7 +138,7 @@ it('selects one signed successor when code publishers race on the same release h
 
 it('rechecks account authorization after code upload before selecting a release', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity(), id = applicationId();
-  const h = await create({ mode: 'dashboard', listener: false, application: { id } });
+  const h = await create({ listener: false, application: { id } });
   const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration(a, b));
   const publication = await release(authority, a, 'revoked-during-upload');
   await inDO(h.id, async t => {
@@ -161,7 +161,7 @@ it('rechecks account authorization after code upload before selecting a release'
 
 it('cleanup retains selected and historical signed releases and unsigned recovery is unavailable', async () => {
   const a = await createPeerIdentity(), b = await createPeerIdentity();
-  const h = await create({ mode: 'dashboard', listener: false, application: { id: applicationId() } });
+  const h = await create({ listener: false, application: { id: applicationId() } });
   const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', configuration(a, b));
   const first = await release(authority, a, 'stable');
   await peerApiJson(h, 'publication/publish', first);

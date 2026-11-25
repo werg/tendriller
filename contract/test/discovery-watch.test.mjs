@@ -135,7 +135,7 @@ test('a newer controller fences the old watcher with 4000 without a reconnect co
 
 for(const status of [401,403,409]) test(`hidden upgrade refusal is terminal after authenticated self returns ${status}`, async t=>{
   t.mock.timers.enable({apis:['setTimeout']});let opens=0, probes=0;
-  const peers=createPeersClient({base:'https://service.test/api/t/aaaaaaaaaaaa', socket:()=>{opens++;throw Error('hidden HTTP upgrade error');},
+  const peers=createPeersClient({base:'https://service.test/api/agent/pages/aaaaaaaaaaaa', socket:()=>{opens++;throw Error('hidden HTTP upgrade error');},
     request:async(path,options)=>{probes++;assert.equal(path,'');assert(options.signal instanceof AbortSignal);throw Object.assign(Error('refused'),{status});}});
   const watch=peers.watchDiscovery(peerId);
   await assert.rejects(watch.ready,{code:'discovery_access_revoked'});assert.equal((await watch.closed).code,4003);
@@ -160,7 +160,7 @@ test('failure-only access diagnosis uses the agent credential and fetcher',async
 test('healthy watches never probe; inconclusive failures back off and aborted probes cannot redial',async t=>{
   t.mock.timers.enable({apis:['setTimeout']});let probes=0, probeSignal;
   const stop=new AbortController(), f=fixture({signal:stop.signal,retryMs:10,maxRetryMs:20,
-    probeAccess:async({signal})=>{probes++;probeSignal=signal;if(probes===1)throw Object.assign(Error('self route unavailable'),{status:404});return new Promise(()=>{});}});
+    probeAccess:async({signal})=>{probes++;probeSignal=signal;if(probes===1)throw Object.assign(Error('access probe unavailable'),{status:404});return new Promise(()=>{});}});
   f.sockets[0].receive({type:'ready'});await f.watch.ready;t.mock.timers.tick(86400000);await flush();assert.equal(probes,0);
   f.sockets[0].end();await flush();assert.equal(probes,1);assert.equal(f.sockets.length,1);
   t.mock.timers.tick(10);assert.equal(f.sockets.length,2);f.sockets[1].end();await flush();assert.equal(probes,2);

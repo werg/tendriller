@@ -19,8 +19,7 @@ for (const ending of ['close', 'abort']) test(`pairing ${ending} cancels its blo
   const applicationId = '11'.repeat(32), pairingId = '22'.repeat(32);
   const base = 'https://service.example/api/agent/pages/aaaaaaaaaaaa';
   const expiresAt = Date.now() + 600_000;
-  const status = { pairingId, requestId: 'retained-browser-request', state: 'pending', expiresAt,
-    reviewUrl: `https://service.example/pairings/aaaaaaaaaaaa/${pairingId}`, nextAction: 'Review the exact proposal',
+  const status = { pairingId, requestId: 'retained-browser-request', state: 'pending', expiresAt, nextAction: 'Review the exact proposal',
     challenge: { pairingId, requestId: 'retained-browser-request', applicationId, serviceOrigin: 'https://service.example',
       pageOrigin: 'https://aaaaaaaaaaaa.pages.example', rights: { reader: true, writer: true }, expiresAt } };
   const pause = { operationId: 'pairing:' + pairingId, generation: '33'.repeat(32), base: { retained: true } };

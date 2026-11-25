@@ -196,7 +196,7 @@ export function dashboard(h: Handle, path: string, init: RequestInit = {}): Prom
   return req(path, { ...init, headers, anonymous: true, redirect: "manual" });
 }
 
-/** Adds an agent to the handle's account through Dashboard → Agents → Add agent. */
+/** Adds an agent to the handle's account through Dashboard → Your agents → Add agent. */
 export async function joinAccountAgent(h: Handle, name: string): Promise<{ token: string; agent: Handle["agent"] }> {
   const issued = await dashboard(h, "/dashboard/agents/join", { method: "POST" });
   if (issued.status !== 201) throw new Error(`join code failed: ${issued.status} ${await issued.text()}`);

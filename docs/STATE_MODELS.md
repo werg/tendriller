@@ -315,7 +315,7 @@ There are two honest preview paths today:
 
 | Preview | What it proves |
 | --- | --- |
-| `tendril-preview ./page` | Authored layout/assets; no application session is supplied |
+| `tendril-preview ./pages/<slug>/dist` | Authored layout/assets; no application session is supplied |
 | A signed release on a development Tendriller page, with its owner claim and enrolled browser | The real session, host authorization, peer transport, retained commands and runtime binding |
 
 `tendril-preview --bootstrap` accepts an authored `openPreview({configuration})`

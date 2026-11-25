@@ -11,10 +11,22 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
   signal?.throwIfAborted();
   const client = await workspace.client();
   const binding = await workspace.attachBinding({ create: true });
-  const { createNativeWorkspaceSupervisor } = await import('@tendriller/core/native-owner');
+  const [{ createNativeWorkspaceSupervisor }, { mergeSessionChanges }] = await Promise.all([
+    import('@tendriller/core/native-owner'), import('@chronolog/peer-session')]);
   const supervisor = await (openOwnerSupervisor ?? createNativeWorkspaceSupervisor)({ directory: workspace.paths.owner,
     workspaceId: workspace.config.agent.id.replace(/[^A-Za-z0-9_.:-]/gu, '_'), bindings: [binding], signal });
-  const pages = new Map(); // id -> { slug, state, owner?, retryTimer?, failures, changes? }
+  const pages = new Map(); // id -> { slug, state, owner?, retryTimer?, failures }
+  // One change feed for every running page; a page's own feed ends with its session.
+  const changes = mergeSessionChanges([], { signal, onError: () => {} });
+  const pageOf = new Map(); // applicationId -> { id, slug }
+  const changeReport = (async () => {
+    try {
+      for await (const change of changes) {
+        const page = pageOf.get(change.applicationId);
+        if (page) report({ page: page.id, slug: page.slug, revision: change.revision, change: change.kind });
+      }
+    } catch { /* each session's signal reports its own cause */ }
+  })();
   let granted = null, stopping = false, rescanTimer;
   const hub = client.hub;
   const stopEvents = hub.events(event => void onHubEvent(event).catch(() => {}));
@@ -73,10 +85,8 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
       report({ page: id, slug: entry.slug, state: 'running', deviceId: profile.deviceId, applicationId: profile.applicationId,
         definition: { id: profile.definitionId, version: profile.definitionVersion } });
       owner.session.participation?.onStatus?.(status => report({ page: id, slug: entry.slug, connection: status.phase, ...(status.error ? { error: status.error } : {}) }));
-      entry.changes = (async () => {
-        try { for await (const change of owner.session.changes({ signal: pageSignal })) report({ page: id, slug: entry.slug, revision: change.revision, change: change.kind }); }
-        catch { /* the session signal reports the cause below */ }
-      })();
+      pageOf.set(owner.session.applicationId, { id, slug: entry.slug });
+      changes.add(owner.session);
       await new Promise(resolve => {
         if (owner.session.signal?.aborted || pageSignal.aborted) resolve();
         owner.session.signal?.addEventListener('abort', resolve, { once: true });
@@ -88,6 +98,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
       report({ page: id, slug: entry.slug, state: 'page_failed', code: safeCode(error), message: String(error?.message ?? error).slice(0, 300) });
       if (entry.owner) { try { await supervisor.removePage(id); } catch { try { await entry.owner.close(); } catch {} } entry.owner = undefined; }
     }
+    if (entry.owner) changes.remove(entry.owner.session);
     if (stopping || pages.get(id) !== entry || pageSignal.aborted) return;
     if (entry.owner) { try { await supervisor.removePage(id); } catch {} entry.owner = undefined; }
     const ms = Math.min(PAGE_MAX_RETRY_MS, PAGE_RETRY_MS * 2 ** Math.min(entry.failures++, 6));
@@ -100,8 +111,8 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     if (!entry) return;
     pages.delete(id);
     clearTimeout(entry.retryTimer); entry.lifetime?.abort();
+    if (entry.owner) changes.remove(entry.owner.session);
     try { if (entry.owner) await supervisor.removePage(id); } catch {}
-    try { await entry.changes; } catch {}
     report({ page: id, slug: entry.slug, state: 'closed', reason });
   }
   async function onHubEvent(event) {
@@ -137,6 +148,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     stopping = true; clearTimeout(rescanTimer); watcher?.close();
     stopEvents(); stopStatus();
     await Promise.allSettled([...pages.keys()].map(id => closePage(id, 'stopping')));
+    changes.close(); await changeReport;
     hub.close(); client.close?.();
     await supervisor.close();
     report({ running: false });

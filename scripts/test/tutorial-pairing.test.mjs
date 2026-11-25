@@ -35,8 +35,7 @@ async function fixture() {
     requestId: 'browser-retained', serviceOrigin: 'https://service.example', pageOrigin: 'https://aaaaaaaaaaaa.pages.example',
     applicationId, accountId: 'owner', publicKey: target.publicKey, rights: { reader: true, writer: true },
     expectedGeneration: first.id, controlRevision: 0, nonce: '22'.repeat(32), expiresAt: Date.now() + 600000 };
-  let status = { pairingId: id, requestId: challenge.requestId, state: 'pending', challenge, expiresAt: challenge.expiresAt,
-    reviewUrl: `${challenge.serviceOrigin}/pairings/aaaaaaaaaaaa/${id}`, nextAction: 'Review this exact proposal' };
+  let status = { pairingId: id, requestId: challenge.requestId, state: 'pending', challenge, expiresAt: challenge.expiresAt, nextAction: 'Review this exact proposal' };
   const records = new Map(), actions = []; let pause = null, closed = false, loseCommitReply = false, drift = false;
   const session = { deviceId: device.publicKey, signal: new AbortController().signal,
     orderingPause: async () => structuredClone(pause),
@@ -173,7 +172,7 @@ function browserFixture({ brokenStorage = false, wrongOrigin = false, failWorker
       applicationId: configuration.applicationId, accountId: 'owner', publicKey: '33'.repeat(32), rights: { reader: true, writer: true },
       expectedGeneration: '34'.repeat(32), controlRevision: 0, nonce: '35'.repeat(32), expiresAt };
     return { pairingId, requestId, state, challenge: c, expiresAt: c.expiresAt,
-      reviewUrl: configuration.serviceOrigin + `/pairings/${configuration.pageId}/${pairingId}`, nextAction: 'Review' };
+      nextAction: 'Review' };
   };
   const make = () => browser.createBrowserPairing({ configuration, profileId: 'browser-profile', storage,
     locks: { request: (_name, _options, work) => work() },

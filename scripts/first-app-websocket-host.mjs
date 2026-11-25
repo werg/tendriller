@@ -38,7 +38,7 @@ export function createFirstAppRequestActivity() {
     if (path.endsWith('/peers/participant')) return 'peer-participant';
     if (path.endsWith('/peers/bootstrap')) return 'peer-bootstrap';
     if (path.endsWith('/peers/pairing')) return 'peer-pairing';
-    if (path.endsWith('/self')) return 'access-probe';
+    if (/^\/api\/agent\/pages\/[^/]+\/?$/.test(path)) return 'access-probe';
     if (path.endsWith('/application')) return 'application-control';
     if (path.endsWith('/_tendril/sw.js')) return 'service-worker';
     if (path.endsWith('/favicon.ico')) return 'favicon';

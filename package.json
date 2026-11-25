@@ -45,8 +45,8 @@
     "test:first-app:feedback": "node scripts/test-first-app.mjs --feedback-qualification"
   },
   "devDependencies": {
-    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-13b88606.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-13b88606.tgz",
+    "@chronolog/peer-generation": "file:test/artifacts/chronolog-peer-generation-control-189fa227.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-189fa227.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",

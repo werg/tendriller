@@ -30,7 +30,7 @@ it('accepts a late join through a hibernatable listener with no expiry timer or 
 });
 
 it('bounds pending invitation work, coalesces exact retries and refuses an application-data frame', async () => {
-  const h = await create({ application: { id: 'e13fc055bc3be9dffef39adc2d65236ae392e355b46a5b20b627e0c2c708800a' }, listener: false, mode: 'dashboard' });
+  const h = await create({ application: { id: 'e13fc055bc3be9dffef39adc2d65236ae392e355b46a5b20b627e0c2c708800a' }, listener: false });
   const before = await inDO(h.id, async t => ({ alarm: await t.ctx.storage.getAlarm(), records: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='record_log_entries'"),
     application: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='application_changes'"), devices: t.db.one("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name='devices'") }));
   const response = await api(h, 'GET', 'peers/invitations?peerId=target', undefined, headers);
@@ -52,7 +52,7 @@ it('bounds pending invitation work, coalesces exact retries and refuses an appli
 });
 
 it('authenticates native invitation listeners through private subprotocol headers and fences revoked recipients', async () => {
-  const h = await create({ application: { id: '0f0657524ee8db10c0da9c20b3eaa55f0ee95486eddd6bb15675292c11974946' }, listener: false, mode: 'dashboard' });
+  const h = await create({ application: { id: '0f0657524ee8db10c0da9c20b3eaa55f0ee95486eddd6bb15675292c11974946' }, listener: false });
   expect((await req(`${h.api}/peers/invitations?peerId=target`, { headers, anonymous: true })).status).toBe(401);
   const response = await req(`${h.api}/peers/invitations?peerId=target`, { anonymous: true,
     headers: { ...headers, 'Sec-WebSocket-Protocol': `${PEER_INVITATION_PROTOCOL}, ${h.token}` } });
@@ -65,7 +65,7 @@ it('authenticates native invitation listeners through private subprotocol header
 });
 
 it('rechecks the sender after asynchronous recipient authorization before delivering an invitation', async () => {
-  const h = await create({ application: { id: '02e6f58e00e0a74baa20e1ef12424acb40747cc17a3a94d036e0ca9d62da6b67' }, listener: false, mode: 'dashboard' });
+  const h = await create({ application: { id: '02e6f58e00e0a74baa20e1ef12424acb40747cc17a3a94d036e0ca9d62da6b67' }, listener: false });
   const response = await req(`${h.page_url}_tendril/peers/invitations?peerId=target`, { headers });
   const socket = response.webSocket!, listener = createPeerInvitationListener(socket, 'target'); socket.accept(); await listener.ready;
   try {

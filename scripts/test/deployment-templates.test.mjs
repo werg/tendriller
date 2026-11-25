@@ -11,7 +11,7 @@ test('templates run the one agent program with the actual private store and a No
   assert.doesNotMatch(docker, /\/data\/\.tendriller/);
   assert.match(template('Dockerfile.dockerignore'), /^\.tendriller$/m);
   assert.match(template('Dockerfile.dockerignore'), /^\*\*\/\.tendriller$/m);
-  for (const path of ['tendriller.service', 'dev.tendriller.participant.plist', 'install-windows-task.ps1']) {
+  for (const path of ['tendriller.service', 'dev.tendriller.agent.plist', 'install-windows-task.ps1']) {
     assert.match(template(path), /@tendriller[\/\\]tools[\/\\]bin[\/\\]tendril\.mjs/); assert.match(template(path), /agent(<\/string>\s*<string>| )run/);
     assert.doesNotMatch(template(path), /--session|participant\.mjs/);
   }

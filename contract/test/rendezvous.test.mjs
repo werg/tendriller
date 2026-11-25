@@ -73,13 +73,13 @@ test('binary or excessive incoming data cannot become a peer application relay',
 
 test('client construction is quiet and agent credentials stay in the protocol header', async () => {
   const calls = [], sockets = [], headers = ['tendriller.rendezvous.v1', 'agent-token'];
-  const client = createPeersClient({ base: 'https://example.test/api/t/id', protocols: headers,
+  const client = createPeersClient({ base: 'https://example.test/api/agent/pages/id', protocols: headers,
     request: async (...args) => { calls.push(args); return { version: 2, endpoints: [] }; },
     socket: (url, protocols) => { sockets.push({ url, protocols }); return new Socket(); } });
   assert.equal(calls.length, 0); assert.equal(sockets.length, 0);
   assert.equal(client.initialBootstrap, null);
   const pending = client.rendezvous('room', 'endpoint');
-  assert.deepEqual(sockets, [{ url: 'wss://example.test/api/t/id/peers/rendezvous?channel=room&peerId=endpoint', protocols: headers }]);
+  assert.deepEqual(sockets, [{ url: 'wss://example.test/api/agent/pages/id/peers/rendezvous?channel=room&peerId=endpoint', protocols: headers }]);
   pending.close();
   assert.deepEqual(await client.bootstrap(), { version: 2, endpoints: [] });
   assert.deepEqual(calls, [['peers/bootstrap']]);

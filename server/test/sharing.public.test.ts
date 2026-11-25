@@ -11,7 +11,7 @@ async function serviceCookie(id: string): Promise<string> {
   return `__Host-tendriller=${raw}`;
 }
 
-it('Dashboard → Agents issues a paste-ready one-time join code and lists, grants and revokes account agents', async () => {
+it('Dashboard → Your agents issues a paste-ready one-time join code and lists, grants and revokes account agents', async () => {
   const h = await create({ name: 'Kitchen helper' });
   const html = await (await dashboard(h, '/dashboard')).text();
   expect(html).toContain('id="agents"');
