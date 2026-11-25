@@ -13,6 +13,23 @@ This pre-release target uses fresh matching storage only — there are no legacy
 
 `scripts/provision.mjs` plans and provisions fresh named Worker, D1, R2, and domain resources and writes a complete Wrangler config. Review resource names and page-domain isolation before deploying.
 
+## Storage revision 12 in the existing s11 Workers
+
+Revision 12 keeps the `tendriller-{staging,production}-s11` Worker scripts, their
+secrets, public routes and `FILES` buckets (content-addressed runtime files). It
+binds fresh storage instead: D1 `tendriller-{staging,production}-s12-accounts`
+and the Durable Object classes `TendrilS12`, `AdmissionS12` and `AgentHubS12`
+(migration tag `storage-12`). The engine exports the same implementations under
+both names; the unrevisioned `Tendril`/`Admission`/`AgentHub` namespaces are no
+longer bound, so their revision-11 data stays inert and is never read, migrated
+or deleted. A later storage revision repeats this with new class names and a
+fresh D1, instead of moving routes to a new Worker.
+
+For each environment: apply the D1 migrations to the fresh database, set its
+`*_STORAGE_SCHEMA` variable to `12`, deploy through the normal workflow, verify
+readiness and the deployment checks, and only then reopen creation with the
+conditional update below.
+
 ## Required s10 → fresh s11 cutover precondition
 
 Changing the configured Worker name to `tendriller-staging-s11` or
