@@ -53,7 +53,7 @@ npx tendril mcp-stdio
 
 Attach calls name a page and never open a second signer; detaching does not stop the agent. Hub loss reopens bounded control streams with backoff, while existing local authoring and direct links remain independent. The hub carries no application operations. Native SQL needs its explicit matching native capability only when that optional page executes SQL.
 
-Optional MCP is prepared with `npm run assistant:prepare -- notes [--events]`; exact query/command/event approval remains separate. No adapter, page residency or hub connection establishes future wake of an existing assistant conversation. Local media preview never shares or stores an image without explicit consent and a configured authorized provider.
+Optional hosted MCP access is opted in per page and OAuth grant on `/connections` (`_tendril/mcp/connect`), using OAuth-token-wrapped X25519 keys with zero plaintext keys stored at rest. Local media preview never shares or stores an image without explicit consent and a configured authorized provider.
 
 ## Verify facts and lifecycle
 

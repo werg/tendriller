@@ -11,7 +11,7 @@ import { HttpError, json, readJson, toErrorResponse } from './http';
 import { AGENT_ID_RE, AGENT_TOKEN_RE, TENDRIL_ID_RE } from './ids';
 
 /** Page socket endpoints reachable through the hub. `peers/relay` stays a direct per-page socket. */
-export const HUB_PATHS = new Set(['setup/watch', 'peers/discovery/watch', 'peers/invitations', 'peers/rendezvous', 'assistant/adapter']);
+export const HUB_PATHS = new Set(['setup/watch', 'peers/discovery/watch', 'peers/invitations', 'peers/rendezvous']);
 export const HUB_LIMITS = Object.freeze({ streams: 64, frameBytes: 1024 * 1024, protocols: 8, queuedFrames: 256 });
 const AGENT_TAG = 'agent';
 const PROTOCOL_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,256}$/;

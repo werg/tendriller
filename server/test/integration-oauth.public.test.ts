@@ -1,39 +1,18 @@
-import { beforeAll, expect, it, vi } from 'vitest';
+import { beforeAll, expect, it } from 'vitest';
 import { evictDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import type { Env } from '../src/env';
 import { route } from '../src/router';
 import { CORE_RELEASE } from '../../contract/index.mjs';
-import { oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
-import { challengeFor } from '../src/accounts/oauth-support';
+import { base64url, challengeFor, oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
-import { bytesToHex, createScopedApplicationTools, describeApplication, eventExecutionManifest, executionManifestArtifacts, openApplicationDevice, createApplicationSession } from '@chronolog/peer-session';
+import { bytesToHex, eventExecutionManifest, executionManifestArtifacts, exportSigningIdentity } from '@chronolog/peer-session';
 import { createSigningIdentity, signAppDescriptor, signMembership, epochKeyCommitment, encodeRecord, recordDigest } from '@chronolog/authority';
 import { authorityRecord } from '../../contract/authority.mjs';
-import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-import { resolveConnection } from '../src/assistant-shared';
-import { createPeersClient } from '../../contract/peers.mjs';
-import { defineApplication, defineCommand, defineQuery, emit, program, type ApplicationReadView } from '@chronolog/peer-session';
-import { connectApplicationAssistant, createAssistantKey, createApplicationAgentKey, createAssistantEventDelivery, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
-import { peerApiJson } from './peer-exchange';
-import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
-import { advance, create, inDO, runAlarm, stub, apiJson, grantAgent, joinAccountAgent } from './helpers';
-
-class MemoryBytesStore {
-  private readonly bytes = new Map<string, Uint8Array>();
-  async get(key: string) { return this.bytes.get(key)?.slice() ?? null; }
-  async put(key: string, value: Uint8Array) { this.bytes.set(key, value.slice()); }
-}
-async function configureAssistantFixture(handle: {id: string;application: {id: string}}, tools: unknown, writers: readonly string[], manifest: string, epochKey: Uint8Array) {
-  const signer=await createSigningIdentity();
-  const descriptor=await signAppDescriptor({applicationId:handle.application.id,rootPrincipal:writers[0],authorityPublicKey:signer.publicKey,executionManifestDigest:manifest,finalityPolicy:{kind:'none'}},signer);
-  const membership=await signMembership({applicationId:handle.application.id,revision:0,previous:null,authorTimeAfterMs:-1n,epoch:0,
-    epochKeyDigest:await epochKeyCommitment(handle.application.id,0,epochKey),members:writers.map(publicKey=>({publicKey,reader:true,writer:true,administrator:true,publisher:false,finalizer:false}))},signer);
-  const bundle={descriptor,memberships:[membership]};
-  const configuration={tools,executionManifestDigest:manifest,executionProfile:'event-v1',publisherKeys:[signer.publicKey]},configurationDigest=await recordDigest(configuration);
-  await inDO(handle.id,t=>{t.db.set('application_configuration',configuration);t.db.set('application_configuration_digest',configurationDigest);t.db.set('application_authority',authorityRecord(encodeRecord(bundle)));});
-  return bundle;
-}
+import { sealHostedKeys } from '../src/mcp-crypto';
+import { doltliteExecutionManifestDigest } from '../src/mcp-sql';
+import { PUBLICATION_WATCH_PROTOCOL } from '../src/publication-watch';
+import { create, inDO, ownerHeaders } from './helpers';
 
 const ISSUER = 'https://tendriller.dev', RESOURCE = ISSUER + '/mcp';
 const REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect';
@@ -44,15 +23,130 @@ beforeAll(async () => {
   publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey) as JsonWebKey;
 });
 function configured(overrides: Partial<Env> = {}): Env {
-  return { ...env, OAUTH_CONFIG_JSON: JSON.stringify({ resource: RESOURCE, clients: [
-    { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read', 'events:subscribe'], allowRefresh: true },
-  ] }),
-  OAUTH_SIGNING_JWK: JSON.stringify({ ...privateJwk, kid: 'signing-1', alg: 'ES256' }), ...overrides };
+  return {
+    ...env,
+    OAUTH_CONFIG_JSON: JSON.stringify({
+      resource: RESOURCE,
+      clients: [
+        {
+          id: 'chatgpt',
+          name: 'ChatGPT',
+          redirectUris: [REDIRECT],
+          scopes: ['tendrils:create', 'tendrils:list', 'applications:read', 'applications:write', 'events:subscribe'],
+          allowRefresh: true,
+        },
+      ],
+    }),
+    OAUTH_SIGNING_JWK: JSON.stringify({ ...privateJwk, kid: 'signing-1', alg: 'ES256' }),
+    ...overrides,
+  };
 }
 function request(path: string, settings: Env = configured(), init: RequestInit = {}) {
   const headers = new Headers(init.headers), bytes = crypto.getRandomValues(new Uint8Array(2));
   if (!headers.has('CF-Connecting-IP')) headers.set('CF-Connecting-IP', `198.18.${bytes[0]}.${bytes[1]}`);
-  return route(new Request(ISSUER + path, { ...init, headers }), settings);
+  const target = /^https?:\/\//u.test(path) ? path : ISSUER + path;
+  return route(new Request(target, { ...init, headers }), settings);
+}
+
+async function hostFixture(applicationId?: string) {
+  const page = await create(applicationId ? { application: { id: applicationId } } : {}), subject = await inDO(page.id, t => t.db.get<string>('owner_account', ''));
+  const raw = 'browser-' + crypto.randomUUID(), now = Date.now();
+  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
+    .bind(await sha256Hex(raw), subject, now, now + 3600000).run();
+  const settings = configured();
+  return { page, subject, settings, raw, cookie: '__Host-tendriller=' + raw };
+}
+function jsonPost(path: string, input: unknown, settings: Env, secret: string) {
+  return request(path, settings, { method: 'POST', headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+function formPost(path: string, input: Record<string, string>, settings: Env, cookie: string, origin = ISSUER) {
+  return request(path, settings, { method: 'POST', headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(input) });
+}
+function serviceForm(path: string, input: Record<string, string>, settings: Env, authorization?: string) {
+  return request(path, settings, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(authorization ? { Authorization: authorization } : {}) },
+    body: new URLSearchParams(input),
+  });
+}
+function decodePart(value: string) { return JSON.parse(atob(value.replace(/-/g, '+').replace(/_/g, '/'))); }
+async function authorization(f: Awaited<ReturnType<typeof hostFixture>>, overrides: Record<string, string> = {}, decision = 'allow') {
+  const verifier = 'verifier-' + 'v'.repeat(43), state = 'state-' + crypto.randomUUID();
+  const params = new URLSearchParams({
+    response_type: 'code', client_id: 'chatgpt', redirect_uri: REDIRECT, resource: RESOURCE,
+    scope: 'tendrils:create tendrils:list applications:read applications:write events:subscribe',
+    code_challenge_method: 'S256', code_challenge: await challengeFor(verifier), state, ...overrides,
+  });
+  const response = await request('/oauth/authorize?' + params, f.settings, { headers: { Cookie: f.cookie } });
+  expect(response.status).toBe(200);
+  const html = await response.text(), token = /name="intent" value="([^"]+)"/u.exec(html)![1];
+  expect(html).toContain('Allow access'); expect(html).toContain('Individual apps keep their own permissions');
+  const result = await formPost('/oauth/authorize', { intent: token, decision }, f.settings, f.cookie);
+  expect(result.status).toBe(303);
+  const location = new URL(result.headers.get('Location')!);
+  expect(location.searchParams.get('iss')).toBe(ISSUER); expect(location.searchParams.get('state')).toBe(state);
+  return { code: location.searchParams.get('code'), error: location.searchParams.get('error'), verifier, token };
+}
+async function tokens(f: Awaited<ReturnType<typeof hostFixture>>, scopeOverrides?: string) {
+  const approved = await authorization(f, scopeOverrides ? { scope: scopeOverrides } : {});
+  const response = await serviceForm('/oauth/token', {
+    client_id: 'chatgpt', grant_type: 'authorization_code', resource: RESOURCE,
+    redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier,
+  }, f.settings);
+  expect(response.status).toBe(200);
+  const result = await response.json() as { access_token: string; refresh_token: string; expires_in: number; scope: string };
+  return { ...result, approved, grantId: decodePart(result.access_token.split('.')[1]).sid as string };
+}
+async function accessActive(token: string, settings: Env) {
+  const response = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, settings, token);
+  return response.status === 200;
+}
+async function mcpCall(settings: Env, token: string, name: string, args: Record<string, unknown> = {}) {
+  const response = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, settings, token);
+  const body = await response.json() as any;
+  return { response, body, result: body?.result, value: body?.result?.structuredContent };
+}
+
+async function seedPageAuthorityAndDomain(
+  page: { id: string; application: { id: string } },
+  writers: readonly string[],
+  epochKey: Uint8Array,
+  manifestDigest: string,
+  executionProfile: string,
+  domainSource: string,
+) {
+  const signer = await createSigningIdentity();
+  const descriptor = await signAppDescriptor({
+    applicationId: page.application.id,
+    rootPrincipal: writers[0],
+    authorityPublicKey: signer.publicKey,
+    executionManifestDigest: manifestDigest,
+    finalityPolicy: { kind: 'none' },
+  }, signer);
+  const membership = await signMembership({
+    applicationId: page.application.id,
+    revision: 0,
+    previous: null,
+    authorTimeAfterMs: -1n,
+    epoch: 0,
+    epochKeyDigest: await epochKeyCommitment(page.application.id, 0, epochKey),
+    members: writers.map(publicKey => ({ publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false })),
+  }, signer);
+  const bundle = { descriptor, memberships: [membership] };
+  const configuration = { executionManifestDigest: manifestDigest, executionProfile, publisherKeys: [signer.publicKey] };
+  const configurationDigest = await recordDigest(configuration);
+  const domainBytes = new TextEncoder().encode(domainSource);
+  const domainHash = await sha256Hex(domainSource);
+  await env.FILES.put(`t/${page.id}/f/${domainHash}`, domainBytes, { httpMetadata: { contentType: 'text/javascript; charset=utf-8' } });
+  await inDO(page.id, t => {
+    t.db.set('application_configuration', configuration);
+    t.db.set('application_configuration_digest', configurationDigest);
+    t.db.set('application_authority', authorityRecord(encodeRecord(bundle)));
+    t.db.run("INSERT OR REPLACE INTO versions(version, created_at, runtime_id, runtime_version, runtime_features, entry, message) VALUES(1, ?, 'test-rt', '1', '[]', 'index.html', 'test')", t.now());
+    t.db.run("INSERT OR REPLACE INTO version_files(version, path, hash, type, size) VALUES(1, 'domain.js', ?, 'text/javascript; charset=utf-8', ?)", domainHash, domainBytes.byteLength);
+    t.db.set('current', 1);
+  });
+  return { bundle, signer };
 }
 
 it('first-party OAuth stays disabled until explicitly configured and remains on the service origin', async () => {
@@ -62,38 +156,46 @@ it('first-party OAuth stays disabled until explicitly configured and remains on 
 });
 
 it('challenges an empty OAuth setup probe and serves the public resource-template catalog', async () => {
-  const settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource: ISSUER + '/mcp', clients: [{
-    id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'],
-  }] }) });
+  const settings = configured({
+    OAUTH_CONFIG_JSON: JSON.stringify({
+      resource: ISSUER + '/mcp',
+      clients: [{ id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] }],
+    }),
+  });
   const probe = await request('/mcp', settings, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' } });
   expect(probe.status).toBe(401);
   expect(probe.headers.get('WWW-Authenticate')).toContain(ISSUER + '/.well-known/oauth-protected-resource/mcp');
-  // ChatGPT requests all scopes advertised by the protected resource, rather
-  // than limiting itself to those in authorization-server metadata.
   const resource = await (await request('/.well-known/oauth-protected-resource/mcp', settings)).json() as { scopes_supported: string[] };
   expect(resource.scopes_supported).toEqual(['applications:read']);
-  const authorization = await request('/oauth/authorize?' + new URLSearchParams({
+  const authorizationResp = await request('/oauth/authorize?' + new URLSearchParams({
     client_id: 'chatgpt', redirect_uri: REDIRECT, state: 'chatgpt-discovery', resource: ISSUER + '/mcp',
     response_type: 'code', scope: resource.scopes_supported.join(' '),
     code_challenge_method: 'S256', code_challenge: await challengeFor('s'.repeat(43)),
   }), settings);
-  expect(authorization.status).toBe(303);
-  expect(new URL(authorization.headers.get('Location')!, ISSUER).pathname).toBe('/auth');
-  const templates = await request('/mcp', settings, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/templates/list' }) });
+  expect(authorizationResp.status).toBe(303);
+  expect(new URL(authorizationResp.headers.get('Location')!, ISSUER).pathname).toBe('/auth');
+  const templates = await request('/mcp', settings, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'resources/templates/list' }),
+  });
   expect(templates.status).toBe(200);
   expect(await templates.json()).toMatchObject({ result: { resourceTemplates: [] } });
 });
 
 it('provides a complete public MCP onboarding route without browsing or account access, including staging', async () => {
   const origin = 'https://staging.tendriller.dev';
-  const settings = configured({ PUBLIC_BASE: origin, SERVICE_ENVIRONMENT: 'Staging QA', SERVICE_SOURCE_COMMIT: 'c'.repeat(40), SERVICE_COMPOSITION_ID: 'd'.repeat(64),
-    OAUTH_CONFIG_JSON: JSON.stringify({ resource: origin + '/mcp', clients: [
-    { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] },
-  ] }) });
+  const settings = configured({
+    PUBLIC_BASE: origin, SERVICE_ENVIRONMENT: 'Staging QA', SERVICE_SOURCE_COMMIT: 'c'.repeat(40), SERVICE_COMPOSITION_ID: 'd'.repeat(64),
+    OAUTH_CONFIG_JSON: JSON.stringify({
+      resource: origin + '/mcp',
+      clients: [{ id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] }],
+    }),
+  });
   const call = async (method: string, params: object = {}) => {
-    const response = await route(new Request(origin + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) }), settings);
+    const response = await route(new Request(origin + '/mcp', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    }), settings);
     return { response, body: await response.json() as Record<string, any> };
   };
   const before = await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first();
@@ -102,7 +204,8 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(initialized.body.result.instructions).toContain(origin);
   expect(initialized.body.result.instructions).toContain(origin + '/docs/MCP_AGENT_GUIDE.md');
   expect(initialized.body.result.serverInfo.version).toBe(CORE_RELEASE);
-  expect(initialized.body.result._meta['tendriller/service']).toMatchObject({ serviceOrigin: origin,
+  expect(initialized.body.result._meta['tendriller/service']).toMatchObject({
+    serviceOrigin: origin,
     environment: { id: origin, label: 'Staging QA', kind: 'deployment' },
     build: { coreRelease: CORE_RELEASE, sourceCommit: 'c'.repeat(40), compositionId: 'd'.repeat(64), runtimeId: expect.stringMatching(/^[a-f0-9]{64}$/) },
   });
@@ -123,8 +226,10 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(start.serviceOrigin).toBe(origin);
   expect(start.environment.id).toBe(origin);
   expect(start.build).toEqual(initialized.body.result._meta['tendriller/service'].build);
-  expect(start.setup).toMatchObject({ startHere: origin + '/docs/MCP_AGENT_GUIDE.md', originPolicy: 'same-origin-only',
-    guideUnavailableAction: expect.stringContaining(origin + '/.well-known/tendriller.json') });
+  expect(start.setup).toMatchObject({
+    startHere: origin + '/docs/MCP_AGENT_GUIDE.md', originPolicy: 'same-origin-only',
+    guideUnavailableAction: expect.stringContaining(origin + '/.well-known/tendriller.json'),
+  });
   expect(start.readiness).toMatchObject({ serviceOrigin: origin, mode: 'open', creation: { available: true } });
   expect(start.setup.readinessUrl).toBe(origin + '/api/readiness');
   expect(start.setup).toMatchObject({ conversationGuide: origin + '/docs/CONVERSATION_DELIVERY.md',
@@ -156,94 +261,18 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect((await call('resources/read', { uri: start.url })).body.result.contents[0].text).toBe(start.text);
   const invalid = await call('tools/call', { name: 'tendril_guide', arguments: { topic: 'https://untrusted.example/' } });
   expect(invalid.body.result).toMatchObject({ isError: true, structuredContent: { code: 'invalid_guide_topic' } });
-  const absentGuide = await route(new Request(origin + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const absentGuide = await route(new Request(origin + '/mcp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'tendril_guide' } }),
   }), { ...settings, ASSETS: { fetch: async () => new Response('Missing', { status: 404 }) } as unknown as Fetcher });
   const absent = (await absentGuide.json() as any).result;
-  expect(absent).toMatchObject({ isError: true, structuredContent: { code: 'guide_unavailable',
-    message: expect.stringContaining(origin + '/.well-known/tendriller.json') } });
+  expect(absent).toMatchObject({
+    isError: true,
+    structuredContent: { code: 'guide_unavailable', message: expect.stringContaining(origin + '/.well-known/tendriller.json') },
+  });
   expect(absent.structuredContent.message).not.toContain('https://tendriller.dev');
   expect((await call('tools/call', { name: 'list_tendrils', arguments: {} })).response.status).toBe(401);
   expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS count FROM tendrils').first()).toEqual(before);
-});
-
-it('prepares assistant permissions before claim and activates their review only for the verified owner', async () => {
-  const f = await hostFixture();
-  const email = (await env.ACCOUNTS.prepare('SELECT email FROM accounts WHERE id=?').bind(f.subject).first<{ email: string }>())!.email;
-  const h = await create({ claim: false, owner: email });
-  const settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource: ISSUER + '/mcp', clients: [
-    { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read'] },
-  ] }) });
-  const restore = await inDO(h.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
-  await inDO(h.id, t => { t.env.OAUTH_CONFIG_JSON = settings.OAUTH_CONFIG_JSON; t.env.OAUTH_SIGNING_JWK = settings.OAUTH_SIGNING_JWK; });
-  try {
-    const device = await createSigningIdentity();
-    const tools={id:'prepared-notes',version:'1',commands:[{name:'addNote',description:'Add a note',input:{type:'null'}}],queries:[{name:'notes',description:'Read notes',input:{type:'null'}}]};
-    await configureAssistantFixture(h,tools,[device.publicKey],'12'.repeat(32),crypto.getRandomValues(new Uint8Array(32)));
-    const key = createAssistantKey(), adapterHash = await sha256Hex(key);
-    const input = { label: 'Prepared notes', adapterHashes: [adapterHash], queries: ['notes'], commands: ['addNote'], events: [] };
-    const prepare = (body = input, token = h.token) => request(new URL(h.api).pathname + '/assistant/propose', settings, {
-      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    const response = await request(new URL(h.api).pathname + '/assistant/propose', settings, {
-      method: 'POST', headers: { Authorization: 'Bearer ' + h.token, 'Content-Type': 'application/json' },
-      body: JSON.stringify(input),
-    });
-    expect(response.status).toBe(200);
-    const prepared = await response.json() as { proposed: string; approved: boolean; reviewUrl: string };
-    expect(prepared.approved).toBe(false);
-    expect(await env.ACCOUNTS.prepare('SELECT * FROM assistant_connections WHERE page_id=?').bind(h.id).first()).toBeNull();
-    expect((await request(new URL(prepared.reviewUrl).pathname, settings, { headers: { Cookie: f.cookie } })).status).toBe(404);
-    const claim = await request('/auth/page?' + new URLSearchParams({ tendril: h.id, key: new URL(h.page_url).pathname.split('/')[2] }), settings,
-      { headers: { Cookie: f.cookie }, redirect: 'manual' });
-    expect(claim.status).toBe(303);
-    const review = await request(new URL(prepared.reviewUrl).pathname, settings, { headers: { Cookie: f.cookie } });
-    expect(review.status).toBe(200);
-    const text = await review.text();
-    expect(text).toContain('Prepared notes');
-    expect(text).toContain('name="queries" value="notes" checked');
-    expect(text).toContain('name="commands" value="addNote" checked');
-    expect(await env.ACCOUNTS.prepare('SELECT enabled,owner_account FROM assistant_connections WHERE page_id=?').bind(h.id).first())
-      .toEqual({ enabled: 0, owner_account: f.subject });
-    expect(await inDO(h.id, t => t.db.get('assistant_connection', null))).toBeNull();
-    const csrf = /name="csrf" value="([^"]+)"/u.exec(text)![1];
-    expect((await formPost(new URL(prepared.reviewUrl).pathname, { csrf, action: 'approve', queries: 'notes', commands: 'addNote' }, settings, f.cookie)).status).toBe(303);
-    expect(await env.ACCOUNTS.prepare('SELECT enabled FROM assistant_connections WHERE page_id=?').bind(h.id).first()).toEqual({ enabled: 1 });
-    const approved = await inDO(h.id, t => t.db.get('assistant_connection', null));
-    const reconnect = async () => {
-      const response = await request(new URL(h.api).pathname + '/assistant/adapter', settings, { headers: {
-        Upgrade: 'websocket', 'Sec-WebSocket-Protocol': ['tendriller.application-mcp.v1', key, 'td_device_' + device.publicKey, h.token].join(', '),
-      } });
-      expect(response.status).toBe(101);
-      const socket = response.webSocket!; socket.accept();
-      const closed = new Promise<void>(resolve => socket.addEventListener('close', () => resolve(), { once: true }));
-      socket.close(); await closed;
-    };
-    await reconnect();
-    expect(await (await prepare()).json()).toMatchObject({ proposed: prepared.proposed, approved: true });
-    expect(await inDO(h.id, t => t.db.get('assistant_connection', null))).toEqual(approved);
-    await reconnect(); // Same reviewed key and retained signer; no second review.
-    const other = await hostFixture();
-    expect((await request(new URL(prepared.reviewUrl).pathname, settings, { headers: { Cookie: other.cookie } })).status).toBe(404);
-    for (const changed of [{ ...input, label: 'Changed label' }, { ...input, adapterHashes: ['b'.repeat(64)] }, { ...input, commands: [] }]) {
-      const result = await (await prepare(changed)).json() as { proposed: string; approved: boolean };
-      expect(result.proposed).not.toBe(prepared.proposed); expect(result.approved).toBe(false);
-    }
-    expect(await (await prepare()).json()).toMatchObject({ proposed: prepared.proposed, approved: true });
-    const delegated = await grantAgent({ ...h, account: f.subject }, await joinAccountAgent(f.page, 'different-credential'), ['assistant:manage', 'participants:connect']);
-    const differentCredential = await (await prepare(input, delegated.token)).json() as { proposed: string; approved: boolean };
-    expect(differentCredential.proposed).not.toBe(prepared.proposed); expect(differentCredential.approved).toBe(false);
-    await prepare();
-    // Owner approval is tied to the exact declared tool input contracts, not SQL schema.
-    const configuration=await inDO(h.id,t=>t.db.get<Record<string,unknown>>('application_configuration',{}));
-    const changedContract=await request(new URL(h.api).pathname+'/application',settings,{
-      method:'POST',headers:{Authorization:'Bearer '+h.token,'Content-Type':'application/json'},
-      body:JSON.stringify({...configuration,tools:{...tools,queries:[{name:'notes',description:'Read notes',input:{type:'string'}}]}}),
-    });
-    expect(changedContract.status).toBe(409);await changedContract.text();
-    await inDO(h.id, t => t.db.set('owner_account', other.subject));
-    try { const denied = await prepare(); expect(denied.status).toBe(403); await denied.text(); }
-    finally { await inDO(h.id, t => t.db.set('owner_account', f.subject)); }
-  } finally { await inDO(h.id, t => { Object.assign(t.env, restore); }); }
 });
 
 it('enabled OAuth names its missing account schema while the ordinary host still works with OAuth disabled', async () => {
@@ -264,9 +293,11 @@ it('discovery binds the exact resource issuer, PKCE and preconfigured client aut
   const response = await request('/.well-known/oauth-authorization-server');
   expect(response.status).toBe(200);
   const value = await response.json() as Record<string, unknown>;
-  expect(value).toMatchObject({ issuer: ISSUER, authorization_endpoint: ISSUER + '/oauth/authorize', token_endpoint: ISSUER + '/oauth/token',
+  expect(value).toMatchObject({
+    issuer: ISSUER, authorization_endpoint: ISSUER + '/oauth/authorize', token_endpoint: ISSUER + '/oauth/token',
     code_challenge_methods_supported: ['S256'], response_types_supported: ['code'], token_endpoint_auth_methods_supported: ['none'],
-    authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: false });
+    authorization_response_iss_parameter_supported: true, client_id_metadata_document_supported: false,
+  });
   expect(value.registration_endpoint).toBeUndefined();
   expect(value.grant_types_supported).toEqual(['authorization_code', 'refresh_token']);
   expect(response.headers.get('Cache-Control')).toBe('no-store');
@@ -300,78 +331,44 @@ it.each(['wildcard redirect', 'unsupported scope', 'duplicate client', 'private 
     const body = await response.text(); expect(body).not.toContain(privateJwk.d); expect(body).not.toContain('admin:*');
   });
 
-async function hostFixture(applicationId?: string) {
-  const page = await create(applicationId ? { application: { id: applicationId } } : {}), subject = await inDO(page.id, t => t.db.get<string>('owner_account', ''));
-  const raw = 'browser-' + crypto.randomUUID(), now = Date.now();
-  await env.ACCOUNTS.prepare('INSERT INTO sessions(hash,account_id,created_at,expires_at) VALUES(?,?,?,?)')
-    .bind(await sha256Hex(raw), subject, now, now + 3600000).run();
-  const settings = configured();
-  return { page, subject, settings, raw, cookie: '__Host-tendriller=' + raw };
-}
-function jsonPost(path: string, input: unknown, settings: Env, secret: string) {
-  return request(path, settings, { method: 'POST', headers: { Authorization: 'Bearer ' + secret, 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-}
-function formPost(path: string, input: Record<string, string>, settings: Env, cookie: string, origin = ISSUER) {
-  return request(path, settings, { method: 'POST', headers: { Cookie: cookie, Origin: origin, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(input) });
-}
-function serviceForm(path: string, input: Record<string, string>, settings: Env, authorization?: string) {
-  return request(path, settings, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(authorization ? { Authorization: authorization } : {}) },
-    body: new URLSearchParams(input) });
-}
-function decodePart(value: string) { return JSON.parse(atob(value.replace(/-/g, '+').replace(/_/g, '/'))); }
-async function authorization(f: Awaited<ReturnType<typeof hostFixture>>, overrides: Record<string, string> = {}, decision = 'allow') {
-  const verifier = 'verifier-' + 'v'.repeat(43), state = 'state-' + crypto.randomUUID();
-  const params = new URLSearchParams({ response_type: 'code', client_id: 'chatgpt', redirect_uri: REDIRECT, resource: RESOURCE,
-    scope: 'applications:read events:subscribe', code_challenge_method: 'S256', code_challenge: await challengeFor(verifier), state, ...overrides });
-  const response = await request('/oauth/authorize?' + params, f.settings, { headers: { Cookie: f.cookie } });
-  expect(response.status).toBe(200);
-  const html = await response.text(), token = /name="intent" value="([^"]+)"/u.exec(html)![1];
-  expect(html).toContain('Allow access'); expect(html).toContain('Individual apps keep their own permissions');
-  const result = await formPost('/oauth/authorize', { intent: token, decision }, f.settings, f.cookie);
-  expect(result.status).toBe(303);
-  const location = new URL(result.headers.get('Location')!);
-  expect(location.searchParams.get('iss')).toBe(ISSUER); expect(location.searchParams.get('state')).toBe(state);
-  return { code: location.searchParams.get('code'), error: location.searchParams.get('error'), verifier, token };
-}
-async function tokens(f: Awaited<ReturnType<typeof hostFixture>>) {
-  const approved = await authorization(f);
-  const response = await serviceForm('/oauth/token', { client_id: 'chatgpt', grant_type: 'authorization_code', resource: RESOURCE,
-    redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier }, f.settings);
-  expect(response.status).toBe(200);
-  const result = await response.json() as { access_token: string; refresh_token: string; expires_in: number; scope: string };
-  return { ...result, approved, grantId: decodePart(result.access_token.split('.')[1]).sid as string };
-}
-async function accessActive(token: string, settings: Env) {
-  const response = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, settings, token);
-  return response.status === 200;
-}
-
-it('authorization code flow uses the actual browser account, exact audience and real asymmetric JWT', async () => {
+it('authorization code flow issues X25519 wrap key in tokens only and clears transient code key at redemption', async () => {
   const f = await hostFixture(), issued = await tokens(f), [header, payload, signature] = issued.access_token.split('.');
   const claims = decodePart(payload);
   expect(decodePart(header)).toEqual({ typ: 'at+jwt', alg: 'ES256', kid: 'signing-1' });
-  expect(claims).toMatchObject({ iss: ISSUER, sub: f.subject, aud: RESOURCE, client_id: 'chatgpt', scope: 'applications:read events:subscribe', sid: issued.grantId });
+  expect(claims).toMatchObject({ iss: ISSUER, sub: f.subject, aud: RESOURCE, client_id: 'chatgpt', sid: issued.grantId });
+  expect(typeof claims.wk).toBe('string');
+  expect(claims.wk.length).toBeGreaterThan(20);
+  expect(issued.refresh_token).toMatch(/^rt_[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u);
   expect(claims.exp - claims.iat).toBe(300); expect(issued.expires_in).toBeGreaterThan(0); expect(issued.expires_in).toBeLessThanOrEqual(300);
   const key = await crypto.subtle.importKey('jwk', publicJwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
   const bytes = Uint8Array.from(atob(signature.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0));
   expect(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, bytes, new TextEncoder().encode(header + '.' + payload))).toBe(true);
   expect(await accessActive(issued.access_token, f.settings)).toBe(true);
+  const grantRow = await env.ACCOUNTS.prepare('SELECT wrap_public_key FROM integration_oauth_grants WHERE id=?').bind(issued.grantId).first<{ wrap_public_key: string }>();
+  expect(grantRow?.wrap_public_key).toMatch(/^[a-f0-9]{64}$/u);
+  const codeRow = await env.ACCOUNTS.prepare('SELECT sealed_wrap_key, used_at FROM integration_oauth_codes WHERE grant_id=?').bind(issued.grantId).first<{ sealed_wrap_key: string | null; used_at: number | null }>();
+  expect(codeRow?.used_at).toBeGreaterThan(0);
+  expect(codeRow?.sealed_wrap_key).toBeNull();
   const rows = await env.ACCOUNTS.prepare('SELECT hash FROM integration_oauth_access WHERE grant_id=?').bind(issued.grantId).all();
   expect(JSON.stringify(rows.results)).not.toContain(issued.access_token);
   expect(rows.results[0]).toMatchObject({ hash: await sha256Hex(issued.access_token) });
 });
 
 it('authorization rejects unregistered redirects, duplicate parameters, missing S256 and excessive scopes', async () => {
-  const f = await hostFixture(), base = { response_type: 'code', client_id: 'chatgpt', redirect_uri: REDIRECT, resource: RESOURCE,
-    scope: 'applications:read', code_challenge_method: 'S256', code_challenge: await challengeFor('v'.repeat(43)), state: 'same-state' };
+  const f = await hostFixture(), base = {
+    response_type: 'code', client_id: 'chatgpt', redirect_uri: REDIRECT, resource: RESOURCE,
+    scope: 'applications:read', code_challenge_method: 'S256', code_challenge: await challengeFor('v'.repeat(43)), state: 'same-state',
+  };
   const anonymous = await request('/oauth/authorize?' + new URLSearchParams(base), f.settings);
   expect(anonymous.status).toBe(303); expect(anonymous.headers.get('Location')).toMatch(/^\/auth\?return_to=/u);
   const unregistered = await request('/oauth/authorize?' + new URLSearchParams({ ...base, redirect_uri: 'https://attacker.example/callback' }), f.settings);
   expect(unregistered.status).toBe(400); expect(unregistered.headers.has('Location')).toBe(false);
   const duplicate = await request('/oauth/authorize?' + new URLSearchParams(base) + '&client_id=chatgpt', f.settings);
   expect(duplicate.status).toBe(400); expect(duplicate.headers.has('Location')).toBe(false);
-  for (const [override, error] of [[{ code_challenge_method: 'plain' }, 'invalid_request'], [{ scope: 'pages:publish' }, 'invalid_scope'],
-    [{ resource: 'https://other.example/mcp' }, 'invalid_target'], [{ response_type: 'token' }, 'unsupported_response_type']] as const) {
+  for (const [override, error] of [
+    [{ code_challenge_method: 'plain' }, 'invalid_request'], [{ scope: 'pages:publish' }, 'invalid_scope'],
+    [{ resource: 'https://other.example/mcp' }, 'invalid_target'], [{ response_type: 'token' }, 'unsupported_response_type'],
+  ] as const) {
     const response = await request('/oauth/authorize?' + new URLSearchParams({ ...base, ...override }), f.settings);
     expect(response.status).toBe(303);
     const location = new URL(response.headers.get('Location')!);
@@ -395,7 +392,7 @@ it('code redemption binds PKCE, redirect and resource; reusing an exchanged code
   expect(await accessActive(issued.access_token, f.settings)).toBe(false);
 });
 
-it('refresh rotates one-use tokens, permits narrower scopes and revokes the entire grant on replay', async () => {
+it('refresh rotates one-use tokens preserving wrap key, permits narrower scopes and revokes the entire grant on replay', async () => {
   const f = await hostFixture(), issued = await tokens(f);
   const input = { grant_type: 'refresh_token', client_id: 'chatgpt', resource: RESOURCE, refresh_token: issued.refresh_token };
   expect((await serviceForm('/oauth/token', { ...input, scope: 'pages:publish' }, f.settings)).status).toBe(400);
@@ -403,6 +400,7 @@ it('refresh rotates one-use tokens, permits narrower scopes and revokes the enti
   const renewed = await refreshed.json() as { access_token: string; refresh_token: string; scope: string };
   expect(renewed.refresh_token).not.toBe(issued.refresh_token); expect(renewed.access_token).not.toBe(issued.access_token);
   expect(renewed.scope).toBe('applications:read'); expect(await accessActive(renewed.access_token, f.settings)).toBe(true);
+  expect(decodePart(renewed.access_token.split('.')[1]).wk).toBeTruthy();
   expect((await serviceForm('/oauth/token', input, f.settings)).status).toBe(400);
   expect(await accessActive(issued.access_token, f.settings)).toBe(false);
   expect(await accessActive(renewed.access_token, f.settings)).toBe(false);
@@ -437,8 +435,10 @@ it('confidential clients require their registered Basic secret as well as PKCE',
   const f = await hostFixture(), secret = 'client-private-' + 's'.repeat(43), value = JSON.parse(f.settings.OAUTH_CONFIG_JSON!);
   Object.assign(value.clients[0], { tokenEndpointAuthMethod: 'client_secret_basic', clientSecretSha256: await sha256Hex(secret) });
   f.settings.OAUTH_CONFIG_JSON = JSON.stringify(value);
-  const approved = await authorization(f), input = { grant_type: 'authorization_code', client_id: 'chatgpt', resource: RESOURCE,
-    redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier };
+  const approved = await authorization(f), input = {
+    grant_type: 'authorization_code', client_id: 'chatgpt', resource: RESOURCE,
+    redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier,
+  };
   expect((await serviceForm('/oauth/token', input, f.settings)).status).toBe(401);
   expect((await serviceForm('/oauth/token', { ...input, client_secret: secret }, f.settings)).status).toBe(401);
   expect((await serviceForm('/oauth/token', input, f.settings, 'Basic ' + btoa('chatgpt:wrong'))).status).toBe(401);
@@ -463,8 +463,10 @@ it('browser grant management revokes only the authenticated account and requires
 it('RS256 signing and retained public keys support configured key rotation without publishing private material', async () => {
   const pair = await crypto.subtle.generateKey({ name: 'RSASSA-PKCS1-v1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' }, true, ['sign', 'verify']) as CryptoKeyPair;
   const signing = await crypto.subtle.exportKey('jwk', pair.privateKey) as JsonWebKey;
-  const settings = configured({ OAUTH_SIGNING_JWK: JSON.stringify({ ...signing, kid: 'rsa-2', alg: 'RS256' }),
-    OAUTH_PUBLIC_JWKS: JSON.stringify({ keys: [{ ...publicJwk, kid: 'signing-1', alg: 'ES256' }] }) });
+  const settings = configured({
+    OAUTH_SIGNING_JWK: JSON.stringify({ ...signing, kid: 'rsa-2', alg: 'RS256' }),
+    OAUTH_PUBLIC_JWKS: JSON.stringify({ keys: [{ ...publicJwk, kid: 'signing-1', alg: 'ES256' }] }),
+  });
   const config = (await oauthConfig(settings))!, token = await signAccessToken(config, { sub: 'test', aud: RESOURCE });
   const [header, payload, signature] = token.split('.'); expect(decodePart(header).alg).toBe('RS256');
   const bytes = Uint8Array.from(atob(signature.replace(/-/g, '+').replace(/_/g, '/')), character => character.charCodeAt(0));
@@ -473,623 +475,375 @@ it('RS256 signing and retained public keys support configured key rotation witho
   expect(jwks.keys.map(key => key.kid)).toEqual(['rsa-2', 'signing-1']); expect(jwks.keys.every(key => key.d === undefined)).toBe(true);
 });
 
-const notes = defineApplication({
-  id: 'notes-mcp-integration', version: '1',
-  commands: { addNote: defineCommand({
-    description: 'Save text in the notebook.', input: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
-    prepare: ({ text }) => program(emit('note', { text })),
-  }) },
-  queries: { notes: defineQuery({ description: 'Read retained notes.', input: { type: 'null' },
-    read: (view: ApplicationReadView) => view.readEvents({ topics: ['note'] }).events.map(event => event.payload) }),
-    privateNotes: defineQuery({ description: 'Read private note status.', input: { type: 'null' }, read: () => true }) },
-});
-const counter = defineApplication({
-  id: 'counter-mcp-integration', version: '1',
-  commands: { count: defineCommand({
-    description: 'Add one reading.',
-    input: { type: 'integer', minimum: 1, maximum: 10 },
-    prepare: value => program(emit('reading', { value })),
-  }) },
-  queries: { readings: defineQuery({ description: 'Return the retained meter readings.',
-    input: { type: 'null' }, read: (view: ApplicationReadView) => view.readEvents({ topics: ['reading'] }).events.map(event => event.payload),
-  }) },
+it('register_agent over /mcp registers a handle + bio and rotates on repeat handle', async () => {
+  const f = await hostFixture(), issued = await tokens(f);
+  const kp1 = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']) as CryptoKeyPair;
+  const pub1 = base64url(new Uint8Array(await crypto.subtle.exportKey('raw', kp1.publicKey) as ArrayBuffer));
+  const first = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'atlas', bio: 'Research helper', publicKey: pub1 });
+  expect(first.response.status).toBe(200);
+  expect(first.result.isError).not.toBe(true);
+  expect(first.value).toMatchObject({ agent: { handle: 'atlas', bio: 'Research helper' }, rotated: false });
+  expect(first.value.token).toMatch(/^ta_/u);
+
+  const kp2 = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']) as CryptoKeyPair;
+  const pub2 = base64url(new Uint8Array(await crypto.subtle.exportKey('raw', kp2.publicKey) as ArrayBuffer));
+  const second = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'atlas', bio: 'Updated bio', publicKey: pub2 });
+  expect(second.value).toMatchObject({ agent: { id: first.value.agent.id, handle: 'atlas', bio: 'Updated bio' }, rotated: true });
+  expect(second.value.token).not.toBe(first.value.token);
+
+  const invalid = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'Bad Handle!', publicKey: pub2 });
+  expect(invalid.result.isError).toBe(true);
 });
 
-it('serves unrelated native applications through one MCP endpoint and retains inbox and signed push across eviction', async () => {
-  const a = await hostFixture(), b = await hostFixture(), now = Date.now(), resource = ISSUER + '/mcp';
-  const scopes = 'tendrils:list applications:read applications:write events:subscribe';
-  const bind = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource, clients: [
-    { id: 'chatgpt', redirectUris: [REDIRECT], scopes: scopes.split(' ') },
-  ] }),
-  ASSISTANT_STORE_KEY: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))), ASSISTANT_CALLBACK_ORIGINS: 'https://callback.example' });
-  const settings = Object.fromEntries(['OAUTH_CONFIG_JSON', 'OAUTH_SIGNING_JWK', 'ASSISTANT_STORE_KEY', 'ASSISTANT_CALLBACK_ORIGINS']
-    .map(key => [key, bind[key as keyof Env]]));
-  const restore = await inDO(a.page.id, t => {
-    const previous = Object.fromEntries(Object.keys(settings).map(key => [key, t.env[key as keyof Env]]));
-    Object.assign(t.env, settings); return previous;
-  });
-  await inDO(b.page.id, t => { Object.assign(t.env, settings); });
-  const oauth = (await oauthConfig(bind))!, adapters: AssistantParticipant[] = [], sessions: { close(): Promise<void> }[] = [];
-  const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0,
-    rendezvousSentBytes: 0, rendezvousReceivedBytes: 0, discoveryUpgrades: 0, discoverySentBytes: 0, discoveryReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0,
-    relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
-  const checkStatus = async (pending: Promise<Response>, status: number) => {
-    const response = await pending, body = await response.text();
-    // Rejected upgrades still carry an HTTP response body. Consume it so the
-    // remote request releases its Durable Object reference before hibernation.
-    expect(response.status, body).toBe(status);
-  };
-  async function open<D extends typeof notes | typeof counter>(f: typeof a, definition: D, query: string, command: string, eventName: string) {
-    const pagePath = new URL(f.page.api).pathname, headers = { Authorization: 'Bearer ' + f.page.token, 'Content-Type': 'application/json' };
-    const peers = createPeersClient({ base: f.page.api, applicationId: f.page.application.id,
-      request: async (path, options = {}) => {
-        const res = await request(pagePath + '/' + path, bind, { method: options.method, headers,
-          ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) });
-        if (!res.ok) throw Error(path + ': ' + res.status + ': ' + await res.text());
-        return res.json();
-      },
-      socket: (raw, protocols) => {
-        const url = new URL(raw);
-        return testPeerSocket(() => request(url.pathname + url.search, bind, { headers: {
-          ...headers, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': protocols.join(', '),
-        } }), traffic, 'relay');
-      },
-    });
-    const device = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
-    const backupDevice = f === a ? await openApplicationDevice({ store: new MemoryBytesStore(), create: true }) : null;
-    const epoch = crypto.getRandomValues(new Uint8Array(32)), manifest = await executionManifestArtifacts(await eventExecutionManifest());
-    const bundle = await configureAssistantFixture(f.page,describeApplication(definition),[device.identity.publicKey,...(backupDevice?[backupDevice.identity.publicKey]:[])],bytesToHex(manifest.executionManifestDigest),epoch);
-    const session = await createApplicationSession({ device, definition, authority: bundle, epochKeys: new Map([[0, epoch]]) });
-    sessions.push(session);
-    const key = createAssistantKey(), backupKey = createAssistantKey(), reviewPath = '/connections/' + f.page.id;
-    const extraQuery = f === a ? ['privateNotes'] : [];
-    const blueprints = { queries: [query, ...extraQuery], commands: [command],
-      events: [{ name: eventName, description: 'An approved app event.' }] };
-    // A page client as createAgentClient().page(id) provides, over this test's request helper.
-    const page = {
-      async request(path: string, options: { method?: string; body?: unknown } = {}) {
-        const response = await request(pagePath + path, bind, { method: options.method ?? 'GET',
-          headers: { Authorization: 'Bearer ' + f.page.token, ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-          ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) });
-        const result = await response.json() as any;
-        if (!response.ok) throw Object.assign(new Error(result?.error?.message ?? 'request failed'), { status: response.status, code: result?.error?.code });
-        return result;
-      },
-      socket() { throw new Error('This test supplies openSocket'); },
-    };
-    const proposal = await proposeApplicationAssistant({ page, key,
-      backupKeys: backupDevice ? [backupKey] : [], label: f.page.name, ...blueprints });
-    expect(proposal.approved).toBe(false);
-    expect(proposal.reviewUrl).toBe(ISSUER + reviewPath);
-    await checkStatus(request(reviewPath, bind, { headers: { Cookie: f === a ? b.cookie : a.cookie } }), 404);
-    const upgrade = (protocols: string[]) => request(pagePath + '/assistant/adapter', bind, { headers: {
-      Upgrade: 'websocket', 'Sec-WebSocket-Protocol': [...protocols, f.page.token].join(', '),
-    } });
-    await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + session.identity.publicKey]), 401);
-    const review = async (queries: string[], origin = ISSUER) => {
-      const page = await request(reviewPath, bind, { headers: { Cookie: f.cookie } });
-      expect(page.status).toBe(200);
-      const csrf = /name="csrf" value="([^"]+)"/.exec(await page.text())?.[1] ?? '';
-      const form = new URLSearchParams({ csrf, action: 'approve', commands: command, events: eventName });
-      for (const name of queries) form.append('queries', name);
-      return request(reviewPath, bind, { method: 'POST', headers: { Origin: origin, Cookie: f.cookie }, body: form });
-    };
-    const reviewAction = async (action: string, fields: Record<string, string>) => {
-      const page = await request(reviewPath, bind, { headers: { Cookie: f.cookie } });
-      const csrf = /name="csrf" value="([^"]+)"/.exec(await page.text())![1];
-      return request(reviewPath, bind, { method: 'POST', headers: { Origin: ISSUER, Cookie: f.cookie },
-        body: new URLSearchParams({ csrf, action, ...fields }) });
-    };
-    await checkStatus(review(blueprints.queries, 'https://evil.example'), 403);
-    await checkStatus(review(blueprints.queries), 303);
-    let dropNextResult = false, droppedResult: Record<string, any> | null = null;
-    const start = (whichKey = key, peer = session) => {
-      const adapter = connectApplicationAssistant({ page, key: whichKey, session: peer, tools: createScopedApplicationTools(peer, blueprints),
-        openSocket: (_url, protocols) => {
-          const socket = testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous'), send = socket.send.bind(socket);
-          socket.send = data => {
-            const frame = typeof data === 'string' ? JSON.parse(data) : null;
-            if (dropNextResult && frame?.type === 'result' && frame.value?.operationReference) {
-              dropNextResult = false; droppedResult = frame.value;
-              // The real native tool saved/applied this operation. Only its
-              // transport response is lost, so another dispatch is unsafe.
-              socket.close(1000, 'Lost reply after native save'); return;
-            }
-            send(data);
-          };
-          return socket as unknown as globalThis.WebSocket;
-        } });
-      adapters.push(adapter);
-      return adapter;
-    };
-    const adapter = start();
-    await vi.waitFor(() => expect(adapter.online).toBe(true));
-    const startBackup = async () => {
-      if (!backupDevice) throw Error('No backup configured');
-      const backup = await createApplicationSession({ device: backupDevice, definition, authority: bundle, epochKeys: new Map([[0, epoch]]) });
-      sessions.push(backup);
-      await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + backup.identity.publicKey]), 409);
-      const channel = 'backup:' + crypto.randomUUID();
-      const firstRelay = peers.relay(channel, session.identity.publicKey, { remotePeerId: backup.identity.publicKey });
-      const secondRelay = peers.relay(channel, backup.identity.publicKey, { remotePeerId: session.identity.publicKey });
-      const [left, right] = await Promise.all([firstRelay, secondRelay].map(relay =>
-        openWebSocketConnection(relay as Parameters<typeof openWebSocketConnection>[0], { ready: relay.ready })));
-      const [primary, replica] = await Promise.all([
-        session.connectPeer({ connection: left, peerIdentity: backup.identity.publicKey }),
-        backup.connectPeer({ connection: right, peerIdentity: session.identity.publicKey }),
-      ]);
-      await Promise.all([primary.synchronize(), replica.synchronize()]);
-      // The session opens its owned storage when created and materializes
-      // synchronized operations eagerly. Prove the database is ready and that a
-      // coherent applied read matches the primary before treating it as a fallback.
-      await vi.waitFor(() => expect(backup.status.database).toBe('ready'));
-      const primaryRead = await session.query(query,null);
-      const backupRead = await backup.query(query,null);
-      expect(backupRead).toEqual(primaryRead);
-      const standby = start(backupKey, backup);
-      await vi.waitFor(() => expect(standby.online).toBe(true));
-      return { standby, backup };
-    };
-    const gid = crypto.randomUUID(), jti = crypto.randomUUID();
-    const bearer = await signAccessToken(oauth, { iss: ISSUER, aud: resource, sub: f.subject, sid: gid, jti, scope: scopes,
-      exp: Math.floor((now + 300_000) / 1000) });
-    await env.ACCOUNTS.batch([
-      env.ACCOUNTS.prepare('INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at) VALUES (?,?,?,?,?,?,?)')
-        .bind(gid, f.subject, 'chatgpt', resource, scopes, now, now + 600_000),
-      env.ACCOUNTS.prepare('INSERT INTO integration_oauth_access(hash,grant_id,jti,scope,created_at,expires_at) VALUES (?,?,?,?,?,?)')
-        .bind(await sha256Hex(bearer), gid, jti, scopes, now, now + 300_000),
-    ]);
-    const rpc = async (method: string, params: Record<string, unknown> = {}) => {
-      const res = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method, params }, bind, bearer);
-      return res.json<any>();
-    };
-    const tool = (name: string, args: Record<string, unknown> = {}) => rpc('tools/call', { name, arguments: args });
-    return { adapter, session, eventName, gid, rpc, tool, review, reviewAction, startBackup, backupKey, id: f.page.application.id,
-      loseNextResult: () => { dropNextResult = true; droppedResult = null; }, lostResult: () => droppedResult };
-  }
-  const sent: { id: string; body: string }[] = [];
-  let mounted: WebSocket | undefined;
-  const secrets = [new Uint8Array(32).fill(9), new Uint8Array(32).fill(10)];
-  const [secret, rotatedSecret] = secrets.map(bytes => 'whsec_' + btoa(String.fromCharCode(...bytes)));
-  let verifications = 0, rejectCallback = false;
-  const outbound = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    const req = new Request(input, init);
-    expect(req.url).toBe('https://callback.example/events');
-    const body = await req.text(), value = JSON.parse(body), id = req.headers.get('webhook-id')!;
-    const signatures = await Promise.all(secrets.map(async bytes => {
-      const key = await crypto.subtle.importKey('raw', bytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-      const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${req.headers.get('webhook-timestamp')}.${body}`));
-      return 'v1,' + btoa(String.fromCharCode(...new Uint8Array(signature)));
-    }));
-    expect(req.headers.get('X-MCP-Subscription-Id')).toMatch(/^sub_/);
-    if (value.type === 'verification') {
-      expect(req.headers.get('webhook-signature')).toBe(signatures[verifications++]);
-      return Response.json({ challenge: value.challenge });
-    }
-    expect(req.headers.get('webhook-signature')).toBe(sent.length === 0 ? signatures[0] : [signatures[1], signatures[0]].join(' '));
-    sent.push({ id, body });
-    return new Response(null, { status: sent.length === 1 || rejectCallback ? 503 : 204 });
+it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys, zero plaintext keys at rest, multi-agent messaging, HTTP gateway, and revocation', async () => {
+  const f = await hostFixture();
+  const issued = await tokens(f);
+  const restore = await inDO(f.page.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
+  await inDO(f.page.id, t => {
+    t.env.OAUTH_CONFIG_JSON = f.settings.OAUTH_CONFIG_JSON;
+    t.env.OAUTH_SIGNING_JWK = f.settings.OAUTH_SIGNING_JWK;
   });
   try {
-    const anonymous = async (method: string, params = {}) => request('/mcp', bind, { method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Mcp-Protocol-Version': '2026-07-28', 'Mcp-Method': method },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
-    expect(await (await anonymous('tools/list')).json()).toMatchObject({ result: { resultType: 'complete' } });
-    await checkStatus(anonymous('tools/call', { name: 'list_tendrils', arguments: {} }), 401);
-    const first = await open(a, notes, 'notes', 'addNote', 'note.added');
-    const second = await open(b, counter, 'readings', 'count', 'counter.changed');
-    expect((await first.rpc('initialize')).result.capabilities.events).toEqual({});
-    expect((await first.tool('list_tendrils')).result.structuredContent.applications).toEqual([
-      { applicationId: first.id, label: a.page.name, pageId: a.page.id },
-    ]);
-    expect((await first.tool('describe_application', { applicationId: second.id })).result.isError).toBe(true);
-    expect((await first.tool('get_profile')).result.structuredContent.id).not.toEqual((await second.tool('get_profile')).result.structuredContent.id);
-    expect((await second.rpc('events/list')).result.events.map((e: {name: string}) => e.name)).toEqual(['application.event']);
-    expect((await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.queries[0].name).toBe('notes');
-    expect((await first.tool('call_application_command', { applicationId: first.id, command: 'addNote', input: {},
-      operationId: 'invalid-before-admission' })).result.structuredContent.code).toBe('invalid_application_input');
-    await inDO(a.page.id, t => expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands')).toEqual({ n: 0 }));
-    const announcement = (await first.tool('open_application_inbox', { applicationId: first.id })).result;
-    expect(announcement.structuredContent).not.toHaveProperty('activity');
-    const proof = announcement._meta.activity.proof;
-    const mount = (pageId: string, token: string) => request('/api/assistant/pages/' + pageId + '/activity', bind, { headers: {
-      Upgrade: 'websocket', 'Sec-WebSocket-Protocol': 'tendriller.application-activity.v1, td_watch.' + token,
-    } });
-    await checkStatus(mount(b.page.id, proof), 401);
-    await checkStatus(mount(a.page.id, proof.replace(/^[\w-]/u, proof[0] === 'A' ? 'B' : 'A')), 401);
-    const watched = await mount(a.page.id, proof);
-    expect(watched.status).toBe(101);
-    mounted = watched.webSocket!;
-    const notices: string[] = [];
-    mounted.addEventListener('message', event => { notices.push(String(event.data)); });
-    mounted.accept();
-    await inDO(a.page.id, t => {
-      expect(t.ctx.getWebSockets('application-mcp')).toHaveLength(1);
-      expect(t.ctx.getWebSockets('application-activity')).toHaveLength(1);
-      expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull();
-    });
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'readings', input: null })).result.isError).toBe(true);
-    const write = { applicationId: first.id, command: 'addNote', operationId: 'reply-one', input: { text: 'Rope checked' } };
-    expect((await first.tool('call_application_command', write)).result.isError).toBeUndefined();
-    expect((await first.tool('call_application_command', write)).result.isError).toBeUndefined();
-    expect((await second.tool('call_application_command', { applicationId: second.id, command: 'count', operationId: 'count-one', input: 7 })).result.isError).toBeUndefined();
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value).toMatchObject([{ text: 'Rope checked' }]);
-    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
+    const pageBase = f.page.page_url;
+    const pageOwner = ownerHeaders(pageBase);
+    const grantsResp = await request(pageBase + '_tendril/mcp/grants', f.settings, { headers: pageOwner });
+    expect(grantsResp.status).toBe(200);
+    const grantsData = await grantsResp.json() as { configured: boolean; grants: Array<{ id: string; wrap_public_key: string }> };
+    expect(grantsData.configured).toBe(true);
+    const grantInfo = grantsData.grants.find(g => g.id === issued.grantId)!;
+    expect(grantInfo.wrap_public_key).toMatch(/^[a-f0-9]{64}$/u);
 
-    const capture = new AbortController();
-    const bareAlarm = await inDO(b.page.id, async t => t.ctx.storage.getAlarm());
-    const forwardedBatch = await second.session.readEvents({topics:['reading']});
-    const deliver = createAssistantEventDelivery({assistant:second.adapter});
-    for(const event of forwardedBatch.events) {
-      const operation=await second.session.operations.get(event.proposalId),state=operation!.inspect();
-      await deliver({name:second.eventName,payload:event.payload,observation:{stored:state.stored,
-        materialized:state.materialized?{outcome:state.materialized.outcome,revision:state.materialized.revision}:null,
-        retained:state.retained,finalized:state.finalized,excluded:state.excluded}},event,forwardedBatch,capture.signal);
-    }
-    capture.abort();
-    expect((await second.tool('read_application_events', { applicationId: second.id })).result.structuredContent.events)
-      .toMatchObject([{ data: { payload: { value: 7 } } }]);
-    await inDO(b.page.id, async t => {
-      expect(await t.ctx.storage.getAlarm()).toBe(bareAlarm);
-      expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull();
-    });
+    const hostedIdentity = await exportSigningIdentity(await createSigningIdentity());
+    const epochKey = crypto.getRandomValues(new Uint8Array(32));
+    const eventsDomain = `
+      export default {
+        id: 'notes-hosted-test',
+        version: '1',
+        commands: {
+          putNote: {
+            description: 'Save a note',
+            input: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' } }, required: ['id', 'text'] },
+            prepare: ({ id, text }) => ({ steps: [{ kind: 'emit', topic: 'note', payload: { id, text } }] }),
+          },
+        },
+        queries: {
+          notes: {
+            description: 'List saved notes',
+            input: { type: 'null' },
+            read: (view) => view.readEvents({ topics: ['note'] }).events.map(e => e.payload),
+          },
+        },
+      };
+    `;
+    const eventManifest = await executionManifestArtifacts(await eventExecutionManifest());
+    await seedPageAuthorityAndDomain(f.page, [hostedIdentity.publicKey], epochKey, bytesToHex(eventManifest.executionManifestDigest), 'event-v1', eventsDomain);
 
-    const tuning = { name: 'application.event', arguments: { application_id: first.id, event: 'note.added' },
-      delivery: { mode: 'webhook', url: 'https://callback.example/events' } };
-    const subscribe = (secret: string) => first.rpc('events/subscribe', { ...tuning, delivery: { ...tuning.delivery, secret } });
-    const watch = await subscribe(secret);
-    expect(watch.result?.id, JSON.stringify(watch)).toMatch(/^sub_/);
-    expect((await subscribe(secret)).result.id).toBe(watch.result.id);
-    expect(verifications).toBe(1);
-    const view = await first.session.readView(), batch = view.readEvents({ topics: ['note'] });
-    await view.release();
-    expect(batch.events).toHaveLength(1);
-    const emitted = { name: 'note.added', sourceEventId: batch.events[0].id, proposalId:batch.events[0].proposalId,revision:batch.revision,observation:{stored:true,materialized:{outcome:'accepted' as const,revision:batch.revision},retained:[],finalized:false,excluded:false}, payload: { ready: true } };
-    // Establish the outage before enqueueing work. The real alarm may fire
-    // immediately after publication; racing it here would test fixture timing.
-    await inDO(a.page.id, t => { t.env.OAUTH_CONFIG_JSON = undefined; });
-    const sequence = await first.adapter.publish(emitted);
-    expect(await first.adapter.publish(emitted)).toBe(sequence);
+    const aad = `${f.page.id}:${f.page.application.id}:${issued.grantId}`;
+    const wrapped = await sealHostedKeys(grantInfo.wrap_public_key, {
+      signingSeedHex: hostedIdentity.privateKey,
+      signingPublicKey: hostedIdentity.publicKey,
+      epochKeys: { '0': bytesToHex(epochKey) },
+    }, aad);
 
-    // A deployment with OAuth temporarily unavailable preserves existing jobs.
-    await advance(a.page.id, 100);
-    await runAlarm(a.page.id);
-    // A real alarm can already own the job when runAlarm returns. Observe that
-    // exact lease finishing before restoring configuration; otherwise the
-    // fixture itself can re-enable egress during its unavailable-policy check.
-    await expect.poll(() => inDO(a.page.id, t =>
-      t.db.one('SELECT block_reason,attempts,lease FROM assistant_jobs')), { timeout: 5000 })
-      .toMatchObject({ block_reason: 'oauth_unavailable', attempts: 0, lease: null });
-    expect(sent).toHaveLength(0);
-    await inDO(a.page.id, t => {
-      Object.assign(t.env, settings);
-      t.db.run('UPDATE assistant_jobs SET due=?', t.now() - 1);
-    });
-    const inbox = (await first.tool('read_application_events', { applicationId: first.id })).result.structuredContent;
-    expect(inbox.events).toMatchObject([{ sequence, data: { payload: { ready: true } } }]);
-    expect((await first.tool('read_application_events', { applicationId: first.id, after: inbox.next })).result.structuredContent.events).toEqual([]);
-    await runAlarm(a.page.id);
-    await expect.poll(() => inDO(a.page.id, t =>
-      t.db.one('SELECT block_reason,attempts,lease FROM assistant_jobs')), { timeout: 5000 })
-      .toMatchObject({ block_reason: 'callback_retry', attempts: 1, lease: null });
-    expect(sent).toHaveLength(1);
-    await checkStatus(first.review(['notes']), 303);
-    expect(first.adapter.online).toBe(true);
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'privateNotes', input: null })).result.structuredContent.code)
-      .toBe('operation_not_approved');
-    expect((await subscribe(rotatedSecret)).result.id).toBe(watch.result.id);
-    expect(verifications).toBe(2);
-    const liveSockets = await inDO(a.page.id, t => ({
-      adapter: t.ctx.getWebSockets('application-mcp').map(socket => socket.deserializeAttachment()),
-      activity: t.ctx.getWebSockets('application-activity').map(socket => socket.deserializeAttachment()),
-    }));
-    expect(liveSockets.adapter).toHaveLength(1); expect(liveSockets.activity).toHaveLength(1);
-    await evictDurableObject(stub(a.page.id));
-    await inDO(a.page.id, t => {
-      Object.assign(t.env, settings);
-      expect(t.ctx.getWebSockets('application-mcp').map(socket => socket.deserializeAttachment())).toEqual(liveSockets.adapter);
-      expect(t.ctx.getWebSockets('application-activity').map(socket => socket.deserializeAttachment())).toEqual(liveSockets.activity);
-    });
-    await advance(a.page.id, 3000);
-    await runAlarm(a.page.id);
-    expect(sent).toHaveLength(2);
-    expect(sent[1]).toEqual(sent[0]);
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result.structuredContent.value).toMatchObject([{ text: 'Rope checked' }]);
-    await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_jobs')).toBeNull());
-
-    const accepted = (await first.tool('get_application_delivery', { applicationId: first.id })).result.structuredContent;
-    expect(accepted.recent).toMatchObject([{ outcome: 'accepted', attempts: 2, sourceEventId: emitted.sourceEventId }]);
-
-    // Keep an old event pinned by a webhook while the visible inbox moves on.
-    rejectCallback = true;
-    const later = { ...emitted, sourceEventId: 'pinned-after-retry' };
-    const pinned = await first.adapter.publish(later);
-    await vi.waitFor(() => expect(notices).toEqual(['{"type":"changed"}']));
-    await inDO(a.page.id, t => {
-      t.transaction(() => {
-        for (let i = 0; i < 258; i++)
-          t.db.run('INSERT INTO assistant_events(source_id,proposal_id,revision,facts,name,payload,created_at) VALUES(?,?,?,?,?,?,?)',
-            'retention-fixture-' + i, later.proposalId, JSON.stringify(later.revision), JSON.stringify({observation:later.observation,change:'upsert'}), later.name, '{}', t.now());
-      });
-    });
-    await first.adapter.publish({ ...later, sourceEventId: 'new-inbox-tail' });
-    const gap = (await first.tool('read_application_events', { applicationId: first.id, after: { ...inbox.next, sequence: pinned }, limit: 1 })).result.structuredContent;
-    expect(gap.truncated).toBe(true);
-    expect(gap.resetRequired).toBe(true); expect(gap.reason).toBe('retention_truncated'); expect(gap.events).toEqual([]);
-    const resumed = (await first.tool('read_application_events', { applicationId: first.id, after: gap.next, limit: 1 })).result.structuredContent;
-    expect(resumed.events[0].sequence).toBeGreaterThan(pinned + 1);
-    await inDO(a.page.id, t => expect(t.db.one('SELECT seq FROM assistant_events WHERE seq=?', pinned)).toBeTruthy());
-
-    // The host may deliver immediately after emission. Let that attempt finish
-    // before preparing the final retry, so its lease cannot overwrite this setup.
-    await runAlarm(a.page.id);
-    await expect.poll(() => inDO(a.page.id, t =>
-      t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_jobs WHERE lease IS NOT NULL')!.n)).toBe(0);
-    await inDO(a.page.id, async t => {
-      t.db.run('UPDATE assistant_jobs SET attempts=7,due=? WHERE event_seq=?', t.now() - 1, pinned);
-      await t.ctx.storage.setAlarm(t.now());
-    });
-    await runAlarm(a.page.id);
-    const failed = (await first.tool('get_application_delivery', { applicationId: first.id })).result.structuredContent;
-    expect(failed.recent).toEqual(expect.arrayContaining([expect.objectContaining({ sourceEventId: later.sourceEventId, outcome: 'retry_exhausted', attempts: 8 })]));
-
-    await env.ACCOUNTS.prepare("UPDATE service_state SET mode='read_only' WHERE id=1").run();
-    try {
-      expect((await subscribe(rotatedSecret)).error.data.code).toBe('read_only');
-      // Access withdrawal remains available during a service pause.
-      expect((await first.rpc('events/unsubscribe', tuning)).result).toEqual({});
-    } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
-    expect((await first.rpc('events/unsubscribe', tuning)).result).toEqual({});
-    await inDO(a.page.id, t => expect(t.db.one('SELECT 1 FROM assistant_watchers')).toBeNull());
-
-    const { standby, backup } = await first.startBackup();
-    await first.adapter.close();
-    // close() settles the local loop; wait for the remote close handshake before
-    // testing the separate already-offline-provider scenario.
-    await vi.waitFor(async () => expect(await inDO(a.page.id, t =>
-      t.ctx.getWebSockets('application-mcp').filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN).length)).toBe(1));
-    expect(backup.status).toMatchObject({ database: 'ready', phase: 'ready', connectedPeers: 1 });
-    expect(first.session.signal.aborted).toBe(false);
-    expect(standby.online).toBe(true);
-    expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result)
-      .toMatchObject({ structuredContent: { value: [{ text: 'Rope checked' }] } });
-    const unresolved = (await first.tool('call_application_command', write)).result.structuredContent;
-    expect(unresolved).toMatchObject({ code: 'operation_uncertain', stored:false, operationReference: { deviceId: first.session.identity.publicKey } });
-    expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.structuredContent.code)
-      .toBe('provider_offline');
-    const provider = (await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.provider;
-    await checkStatus(first.reviewAction('select-provider', { provider: await sha256Hex(first.backupKey), epoch: String(provider.selectionEpoch) }), 303);
-    expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.isError)
-      .toBeUndefined();
-    await vi.waitFor(async () => expect((await first.session.query('notes',null) as { value: unknown }).value)
-      .toMatchObject([{ text: 'Rope checked' }, { text: 'Backup checked' }]), { timeout: 5000 });
-
-    // Model an internal request that was admitted by the gateway, then
-    // waited behind another page operation until its OAuth grant was revoked.
-    await env.ACCOUNTS.prepare('UPDATE integration_oauth_grants SET revoked_at=? WHERE id=?').bind(Date.now(), first.gid).run();
-    const stale = await stub(a.page.id).fetch(new Request('https://tendril.internal/assistant', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ applicationId: first.id, method: 'call_application_command',
-        params: { ...write, operationId: 'queued-revocation' },
-        principal: { account: a.subject, grant: first.gid, client: 'chatgpt', scopes: scopes.split(' '), expires: Date.now() + 10_000 },
+    const connectResp = await request(pageBase + '_tendril/mcp/connect', f.settings, {
+      method: 'POST',
+      headers: { ...pageOwner, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grantId: issued.grantId,
+        handle: 'chatgpt',
+        bio: 'Hosted notes assistant',
+        publicKey: hostedIdentity.publicKey,
+        wrappedKeysBase64: base64url(wrapped),
+        label: 'Hosted Notes',
       }),
-    }));
-    expect(stale.status).toBe(403);
-    expect(await stale.json()).toMatchObject({ error: { code: 'authorization_revoked' } });
-    await inDO(a.page.id, t => expect(t.db.one('SELECT COUNT(*) AS n FROM assistant_commands')).toEqual({ n: 2 }));
-    await standby.close();
-    expect((await first.rpc('initialize')).error).toBe('invalid_token');
-    expect((await second.tool('query_application', { applicationId: second.id, query: 'readings', input: null })).result.structuredContent.value).toEqual([{ value: 7 }]);
-
-    // Two separately approved agents behind the same OAuth client can retain
-    // the same short operation ID without sharing authority or progress.
-    const reviewerKey = createApplicationAgentKey(), plannerKey = createApplicationAgentKey();
-    const register = (key: string, label: string) => second.tool('register_application_agent', { applicationId: second.id, bindingToken: key,
-      label, queries: ['readings'], commands: ['count'], events: ['counter.changed'], route: 'on-demand' });
-    const reviewer = (await register(reviewerKey, 'Reviewer')).result.structuredContent;
-    const planner = (await register(plannerKey, 'Planner')).result.structuredContent;
-    expect(reviewer.status).toBe('pending'); expect(planner.agentBindingId).not.toBe(reviewer.agentBindingId);
-    expect((await register(reviewerKey, 'Reviewer')).result.structuredContent.agentBindingId).toBe(reviewer.agentBindingId);
-    expect((await second.tool('call_application_command', { applicationId: second.id, bindingToken: reviewerKey,
-      command: 'count', input: 2, operationId: 'same-local-id' })).result.structuredContent.code).toBe('agent_binding_approval_required');
-    await checkStatus(second.reviewAction('approve-agent', { binding: reviewer.agentBindingId, revision: '1' }), 303);
-    await checkStatus(second.reviewAction('approve-agent', { binding: planner.agentBindingId, revision: '1' }), 303);
-    const agentWrite = (key: string, input: number) => second.tool('call_application_command', {
-      applicationId: second.id, bindingToken: key, command: 'count', input, operationId: 'same-local-id',
-      context: { endpointId: 'tool-endpoint', runId: 'run-' + input },
     });
-    const [reviewed, planned] = await Promise.all([agentWrite(reviewerKey, 2), agentWrite(plannerKey, 3)]);
-    const reviewedRef = reviewed.result.structuredContent.operationReference, plannedRef = planned.result.structuredContent.operationReference;
-    expect(reviewedRef.deviceId).toBe(second.session.identity.publicKey); expect(plannedRef.deviceId).toBe(second.session.identity.publicKey);
-    expect(reviewedRef.operationId).not.toBe(plannedRef.operationId);
-    expect(reviewedRef.agentBindingId).toBe(reviewer.agentBindingId);
-    expect((await agentWrite(reviewerKey, 2)).result.structuredContent.operationReference.operationId).toBe(reviewedRef.operationId);
-    expect((await agentWrite(reviewerKey, 4)).result.structuredContent.code).toBe('operation_id_conflict');
-    const inspection = (await second.tool('inspect_application_operation', { applicationId: second.id,
-      bindingToken: reviewerKey, operationId: 'same-local-id' })).result.structuredContent;
-    expect(inspection.operationReference.proposalId).toMatch(/^[a-f0-9]{64}$/u);
-    expect(inspection.operation.state.operationId).toBe(reviewedRef.operationId);
-    expect((await second.tool('wait_application_operation', { applicationId: second.id, bindingToken: reviewerKey,
-      operationId: 'same-local-id' })).result.structuredContent.materialized.outcome).toBe('accepted');
-    expect((await second.tool('wait_application_operation', { applicationId: second.id, bindingToken: reviewerKey,
-      operationId: 'same-local-id', fact: 'finalized' })).result.structuredContent.code).toBe('finality_unsupported');
-    expect((await second.tool('retry_application_operation', { applicationId: second.id, bindingToken: reviewerKey,
-      operationId: 'same-local-id' })).result.structuredContent.operationReference.operationId).toBe(reviewedRef.operationId);
-    const agentInbox = (await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey })).result.structuredContent;
-    expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: plannerKey,
-      after: agentInbox.next })).result.structuredContent).toMatchObject({ resetRequired: true, reason: 'binding_changed', events: [] });
-    expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey,
-      after: { ...agentInbox.next, exportVersion: 'f'.repeat(64) } })).result.structuredContent.reason).toBe('export_changed');
-    expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey,
-      after: agentInbox.next, events: [] })).result.structuredContent.reason).toBe('filter_changed');
-    const rotated = createApplicationAgentKey(reviewer.agentBindingId);
-    expect((await second.tool('rotate_application_agent', { applicationId: second.id, bindingToken: reviewerKey,
-      nextBindingToken: rotated })).result.structuredContent.agentBindingId).toBe(reviewer.agentBindingId);
-    expect((await second.tool('describe_application', { applicationId: second.id, bindingToken: reviewerKey })).result.structuredContent.code).toBe('invalid_agent_binding');
-    expect((await second.tool('inspect_application_operation', { applicationId: second.id, bindingToken: rotated,
-      operationId: 'same-local-id' })).result.structuredContent.operationReference.operationId).toBe(reviewedRef.operationId);
-    expect((await second.tool('revoke_application_agent', { applicationId: second.id, bindingToken: rotated })).result.structuredContent.status).toBe('revoked');
-    expect((await second.tool('describe_application', { applicationId: second.id, bindingToken: rotated })).result.structuredContent.code).toBe('agent_binding_revoked');
-    expect((await second.tool('describe_application', { applicationId: second.id, bindingToken: plannerKey })).result.structuredContent.caller.verification).toBe('approved-binding');
-    const beforeLoss = (await second.tool('describe_application', { applicationId: second.id })).result.structuredContent.provider;
-    second.loseNextResult();
-    const uncertain = (await second.tool('call_application_command', { applicationId: second.id, bindingToken: plannerKey,
-      command: 'count', input: 5, operationId: 'reply-lost-after-save', context: { runId: 'original-run' } })).result.structuredContent;
-    expect(uncertain).toMatchObject({ code: 'operation_uncertain', stored:false, operationReference: { deviceId: second.session.identity.publicKey } });
-    expect(second.lostResult()!.state.stored).toBe(true);
-    expect(second.lostResult()!.state.proposalId).toMatch(/^[a-f0-9]{64}$/u);
-    await vi.waitFor(() => expect(second.adapter.online).toBe(true), { timeout: 5000 });
-    const restored = (await second.tool('inspect_application_operation', { applicationId: second.id,
-      bindingToken: plannerKey, operationId: 'reply-lost-after-save' })).result.structuredContent;
-    expect(restored.operationReference).toMatchObject({ requestOperationId: uncertain.operationReference.requestOperationId,
-      proposalId: second.lostResult()!.state.proposalId, deviceId: second.session.identity.publicKey,
-      sourceContext: { runId: 'original-run', evidence: 'caller-asserted' } });
-    const retried = (await second.tool('retry_application_operation', { applicationId: second.id,
-      bindingToken: plannerKey, operationId: 'reply-lost-after-save' })).result.structuredContent;
-    expect(retried.operationReference.proposalId).toBe(restored.operationReference.proposalId);
-    expect(retried.operationReference.sourceContext.runId).toBe('original-run');
-    expect((await second.tool('query_application', { applicationId: second.id, bindingToken: plannerKey, query: 'readings', input: null }))
-      .result.structuredContent.value.filter((value: { value: number }) => value.value === 5)).toHaveLength(1);
-    const afterLoss = (await second.tool('describe_application', { applicationId: second.id })).result.structuredContent.provider;
-    expect(afterLoss.bindingId).toBe(beforeLoss.bindingId);
-    expect(afterLoss.selectionEpoch).toBe(beforeLoss.selectionEpoch);
-    expect(afterLoss.connectionEpoch).toBeGreaterThan(beforeLoss.connectionEpoch);
-  } finally {
-    outbound.mockRestore();
-    mounted?.close();
-    await Promise.all(adapters.map(item => item.close()));
-    await Promise.all(sessions.map(item => item.close()));
-    await inDO(a.page.id, t => { Object.assign(t.env, restore); });
-    await inDO(b.page.id, t => { Object.assign(t.env, restore); });
-  }
-}, 60_000);
+    expect(connectResp.status).toBe(201);
+    await connectResp.json();
 
-it('uses an operator-pinned client metadata document for public PKCE without fetching caller-controlled URLs', async () => {
-  const f = await hostFixture(), id = 'https://chatgpt.com/oauth/client.json';
-  const settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({
-    resource: ISSUER + '/mcp', clients: [{
-      id, name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['tendrils:list'], metadataDocument: true,
-    }],
-  }) });
-  const redirect = { client_id: id, redirect_uri: REDIRECT, state: 'cimd-browser-state', resource: ISSUER + '/mcp',
-    scope: 'tendrils:list', response_type: 'code', code_challenge_method: 'S256',
-    code_challenge: await challengeFor('s'.repeat(43)) };
-  let valid = false;
-  const outbound = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    expect(String(input)).toBe(id);
-    expect(init?.redirect).toBe('manual');
-    return Response.json({ client_id: id, redirect_uris: valid ? [REDIRECT] : ['https://chatgpt.com/unregistered'],
-      token_endpoint_auth_methods_supported: ['private_key_jwt', 'none'], token_endpoint_auth_method: 'private_key_jwt' });
+    // Appears in page roster as hosted-mcp agent; owner can promote it to primary.
+    const rosterResp = await request(pageBase + '_tendril/agents', f.settings, { headers: pageOwner });
+    expect(rosterResp.status).toBe(200);
+    const roster = await rosterResp.json() as { primary_agent_id: string; agents: Array<{ id: string; handle: string; kind: string }> };
+    expect(roster.primary_agent_id).toBe(f.page.agent.id);
+    expect(roster.agents).toContainEqual(expect.objectContaining({ id: `mcp:${issued.grantId}`, handle: 'chatgpt', kind: 'hosted-mcp' }));
+    const promoteResp = await request(pageBase + '_tendril/agents/primary', f.settings, {
+      method: 'PUT',
+      headers: { ...pageOwner, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: `mcp:${issued.grantId}` }),
+    });
+    expect(promoteResp.status).toBe(200);
+    expect((await promoteResp.json() as { primary_agent_id: string }).primary_agent_id).toBe(`mcp:${issued.grantId}`);
+
+    // list_tendrils + describe_application + agents_list
+    const listed = await mcpCall(f.settings, issued.access_token, 'list_tendrils');
+    expect(listed.value.applications).toContainEqual(expect.objectContaining({ applicationId: f.page.application.id, handle: 'chatgpt', label: 'Hosted Notes' }));
+
+    const described = await mcpCall(f.settings, issued.access_token, 'describe_application', { applicationId: f.page.application.id });
+    expect(described.value.hasDomainBundle).toBe(true);
+    expect(described.value.hostedParticipant).toMatchObject({ handle: 'chatgpt', isPrimary: true, keyCustody: 'oauth-token-wrapped' });
+    expect(described.value.commands.map((c: any) => c.name)).toContain('putNote');
+    expect(described.value.queries.map((q: any) => q.name)).toContain('notes');
+
+    const agents = await mcpCall(f.settings, issued.access_token, 'agents_list', { applicationId: f.page.application.id });
+    expect(agents.value.selfHandle).toBe('chatgpt');
+
+    // Execute command + query through QuickJS-NG WASM sandbox
+    const write = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id,
+      command: 'putNote',
+      input: { id: 'n1', text: 'Zero plaintext keys at rest!' },
+      operationId: 'op-note-1',
+    });
+    expect(write.value, JSON.stringify(write.result)).toMatchObject({ materialized: { outcome: 'accepted' } });
+    expect(write.result.isError).not.toBe(true);
+
+    const read = await mcpCall(f.settings, issued.access_token, 'query_application', {
+      applicationId: f.page.application.id,
+      query: 'notes',
+      input: null,
+    });
+    expect(read.result.isError).not.toBe(true);
+    expect(read.value.value).toEqual([{ id: 'n1', text: 'Zero plaintext keys at rest!' }]);
+
+    // Multi-agent Chronolog pipe: agent_message + agent_feed
+    const sent = await mcpCall(f.settings, issued.access_token, 'agent_message', {
+      applicationId: f.page.application.id,
+      channel: 'chat',
+      text: 'Saved note n1 for you.',
+      expectReply: false,
+      operationId: 'op-chat-1',
+    });
+    expect(sent.result.isError).not.toBe(true);
+    const feed = await mcpCall(f.settings, issued.access_token, 'agent_feed', { applicationId: f.page.application.id });
+    expect(feed.value.value.messages).toEqual([expect.objectContaining({ text: 'Saved note n1 for you.', expectReply: false })]);
+
+    // Outbound HTTPS gateway `/v1/apps/:appId/*` works identically
+    const httpQuery = await request(`/v1/apps/${f.page.application.id}/query?query=notes&input=null`, f.settings, {
+      headers: { Authorization: 'Bearer ' + issued.access_token },
+    });
+    expect(httpQuery.status).toBe(200);
+    expect(await httpQuery.json()).toMatchObject({ value: [{ id: 'n1', text: 'Zero plaintext keys at rest!' }] });
+
+    // Blind envelope sync returns encrypted envelopes without revealing plaintext
+    const syncResp = await request(pageBase + '_tendril/mcp/sync', f.settings, {
+      method: 'POST',
+      headers: { ...pageOwner, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ envelopes: [], knownIds: [] }),
+    });
+    expect(syncResp.status).toBe(200);
+    const synced = await syncResp.json() as { envelopes: Array<{ proposalId: string; envelopeBase64: string }> };
+    expect(synced.envelopes.length).toBeGreaterThanOrEqual(2);
+
+    // Zero plaintext signing seed or epoch key stored anywhere in DO SQLite
+    const leaked = await inDO(f.page.id, t => {
+      const storeRows = t.db.all<{ k: string; v: ArrayBuffer }>('SELECT k, v FROM mcp_store');
+      const connRows = t.db.all<{ wrapped_keys: ArrayBuffer }>('SELECT wrapped_keys FROM mcp_connections');
+      const text = [
+        ...storeRows.map(r => r.k + ':' + new TextDecoder().decode(new Uint8Array(r.v))),
+        ...connRows.map(r => new TextDecoder().decode(new Uint8Array(r.wrapped_keys))),
+      ].join('\n');
+      return {
+        hasSeed: text.includes(hostedIdentity.privateKey),
+        hasEpoch: text.includes(bytesToHex(epochKey)),
+        hasPlaintext: text.includes('Zero plaintext keys at rest!'),
+        keys: storeRows.map(r => r.k),
+      };
+    });
+    expect(leaked.hasSeed).toBe(false);
+    expect(leaked.hasEpoch).toBe(false);
+    expect(leaked.hasPlaintext).toBe(false);
+    expect(leaked.keys.some(k => /signer|epoch|private/i.test(k))).toBe(false);
+
+    // Evict DO and verify encrypted persistence + re-hydration on next request
+    await evictDurableObject(env.TENDRIL.get(env.TENDRIL.idFromName(f.page.id)));
+    await inDO(f.page.id, t => {
+      t.env.OAUTH_CONFIG_JSON = f.settings.OAUTH_CONFIG_JSON;
+      t.env.OAUTH_SIGNING_JWK = f.settings.OAUTH_SIGNING_JWK;
+    });
+    const afterEvict = await mcpCall(f.settings, issued.access_token, 'query_application', {
+      applicationId: f.page.application.id,
+      query: 'notes',
+      input: null,
+    });
+    expect(afterEvict.value.value).toEqual([{ id: 'n1', text: 'Zero plaintext keys at rest!' }]);
+
+    // Disconnecting immediately revokes hosted MCP access and updates roster
+    const disconnect = await request(pageBase + `_tendril/mcp/${issued.grantId}`, f.settings, {
+      method: 'DELETE',
+      headers: pageOwner,
+    });
+    expect(disconnect.status).toBe(200);
+    await disconnect.json();
+    const denied = await mcpCall(f.settings, issued.access_token, 'query_application', {
+      applicationId: f.page.application.id,
+      query: 'notes',
+      input: null,
+    });
+    expect(denied.result.isError).toBe(true);
+    expect(denied.value.code).toBe('application_not_connected');
+  } finally {
+    await inDO(f.page.id, t => { Object.assign(t.env, restore); });
+  }
+});
+
+it('executes hosted MCP SQL domain.js using QuickJS-WASM + ephemeral in-memory DoltLite WASM (MEMFS)', async () => {
+  const f = await hostFixture();
+  const issued = await tokens(f);
+  const restore = await inDO(f.page.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
+  await inDO(f.page.id, t => {
+    t.env.OAUTH_CONFIG_JSON = f.settings.OAUTH_CONFIG_JSON;
+    t.env.OAUTH_SIGNING_JWK = f.settings.OAUTH_SIGNING_JWK;
   });
   try {
-    const discovery = await request('/.well-known/oauth-authorization-server', settings);
-    expect(await discovery.json()).toMatchObject({ client_id_metadata_document_supported: true, token_endpoint_auth_methods_supported: ['none'] });
-    const open = (params = redirect) => request('/oauth/authorize?' + new URLSearchParams(params), settings, { headers: { Cookie: f.cookie } });
-    expect((await open({ ...redirect, client_id: 'https://unknown.example/client.json' })).status).toBe(400);
-    expect(outbound).not.toHaveBeenCalled();
-    const rejected = await open();
-    expect(rejected.status).toBe(303);
-    expect(new URL(rejected.headers.get('Location')!).searchParams.get('error')).toBe('invalid_client');
-    valid = true;
-    const review = await open();
-    expect(review.status).toBe(200);
-    expect(review.headers.get('Content-Security-Policy')).toContain("form-action 'self' https://chatgpt.com;");
-    const connections = await request('/oauth/connections', settings, { headers: { Cookie: f.cookie } });
-    expect(connections.headers.get('Content-Security-Policy')).toContain("form-action 'self';");
-    const intent = /name="intent" value="([^"]+)"/u.exec(await review.text())![1];
-    const approved = await formPost('/oauth/authorize', { intent, decision: 'allow' }, settings, f.cookie);
-    expect(approved.status).toBe(303);
-    const code = new URL(approved.headers.get('Location')!).searchParams.get('code')!;
-    const response = await serviceForm('/oauth/token', { client_id: id, grant_type: 'authorization_code',
-      resource: ISSUER + '/mcp', redirect_uri: REDIRECT, code, code_verifier: 's'.repeat(43) }, settings);
-    expect(response.status).toBe(200);
-    const result = await response.json() as { access_token: string };
-    const listed = await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call',
-      params: { name: 'list_tendrils', arguments: {} } }, settings, result.access_token);
-    const listing = (await listed.json() as any).result.structuredContent;
-    expect(listing).toMatchObject({ applications: [], serviceOrigin: ISSUER,
-      environment: { id: ISSUER, label: new URL(ISSUER).host, kind: 'deployment' },
-      build: { coreRelease: CORE_RELEASE, sourceCommit: null }, setup: {
-      guideTool: 'tendril_guide', topic: 'start', serviceOrigin: ISSUER,
-      startHere: ISSUER + '/docs/MCP_AGENT_GUIDE.md', nextAction: expect.stringContaining('For a new app'),
-      originPolicy: 'same-origin-only', guideUnavailableAction: expect.stringContaining('Refresh the installed plugin'),
-    } });
-    const profile = await jsonPost('/mcp', { jsonrpc: '2.0', id: 2, method: 'tools/call',
-      params: { name: 'get_profile', arguments: {} } }, settings, result.access_token);
-    const identity = (await profile.json() as any).result.structuredContent;
-    expect(identity.id).toMatch(/^profile_[a-f0-9]{64}$/);
-    expect(identity).toMatchObject({ serviceOrigin: listing.serviceOrigin, environment: listing.environment, build: listing.build,
-      setup: { startHere: listing.setup.startHere, guideUnavailableAction: listing.setup.guideUnavailableAction } });
-    expect(identity).not.toHaveProperty('email');
-    expect(identity).not.toHaveProperty('account');
-    await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
-    try {
-      const blocked = await jsonPost('/mcp', { jsonrpc: '2.0', id: 3, method: 'tools/call',
-        params: { name: 'list_tendrils', arguments: {} } }, settings, result.access_token);
-      expect((await blocked.json() as any).result.structuredContent).toMatchObject({ applications: [], serviceOrigin: ISSUER,
-        readiness: { mode: 'creation_paused', creation: { available: false } },
-        setup: { nextAction: expect.stringContaining('Stop new-app setup before downloading or installing packages') } });
-    } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
-  } finally { outbound.mockRestore(); }
-});
+    const pageBase = f.page.page_url;
+    const pageOwner = ownerHeaders(pageBase);
+    const grantsData = await (await request(pageBase + '_tendril/mcp/grants', f.settings, { headers: pageOwner })).json() as {
+      grants: Array<{ id: string; wrap_public_key: string }>;
+    };
+    const grantInfo = grantsData.grants.find(g => g.id === issued.grantId)!;
 
-it('reserves application routing only for enabled pages in the same account', async () => {
-  const applicationId = await sha256Hex('shared-app-id-' + crypto.randomUUID());
-  const [a, b] = await Promise.all([hostFixture(applicationId), hostFixture(applicationId)]);
-  const add = (pageId: string, account: string, enabled: number) => env.ACCOUNTS
-    .prepare('INSERT INTO assistant_connections(page_id,application_id,owner_account,label,enabled) VALUES(?,?,?,?,?)')
-    .bind(pageId, applicationId, account, 'Connections test', enabled).run();
-  const pendingPage = await create({ claim: false, application: { id: applicationId } });
-  await add(pendingPage.id, a.subject, 0);
-  await add(a.page.id, a.subject, 1);
-  await add(b.page.id, b.subject, 1);
-  expect((await resolveConnection(env, a.subject, applicationId)).pageId).toBe(a.page.id);
-  expect((await resolveConnection(env, b.subject, applicationId)).pageId).toBe(b.page.id);
-  await expect(env.ACCOUNTS.prepare('UPDATE assistant_connections SET enabled=1 WHERE page_id=?').bind(pendingPage.id).run())
-    .rejects.toThrow(/UNIQUE constraint failed/);
-});
+    const hostedIdentity = await exportSigningIdentity(await createSigningIdentity());
+    const epochKey = crypto.getRandomValues(new Uint8Array(32));
+    const sqlDomain = `
+      export default {
+        id: 'inventory-hosted-sql-test',
+        version: '1',
+        commands: {
+          init: {
+            description: 'Create items table',
+            input: { type: 'null' },
+            prepare: () => ({
+              steps: [
+                { kind: 'sql', sql: 'CREATE TABLE IF NOT EXISTS items (id TEXT PRIMARY KEY, qty INTEGER NOT NULL)', params: [] },
+              ],
+            }),
+          },
+          addItem: {
+            description: 'Insert an item',
+            input: { type: 'object', properties: { id: { type: 'string' }, qty: { type: 'integer' } }, required: ['id', 'qty'] },
+            prepare: ({ id, qty }) => ({
+              steps: [
+                { kind: 'sql', sql: 'INSERT INTO items (id, qty) VALUES (?, ?)', params: [id, qty] },
+              ],
+            }),
+          },
+        },
+        queries: {
+          items: {
+            description: 'List all items',
+            input: { type: 'null' },
+            read: (view) => {
+              const res = view.query('SELECT id, qty FROM items ORDER BY id');
+              return res.rows.map(([id, qty]) => ({ id, qty }));
+            },
+          },
+        },
+      };
+    `;
+    const sqlDigest = await doltliteExecutionManifestDigest();
+    await seedPageAuthorityAndDomain(f.page, [hostedIdentity.publicKey], epochKey, sqlDigest, 'sql-doltlite-v1', sqlDomain);
 
-it('register_agent creates or rotates an account agent for an OAuth-linked assistant and list_tendrils is paged', async () => {
-  const base = await hostFixture(), settings = configured({ OAUTH_CONFIG_JSON: JSON.stringify({ resource: RESOURCE, clients: [
-    { id: 'chatgpt', name: 'ChatGPT', redirectUris: [REDIRECT], scopes: ['applications:read', 'tendrils:create', 'tendrils:list'] },
-  ] }) });
-  const f = { ...base, settings };
-  const approved = await authorization(f, { scope: 'tendrils:create tendrils:list' });
-  const response = await serviceForm('/oauth/token', { client_id: 'chatgpt', grant_type: 'authorization_code', resource: RESOURCE,
-    redirect_uri: REDIRECT, code: approved.code!, code_verifier: approved.verifier }, settings);
-  expect(response.status).toBe(200);
-  const { access_token } = await response.json() as { access_token: string };
-  const call = async (name: string, args: Record<string, unknown>) =>
-    (await (await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, settings, access_token)).json()) as any;
-  const listed = await (await jsonPost('/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, settings, access_token)).json() as any;
-  const names = listed.result.tools.map((tool: { name: string }) => tool.name);
-  expect(names).toContain('register_agent');
-  expect(names.some((name: string) => /setup/.test(name))).toBe(false);
-  const publicKey = 'A'.repeat(43);
-  const first = (await call('register_agent', { name: 'chat-agent', publicKey })).result.structuredContent;
-  expect(first).toMatchObject({ rotated: false, agent: { name: 'chat-agent', claimed: true, public_key: publicKey }, service: ISSUER });
-  expect(first.token).toMatch(/^ta_[a-z2-7]{32}$/);
-  const self = await request('/api/agent', settings, { headers: { Authorization: 'Bearer ' + first.token } });
-  expect(await self.json()).toMatchObject({ agent: { id: first.agent.id }, account: { claimed: true }, grants: 0 });
-  const page = await request('/api/agent/pages', settings, { method: 'POST', headers: { Authorization: 'Bearer ' + first.token, 'Content-Type': 'application/json' }, body: '{}' });
-  expect(page.status).toBe(201);
-  const created = await page.json() as { id: string; claimed: boolean };
-  expect(created.claimed).toBe(true);
-  expect(await env.ACCOUNTS.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(created.id).first()).toEqual({ owner_account: base.subject });
-  const rotated = (await call('register_agent', { name: 'chat-agent', publicKey: 'B'.repeat(43) })).result.structuredContent;
-  expect(rotated).toMatchObject({ rotated: true, agent: { id: first.agent.id, public_key: 'B'.repeat(43) } });
-  expect((await request('/api/agent', settings, { headers: { Authorization: 'Bearer ' + first.token } })).status).toBe(401);
-  const pages = await (await request('/api/agent/pages', settings, { headers: { Authorization: 'Bearer ' + rotated.token } })).json() as any;
-  expect(pages).toMatchObject({ pages: [{ id: created.id, granted_by: 'creator' }], next_cursor: null });
-  expect(await inDO(created.id, t => t.db.one('SELECT public_key FROM agent_grants WHERE agent_id=?', first.agent.id))).toEqual({ public_key: 'B'.repeat(43) });
-  // The review fixture's own register_agent request, sent through this actual MCP route with the same linked-account token.
-  // @ts-expect-error plugin sources are plain JavaScript consumer files without declarations
-  const { registerAgentThroughMcp } = await import('../../plugin/review-setup.mjs') as { registerAgentThroughMcp: (origin: string, token: string, args: object, options: { fetch: typeof fetch }) => Promise<any> };
-  const viaFixture = await registerAgentThroughMcp(ISSUER, access_token, { name: 'review-fixture', publicKey: 'C'.repeat(43) },
-    { fetch: ((url: string, init: RequestInit) => request(new URL(url).pathname, settings, { ...init, redirect: 'manual' })) as typeof fetch });
-  expect(viaFixture).toMatchObject({ rotated: false, agent: { name: 'review-fixture', claimed: true, public_key: 'C'.repeat(43) }, service: ISSUER });
-  expect(viaFixture.token).toMatch(/^ta_[a-z2-7]{32}$/);
-  const apps = (await call('list_tendrils', {})).result.structuredContent;
-  expect(apps).toMatchObject({ applications: [], nextCursor: null });
-  expect((await call('register_agent', { name: 'bad name!', publicKey })).error ?? (await call('register_agent', { name: 'bad name!', publicKey })).result?.isError).toBeTruthy();
+    const aad = `${f.page.id}:${f.page.application.id}:${issued.grantId}`;
+    const wrapped = await sealHostedKeys(grantInfo.wrap_public_key, {
+      signingSeedHex: hostedIdentity.privateKey,
+      signingPublicKey: hostedIdentity.publicKey,
+      epochKeys: { '0': bytesToHex(epochKey) },
+    }, aad);
+
+    const connectResp = await request(pageBase + '_tendril/mcp/connect', f.settings, {
+      method: 'POST',
+      headers: { ...pageOwner, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grantId: issued.grantId,
+        handle: 'stockbot',
+        bio: 'Hosted SQL inventory assistant',
+        publicKey: hostedIdentity.publicKey,
+        wrappedKeysBase64: base64url(wrapped),
+        label: 'Hosted SQL Inventory',
+      }),
+    });
+    expect(connectResp.status).toBe(201);
+    await connectResp.json();
+
+    const initRes = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id,
+      command: 'init',
+      input: null,
+      operationId: 'op-sql-init',
+    });
+    expect(initRes.value, JSON.stringify(initRes.result)).toMatchObject({ materialized: { outcome: 'accepted' } });
+    expect(initRes.result.isError).not.toBe(true);
+
+    const add1 = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id,
+      command: 'addItem',
+      input: { id: 'bolts', qty: 42 },
+      operationId: 'op-sql-bolts',
+    });
+    expect(add1.result.isError).not.toBe(true);
+    expect(add1.value.materialized.outcome).toBe('accepted');
+
+    const queried = await mcpCall(f.settings, issued.access_token, 'query_application', {
+      applicationId: f.page.application.id,
+      query: 'items',
+      input: null,
+    });
+    expect(queried.result.isError).not.toBe(true);
+    expect(queried.value.value).toEqual([{ id: 'bolts', qty: 42 }]);
+
+    // Verify encrypted SQL checkpointing (threshold = 2) + live `mcp-sync` push notice + DO eviction recovery
+    await inDO(f.page.id, t => { t.db.set('mcp_sql_checkpoint_threshold', 2); });
+    const watchResp = await request(pageBase + '_tendril/publication-ready', f.settings, {
+      headers: { ...pageOwner, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PUBLICATION_WATCH_PROTOCOL },
+    });
+    expect(watchResp.status).toBe(101);
+    const watchSock = watchResp.webSocket!;
+    const watchMsgs: any[] = [];
+    watchSock.addEventListener('message', ev => { watchMsgs.push(JSON.parse(ev.data as string)); });
+    watchSock.accept();
+    await expect.poll(() => watchMsgs.length).toBeGreaterThanOrEqual(1);
+
+    const add2 = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id,
+      command: 'addItem',
+      input: { id: 'nuts', qty: 10 },
+      operationId: 'op-sql-nuts',
+    });
+    expect(add2.result.isError).not.toBe(true);
+    expect(add2.value.materialized.outcome).toBe('accepted');
+    await expect.poll(() => watchMsgs.some(m => m.type === 'mcp-sync' && m.version === 1)).toBe(true);
+    watchSock.close();
+
+    // Encrypted SQL checkpoint exists in mcp_store with ZERO plaintext SQLite header or row values
+    const ckptCheck = await inDO(f.page.id, t => {
+      const row = t.db.one<{ v: ArrayBuffer }>('SELECT v FROM mcp_store WHERE k=?', `sql-checkpoint/${f.page.application.id}`);
+      if (!row) return { exists: false, hasPlaintext: false, hasSqliteHeader: false };
+      const text = new TextDecoder().decode(new Uint8Array(row.v));
+      return {
+        exists: true,
+        bytes: row.v.byteLength,
+        hasPlaintext: text.includes('bolts') || text.includes('nuts'),
+        hasSqliteHeader: text.includes('SQLite format 3'),
+      };
+    });
+    expect(ckptCheck.exists).toBe(true);
+    expect(ckptCheck.hasPlaintext).toBe(false);
+    expect(ckptCheck.hasSqliteHeader).toBe(false);
+
+    // Evict DO and verify hydrated checkpoint + tail query returns all items accurately
+    await evictDurableObject(env.TENDRIL.get(env.TENDRIL.idFromName(f.page.id)));
+    await inDO(f.page.id, t => {
+      t.env.OAUTH_CONFIG_JSON = f.settings.OAUTH_CONFIG_JSON;
+      t.env.OAUTH_SIGNING_JWK = f.settings.OAUTH_SIGNING_JWK;
+    });
+    const afterCkptEvict = await mcpCall(f.settings, issued.access_token, 'query_application', {
+      applicationId: f.page.application.id,
+      query: 'items',
+      input: null,
+    });
+    expect(afterCkptEvict.result.isError).not.toBe(true);
+    expect(afterCkptEvict.value.value).toEqual([{ id: 'bolts', qty: 42 }, { id: 'nuts', qty: 10 }]);
+  } finally {
+    await inDO(f.page.id, t => { Object.assign(t.env, restore); });
+  }
 });

@@ -11,11 +11,16 @@ import { openConsumerCheckpoint } from '../../docs/tutorial/shared/helpers/agent
 
 const threadId = '01234567-89ab-4cde-8fab-0123456789ab';
 const deviceId = '11'.repeat(32), author = '22'.repeat(32);
+const roster = async () => ({ primary_agent_id: null, is_primary: false, agents: [] });
 const options = { threadId, cwd: '/workspace/project', requestTopics: ['chat'], remote: 'unix://',
   connect: async () => rpcFor().client };
-const page = { id: 'page-one', slug: 'notes' };
-const request = (id, overrides = {}) => ({ id, author, operationId: id, topic: 'agent/request',
-  payload: { recipient: deviceId, topic: 'chat', text: 'Private authored request text.' }, ...overrides });
+const page = { id: 'page-one', slug: 'notes', roster };
+// A request is a chat agentMessage addressed to this agent's signing key.
+const request = (id, overrides = {}) => ({ id, author, operationId: id, topic: 'agent/message',
+  payload: { channel: 'chat', to: [deviceId], text: 'Private authored request text.' }, ...overrides });
+// This agent's durable reply naming the full original message identity.
+const replied = (operationId, messageAuthor = author) => ({ author: deviceId, operationId: 'reply-' + operationId,
+  inReplyTo: { author: messageAuthor, operationId } });
 const ack = id => ({ stdout: `Queued message ${id} for thread ${threadId}.\n`, stderr: '' });
 
 const rpcError = (message, extra = {}) => Object.assign(Error('Rejected'), {
@@ -59,14 +64,14 @@ function sessionFor(events, { answers = [], wait = false, stale = false } = {}) 
     },
     async readView() { return {
       async readEvents({ cursor, topics }) {
-        assert.deepEqual(topics, ['agent/request']);
+        assert.deepEqual(topics, ['agent/message']);
         // A cursor from an earlier materialized revision fails; no cursor reads the current snapshot.
         if (cursor && stale) throw Object.assign(Error('EVENT_CURSOR_STALE'), { code: 'EVENT_CURSOR_STALE' });
         return { events: cursor ? [] : events, cursor: 'next-cursor', hasMore: false };
       },
       async release() { releases++; },
     }; },
-    async query(name) { assert.equal(name, 'agentInbox'); return { value: { requests: answers } }; },
+    async query(name) { assert.equal(name, 'agentFeed'); return { value: { messages: answers, activity: [], receipts: {} } }; },
     command() { throw Error('A bridge must never acknowledge or answer for the worker.'); },
   };
   return { session, owner, get releases() { return releases; },
@@ -82,15 +87,16 @@ async function durable(t) {
     async reopen() { await current.close(); current = await openConsumerCheckpoint(path, { scope }); return current; } };
 }
 
-const consume = (session, checkpoint, extra = {}) => consumeCodexRequests({ ...options, page, session, checkpoint, ...extra });
+const consume = (session, checkpoint, extra = {}) => consumeCodexRequests({ ...options, page, session, checkpoint, roster, ...extra });
 
 test('bridge sends only addressed selected requests to one exact UUID without shell evaluation, receipt or presence', async t => {
   const state = await durable(t), calls = [], notices = [];
   const dangerousId = '$(touch /tmp/never) `echo never`';
   const events = [request(dangerousId), request('other-author', { author: '33'.repeat(32), operationId: dangerousId }),
-    request('foreign-recipient', { payload: { recipient: '44'.repeat(32), topic: 'chat' } }),
-    request('other-topic', { payload: { recipient: deviceId, topic: 'fetch' } }), request('answered')];
-  const f = sessionFor(events, { answers: [{ requestAuthor: author, requestOperationId: 'answered', answers: [{}] }] });
+    request('foreign-recipient', { payload: { channel: 'chat', to: ['44'.repeat(32)], text: 'x' } }),
+    request('own-message', { author: deviceId }),
+    request('other-channel', { payload: { channel: 'agents', to: [deviceId], text: 'x' } }), request('answered')];
+  const f = sessionFor(events, { answers: [replied('answered')] });
   await assert.rejects(consume(f.session, state.checkpoint, {
     execute: async (binary, argv, execution) => { calls.push({ binary, argv, execution }); return ack(`queue-${calls.length}`); },
     onState: value => notices.push(value),
@@ -166,7 +172,7 @@ test('a stale cursor derives events again without notifying the conversation twi
   assert.equal(state.checkpoint.read().delivered.length, 2);
   // Once the application records an answer, the delivered marker is dropped.
   await state.reopen();
-  const answered = [{ requestAuthor: author, requestOperationId: 'first', answers: [{}] }];
+  const answered = [replied('first')];
   await assert.rejects(consume(sessionFor([request('first'), request('second')], { stale: true, answers: answered }).session,
     state.checkpoint, { execute }), /AGENT_CONSUMER_STREAM_ENDED/);
   assert.equal(sent.length, 2);
@@ -183,8 +189,8 @@ test('an uncertain notice survives stale-snapshot rescans with its full request 
   await assert.rejects(consume(sessionFor([request('first'), request('second')], { stale: true }).session, state.checkpoint,
     { execute: async () => { throw Error('outcome unknown'); } }), { code: 'CODEX_QUEUE_DELIVERY_UNCERTAIN' });
   const retained = state.checkpoint.read().pending.requests.find(row => row.status === 'uncertain');
-  assert.equal(retained.request.requestOperationId, 'second');
-  assert.equal(retained.request.requestAuthor, author, 'the full original request reference is retained');
+  assert.equal(retained.request.messageOperationId, 'second');
+  assert.equal(retained.request.messageAuthor, author, 'the full original message reference is retained');
   assert.equal(state.checkpoint.read().delivered.length, 1, 'the earlier delivery stays recorded');
   for (const stale of [true, false]) {
     await state.reopen();
@@ -222,7 +228,7 @@ test('one bridge routes multiple pages to the same thread and detaches every own
   const one = sessionFor([request('one')], { wait: true }), two = sessionFor([request('two')], { wait: true });
   const sent = []; let closed = false;
   const run = runCodexQueueBridge({ ...options, signal: cancellation.signal, stateDirectory: join(state.directory, 'multi'),
-    pages: [{ ...page, attach: one.attach }, { id: 'page-two', slug: 'other', attach: two.attach }],
+    pages: [{ ...page, attach: one.attach }, { id: 'page-two', slug: 'other', attach: two.attach, roster }],
     execute: async (_binary, argv) => {
       if (argv.includes('--help')) return { stdout: '--thread --message --resume --remote', stderr: '' };
       sent.push(argv); return ack(`queue-${sent.length}`);
@@ -253,7 +259,7 @@ test('malformed outbox and altered request references stop before any delivery o
     await assert.rejects(consume(sessionFor(events).session, state.checkpoint, { execute }), { code: 'CODEX_QUEUE_CHECKPOINT_INVALID' });
   }
   const altered = structuredClone(original);
-  altered.pending.requests[0].request.topic = 'another-topic';
+  altered.pending.requests[0].request.channel = 'agents';
   await state.checkpoint.save(altered); await state.reopen();
   await assert.rejects(consume(sessionFor(events).session, state.checkpoint, { execute }), { code: 'CODEX_QUEUE_REVIEW_HISTORY' });
   assert.equal(calls, 0);
@@ -454,7 +460,7 @@ test('WebSocket RPC retains remote bearer routing and rejects server-initiated i
 test('one bridge serializes all page admissions through connection close', async t => {
   const state = await durable(t), cancellation = new AbortController();
   let active = 0, maximum = 0, queued = 0;
-  const pages = ['one', 'two'].map(slug => ({ id: slug, slug, attach: sessionFor([request(slug)], { wait: true }).attach }));
+  const pages = ['one', 'two'].map(slug => ({ id: slug, slug, attach: sessionFor([request(slug)], { wait: true }).attach, roster }));
   const connect = async () => {
     active++; maximum = Math.max(maximum, active);
     const rpc = rpcFor().client;

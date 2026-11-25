@@ -197,20 +197,29 @@ for (const width of [1280, 320]) {
     await page.route('https://layout.test/_tendril/links**', route => route.fulfill({ json: { name: 'Test page', links: [] } }));
     await page.route('https://layout.test/_tendril/agents', async route => {
       if (route.request().method() === 'POST') { posted.push(route.request().postDataJSON()); return route.fulfill({ json: { ok: true } }); }
-      await route.fulfill({ json: { dashboard: 'https://tendriller.dev/dashboard#agents',
-        agents: [{ id: 'ag_' + 'a'.repeat(26), name: 'builder', granted: true }, { id: 'ag_' + 'b'.repeat(26), name: 'reviewer', granted: false }] } });
+      await route.fulfill({ json: {
+        primary_agent_id: 'ag_' + 'a'.repeat(26),
+        can_manage: true,
+        dashboard: 'https://tendriller.dev/dashboard#agents',
+        connections: 'https://tendriller.dev/connections',
+        agents: [{ id: 'ag_' + 'a'.repeat(26), handle: 'builder', bio: '', public_key: 'a'.repeat(64), kind: 'workspace', is_primary: true, granted_at: 1 }],
+        account_agents: [
+          { id: 'ag_' + 'a'.repeat(26), handle: 'builder', bio: '', granted: true },
+          { id: 'ag_' + 'b'.repeat(26), handle: 'reviewer', bio: '', granted: false },
+        ],
+      } });
     });
     await page.evaluate(() => { const w = window as any; w.disposeUtility(); w.mount(); });
     await page.getByRole('button', { name: 'Add people & devices', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'My device', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByRole('img', { name: 'Scan to open this page on another device' })).toBeVisible();
     await page.getByRole('tab', { name: 'An agent', exact: true }).click();
-    await expect(page.getByRole('checkbox', { name: 'builder', exact: true })).toBeChecked();
-    const reviewer = page.getByRole('checkbox', { name: 'reviewer', exact: true });
+    await expect(page.getByRole('checkbox', { name: '@builder', exact: true })).toBeChecked();
+    const reviewer = page.getByRole('checkbox', { name: '@reviewer', exact: true });
     await expect(reviewer).not.toBeChecked();
     await reviewer.check();
     await expect.poll(() => posted).toEqual([{ agent: 'ag_' + 'b'.repeat(26), granted: true }]);
-    await expect(page.getByText('reviewer can now maintain this page.', { exact: true })).toBeVisible();
+    await expect(page.getByText('@reviewer can now maintain this page.', { exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Add an agent on your dashboard', exact: true })).toHaveAttribute('href', 'https://tendriller.dev/dashboard#agents');
     await page.screenshot({ path: testInfo.outputPath('agent-grants.png') });
   });

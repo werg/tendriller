@@ -134,6 +134,40 @@ export interface RuntimeInstallation {
   /** Call directly from a user gesture. accepted is a choice, not confirmation that installation completed. */
   prompt(): Promise<"accepted" | "dismissed" | "unavailable">;
 }
+export interface AgentLiveStatus {
+  readonly enrolled?: boolean;
+  readonly state: "online" | "busy" | "offline" | "stopped" | "unknown";
+  readonly capabilities?: readonly string[];
+  readonly lastSeenAt?: number;
+}
+export interface PageAgentRoster {
+  readonly primary_agent_id: string | null;
+  readonly agents: readonly import("./publication-watch.mjs").PageAgentEntry[];
+  readonly can_manage?: boolean;
+  readonly dashboard?: string;
+  readonly connections?: string;
+  readonly live?: Readonly<Record<string, AgentLiveStatus>>;
+}
+export interface HostedMcpConnectInput {
+  readonly grantId: string;
+  readonly wrapPublicKey: string;
+  readonly handle: string;
+  readonly bio?: string;
+  readonly label?: string;
+  readonly writer?: boolean;
+  readonly capabilities?: { read?: boolean; write?: boolean; queries?: string[] | null; commands?: string[] | null };
+}
+export interface RuntimeAgents {
+  snapshot(): PageAgentRoster;
+  refresh(): Promise<PageAgentRoster>;
+  setPrimary(agentId: string | null): Promise<PageAgentRoster>;
+  onChange(listener: (roster: PageAgentRoster) => void): () => void;
+  resolveHandle(handleOrKey: string): import("./publication-watch.mjs").PageAgentEntry | null;
+  reportLiveStatus(map: Record<string, AgentLiveStatus>): void;
+  readonly canConnectMcp: boolean;
+  registerMcpConnector(connector: (input: HostedMcpConnectInput) => Promise<unknown>): () => void;
+  connectMcp(input: HostedMcpConnectInput): Promise<unknown>;
+}
 /** Explicit hosted operations. Constructing these services starts no connection or request. */
 export interface HostServices {
   readonly peers: import("./peers.mjs").PeersClient;
@@ -143,6 +177,8 @@ export interface RuntimeServices {
   readonly host: HostServices;
   readonly signals: import("./signals.mjs").SignalBinding;
   readonly application: import("./application.mjs").ApplicationBinding;
+  /** Page-level agent roster (handles, bios, primary selection, live status). */
+  readonly agents: RuntimeAgents;
   /** Local authenticated-link observation; explicit refresh never opens network work. */
   readonly transport: import("./transport-diagnostics.mjs").RuntimeTransport;
   /** Bounded boot-to-runtime error ring buffer; zero network work. */

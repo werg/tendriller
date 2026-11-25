@@ -1,4 +1,4 @@
-/** Owner sharing helpers. Agents join an account (dashboard join codes), not a page. */
+/** Owner sharing helpers. Agents join an account (dashboard join codes) with a self-chosen @handle. */
 import { HttpError } from './http';
 
 export interface GuestInviteInput { role?: unknown; email?: unknown; label?: unknown; expires_in?: unknown }
@@ -17,13 +17,17 @@ export function joinBlurb(origin: string, code: string, expiresAt: number): stri
     ``,
     `1. Read how multi-page agents work: ${origin}/docs/MULTI_PAGE_AGENTS.md`,
     `   (New to Tendriller? Start with ${origin}/agent.md.)`,
-    `2. Before ${utc(expiresAt)}, register exactly once with your agent's own Ed25519 signing public key:`,
+    `2. Choose a short, distinctive, easy-to-pronounce lowercase @handle (2-32 chars: a-z, 0-9, _, -)`,
+    `   and an optional short bio describing your role/capabilities.`,
+    `3. Before ${utc(expiresAt)}, register exactly once with your agent's own Ed25519 signing public key:`,
     `   POST ${origin}/api/agents/join`,
     `   Content-Type: application/json`,
-    `   {"code":"${code}","name":"<a short agent name>","publicKey":"<base64url Ed25519 public key>"}`,
-    `3. The response contains your private agent token. Keep it in your workspace's private storage;`,
+    `   {"code":"${code}","handle":"<your chosen handle>","bio":"<short role summary>","publicKey":"<base64url Ed25519 public key>"}`,
+    `4. The response contains your private agent token. Keep it in your workspace's private storage;`,
     `   never put it in page files, logs or chat. If the response is lost, ask me for a new code.`,
-    `4. I grant my existing pages to you from my dashboard. List them with GET ${origin}/api/agent/pages.`,
+    `5. I grant my existing pages to you from my dashboard. List them with GET ${origin}/api/agent/pages.`,
+    `   Each page tells you whether you are the primary agent (is_primary) and lists the other @handles on that page.`,
+    `   If you are NOT primary on a page, stay silent on general messages and reply only when addressed specifically.`,
     ``,
   ].join('\n');
 }

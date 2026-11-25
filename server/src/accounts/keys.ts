@@ -8,7 +8,7 @@ import { requireWritesOpen } from "../service-state";
 import { emojiIconSvg, iconSvg } from "../inject";
 import { DEFAULT_THEME_COLOR, isEmojiIcon } from "../pwa";
 import { avatar, icon, servicePage } from "./ui";
-import { accountGrants, createJoinCode, listAccountAgents, revokeAgent, setAgentGrant } from "../agents";
+import { accountGrants, createJoinCode, listAccountAgents, revokeAgent, setAgentGrant, setPagePrimaryAgent } from "../agents";
 
 function escape(s: string): string { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
 export async function dashboard(req: Request, env: Env, url: URL): Promise<Response> {
@@ -93,6 +93,17 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
       return json({ page: grantMatch[1], agent: body.agent, granted: body.granted });
     } catch (error) { return toErrorResponse(error); }
   }
+  const primaryMatch = /^\/dashboard\/t\/([a-z2-7]{12})\/primary$/.exec(url.pathname);
+  if (primaryMatch && req.method === "POST") {
+    try {
+      sameOrigin();
+      await requireWritesOpen(env);
+      const body = await jsonBody();
+      if (body.agent_id !== null && typeof body.agent_id !== "string") throw new HttpError(400, "bad_request", "Expected { agent_id: string | null }");
+      const roster = await setPagePrimaryAgent(env, session.accountId, primaryMatch[1], body.agent_id);
+      return json(roster);
+    } catch (error) { return toErrorResponse(error); }
+  }
   const shareMatch = /^\/dashboard\/t\/([a-z2-7]{12})\/invite$/.exec(url.pathname);
   if (shareMatch && req.method === "POST") {
     try {
@@ -130,7 +141,7 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
       .bind(session.accountId).all<{ id: string; lifetime: string; state: string; created_at: number }>();
     const [agents, grants] = await Promise.all([listAccountAgents(env, session.accountId), accountGrants(env, session.accountId)]);
     const dbMs = performance.now() - started - sessionMs;
-    type Summary = { name: string; page_url: string; icon?: string | null; theme_color?: string | null; version: number; held: boolean; bytes: number; agents: number; guests_waiting: number; last_activity: { ts: number; summary: string } | null };
+    type Summary = { name: string; page_url: string; icon?: string | null; theme_color?: string | null; version: number; held: boolean; bytes: number; agents: number; primary_agent_id?: string | null; guests_waiting: number; last_activity: { ts: number; summary: string } | null };
     const summaries = await Promise.all(tendrils.results.map(async t => {
       try {
         const response = await pageFetch(t.id, "summary", { signal: AbortSignal.timeout(3000) });
@@ -168,8 +179,8 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
     const firstName = session.email ? session.email.split("@")[0]!.split(/[._+-]/)[0]! : "";
     const greeting = firstName ? `Welcome back, ${escape(firstName.charAt(0).toUpperCase() + firstName.slice(1))}` : "Welcome back";
     const buildPrompt = `Build me an app with Tendriller at ${origin}. Start by reading ${origin}/agent.md and follow it end to end. I will sign in as ${session.email ?? "my GitHub or Google account"}.\n\nWhat I want: `;
-    const agentChecks = agents.map(agent => `<label class="check-item"><input type="checkbox" name="agent" value="${escape(agent.id)}" data-grant><span class="check-copy"><span class="check-title">${icon("bot")} ${escape(agent.name)}</span><span class="check-desc">Full host access to this page</span></span></label>`).join("");
-    const agentRows = agents.map(agent => `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${icon("bot")} ${escape(agent.name)}</div><p class="list-item-sub">${agent.grants} ${agent.grants === 1 ? "page" : "pages"} · added ${escape(new Date(agent.created_at).toISOString().slice(0, 10))}</p></div><form class="inline-form" method="post" action="/dashboard/agents/${escape(agent.id)}/revoke"><button class="sm danger" type="submit" aria-label="Revoke ${escape(agent.name)}">Revoke</button></form></li>`).join("");
+    const agentChecks = agents.map(agent => `<label class="check-item"><input type="checkbox" name="agent" value="${escape(agent.id)}" data-grant><span class="check-copy"><span class="check-title">${icon("bot")} @${escape(agent.handle)}</span><span class="check-desc">${agent.bio ? `${escape(agent.bio)} · ` : ""}Full host access to this page</span></span></label>`).join("");
+    const agentRows = agents.map(agent => `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${icon("bot")} @${escape(agent.handle)}</div><p class="list-item-sub">${agent.bio ? `${escape(agent.bio)} · ` : ""}${agent.grants} ${agent.grants === 1 ? "page" : "pages"} · added ${escape(new Date(agent.created_at).toISOString().slice(0, 10))}</p></div><form class="inline-form" method="post" action="/dashboard/agents/${escape(agent.id)}/revoke"><button class="sm danger" type="submit" aria-label="Revoke @${escape(agent.handle)}">Revoke</button></form></li>`).join("");
     const agentsSection = `<section class="card" id="agents" aria-labelledby="agents-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} Agents</span><h2 id="agents-title">Your agents</h2><p>One agent can maintain many pages. It keeps pages it creates; you choose which existing pages it may maintain from each page’s <strong>Add people &amp; devices → An agent</strong>.</p></div><button class="sm" type="button" id="agent-add">${icon("bot")} Add agent</button></div>
       ${agentRows ? `<ul class="list">${agentRows}</ul>` : '<p class="empty">No agents yet. Add one to let it maintain your pages.</p>'}
       <div class="result" id="join-result" hidden><h3>${icon("check")} Paste this to the new agent</h3><div class="stack-sm"><div class="copy-box"><label class="field-label" for="join-blurb">Invitation (includes a one-time code, valid 10 minutes)</label><textarea id="join-blurb" class="blurb-full" readonly rows="14"></textarea><div class="cluster"><button class="sm" type="button" data-copy-from="join-blurb">${icon("copy")} Copy invitation</button></div></div><p class="fine">Single use. If the agent loses the reply, add the agent again.</p></div></div><p class="fine" role="status" id="join-status"></p></section>`;

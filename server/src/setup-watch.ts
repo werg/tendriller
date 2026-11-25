@@ -11,11 +11,9 @@ const attachment = (ws: WebSocket) => {
 };
 export const isSetupWatch = (ws: WebSocket) => attachment(ws) !== null;
 function snapshot(t: Tendril) {
-  const proposed = t.db.get<{ id: string } | null>('assistant_proposal', null);
-  const approved = t.db.get<{ id: string; version: string } | null>('assistant_connection', null);
+  const mcp = t.db.all<{ grant_id: string; updated_at: number }>('SELECT grant_id,updated_at FROM mcp_connections ORDER BY grant_id');
   return JSON.stringify({ type: 'setup', version: 1,
-    assistant: { proposalId: proposed?.id ?? null, approved: Boolean(proposed && approved?.id === proposed.id),
-      revision: proposed && approved?.id === proposed.id ? approved.version : null } });
+    mcp: { connected: mcp.length > 0, grants: mcp.map(item => item.grant_id), updatedAt: mcp.reduce((max, item) => Math.max(max, item.updated_at), 0) } });
 }
 async function authorized(t: Tendril, principal: AgentPrincipal) {
   requireAgentScope(principal, 'control:write');

@@ -6,7 +6,6 @@ import { resolve, dirname } from 'node:path';
 export const REVIEW_FIXTURE_FILES = [
   ['review-app.mjs', 'plugin/review-app.mjs'],
   ['review-domain.mjs', 'plugin/review-domain.mjs'],
-  ['review-assistant.mjs', 'plugin/review-assistant.mjs'],
   ['review-local.mjs', 'plugin/review-local.mjs'],
   ['review-agent.mjs', 'plugin/review-agent.mjs'],
   ['review-setup.mjs', 'plugin/review-setup.mjs'],

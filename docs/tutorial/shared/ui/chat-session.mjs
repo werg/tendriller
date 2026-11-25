@@ -1,18 +1,24 @@
-// Connects @tendriller/runtime/voice's mountAgentChat directly to a Tendriller
-// Chronolog session: durable agentRequest/agentAnswer history, ephemeral live
-// agent presence (zero durable heartbeat writes), and live streaming previews.
-import { requestDelivery, watchAgentPresence, watchAgentStream } from '../helpers/agent-requests.mjs';
+// Connects @tendriller/runtime/voice's mountAgentChat to a multi-agent Chronolog
+// session: durable agentMessage/agentReceipt feed (chat + agents backchannel),
+// runtime.agents roster + primary selection, ephemeral multi-agent Agent Cards,
+// concurrent streaming previews, and non-blocking primary failover UX.
+import {
+  evaluateFailover,
+  messageDelivery,
+  parseAddressing,
+  watchAgentsPresence,
+  watchAgentStreams,
+} from '../helpers/agent-requests.mjs';
+import { enableHostedMcp } from '../helpers/hosted-mcp.mjs';
 
 export async function mountConnectedAgentChat({
   runtime = window.tendril,
   session,
-  peer,
-  consumerId,
+  peers,
   container,
   title = 'Assistant',
   layout = container ? 'embedded' : 'dock',
   open,
-  topic = 'chat',
   consentMode = 'auto',
   autoSendVoice = true,
   voiceOutput = 'browser',
@@ -23,21 +29,138 @@ export async function mountConnectedAgentChat({
 } = {}) {
   if (!runtime) throw Error('mountConnectedAgentChat requires window.tendril runtime');
   if (!session) throw Error('mountConnectedAgentChat requires a Chronolog session');
-  if (!peer) throw Error('mountConnectedAgentChat requires an explicitly authorized agent participant public key');
 
   const voiceModule = await loadVoice();
   const stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, session.signal].filter(Boolean));
   const optimistic = new Map();
-  let inboxMessages = [];
+  let lastFeed = { messages: [], activity: [], receipts: {} };
+  let liveMap = {};
+  let selectedTarget = null; // null = primary, agent.id = specific agent, '*' = @all
+  let primaryOfflineSinceMs = null;
+  let dismissedFailoverFor = null;
+  let switchedFromPrimaryId = null;
   let refreshTail = Promise.resolve();
 
-  const renderMerged = () => {
-    const merged = [...inboxMessages];
+  const currentRoster = () => runtime.agents?.snapshot?.() ?? { primary_agent_id: null, agents: [], can_manage: false };
+  const agentByKey = key => currentRoster().agents.find(a => a.public_key === key) ?? null;
+  const agentById = id => currentRoster().agents.find(a => a.id === id) ?? null;
+
+  const syncRosterToUi = () => {
+    const roster = currentRoster();
+    const items = roster.agents.map(agent => {
+      const live = liveMap[agent.public_key] ?? liveMap[agent.id];
+      const state = agent.kind === 'hosted-mcp'
+        ? 'online'
+        : (live?.state ?? 'offline');
+      return {
+        id: agent.id,
+        handle: agent.handle,
+        bio: agent.bio,
+        publicKey: agent.public_key,
+        kind: agent.kind,
+        isPrimary: agent.id === roster.primary_agent_id || agent.is_primary,
+        state,
+        enrolled: agent.kind === 'hosted-mcp' ? true : live?.enrolled,
+      };
+    });
+    chat.setRoster({
+      primaryId: roster.primary_agent_id ?? null,
+      agents: items,
+      targetId: selectedTarget,
+      canSetPrimary: Boolean(roster.can_manage),
+    });
+    updateFailoverBanner();
+  };
+
+  const renderFeed = () => {
+    const roster = currentRoster();
+    const myKey = session.identity?.publicKey;
+    const chatMessages = lastFeed.messages.map(m => {
+      const sender = agentByKey(m.author);
+      const isUser = !sender && m.author === myKey;
+      const toHandles = (m.to ?? []).map(target => {
+        if (target === '*') return '*';
+        const hit = agentByKey(target);
+        return hit ? hit.handle : target.slice(0, 8);
+      });
+      return {
+        id: m.operationId || `${m.author}:${m.eventId}`,
+        role: isUser ? 'user' : 'agent',
+        text: m.text,
+        at: m.atMs ?? undefined,
+        ...(isUser ? { status: messageDelivery(m, lastFeed) } : {}),
+        ...(sender ? {
+          senderHandle: sender.handle,
+          senderId: sender.id,
+          isPrimary: sender.id === roster.primary_agent_id || sender.is_primary,
+        } : {}),
+        ...(toHandles.length ? { toHandles } : {}),
+      };
+    });
     for (const pending of optimistic.values()) {
-      if (!merged.some(m => m.id === pending.id)) merged.push(pending);
+      if (!chatMessages.some(m => m.id === pending.id)) chatMessages.push(pending);
     }
-    chat.setMessages(merged);
+    chat.setMessages(chatMessages);
+
+    const activityItems = lastFeed.activity.map(item => {
+      const sender = agentByKey(item.author);
+      const toHandles = (item.to ?? []).map(t => t === '*' ? '*' : (agentByKey(t)?.handle ?? t.slice(0, 8)));
+      return {
+        id: item.operationId || `${item.author}:${item.eventId}`,
+        senderHandle: sender?.handle ?? item.author.slice(0, 8),
+        toHandles,
+        text: item.text,
+        at: item.atMs ?? undefined,
+      };
+    });
+    chat.setActivity(activityItems);
+    updateFailoverBanner();
+  };
+
+  const sendMessage = async ({ text, context, explicitTo }) => {
+    const roster = currentRoster();
+    const parsed = parseAddressing(text, roster);
+    let to = explicitTo ?? parsed.to;
+    if (!explicitTo && to.length === 0 && selectedTarget) {
+      if (selectedTarget === '*') {
+        to = ['*'];
+      } else {
+        const chosen = agentById(selectedTarget);
+        const isPrimary = chosen && (chosen.id === roster.primary_agent_id || chosen.is_primary);
+        if (chosen && !isPrimary) to = [chosen.public_key];
+      }
+    }
+    const operationId = crypto.randomUUID();
+    const body = context ? `[Context: ${typeof context === 'string' ? context : JSON.stringify(context)}]\n${text}` : text;
+    optimistic.set(operationId, {
+      id: operationId,
+      role: 'user',
+      text,
+      at: Date.now(),
+      status: 'sending',
+      ...(context ? { contextLabel: typeof context === 'string' ? context : context.title || 'Card' } : {}),
+    });
+    renderFeed();
+    try {
+      const op = await session.command('agentMessage', {
+        channel: 'chat',
+        to,
+        text: body.slice(0, 8000),
+      }, { operationId });
+      const item = optimistic.get(operationId);
+      if (item) { item.status = 'delivered'; renderFeed(); }
+      const materialized = await op.materialized({ signal: AbortSignal.any([lifetime, AbortSignal.timeout(20_000)]) });
+      if (materialized.outcome === 'rejected') {
+        throw Error(`Currently rejected (${materialized.rejectionCode ?? 'domain guard'}); original operation ${operationId} remains inspectable.`);
+      }
+      optimistic.delete(operationId);
+      await refreshFeed();
+    } catch (error) {
+      const item = optimistic.get(operationId);
+      if (item) { item.status = 'error'; renderFeed(); }
+      throw error;
+    }
   };
 
   const chat = voiceModule.mountAgentChat(runtime, {
@@ -51,114 +174,213 @@ export async function mountConnectedAgentChat({
     autoSpeak,
     handsFreeLoop,
     onAttach,
-    async onSend({ text, via, context }) {
-      const operationId = crypto.randomUUID();
-      const body = context ? `[Context: ${typeof context === 'string' ? context : JSON.stringify(context)}]\n${text}` : text;
-      optimistic.set(operationId, {
-        id: operationId,
-        role: 'user',
-        text,
-        at: Date.now(),
-        status: 'sending',
-        ...(context ? { contextLabel: typeof context === 'string' ? context : context.title || 'Card' } : {}),
-      });
-      renderMerged();
-      try {
-        const op = await session.command('agentRequest', {
-          recipient: peer,
-          topic,
-          text: body.slice(0, 8000),
-        }, { operationId });
-        const item = optimistic.get(operationId);
-        if (item) { item.status = 'stored'; renderMerged(); }
-        const materialized = await op.materialized({ signal: AbortSignal.any([lifetime, AbortSignal.timeout(20_000)]) });
-        if (materialized.outcome === 'rejected') throw Error(`Currently rejected (${materialized.rejectionCode ?? 'domain guard'}); original operation ${operationId} remains inspectable and its materialization is revisable.`);
-        optimistic.delete(operationId);
-        await refreshInbox();
-      } catch (error) {
-        const item = optimistic.get(operationId);
-        if (item) { item.status = 'error'; renderMerged(); }
-        throw error;
-      }
+    onSelectTarget(target) {
+      selectedTarget = target;
+      syncRosterToUi();
+    },
+    async onSetPrimary(agentId) {
+      await runtime.agents.setPrimary(agentId);
+      selectedTarget = null;
+      dismissedFailoverFor = null;
+      syncRosterToUi();
+    },
+    async onSend({ text, context }) {
+      await sendMessage({ text, context });
     },
   });
 
-  const refreshInbox = () => {
-    const pending = refreshTail.then(async () => {
-    if (lifetime.aborted) return;
-    try {
-      const result = await session.query('agentInbox', null);
-      const requests = (result?.value?.requests ?? []).filter(r => r.recipient === peer && r.topic === topic);
-      const next = [];
-      for (const req of requests) {
-        const phase = requestDelivery(req);
-        next.push({
-          id: req.requestOperationId,
-          role: 'user',
-          text: req.text,
-          at: req.sentAtMs ?? undefined,
-          status: phase === 'answered' ? 'answered' : phase === 'seen' ? 'seen' : 'delivered',
+  const lastUnansweredUserMessage = () => {
+    const myKey = session.identity?.publicKey;
+    for (let i = lastFeed.messages.length - 1; i >= 0; i--) {
+      const msg = lastFeed.messages[i];
+      if (msg.author !== myKey) continue;
+      if ((msg.to ?? []).length > 0) continue; // Only general messages depend on primary
+      const delivery = messageDelivery(msg, lastFeed);
+      if (delivery === 'delivered') {
+        return { ...msg, sentAtMs: msg.atMs ?? Date.now() };
+      }
+      break;
+    }
+    return null;
+  };
+
+  const updateFailoverBanner = () => {
+    const roster = currentRoster();
+    const online = typeof navigator === 'undefined' ? true : navigator.onLine !== false;
+    const primary = roster.agents.find(a => a.id === roster.primary_agent_id || a.is_primary) ?? null;
+
+    // Track how long the current primary has been offline.
+    if (primary && primary.kind !== 'hosted-mcp') {
+      const live = liveMap[primary.public_key] ?? liveMap[primary.id];
+      const healthy = live?.state === 'online' || live?.state === 'busy';
+      if (healthy) primaryOfflineSinceMs = null;
+      else if (primaryOfflineSinceMs === null) primaryOfflineSinceMs = Date.now();
+    } else {
+      primaryOfflineSinceMs = null;
+    }
+
+    // If we previously switched away from a primary and it came back online, offer a gentle return chip.
+    if (switchedFromPrimaryId && switchedFromPrimaryId !== roster.primary_agent_id) {
+      const original = agentById(switchedFromPrimaryId);
+      const origLive = original ? (liveMap[original.public_key] ?? liveMap[original.id]) : null;
+      if (original && (origLive?.state === 'online' || origLive?.state === 'busy')) {
+        chat.setBanner({
+          kind: 'info',
+          message: `@${original.handle} is back online.`,
+          actions: [
+            { id: 'restore', label: roster.can_manage ? `Make @${original.handle} primary again` : `Switch back to @${original.handle}`, primary: true },
+          ],
+          async onAction() {
+            if (roster.can_manage) await runtime.agents.setPrimary(original.id);
+            else selectedTarget = original.id;
+            switchedFromPrimaryId = null;
+            chat.setBanner(null);
+            syncRosterToUi();
+          },
+          onDismiss() {
+            switchedFromPrimaryId = null;
+            chat.setBanner(null);
+          },
         });
-        for (const ans of req.answers) {
-          next.push({
-            id: ans.operationId || `${req.requestOperationId}:${ans.eventId}`,
-            role: 'agent',
-            text: ans.text,
-            at: ans.atMs ?? undefined,
+        return;
+      }
+    }
+
+    const failover = evaluateFailover({
+      roster,
+      liveMap,
+      online,
+      lastPendingUserMessage: lastUnansweredUserMessage(),
+      primaryOfflineSinceMs,
+    });
+    if (!failover || dismissedFailoverFor === failover.primary.id) {
+      chat.setBanner(null);
+      return;
+    }
+
+    const { primary: p, backup, lastPendingUserMessage: pending } = failover;
+    const reasonText = failover.reason === 'stopped'
+      ? `@${p.handle} stopped.`
+      : failover.reason === 'unacknowledged'
+        ? `@${p.handle} hasn't picked up your last message.`
+        : `@${p.handle} appears offline.`;
+    const actions = roster.can_manage
+      ? [
+          ...(pending ? [{ id: 'switch-forward', label: `Switch primary to @${backup.handle} & forward`, primary: true }] : []),
+          { id: 'switch', label: `Switch primary to @${backup.handle}`, primary: !pending },
+        ]
+      : [
+          ...(pending ? [{ id: 'target-forward', label: `Send to @${backup.handle}`, primary: true }] : []),
+          { id: 'target', label: `Message @${backup.handle} for now`, primary: !pending },
+        ];
+
+    chat.setBanner({
+      kind: 'warning',
+      message: `${reasonText} @${backup.handle} is online.`,
+      actions,
+      async onAction(actionId) {
+        switchedFromPrimaryId = p.id;
+        if (actionId === 'switch' || actionId === 'switch-forward') {
+          await runtime.agents.setPrimary(backup.id);
+          selectedTarget = null;
+        } else {
+          selectedTarget = backup.id;
+        }
+        chat.setBanner(null);
+        syncRosterToUi();
+        if ((actionId === 'switch-forward' || actionId === 'target-forward') && pending) {
+          await sendMessage({
+            text: pending.text,
+            explicitTo: [backup.public_key],
           });
         }
-      }
-      inboxMessages = next;
-      renderMerged();
-    } catch { /* Initial or transient read failure will retry on next change. */ }
+      },
+      onDismiss() {
+        dismissedFailoverFor = p.id;
+        chat.setBanner(null);
+      },
+    });
+  };
+
+  const refreshFeed = () => {
+    const pending = refreshTail.then(async () => {
+      if (lifetime.aborted) return;
+      try {
+        const result = await session.query('agentFeed', null);
+        if (result?.value) {
+          lastFeed = result.value;
+          renderFeed();
+        }
+      } catch { /* Initial or transient read failure retries on next change. */ }
     });
     refreshTail = pending.catch(() => {});
     return pending;
   };
 
-  const presence = watchAgentPresence(session, {
-    peer,
-    consumerId,
-    requestTopic: topic,
+  const presence = watchAgentsPresence(session, {
     signal: lifetime,
     onChange(snap) {
-      const status = snap.status === 'available' ? 'online'
-        : snap.status === 'busy' ? 'busy'
-        : snap.status === 'stopped' || snap.status === 'stale' ? 'offline' : 'unknown';
-      const label = snap.status === 'available' ? 'Agent online'
-        : snap.status === 'busy' ? 'Agent thinking…'
-        : snap.status === 'stopped' ? 'Agent stopped'
-        : snap.status === 'stale' ? 'Agent offline' : 'Connecting…';
-      chat.setPresence({ status, label });
+      liveMap = snap;
+      runtime.agents?.reportLiveStatus?.(snap);
+      syncRosterToUi();
     },
   });
 
-  const stream = watchAgentStream(session, {
-    peer,
+  const streams = watchAgentStreams(session, {
     signal: lifetime,
-    onChunk(chunk) {
-      chat.setStreamingReply(chunk.done ? null : chunk.text);
+    onChange(entries) {
+      chat.setStreamingReplies(entries.map(e => ({
+        id: e.id,
+        senderHandle: e.senderHandle ?? agentByKey(e.author)?.handle,
+        text: e.text,
+      })));
     },
   });
+
+  const offAgents = runtime.agents?.onChange?.(() => {
+    syncRosterToUi();
+    renderFeed();
+  }) ?? (() => {});
+
+  const failoverTicker = setInterval(updateFailoverBanner, 5_000);
+  const onOnlineChange = () => updateFailoverBanner();
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', onOnlineChange);
+    window.addEventListener('offline', onOnlineChange);
+  }
 
   const changeLoop = (async () => {
     try {
       for await (const _change of session.changes({ signal: lifetime })) {
-        await refreshInbox();
+        await refreshFeed();
       }
     } catch { /* closed */ }
   })();
 
-  await refreshInbox();
+  const hostedMcp = peers
+    ? enableHostedMcp({ runtime, session, peers, label: title, signal: lifetime })
+    : null;
+
+  await runtime.agents?.refresh?.().catch(() => {});
+  syncRosterToUi();
+  await refreshFeed();
 
   return Object.freeze({
     ...chat,
-    refresh: refreshInbox,
+    refresh: refreshFeed,
+    syncHostedMcp: () => hostedMcp?.syncNow?.() ?? Promise.resolve({ supported: false, uploaded: 0, merged: 0 }),
     done: changeLoop,
     close() {
       stop.abort();
+      clearInterval(failoverTicker);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', onOnlineChange);
+        window.removeEventListener('offline', onOnlineChange);
+      }
+      hostedMcp?.close();
+      offAgents();
       presence.close();
-      stream.close();
+      streams.close();
       chat.dispose();
     },
   });

@@ -1,6 +1,7 @@
 import { validateClientMetadata } from './oauth-client-metadata';
 import type { Env } from '../env';
 import { sha256Hex } from '../ids';
+import { generateWrapKeyPair, sealTokenWrapKey } from '../mcp-crypto';
 import { authorizationRedirect, browserIdentity, consumeIntent, intent, redirect, sameOrigin } from './oauth-data';
 import { authorizationPage, decisionForm, escapeHtml } from './oauth-management';
 import { checkedChallenge, checkedParameters, form, oauthJson, OAuthFailure, randomToken, reject, text, type OAuthClient, type OAuthConfig } from './oauth-support';
@@ -68,17 +69,19 @@ export async function authorize(req: Request, env: Env, config: OAuthConfig, url
   if (!client || !client.redirectUris.includes(value.uri as string) || value.resource !== config.resource || value.policy !== await policy(config, client))
     reject('access_denied', 'Client configuration changed; review a new authorization request', 403);
   if (params.get('decision') === 'deny') return authorizationRedirect(config, value.uri as string, value.state as string, { error: 'access_denied' });
-  const now = Date.now(), grantId = 'og_' + randomToken(), code = randomToken();
+  const now = Date.now(), grantId = 'og_' + randomToken(), code = randomToken(), codeHash = await sha256Hex(code);
   const expiresAt = now + 1000 * (client!.allowRefresh ? config.grantTtlSeconds : config.accessTokenTtlSeconds);
+  const wrap = await generateWrapKeyPair();
+  const sealedWrapKey = await sealTokenWrapKey(env.OAUTH_SIGNING_JWK ?? '', codeHash, wrap.privateKeyBytes);
   const results = await env.ACCOUNTS.batch([
-    env.ACCOUNTS.prepare(`INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at)
-      SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM sessions s JOIN accounts a ON a.id=s.account_id
+    env.ACCOUNTS.prepare(`INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,wrap_public_key,created_at,expires_at)
+      SELECT ?,?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM sessions s JOIN accounts a ON a.id=s.account_id
         WHERE s.hash=? AND s.account_id=? AND s.expires_at>? AND a.suspended_at IS NULL AND a.deleting_at IS NULL)
       AND (SELECT COUNT(*) FROM integration_oauth_grants WHERE account_id=?)<100`)
-      .bind(grantId, browser!.id, client!.id, config.resource, value.scope, now, expiresAt, browser!.sessionHash, browser!.id, now, browser!.id),
-    env.ACCOUNTS.prepare(`INSERT INTO integration_oauth_codes(hash,grant_id,redirect_uri,challenge,expires_at)
-      SELECT ?,id,?,?,? FROM integration_oauth_grants WHERE id=?`)
-      .bind(await sha256Hex(code), value.uri, value.challenge, Math.min(expiresAt, now + 120000), grantId),
+      .bind(grantId, browser!.id, client!.id, config.resource, value.scope, wrap.publicKeyHex, now, expiresAt, browser!.sessionHash, browser!.id, now, browser!.id),
+    env.ACCOUNTS.prepare(`INSERT INTO integration_oauth_codes(hash,grant_id,redirect_uri,challenge,sealed_wrap_key,expires_at)
+      SELECT ?,id,?,?,?,? FROM integration_oauth_grants WHERE id=?`)
+      .bind(codeHash, value.uri, value.challenge, sealedWrapKey, Math.min(expiresAt, now + 120000), grantId),
   ]);
   if (results[0].meta.changes !== 1 || results[1].meta.changes !== 1) reject('access_denied', 'Account session expired or authorization capacity reached', 403);
   return authorizationRedirect(config, value.uri as string, value.state as string, { code });

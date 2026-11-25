@@ -3,8 +3,8 @@
 export const HUB_PROTOCOL = 'tendriller.hub.v1';
 export const HUB_LIMITS = Object.freeze({ streams: 64, frameBytes: 1024 * 1024, maxStreamId: 2 ** 31 - 1,
   openTimeoutMs: 15_000, closeTimeoutMs: 5_000, pingMs: 30_000, retryMs: 1000, maxRetryMs: 60_000 });
-export const HUB_PATHS = Object.freeze(['setup/watch', 'peers/discovery/watch', 'peers/invitations', 'peers/rendezvous', 'assistant/adapter']);
-export const HUB_EVENT_KINDS = Object.freeze(['grant', 'revoked', 'page-deleted', 'publication']);
+export const HUB_PATHS = Object.freeze(['setup/watch', 'peers/discovery/watch', 'peers/invitations', 'peers/rendezvous']);
+export const HUB_EVENT_KINDS = Object.freeze(['grant', 'revoked', 'page-deleted', 'publication', 'agents-changed']);
 const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
 export class HubError extends Error {
   constructor(code, message = code) { super(message); this.name = 'HubError'; this.code = code; }

@@ -1,0 +1,272 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  bytesToHex,
+  createApplicationSession,
+  defineApplication,
+  defineCommand,
+  defineQuery,
+  emit,
+  eventExecutionManifest,
+  executionManifestArtifacts,
+  openApplicationDevice,
+  program,
+} from '@chronolog/peer-session';
+import {
+  createSigningIdentity,
+  decodeRecord,
+  encodeRecord,
+  epochKeyCommitment,
+  recordDigest,
+  signAppDescriptor,
+  signMembership,
+} from '@chronolog/authority';
+import { authorityRecord } from '../../contract/authority.mjs';
+import {
+  connectHostedMcpGrant,
+  enableHostedMcp,
+  sealHostedKeys,
+  syncHostedMcpEnvelopes,
+} from '../../docs/tutorial/shared/helpers/hosted-mcp.mjs';
+
+class MemoryStore {
+  #map = new Map();
+  async get(k) { return this.#map.get(k)?.slice() ?? null; }
+  async put(k, v) { this.#map.set(k, v.slice()); }
+  async delete(k) { this.#map.delete(k); }
+  async initialize(entries) {
+    for (const e of entries) if (!this.#map.has(e.key)) this.#map.set(e.key, e.value.slice());
+  }
+}
+
+function unbase64url(encoded) {
+  const padded = encoded.replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(padded);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+const definition = defineApplication({
+  id: 'hosted-mcp-helper-test',
+  version: '1',
+  commands: {
+    putNote: defineCommand({
+      description: 'Store a note',
+      input: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
+      prepare: ({ text }) => program(emit('note', { text })),
+    }),
+  },
+  queries: {
+    notes: defineQuery({
+      description: 'Read notes',
+      input: { type: 'null' },
+      read: view => view.readEvents({ topics: ['note'] }).events.map(e => e.payload.text),
+    }),
+  },
+});
+
+async function openFixture(t) {
+  const appId = 'a'.repeat(64);
+  const epochKey = crypto.getRandomValues(new Uint8Array(32));
+  const authoritySigner = await createSigningIdentity();
+  const device = await openApplicationDevice({ store: new MemoryStore(), create: true });
+  const manifest = await executionManifestArtifacts(await eventExecutionManifest());
+  const descriptor = await signAppDescriptor({
+    applicationId: appId,
+    rootPrincipal: device.identity.publicKey,
+    authorityPublicKey: authoritySigner.publicKey,
+    executionManifestDigest: bytesToHex(manifest.executionManifestDigest),
+    finalityPolicy: { kind: 'none' },
+  }, authoritySigner);
+  const membership0 = await signMembership({
+    applicationId: appId,
+    revision: 0,
+    previous: null,
+    authorTimeAfterMs: -1n,
+    epoch: 0,
+    epochKeyDigest: await epochKeyCommitment(appId, 0, epochKey),
+    members: [{ publicKey: device.identity.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false }],
+  }, authoritySigner);
+  let bundle = { descriptor, memberships: [membership0] };
+  const session = await createApplicationSession({
+    device,
+    definition,
+    authority: bundle,
+    epochKeys: new Map([[0, epochKey]]),
+  });
+  t.after(() => session.close());
+
+  const peers = {
+    async application() { return { authority: authorityRecord(encodeRecord(bundle)) }; },
+    async grant(intent) {
+      const prev = bundle.memberships.at(-1);
+      const next = await signMembership({
+        applicationId: appId,
+        revision: prev.payload.revision + 1,
+        previous: await recordDigest(prev),
+        authorTimeAfterMs: BigInt(intent.authorTimeAfterMs),
+        epoch: prev.payload.epoch,
+        epochKeyDigest: prev.payload.epochKeyDigest,
+        members: [...prev.payload.members, intent.grant],
+      }, authoritySigner);
+      bundle = { descriptor, memberships: [...bundle.memberships, next] };
+      return { authority: authorityRecord(encodeRecord(bundle)) };
+    },
+  };
+  return { appId, epochKey, session, peers, getBundle: () => bundle };
+}
+
+test('connectHostedMcpGrant provisions a revocable identity in RAM and X25519-seals epoch keys cleanly', async t => {
+  const f = await openFixture(t);
+  const wrapPair = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
+  const wrapPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', wrapPair.publicKey));
+  const wrapPubHex = bytesToHex(wrapPubRaw);
+
+  let postedConnect = null;
+  let syncCalls = 0;
+  let refreshed = 0;
+  const runtime = {
+    identity: { page: 'pg1234567890', base: 'https://page.example/p/' },
+    application: { id: f.appId },
+    agents: { async refresh() { refreshed++; } },
+  };
+  const fetchImpl = async (url, init = {}) => {
+    if (String(url).endsWith('_tendril/mcp/connect')) {
+      postedConnect = JSON.parse(init.body);
+      return new Response(JSON.stringify({ connected: true, grant_id: postedConnect.grantId }), { status: 201 });
+    }
+    if (String(url).endsWith('_tendril/mcp/sync')) {
+      syncCalls++;
+      return new Response(JSON.stringify({ stored: 0, envelopes: [] }), { status: 200 });
+    }
+    throw Error('Unexpected URL: ' + url);
+  };
+
+  await connectHostedMcpGrant({
+    runtime,
+    session: f.session,
+    peers: f.peers,
+    grantId: 'og_test_grant',
+    wrapPublicKey: wrapPubHex,
+    handle: 'chatgpt',
+    bio: 'Hosted notes helper',
+    label: 'Notes',
+    fetchImpl,
+  });
+
+  assert.ok(postedConnect, 'connect payload posted');
+  assert.equal(postedConnect.grantId, 'og_test_grant');
+  assert.equal(postedConnect.handle, 'chatgpt');
+  assert.match(postedConnect.publicKey, /^[a-f0-9]{64}$/u);
+  assert.equal(refreshed, 1);
+  assert.equal(syncCalls, 1);
+
+  // Decrypt using the OAuth grant's X25519 private key and verify exact AAD + epoch key match
+  const sealedEnvelope = JSON.parse(new TextDecoder().decode(unbase64url(postedConnect.wrappedKeysBase64)));
+  assert.equal(sealedEnvelope.v, 1);
+  const epkBytes = hexToBytes(sealedEnvelope.epk);
+  const epkKey = await crypto.subtle.importKey('raw', epkBytes, { name: 'X25519' }, false, []);
+  const shared = await crypto.subtle.deriveBits({ name: 'X25519', public: epkKey }, wrapPair.privateKey, 256);
+  const salt = new Uint8Array(64);
+  salt.set(epkBytes, 0);
+  salt.set(wrapPubRaw, 32);
+  const aad = new TextEncoder().encode(`tendriller-mcp-keys-v1:pg1234567890:${f.appId}:og_test_grant`);
+  const ikm = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveKey']);
+  const aesKey = await crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt, info: aad }, ikm, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  const plain = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: unbase64url(sealedEnvelope.iv), additionalData: aad },
+    aesKey,
+    unbase64url(sealedEnvelope.ct),
+  );
+  const material = JSON.parse(new TextDecoder().decode(plain));
+  assert.equal(material.signingPublicKey, postedConnect.publicKey);
+  assert.match(material.signingSeedHex, /^[a-f0-9]{96}$/u);
+  assert.equal(material.epochKeys['0'], bytesToHex(f.epochKey));
+});
+
+test('syncHostedMcpEnvelopes and enableHostedMcp exchange blind encrypted envelopes across sessions without plaintext', async t => {
+  const f = await openFixture(t);
+  // Author a local operation on browser session
+  const op1 = await f.session.command('putNote', { text: 'From browser' }, { operationId: 'op-browser-1' });
+  await op1.materialized({ signal: AbortSignal.timeout(5000) });
+
+  // Simulate DO mcp_store retaining blind encrypted envelopes
+  const doStore = new Map();
+  const fetchImpl = async (url, init = {}) => {
+    if (String(url).endsWith('_tendril/mcp/sync')) {
+      const body = JSON.parse(init.body);
+      for (const b64 of body.envelopes) {
+        const raw = unbase64url(b64);
+        const env = decodeRecord(raw);
+        doStore.set(env.payload.proposalId, b64);
+      }
+      const known = new Set(body.knownIds);
+      const missing = [...doStore.entries()].filter(([id]) => !known.has(id)).map(([proposalId, envelopeBase64]) => ({ proposalId, envelopeBase64 }));
+      return new Response(JSON.stringify({ stored: body.envelopes.length, envelopes: missing }), { status: 200 });
+    }
+    throw Error('Unexpected URL: ' + url);
+  };
+
+  // Push browser envelope to DO store
+  const push = await syncHostedMcpEnvelopes({ base: 'https://page.example/p/', session: f.session, fetchImpl });
+  assert.equal(push.supported, true);
+  assert.equal(push.uploaded, 1);
+  assert.equal(push.merged, 0);
+  assert.equal(doStore.size, 1);
+  assert.equal([...doStore.values()].join('').includes('From browser'), false, 'DO store holds ciphertext only');
+
+  // Second device/session (simulating hosted MCP) writes an op and pushes to DO store
+  const peerDevice = await openApplicationDevice({ store: new MemoryStore(), create: true });
+  await f.peers.grant({
+    requestId: crypto.randomUUID(),
+    expectedMembershipId: f.getBundle().memberships.at(-1).id,
+    authorTimeAfterMs: String(Date.now() - 10),
+    grant: { publicKey: peerDevice.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false },
+  });
+  await f.session.mergeAuthority(f.getBundle());
+  const peerSession = await createApplicationSession({
+    device: peerDevice,
+    definition,
+    authority: f.getBundle(),
+    epochKeys: new Map([[0, f.epochKey]]),
+  });
+  t.after(() => peerSession.close());
+  const op2 = await peerSession.command('putNote', { text: 'From hosted MCP' }, { operationId: 'op-mcp-1' });
+  await op2.materialized({ signal: AbortSignal.timeout(5000) });
+  await syncHostedMcpEnvelopes({ base: 'https://page.example/p/', session: peerSession, fetchImpl });
+  assert.equal(doStore.size, 2);
+
+  // Trigger enableHostedMcp via `mcp-sync` runtime event and verify browser merges hosted MCP's op!
+  const listeners = new Map();
+  let registeredConnector = null;
+  const runtime = {
+    identity: { page: 'pg1', base: 'https://page.example/p/' },
+    application: { id: f.appId },
+    on(type, fn) {
+      const set = listeners.get(type) ?? new Set();
+      set.add(fn);
+      listeners.set(type, set);
+      return () => set.delete(fn);
+    },
+    agents: {
+      snapshot: () => ({ primary_agent_id: 'mcp:g1', agents: [{ id: 'mcp:g1', handle: 'chatgpt', kind: 'hosted-mcp' }] }),
+      onChange: () => () => {},
+      registerMcpConnector: fn => { registeredConnector = fn; return () => { registeredConnector = null; }; },
+    },
+  };
+  const ctrl = enableHostedMcp({ runtime, session: f.session, peers: f.peers, fetchImpl });
+  t.after(() => ctrl.close());
+  assert.equal(typeof registeredConnector, 'function');
+  for (const fn of listeners.get('mcp-sync') ?? []) fn({ type: 'mcp-sync', version: 1 });
+  await ctrl.syncNow();
+  const notes = (await f.session.query('notes', null)).value;
+  assert.deepEqual(notes.sort(), ['From browser', 'From hosted MCP']);
+  assert.equal(typeof sealHostedKeys, 'function');
+});

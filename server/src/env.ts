@@ -39,8 +39,6 @@ export interface Env {
   OAUTH_SIGNING_JWK?: string;
   /** Optional previous public signing keys retained while issued tokens expire. */
   OAUTH_PUBLIC_JWKS?: string;
-  ASSISTANT_STORE_KEY?: string;
-  ASSISTANT_CALLBACK_ORIGINS?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
   ADMIN_IDENTITIES?: string;

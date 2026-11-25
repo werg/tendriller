@@ -165,6 +165,7 @@ CREATE TABLE integration_oauth_grants (
   client_id TEXT NOT NULL,
   resource TEXT NOT NULL,
   scope TEXT NOT NULL,
+  wrap_public_key TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   revoked_at INTEGER
@@ -175,6 +176,7 @@ CREATE TABLE integration_oauth_codes (
   grant_id TEXT NOT NULL REFERENCES integration_oauth_grants(id) ON DELETE CASCADE,
   redirect_uri TEXT NOT NULL,
   challenge TEXT NOT NULL,
+  sealed_wrap_key TEXT,
   expires_at INTEGER NOT NULL,
   used_at INTEGER
 );
@@ -197,12 +199,16 @@ CREATE TABLE integration_oauth_access (
   expires_at INTEGER NOT NULL
 );
 
-CREATE TABLE assistant_connections (
-  page_id TEXT PRIMARY KEY REFERENCES tendrils(id) ON DELETE CASCADE,
+CREATE TABLE mcp_connections (
+  page_id TEXT NOT NULL REFERENCES tendrils(id) ON DELETE CASCADE,
+  grant_id TEXT NOT NULL REFERENCES integration_oauth_grants(id) ON DELETE CASCADE,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   application_id TEXT NOT NULL,
-  owner_account TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  handle TEXT NOT NULL,
+  public_key TEXT NOT NULL,
   label TEXT NOT NULL,
-  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1))
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (page_id, grant_id)
 );
 
 CREATE INDEX identities_account ON identities(account_id);
@@ -221,8 +227,8 @@ CREATE INDEX integration_oauth_codes_grant ON integration_oauth_codes(grant_id);
 CREATE INDEX integration_oauth_refresh_grant ON integration_oauth_refresh(grant_id);
 CREATE INDEX integration_oauth_access_grant ON integration_oauth_access(grant_id);
 CREATE INDEX integration_oauth_access_expiry ON integration_oauth_access(expires_at);
-CREATE INDEX assistant_connections_owner ON assistant_connections(owner_account, enabled, page_id);
-CREATE UNIQUE INDEX assistant_connections_enabled_app ON assistant_connections(owner_account, application_id) WHERE enabled = 1;
+CREATE INDEX mcp_connections_account ON mcp_connections(account_id, page_id);
+CREATE INDEX mcp_connections_app ON mcp_connections(account_id, application_id);
 
 CREATE TRIGGER tendril_reservation AFTER UPDATE OF reserved, owner_account ON tendrils
 BEGIN

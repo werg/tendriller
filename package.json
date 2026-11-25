@@ -59,8 +59,10 @@
     "wrangler": "^4.161.0"
   },
   "dependencies": {
+    "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
     "ipaddr.js": "^2.5.0",
-    "phonon-tts": "0.7.1"
+    "phonon-tts": "0.7.1",
+    "quickjs-emscripten-core": "0.32.0"
   },
   "version": "0.3.0-rc.17",
   "engines": {

@@ -10,7 +10,7 @@
 //                   default, and show the "New version published" card meanwhile.
 // Pinning is explicit: a document opened at its immutable /_publications/ID/ URL stays
 // on that release and only offers the update.
-import { watchPublicationUpdates as watchPublicationSelection } from "../../contract/publication-watch.mjs";
+import { watchPublicationUpdates as watchPublicationSelection, type AgentsRosterNotice, type McpSyncNotice } from "../../contract/publication-watch.mjs";
 import { documentUrl } from "./document";
 import type { TendrilConfig } from "./types";
 
@@ -107,7 +107,7 @@ const holdingStatus = (state: string) => state === "connected" ? "Your agent is 
 
 /** The update policy. `watch` opens the page's one publication watch (the default
  * tendril.js entry does; the bare kernel stays without host connections unless asked). */
-export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: boolean; watch?: boolean; reload?: () => void; policy?: UpdatePolicy } = { pinned: false }): PublicationUpdates {
+export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: boolean; watch?: boolean; reload?: () => void; policy?: UpdatePolicy; onAgents?: (notice: AgentsRosterNotice) => void; onMcpSync?: (notice: McpSyncNotice) => void } = { pinned: false }): PublicationUpdates {
   const listeners = new Set<(update: { version: number | null }) => void>(), holds = new Set<object>(), edited = new Set<Element>();
   const policy = (): UpdatePolicy => options.policy ?? authoredUpdatePolicy();
   const reload = options.reload ?? (() => location.reload());
@@ -137,6 +137,12 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: b
         if (available === current) return;
         available = current; announce(current);
         attempt();
+      },
+      onAgents(notice: AgentsRosterNotice) {
+        if (!closed) options.onAgents?.(notice);
+      },
+      onMcpSync(notice: McpSyncNotice) {
+        if (!closed) options.onMcpSync?.(notice);
       },
       onStatus({ state }: { state: string }) {
         if (closed || cfg.version !== 0) return;

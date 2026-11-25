@@ -64,7 +64,46 @@ export interface AgentChatMessage {
   at?: number;
   status?: "sending" | "delivered" | "seen" | "thinking" | "answered" | "error";
   contextLabel?: string;
+  senderHandle?: string;
+  senderId?: string;
+  isPrimary?: boolean;
+  toHandles?: string[];
   actions?: Array<{ id: string; label: string; primary?: boolean }>;
+}
+export interface AgentChatStreamingEntry {
+  id: string;
+  senderHandle?: string;
+  text: string;
+}
+export interface AgentChatActivityItem {
+  id: string;
+  senderHandle: string;
+  toHandles?: string[];
+  text: string;
+  at?: number;
+}
+export interface AgentChatRosterItem {
+  id: string;
+  handle: string;
+  bio?: string;
+  publicKey: string;
+  kind?: "workspace" | "hosted-mcp";
+  isPrimary?: boolean;
+  state: "online" | "busy" | "offline" | "stopped" | "unknown";
+  enrolled?: boolean;
+}
+export interface AgentChatRosterState {
+  primaryId: string | null;
+  agents: readonly AgentChatRosterItem[];
+  targetId?: string | null | "*";
+  canSetPrimary?: boolean;
+}
+export interface AgentChatBanner {
+  kind?: "warning" | "info";
+  message: string;
+  actions?: Array<{ id: string; label: string; primary?: boolean }>;
+  onAction?(actionId: string): void | Promise<void>;
+  onDismiss?(): void;
 }
 export interface AgentChatPresence {
   status: "online" | "busy" | "offline" | "unknown";
@@ -79,9 +118,11 @@ export interface AgentChatOptions {
   title?: string;
   placeholder?: string;
   messages?: AgentChatMessage[];
-  onSend(input: { text: string; via: "text" | "voice"; context?: unknown }): void | Promise<void>;
+  onSend(input: { text: string; via: "text" | "voice"; context?: unknown; target?: string | null | "*" }): void | Promise<void>;
   onAction?(action: { messageId: string; actionId: string; label: string }): void | Promise<void>;
   onAttach?(file: File): void | Promise<void>;
+  onSelectTarget?(target: string | null | "*"): void;
+  onSetPrimary?(agentId: string | null): void | Promise<void>;
   consentMode?: VoiceConsentMode;
   autoSendVoice?: boolean;
   voiceOutput?: "browser" | "neural" | false;
@@ -91,12 +132,17 @@ export interface AgentChatOptions {
   layout?: "embedded" | "drawer" | "dock";
   open?: boolean;
   presence?: AgentChatPresence;
+  consumeShares?: boolean;
 }
 export interface AgentChatHandle {
   readonly voice: VoiceAdapter;
   readonly element: HTMLElement;
   setMessages(messages: AgentChatMessage[]): void;
   setStreamingReply(text: string | null): void;
+  setStreamingReplies(entries: AgentChatStreamingEntry[]): void;
+  setRoster(roster: AgentChatRosterState): void;
+  setActivity(items: AgentChatActivityItem[]): void;
+  setBanner(banner: AgentChatBanner | null): void;
   setPresence(presence: AgentChatPresence): void;
   setContext(context: AgentChatContext | null): void;
   speak(text: string): void;

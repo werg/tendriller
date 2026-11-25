@@ -11,11 +11,15 @@
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"
         },
-        "name": {
+        "handle": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 64,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]*$"
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 160
         },
         "publicKey": {
           "type": "string",
@@ -24,7 +28,7 @@
       },
       "required": [
         "owner",
-        "name",
+        "handle",
         "publicKey"
       ],
       "additionalProperties": false
@@ -37,11 +41,15 @@
           "minLength": 1,
           "maxLength": 128
         },
-        "name": {
+        "handle": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 64,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]*$"
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 160
         },
         "publicKey": {
           "type": "string",
@@ -50,9 +58,26 @@
       },
       "required": [
         "code",
-        "name",
+        "handle",
         "publicKey"
       ],
+      "additionalProperties": false
+    },
+    "agentProfileUpdate": {
+      "type": "object",
+      "properties": {
+        "handle": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 160
+        }
+      },
+      "required": [],
       "additionalProperties": false
     },
     "agentCredential": {
@@ -62,8 +87,15 @@
           "type": "string",
           "pattern": "^ag_[a-z2-7]{26}$"
         },
-        "name": {
-          "type": "string"
+        "handle": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 160
         },
         "token": {
           "type": "string",
@@ -78,7 +110,7 @@
       },
       "required": [
         "id",
-        "name",
+        "handle",
         "token"
       ],
       "additionalProperties": true
@@ -113,6 +145,76 @@
       },
       "required": [],
       "additionalProperties": false
+    },
+    "pageAgent": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "handle": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 32,
+          "pattern": "^[a-z][a-z0-9_-]{1,31}$"
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "public_key": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "workspace",
+            "hosted-mcp"
+          ]
+        },
+        "is_primary": {
+          "type": "boolean"
+        },
+        "granted_at": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "handle",
+        "bio",
+        "public_key",
+        "kind",
+        "is_primary"
+      ],
+      "additionalProperties": true
+    },
+    "pageAgentRoster": {
+      "type": "object",
+      "properties": {
+        "primary_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agents": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/pageAgent"
+          }
+        }
+      },
+      "required": [
+        "primary_agent_id",
+        "agents"
+      ],
+      "additionalProperties": true
     },
     "agentPage": {
       "type": "object",
@@ -170,6 +272,26 @@
         },
         "lifetime": {
           "type": "string"
+        },
+        "primary_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "is_primary": {
+          "type": "boolean"
+        },
+        "agents": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/pageAgent"
+          }
         }
       },
       "required": [

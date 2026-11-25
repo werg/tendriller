@@ -30,12 +30,11 @@ export async function run(action,args) {
  if(action==='demo'){await pageModule(slug,'demo.mjs');return;}
  if(['sign-enrollment','provisioning-request','import-provisioning'].includes(action))return provisionPage(context,action,file);
  if(action==='init')return(await pageModule(slug,'setup.mjs')).initializePage(context,values['browser-finalizer']?{requestedFinality:{kind:'browser-signed-frontier'}}:{});
- if(action==='assistant')return(await pageModule(slug,'assistant.mjs')).prepareAssistant(context,{events:values.events});
  if(action==='build'||action==='deploy'){
   const{build}=await import('esbuild');const output=await(await pageModule(slug,'build.mjs')).buildPage(context,{bundle:build});
   if(action==='build')return{built:output,next:`npm run deploy -- ${slug}`};
   return(await pageModule(slug,'publish.mjs')).publishPage(context,{root:pathToFileURL(output.endsWith('/')?output:output+'/')});
  }
- throw Error('Use new, init, build, deploy, assistant, demo, sign-enrollment, provisioning-request, or import-provisioning with a page slug');
+ throw Error('Use new, init, build, deploy, demo, sign-enrollment, provisioning-request, or import-provisioning with a page slug');
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){try{const result=await run(process.argv[2],process.argv.slice(3));if(result!==undefined)console.log(JSON.stringify(result,null,2));}catch(error){console.error(`${error.code??error.name}: ${error.message}`);process.exitCode=1;}}

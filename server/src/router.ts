@@ -1,5 +1,4 @@
-import { parseActivityTicket } from './assistant-activity';
-import { routeAssistant, routeAssistantHttpGateway } from './assistant-gateway';
+import { routeMcp, routeMcpHttpGateway } from './mcp-gateway';
 import { runtimeAsset, immutableAsset } from "./runtime-assets";
 import { servicePage } from "./accounts/ui";
 import { schemaDocument } from "../../contract/index.mjs";
@@ -13,8 +12,7 @@ import { reportPage } from "./abuse/report";
 import { adminPage, appealPage } from "./abuse/admin";
 import { budgetWebhook } from "./budget";
 import { redeemPageCode, routePageAuth } from "./accounts/page";
-import { CORS_HEADERS, errorResponse, HttpError, json, toErrorResponse, withCors } from "./http";
-import { TENDRIL_ID_RE } from "./ids";
+import { CORS_HEADERS, errorResponse, json, toErrorResponse, withCors } from "./http";
 import { landingPage } from "./inject";
 import { internalHeaders, routeAgentApi } from "./agents";
 import { serviceDescriptor } from "./descriptor";
@@ -34,7 +32,7 @@ function forward(env: Env, id: string, kind: string, req: Request, url: URL, hea
   const h = internalHeaders(req);
   h.set("x-tendril-id", id);
   for (const [k, v] of Object.entries(headers)) h.set(k, v);
-  const init: RequestInit = { method: req.method, headers: h, signal: req.signal, ...(kind === "assistant" || kind === "page" ? { redirect: "manual" } : {}) };
+  const init: RequestInit = { method: req.method, headers: h, signal: req.signal, ...(kind === "mcp" || kind === "page" ? { redirect: "manual" } : {}) };
   if (req.method !== "GET" && req.method !== "HEAD") init.body = req.body;
   return stub(env, id).fetch(new Request(`https://tendril.internal/${kind}${url.search}`, init));
 }
@@ -156,10 +154,10 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   }
 
 
-  if (path.startsWith('/v1/apps/')) return routeAssistantHttpGateway(req, env, url);
+  if (path.startsWith('/v1/apps/')) return routeMcpHttpGateway(req, env, url);
   if (path === '/mcp' || path === '/connections' || path.startsWith('/connections/') ||
     path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp')
-    return routeAssistant(req, env, url);
+    return routeMcp(req, env, url);
   if (path === '/.well-known/oauth-authorization-server' || path.startsWith('/oauth/')) return routeIntegrationOAuth(req, env, url);
   if (path === "/auth/page") return routePageAuth(req, env, url);
   if (path === "/report") return reportPage(req, env, url);
@@ -255,13 +253,6 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     }
     const agentResponse = await routeAgentApi(req, env, url);
     if (agentResponse) return agentResponse;
-    // Assistant inbox widgets watch one connected page with a short-lived activity ticket.
-    const activity = /^\/api\/assistant\/pages\/([^/]+)\/activity$/.exec(path);
-    if (activity) {
-      if (!TENDRIL_ID_RE.test(activity[1])) return errorResponse(404, "not_found", "No such tendril");
-      if (url.origin !== publicBase(env) || !await parseActivityTicket(env, req, activity[1])) throw new HttpError(401, 'activity_ticket_expired');
-      return forward(env, activity[1], 'assistant-activity', req, url, {});
-    }
     return errorResponse(404, "not_found", "No such API route");
   } catch (err) {
     return toErrorResponse(err);

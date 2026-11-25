@@ -11,7 +11,7 @@ import { HttpError, readBody } from './http';
 import { avatar, icon, serviceStyle } from './accounts/ui';
 import { hostApprovalBinding, requireHostApprovalBinding, requireHostApprovalPolicy } from './owner-review';
 import { listAccountAgents, type AccountAgent } from './agents';
-import { deleteAgentGrant, mirroredAgents, putAgentGrant } from './agent-grants';
+import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimaryAgent } from './agent-grants';
 
 const text = (value: unknown) => escapeHtml(String(value ?? ''));
 
@@ -47,7 +47,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
         const has = !!localAgentGrant(t, agent.id);
         if (checked.has(agent.id) && !has) {
           await commit(() => {});
-          await putAgentGrant(t, principal.accountId!, agent.id, agent.public_key, [...AGENT_SCOPES]); granted++;
+          await putAgentGrant(t, principal.accountId!, agent.id, agent.handle, agent.bio, agent.public_key, [...AGENT_SCOPES]); granted++;
         } else if (!checked.has(agent.id) && has) {
           await commit(() => {});
           await deleteAgentGrant(t, agent.id, `owner:${principal.accountId}`); removed++;
@@ -55,6 +55,13 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
       }
       tab = 'agent';
       message = granted || removed ? `Agent access saved: ${granted} granted, ${removed} removed.` : 'Agent access unchanged.';
+    } else if (action === 'set-primary-agent') {
+      const target = (form.get('agent_id') ?? '').trim() || null;
+      await commit(() => {
+        setPrimaryAgent(t, target, `owner:${principal.accountId}`);
+      });
+      tab = 'agent';
+      message = target ? 'Primary agent updated.' : 'Primary agent cleared.';
     } else if (action === 'remove-agent') {
       const agentId = form.get('agent') ?? '';
       await commit(() => { if (!localAgentGrant(t, agentId)) throw new HttpError(404, 'not_found', 'This agent has no access to this page'); });
@@ -123,17 +130,29 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
   };
   const copyField = (value: string, label: string, id: string) =>
     `<div class="copy-box"><label class="field-label" for="${id}">${text(label)}</label><input id="${id}" type="text" readonly value="${text(value)}"></div>`;
-  const names = new Map(accountAgents.map(agent => [agent.id, agent.name]));
+  const roster = owner ? pageAgents(t) : { primary_agent_id: null, agents: [] };
   const granted = owner ? mirroredAgents(t).map(id => ({ id, grant: localAgentGrant(t, id)! })) : [];
-  const agentRows = granted.map(({ id, grant }) => {
-    const label = names.get(id) ?? id;
-    const origin = grant.granted_by === 'creator' ? 'Created this page' : `Granted ${new Date(grant.granted_at).toISOString().slice(0, 10)}`;
-    return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${icon('bot')} ${text(label)}</div><p class="list-item-sub">${text(origin)} · Full host access</p></div><form class="inline-form" action="${actionURL}" method="post"><input type="hidden" name="action" value="remove-agent"><input type="hidden" name="agent" value="${text(id)}"><button class="sm danger">Remove access</button></form></li>`;
+  const agentRows = roster.agents.map(entry => {
+    const grant = entry.kind === 'workspace' ? localAgentGrant(t, entry.id) : null;
+    const origin = entry.kind === 'hosted-mcp'
+      ? 'Hosted MCP participant'
+      : grant?.granted_by === 'creator'
+        ? 'Created this page'
+        : `Granted ${new Date(entry.granted_at).toISOString().slice(0, 10)}`;
+    const primaryBadge = entry.is_primary ? ' <span class="badge ok">Primary</span>' : '';
+    const bioLine = entry.bio ? `${text(entry.bio)} · ` : '';
+    const removeForm = entry.kind === 'workspace'
+      ? `<form class="inline-form" action="${actionURL}" method="post"><input type="hidden" name="action" value="remove-agent"><input type="hidden" name="agent" value="${text(entry.id)}"><button class="sm danger">Remove access</button></form>`
+      : `<a class="button sm secondary" href="${text(t.env.PUBLIC_BASE + '/connections')}">Manage MCP</a>`;
+    return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${icon('bot')} @${text(entry.handle)}${primaryBadge}</div><p class="list-item-sub">${bioLine}${text(origin)}</p></div>${removeForm}</li>`;
   }).join('');
+  const primaryRadios = roster.agents.length
+    ? `<form action="${actionURL}" method="post" style="margin-top:.85rem"><input type="hidden" name="action" value="set-primary-agent"><div class="field"><label class="field-label" for="primary-agent-select">Primary agent (answers general messages)</label><select id="primary-agent-select" name="agent_id"><option value=""${roster.primary_agent_id === null ? ' selected' : ''}>None (only direct @mentions)</option>${roster.agents.map(entry => `<option value="${text(entry.id)}"${entry.is_primary ? ' selected' : ''}>@${text(entry.handle)}${entry.kind === 'hosted-mcp' ? ' (Hosted MCP)' : ''}</option>`).join('')}</select></div><div class="actions"><button class="secondary sm" type="submit">Save primary agent</button></div></form>`
+    : '';
   const agentChecks = accountAgents.map(agent =>
-    `<label class="check-item"><input type="hidden" name="known" value="${text(agent.id)}"><input type="checkbox" name="agent" value="${text(agent.id)}"${localAgentGrant(t, agent.id) ? ' checked' : ''}><span class="check-copy"><span class="check-title">${icon('bot')} ${text(agent.name)}</span><span class="check-desc">${agent.grants} ${agent.grants === 1 ? 'page' : 'pages'} granted</span></span></label>`,
+    `<label class="check-item"><input type="hidden" name="known" value="${text(agent.id)}"><input type="checkbox" name="agent" value="${text(agent.id)}"${localAgentGrant(t, agent.id) ? ' checked' : ''}><span class="check-copy"><span class="check-title">${icon('bot')} @${text(agent.handle)}</span><span class="check-desc">${agent.bio ? `${text(agent.bio)} · ` : ''}${agent.grants} ${agent.grants === 1 ? 'page' : 'pages'} granted</span></span></label>`,
   ).join('');
-  const agents = granted;
+  const agents = roster.agents;
   const shareLinks = owner ? t.listLinks().filter(link => link.role !== 'owner') : [];
   const shareRows = shareLinks.map(link => {
     const roleLabel = link.role === 'guest' ? 'Guest invite' : 'Page-only';
@@ -183,8 +202,8 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
       ${shareRows ? `<ul class="list">${shareRows}</ul>` : '<p class="empty">No active invite or page-only links yet. Create one under <a href="#add">Add people &amp; devices</a>.</p>'}
     </section>
     <section class="card">
-      <div class="card-head"><div><h2>Agents with access</h2><p>Each agent uses its own account-level credential. Removing access closes its connections to this page; Chronolog signing grants are managed separately.</p></div>${agents.length ? `<span class="badge ok">${agents.length} with access</span>` : ''}</div>
-      ${agentRows ? `<ul class="list">${agentRows}</ul>` : '<p class="empty">No agents have access to this page.</p>'}
+      <div class="card-head"><div><h2>Agents with access</h2><p>Each agent uses its own account-level credential or hosted MCP grant. Removing access closes its connections to this page; Chronolog signing grants are managed separately.</p></div>${agents.length ? `<span class="badge ok">${agents.length} with access</span>` : ''}</div>
+      ${agentRows ? `<ul class="list">${agentRows}</ul>${primaryRadios}` : '<p class="empty">No agents have access to this page.</p>'}
     </section>
     <section class="card">
       <div class="card-head"><div><h2>Publications</h2><p>Restoring earlier code requires a new signed Chronolog publication.</p></div>${current ? `<span class="badge">v${text(current)}</span>` : ''}</div>

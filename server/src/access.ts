@@ -4,7 +4,7 @@ import type { Link, Tendril } from "./tendril";
 import { HttpError } from "./http";
 import { AGENT_ID_RE, sha256Hex } from "./ids";
 
-export const AGENT_SCOPES = ['host:read', 'host:manage', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage', 'notifications:send'] as const;
+export const AGENT_SCOPES = ['host:read', 'host:manage', 'participants:connect', 'control:write', 'publication:write', 'notifications:send'] as const;
 export type AgentScope = typeof AGENT_SCOPES[number];
 /** Internal headers the service router (or an agent hub) sets after its D1 grant check. */
 export const AGENT_HEADER = 'x-tendril-agent';
@@ -43,11 +43,11 @@ export function requireAccess(principal: Principal, action: AccessAction): void 
 }
 
 /** The page's synchronous mirror of one agent grant. D1 remains the routing index. */
-export interface LocalAgentGrant { agent_id: string; public_key: string; scopes: AgentScope[]; revision: number; granted_by: string; granted_at: number }
+export interface LocalAgentGrant { agent_id: string; handle: string; bio: string; public_key: string; scopes: AgentScope[]; revision: number; granted_by: string; granted_at: number }
 export function localAgentGrant(t: Tendril, agentId: string): LocalAgentGrant | null {
   return t.db.cached(`access:agent:${agentId}`, () => {
     const row = t.db.one<Omit<LocalAgentGrant, 'scopes'> & { scopes: string }>(
-      'SELECT agent_id,public_key,scopes,revision,granted_by,granted_at FROM agent_grants WHERE agent_id=?', agentId);
+      'SELECT agent_id,handle,bio,public_key,scopes,revision,granted_by,granted_at FROM agent_grants WHERE agent_id=?', agentId);
     return row ? Object.freeze({ ...row, scopes: JSON.parse(row.scopes) as AgentScope[] }) : null;
   });
 }

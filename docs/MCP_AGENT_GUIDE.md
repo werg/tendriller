@@ -100,13 +100,13 @@ email, account credentials or application keys.
    Give the app a recognizable emoji favicon during
    preparation: set `icon` to an emoji such as `🌱` through the page's metadata (`tendril --page <slug> meta`);
    the [build guide](BUILD_AN_APP.md#give-the-app-a-recognizable-favicon) has a runnable example.
-7. To use the app from this MCP connection, read `topic: "connect"`. Attach
-   `@tendriller/core/assistant` to the *existing* application participant, propose
-   its declared capabilities before claim, and give the owner the ready page and
-   returned permission-review URL. The supplied starter has `npm run assistant:prepare`
-   for this route, and `npx tendril agent run` keeps every page's participant running through one hub
-   connection. They choose what to expose. Keep that participant available for calls.
-8. Refresh `list_tendrils`, call `describe_application`, make a real query and
+7. To use the app from this MCP connection, read `topic: "connect"`. Publish a
+   signed `domain.js` bundle with your page, and have the owner opt in on
+   `/connections` (or `_tendril/mcp/connect`) so the browser seals a dedicated
+   signing key and epoch keys to the OAuth grant's X25519 `wrap_public_key`.
+   Zero plaintext keys are stored at rest; the OAuth Bearer token unseals them
+   in RAM per `/mcp` call.
+8. Refresh `list_applications`, call `describe_application`, make a real query and
    the requested command, then verify the materialized result (revisable until
    finalized), retained evidence and persistence after reload. Use `topic: "delivery"` for the completion evidence and report
    the actual running process and how to resume the workspace's saved device stores.

@@ -21,7 +21,7 @@ export async function ensureOAuthSchema(env: Env): Promise<void> {
   return cached.task;
 }
 
-export interface OAuthGrant { id: string; account_id: string; client_id: string; resource: string; scope: string; created_at: number; expires_at: number; revoked_at: number | null }
+export interface OAuthGrant { id: string; account_id: string; client_id: string; resource: string; scope: string; wrap_public_key: string; created_at: number; expires_at: number; revoked_at: number | null }
 export const scopesOf = (grant: Pick<OAuthGrant, 'scope'>): string[] => grant.scope ? grant.scope.split(' ') : [];
 export async function activeAccount(env: Env, subject: string): Promise<boolean> {
   if (!testAccountEnabled(env, subject)) return false;

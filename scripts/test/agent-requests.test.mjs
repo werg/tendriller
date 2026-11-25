@@ -6,121 +6,192 @@ import { tmpdir } from 'node:os';
 import * as p from '@chronolog/peer-session';
 import { authorityForDevices } from '../../collaboration/test/physical-fixture.mjs';
 import { openNativeDevice } from '@chronolog/peer-session/native';
-import { agentRequestCommands, agentRequestQueries, consumerPresence, readAgentInbox,
-  requestDelivery } from '../../docs/tutorial/shared/helpers/agent-requests.mjs';
+import {
+  agentRequestCommands,
+  agentRequestQueries,
+  evaluateFailover,
+  messageDelivery,
+  parseAddressing,
+  readAgentFeed,
+  shouldAgentRespond,
+} from '../../docs/tutorial/shared/helpers/agent-requests.mjs';
 
-const definition = p.defineApplication({ id: 'agent-requests-test', version: '1',
-  commands: agentRequestCommands, queries: agentRequestQueries });
+const definition = p.defineApplication({
+  id: 'agent-bus-test',
+  version: '1',
+  commands: agentRequestCommands,
+  queries: agentRequestQueries,
+});
 
 async function fixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'agent-requests-'));
+  const directory = await mkdtemp(join(tmpdir(), 'agent-bus-'));
   const path = join(directory, 'device.sqlite');
   let device = await openNativeDevice({ path, create: true }), session;
-  t.after(async () => { try { if (session) await session.close(); else await device.close(); }
-    finally { await rm(directory, { recursive: true, force: true }); } });
+  t.after(async () => {
+    try { if (session) await session.close(); else await device.close(); }
+    finally { await rm(directory, { recursive: true, force: true }); }
+  });
   const { authority, key: epochKey } = await authorityForDevices([device], { applicationId: '73'.repeat(32) });
   const open = async () => p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
   session = await open();
-  return { get session() { return session; },
-    async reopen() { await session.close(); session = undefined;
-      device = await openNativeDevice({ path }); session = await open(); },
+  return {
+    get session() { return session; },
+    async reopen() {
+      await session.close();
+      session = undefined;
+      device = await openNativeDevice({ path });
+      session = await open();
+    },
     async command(name, input, operationId) {
       const operation = await session.command(name, input, { operationId });
       const outcome = await operation.materialized({ signal: AbortSignal.timeout(5000) });
-      assert.equal(outcome.outcome, 'accepted'); return operation;
-    } };
+      assert.equal(outcome.outcome, 'accepted');
+      return operation;
+    },
+  };
 }
 
-test('public native session retains full request identity, author time, receipt, answer and heartbeat after reopen', { timeout: 20_000 }, async t => {
-  const f = await fixture(t), operationId = 'namespaced-request-' + 'x'.repeat(350);
-  const author = f.session.identity.publicKey, startedAtMs = Date.now();
-  await assert.rejects(async () => f.session.command('agentRequest', {
-    recipient: 'z'.repeat(64), topic: 'analysis', text: 'Invalid address',
-  }, { operationId: 'invalid-address' }), /AGENT_REQUEST_IDENTITY_INVALID/);
-  await f.command('agentRequest', { recipient: author, topic: 'analysis', text: 'What changed?' }, operationId);
-  let inbox = (await f.session.query('agentInbox', null)).value;
-  assert.equal(inbox.requests[0].requestOperationId, operationId);
-  assert.equal(requestDelivery(inbox.requests[0]), 'awaiting-receipt');
-  assert.ok(inbox.requests[0].sentAtMs >= startedAtMs);
-  const reference = { requestAuthor: author, requestOperationId: operationId, consumerId: 'worker', runId: 'run-1' };
-  await f.command('agentReceipt', reference, 'receipt-1');
-  inbox = (await f.session.query('agentInbox', null)).value;
-  assert.equal(requestDelivery(inbox.requests[0]), 'seen');
-  await f.command('agentAnswer', { ...reference, text: 'Here is the result.' }, 'answer-1');
-  // Exact retry cannot append another answer.
-  await f.command('agentAnswer', { ...reference, text: 'Here is the result.' }, 'answer-1');
-  await f.command('agentHeartbeat', { consumerId: 'worker', runId: 'run-1', role: 'analyst',
-    topics: ['analysis'], startedAtMs, state: 'listening' }, 'heartbeat-1');
+test('multi-agent bus retains chat messages, backchannel activity and receipts across reopen', { timeout: 20_000 }, async t => {
+  const f = await fixture(t);
+  const author = f.session.identity.publicKey;
+  const opId = 'msg-' + 'x'.repeat(100);
+  await assert.rejects(
+    async () => f.session.command('agentMessage', { channel: 'chat', to: ['invalid-key'], text: 'Bad' }, { operationId: 'bad-1' }),
+    /AGENT_MESSAGE_RECIPIENT_INVALID/,
+  );
+
+  await f.command('agentMessage', { channel: 'chat', to: [], text: 'Summarize the budget' }, opId);
+  let feed = (await f.session.query('agentFeed', null)).value;
+  assert.equal(feed.messages.length, 1);
+  assert.equal(feed.messages[0].author, author);
+  assert.equal(feed.messages[0].operationId, opId);
+  assert.equal(messageDelivery(feed.messages[0], feed), 'delivered');
+
+  await f.command('agentReceipt', { messageAuthor: author, messageOperationId: opId, runId: 'run-1', state: 'seen' }, 'rcpt-1');
+  feed = (await f.session.query('agentFeed', null)).value;
+  assert.equal(feed.receipts[`${author}:${opId}`].length, 1, 'the receipt is retained');
+  assert.equal(messageDelivery(feed.messages[0], feed), 'delivered', 'a signer cannot acknowledge its own message');
+
+  await f.command('agentMessage', {
+    channel: 'agents',
+    to: [author],
+    text: 'Check row 4 totals',
+    inReplyTo: { author, operationId: opId },
+    hopCount: 1,
+    expectReply: true,
+  }, 'delegation-1');
+
+  await f.command('agentMessage', {
+    channel: 'chat',
+    to: [],
+    text: 'Budget summary: on track.',
+    inReplyTo: { author, operationId: opId },
+    expectReply: false,
+  }, 'reply-1');
+
   await f.reopen();
-  inbox = (await f.session.query('agentInbox', null)).value;
-  assert.equal(requestDelivery(inbox.requests[0]), 'answered');
-  assert.equal(inbox.requests[0].answers.length, 1);
-  assert.equal(inbox.requests[0].receipts[0].author, author);
-  assert.equal(inbox.requests[0].answers[0].text, 'Here is the result.');
-  assert.equal(inbox.consumers[0].runId, 'run-1');
-  assert.equal(consumerPresence(inbox.consumers[0], { observationCurrent: true }).status, 'available');
+  feed = (await f.session.query('agentFeed', null)).value;
+  assert.equal(feed.messages.length, 2);
+  assert.equal(feed.activity.length, 1);
+  assert.equal(feed.activity[0].hopCount, 1);
+  assert.equal(feed.messages[1].inReplyTo.operationId, opId);
+  assert.equal(messageDelivery(feed.messages[0], feed), 'delivered', 'nor answer it on another agent\'s behalf');
 });
 
-const event = (topic, author, operationId, payload, at = 1000) => ({
-  topic: 'agent/' + topic, author, operationId, payload,
-  authorTimestampMs: String(at), id: author + ':' + operationId,
-});
-function read(events, pageSize = 2) {
-  return readAgentInbox({ readEvents({ cursor }) {
-    const start = cursor === undefined ? 0 : Number(cursor), end = Math.min(start + pageSize, events.length);
-    return { events: events.slice(start, end), cursor: String(end), hasMore: end < events.length };
-  } });
-}
-
-test('pagination binds receipt/answer to both request author and full ID, rejects impersonation and never downgrades answered', () => {
-  const reference = { requestAuthor: 'page-a', requestOperationId: 'same-id', consumerId: 'worker', runId: 'one' };
-  const rows = [
-    event('request', 'page-a', 'same-id', { recipient: 'native', topic: 'ask', text: 'A' }),
-    event('request', 'page-b', 'same-id', { recipient: 'native', topic: 'ask', text: 'B' }),
-    event('receipt', 'impostor', 'fake-receipt', reference),
-    event('answer', 'impostor', 'fake-answer', { ...reference, text: 'Forged' }),
-    event('answer', 'native', 'answer', { ...reference, text: 'Actual' }),
-    event('receipt', 'native', 'late-receipt', reference),
-    event('receipt', 'native', 'duplicate-receipt', reference),
-  ];
-  const result = read(rows).requests;
-  assert.equal(requestDelivery(result[0]), 'answered');
-  assert.equal(result[0].answers[0].text, 'Actual');
-  assert.equal(result[0].answers.length, 1);
-  assert.equal(result[0].receipts.length, 1);
-  assert.equal(requestDelivery(result[1]), 'awaiting-receipt');
-  assert.equal(read(rows.slice(2)).requests.length, 0, 'excluded/orphan facts cannot resurrect a request');
-  assert.equal(requestDelivery(read(rows.slice(0, 2)).requests[0]), 'awaiting-receipt',
-    're-deriving the coherent snapshot removes receipts and answers absent from it');
+test('messageDelivery counts only receipts and replies from other signers', () => {
+  const user = 'a'.repeat(64), agent = 'b'.repeat(64);
+  const message = { author: user, operationId: 'm1' };
+  const feed = (receipts, messages = [message]) => ({ messages, activity: [], receipts: { [`${user}:m1`]: receipts } });
+  assert.equal(messageDelivery(message, feed([])), 'delivered');
+  assert.equal(messageDelivery(message, feed([{ author: user, state: 'done' }])), 'delivered');
+  assert.equal(messageDelivery(message, feed([{ author: agent, state: 'seen' }])), 'seen');
+  assert.equal(messageDelivery(message, feed([{ author: agent, state: 'thinking' }])), 'thinking');
+  assert.equal(messageDelivery(message, feed([{ author: agent, state: 'done' }])), 'answered');
+  assert.equal(messageDelivery(message, { messages: [message], receipts: {},
+    activity: [{ author: agent, inReplyTo: { author: user, operationId: 'm1' } }] }), 'answered', 'a backchannel reply answers too');
+  assert.equal(messageDelivery(message, feed([], [message, { author: user, inReplyTo: { author: user, operationId: 'm1' } }])), 'delivered');
 });
 
-test('late readers see announcements, stale age changes without an event, restart replaces run and disconnected observations stay unknown', () => {
-  const announce = { consumerId: 'worker', runId: 'one', role: 'analyst',
-    topics: ['analysis'], startedAtMs: 900, state: 'listening' };
-  const first = event('heartbeat', 'native', 'pulse-1', announce);
-  const consumer = read([first]).consumers[0];
-  assert.equal(consumerPresence(consumer, { now: 1000 }).status, 'unknown');
-  assert.equal(consumerPresence(consumer, { now: 1000, observationCurrent: true }).status, 'available');
-  assert.equal(consumerPresence(consumer, { now: 91_000, observationCurrent: true }).status, 'stale');
-  assert.equal(consumerPresence(consumer, { now: 999, observationCurrent: true }).status, 'clock-skew');
-  const restart = event('heartbeat', 'native', 'pulse-2', { ...announce, runId: 'two', startedAtMs: 95_000 }, 100_000);
-  const next = read([first, restart]).consumers;
-  assert.equal(next.length, 1); assert.equal(next[0].runId, 'two');
-  assert.equal(next[0].startedAtMs, 95_000);
-  const stopped = { ...next[0], state: 'stopped' };
-  assert.equal(consumerPresence(stopped, { now: 101_000, observationCurrent: true }).status, 'stopped');
-  assert.equal(consumerPresence(next[0], { now: 101_000, observationCurrent: false }).status, 'unknown');
-  assert.equal(consumerPresence({ ...consumer, lastSeenAtMs: null }, { observationCurrent: true }).status, 'clock-skew');
+test('parseAddressing resolves @handles, @all and voice prefixes against the roster', () => {
+  const roster = {
+    primary_agent_id: 'ag_1',
+    agents: [
+      { id: 'ag_1', handle: 'atlas', public_key: 'a'.repeat(64), is_primary: true },
+      { id: 'ag_2', handle: 'reviewer', public_key: 'b'.repeat(64), is_primary: false },
+    ],
+  };
+  assert.deepEqual(parseAddressing('General question', roster), { to: [], handles: [], explicit: false, broadcast: false });
+  assert.deepEqual(parseAddressing('@reviewer check this diff', roster), { to: ['b'.repeat(64)], handles: ['reviewer'], explicit: true, broadcast: false });
+  assert.deepEqual(parseAddressing('Hey reviewer, check this', roster), { to: ['b'.repeat(64)], handles: ['reviewer'], explicit: true, broadcast: false });
+  assert.deepEqual(parseAddressing('@all please weigh in', roster), { to: ['*'], handles: ['*'], explicit: true, broadcast: true });
+});
+
+test('shouldAgentRespond enforces primary step-back, secondary silence, @all, expectReply and hopCount guardrails', () => {
+  const userKey = '0'.repeat(64), atlasKey = 'a'.repeat(64), reviewerKey = 'b'.repeat(64);
+  const roster = {
+    primary_agent_id: 'ag_1',
+    agents: [
+      { id: 'ag_1', handle: 'atlas', public_key: atlasKey, is_primary: true },
+      { id: 'ag_2', handle: 'reviewer', public_key: reviewerKey, is_primary: false },
+    ],
+  };
+  const general = { author: userKey, channel: 'chat', to: [], text: 'Hello' };
+  assert.equal(shouldAgentRespond(general, { selfPublicKey: atlasKey, roster }), true);
+  assert.equal(shouldAgentRespond(general, { selfPublicKey: reviewerKey, roster }), false);
+
+  const directSecondary = { author: userKey, channel: 'chat', to: [reviewerKey], text: '@reviewer help' };
+  assert.equal(shouldAgentRespond(directSecondary, { selfPublicKey: atlasKey, roster }), false, 'primary steps back on direct secondary mention');
+  assert.equal(shouldAgentRespond(directSecondary, { selfPublicKey: reviewerKey, roster }), true);
+
+  const broadcast = { author: userKey, channel: 'chat', to: ['*'], text: '@all chime in' };
+  assert.equal(shouldAgentRespond(broadcast, { selfPublicKey: atlasKey, roster }), true);
+  assert.equal(shouldAgentRespond(broadcast, { selfPublicKey: reviewerKey, roster }), true);
+
+  // Loop guardrails: own message, expectReply: false, hopCount >= 5.
+  assert.equal(shouldAgentRespond({ ...general, author: atlasKey }, { selfPublicKey: atlasKey, roster }), false);
+  assert.equal(shouldAgentRespond({ ...directSecondary, expectReply: false }, { selfPublicKey: reviewerKey, roster }), false);
+  assert.equal(shouldAgentRespond({ ...directSecondary, hopCount: 5 }, { selfPublicKey: reviewerKey, roster }), false);
+
+  // Backchannel delegation to secondary works when addressed, ignores unaddressed notes.
+  assert.equal(shouldAgentRespond({ author: atlasKey, channel: 'agents', to: [reviewerKey], hopCount: 1, text: 'audit' }, { selfPublicKey: reviewerKey, roster }), true);
+  assert.equal(shouldAgentRespond({ author: atlasKey, channel: 'agents', to: [], hopCount: 1, text: 'log' }, { selfPublicKey: reviewerKey, roster }), false);
+});
+
+test('evaluateFailover suppresses offline/no-backup cases and triggers on stopped, offline threshold, or unacknowledged message', () => {
+  const atlasKey = 'a'.repeat(64), reviewerKey = 'b'.repeat(64);
+  const roster = {
+    primary_agent_id: 'ag_1',
+    agents: [
+      { id: 'ag_1', handle: 'atlas', public_key: atlasKey, kind: 'workspace', is_primary: true },
+      { id: 'ag_2', handle: 'reviewer', public_key: reviewerKey, kind: 'workspace', is_primary: false },
+    ],
+  };
+  const backupOnline = { [atlasKey]: { state: 'offline' }, [reviewerKey]: { state: 'online' } };
+  // Suppressed while browser is offline.
+  assert.equal(evaluateFailover({ roster, liveMap: backupOnline, online: false, primaryOfflineSinceMs: 0, now: 60_000 }), null);
+  // Suppressed when no backup is online.
+  assert.equal(evaluateFailover({ roster, liveMap: { [atlasKey]: { state: 'stopped' }, [reviewerKey]: { state: 'offline' } }, online: true }), null);
+  // Fires immediately when primary explicitly stopped and backup is online.
+  const stopped = evaluateFailover({ roster, liveMap: { [atlasKey]: { state: 'stopped' }, [reviewerKey]: { state: 'online' } }, online: true });
+  assert.equal(stopped?.reason, 'stopped');
+  assert.equal(stopped?.backup.handle, 'reviewer');
+  // Fires on 12s unacknowledged message even before 30s offline threshold.
+  const unack = evaluateFailover({ roster, liveMap: backupOnline, online: true, lastPendingUserMessage: { text: 'hi', sentAtMs: 1000 }, primaryOfflineSinceMs: 10_000, now: 15_000 });
+  assert.equal(unack?.reason, 'unacknowledged');
+  // Fires after 30s offline.
+  const offline = evaluateFailover({ roster, liveMap: backupOnline, online: true, primaryOfflineSinceMs: 1000, now: 35_000 });
+  assert.equal(offline?.reason, 'offline');
 });
 
 test('a stalled retained-event cursor fails rather than spinning forever', () => {
-  assert.throws(() => readAgentInbox({ readEvents: () => ({ events: [], hasMore: true, cursor: 'same' }) }),
-    /AGENT_INBOX_CURSOR_STALLED/);
+  assert.throws(() => readAgentFeed({ readEvents: () => ({ events: [], hasMore: true, cursor: 'same' }) }),
+    /AGENT_FEED_CURSOR_STALLED/);
 });
 
 import { readFile, stat } from 'node:fs/promises';
 import { runRequestWorker } from '../../docs/tutorial/consumers/request-worker.mjs';
 import { openConsumerCheckpoint } from '../../docs/tutorial/shared/helpers/agent-consumer.mjs';
+import { createTestConnection } from '../observation-fixture/connection.mjs';
 
 const eventually = async (check, timeoutMs = 8000) => {
   const deadline = Date.now() + timeoutMs;
@@ -142,84 +213,153 @@ const waitForCheckpoint = path => eventually(async () => {
   const value = await checkpoint(path);
   return Boolean(value?.cursor && value.pending === null);
 });
+const noRoster = async () => ({ primary_agent_id: null, is_primary: false, agents: [] });
 
-test('runnable worker answers a second request after restart while the same native owner remains alive', { timeout: 25000 }, async t => {
-  const f = await fixture(t), checkpointPath = await workerFiles(t);
+/** A page user and a separate agent signer, replicating over an authenticated test link. */
+async function pair(t, applicationId = '74'.repeat(32)) {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-worker-pair-')), cleanup = [];
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  t.after(async () => { for (const close of cleanup.reverse()) await close(); });
+  const devices = [];
+  for (const name of ['user', 'agent']) {
+    const device = await openNativeDevice({ path: join(directory, name + '.sqlite'), create: true });
+    devices.push(device); cleanup.push(() => device.close());
+  }
+  const { authority, key: epochKey } = await authorityForDevices(devices, { applicationId });
+  const sessions = [];
+  for (const device of devices) {
+    const session = await p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
+    sessions.push(session); cleanup.push(() => session.close());
+  }
+  const [user, agent] = sessions;
+  let left, right;
+  left = createTestConnection((lane, bytes) => right.accept(lane, bytes));
+  right = createTestConnection((lane, bytes) => left.accept(lane, bytes));
+  const links = await Promise.all([
+    user.connectPeer({ connection: left.connection, peerIdentity: agent.identity.publicKey }),
+    agent.connectPeer({ connection: right.connection, peerIdentity: user.identity.publicKey }),
+  ]);
+  cleanup.push(async () => { await Promise.all(links.map(link => link.close())); });
+  const submit = async (session, name, input, operationId) => {
+    const operation = await session.command(name, input, { operationId });
+    assert.equal((await operation.materialized({ signal: AbortSignal.timeout(5000) })).outcome, 'accepted');
+  };
+  const feed = async (session = agent) => (await session.query('agentFeed', null)).value;
+  return {
+    user, agent, feed,
+    /** The user asks the agent directly (`@handle` resolves to its signing key). */
+    ask: (text, operationId) => submit(user, 'agentMessage', { channel: 'chat', to: [agent.identity.publicKey], text }, operationId),
+    reply: (input, operationId) => submit(agent, 'agentMessage', input, operationId),
+    async message(operationId, session = agent) {
+      const value = await feed(session);
+      const message = value.messages.find(item => item.author === user.identity.publicKey && item.operationId === operationId);
+      return message && { message, delivery: messageDelivery(message, value),
+        receipts: value.receipts[`${message.author}:${message.operationId}`] ?? [],
+        replies: value.messages.filter(item => item.inReplyTo?.author === message.author && item.inReplyTo?.operationId === operationId) };
+    },
+    /** Wait until the agent's replica has materialized the user's message. */
+    arrived: operationId => eventually(async () => Boolean((await feed()).messages.some(item => item.operationId === operationId))),
+  };
+}
+
+test('runnable worker answers a second message after restart while the same native owner remains alive', { timeout: 25000 }, async t => {
+  const f = await pair(t), checkpointPath = await workerFiles(t);
   const answers = [];
-  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page',
-    async handleRequest(request) { answers.push(request.requestOperationId); return 'Answer: ' + request.text; } };
+  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page', roster: noRoster,
+    async handleRequest(request) { answers.push(request.operationId); return 'Answer: ' + request.text; } };
   for (const id of ['first-worker-request', 'second-worker-request']) {
-    await f.command('agentRequest', { recipient: f.session.identity.publicKey, topic: 'chat', text: id }, id);
+    await f.ask(id, id);
+    await f.arrived(id);
     const stopped = new AbortController();
-    const run = runRequestWorker(f.session, { ...options, signal: stopped.signal });
+    const run = runRequestWorker(f.agent, { ...options, signal: stopped.signal });
     const ended = assert.rejects(run, error => error === stopped.signal.reason);
     try {
-      await eventually(async () => (await f.session.query('agentInbox', null)).value.requests
-        .some(request => request.requestOperationId === id && requestDelivery(request) === 'answered'));
+      await eventually(async () => (await f.message(id))?.delivery === 'answered');
       await waitForCheckpoint(checkpointPath);
     } finally { stopped.abort(Error('Worker stopped')); await ended; }
-    assert.equal(f.session.signal.aborted, false, 'worker cleanup must not close its owner');
-    const inbox = (await f.session.query('agentInbox', null)).value;
-    const request = inbox.requests.find(request => request.requestOperationId === id);
-    assert.equal(request.receipts.length, 1);
-    assert.equal(request.answers.length, 1);
-    assert.equal(inbox.consumers.length, 0, 'ephemeral presence never adds durable heartbeat records');
+    assert.equal(f.agent.signal.aborted, false, 'worker cleanup must not close its owner');
+    const { receipts, replies } = await f.message(id);
+    assert.equal(receipts.length, 1);
+    assert.equal(replies.length, 1);
+    assert.equal(replies[0].author, f.agent.identity.publicKey);
+    assert.deepEqual(replies[0].to, [f.user.identity.publicKey]);
+    // The reply reaches the user's replica as an ordinary authored message.
+    await eventually(async () => (await f.message(id, f.user))?.delivery === 'answered');
   }
   assert.deepEqual(answers, ['first-worker-request', 'second-worker-request']);
 });
 
-test('lost answer acknowledgement retries the exact saved result without re-running the handler', { timeout: 25000 }, async t => {
-  const f = await fixture(t), checkpointPath = await workerFiles(t);
-  await f.command('agentRequest', { recipient: f.session.identity.publicKey, topic: 'chat', text: 'Retain result' }, 'uncertain-answer');
+test('a worker ignores its own messages, unaddressed chat while not primary, and other channels', { timeout: 25000 }, async t => {
+  const f = await pair(t), checkpointPath = await workerFiles(t), self = f.agent.identity.publicKey;
+  let calls = 0;
+  await f.reply({ channel: 'chat', to: [f.user.identity.publicKey], text: 'Agent note' }, 'own-message');
+  await f.user.command('agentMessage', { channel: 'chat', to: [], text: 'General' }, { operationId: 'general' });
+  await f.user.command('agentMessage', { channel: 'agents', to: [self], text: 'Backchannel' }, { operationId: 'backchannel' });
+  await f.arrived('general'); await eventually(async () => (await f.feed()).activity.some(item => item.operationId === 'backchannel'));
+  const stopped = new AbortController();
+  const run = runRequestWorker(f.agent, { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page',
+    roster: async () => ({ primary_agent_id: 'other', is_primary: false, agents: [{ id: 'self', public_key: self, handle: 'helper' }] }),
+    signal: stopped.signal, async handleRequest() { calls++; return 'Unexpected'; } });
+  const ended = assert.rejects(run, error => error === stopped.signal.reason);
+  try { await waitForCheckpoint(checkpointPath); }
+  finally { stopped.abort(Error('Done')); await ended; }
+  assert.equal(calls, 0);
+  assert.equal((await f.message('general')).receipts.length, 0);
+});
+
+test('lost reply acknowledgement retries the exact saved result without re-running the handler', { timeout: 25000 }, async t => {
+  const f = await pair(t), checkpointPath = await workerFiles(t);
+  await f.ask('Retain result', 'uncertain-answer');
+  await f.arrived('uncertain-answer');
   let calls = 0, loseReply = true, views = 0;
   const session = {
-    identity: f.session.identity, signal: f.session.signal, signals: f.session.signals,
-    get status() { return f.session.status; }, onStatus: f.session.onStatus.bind(f.session),
-    changes: f.session.changes.bind(f.session),
-    query: f.session.query.bind(f.session),
+    identity: f.agent.identity, signal: f.agent.signal, signals: f.agent.signals,
+    get status() { return f.agent.status; }, onStatus: f.agent.onStatus.bind(f.agent),
+    changes: f.agent.changes.bind(f.agent),
+    query: f.agent.query.bind(f.agent),
     async readView() {
-      const view = await f.session.readView(); views++;
+      const view = await f.agent.readView(); views++;
       return { readEvents: view.readEvents.bind(view), async release() { await view.release(); views--; } };
     },
     async command(name, input, options) {
-      const attempt = await f.session.command(name, input, options);
-      if (name !== 'agentAnswer' || !loseReply) return attempt;
+      const attempt = await f.agent.command(name, input, options);
+      if (name !== 'agentMessage' || !loseReply) return attempt;
       loseReply = false;
-      return { async materialized(options) { await attempt.materialized(options); throw Error('Lost answer acknowledgement'); } };
+      return { async materialized(options) { await attempt.materialized(options); throw Error('Lost reply acknowledgement'); } };
     },
   };
-  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page',
+  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page', roster: noRoster,
     async handleRequest() { assert.equal(views, 0, 'no captured read view spans handler work'); calls++; return 'Retained answer'; } };
-  await assert.rejects(runRequestWorker(session, options), /Lost answer acknowledgement/);
+  await assert.rejects(runRequestWorker(session, options), /Lost reply acknowledgement/);
   assert.equal((await checkpoint(checkpointPath)).pending.rows[0].phase, 'result');
-  assert.equal(f.session.signal.aborted, false);
+  assert.equal(f.agent.signal.aborted, false);
   const stopped = new AbortController();
   const run = runRequestWorker(session, { ...options, signal: stopped.signal });
   const ended = assert.rejects(run, error => error === stopped.signal.reason);
   try { await waitForCheckpoint(checkpointPath); }
   finally { stopped.abort(Error('Done')); await ended; }
   assert.equal(calls, 1);
-  const request = (await f.session.query('agentInbox', null)).value.requests[0];
-  assert.equal(request.receipts.length, 1);
-  assert.equal(request.answers.length, 1);
-  assert.equal(request.answers[0].text, 'Retained answer');
+  const { receipts, replies } = await f.message('uncertain-answer');
+  assert.equal(receipts.length, 1);
+  assert.equal(replies.length, 1, 'the exact retained reply operation is retried, not duplicated');
+  assert.equal(replies[0].text, 'Retained answer');
 });
 
 test('uncertain handler effects block automatic restart without advancing the handled cursor', { timeout: 20000 }, async t => {
-  const f = await fixture(t), checkpointPath = await workerFiles(t);
-  await f.command('agentRequest', { recipient: f.session.identity.publicKey, topic: 'chat', text: 'An external task' }, 'uncertain-handler');
+  const f = await pair(t), checkpointPath = await workerFiles(t);
+  await f.ask('An external task', 'uncertain-handler');
+  await f.arrived('uncertain-handler');
   let effects = 0;
-  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page',
+  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page', roster: noRoster,
     async handleRequest() { effects++; throw Error('Provider outcome unknown'); } };
-  await assert.rejects(runRequestWorker(f.session, options), /AGENT_CONSUMER_REVIEW_REQUIRED/);
+  await assert.rejects(runRequestWorker(f.agent, options), /AGENT_CONSUMER_REVIEW_REQUIRED/);
   const retained = await checkpoint(checkpointPath);
   assert.equal(retained.cursor, undefined);
   assert.equal(retained.pending.rows[0].phase, 'uncertain');
-  await assert.rejects(runRequestWorker(f.session, options), /AGENT_CONSUMER_REVIEW_REQUIRED/);
+  await assert.rejects(runRequestWorker(f.agent, options), /AGENT_CONSUMER_REVIEW_REQUIRED/);
   assert.equal(effects, 1, 'supervisor restart cannot repeat an uncertain external effect');
-  const request = (await f.session.query('agentInbox', null)).value.requests[0];
-  assert.equal(requestDelivery(request), 'seen');
-  assert.equal(f.session.signal.aborted, false);
+  assert.equal((await f.message('uncertain-handler')).delivery, 'seen');
+  assert.equal(f.agent.signal.aborted, false);
 });
 
 test('private checkpoints reject concurrent writers and a different scope, preserving the saved cursor', async t => {
@@ -236,50 +376,28 @@ test('private checkpoints reject concurrent writers and a different scope, prese
   await next.close();
 });
 
-test('a fresh worker checkpoint does not repeat a request already answered in retained history', { timeout: 20000 }, async t => {
-  const f = await fixture(t), checkpointPath = await workerFiles(t), author = f.session.identity.publicKey;
-  await f.command('agentRequest', { recipient: author, topic: 'chat', text: 'Already handled' }, 'historical-request');
-  await f.command('agentAnswer', { requestAuthor: author, requestOperationId: 'historical-request',
-    consumerId: 'assistant', runId: 'old-run', text: 'Previous durable result' }, 'previous-answer');
+test('a fresh worker checkpoint does not repeat a message this agent already answered', { timeout: 20000 }, async t => {
+  const f = await pair(t), checkpointPath = await workerFiles(t), user = f.user.identity.publicKey;
+  await f.ask('Already handled', 'historical-request');
+  await f.arrived('historical-request');
+  await f.reply({ channel: 'chat', to: [user], text: 'Previous durable result',
+    inReplyTo: { author: user, operationId: 'historical-request' }, hopCount: 1 }, 'previous-answer');
   let calls = 0;
   const stopped = new AbortController();
-  const run = runRequestWorker(f.session, { consumerId: 'assistant', topics: ['chat'],
+  const run = runRequestWorker(f.agent, { consumerId: 'assistant', topics: ['chat'], roster: noRoster,
     checkpointPath, scope: 'same-page', signal: stopped.signal, async handleRequest() { calls++; return 'Duplicate'; } });
   const ended = assert.rejects(run, error => error === stopped.signal.reason);
   try { await waitForCheckpoint(checkpointPath); }
   finally { stopped.abort(Error('Done')); await ended; }
   assert.equal(calls, 0);
-  const request = (await f.session.query('agentInbox', null)).value.requests[0];
-  assert.equal(request.answers.length, 1);
-  assert.equal(request.receipts.length, 0);
+  const { receipts, replies } = await f.message('historical-request');
+  assert.equal(replies.length, 1);
+  assert.equal(receipts.length, 0);
 });
 
 test('worker presence uses the pinned public session default signal TTL and stream contract', { timeout: 20000 }, async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'agent-presence-route-')), cleanup = [];
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  t.after(async () => { for (const close of cleanup.reverse()) await close(); });
-  const devices = [];
-  for (const name of ['worker', 'page']) {
-    const device = await openNativeDevice({ path: join(directory, name + '.sqlite'), create: true });
-    devices.push(device); cleanup.push(() => device.close());
-  }
-  const [workerDevice, pageDevice] = devices;
-  const { authority, key: epochKey } = await authorityForDevices([workerDevice, pageDevice], { applicationId: '76'.repeat(32) });
-  const sessions = [];
-  for (const device of devices) {
-    const session = await p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
-    sessions.push(session); cleanup.push(() => session.close());
-  }
-  const [workerSession, pageSession] = sessions;
-  const { createTestConnection } = await import('../observation-fixture/connection.mjs');
-  let left, right;
-  left = createTestConnection((lane, bytes) => right.accept(lane, bytes));
-  right = createTestConnection((lane, bytes) => left.accept(lane, bytes));
-  const links = await Promise.all([
-    workerSession.connectPeer({ connection: left.connection, peerIdentity: pageSession.identity.publicKey }),
-    pageSession.connectPeer({ connection: right.connection, peerIdentity: workerSession.identity.publicKey }),
-  ]);
-  cleanup.push(async () => { await Promise.all(links.map(link => link.close())); });
+  const f = await pair(t, '76'.repeat(32));
+  const workerSession = f.agent, pageSession = f.user;
   const sent = [], failures = [];
   const { announceAgentPresence, watchAgentPresence } = await import('../../docs/tutorial/shared/helpers/agent-requests.mjs');
   const presence = announceAgentPresence({
@@ -298,18 +416,19 @@ test('worker presence uses the pinned public session default signal TTL and stre
         }
       },
     },
-  }, { consumerId: 'assistant', topics: ['chat'] });
-  cleanup.push(() => presence.close());
+  }, { consumerId: 'assistant', topics: ['chat'], handle: 'assistant' });
+  t.after(() => presence.close());
   const watcher = watchAgentPresence(pageSession, {
     peer: workerSession.identity.publicKey, consumerId: 'assistant', requestTopic: 'chat',
   });
-  cleanup.push(() => watcher.close());
+  t.after(() => watcher.close());
   await eventually(() => sent.length > 0 || failures.length > 0);
   assert.deepEqual(failures, [], 'default presence must not silently fail SIGNAL_TTL_INVALID');
   await eventually(() => watcher.snapshot().status === 'available');
   assert.equal(sent[0].expiresAtMs - sent[0].issuedAtMs, 30_000);
   assert.equal(sent[0].stream.streamId, 'assistant');
   assert.equal(watcher.snapshot().consumer.author, workerSession.identity.publicKey);
+  assert.equal(watcher.snapshot().consumer.handle, 'assistant');
   await presence.close();
   await presence.done;
   await eventually(() => watcher.snapshot().status === 'stopped');
@@ -317,58 +436,58 @@ test('worker presence uses the pinned public session default signal TTL and stre
   assert.deepEqual(failures, []);
   assert.equal(workerSession.signal.aborted, false);
   assert.equal(pageSession.signal.aborted, false);
-  assert.deepEqual((await workerSession.query('agentInbox', null)).value.requests, [],
-    'stopping worker presence leaves the native application owner usable');
+  assert.deepEqual((await f.feed()).messages, [], 'ephemeral presence writes no durable records and leaves the owner usable');
 });
 
-test('a stale cursor rescans the snapshot, skips answered requests and keeps the full original request reference', { timeout: 25000 }, async t => {
-  const f = await fixture(t), checkpointPath = await workerFiles(t), author = f.session.identity.publicKey;
+test('a stale cursor rescans the snapshot, skips answered messages and keeps the full original message reference', { timeout: 25000 }, async t => {
+  const f = await pair(t), checkpointPath = await workerFiles(t), user = f.user.identity.publicKey;
   const longId = 'namespaced-' + 'y'.repeat(380), handled = [];
-  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page',
+  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page', roster: noRoster,
     async handleRequest(request) { handled.push(request); return 'Answer: ' + request.text; } };
   const runUntilCheckpoint = async id => {
-    const stopped = new AbortController(), run = runRequestWorker(f.session, { ...options, signal: stopped.signal });
+    await f.arrived(id);
+    const stopped = new AbortController(), run = runRequestWorker(f.agent, { ...options, signal: stopped.signal });
     const ended = assert.rejects(run, error => error === stopped.signal.reason);
     try {
-      await eventually(async () => (await f.session.query('agentInbox', null)).value.requests
-        .some(request => request.requestOperationId === id && requestDelivery(request) === 'answered'));
+      await eventually(async () => (await f.message(id))?.delivery === 'answered');
       await waitForCheckpoint(checkpointPath);
     } finally { stopped.abort(Error('Worker stopped')); await ended; }
   };
-  await f.command('agentRequest', { recipient: author, topic: 'chat', text: 'first' }, longId);
+  await f.ask('first', longId);
   await runUntilCheckpoint(longId);
   const savedCursor = (await checkpoint(checkpointPath)).cursor;
-  // Another operation (this worker's own answer already moved the revision; a new request moves it again).
-  await f.command('agentRequest', { recipient: author, topic: 'chat', text: 'second' }, 'second-request');
+  // The worker's own reply already moved the revision; a new message moves it again.
+  await f.ask('second', 'second-request');
   await runUntilCheckpoint('second-request');
-  assert.deepEqual(handled.map(request => request.requestOperationId), [longId, 'second-request'],
-    'the answered request is not handled again after the snapshot is derived again');
-  assert.equal(handled[0].requestOperationId.length, longId.length, 'the full original request identity is retained');
-  assert.equal(handled[0].requestAuthor, author);
-  const inbox = (await f.session.query('agentInbox', null)).value;
-  for (const request of inbox.requests) {
-    assert.equal(request.receipts.length, 1); assert.equal(request.answers.length, 1);
+  assert.deepEqual(handled.map(request => request.operationId), [longId, 'second-request'],
+    'the answered message is not handled again after the snapshot is derived again');
+  assert.equal(handled[0].operationId.length, longId.length, 'the full original message identity is retained');
+  assert.equal(handled[0].author, user);
+  for (const id of [longId, 'second-request']) {
+    const { receipts, replies } = await f.message(id);
+    assert.equal(receipts.length, 1); assert.equal(replies.length, 1);
   }
   assert.notEqual((await checkpoint(checkpointPath)).cursor, savedCursor, 'the handled cursor follows the new snapshot');
 });
 
 test('an in-flight uncertain handler row survives a later revision and sends no new notice or effect', { timeout: 20000 }, async t => {
-  const f = await fixture(t), checkpointPath = await workerFiles(t), author = f.session.identity.publicKey;
-  await f.command('agentRequest', { recipient: author, topic: 'chat', text: 'external' }, 'uncertain-rescan');
+  const f = await pair(t), checkpointPath = await workerFiles(t);
+  await f.ask('external', 'uncertain-rescan');
+  await f.arrived('uncertain-rescan');
   let effects = 0;
-  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page',
+  const options = { consumerId: 'assistant', topics: ['chat'], checkpointPath, scope: 'same-page', roster: noRoster,
     async handleRequest() { effects++; throw Error('Provider outcome unknown'); } };
-  await assert.rejects(runRequestWorker(f.session, options), /AGENT_CONSUMER_REVIEW_REQUIRED/);
+  await assert.rejects(runRequestWorker(f.agent, options), /AGENT_CONSUMER_REVIEW_REQUIRED/);
   const retained = (await checkpoint(checkpointPath)).pending.rows[0];
   assert.equal(retained.phase, 'uncertain');
   // A later revision changes the snapshot; the uncertain row must still stop the worker.
-  await f.command('agentRequest', { recipient: author, topic: 'chat', text: 'later' }, 'later-request');
-  await assert.rejects(runRequestWorker(f.session, options), /AGENT_CONSUMER_REVIEW_REQUIRED/);
+  await f.ask('later', 'later-request');
+  await f.arrived('later-request');
+  await assert.rejects(runRequestWorker(f.agent, options), /AGENT_CONSUMER_REVIEW_REQUIRED/);
   assert.equal(effects, 1, 'uncertainty never repeats the external effect');
   const after = (await checkpoint(checkpointPath)).pending.rows[0];
-  assert.deepEqual(after.request, retained.request, 'the full original request reference is unchanged');
+  assert.deepEqual(after.request, retained.request, 'the full original message reference is unchanged');
   assert.equal(after.phase, 'uncertain');
-  const requests = (await f.session.query('agentInbox', null)).value.requests;
-  assert.equal(requests.find(request => request.requestOperationId === 'later-request').receipts.length, 0,
-    'no later request is acknowledged while an uncertain row is retained');
+  assert.equal((await f.message('later-request')).receipts.length, 0,
+    'no later message is acknowledged while an uncertain row is retained');
 });

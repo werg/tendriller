@@ -11,7 +11,7 @@ Keep three lifetimes separate:
 | Component | Responsibility | Evidence |
 | --- | --- | --- |
 | Workspace agent program / page owner | Retain the signer, page sessions, transport and declared application tools | Correct application/history and a successful declared query |
-| Request worker | Read the implemented request topics, acknowledge work and retain answers | Worker-owned live presence plus durable receipt/answer on the original request |
+| Request worker | Read messages this agent should answer on its channels, acknowledge work and retain replies | Worker-owned live presence plus a durable receipt and `inReplyTo` reply on the original message |
 | Conversation receiver | Ask the host to admit input to the selected current turn or start another turn in that thread | Active-turn input and repeated completed turns in the same thread |
 
 The workspace still uses one agent identity and one page owner per application.
@@ -35,7 +35,6 @@ origin.
 | Codex exposes App Server steering, the documented `codex queue` command and the intended thread on its daemon | Use the bundled multi-page bridge with the exact thread UUID and explicit remote endpoint | Steer an observed active turn; queue idle work; qualify both active injection and repeated same-thread execution as below |
 | A host exposes another existing-thread execution API | A supervised receiver admits work to that exact thread and waits for the resulting turn/outcome | Qualify thread identity, concurrent-turn policy and restart handling before selecting this route |
 | Only `read_application_events` is available | Catch up during a turn initiated by the user or an independently supported host mechanism | No unattended wake established |
-| A compatible host exposes `open_application_inbox` | The user chooses **Check inbox in this chat** on the mounted card | Explicit user action; mounting the card is not automatic wake |
 | Only `tendril watch`, `events`, or a one-shot terminal waiter is running | Observe or replay retained application events for a real worker | No conversation admission mechanism established |
 | An independently published Workspace Agent or another worker owns its execution loop | Route work to that separately identified worker with the owner's chosen policy | Does not establish continuation of an existing Codex/ChatGPT thread |
 
@@ -78,7 +77,7 @@ declaring the request pattern:
 
 ```sh
 node consumers/codex-queue.mjs --workspace /absolute/workspace \
-  --pages requests,second --thread EXACT_THREAD_UUID --topics chat,analysis \
+  --pages requests,second --thread EXACT_THREAD_UUID --topics chat,agents \
   --remote unix:// --state-dir /private/codex-queue
 ```
 
@@ -108,14 +107,16 @@ cannot grant approvals on the user's behalf.
 One bridge serves every page listed in `--pages` and one thread. It serializes
 metadata reads and admission through connection cleanup across its pages, and
 checks cancellation before the next admission. It attaches to
-the existing owner, filters addressed requests by implemented topic, and keeps a
+the existing owner, selects `agentMessage` events on the chosen channels that this
+agent should answer under the page roster (`shouldAgentRespond`), and keeps a
 bounded private outbox/checkpoint per page. Its default state lives under
 `.tendriller/consumers/codex-queue/THREAD_UUID` in the workspace. The notice
-contains request references and instructions to read the declared inbox, rather
-than copying private request text. The conversation reads `agentInbox`,
-acknowledges actual work with `agentReceipt`, performs its authorized work and
-retains `agentAnswer`. Already answered requests are skipped. The bridge itself
-neither announces assistant presence nor writes a receipt or answer.
+contains message references and instructions to read the declared feed, rather
+than copying private message text. The conversation reads `agentFeed`,
+acknowledges actual work with an `agentReceipt`, performs its authorized work and
+replies with an `agentMessage` whose `inReplyTo` names the original message. Messages
+this agent already replied to are skipped. The bridge itself neither announces
+assistant presence nor writes a receipt or reply.
 
 ### Active-turn steering and race handling
 
@@ -252,9 +253,9 @@ means the conversation handled the request. Keep the last **handled** position
 with durable results and stable request identities. A receiver's stdout line,
 HTTP 2xx response or successful thread-start request is not a handled checkpoint.
 
-Use the complete `(applicationId, requestAuthor, requestOperationId)`
+Use the complete `(applicationId, messageAuthor, messageOperationId)`
 identity for deduplication. Preserve the original inputs and operation IDs for
-receipt/answer retries. Read current authorized application state after a wake;
+receipt/reply retries. Read current authorized application state after a wake;
 private request text need not appear in the wake notice. Application content is
 untrusted data, and the application's action policy still decides which effects
 are authorized. Do not convert an event payload into unrestricted instructions.

@@ -8,7 +8,7 @@ import { probeCapabilities } from '@tendriller/core/probe';
 import { serveStdioMcp } from './mcp-stdio.mjs';
 import { exportSourceHandoff } from './handoff.mjs';
 import { exportWorkspaceCheckpoint, restoreWorkspaceCheckpoint } from './checkpoint.mjs';
-import { adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, workspaceKey } from './workspace.mjs';
+import { adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, updateWorkspaceProfile, workspaceKey } from './workspace.mjs';
 import { attachPage, runAgent } from './agent.mjs';
 
 export const usage = `Usage: tendril <command> [options]
@@ -21,15 +21,16 @@ Start with a service origin (no workspace required):
   handoff source <out.tgz> [--project DIR]  Pack non-secret source files for another sandbox
 
 Workspace (one agent credential and signing key for many pages):
-  workspace init --service URL --owner VERIFIED_EMAIL [--name AGENT]   Register a new agent in this empty folder
-  workspace join --service URL --code CODE [--name AGENT]              Join an account with a dashboard code
-  workspace key --service URL [--name AGENT]                           Print register_agent arguments (account-linked MCP)
-  workspace adopt --service URL --credential FILE                      Retain the saved register_agent result
+  workspace init --service URL --owner VERIFIED_EMAIL --handle HANDLE [--bio BIO]  Register a new agent in this empty folder
+  workspace join --service URL --code CODE --handle HANDLE [--bio BIO]             Join an account with a dashboard code
+  workspace key --service URL --handle HANDLE [--bio BIO]                          Print register_agent arguments (account-linked MCP)
+  workspace adopt --service URL --credential FILE                                  Retain the saved register_agent result
   page new <slug> [--name TITLE]        Create a page (granted to this agent) and its pages/<slug>/ folder
   page grant <slug> <page-id>           Register a page the owner granted to this agent
   page list                             Granted and registered pages
   status                                Workspace, agent, grants and the agent program
   agent run                             The only long-running program: hub, one session per page, attach socket
+  agent profile [--handle H] [--bio B]  Update this agent's @handle or short bio
   mcp-stdio                             Local MCP server for every page; each tool takes page
   checkpoint export <file> [--secret-env VAR]   Move this stopped workspace's private state (agent key,
                                         credential, every page device and record) into one encrypted file;
@@ -75,7 +76,7 @@ const flagsByCommand = {
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
   readiness: ['server'], service: ['server'],
-  workspace: ['service', 'owner', 'name', 'code', 'kit', 'credential'], page: ['name'], agent: [], 'mcp-stdio': [],
+  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name'], agent: ['handle', 'bio'], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
 };
@@ -118,16 +119,16 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
     const root = workspaceDir ?? process.cwd();
     if (args[0] === 'init') {
       if (!flags.service) throw invalid('workspace init requires --service with the selected connector service origin; creation never defaults to production');
-      return initWorkspace(root, { service: publicServiceOrigin(flags.service), owner: String(flags.owner ?? '').trim(), name: flags.name, kit: flags.kit, signal });
+      return initWorkspace(root, { service: publicServiceOrigin(flags.service), owner: String(flags.owner ?? '').trim(), handle: flags.handle, bio: flags.bio, kit: flags.kit, signal });
     }
     if (args[0] === 'join') {
       if (!flags.service) throw invalid('workspace join requires --service with the inviting service origin');
-      return joinWorkspace(root, { service: publicServiceOrigin(flags.service), code: flags.code, name: flags.name, kit: flags.kit, signal });
+      return joinWorkspace(root, { service: publicServiceOrigin(flags.service), code: flags.code, handle: flags.handle, bio: flags.bio, kit: flags.kit, signal });
     }
     if (args[0] === 'key' || args[0] === 'adopt') {
       if (!flags.service) throw invalid(`workspace ${args[0]} requires --service with the account-linked connector's service origin`);
       const service = publicServiceOrigin(flags.service);
-      return args[0] === 'key' ? workspaceKey(root, { service, name: flags.name })
+      return args[0] === 'key' ? workspaceKey(root, { service, handle: flags.handle, bio: flags.bio })
         : adoptWorkspace(root, { service, credential: flags.credential, kit: flags.kit, signal });
     }
     throw invalid('Use workspace init, join, key or adopt');
@@ -153,20 +154,57 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
     throw invalid('Use page new <slug>, page grant <slug> <page-id> or page list');
   }
   if (command === 'agent') {
-    if (args[0] !== 'run') throw invalid('Use agent run');
+    if (args[0] === 'profile') {
+      return updateWorkspaceProfile(workspace, { handle: flags.handle, bio: flags.bio }, { signal });
+    }
+    if (args[0] !== 'run') throw invalid('Use agent run or agent profile');
     await runAgent(workspace, { signal, report: value => { void emit(value).catch(() => {}); } });
     return undefined;
   }
   if (command === 'mcp-stdio') {
     const client = await workspace.client(), attached = new Map();
+    const fetchRoster = async (pageId, requestSignal) => {
+      try {
+        const info = await client.page(pageId).request('', { signal: requestSignal });
+        return {
+          self: workspace.config.agent,
+          primary_agent_id: info?.primary_agent_id ?? null,
+          is_primary: Boolean(info?.is_primary),
+          agents: Array.isArray(info?.agents) ? info.agents : [],
+        };
+      } catch {
+        return { self: workspace.config.agent, primary_agent_id: null, is_primary: false, agents: [] };
+      }
+    };
     const pages = {
-      list: () => workspace.pages(),
+      self: () => workspace.config.agent,
+      list: async () => {
+        const local = await workspace.pages();
+        const remoteById = new Map();
+        try {
+          for await (const p of client.pages.all({ signal })) remoteById.set(p.id, p);
+        } catch { /* offline: return local page list */ }
+        return local.map(p => {
+          const r = remoteById.get(p.id);
+          const primary = r?.agents?.find(a => a.id === r.primary_agent_id || a.is_primary);
+          return {
+            ...p,
+            ...(r ? {
+              primary_agent_id: r.primary_agent_id ?? null,
+              primaryHandle: primary?.handle ?? null,
+              isPrimary: Boolean(r.is_primary),
+              agents: r.agents ?? [],
+            } : {}),
+          };
+        });
+      },
       async open(ref, { signal: requestSignal } = {}) {
         const page = await workspace.page(ref);
         let entry = attached.get(page.id);
         if (!entry || entry.session.signal?.aborted) {
           entry = await attachPage(workspace, page.id, { signal });
           entry.notify = (payload, options) => client.page(page.id).request('/push', { method: 'POST', body: payload, ...options });
+          entry.roster = opts => fetchRoster(page.id, opts?.signal ?? requestSignal);
           attached.set(page.id, entry);
         }
         requestSignal?.throwIfAborted();

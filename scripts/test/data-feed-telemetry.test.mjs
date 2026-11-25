@@ -5,8 +5,9 @@ import { mountDevTelemetry, collectDevTelemetry } from '../../docs/tutorial/shar
 import {
   announceAgentPresence,
   watchAgentPresence,
+  watchAgentsPresence,
   streamAgentReply,
-  watchAgentStream,
+  watchAgentStreams,
 } from '../../docs/tutorial/shared/helpers/agent-requests.mjs';
 
 /**
@@ -186,7 +187,7 @@ test('streaming preview truncation respects encoded frame bytes for Unicode and 
   const sent = [];
   const session = { signals: { async send(_topic, payload) { sent.push(payload); } } };
   for (const text of ['😀'.repeat(8000), '"\\'.repeat(8000)]) {
-    await streamAgentReply(session, { requestAuthor: 'a'.repeat(64), requestOperationId: 'id', text });
+    await streamAgentReply(session, { messageAuthor: 'a'.repeat(64), messageOperationId: 'id', handle: 'atlas', text });
     const payload = sent.at(-1);
     assert.ok(new TextEncoder().encode(JSON.stringify(payload)).length <= 12 * 1024);
     assert.ok(text.startsWith(payload.text));
@@ -256,27 +257,26 @@ test('mountDevTelemetry streams buffered and live runtime errors to collectDevTe
 
 test('ephemeral agent presence and streaming previews work with zero durable journal records', async t => {
   const { native, browser, link } = createMockSignalPair();
-  const announcer = announceAgentPresence(native, { consumerId: 'agent-1', role: 'ops-agent', intervalMs: 60_000 });
+  const announcer = announceAgentPresence(native, { handle: 'ops', bio: 'Ops monitor', intervalMs: 60_000 });
 
-  const states = [];
-  const watcher = watchAgentPresence(browser, { peer: native.identity.publicKey, onChange: s => states.push(s.status) });
-  const chunks = [];
-  const stream = watchAgentStream(browser, { peer: native.identity.publicKey, onChunk: c => chunks.push(c) });
+  const watcher = watchAgentsPresence(browser);
+  const streams = [];
+  const stream = watchAgentStreams(browser, { onChange: entries => streams.push(entries) });
   t.after(async () => { stream.close(); watcher.close(); await announcer.close(); native.close(); browser.close(); });
-  await waitUntil(() => watcher.snapshot().status === 'available');
+  await waitUntil(() => watcher.snapshot()[native.identity.publicKey]?.state === 'online');
 
   announcer.setState('busy');
-  await waitUntil(() => watcher.snapshot().status === 'busy');
+  await waitUntil(() => watcher.snapshot()[native.identity.publicKey]?.state === 'busy');
 
-  await streamAgentReply(native, { requestAuthor: browser.identity.publicKey, requestOperationId: 'op-1', text: 'Checking CPU…' });
-  await waitUntil(() => chunks.length === 1 && chunks[0].text === 'Checking CPU…');
+  await streamAgentReply(native, { messageAuthor: browser.identity.publicKey, messageOperationId: 'op-1', handle: 'ops', text: 'Checking CPU…' });
+  await waitUntil(() => streams.at(-1)?.[0]?.text === 'Checking CPU…');
 
   link.browser.setPeers([]);
-  assert.equal(watcher.snapshot().status, 'stale');
+  assert.equal(watcher.snapshot()[native.identity.publicKey]?.state, 'offline');
   link.browser.setPeers([native.identity.publicKey]);
 
   await announcer.close();
-  await waitUntil(() => watcher.snapshot().status === 'stopped');
+  await waitUntil(() => watcher.snapshot()[native.identity.publicKey]?.state === 'stopped');
 });
 
 test('untrusted console text is redacted and bounded before it leaves the page, and the original console still runs', async t => {
@@ -351,25 +351,25 @@ test('a feed service replays its latest snapshots on a new link and drops pushes
   await waitUntil(() => feed.snapshot().data === 5);
 });
 
-test('agent presence is announced and watched on link changes only, and a cut link marks it stale', async t => {
+test('agent presence is announced and watched on link changes only, and a cut link marks it offline', async t => {
   const { native, browser, link } = createMockSignalPair();
   link.native.setPeers([]);
   const sent = [], send = native.signals.send;
   native.signals.send = async (topic, payload, options) => { sent.push(payload.state); return send(topic, payload, options); };
-  const announcer = announceAgentPresence(native, { consumerId: 'agent-1', role: 'ops-agent', intervalMs: 60_000 });
-  const watcher = watchAgentPresence(browser, { peer: native.identity.publicKey });
+  const announcer = announceAgentPresence(native, { handle: 'ops', intervalMs: 60_000 });
+  const watcher = watchAgentsPresence(browser);
   t.after(async () => { watcher.close(); await announcer.close(); native.close(); browser.close(); });
   await new Promise(resolve => setTimeout(resolve, 60));
   assert.deepEqual(sent, [], 'nothing is announced while no peer is connected');
-  assert.equal(watcher.snapshot().status, 'unknown');
+  assert.equal(watcher.snapshot()[native.identity.publicKey], undefined);
   link.native.setPeers([browser.identity.publicKey]);
-  await waitUntil(() => watcher.snapshot().status === 'available');
+  await waitUntil(() => watcher.snapshot()[native.identity.publicKey]?.state === 'online');
   const announced = sent.length;
   for (let index = 0; index < 5; index++) link.native.notify();
   await new Promise(resolve => setTimeout(resolve, 40));
   assert.equal(sent.length, announced, 'status notices without a new link announce nothing');
   link.browser.setPeers([]);
-  assert.equal(watcher.snapshot().status, 'stale');
+  assert.equal(watcher.snapshot()[native.identity.publicKey]?.state, 'offline');
 });
 
 test('presence follows the actual worker and its topic while the native owner stays connected', async t => {
@@ -406,7 +406,7 @@ test('presence follows the actual worker and its topic while the native owner st
 test('presence and streamed replies retain the authenticated frame author', async t => {
   const { native, browser } = createMockSignalPair();
   const watcher = watchAgentPresence(browser, { peer: native.identity.publicKey, consumerId: 'assistant', requestTopic: 'chat' });
-  const chunks = [], stream = watchAgentStream(browser, { peer: native.identity.publicKey, onChunk: value => chunks.push(value) });
+  const chunks = [], stream = watchAgentStreams(browser, { peer: native.identity.publicKey, onChange: entries => chunks.splice(0, chunks.length, ...entries) });
   t.after(() => { watcher.close(); stream.close(); native.close(); browser.close(); });
   await native.signals.send('agent/presence', { author: 'forged', consumerId: 'assistant',
     runId: 'run', role: 'assistant', topics: ['chat'], state: 'listening', startedAtMs: 1, atMs: 2 },

@@ -215,10 +215,10 @@ test('release rejects a stale served starter even with a matching core version',
   mkdirSync(directory);
   for (const file of TUTORIAL_FILES) {
     mkdirSync(dirname(join(directory, file)), { recursive: true });
-    writeFileSync(join(directory, file), file === 'templates/notes/assistant.mjs' ? 'stale' : readFileSync(tutorialSource(f.root, file)));
+    writeFileSync(join(directory, file), file === 'templates/notes/agent.mjs' ? 'stale' : readFileSync(tutorialSource(f.root, file)));
   }
   execFileSync('tar', ['-czf', join(f.root, 'server/public/downloads/tendriller-first-app.tgz'), '-C', directory, ...TUTORIAL_FILES]);
-  assert.throws(f.prepare, /Starter source is stale: templates\/notes\/assistant.mjs/);
+  assert.throws(f.prepare, /Starter source is stale: templates\/notes\/agent.mjs/);
 });
 
 test('first-app composition rejects dirty or SQL-only companion packages', t => {
@@ -283,7 +283,7 @@ test('source-qualified graph carries the current plugin guidance and detects ZIP
   assert.deepEqual(execFileSync('unzip', ['-p', join(f.root, 'dist', plugin.file), skill]),
     readFileSync(join(f.root, 'plugin', skill)));
   assert.deepEqual(execFileSync('unzip', ['-Z1', join(f.root, 'dist', plugin.file)], { encoding: 'utf8' }).trim().split('\n'),
-    ['review/review-app.mjs', 'review/review-domain.mjs', 'review/review-assistant.mjs',
+    ['review/review-app.mjs', 'review/review-domain.mjs',
       'review/review-local.mjs', 'review/review-agent.mjs', 'review/review-setup.mjs', 'review/review-page.mjs',
       'review/review-worker.mjs', 'review/review-index.html',
       'review/support/participant-lifecycle.mjs', 'review/support/native-page.mjs', 'review/support/prepare-host.mjs',

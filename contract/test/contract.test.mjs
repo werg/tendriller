@@ -5,13 +5,14 @@ import { createAgentClient, describeService, requireService } from '../client.mj
 const application = { id: '12'.repeat(32) };
 const credential = { service: 'https://host.test', token: 'ta_' + 'a'.repeat(32) };
 test('agent registration and page creation schemas reject unknown or malformed fields', () => {
-  assertValid('agentRegistration', { owner: 'owner@example.test', name: 'laptop', publicKey: 'A'.repeat(43) });
+  assertValid('agentRegistration', { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey: 'A'.repeat(43) });
   assertValid('agentPageCreate', { name: 'Notes' }); assertValid('agentPageCreate', {});
   assertValid('agentPageCreate', { name: 'Board', mode: 'dashboard', application: { id: 'ab'.repeat(32) } });
   for (const body of [{ mode: 'hosted' }, { application: { id: 'AB'.repeat(32) } }, { application: { id: 'ab'.repeat(32), extra: true } }])
     assert.ok(validate('agentPageCreate', body).length);
-  for (const body of [{ owner: 'bad', name: 'x', publicKey: 'A'.repeat(43) }, { owner: 'owner@example.test', name: 'x', publicKey: 'ab'.repeat(32) },
-    { owner: 'owner@example.test', name: 'x', publicKey: 'A'.repeat(43), token: 'ta_' }]) assert.ok(validate('agentRegistration', body).length);
+  for (const body of [{ owner: 'bad', handle: 'ab', publicKey: 'A'.repeat(43) }, { owner: 'owner@example.test', handle: 'Bad!', publicKey: 'A'.repeat(43) },
+    { owner: 'owner@example.test', handle: 'ab', publicKey: 'ab'.repeat(32) },
+    { owner: 'owner@example.test', handle: 'ab', publicKey: 'A'.repeat(43), token: 'ta_' }]) assert.ok(validate('agentRegistration', body).length);
   assert.ok(validate('agentPageCreate', { name: 'x', owner: 'owner@example.test' }).length);
 });
 test('the host SDK starts no traffic and exposes only explicit host and participant services', async () => {

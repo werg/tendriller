@@ -246,7 +246,7 @@ export async function observeInController({ evidence, input, source, observe }) 
 export function control(directory, input) {
   const { socket } = readJson(join(resolve(directory), 'controller.json'));
   return new Promise((resolve, reject) => {
-    const req = request({ socketPath: socket, method: 'POST', path: '/', timeout: 60000 }, res => {
+    const req = request({ socketPath: socket, agent: false, method: 'POST', path: '/', timeout: 60000 }, res => {
       let text = ''; res.on('data', chunk => { text += chunk; });
       res.on('end', () => res.statusCode === 200 ? resolve(JSON.parse(text)) : reject(Error('Control action rejected')));
     });

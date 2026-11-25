@@ -85,7 +85,7 @@ async function pageContext(directory, slug, { signal, requests = [] } = {}) {
     try { return JSON.parse(await readFile(join(privateDir, name), 'utf8')); }
     catch (error) { if (optional && error.code === 'ENOENT') return null; throw error; }
   };
-  return { reports, peers, context: { workspace: directory, service: 'https://service.test', agent: { id: AGENT, name: 'laptop' },
+  return { reports, peers, context: { workspace: directory, service: 'https://service.test', agent: { id: AGENT, handle: 'laptop', bio: '' },
     page: { id: PAGE, slug, name: 'Field notes', applicationId: '74'.repeat(32), pageUrl: `https://${PAGE}.pages.test/s/${'e'.repeat(26)}/`,
       directory: privateDir, source: join(directory, 'pages', slug) },
     host, signal, report: value => reports.push(value), signer: { publicKey: signer.publicKey },
@@ -139,10 +139,6 @@ export const definition = defineApplication({
   await assert.rejects(access(join(page, 'dist')), { code: 'ENOENT' });
   await writeFile(preparedPath, original, { mode: 0o600 });
 
-  const { prepareAssistant } = await module('assistant.mjs');
-  await assert.rejects(prepareAssistant(context), /Review the explicit capability selection/);
-  await assert.rejects(access(context.privatePath('assistant-key.json')), { code: 'ENOENT' });
-
   // The agent never invents keys: without the explicit recipient-bound provisioning import there is no native owner.
   const { openPage } = await module('agent.mjs');
   await assert.rejects(openPage(context), /explicit/i);
@@ -172,27 +168,6 @@ export const definition = defineApplication({
   finally { await reopened.close(); }
 });
 
-test('assistant preparation retains one private key on the page and the agent connects only a prepared proposal', { timeout: 30_000 }, async t => {
-  const directory = await kit(t), requests = [];
-  await cp(join(directory, 'templates/notes'), join(directory, 'pages/notes'), { recursive: true });
-  const { context } = await pageContext(directory, 'notes', { requests });
-  const assistant = await import(pathToFileURL(join(directory, 'pages/notes/assistant.mjs')).href);
-  assert.deepEqual(await assistant.assistantIntegration({ context, session: {} }), {}, 'no adapter before preparation');
-  const first = await assistant.prepareAssistant(context);
-  const key = await context.readPrivate('assistant-key.json');
-  assert.match(key, /^td_a_[a-f0-9]{64}$/);
-  assert.equal(requests[0].path, '/assistant/propose');
-  assert.deepEqual(requests[0].body.events, []);
-  assert.deepEqual(requests[0].body.commands, ['putNote']);
-  await assistant.prepareAssistant(context, { events: true }).catch(error => assert.equal(error.code, 'private_record_exists'));
-  assert.equal(await context.readPrivate('assistant-key.json'), key, 'the adapter key is created once');
-  assert.equal(first.proposed, 'd'.repeat(64));
-  const hooks = await assistant.assistantIntegration({ context, session: {} });
-  assert.equal(hooks.proposalId, 'd'.repeat(64));
-  assert.equal(typeof hooks.startAdapter, 'function');
-  assert.equal(hooks.onOnline, undefined, 'event forwarding stays opt-in');
-});
-
 /** A loopback host with the agent routes used by workspace init and page creation. */
 async function host(t) {
   const calls = [], granted = [];
@@ -207,9 +182,9 @@ async function host(t) {
       creation: { available: mode === 'open', code: mode === 'open' ? null : 'creation_paused', message: 'State.', nextAction: 'Keep this origin.' },
       writes: { available: true, code: null }, readinessUrl: origin + '/api/readiness', statusUrl: origin + '/status', checkedAt: new Date().toISOString() });
     if (request.url === '/api/service') return json(200, { contract: 3, core_release: 'test', limits: {} });
-    if (request.url === '/api/agents') return json(201, { id: AGENT, name: JSON.parse(body).name, token: TOKEN, account_state: 'unclaimed' });
+    if (request.url === '/api/agents') return json(201, { id: AGENT, handle: JSON.parse(body).handle, bio: JSON.parse(body).bio ?? '', token: TOKEN, account_state: 'unclaimed' });
     if (request.headers.authorization !== 'Bearer ' + TOKEN) return json(401, { error: { code: 'unauthorized', message: 'No' } });
-    if (request.url === '/api/agent') return json(200, { id: AGENT, account_state: 'unclaimed', grants: granted.length });
+    if (request.url === '/api/agent') return json(200, { id: AGENT, handle: 'laptop', bio: '', account_state: 'unclaimed', grants: granted.length });
     if (request.url === '/api/agent/pages' && request.method === 'GET') return json(200, { pages: granted, next_cursor: null });
     if (request.url === '/api/agent/pages' && request.method === 'POST') {
       const page = { id: PAGE, name: JSON.parse(body).name, page_url: `https://${PAGE}.pages.test/s/${'e'.repeat(26)}/`,
@@ -227,7 +202,7 @@ async function host(t) {
 test('page:new requires an empty page folder and open readiness, then copies its template into pages/<slug>/', { timeout: 60_000 }, async t => {
   const directory = await kit(t), fake = await host(t);
   const tendril = args => run(process.execPath, [join(directory, 'node_modules/@tendriller/tools/bin/tendril.mjs'), ...args], { cwd: directory, env: { ...process.env, TENDRIL_WORKSPACE: '' } });
-  const created = JSON.parse((await tendril(['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--name', 'laptop'])).stdout);
+  const created = JSON.parse((await tendril(['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--handle', 'laptop'])).stdout);
   assert.equal(created.agent.id, AGENT);
   const npm = args => run('npm', ['run', '--silent', ...args], { cwd: directory });
   await mkdir(join(directory, 'pages/kept'), { recursive: true }); await writeFile(join(directory, 'pages/kept/notes.txt'), 'retained');

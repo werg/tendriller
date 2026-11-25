@@ -11,18 +11,36 @@ const nullable = schema => ({ anyOf: [schema, { type: 'null' }] });
 const application = object({ id: { type: 'string', pattern: '^[0-9a-f]{64}$' } }, ['id']);
 const pageId = { type: 'string', pattern: '^[a-z2-7]{12}$' }, agentId = { type: 'string', pattern: '^ag_[a-z2-7]{26}$' };
 const email = { type: 'string', maxLength: 254, pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' };
-const agentName = { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9][A-Za-z0-9 ._-]*$' };
+const agentHandle = { type: 'string', minLength: 2, maxLength: 32, pattern: '^[a-z][a-z0-9_-]{1,31}$' };
+const agentBio = { type: 'string', maxLength: 160 };
 const publicKey = { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' };
 const error = object({ code: string, message: string, details: {} }, ['code', 'message'], true);
+const pageAgent = object({
+  id: string,
+  handle: agentHandle,
+  bio: agentBio,
+  public_key: string,
+  kind: { enum: ['workspace', 'hosted-mcp'] },
+  is_primary: { type: 'boolean' },
+  granted_at: integer,
+}, ['id', 'handle', 'bio', 'public_key', 'kind', 'is_primary'], true);
 export const schemas = Object.freeze({
-  agentRegistration: object({ owner: email, name: agentName, publicKey }, ['owner', 'name', 'publicKey']),
-  agentJoin: object({ code: { type: 'string', minLength: 1, maxLength: 128 }, name: agentName, publicKey }, ['code', 'name', 'publicKey']),
-  agentCredential: object({ id: agentId, name: string, token: { type: 'string', pattern: '^ta_[a-z2-7]{32}$' },
-    account_state: { enum: ['unclaimed', 'claimed'] } }, ['id', 'name', 'token'], true),
+  agentRegistration: object({ owner: email, handle: agentHandle, bio: agentBio, publicKey }, ['owner', 'handle', 'publicKey']),
+  agentJoin: object({ code: { type: 'string', minLength: 1, maxLength: 128 }, handle: agentHandle, bio: agentBio, publicKey }, ['code', 'handle', 'publicKey']),
+  agentProfileUpdate: object({ handle: agentHandle, bio: agentBio }, []),
+  agentCredential: object({ id: agentId, handle: agentHandle, bio: agentBio, token: { type: 'string', pattern: '^ta_[a-z2-7]{32}$' },
+    account_state: { enum: ['unclaimed', 'claimed'] } }, ['id', 'handle', 'token'], true),
   agentPageCreate: object({ name: { type: 'string', minLength: 1, maxLength: 200 }, mode: { enum: ['interactive', 'dashboard'] }, application }),
+  pageAgent,
+  pageAgentRoster: object({
+    primary_agent_id: nullable(string),
+    agents: { type: 'array', maxItems: 64, items: { $ref: '#/$defs/pageAgent' } },
+  }, ['primary_agent_id', 'agents'], true),
   // A listed page whose details are momentarily unavailable has null name, page_url and application.
   agentPage: object({ id: pageId, name: nullable(string), page_url: nullable(string), scopes: { type: 'array', items: string, maxItems: 16 },
-    application: { anyOf: [application, { type: 'null' }] }, lifetime: string }, ['id', 'page_url', 'application'], true),
+    application: { anyOf: [application, { type: 'null' }] }, lifetime: string,
+    primary_agent_id: nullable(string), is_primary: { type: 'boolean' },
+    agents: { type: 'array', maxItems: 64, items: { $ref: '#/$defs/pageAgent' } } }, ['id', 'page_url', 'application'], true),
   agentPageList: object({ pages: { type: 'array', maxItems: 100, items: { $ref: '#/$defs/agentPage' } },
     next_cursor: { anyOf: [string, { type: 'null' }] } }, ['pages'], true),
   serviceDescriptor: object({ contract: { const: 3 }, core_release: string, limits: { type: 'object' } }, ['contract', 'core_release', 'limits']),

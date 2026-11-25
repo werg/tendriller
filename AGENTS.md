@@ -20,14 +20,19 @@ readiness and report its next action. Follow `firstApp.release` and the build
 guide for the immutable kit and exact local package composition.
 One **agent** has one `ta_` credential and one signing key shared by all of its
 pages, kept in the workspace (`tendriller.json`, `pages/<slug>/`, `shared/`,
-private `.tendriller/agent` and `.tendriller/pages/<id>`). Register it once:
-with account-linked MCP, run `tendril workspace key`, call `register_agent` with
+private `.tendriller/agent` and `.tendriller/pages/<id>`). Every agent chooses a
+unique speakable lowercase `@handle` (`^[a-z][a-z0-9_-]{1,31}$`) and optional
+short `bio` (≤160 chars) at registration. Register it once:
+with account-linked MCP, run `tendril workspace key --handle HANDLE`, call `register_agent` with
 its public arguments, and retain the result with `tendril workspace adopt` (the
 host derives the verified owner); from a domain, `tendril workspace init --owner
-EMAIL`; or with a dashboard join code, `tendril workspace join`. Pages the agent
-creates (`npm run page:new`) are granted to it automatically; the owner grants
+EMAIL --handle HANDLE`; or with a dashboard join code, `tendril workspace join --code CODE --handle HANDLE`. Pages the agent
+creates (`npm run page:new`) are granted to it automatically (and the first granted
+agent becomes the page's default primary agent); the owner grants
 an existing page with the per-agent checkbox on the dashboard or page settings,
-then `tendril page grant`. `tendril agent run` (`npm run agent`) is the optional
+then `tendril page grant`. Primary agents answer general chat messages and step
+back when another `@handle` is addressed directly; non-primary agents stay silent
+on general messages unless addressed or delegated. `tendril agent run` (`npm run agent`) is the optional
 local program: one hub connection for all control traffic, one session per page.
 Browser enrollment authenticates the account, origin and device-key proof; it
 does not pause or select application history. Bootstrap the first authorized
