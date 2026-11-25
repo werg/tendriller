@@ -11,7 +11,7 @@
  */
 import {
   createApplicationSession, createAuthorityProvider, decodeRecord, defineApplication,
-  emit, encodeRecord, hexToBytes, importSigningIdentity, openApplicationDevice, platformOp, program, sqlStatement,
+  emit, encodeRecord, hexToBytes, importSigningIdentity, openApplicationDevice, parseApplicationInput, platformOp, program, sqlStatement,
 } from '@chronolog/peer-session';
 import { activeGrant } from './accounts/oauth-data';
 import { allows, type PagePrincipal } from './access';
@@ -22,7 +22,7 @@ import { readAuthorityBundle } from './authority';
 import { fileKey, servedVersion } from './files';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { base64url } from './accounts/oauth-support';
-import { hexToBytes as parseHex, normalizeEd25519Pkcs8Hex, sealSqlCheckpoint, unbase64url, unsealHostedKeys, unsealSqlCheckpoint } from './mcp-crypto';
+import { hexToBytes as parseHex, normalizeEd25519Pkcs8Hex, sealHostedRequests, sealSqlCheckpoint, unbase64url, unsealHostedKeys, unsealHostedRequests, unsealSqlCheckpoint } from './mcp-crypto';
 import { createEphemeralSqlMaterializer, doltliteExecutionManifestDigest } from './mcp-sql';
 import { describeDomainBundle, runDomainCommand, runDomainQuery, type SandboxProgramStep, type SandboxReadBridge } from './mcp-sandbox';
 import { mcpOAuth, REQUEST_LIMIT, requireScope, string, type McpPrincipal } from './mcp-shared';
@@ -54,6 +54,7 @@ interface McpCapabilities {
 const DEFAULT_CAPABILITIES: McpCapabilities = { read: true, write: true, queries: null, commands: null };
 const ENVELOPE_PREFIX = 'envelope/';
 const SQL_CHECKPOINT_PREFIX = 'sql-checkpoint/';
+const REQUESTS_PREFIX = 'hosted-requests/';
 const DEFAULT_SQL_CHECKPOINT_THRESHOLD = 8;
 const MAX_SQL_CHECKPOINT_BYTES = 4 * 1024 * 1024;
 
@@ -95,6 +96,20 @@ async function loadPublishedDomainBundle(t: Tendril): Promise<string | null> {
   const obj = await t.env.FILES.get(fileKey(t, row.hash));
   if (!obj) return null;
   return await obj.text();
+}
+
+/**
+ * Validate input against the signed domain bundle's declared schema before any program is prepared, exactly as a
+ * Chronolog `defineCommand`/`defineQuery` does for local callers. Invalid input is never signed or stored.
+ */
+async function declaredInput(domainBundle: string, kind: 'commands' | 'queries', name: string, input: unknown): Promise<void> {
+  const declared = (await describeDomainBundle(domainBundle))[kind].find(item => item.name === name);
+  if (!declared) throw new HttpError(404, kind === 'commands' ? 'command_not_found' : 'query_not_found', `No declared ${kind === 'commands' ? 'command' : 'query'} ${name}.`);
+  try { parseApplicationInput(declared.input as Parameters<typeof parseApplicationInput>[0], input); }
+  catch (error) {
+    const code = error && typeof error === 'object' && 'code' in error ? String((error as { code: unknown }).code) : '';
+    throw new HttpError(400, 'invalid_input', `Input does not match the declared schema for ${name}${code ? ` (${code})` : ''}.`);
+  }
 }
 
 /** Convert pure QuickJS-produced steps into a real Chronolog program. */
@@ -365,8 +380,22 @@ async function withHostedSession<T>(
     } catch { /* ignore malformed */ }
   }
   const journalSuffix = `operation-set/${applicationId}`;
+  // This hosted identity's own request records (operationId → proposal) let an exact retry reuse its original
+  // signed intent. They are sealed under the identity's wrapped seed and kept only while their envelope is retained.
+  const requestsKey = `${REQUESTS_PREFIX}${row.grant_id}`, requestsContext = `${t.tid}:${applicationId}:${row.grant_id}:${row.public_key}`;
+  let hydratedRequests: unknown[] = [];
+  const sealedRequests = t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', requestsKey);
+  if (sealedRequests) {
+    const opened = await unsealHostedRequests(material.signingSeedHex, requestsContext, asBytes(sealedRequests.v));
+    if (opened) {
+      try {
+        const records = decodeRecord<unknown[]>(opened);
+        if (Array.isArray(records)) hydratedRequests = records.filter(item => hydratedSeen.has((item as { proposalId?: string })?.proposalId ?? ''));
+      } catch { /* A malformed record is ignored; retries then mint fresh intents. */ }
+    }
+  }
   const hydratedJournalBytes = hydratedEnvelopes.length > 0
-    ? encodeRecord({ format: 'authored-operation-set-v1', applicationId, envelopes: hydratedEnvelopes, requests: [], retentions: [], finality: [] })
+    ? encodeRecord({ format: 'authored-operation-set-v1', applicationId, envelopes: hydratedEnvelopes, requests: hydratedRequests, retentions: [], finality: [] })
     : null;
 
   const store = new MemoryBytesStore(key => (hydratedJournalBytes && (key === journalSuffix || key.endsWith('/' + journalSuffix)) ? hydratedJournalBytes : null));
@@ -434,6 +463,12 @@ async function withHostedSession<T>(
         if (k !== journalSuffix && !k.endsWith('/' + journalSuffix)) continue;
         const journal = decodeRecord<any>(rawJournal);
         const envelopes = Array.isArray(journal?.envelopes) ? journal.envelopes : [];
+        const requests = Array.isArray(journal?.requests) ? journal.requests : [];
+        if (requests.length > hydratedRequests.length) {
+          const sealed = await sealHostedRequests(material.signingSeedHex, requestsContext, encodeRecord(requests));
+          const copy = new Uint8Array(sealed.byteLength); copy.set(sealed);
+          t.db.run('INSERT INTO mcp_store(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', requestsKey, copy.buffer);
+        }
         if (envelopes.length > latestEnvelopeCount) latestEnvelopeCount = envelopes.length;
         for (const envelope of envelopes) {
           const id = envelope?.payload?.proposalId;
@@ -600,6 +635,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
             },
             ...(isSql ? { query: (sql, sqlParams) => runSql(sql, sqlParams) } : {}),
           };
+          await declaredInput(domainBundle, 'queries', queryName, params.input ?? null);
           const value = await runDomainQuery(domainBundle, queryName, params.input ?? null, bridge);
           return json({ value: { revision: view.revision, value } });
         } finally {
@@ -651,6 +687,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
           if (!domainBundle) {
             throw new HttpError(409, 'domain_bundle_missing', 'Publish a signed domain.js bundle with your page to run named commands in hosted MCP.');
           }
+          await declaredInput(domainBundle, 'commands', commandName, params.input);
           steps = await runDomainCommand(domainBundle, commandName, params.input);
         }
         const op = await session.submit({ program: buildChronologProgram(steps), operationId });

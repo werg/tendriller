@@ -300,3 +300,31 @@ export async function unsealSqlCheckpoint(
     return null;
   }
 }
+
+async function hostedRequestKey(signingSeedHex: string, usage: ('encrypt' | 'decrypt')[]): Promise<CryptoKey> {
+  const seed = await crypto.subtle.importKey('raw', asBuffer(hexToBytes(signingSeedHex.toLowerCase())), 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: encoder.encode('tendriller-hosted-mcp-requests-v1') },
+    seed, { name: 'AES-GCM', length: 256 }, false, usage);
+}
+
+/**
+ * Seal the hosted participant's own signed-intent request records (operationId → proposal) under a key
+ * derived from its wrapped signing seed. Only an authenticated call that unwraps that seed can reopen them,
+ * so a retried operationId resolves to its original proposal without plaintext metadata at rest.
+ */
+export async function sealHostedRequests(signingSeedHex: string, context: string, bytes: Uint8Array): Promise<Uint8Array> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: asBuffer(iv), additionalData: asBuffer(encoder.encode('requests:' + context)) },
+    await hostedRequestKey(signingSeedHex, ['encrypt']), asBuffer(bytes)));
+  const out = new Uint8Array(12 + ct.byteLength); out.set(iv, 0); out.set(ct, 12);
+  return out;
+}
+
+/** Null when the record was sealed by another (rotated) hosted identity or context. */
+export async function unsealHostedRequests(signingSeedHex: string, context: string, sealed: Uint8Array): Promise<Uint8Array | null> {
+  if (sealed.byteLength <= 12) return null;
+  try {
+    return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: asBuffer(sealed.subarray(0, 12)), additionalData: asBuffer(encoder.encode('requests:' + context)) },
+      await hostedRequestKey(signingSeedHex, ['decrypt']), asBuffer(sealed.subarray(12))));
+  } catch { return null; }
+}

@@ -597,6 +597,33 @@ it('executes hosted MCP Events domain.js in QuickJS-WASM with OAuth-wrapped keys
     expect(write.value, JSON.stringify(write.result)).toMatchObject({ materialized: { outcome: 'accepted' } });
     expect(write.result.isError).not.toBe(true);
 
+    // An exact retry reuses the original signed intent; a changed program under that operationId is refused.
+    const retry = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id, command: 'putNote', input: { id: 'n1', text: 'Zero plaintext keys at rest!' }, operationId: 'op-note-1',
+    });
+    expect(retry.result.isError).not.toBe(true);
+    expect(retry.value.proposalId).toBe(write.value.proposalId);
+    const reused = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id, command: 'putNote', input: { id: 'n1', text: 'changed' }, operationId: 'op-note-1',
+    });
+    expect(reused.result.isError).toBe(true);
+    // Input is validated against the declared schema before any program is prepared or signed.
+    const malformed = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id, command: 'putNote', input: { id: 'n2' }, operationId: 'op-note-malformed',
+    });
+    expect(malformed.result.isError).toBe(true);
+    expect(malformed.result.structuredContent.code).toBe('invalid_input');
+    const unknown = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id, command: 'deleteAll', input: null, operationId: 'op-note-unknown',
+    });
+    expect(unknown.result.isError).toBe(true);
+    await inDO(f.page.id, t => {
+      expect(t.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_store WHERE k LIKE 'envelope/%'")!.n).toBe(1);
+      const sealed = t.db.one<{ v: ArrayBuffer }>("SELECT v FROM mcp_store WHERE k LIKE 'hosted-requests/%'");
+      expect(sealed).toBeTruthy();
+      expect(new TextDecoder().decode(new Uint8Array(sealed!.v))).not.toContain('op-note-1');
+    });
+
     const read = await mcpCall(f.settings, issued.access_token, 'query_application', {
       applicationId: f.page.application.id,
       query: 'notes',
