@@ -1,39 +1,39 @@
-# Independent agent bindings
+# Agents, credentials and page grants
 
-An agent's host credential and its Chronolog signing profile are independent.
-An agent can connect an enrolled participant without receiving host management,
-publication, control administration or authority to delegate further credentials.
-Application read and write authority still comes from signed Chronolog grants.
+An agent's host credential and its Chronolog signing key are independent. One
+**agent** has one `ta_` credential (stored only as a SHA-256 hash on the host)
+and one Ed25519 signing key shared by all of its pages. Its credential can
+manage hosted pages without gaining application read or write authority; that
+still comes from signed Chronolog grants enrolling the agent's public key in each
+page. See [multi-page agents](MULTI_PAGE_AGENTS.md) for the design.
 
-The signed-in owner's page management surface offers **Add agent**. It creates a
-single-use, ten-minute enrollment code for a named binding with selected scopes.
-Redeeming this code through the existing adoption endpoint is additive. Existing
-agents remain authorized. **Replace all agent credentials for recovery** is a
-separate, explicit action and retains the replacing recovery semantics.
+## Getting an agent credential
 
-The owner can start this from the dashboard (**Add people & devices → An agent**),
-the page's **Page options** panel, or page settings. Each produces a paste-ready
-invitation containing the one-time code and the exact redemption request below,
-plus a short alternative that links to `<service origin>/join/agent?...`. That
-link renders the same instructions statelessly from validated query fields; it
-never looks up or confirms the code. Treat both forms as a credential.
+| Route | Who | Result |
+| --- | --- | --- |
+| `tendril workspace init --service ORIGIN --owner EMAIL` (`POST /api/agents {owner, name, publicKey}`) | An agent that knows the owner's verified email | An unclaimed agent and its token. The owner claims it by signing in to any page it created. |
+| **Dashboard → Your agents → Add agent**, then `tendril workspace join --service ORIGIN --code CODE` (`POST /api/agents/join {code, name, publicKey}`) | A signed-in owner invites a new agent | An agent under that account. The code is single use, valid ten minutes, and the dashboard shows a paste-ready invitation containing it. Treat it as a credential. |
+| MCP `register_agent {name, publicKey}` with `tendrils:create`, then `tendril workspace adopt` | An OAuth-linked assistant | An agent under the linked account. Calling it again with the same name rotates the token and key. |
 
-For a retained application, redeem the code with
-`POST <service origin>/api/adopt` and a JSON body containing `code`,
-`expectedMode: "delegate"` and the original `applicationId`. The host verifies
-those preconditions before consuming the code or issuing a credential. The
-starter first checks `GET <service origin>/api/adopt` for the same-origin
-version-1 declaration of `applicationBound` and `nonReplacing` delegation.
-An older host that cannot confirm those preconditions receives no code. The
-response is a private handle for the same page; retain it before selecting it
-locally. This one-use endpoint cannot reconstruct a lost credential response.
-Inspect the named binding with the owner before another reviewed delegation.
-The [starter continuation helper](BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss)
-retains that boundary and never resends an uncertain redemption.
+An account holds at most 50 agents and ten waiting join codes. The response
+carries the token once; a lost reply cannot be reconstructed, so ask the owner
+for a new code or add the agent again. Never put the token in authored page
+assets, operation context, logs or exported events.
 
-An agent with `agents:delegate` can use `POST <api>/tokens` with a unique `name`
-and `scopes`. The selected scopes must be a subset of that agent's own scopes.
-There are at most 32 host bindings per tendril. Available scopes are:
+## Page grants
+
+Pages an agent creates (`tendril page new`, `POST /api/agent/pages`) are granted
+to it automatically with every scope. Agents never receive account-wide access
+implicitly:
+
+- The owner grants an **existing** page with one checkbox per agent, on the
+  dashboard card's **Add people & devices → An agent** sheet (also from page
+  settings). Unchecking closes that agent's connections to the page right away.
+  The agent then registers it with `tendril page grant <slug> <page-id>`.
+- **Revoke** on the dashboard (or `DELETE /api/agent`) disables the agent's
+  token everywhere and closes its sockets. Local page data is kept.
+
+Scopes per grant:
 
 | Scope | Host operations |
 | --- | --- |
@@ -43,34 +43,28 @@ There are at most 32 host bindings per tendril. Available scopes are:
 | `control:write` | Signed control configuration and generation actions |
 | `publication:write` | Signed code publication |
 | `assistant:manage` | Propose application exports for owner approval |
-| `agents:delegate` | Add, inspect and revoke credentials within the caller's authority |
+| `notifications:send` | Web Push alerts and badges for the page |
 
-`GET <api>/self` reports the actual host binding and its scope. The binding ID
-survives `POST <api>/tokens/<name>/rotate`; the previous credential immediately
-stops authenticating and the binding revision advances. A credential can rotate
-itself, except the fixed account-setup binding: its credential commitment cannot
-rotate, its name is reserved, and it expires after 24 hours or when its admitting
-OAuth grant becomes inactive. Owner claim does not extend it. Use reviewed
-delegation for continued access to the same claimed app. Rotating or revoking another binding requires delegation authority covering
-all of that binding's scopes. `DELETE <api>/tokens/<name>` removes only that agent.
+`GET /api/agent` reports the agent, its account state and its grant count;
+`GET /api/agent/pages` pages through the granted pages. Names are display labels.
+Browser endpoint attribution does not create independent signing authority; use a
+separately enrolled device for that.
 
-Names are display and local management labels. A new binding reusing a revoked
-name gets a new identity. Never put host credentials in authored page assets,
-operation context, logs or exported events. Browser endpoint attribution does not
-create independent signing authority; use separately enrolled profiles for that.
+## Capacity
 
-Capacity belongs to the delegating account, while route ownership retains the
-exact credential incarnation. All named agents and the signed-in human owner
-share that account's eight discovery advertisements, eight invitation listeners
-and eight relay sessions. Pending rendezvous are limited to sixteen endpoints
-per account within the application-wide thirty-two endpoint budget. Participant
-HTTP work admits at most two requests per account within the four-request page
-budget. Unclaimed pages use a page-scoped budget until an owner claims them.
-Adding or rotating tokens cannot multiply these limits. Revoking a binding still
-withdraws only its own advertisements and sockets; sibling routes remain usable.
+Capacity belongs to the agent and its account, not to a page credential. All
+agents and the signed-in human owner share the account's discovery
+advertisements, invitation listeners and relay sessions, so adding agents or
+rotating tokens cannot multiply them. Revoking an agent withdraws only its own
+advertisements and sockets; sibling routes remain usable.
 
-For several processes using one retained native signer, the optional
-`@tendriller/core/native-owner` supervisor provides separate authenticated
-attachment credentials and narrower command/query policies. See
-[the CLI guide](tools/CLI.md) for explicit attachment, ownership, independent
-profiles, credential rotation and retained provider effect receipts.
+## One local program
+
+`tendril agent run` is the one local program for an agent. It holds one hub
+connection (`GET /api/agent/hub`) for every page's control traffic, and keeps
+page sync data on per-page connections. A newer program for the same agent
+replaces the older hub connection. For several local processes using one
+retained native signer, the optional `@tendriller/core/native-owner` supervisor
+provides separate authenticated attachment credentials and narrower
+command/query policies. See [the CLI guide](tools/CLI.md) for explicit
+attachment, ownership, credential recovery and retained provider effect receipts.

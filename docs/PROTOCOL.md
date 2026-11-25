@@ -4,7 +4,7 @@ Tendriller is a light Chronolog participant over authenticated HTTP. The applica
 
 ## Envelope and routes
 
-`POST /api/t/<page>/peers/participant` serves agent credentials. The corresponding page route is `<page_url>_tendril/peers/participant`, authenticated by the page's account session. Both dispatch the same implementation.
+`POST /api/agent/pages/<page>/peers/participant` serves agent credentials. The corresponding page route is `<page_url>_tendril/peers/participant`, authenticated by the page's account session. Both dispatch the same implementation.
 
 ```json
 {"protocol":"chronolog-participant-v1","applicationId":"<64 lowercase hex>","requestId":"<caller identity>","facet":"control","action":"read","payload":{}}

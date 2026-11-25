@@ -38,7 +38,7 @@ OAuth is optional. Without `OAUTH_CONFIG_JSON`, its routes return 404. When misc
 | Scope | Ceiling |
 | --- | --- |
 | `tendrils:list` | List assistant-connected pages for the linked account. |
-| `tendrils:create` | Use account-bound `prepare_tendril_setup` / `inspect_tendril_setup` with a verified account email. |
+| `tendrils:create` | Use `register_agent` to give the assistant an account-level agent credential (one `ta_` token, one signing key) that creates and maintains the account's pages. |
 | `applications:read` | Execute approved read queries and read retained events. |
 | `applications:write` | Execute approved commands. |
 | `events:subscribe` | Register approved application event subscriptions. |
@@ -72,9 +72,9 @@ All OAuth endpoints live on `PUBLIC_BASE` (never on page subdomains):
 
 Access tokens are `at+jwt` JWTs containing `iss`, `sub` (Tendriller account ID), `aud` (`<PUBLIC_BASE>/mcp`), `client_id`, `scope`, `iat`, `exp`, `jti`, and `sid` (grant ID). Refresh tokens rotate on every use; replay of a spent refresh token or a PKCE-proven spent authorization code revokes the entire grant immediately.
 
-## Account-bound setup
+## Account-bound agent registration
 
-With `tendrils:create`, `prepare_tendril_setup` allocates a page using the caller's verified account email and a client-supplied SHA-256 commitment to a locally retained setup credential. The server never sees or returns the raw setup credential; `inspect_tendril_setup` resolves uncertain replies by the original operation ID.
+With `tendrils:create`, `register_agent {name, publicKey}` registers an agent under the caller's linked account. The client generates and retains an Ed25519 signing key and sends only its base64url public key; the result carries the agent's `ta_` credential once. Calling it again with the same name rotates the token and key. The agent creates pages with `POST /api/agent/pages`, and the owner grants any existing page from the dashboard. See [Agents and grants](AGENT_BINDINGS.md).
 
 ## Security invariants
 
