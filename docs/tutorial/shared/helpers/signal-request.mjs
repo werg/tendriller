@@ -228,3 +228,91 @@ export async function serveSignalRequests(session, { handle, requestTopic = 'app
   finally { stop.abort(failed ? failure : fail('REQUEST_CLOSED')); await Promise.allSettled([...jobs]); recent.clear(); }
   if (failed) throw failure;
 }
+
+/**
+ * Multi-agent ephemeral RPC client: address any agent dynamically by public key
+ * over session.signals (4 MiB / 512-piece chunked JSON replies, zero durable journal writes).
+ */
+export function createAgentRpc(session, { requestTopic = 'agent/rpc/req', replyTopic = 'agent/rpc/res', retryMs = 3000 } = {}) {
+  if (!Number.isSafeInteger(retryMs) || retryMs < 1 || retryMs > 60_000) throw fail('REQUEST_OPTIONS_INVALID');
+  const waiting = new Map(), stop = new AbortController(), lifetime = combine(stop.signal, session.signal);
+  void (async () => {
+    for await (const signal of session.signals.subscribe({ topics: [replyTopic], mode: 'all', signal: lifetime })) {
+      const { id, g, r, i, n, z, error, code } = signal.payload ?? {};
+      if (r !== session.identity.publicKey) continue;
+      const entry = waiting.get(id);
+      if (!entry || entry.done || signal.authorId !== entry.target) continue;
+      try {
+        if (typeof g !== 'string' || !g.length || g.length > 128 || bytes(signal.payload) > MAX_FRAME) throw fail('REQUEST_REPLY_INVALID');
+        let assembly = entry.assemblies.get(g);
+        if (!assembly) {
+          if (entry.assemblies.size >= 32) throw fail('REQUEST_REPLY_INVALID');
+          entry.assemblies.set(g, assembly = { pieces: new Map(), n: undefined });
+        }
+        if (typeof error === 'string') throw fail(typeof code === 'string' ? code.slice(0, 128) : 'REQUEST_FAILED', error.slice(0, 2000));
+        if (!Number.isSafeInteger(i) || !Number.isSafeInteger(n) || n < 1 || n > MAX_PARTS || i < 0 || i >= n || typeof z !== 'string' ||
+            (assembly.n !== undefined && n !== assembly.n)) throw fail('REQUEST_REPLY_INVALID');
+        assembly.n = n;
+        if (assembly.pieces.has(i)) { if (assembly.pieces.get(i) !== z) throw fail('REQUEST_REPLY_INVALID'); continue; }
+        entry.total += encoder.encode(z).length;
+        if (entry.total > MAX_REPLY) throw fail('REQUEST_REPLY_TOO_LARGE');
+        assembly.pieces.set(i, z); entry.progressAt = Date.now();
+        if (assembly.pieces.size === n) {
+          const text = Array.from({ length: n }, (_, index) => assembly.pieces.get(index)).join('');
+          let answer; try { answer = JSON.parse(text); } catch { throw fail('REQUEST_REPLY_INVALID'); }
+          entry.done = true; entry.resolve(answer);
+        }
+      } catch (err) { entry.done = true; entry.reject(err); }
+    }
+    if (!lifetime.aborted) stop.abort(fail('REQUEST_STREAM_CLOSED'));
+  })().catch(error => stop.abort(error));
+  return Object.freeze({
+    async call(targetPublicKey, method, input = null, { signal, timeoutMs = 30_000 } = {}) {
+      if (typeof targetPublicKey !== 'string' || !/^[a-f0-9]{64}$/u.test(targetPublicKey)) throw fail('REQUEST_TARGET_INVALID');
+      const base = combine(lifetime, signal); base.throwIfAborted();
+      if (waiting.size >= MAX_WAITING) throw fail('REQUEST_BUSY');
+      const id = crypto.randomUUID(), payload = { id, to: targetPublicKey, q: method, input };
+      if (typeof method !== 'string' || bytes(payload) > PAYLOAD_BUDGET) throw fail('REQUEST_TOO_LARGE');
+      const scope = deadline(base, timeoutMs, 'REQUEST_TIMEOUT');
+      const entry = { target: targetPublicKey, assemblies: new Map(), total: 0, done: false, progressAt: 0 };
+      const result = new Promise((resolve, reject) => { entry.resolve = resolve; entry.reject = reject; });
+      waiting.set(id, entry);
+      const abort = () => { entry.done = true; entry.reject(scope.signal.reason); };
+      scope.signal.addEventListener('abort', abort, { once: true });
+      if (scope.signal.aborted) abort();
+      const sending = (async () => {
+        while (!entry.done) {
+          scope.signal.throwIfAborted();
+          if (Date.now() - entry.progressAt >= retryMs) {
+            await whenConnected(session, targetPublicKey, { signal: scope.signal }); scope.signal.throwIfAborted();
+            try { await owned(session.signals.send(requestTopic, payload, { ttlMs: 20_000, signal: scope.signal }), scope.signal); }
+            catch (err) { if (!TRANSIENT.has(err.code)) throw err; }
+          }
+          if (!entry.done) await sleep(retryMs, scope.signal);
+        }
+      })();
+      void sending.catch(err => { entry.done = true; entry.reject(err); });
+      try { return await result; }
+      finally { entry.done = true; waiting.delete(id); scope.signal.removeEventListener('abort', abort); scope.close(); await sending.catch(() => {}); }
+    },
+    close() { stop.abort(fail('REQUEST_CLOSED')); },
+  });
+}
+
+/** Multi-agent ephemeral RPC server: handles requests explicitly addressed to this agent's public key. */
+export function serveAgentRpc(session, { handle, requestTopic = 'agent/rpc/req', replyTopic = 'agent/rpc/res', signal, cacheMs = 60_000 }) {
+  const selfKey = session.identity.publicKey;
+  const wrappedSession = {
+    ...session,
+    signals: {
+      ...session.signals,
+      async *subscribe(opts) {
+        for await (const frame of session.signals.subscribe(opts)) {
+          if (frame?.payload?.to !== selfKey) continue;
+          yield frame;
+        }
+      },
+    },
+  };
+  return serveSignalRequests(wrappedSession, { handle, requestTopic, replyTopic, signal, cacheMs });
+}

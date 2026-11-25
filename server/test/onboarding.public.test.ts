@@ -58,8 +58,8 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
       service_descriptor: origin + '/api/service',
       readiness: origin + '/api/readiness',
       contract: origin + '/contract/v3.json',
-      register_agent: { method: 'POST', url: origin + '/api/agents', required: ['owner', 'name', 'publicKey'] },
-      join_agent: { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'name', 'publicKey'] },
+      register_agent: { method: 'POST', url: origin + '/api/agents', required: ['owner', 'handle', 'publicKey'] },
+      join_agent: { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'handle', 'publicKey'] },
       create_page: { method: 'POST', url: origin + '/api/agent/pages', authorization: 'agent token' },
     },
   });

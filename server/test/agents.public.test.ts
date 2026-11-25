@@ -43,11 +43,14 @@ async function hub(token: string) {
 it('creates an unclaimed agent, lists only its granted pages and claims it and all its pages with the owner’s first page sign-in', async () => {
   const email = `agent-owner-${crypto.randomUUID()}@example.com`;
   const bad = await req('/api/agents', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': randomTestIp() },
-    body: JSON.stringify({ owner: email, name: 'x', publicKey: 'not a key' }) });
+    body: JSON.stringify({ owner: email, handle: 'ab', publicKey: 'not a key' }) });
   expect(bad.status).toBe(400);
-  const agent = await createAgent(email, 'garden-keeper');
+  const badHandle = await req('/api/agents', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': randomTestIp() },
+    body: JSON.stringify({ owner: email, handle: 'Bad Handle!', publicKey: testPublicKey() }) });
+  expect(badHandle.status).toBe(400);
+  const agent = await createAgent(email, 'garden-keeper', 'Tends the garden notes');
   expect(agent.token).toMatch(/^ta_[a-z2-7]{32}$/);
-  expect(agent.agent).toMatchObject({ name: 'garden-keeper', claimed: false, owner_email: email });
+  expect(agent.agent).toMatchObject({ handle: 'garden-keeper', bio: 'Tends the garden notes', claimed: false, owner_email: email });
   expect(agent.agent.id).toMatch(/^ag_[a-z2-7]{26}$/);
   expect(await (await agentReq(agent.token, 'GET', '/api/agent')).json()).toMatchObject({
     agent: { id: agent.agent.id, claimed: false }, account: { claimed: false, owner_email: email }, grants: 0 });
@@ -117,29 +120,55 @@ it('removes page tokens, adoption, setup and per-page agent routes outright', as
   }
 });
 
-it('lets the page owner grant and remove account agents from the page itself', async () => {
+it('lets the page owner grant and remove account agents, pick primary, and propagate handle renames', async () => {
   const h = await create();
-  const helper = await joinAccountAgent(h, 'helper');
+  const helper = await joinAccountAgent(h, 'helper', 'Reviews changes');
   const json = { 'Content-Type': 'application/json' };
-  const listed = await (await req(h.page_url + '_tendril/agents')).json() as { agents: { id: string; name: string; granted: boolean }[]; dashboard: string };
+  const listed = await (await req(h.page_url + '_tendril/agents')).json() as {
+    primary_agent_id: string | null;
+    agents: { id: string; handle: string; bio: string; is_primary: boolean }[];
+    account_agents: { id: string; handle: string; bio: string; granted: boolean }[];
+    can_manage: boolean;
+    dashboard: string;
+  };
   expect(listed.dashboard).toBe('https://tendriller.dev/dashboard#agents');
-  expect(listed.agents.find(agent => agent.id === h.agent.id)).toMatchObject({ granted: true });
-  expect(listed.agents.find(agent => agent.id === helper.agent.id)).toEqual({ id: helper.agent.id, name: 'helper', granted: false });
+  expect(listed.can_manage).toBe(true);
+  expect(listed.primary_agent_id).toBe(h.agent.id);
+  expect(listed.agents).toHaveLength(1);
+  expect(listed.account_agents.find(agent => agent.id === h.agent.id)).toMatchObject({ granted: true });
+  expect(listed.account_agents.find(agent => agent.id === helper.agent.id)).toMatchObject({ id: helper.agent.id, handle: 'helper', bio: 'Reviews changes', granted: false });
   expect((await agentReq(helper.token, 'GET', `/api/agent/pages/${h.id}`)).status).toBe(404);
 
   const grant = await req(h.page_url + '_tendril/agents', { method: 'POST', headers: json, body: JSON.stringify({ agent: helper.agent.id, granted: true }) });
   expect(grant.status).toBe(200);
   expect((await agentReq(helper.token, 'GET', `/api/agent/pages/${h.id}`)).status).toBe(200);
-  const after = await (await req(h.page_url + '_tendril/agents')).json() as { agents: { id: string; granted: boolean }[] };
-  expect(after.agents.find(agent => agent.id === helper.agent.id)?.granted).toBe(true);
+  const after = await (await req(h.page_url + '_tendril/agents')).json() as { primary_agent_id: string | null; agents: { id: string; handle: string; is_primary: boolean }[]; account_agents: { id: string; granted: boolean }[] };
+  expect(after.account_agents.find(agent => agent.id === helper.agent.id)?.granted).toBe(true);
+  expect(after.primary_agent_id).toBe(h.agent.id);
 
+  // Owner can switch primary agent to helper and back, and clear it.
+  const setPrimary = await req(h.page_url + '_tendril/agents/primary', { method: 'PUT', headers: json, body: JSON.stringify({ agent_id: helper.agent.id }) });
+  expect(setPrimary.status).toBe(200);
+  expect((await setPrimary.json() as any).primary_agent_id).toBe(helper.agent.id);
+
+  // Agent can update its own handle + bio via PATCH /api/agent, propagating to granted pages.
+  const dup = await agentReq(helper.token, 'PATCH', '/api/agent', { handle: h.agent.handle.toUpperCase() });
+  expect(dup.status).toBe(409);
+  const renamed = await agentReq(helper.token, 'PATCH', '/api/agent', { handle: 'reviewer', bio: 'Code reviewer' });
+  expect(renamed.status).toBe(200);
+  const afterRename = await (await req(h.page_url + '_tendril/agents')).json() as { agents: { id: string; handle: string; bio: string }[] };
+  expect(afterRename.agents.find(a => a.id === helper.agent.id)).toMatchObject({ handle: 'reviewer', bio: 'Code reviewer' });
+
+  // Removing primary agent reconciles primary to the remaining granted agent.
   const remove = await req(h.page_url + '_tendril/agents', { method: 'POST', headers: json, body: JSON.stringify({ agent: helper.agent.id, granted: false }) });
   expect(remove.status).toBe(200);
   expect((await agentReq(helper.token, 'GET', `/api/agent/pages/${h.id}`)).status).toBe(404);
+  const reconciled = await (await req(h.page_url + '_tendril/agents')).json() as { primary_agent_id: string | null };
+  expect(reconciled.primary_agent_id).toBe(h.agent.id);
 
   const stranger = await req(h.page_url + '_tendril/agents', { method: 'POST', headers: json, body: JSON.stringify({ agent: 'ag_' + 'a'.repeat(26), granted: true }) });
   expect(stranger.status).toBe(404);
-  // Visitors without the owner's session get the page's sign-in screen, never the agent list.
+  // Visitors without a session get the page's sign-in screen, never the agent list.
   const visitor = await req(h.page_url + '_tendril/agents', { anonymous: true });
   expect(visitor.headers.get('content-type')).toMatch(/^text\/html/);
   expect(await visitor.text()).not.toContain(helper.agent.id);
@@ -193,7 +222,7 @@ it('multiplexes control streams over one hub connection onto real page socket en
   expect(await connection.next()).toEqual({ t: 'opened', s: 1, protocol: SETUP_WATCH_PROTOCOL });
   const snapshot = await connection.next();
   expect(snapshot).toMatchObject({ t: 'data', s: 1 });
-  expect(JSON.parse(snapshot.text)).toEqual({ type: 'setup', version: 1, assistant: { proposalId: null, approved: false, revision: null } });
+  expect(JSON.parse(snapshot.text)).toEqual({ type: 'setup', version: 1, mcp: { connected: false, grants: [], updatedAt: 0 } });
 
   const peerId = 'ab'.repeat(32);
   connection.send({ t: 'open', s: 2, page: h.id, path: `peers/discovery/watch?peerId=${peerId}`, protocols: [PEER_DISCOVERY_PROTOCOL] });
@@ -239,18 +268,18 @@ it('delivers grant, revoked, page-deleted and publication-free events to granted
   const granted = await dashboard(h, `/dashboard/t/${h.id}/agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ agent: joined.agent.id, granted: true }) });
   expect(granted.status).toBe(200);
-  expect(await connection.until(frame => frame.t === 'event')).toEqual({ t: 'event', page: h.id, kind: 'grant', data: { scopes: expect.arrayContaining(['host:read']) } });
+  expect(await connection.until(frame => frame.t === 'event' && frame.kind === 'grant')).toEqual({ t: 'event', page: h.id, kind: 'grant', data: { scopes: expect.arrayContaining(['host:read']) } });
   connection.send({ t: 'open', s: 2, page: h.id, path: 'setup/watch', protocols: [SETUP_WATCH_PROTOCOL] });
   expect(await connection.until(frame => frame.s === 2 && frame.t === 'opened')).toMatchObject({ protocol: SETUP_WATCH_PROTOCOL });
   await connection.until(frame => frame.s === 2 && frame.t === 'data');
   expect((await revokeGrant(h, joined.agent.id)).status).toBe(200);
   expect(await connection.until(frame => frame.s === 2)).toMatchObject({ t: 'closed', s: 2, code: 4003 });
-  expect(await connection.until(frame => frame.t === 'event')).toEqual({ t: 'event', page: h.id, kind: 'revoked', data: {} });
+  expect(await connection.until(frame => frame.t === 'event' && frame.kind === 'revoked')).toEqual({ t: 'event', page: h.id, kind: 'revoked', data: {} });
 
   // The creator's hub hears about deletion of its page.
   const creator = await hub(h.token);
   expect((await agentReq(h.token, 'DELETE', `/api/agent/pages/${page.id}`)).status).toBe(204);
-  expect(await creator.until(frame => frame.t === 'event')).toEqual({ t: 'event', page: page.id, kind: 'page-deleted', data: {} });
+  expect(await creator.until(frame => frame.t === 'event' && frame.kind === 'page-deleted')).toEqual({ t: 'event', page: page.id, kind: 'page-deleted', data: {} });
   expect(await env.ACCOUNTS.prepare('SELECT COUNT(*) AS n FROM agent_grants WHERE page_id=?').bind(page.id).first()).toEqual({ n: 0 });
   creator.close(); connection.close();
 });
@@ -273,7 +302,7 @@ it('join codes are single-use, expire and add agents only to the issuing account
   const issued = await (await dashboard(h, '/dashboard/agents/join', { method: 'POST' })).json() as { code: string };
   await env.ACCOUNTS.prepare('UPDATE agent_join_codes SET expires_at=? WHERE account_id=?').bind(Date.now() - 1, h.account).run();
   const expired = await req('/api/agents/join', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': randomTestIp() },
-    body: JSON.stringify({ code: issued.code, name: 'late', publicKey: testPublicKey() }) });
+    body: JSON.stringify({ code: issued.code, handle: 'late', publicKey: testPublicKey() }) });
   expect(expired.status).toBe(404);
   const joined = await joinAccountAgent(h, 'fresh');
   expect(await env.ACCOUNTS.prepare('SELECT account_id FROM agents WHERE id=?').bind(joined.agent.id).first()).toEqual({ account_id: h.account });

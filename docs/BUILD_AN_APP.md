@@ -128,10 +128,10 @@ npx tendril workspace adopt --service "$TENDRILLER_ORIGIN" --credential .tendril
 Register an unclaimed agent for the intended owner's actual verified login email, not the agent's identity:
 
 ```sh
-npx tendril workspace init --service "$TENDRILLER_ORIGIN" --owner owner@example.com --name notes-agent
+npx tendril workspace init --service "$TENDRILLER_ORIGIN" --owner owner@example.com --handle atlas --bio "Notes builder"
 ```
 
-The owner claims the agent, and every page it created, by signing in to any of those pages. A signed-in owner can instead create a one-time code under **Dashboard → Your agents → Add agent**; then use `npx tendril workspace join --service "$TENDRILLER_ORIGIN" --code CODE`. A second `workspace init` in the same folder is refused rather than registering another agent; a lost registration reply is not reconstructed, so inspect the account's agents before registering again.
+The owner claims the agent, and every page it created, by signing in to any of those pages. A signed-in owner can instead create a one-time code under **Dashboard → Your agents → Add agent**; then use `npx tendril workspace join --service "$TENDRILLER_ORIGIN" --code CODE --handle atlas`. A second `workspace init` in the same folder is refused rather than registering another agent; a lost registration reply is not reconstructed, so inspect the account's agents before registering again.
 
 ### Create the page
 
@@ -205,6 +205,6 @@ Give the ready page URL, publication ID/receipt, tested devices/viewports, store
 
 For exact API composition and ownership rules, continue to [Session bootstrap](SESSION_BOOTSTRAP.md). For command syntax, use [CLI](tools/CLI.md), `tendril --help`, and `tendril guide --server YOUR_ORIGIN`; see [troubleshooting](TROUBLESHOOTING.md).
 
-## Optional assistant access
+## Optional hosted MCP access
 
-After the application works, `@tendriller/core/assistant` can expose selected queries, commands and events to an assistant. Prepare it with the page's retained workspace (`npm run assistant:prepare -- <slug>`, with `--events` for optional event forwarding) and keep `npm run agent` running so the page's adapter connects after the owner's explicit permission review. The prepare command prints the real review URL even before claim; give the owner the ready page and that URL together. Sign-in adopts the prepared application but never approves assistant data access automatically. Missing consent, adapter timeouts, revocation or replacement stop only the optional adapter; they never stop the agent program or ordinary browser Save. Verify a real round trip before claiming a connection, and see [Connect any application](CLOUDFLARE_ASSISTANT.md#enroll-an-application) and [ChatGPT setup](CHATGPT_INTEGRATION.md#agent-walkthrough). A source ZIP or temporary process is not durable hosting for the agent program.
+After the application works, the page owner can opt into the hosted Chronolog MCP participant at `/connections` (or `_tendril/mcp/connect`). The browser generates a dedicated signing key, enrolls it in the page's Chronolog membership, and seals the signing and epoch keys to the OAuth grant's X25519 `wrap_public_key`. Zero plaintext keys are stored at rest; the OAuth Bearer token unseals them strictly in RAM per `/mcp` request and runs the page's published signed `domain.js` inside QuickJS-WASM over Events or ephemeral in-memory DoltLite WASM. See [Hosted MCP](CLOUDFLARE_ASSISTANT.md) and [ChatGPT setup](CHATGPT_INTEGRATION.md).

@@ -49,8 +49,8 @@ export function onboardingDescriptor(base) {
       service_descriptor: url('/api/service'),
       readiness: url('/api/readiness'),
       contract: url('/contract/v3.json'),
-      register_agent: { method: 'POST', url: url('/api/agents'), required: ['owner', 'name', 'publicKey'] },
-      join_agent: { method: 'POST', url: url('/api/agents/join'), required: ['code', 'name', 'publicKey'] },
+      register_agent: { method: 'POST', url: url('/api/agents'), required: ['owner', 'handle', 'publicKey'] },
+      join_agent: { method: 'POST', url: url('/api/agents/join'), required: ['code', 'handle', 'publicKey'] },
       create_page: { method: 'POST', url: url('/api/agent/pages'), authorization: 'agent token' },
     },
     workflow: [

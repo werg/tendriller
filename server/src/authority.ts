@@ -237,9 +237,3 @@ export async function withPublicationAuthority<T>(t: Tendril, principal: Princip
     }, checkAccess: () => freshAuthorityAccess(t, principal) });
   });
 }
-export function withAssistantAuthority<T>(t: Tendril, work: (canUseDevice: (id: string, write: boolean) => Promise<boolean>) => T): Promise<T> {
-  return withAuthorityMutation(t, async () => {
-    const bundle = await readAuthorityBundle(t);
-    return work(async (id, write) => !!bundle?.memberships.at(-1)?.payload.members.some(member => member.publicKey === id && (write ? member.writer : member.reader)));
-  });
-}

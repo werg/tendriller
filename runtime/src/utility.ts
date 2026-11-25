@@ -87,8 +87,17 @@ export function mountUtility(api: RuntimeApi): () => void {
     .tabpanel h4{font-size:13px;margin:0 0 6px}
     .scopes{display:grid;gap:2px;font-size:12px}.scopes label{display:flex;gap:8px;align-items:flex-start;padding:5px 2px;cursor:pointer}.scopes input{margin-top:2px}
     .agent-grants{font-size:14px;margin:4px 0 12px}.agent-grants label{align-items:center}
+    .agent-roster{list-style:none;margin:0 0 12px;padding:0;display:grid;gap:8px}
+    .agent-card{border:1px solid #8884;border-radius:10px;padding:8px 10px;display:grid;gap:4px;background:#8881}
+    .agent-card-top{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+    .agent-handle{font-weight:700;font-size:13px}.agent-bio{font-size:12px;opacity:.8}
+    .agent-pills{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+    .agent-pill{font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;background:#8882}
+    .agent-pill.primary{background:#1e644a22;color:#1e644a}.agent-pill.online{background:#1f8b4c22;color:#1f8b4c}.agent-pill.warn{background:#d9822b22;color:#9a5b13}
+    .agent-primary-row{display:grid;gap:6px;margin:8px 0 12px}.agent-primary-row select{font:inherit;font-size:13px;padding:7px 9px;border:1px solid #8886;border-radius:8px;background:Canvas;color:CanvasText;width:100%}
+    .agent-links{display:grid;gap:6px;margin-top:8px}
     .message{font-size:13px;margin:10px 0 0}.suggestion p{margin:0 0 8px}.suggestion strong{font-size:16px}.actions{display:flex;align-items:center;gap:6px}.actions .primary{width:auto;margin:0;flex:1}.actions button{white-space:nowrap}
-    @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}.share-role{background:#a6dfbd22;color:#a6dfbd}.share-row-actions .revoke{color:#fca5a5;border-color:#fca5a555}}
+    @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}.share-role,.agent-pill.primary{background:#a6dfbd22;color:#a6dfbd}.agent-pill.online{background:#4ade8022;color:#86efac}.agent-pill.warn{background:#fbbf2422;color:#fcd34d}.share-row-actions .revoke{color:#fca5a5;border-color:#fca5a555}}
   `;
   const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
     const node = document.createElement(tag);
@@ -208,16 +217,24 @@ export function mountUtility(api: RuntimeApi): () => void {
   const ownerLoading = element("p", "Loading…", "note");
   personPanel.append(ownerLoading, shareOwnerBox, shareVisitorNote);
 
-  // Agents belong to the owner's account; this tab grants or removes this page per agent.
+  // Agents on this page: unified roster, honest live/enrollment status, primary picker, and owner grants.
+  const agentRosterList = element("ul", undefined, "agent-roster");
+  const agentPrimaryBox = element("div", undefined, "agent-primary-row"); agentPrimaryBox.hidden = true;
+  const agentPrimaryLabel = element("label", "Primary agent (answers general messages)", "note");
+  const agentPrimarySelect = document.createElement("select");
+  agentPrimarySelect.setAttribute("aria-label", "Primary agent");
+  agentPrimaryBox.append(agentPrimaryLabel, agentPrimarySelect);
   const agentOwnerBox = element("div"); agentOwnerBox.hidden = true;
-  const agentList = element("div", undefined, "scopes agent-grants"); agentList.setAttribute("role", "group"); agentList.setAttribute("aria-label", "Agents with access to this page");
-  const agentEmpty = element("p", "No agents on your account yet.", "note"); agentEmpty.hidden = true;
+  const agentList = element("div", undefined, "scopes agent-grants"); agentList.setAttribute("role", "group"); agentList.setAttribute("aria-label", "Account agents granted access");
+  const agentEmpty = element("p", "No agents on this page yet.", "note"); agentEmpty.hidden = true;
   const agentDashboard = element("a", "Add an agent on your dashboard", "secondary"); agentDashboard.target = "_blank"; agentDashboard.rel = "noopener";
-  agentOwnerBox.append(element("p", "Checked agents can maintain this page. Add a new agent from your dashboard, then check it here.", "note"),
-    agentList, agentEmpty, agentDashboard);
-  const agentVisitorNote = element("p", "Only the page owner can connect agents.", "note"); agentVisitorNote.hidden = true;
+  const agentConnections = element("a", "Hosted MCP connections", "secondary"); agentConnections.target = "_blank"; agentConnections.rel = "noopener";
+  const agentLinks = element("div", undefined, "agent-links"); agentLinks.append(agentDashboard, agentConnections);
+  agentOwnerBox.append(element("h4", "Account agent access"), element("p", "Checked agents can maintain this page. Add new agents from your dashboard.", "note"),
+    agentList, agentLinks);
+  const agentVisitorNote = element("p", "Only the page owner can change agent access or the primary agent.", "note"); agentVisitorNote.hidden = true;
   const agentLoading = element("p", "Loading…", "note");
-  agentPanel.append(agentLoading, agentOwnerBox, agentVisitorNote);
+  agentPanel.append(agentLoading, agentRosterList, agentEmpty, agentPrimaryBox, agentOwnerBox, agentVisitorNote);
 
   const manualLink = document.createElement("input"); manualLink.type = "text"; manualLink.readOnly = true; manualLink.hidden = true;
   manualLink.setAttribute("aria-label", "Link to copy"); manualLink.style.cssText = "width:100%;font:inherit";
@@ -418,29 +435,94 @@ export function mountUtility(api: RuntimeApi): () => void {
     shareOwnerBox.hidden = agentOwnerBox.hidden = !owner;
     shareVisitorNote.hidden = agentVisitorNote.hidden = owner;
   };
+  let lastAccountAgents: Array<{ id: string; handle: string; bio: string; granted: boolean }> = [];
+  let canManageAgents = false;
+  const renderRosterView = () => {
+    const snap = api.agents.snapshot();
+    agentRosterList.replaceChildren();
+    agentEmpty.hidden = snap.agents.length > 0;
+    for (const agent of snap.agents) {
+      const li = element("li", undefined, "agent-card");
+      const top = element("div", undefined, "agent-card-top");
+      top.append(element("span", `@${agent.handle}`, "agent-handle"));
+      const pills = element("div", undefined, "agent-pills");
+      if (agent.is_primary || agent.id === snap.primary_agent_id) pills.append(element("span", "Primary", "agent-pill primary"));
+      if (agent.kind === "hosted-mcp") {
+        pills.append(element("span", "Hosted MCP", "agent-pill"));
+      } else {
+        const liveStatus = snap.live?.[agent.public_key] ?? snap.live?.[agent.id];
+        if (liveStatus?.state === "online") pills.append(element("span", "Online", "agent-pill online"));
+        else if (liveStatus?.state === "busy") pills.append(element("span", "Busy", "agent-pill online"));
+        else if (liveStatus?.enrolled === false) pills.append(element("span", "Host-granted · awaiting data enrollment", "agent-pill warn"));
+        else if (liveStatus?.enrolled === true) pills.append(element("span", "Enrolled · Offline", "agent-pill"));
+        else pills.append(element("span", "Offline", "agent-pill"));
+      }
+      top.append(pills);
+      li.append(top);
+      if (agent.bio) li.append(element("div", agent.bio, "agent-bio"));
+      agentRosterList.append(li);
+    }
+    agentPrimaryBox.hidden = !canManageAgents || snap.agents.length === 0;
+    if (!agentPrimaryBox.hidden) {
+      agentPrimarySelect.replaceChildren();
+      const noneOpt = document.createElement("option");
+      noneOpt.value = ""; noneOpt.textContent = "None (only direct @mentions)";
+      noneOpt.selected = !snap.primary_agent_id;
+      agentPrimarySelect.append(noneOpt);
+      for (const agent of snap.agents) {
+        const opt = document.createElement("option");
+        opt.value = agent.id;
+        opt.textContent = `@${agent.handle}${agent.kind === "hosted-mcp" ? " (Hosted MCP)" : ""}`;
+        opt.selected = agent.id === snap.primary_agent_id;
+        agentPrimarySelect.append(opt);
+      }
+    }
+  };
+  agentPrimarySelect.addEventListener("change", async () => {
+    const next = agentPrimarySelect.value || null;
+    agentPrimarySelect.disabled = true;
+    showShareStatus("Updating primary agent…");
+    try {
+      await api.agents.setPrimary(next);
+      if (!disposed) showShareStatus(next ? "Primary agent updated." : "Primary agent cleared.");
+    } catch (err) {
+      if (!disposed) showShareStatus(err instanceof Error ? err.message : "Could not update primary agent.");
+      renderRosterView();
+    } finally {
+      if (!disposed) agentPrimarySelect.disabled = false;
+    }
+  });
+  const offAgents = api.agents.onChange(() => { if (!disposed) renderRosterView(); });
   const refreshShareState = async () => {
     if (disposed || !api.identity.base) return;
     try {
       const linksRes = await fetch(`${api.identity.base}_tendril/links`, { credentials: "same-origin", cache: "no-store" });
       if (disposed) return;
-      if (linksRes.status === 403 || linksRes.status === 401) { ownerChecked = true; showOwner(false); return; }
+      if (linksRes.status === 403 || linksRes.status === 401) {
+        ownerChecked = true; canManageAgents = false; showOwner(false);
+        void refreshAgents();
+        return;
+      }
       if (!linksRes.ok) throw Error();
       const data = await linksRes.json() as { name?: string; links?: ShareLink[] };
       if (data.name) sharePageName = data.name;
-      ownerChecked = true; showOwner(true);
+      ownerChecked = true; canManageAgents = true; showOwner(true);
       renderShareLinks(data.links ?? []);
       void refreshAgents();
     } catch {
       if (disposed) return;
       showOwner(false);
       shareVisitorNote.textContent = agentVisitorNote.textContent = "Could not load sharing options while offline.";
+      renderRosterView();
     }
   };
-  const renderAgents = (agents: { id: string; name: string; granted: boolean }[], dashboard: string) => {
-    agentDashboard.href = dashboard; agentList.replaceChildren(); agentEmpty.hidden = agents.length > 0;
+  const renderAccountAgentChecks = (agents: { id: string; handle: string; bio: string; granted: boolean }[], dashboard: string, connections: string) => {
+    lastAccountAgents = agents;
+    agentDashboard.href = dashboard;
+    agentConnections.href = connections;
+    agentList.replaceChildren();
     for (const agent of agents) {
       const row = document.createElement("label"), box = document.createElement("input");
-      // The saved grant is the default, so a stored grant is never mistaken for an unsaved edit.
       box.type = "checkbox"; box.value = agent.id; box.defaultChecked = box.checked = agent.granted;
       box.addEventListener("change", async () => {
         const want = box.checked; box.disabled = true; showShareStatus("Saving…");
@@ -450,13 +532,18 @@ export function mountUtility(api: RuntimeApi): () => void {
           const data = await res.json().catch(() => null) as { error?: { message?: string } } | null;
           if (!res.ok) throw Error(data?.error?.message || "Could not change access. Try again.");
           box.defaultChecked = want;
-          if (!disposed) showShareStatus(want ? `${agent.name} can now maintain this page.` : `${agent.name} no longer has access.`);
+          await api.agents.refresh().catch(() => {});
+          if (!disposed) showShareStatus(want ? `@${agent.handle} can now maintain this page.` : `@${agent.handle} no longer has access.`);
         } catch (err) {
           if (disposed) return;
           box.checked = !want; showShareStatus(err instanceof Error ? err.message : "Could not change access. Try again.");
         } finally { if (!disposed) box.disabled = false; }
       });
-      row.append(box, element("span", agent.name)); agentList.append(row);
+      row.append(box, element("span", `@${agent.handle}${agent.bio ? ` — ${agent.bio}` : ""}`));
+      agentList.append(row);
+    }
+    if (lastAccountAgents.length === 0) {
+      agentList.append(element("p", "No workspace agents on your account yet.", "note"));
     }
   };
   const refreshAgents = async () => {
@@ -464,9 +551,26 @@ export function mountUtility(api: RuntimeApi): () => void {
     try {
       const res = await fetch(`${api.identity.base}_tendril/agents`, { credentials: "same-origin", cache: "no-store" });
       if (!res.ok) throw Error();
-      const data = await res.json() as { agents?: { id: string; name: string; granted: boolean }[]; dashboard?: string };
-      if (!disposed) renderAgents(data.agents ?? [], data.dashboard ?? "/dashboard#agents");
-    } catch { if (!disposed) { agentEmpty.textContent = "Could not load your agents. Try again later."; agentEmpty.hidden = false; } }
+      const data = await res.json() as {
+        can_manage?: boolean;
+        dashboard?: string;
+        connections?: string;
+        account_agents?: { id: string; handle: string; bio: string; granted: boolean }[];
+      };
+      await api.agents.refresh().catch(() => {});
+      if (disposed) return;
+      canManageAgents = Boolean(data.can_manage);
+      if (data.account_agents) renderAccountAgentChecks(data.account_agents, data.dashboard ?? "/dashboard#agents", data.connections ?? "/connections");
+      renderRosterView();
+    } catch {
+      if (!disposed) {
+        renderRosterView();
+        if (api.agents.snapshot().agents.length === 0) {
+          agentEmpty.textContent = "Could not load agents right now.";
+          agentEmpty.hidden = false;
+        }
+      }
+    }
   };
   const createShareLink = async (role: "guest" | "display", trigger: HTMLButtonElement) => {
     if (trigger.disabled) return;
@@ -873,7 +977,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     updateKeyboardLayout();
   });
   return () => {
-    disposed = true; stopFollowing(); voiceControls?.dispose(); transportInspector.close(); offUpdate(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
+    disposed = true; stopFollowing(); voiceControls?.dispose(); transportInspector.close(); offUpdate(); offAgents(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     document.removeEventListener("focusin", updateKeyboardLayout); document.removeEventListener("focusout", updateKeyboardLayout);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();

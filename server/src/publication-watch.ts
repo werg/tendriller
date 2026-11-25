@@ -1,4 +1,5 @@
 import { currentPrincipal, pagePolicy, type PagePrincipal } from './access';
+import { pageAgents } from './agent-grants';
 import { HttpError } from './http';
 import type { Tendril } from './tendril';
 
@@ -20,6 +21,17 @@ const selected = (t: Tendril) => t.db.get<number>('current', 0);
 function send(socket: WebSocket, value: Watch, current: number): void {
   socket.send(JSON.stringify({ type: 'publication', version: 1, current }));
   socket.serializeAttachment({ ...value, current } satisfies Watch);
+}
+function sendAgents(t: Tendril, socket: WebSocket, value: Watch): void {
+  if (value.principal.role === 'display') return;
+  const roster = pageAgents(t);
+  socket.send(JSON.stringify({
+    type: 'agents',
+    version: 1,
+    primary_agent_id: roster.primary_agent_id,
+    agents: roster.agents,
+    can_manage: value.principal.role === 'owner',
+  }));
 }
 
 /** Authentication belongs to the page, not to the independently enrolled application participant. */
@@ -56,10 +68,31 @@ export function notifyPublicationWatchers(t: Tendril): void {
         if (!policy) policies.set(visitor, policy = pagePolicy(t, visitor));
         if (await policy !== 'active' || !currentPrincipal(t, value.principal, value.key)) { socket.close(4003, 'Page access ended'); return; }
         if (socket.readyState !== WebSocket.READY_STATE_OPEN) return;
-        // Read after the async policy check. Concurrent notifications cannot send an older snapshot later.
         const current = selected(t), latest = attachment(socket);
         if (latest && latest.current !== current) send(socket, latest, current);
       } catch { try { socket.close(1011, 'Publication watch interrupted'); } catch { /* disconnected */ } }
+    }));
+  });
+}
+
+/** Notify open authenticated browser tabs whenever the page's agent roster or primary changes. */
+export function notifyAgentsWatchers(t: Tendril): void {
+  t.afterCommit(async () => {
+    const policies = new Map<string | null, ReturnType<typeof pagePolicy>>();
+    const watchers = t.ctx.getWebSockets(tag).filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN);
+    await Promise.all(watchers.map(async socket => {
+      const value = attachment(socket);
+      if (!value) { socket.close(4003, 'Page watch expired'); return; }
+      if (value.principal.role === 'display') return;
+      try {
+        if (!currentPrincipal(t, value.principal, value.key)) { socket.close(4003, 'Page access ended'); return; }
+        const visitor = value.principal.role === 'guest' ? value.principal.accountId : null;
+        let policy = policies.get(visitor);
+        if (!policy) policies.set(visitor, policy = pagePolicy(t, visitor));
+        if (await policy !== 'active' || !currentPrincipal(t, value.principal, value.key)) { socket.close(4003, 'Page access ended'); return; }
+        if (socket.readyState !== WebSocket.READY_STATE_OPEN) return;
+        sendAgents(t, socket, value);
+      } catch { try { socket.close(1011, 'Page watch interrupted'); } catch { /* disconnected */ } }
     }));
   });
 }

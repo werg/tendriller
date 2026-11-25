@@ -78,7 +78,6 @@ export const TUTORIAL_FILES = Object.freeze([
   'templates/inventory/ui-state.mjs',
   'templates/inventory/worker.mjs',
   'templates/notes/agent.mjs',
-  'templates/notes/assistant.mjs',
   'templates/notes/build.mjs',
   'templates/notes/domain.mjs',
   'templates/notes/index.html',

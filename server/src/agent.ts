@@ -1,6 +1,5 @@
 /** Explicit page-host lifecycle and the filtered Chronolog participant transport. */
 import { upgradeSetupWatch } from './setup-watch';
-import { proposeAssistant } from './assistant-admission';
 import { changeLifetime } from './lifetime';
 import { PEER_ROUTE, handlePeers } from './peers';
 import { applicationPrepared, withUnconfiguredApplication } from './authority';
@@ -13,7 +12,8 @@ import { HttpError, intParam, json, readJson } from './http';
 import { newPageKey, sha256Hex } from './ids';
 import { serviceDescriptor } from './descriptor';
 import { authenticateAgent, localAgentGrant, requireAgentScope, type AgentPrincipal } from './access';
-import { upgradeAssistantAdapter } from './assistant-socket';
+import { pageAgents } from './agent-grants';
+import { handleEnvelopeSync } from './mcp-participant';
 import { onboardingDescriptor } from './onboarding';
 import { publicBase } from './urls';
 import { isEmojiIcon, validateShortcuts, type PageShortcut } from './pwa';
@@ -45,13 +45,9 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
     return handlePeers(t, req, url, rest, principal);
   }
   if (rest === 'setup/watch') return upgradeSetupWatch(t, req, principal);
-  if (rest === 'assistant/adapter') {
-    requireAgentScope(principal, 'assistant:manage');
-    return upgradeAssistantAdapter(t, req, principal);
-  }
-  if (rest === 'assistant/propose' && method === 'POST') {
-    requireAgentScope(principal, 'assistant:manage');
-    return proposeAssistant(t, req, principal);
+  if (rest === 'mcp/sync' && method === 'POST') {
+    requireAgentScope(principal, 'participants:connect');
+    return handleEnvelopeSync(t, req);
   }
   if (rest === 'push' && method === 'POST') {
     requireAgentScope(principal, 'notifications:send');
@@ -66,20 +62,30 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
   requireAgentScope(principal, method === 'GET' ? 'host:read' : 'host:manage');
   return route.handler(t, req, url, `agent:${principal.agentId}`, route.pattern.exec(rest)!.slice(1), principal);
 }
-/** Granted-page summary for agent listings; no credential or grant data beyond the agent's own. */
+/** Granted-page summary for agent listings; includes primary status and page @handle roster. */
 export function agentPageSummary(t: Tendril, agentId: string) {
   const grant = localAgentGrant(t, agentId);
-  return { id: t.tid, name: t.db.get('name', 'Tendril'), page_url: t.mainPageUrl(), lifetime: t.db.get('lifetime', 'ad_hoc'),
+  const roster = pageAgents(t);
+  return {
+    id: t.tid, name: t.db.get('name', 'Tendril'), page_url: t.mainPageUrl(), lifetime: t.db.get('lifetime', 'ad_hoc'),
     application: { id: selectedApplication(t).id }, claimed: t.db.get<string | null>('owner_account', null) !== null,
-    expires_at: t.expiresAt(), scopes: grant?.scopes ?? [], granted_by: grant?.granted_by ?? null };
+    expires_at: t.expiresAt(), scopes: grant?.scopes ?? [], granted_by: grant?.granted_by ?? null,
+    primary_agent_id: roster.primary_agent_id, is_primary: roster.primary_agent_id === agentId, agents: roster.agents,
+  };
 }
-async function tendrilInfo(t: Tendril) {
+async function tendrilInfo(t: Tendril, agentId?: string) {
   const ownerId = t.db.get<string | null>('owner_account', null);
   const owner = ownerId && t.env.ACCOUNTS ? await t.env.ACCOUNTS.prepare('SELECT provider, login FROM identities WHERE account_id = ? ORDER BY created_at LIMIT 1')
     .bind(ownerId).first<{ provider: string; login: string }>() : null;
-  return { id: t.tid, name: t.db.get('name', 'Tendril'), page_url: t.mainPageUrl(), lifetime: t.db.get('lifetime', 'ad_hoc'),
+  const roster = pageAgents(t);
+  return {
+    id: t.tid, name: t.db.get('name', 'Tendril'), page_url: t.mainPageUrl(), lifetime: t.db.get('lifetime', 'ad_hoc'),
     application: selectedApplication(t), configured: applicationPrepared(t),
-    expires_at: t.expiresAt(), owner, owner_account_id: ownerId, version: pointers(t), meta: tendrilMeta(t) };
+    expires_at: t.expiresAt(), owner, owner_account_id: ownerId, version: pointers(t), meta: tendrilMeta(t),
+    primary_agent_id: roster.primary_agent_id,
+    ...(agentId ? { is_primary: roster.primary_agent_id === agentId } : {}),
+    agents: roster.agents,
+  };
 }
 export function tendrilMeta(t: Tendril) {
   return {
@@ -93,7 +99,7 @@ export function tendrilMeta(t: Tendril) {
   };
 }
 
-route('GET', /^$/, async (t, _req, _url, _by, _params, principal) => json({ ...await tendrilInfo(t), scopes: principal.scopes }));
+route('GET', /^$/, async (t, _req, _url, _by, _params, principal) => json({ ...await tendrilInfo(t, principal.agentId), scopes: principal.scopes }));
 route('GET', /^service$/, () => json(serviceDescriptor()));
 route('GET', /^guide$/, t => json(onboardingDescriptor(publicBase(t.env))));
 route("PATCH", /^$/, async (t, req) => {

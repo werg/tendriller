@@ -35,10 +35,14 @@ async function host(t, { mode = 'open' } = {}) {
     if (request.url === '/api/service') return json(200, { contract: 3, core_release: 'test', limits: {} });
     if (request.url === '/api/agents' && request.method === 'POST') {
       const value = JSON.parse(body); registered.push(value);
-      return json(201, { id: AGENT, name: value.name, token: TOKEN, account_state: 'unclaimed' });
+      return json(201, { id: AGENT, handle: value.handle, bio: value.bio ?? '', token: TOKEN, account_state: 'unclaimed' });
     }
     if (!authorized) return json(401, { error: { code: 'unauthorized', message: 'Agent token required' } });
-    if (request.url === '/api/agent') return json(200, { id: AGENT, account_state: 'unclaimed', grants: pages.length });
+    if (request.url === '/api/agent' && request.method === 'PATCH') {
+      const patch = JSON.parse(body);
+      return json(200, { id: AGENT, handle: patch.handle ?? 'laptop', bio: patch.bio ?? '' });
+    }
+    if (request.url === '/api/agent') return json(200, { id: AGENT, handle: 'laptop', bio: '', account_state: 'unclaimed', grants: pages.length });
     if (request.url === '/api/agent/pages' && request.method === 'POST') {
       // The host adopts the exact application identity of the retained creation intent.
       const requested = JSON.parse(body);
@@ -107,21 +111,28 @@ export async function openPage(context) {
 
 test('workspace init registers one agent key; page new creates a granted page and its folder', async t => {
   const fake = await host(t), directory = await workspaceDir(t);
-  const created = JSON.parse((await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--name', 'laptop'])).stdout);
+  await assert.rejects(tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test']),
+    error => JSON.parse(error.stderr).error.code === 'invalid_agent_handle');
+  const created = JSON.parse((await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--handle', 'laptop', '--bio', 'Dev agent'])).stdout);
   assert.equal(created.agent.id, AGENT);
+  assert.equal(created.agent.handle, 'laptop');
   assert.equal(fake.registered.length, 1);
   assert.equal(fake.registered[0].owner, 'owner@example.test');
+  assert.equal(fake.registered[0].handle, 'laptop');
   assert.equal(Buffer.from(fake.registered[0].publicKey, 'base64url').toString('hex'), created.publicKey);
   const config = JSON.parse(await readFile(join(directory, 'tendriller.json'), 'utf8'));
-  assert.deepEqual(config, { schemaVersion: 1, service: fake.origin, agent: { id: AGENT, name: 'laptop' }, pages: {} });
+  assert.deepEqual(config, { schemaVersion: 1, service: fake.origin, agent: { id: AGENT, handle: 'laptop', bio: 'Dev agent' }, pages: {} });
   assert.doesNotMatch(await readFile(join(directory, 'tendriller.json'), 'utf8'), /ta_/);
   const credential = join(directory, '.tendriller/agent/credential.json');
   assert.equal((await stat(credential)).mode & 0o777, 0o600);
   assert.equal(JSON.parse(await readFile(credential, 'utf8')).token, TOKEN);
   assert.match(await readFile(join(directory, '.gitignore'), 'utf8'), /^\.tendriller\/$/m);
-  await assert.rejects(tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test']),
+  await assert.rejects(tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--handle', 'laptop']),
     error => JSON.parse(error.stderr).error.code === 'workspace_exists');
   assert.equal(fake.registered.length, 1, 'a second init never registers another agent');
+  const updated = JSON.parse((await tendril(directory, ['agent', 'profile', '--handle', 'atlas', '--bio', 'Primary builder'])).stdout);
+  assert.deepEqual(updated, { id: AGENT, handle: 'atlas', bio: 'Primary builder' });
+  assert.equal(JSON.parse(await readFile(join(directory, 'tendriller.json'), 'utf8')).agent.handle, 'atlas');
 
   const page = JSON.parse((await tendril(directory, ['page', 'new', 'notes', '--name', 'Shared notes'])).stdout);
   assert.equal(page.id, PAGE); assert.equal(page.slug, 'notes');
@@ -144,17 +155,17 @@ test('workspace init registers one agent key; page new creates a granted page an
 
 test('workspace init stops at paused readiness before creating a signer or registering', async t => {
   const fake = await host(t, { mode: 'creation_paused' }), directory = await workspaceDir(t);
-  await assert.rejects(tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test']),
+  await assert.rejects(tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--handle', 'laptop']),
     error => JSON.parse(error.stderr).error.code === 'creation_paused');
   await assert.rejects(access(join(directory, '.tendriller')), { code: 'ENOENT' });
-  await assert.rejects(tendril(directory, ['workspace', 'init', '--owner', 'owner@example.test']),
+  await assert.rejects(tendril(directory, ['workspace', 'init', '--owner', 'owner@example.test', '--handle', 'laptop']),
     error => error.code === 64 && /never defaults to production/.test(error.stderr));
   assert.deepEqual(fake.registered, []);
 });
 
 test('agent run serves an initialized page through one attach socket; CLI commands name the page', { timeout: 60_000 }, async t => {
   const fake = await host(t), directory = await workspaceDir(t);
-  await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--name', 'laptop']);
+  await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--handle', 'laptop']);
   await tendril(directory, ['page', 'new', 'notes']);
   await writeFile(join(directory, 'pages/notes/agent.mjs'), PAGE_MODULE);
   await writeFile(join(directory, `.tendriller/pages/${PAGE}/initialized.json`), '{}', { mode: 0o600 });
@@ -220,7 +231,7 @@ function startAgent(t, directory) {
 
 test('agent run waits for explicit initialization and never opens a page device or signer for an uninitialized page', { timeout: 60_000 }, async t => {
   const fake = await host(t), directory = await workspaceDir(t);
-  await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--name', 'laptop']);
+  await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--handle', 'laptop']);
   await tendril(directory, ['page', 'new', 'notes']);
   await writeFile(join(directory, 'pages/notes/agent.mjs'), PAGE_MODULE);
   const run = startAgent(t, directory);
@@ -234,7 +245,7 @@ test('agent run waits for explicit initialization and never opens a page device 
 
 test('a page whose owner fails to open is reported and retried while the agent program stays up and exits cleanly on SIGTERM', { timeout: 60_000 }, async t => {
   const fake = await host(t), directory = await workspaceDir(t);
-  await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--name', 'laptop']);
+  await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--handle', 'laptop']);
   await tendril(directory, ['page', 'new', 'notes']);
   await writeFile(join(directory, 'pages/notes/agent.mjs'), 'export async function openPage() { throw Object.assign(Error("fixture refused"), { code: "FIXTURE_REFUSED" }); }\n');
   await writeFile(join(directory, `.tendriller/pages/${PAGE}/initialized.json`), '{}', { mode: 0o600 });
@@ -255,7 +266,7 @@ test('agent run outside an initialized workspace fails closed with a structured 
 
 test('SIGTERM during a slow page open aborts that open, closes nothing it never opened and still exits 0', { timeout: 60_000 }, async t => {
   const fake = await host(t), directory = await workspaceDir(t);
-  await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--name', 'laptop']);
+  await tendril(directory, ['workspace', 'init', '--service', fake.origin, '--owner', 'owner@example.test', '--handle', 'laptop']);
   await tendril(directory, ['page', 'new', 'notes']);
   const marker = join(directory, 'open-aborted');
   await writeFile(join(directory, 'pages/notes/agent.mjs'), `import { writeFile } from 'node:fs/promises';
@@ -287,23 +298,23 @@ test('account-linked MCP route: workspace key prints register_agent arguments an
     response.setHeader('Content-Type', 'application/json');
     if (request.url === '/api/service') return response.end(JSON.stringify({ contract: 3, core_release: 'test', limits: {} }));
     if (request.url === '/api/agent' && request.headers.authorization === 'Bearer ' + token)
-      return response.end(JSON.stringify({ id: 'ag_' + 'e'.repeat(26), name: 'assistant', account_state: 'claimed', grants: 0 }));
+      return response.end(JSON.stringify({ id: 'ag_' + 'e'.repeat(26), handle: 'assistant', bio: '', account_state: 'claimed', grants: 0 }));
     response.statusCode = 401; response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'No' } }));
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const service = `http://127.0.0.1:${server.address().port}`;
-  const key = await workspaceKey(dir, { service, name: 'assistant' });
+  const key = await workspaceKey(dir, { service, handle: 'assistant' });
   assert.match(key.register_agent.publicKey, /^[A-Za-z0-9_-]{43}$/);
-  assert.equal(key.register_agent.name, 'assistant');
-  assert.deepEqual((await workspaceKey(dir, { service, name: 'assistant' })).register_agent, key.register_agent, 'the key is created once');
-  await write(joinPath(dir, 'bad.json'), JSON.stringify({ structuredContent: { id: 'ag_' + 'e'.repeat(26), name: 'assistant', token: 'ta_' + 'f'.repeat(32) } }));
+  assert.equal(key.register_agent.handle, 'assistant');
+  assert.deepEqual((await workspaceKey(dir, { service, handle: 'assistant' })).register_agent, key.register_agent, 'the key is created once');
+  await write(joinPath(dir, 'bad.json'), JSON.stringify({ structuredContent: { id: 'ag_' + 'e'.repeat(26), handle: 'assistant', token: 'ta_' + 'f'.repeat(32) } }));
   await assert.rejects(adoptWorkspace(dir, { service, credential: 'bad.json' }), { status: 401 });
   await assert.rejects(read(joinPath(dir, 'tendriller.json')), { code: 'ENOENT' });
-  await write(joinPath(dir, 'result.json'), JSON.stringify({ structuredContent: { id: 'ag_' + 'e'.repeat(26), name: 'assistant', token } }));
+  await write(joinPath(dir, 'result.json'), JSON.stringify({ structuredContent: { id: 'ag_' + 'e'.repeat(26), handle: 'assistant', token } }));
   const adopted = await adoptWorkspace(dir, { service, credential: 'result.json' });
   assert.equal(adopted.agent.id, 'ag_' + 'e'.repeat(26));
   assert.equal(JSON.parse(await read(joinPath(dir, '.tendriller/agent/credential.json'), 'utf8')).token, token);
-  assert.equal(JSON.parse(await read(joinPath(dir, 'tendriller.json'), 'utf8')).agent.name, 'assistant');
+  assert.equal(JSON.parse(await read(joinPath(dir, 'tendriller.json'), 'utf8')).agent.handle, 'assistant');
   assert(seen.some(([url, auth]) => url === '/api/agent' && auth === 'Bearer ' + token), 'the token was verified before retention');
 });

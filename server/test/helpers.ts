@@ -29,7 +29,7 @@ export interface Handle {
   api: string;
   /** The creating agent's account-level credential. */
   token: string;
-  agent: { id: string; name: string; public_key: string };
+  agent: { id: string; handle: string; bio?: string; public_key: string };
   application: { id: string };
   lifetime: string;
   claimed?: boolean;
@@ -54,10 +54,10 @@ export function testPublicKey(): string {
 }
 
 /** Creates an unclaimed agent for an owner email, the way a new agent bootstraps. */
-export async function createAgent(owner: string, name = "maintainer"): Promise<{ token: string; agent: Handle["agent"] }> {
+export async function createAgent(owner: string, handle = "maintainer", bio = ""): Promise<{ token: string; agent: Handle["agent"] }> {
   const res = await req("/api/agents", { method: "POST", anonymous: true,
     headers: { "Content-Type": "application/json", "CF-Connecting-IP": randomTestIp() },
-    body: JSON.stringify({ owner, name, publicKey: testPublicKey() }) });
+    body: JSON.stringify({ owner, handle, ...(bio ? { bio } : {}), publicKey: testPublicKey() }) });
   if (res.status !== 201) throw new Error(`agent creation failed: ${res.status} ${await res.text()}`);
   return await res.json() as { token: string; agent: Handle["agent"] };
 }
@@ -197,13 +197,13 @@ export function dashboard(h: Handle, path: string, init: RequestInit = {}): Prom
 }
 
 /** Adds an agent to the handle's account through Dashboard → Your agents → Add agent. */
-export async function joinAccountAgent(h: Handle, name: string): Promise<{ token: string; agent: Handle["agent"] }> {
+export async function joinAccountAgent(h: Handle, handle: string, bio = ""): Promise<{ token: string; agent: Handle["agent"] }> {
   const issued = await dashboard(h, "/dashboard/agents/join", { method: "POST" });
   if (issued.status !== 201) throw new Error(`join code failed: ${issued.status} ${await issued.text()}`);
   const { code } = await issued.json() as { code: string };
   const res = await req("/api/agents/join", { method: "POST", anonymous: true,
     headers: { "Content-Type": "application/json", "CF-Connecting-IP": randomTestIp() },
-    body: JSON.stringify({ code, name, publicKey: testPublicKey() }) });
+    body: JSON.stringify({ code, handle, ...(bio ? { bio } : {}), publicKey: testPublicKey() }) });
   if (res.status !== 201) throw new Error(`join failed: ${res.status} ${await res.text()}`);
   return await res.json() as { token: string; agent: Handle["agent"] };
 }
@@ -212,7 +212,7 @@ export async function joinAccountAgent(h: Handle, name: string): Promise<{ token
 export async function grantAgent(h: Handle, agent: { token: string; agent: Handle["agent"] }, scopes?: string[]): Promise<Handle> {
   const res = await stub(h.id).fetch(new Request("https://tendril.internal/agent-grant/put", { method: "POST",
     headers: { "Content-Type": "application/json", "x-account-id": h.account! },
-    body: JSON.stringify({ agentId: agent.agent.id, publicKey: agent.agent.public_key, ...(scopes ? { scopes } : {}) }) }));
+    body: JSON.stringify({ agentId: agent.agent.id, handle: agent.agent.handle, bio: agent.agent.bio ?? "", publicKey: agent.agent.public_key, ...(scopes ? { scopes } : {}) }) }));
   if (!res.ok) throw new Error(`grant failed: ${res.status} ${await res.text()}`);
   return { ...h, token: agent.token, agent: agent.agent };
 }

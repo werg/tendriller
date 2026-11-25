@@ -29,6 +29,9 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
     await bundle({ absWorkingDir: fileURLToPath(root), entryPoints: { page: 'page.mjs', worker: 'worker.mjs' },
       outdir: fileURLToPath(output), bundle: true, splitting: true, format: 'esm', platform: 'browser',
       target: 'es2022', outExtension: { '.js': '.mjs' }, chunkNames: 'chunks/[name]-[hash]', logLevel: 'warning' });
+    await bundle({ absWorkingDir: fileURLToPath(root), entryPoints: ['domain.mjs'],
+      outfile: fileURLToPath(new URL('domain.js', output)), bundle: true, format: 'esm', platform: 'neutral',
+      target: 'es2022', external: ['@chronolog/peer-session'], logLevel: 'warning' });
     return fileURLToPath(output);
   } catch (cause) {
     await rm(output, { recursive: true, force: true });

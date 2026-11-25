@@ -36,11 +36,11 @@ export async function registerAgent(service, body, { fetch: fetcher = globalThis
 export async function joinAgent(service, body, { fetch: fetcher = globalThis.fetch, signal } = {}) {
   return credential(service, '/api/agents/join', assertValid('agentJoin', body), fetcher, signal);
 }
-/** The host answers {agent, token}; callers keep the flat {id, name, token, account_state}. */
+/** The host answers {agent, token}; callers keep the flat {id, handle, bio, token, account_state}. */
 export function agentCredential(result) {
   const agent = result?.agent;
   return agent && typeof agent === 'object'
-    ? { id: agent.id, name: agent.name, token: result.token, account_state: agent.claimed ? 'claimed' : 'unclaimed' }
+    ? { id: agent.id, handle: agent.handle, bio: agent.bio ?? '', token: result.token, account_state: agent.claimed ? 'claimed' : 'unclaimed' }
     : result;
 }
 async function credential(service, path, body, fetcher, signal) {
@@ -112,6 +112,7 @@ export function createAgentClient({ service, token }, { fetch: fetcher = globalT
     service: origin,
     request,
     self: options => request('', options, 'objectResponse'),
+    updateProfile: (body, options = {}) => request('', { method: 'PATCH', body: assertValid('agentProfileUpdate', body), ...options }, 'objectResponse'),
     pages: Object.freeze({
       list: ({ cursor, signal } = {}) => request('/pages' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), { signal }, 'agentPageList'),
       async *all({ signal } = {}) {

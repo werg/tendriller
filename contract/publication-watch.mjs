@@ -1,12 +1,17 @@
 /** Page-origin metadata only, shared by holding pages and published-page utilities. */
-export function watchPublicationUpdates({ base, onCurrent, onStatus = () => {}, signal }) {
+export function watchPublicationUpdates({ base, onCurrent, onAgents = () => {}, onStatus = () => {}, signal }) {
   const protocol = 'tendriller.publication.v1';
   const endpoint = new URL('_tendril/publication-ready', base);
   if (endpoint.origin !== location.origin || !['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
     throw Error('INVALID_PUBLICATION_WATCH');
   let socket, timer, probe, stopped = false, paused = false, recovering = false, epoch = 0, failures = 0;
   function notify(value) {
-    if (!value || Object.keys(value).sort().join() !== 'current,type,version' || value.type !== 'publication' || value.version !== 1 ||
+    if (!value || typeof value !== 'object') throw Error('INVALID_PUBLICATION_NOTICE');
+    if (value.type === 'agents' && value.version === 1 && Array.isArray(value.agents)) {
+      onAgents(value);
+      return;
+    }
+    if (Object.keys(value).sort().join() !== 'current,type,version' || value.type !== 'publication' || value.version !== 1 ||
         !Number.isSafeInteger(value.current) || value.current < 0) throw Error('INVALID_PUBLICATION_NOTICE');
     onCurrent(value);
   }
@@ -61,7 +66,7 @@ export function watchPublicationUpdates({ base, onCurrent, onStatus = () => {}, 
       stream.onmessage = event => {
         if (stopped || paused || socket !== stream || attempt !== epoch || recovering) return;
         try {
-          if (typeof event.data !== 'string' || event.data.length > 256) throw Error('INVALID_PUBLICATION_NOTICE');
+          if (typeof event.data !== 'string' || event.data.length > 16384) throw Error('INVALID_PUBLICATION_NOTICE');
           notify(JSON.parse(event.data)); clearTimeout(timer); timer = undefined; failures = 0;
           onStatus({ state: 'connected' });
         } catch { close(); onStatus({ state: 'protocol_error' }); }

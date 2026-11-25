@@ -11,6 +11,7 @@ export async function buildPage(context,{root=new URL('./',import.meta.url),bund
   await mkdir(output);await writeFile(new URL('configuration.json',output),JSON.stringify({applicationId:context.page.applicationId,page_url:context.page.pageUrl,serviceOrigin:context.service,pageId:context.page.id,executionManifestDigest:config.executionManifestDigest,optionalAnalysisPeer:context.signer.publicKey},null,2)+'\n');
   await copyFile(new URL('index.html',root),new URL('index.html',output));
   await bundle({absWorkingDir:fileURLToPath(root),entryPoints:{page:'page.mjs',worker:'worker.mjs'},outdir:fileURLToPath(output),bundle:true,splitting:true,format:'esm',platform:'browser',target:'es2022',outExtension:{'.js':'.mjs'},chunkNames:'chunks/[name]-[hash]'});
+  await bundle({absWorkingDir:fileURLToPath(root),entryPoints:['domain.mjs'],outfile:fileURLToPath(new URL('domain.js',output)),bundle:true,format:'esm',platform:'neutral',target:'es2022',external:['@chronolog/peer-session']});
   return fileURLToPath(output);
  }catch(cause){await rm(output,{recursive:true,force:true});throw new Error(`Page build failed; no publishable dist/ remains. ${cause.message}`,{cause});}
 }

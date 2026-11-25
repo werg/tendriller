@@ -1,228 +1,98 @@
-# Requests, receipts, answers and listener presence
+# Multi-agent chat, backchannel & ephemeral RPC (`agent-requests.mjs`)
 
-A page-to-agent request has two lifecycles: its **journal operation** and the
-**consumer's work**. A `stored` operation is a signed request durable on the
-sender's device, and a `materialized` accepted outcome means the current local
-replay admitted it. That outcome stays revisable until finalized. Neither means
-an agent has read it. A peer retention receipt (`retained()`) and a configured
-finality proof (`finalized()`) also do not acknowledge application-level work.
+The starter kit includes `shared/helpers/agent-requests.mjs`, an importable
+multi-agent Chronolog communication pipe with two durable commands (`agentMessage`,
+`agentReceipt`), one coherent query (`agentFeed`), deterministic routing helpers
+(`parseAddressing`, `shouldAgentRespond`, `evaluateFailover`), and ephemeral
+signal helpers (`announceAgentPresence`, `watchAgentsPresence`, `streamAgentReply`,
+`watchAgentStreams`).
 
-The first-app archive includes `shared/helpers/agent-requests.mjs`, an importable,
-application-owned pattern using public Chronolog commands and queries. It supplies
-`agentRequest`, `agentReceipt`, `agentAnswer`, `agentHeartbeat` and `agentInbox`.
-It does not add journal statuses, a hidden agent service, or a background wake
-mechanism. An actual consumer process must stay running.
-
-## Add the pattern to your application definition
-
-Before initial configuration, compose it into your existing `domain.mjs`:
+## 1. Wire the commands and query into `domain.mjs`
 
 ```js
 import { defineApplication } from '@chronolog/peer-session';
 import { agentRequestCommands, agentRequestQueries } from '../../shared/helpers/agent-requests.mjs';
 
 export const definition = defineApplication({
-  id: 'my-application', version: '1',
+  id: 'my-app',
+  version: '1',
   commands: { ...agentRequestCommands /*, your domain commands */ },
   queries: { ...agentRequestQueries /*, your domain queries */ },
 });
 ```
 
-For an existing application, adding commands changes its definition. A UI
-republish alone does not change the definition a participant opened, so install
-the same definition in every native and browser participant. Application schema
-changes are ordinary authorized transactions, not a code-publication step. The supplied Shared Notes definition stays
-unchanged; this helper is an optional pattern to adapt for a new domain.
+- Every durable message is authenticated by `event.author` (the cryptographic
+  signing public key) — never by a self-claimed author field.
+- `channel: 'chat'` renders in the user-facing chat timeline.
+- `channel: 'agents'` renders in the collapsible **Agent activity** drawer for
+  agent-to-agent delegation and coordination.
+- `to` is an array of 64-hex signing public keys, `['*']` for `@all`, or `[]`
+  for a general message handled by the page's primary agent.
 
-Requests address an enrolled participant's signing `deviceId` in `recipient`.
-Use the application's configured native participant identity; do not pick an
-arbitrary connected peer. Inputs identify a `consumerId` and a fresh `runId`, but
-those are labels, not separate signing identities. Local attach clients share the
-owner's signer. If consumers need separate authorization, enroll separate
-participants and grant their actual capabilities. With an assistant binding,
-grant only the commands/queries that consumer needs.
-
-## Keep the whole request reference
-
-A receipt or answer contains **both** `requestAuthor` and
-`requestOperationId`, copied unchanged from the query/event. The schema permits
-512 characters for an operation reference, matching the current public protocol
-bound. Do not truncate, slice a suffix, split a namespace, or assume a 128-character
-identifier. Different authors can use the same operation ID.
-
-The query matches references against the request's full authenticated identity
-and accepts receipts/answers only when their event author equals its `recipient`.
-It ignores orphan references. The displayed consumer identity comes from the
-signed event author, never from a caller-provided claim. This is a shared-app
-pattern: requests and answers are visible to members of that application, not a
-private mailbox. Adapt the domain's permissions and information model as needed.
-
-## Send once, then show each state on the request
-
-Capture intent before dispatch, as in [uncertain submission](APP_PATTERNS.md#3-preserve-uncertain-intent-before-dispatch):
+## 2. Addressing & primary/secondary routing
 
 ```js
-const pendingKey = `ask:${session.applicationId}:${session.identity.publicKey}`;
-if (localStorage.getItem(pendingKey)) throw Error('Resolve the previous submission first.');
-const pending = {
-  operationId: crypto.randomUUID(), createdAtMs: Date.now(),
-  command: 'agentRequest',
-  input: { recipient: nativeDeviceId, topic: 'analysis', text: question.trim() },
-};
-localStorage.setItem(pendingKey, JSON.stringify(pending)); // Failure prevents dispatch.
-const operation = await session.command(pending.command, pending.input, {
-  operationId: pending.operationId,
-});
-const result = await operation.materialized({ signal: AbortSignal.timeout(15_000) });
-// Inspect result.outcome. A provisional accepted outcome is not a receipt or answer.
+import { parseAddressing, shouldAgentRespond } from '../../shared/helpers/agent-requests.mjs';
+
+const parsed = parseAddressing('@reviewer please check this', roster);
+// -> { to: [reviewer.public_key], handles: ['reviewer'], explicit: true, broadcast: false }
 ```
 
-Keep this exact record after an uncertain reply/timeout. Inspect/retry the
-original operation with `session.operations.get(id)` and `session.operations.retry(id)`;
-do not generate another request. If a configured closed-time frontier excludes the
-original, its intent stays inspectable. Sending the question again is a separate
-reviewed action with a new operation identity, never a silent retimestamp. Once the accepted
-request appears in `agentInbox`, the durable query supplies it after any reload;
-local storage is only for unresolved intent and per-device read/unread markers.
+Every native agent checks `shouldAgentRespond(message, { selfPublicKey, selfHandle, roster, maxHops: 5 })`:
 
-| Evidence | Request card copy |
-| --- | --- |
-| Local pending reference, no observed operation | Sending; outcome not yet known |
-| Operation `stored`, not yet materialized | Saved on this device; waiting for local materialization |
-| Operation `materialized`, rejected | Request rejected for now; show the domain reason and watch for revisions |
-| Query contains request, no receipt/answer | Sent at [time]; waiting for the listener to acknowledge |
-| Query contains receipt | Seen by [named consumer] at [time]; waiting for an answer |
-| Query contains answer | Answered at [time]; show the answer on this request |
-| `excluded` by a configured closed frontier | Request was first seen behind a sealed time; review it before sending a new one |
+- **Primary agent** responds to general `chat` messages (`to: []`), and steps
+  back cleanly when the user explicitly addresses a secondary `@handle`.
+- **Non-primary agents** stay silent on general messages (`to: []`) and respond
+  only when directly addressed (`@handle`, `@all`, or delegated on `agents`).
+- **Loop guardrails:** messages with `expectReply: false` or `hopCount >= 5`
+  never trigger automatic replies. Delegated specialists can set
+  `replyToUser: true` to post directly to `chat` or return results on `agents`
+  for the primary agent to synthesize.
 
-Use `createLiveView(session, { query: 'agentInbox', input: null, ... })` for one
-coherent snapshot. `requestDelivery(request)` returns `awaiting-receipt`, `seen`
-or `answered`; a late receipt never changes an answered card back to seen.
-Keep operation rejections, observation errors and finality exclusions separate. When
-`session.changes()` reports a revision, replace the displayed query result with a
-fresh coherent snapshot instead of merging revised or excluded answers into it. Display an empty inbox, loading state and actionable error state.
+## 3. Ephemeral Agent Cards & streaming previews (zero durable heartbeats)
 
-Each request's `sentAtMs` and each receipt/answer's `atMs` come from
-`view.readEvents(...).events[].authorTimestampMs`. This metadata **is available
-inside a declared query**; it is a decimal string in the public event envelope.
-The helper validates it before converting to a safe integer. It represents the
-signer's clock, not a server-certified delivery time. Show unknown time when it
-cannot be represented, and keep clock disagreement visible.
-
-Render answers as named, readable cards or conversations, with expandable long
-text and links labeled by their destination's meaning. Use answer `eventId`s for
-per-device unread markers, scoped by application and browser profile; a page
-reload must not recreate an answered request or mark every old answer unread.
-
-## A consumer acknowledges actual work
-
-The consumer first reads the request, submits `agentReceipt`, and awaits its
-accepted materialization. It then performs the work and submits `agentAnswer` with
-the same reference. Both use caller-owned stable operation IDs:
+Never write periodic durable heartbeat records to Chronolog. Use ephemeral
+signals instead:
 
 ```js
-import { createHash } from 'node:crypto';
-
-const reference = request => ({
-  requestAuthor: request.requestAuthor,
-  requestOperationId: request.requestOperationId,
-  consumerId, runId,
-});
-const workKey = request => createHash('sha256').update(JSON.stringify([
-  session.applicationId, request.requestAuthor, request.requestOperationId, consumerId,
-])).digest('hex');
-async function accepted(name, input, operationId) {
-  const operation = await session.command(name, input, { operationId });
-  const result = await operation.materialized({ signal: AbortSignal.timeout(15_000) });
-  if (result.outcome !== 'accepted') throw Error(`Consumer command rejected: ${result.rejectionCode}`);
-}
-
-// Only consume rows addressed to session.identity.publicKey and an implemented topic.
-const ref = reference(request);
-const key = workKey(request);
-await accepted('agentReceipt', ref, `receipt:${key}:${runId}`);
-// Application-owned worker: durably retain the exact result by key BEFORE sending.
-// On restart it returns that retained result, rather than repeating side effects.
-const text = await durableWorkResult(key, request);
-// Retain the exact answer input (including runId) with that result too.
-const answer = await retainAnswerInput(key, { ...ref, text });
-await accepted('agentAnswer', answer, `answer:${key}`);
-```
-
-Here `durableWorkResult` and `retainAnswerInput` are the domain's durable work
-store, not Tendriller APIs. The latter must return the original input on retry,
-including its original run ID. Bound your run IDs (a UUID suffices) so these new
-operation IDs stay within the protocol limit. A later run may add its own receipt,
-but must not reuse an answer ID with changed text or metadata.
-
-For a purely computed answer, caching the result before submission is enough.
-For a file edit, payment, email or other external effect, use the target system's
-idempotency support or a transactional work store and reconcile uncertain effects.
-Neither a materialized request nor a receipt gives exactly-once external execution.
-Persist an event replay cursor **after** durable handling/checkpointing, never on
-read alone. A crash before that checkpoint can redeliver a request; the work key
-and exact answer input make that redelivery safe. After a revision, reread a coherent snapshot and inspect any finality-excluded
-request before continuing an old cursor. A cursor is bound to the revision that
-produced it, so a stale one needs an explicit reread, never a silent skip.
-
-For an event-driven process use `tendril --page notes watch --events
---topics '["agent/request"]'` with the last committed cursor, or the public event forwarder. Plain `watch`
-reports coalesced query invalidations and is not an event delivery log. See
-[CLI supervision](tools/CLI.md) and [restart checklist](AGENT_RESTART.md).
-Map each raw request event into the query's reference shape before using the
-consumer code above:
-
-```js
-const request = { ...event.payload,
-  requestAuthor: event.author, requestOperationId: event.operationId };
-```
-
-Use this mapping only for `agent/request` events from the intended application;
-filter by recipient and implemented topic before accepting work.
-
-## Live presence and streaming previews (preferred, zero durable writes)
-
-Peer connectivity only says an enrolled participant is reachable. It does not say
-whether its agent loop is actively handling requests or currently thinking.
-**Do not write periodic durable `agentHeartbeat` records every 30 seconds**—that
-adds ~120 signed journal entries per hour and burns through history quotas even
-while idle.
-
-Instead, use the ephemeral signal helpers in `shared/helpers/agent-requests.mjs`:
-
-```js
-// Native agent process: broadcasts presence ONLY while a peer is connected and
-// responds immediately to on-demand pings. Writes zero durable Chronolog records.
 import { announceAgentPresence, streamAgentReply } from '../../shared/helpers/agent-requests.mjs';
 
-const presence = announceAgentPresence(session, {
-  consumerId: 'ops-agent', role: 'Operations assistant', topics: ['chat'],
+const card = announceAgentPresence(session, {
+  handle: context.agent.handle,
+  bio: context.agent.bio,
+  capabilities: ['chat', 'code'],
+  isPrimary: context.roster.isPrimary,
 });
-// While generating an answer, mark busy and stream live previews:
-presence.setState('busy');
+context.roster.onChange(r => card.updateCard({ isPrimary: r.is_primary }));
+
+// Stream partial replies ephemerally while working:
 await streamAgentReply(session, {
-  requestAuthor: req.requestAuthor, requestOperationId: req.requestOperationId,
-  text: partialReply,
+  messageAuthor: msg.author,
+  messageOperationId: msg.operationId,
+  handle: context.agent.handle,
+  text: partialText,
 });
-// Then commit the final durable agentAnswer and clear the stream:
+// Commit durable agentMessage reply, then clear the stream:
 await streamAgentReply(session, {
-  requestAuthor: req.requestAuthor, requestOperationId: req.requestOperationId,
-  text: '', done: true,
+  messageAuthor: msg.author,
+  messageOperationId: msg.operationId,
+  handle: context.agent.handle,
+  text: '',
+  done: true,
 });
-presence.setState('listening');
 ```
 
-On the browser side, `watchAgentPresence(session, { peer, onChange })` subscribes
-with `mode: 'latest', includeLatest: true` and sends an immediate ping on connect,
-so late-joining pages see live availability (`available`, `busy`, `stale`, `stopped`)
-right away without any durable writes. `watchAgentStream` feeds live thinking
-previews directly into `mountAgentChat.setStreamingReply(...)`.
+## 4. Handle-addressed ephemeral RPC (`signal-request.mjs`)
 
-## Optional durable listener checkpoints
+For up to 4 MiB chunked JSON request/reply between browser ↔ any agent or
+agent ↔ agent without writing to the durable journal, use `createAgentRpc` and
+`serveAgentRpc` from `shared/helpers/signal-request.mjs`.
 
-If an application specifically requires an auditable durable record of when a
-consumer started or stopped (not a periodic timer), `agentHeartbeat` remains
-available as an occasional lifecycle command (`state: 'listening'` on startup,
-`state: 'stopped'` on shutdown). Avoid sub-minute polling intervals so the journal
-stays lean; use `consumerPresence` with explicit wall-clock expiry when displaying
-durable checkpoints.
+## 5. Browser chat & failover UX (`chat-session.mjs`)
+
+Use `mountConnectedAgentChat({ runtime: window.tendril, session, container })`
+from `shared/ui/chat-session.mjs`. It connects automatically to `tendril.agents`,
+renders per-agent `@handle` badges, `@handle` autocomplete, `To:` target chips,
+collapsible **Agent activity**, queued TTS playback, and a non-blocking
+failover banner when the primary agent is offline or stopped and another
+enrolled agent is online.

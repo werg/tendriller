@@ -1,13 +1,12 @@
 // An agent workspace: one account-level credential and signer, many pages.
 //
-//   tendriller.json          { schemaVersion, service, agent: { id, name }, kit, pages: { <slug>: { id } } }
+//   tendriller.json          { schemaVersion, service, agent: { id, handle, bio }, kit, pages: { <slug>: { id } } }
 //   pages/<slug>/            per-page source (agent.mjs, domain.mjs, page.mjs, ...)
 //   .tendriller/agent/       identity.sqlite (shared signer), credential.json, attach.json, owner/ (attach socket)
 //   .tendriller/pages/<id>/  page.json, device.sqlite, descriptor and setup records
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { assertValid } from '@tendriller/core/contract';
-import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createWorkspacePage } from './page-creation.mjs';
@@ -84,10 +83,19 @@ export async function openPageDevice({ path, signer, create = false }) {
   return openNativeDevice({ path, managedSigner: signer, ...(create ? { create: true } : {}) });
 }
 
-const agentName = value => {
-  const name = String(value ?? `agent-${hostname()}`).replace(/[^A-Za-z0-9 ._-]+/gu, '-').replace(/^[^A-Za-z0-9]+/u, '').slice(0, 64);
-  if (!name) throw failure('invalid_agent_name', 'Supply --name with letters, digits, space, dot, underscore or dash.', 64);
-  return name;
+const HANDLE_RE = /^[a-z][a-z0-9_-]{1,31}$/u;
+const agentHandle = value => {
+  const handle = String(value ?? '').trim().replace(/^@+/u, '').toLowerCase();
+  if (!HANDLE_RE.test(handle)) {
+    throw failure('invalid_agent_handle', 'Supply a speakable --handle matching ^[a-z][a-z0-9_-]{1,31}$ (e.g. --handle atlas).', 64);
+  }
+  return handle;
+};
+const agentBio = value => {
+  if (value === undefined || value === null) return '';
+  const bio = String(value).replace(/[\r\n\t]+/gu, ' ').trim();
+  if (bio.length > 160) throw failure('invalid_agent_bio', '--bio must be at most 160 characters.', 64);
+  return bio;
 };
 
 async function requireEmptyWorkspace(root) {
@@ -97,7 +105,7 @@ async function requireEmptyWorkspace(root) {
   if (blocking.includes('pages')) throw failure('workspace_not_empty', 'This folder already holds page sources without a workspace file. Restore tendriller.json instead of creating a new agent.');
 }
 
-async function enroll(root, { service, name, kit, signal }, request) {
+async function enroll(root, { service, handle, bio = '', kit, signal }, request) {
   const origin = requireServiceOrigin(service), paths = workspacePaths(root);
   await requireEmptyWorkspace(root);
   const retained = await readJson(paths.credential, true);
@@ -109,10 +117,19 @@ async function enroll(root, { service, name, kit, signal }, request) {
   const signer = await openSharedSigner(paths.identity, { create: !existsSync(paths.identity) });
   let credential = retained;
   if (!credential) {
-    const result = await request(origin, { name: agentName(name), publicKey: publicKeyBase64url(signer.publicKey) }, { signal });
-    credential = await savePrivateJson(paths.credential, { schemaVersion: 1, service: origin,
-      agent: { id: result.id, name: result.name }, token: result.token, publicKey: signer.publicKey,
-      accountState: result.account_state ?? null });
+    const cleanHandle = agentHandle(handle);
+    const cleanBio = agentBio(bio);
+    const result = await request(origin, {
+      handle: cleanHandle,
+      ...(cleanBio ? { bio: cleanBio } : {}),
+      publicKey: publicKeyBase64url(signer.publicKey),
+    }, { signal });
+    credential = await savePrivateJson(paths.credential, {
+      schemaVersion: 1, service: origin,
+      agent: { id: result.id, handle: result.handle, bio: result.bio ?? cleanBio },
+      token: result.token, publicKey: signer.publicKey,
+      accountState: result.account_state ?? null,
+    });
   }
   if (credential.publicKey !== signer.publicKey) throw failure('agent_signer_mismatch', 'The retained signer does not match the registered agent key. Restore the original identity.sqlite.');
   const config = { schemaVersion: 1, service: origin, agent: credential.agent, ...(kit ? { kit } : {}), pages: {} };
@@ -130,29 +147,38 @@ async function ensureGitignore(root) {
 }
 
 /** Register a new unclaimed agent; the owner claims it by signing in to a page it creates. */
-export async function initWorkspace(root, { service, owner, name, kit, signal } = {}) {
+export async function initWorkspace(root, { service, owner, handle, bio = '', kit, signal } = {}) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(owner ?? '') || owner.length > 254) throw failure('invalid_owner', 'workspace init requires --owner VERIFIED_EMAIL', 64);
+  const cleanHandle = agentHandle(handle);
+  const cleanBio = agentBio(bio);
   const origin = requireServiceOrigin(service);
   if (!existsSync(workspacePaths(root).credential)) requireCreationReady(await describeReadiness(origin, { signal }), { service: origin });
-  return enroll(root, { service: origin, name, kit, signal }, (origin, body, options) => registerAgent(origin, { owner, ...body }, options));
+  return enroll(root, { service: origin, handle: cleanHandle, bio: cleanBio, kit, signal }, (origin, body, options) => registerAgent(origin, { owner, ...body }, options));
 }
 /** Join the inviting account with a one-time code from Dashboard -> Your agents -> Add agent. */
-export async function joinWorkspace(root, { service, code, name, kit, signal } = {}) {
+export async function joinWorkspace(root, { service, code, handle, bio = '', kit, signal } = {}) {
   if (typeof code !== 'string' || !code.trim()) throw failure('invalid_join_code', 'workspace join requires --code from the owner dashboard', 64);
-  return enroll(root, { service, name, kit, signal }, (origin, body, options) => joinAgent(origin, { code: code.trim(), ...body }, options));
+  const cleanHandle = agentHandle(handle);
+  const cleanBio = agentBio(bio);
+  return enroll(root, { service, handle: cleanHandle, bio: cleanBio, kit, signal }, (origin, body, options) => joinAgent(origin, { code: code.trim(), ...body }, options));
 }
 
 /**
  * The account-linked MCP route: create the shared key and print the public
  * register_agent arguments. Nothing is sent; the key is retained for adoptWorkspace.
  */
-export async function workspaceKey(root, { service, name } = {}) {
+export async function workspaceKey(root, { service, handle, bio = '' } = {}) {
   const origin = requireServiceOrigin(service), paths = workspacePaths(root);
+  const cleanHandle = agentHandle(handle);
+  const cleanBio = agentBio(bio);
   await requireEmptyWorkspace(root);
   if (existsSync(paths.credential)) throw failure('agent_credential_exists', `${paths.credential} already exists. Resume with tendril workspace adopt or restore tendriller.json.`);
   const signer = await openSharedSigner(paths.identity, { create: !existsSync(paths.identity) });
-  return { service: origin, register_agent: { name: agentName(name), publicKey: publicKeyBase64url(signer.publicKey) },
-    next: 'Call register_agent through the account-linked connector for this service with exactly these arguments, save its result privately, then run tendril workspace adopt --service ORIGIN --credential FILE.' };
+  return {
+    service: origin,
+    register_agent: { handle: cleanHandle, ...(cleanBio ? { bio: cleanBio } : {}), publicKey: publicKeyBase64url(signer.publicKey) },
+    next: 'Call register_agent through the account-linked connector for this service with exactly these arguments, save its result privately, then run tendril workspace adopt --service ORIGIN --credential FILE.',
+  };
 }
 
 /** Retain the agent credential an account-linked register_agent call returned for this workspace's key. */
@@ -162,12 +188,32 @@ export async function adoptWorkspace(root, { service, credential: file, kit, sig
   if (!existsSync(paths.identity)) throw failure('agent_signer_missing', 'Run tendril workspace key first; the registered public key must be this workspace key.', 64);
   const result = await readJson(resolve(root, file));
   const value = agentCredential(result?.structuredContent ?? result);
-  if (!/^ag_[a-z2-7]{26}$/u.test(value?.id ?? '') || !AGENT_TOKEN.test(value?.token ?? '') || typeof value?.name !== 'string')
-    throw failure('invalid_agent_credential', 'The file does not hold a register_agent result {id, name, token}.', 64);
+  if (!/^ag_[a-z2-7]{26}$/u.test(value?.id ?? '') || !AGENT_TOKEN.test(value?.token ?? '') || typeof value?.handle !== 'string' || !HANDLE_RE.test(value.handle))
+    throw failure('invalid_agent_credential', 'The file does not hold a register_agent result {id, handle, token}.', 64);
   const origin = requireServiceOrigin(service);
   // The token is checked against this service before the workspace retains it.
   await createAgentClient({ service: origin, token: value.token }).self({ signal });
-  return enroll(root, { service: origin, name: value.name, kit, signal }, async () => value);
+  return enroll(root, { service: origin, handle: value.handle, bio: value.bio ?? '', kit, signal }, async () => value);
+}
+
+/** Update this workspace agent's @handle and/or bio on the host and in local workspace files. */
+export async function updateWorkspaceProfile(workspace, { handle, bio } = {}, { signal } = {}) {
+  const body = {};
+  if (handle !== undefined) body.handle = agentHandle(handle);
+  if (bio !== undefined) body.bio = agentBio(bio);
+  if (Object.keys(body).length === 0) throw failure('invalid_profile_update', 'Supply --handle and/or --bio to update the agent profile.', 64);
+  const client = await workspace.client();
+  const updated = await client.updateProfile(body, { signal });
+  const nextAgent = {
+    id: workspace.config.agent.id,
+    handle: updated.handle ?? body.handle ?? workspace.config.agent.handle,
+    bio: updated.bio ?? body.bio ?? workspace.config.agent.bio ?? '',
+  };
+  workspace.config.agent = nextAgent;
+  await replaceJson(workspace.paths.config, workspace.config);
+  const cred = await workspace.credential();
+  await replaceJson(workspace.paths.credential, { ...cred, agent: nextAgent }, 0o600);
+  return nextAgent;
 }
 
 export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, WebSocket } = {}) {
@@ -275,18 +321,26 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       return savePrivateJson(paths.attach, { id: 'local-terminal', token: createNativeAttachmentKey(), policy: ATTACH_POLICY });
     },
     /** Everything a page module needs; it never sees the agent token or private key bytes. */
-    async pageContext(ref, { signal, report = () => {} } = {}) {
+    async pageContext(ref, { signal, report = () => {}, roster } = {}) {
       const page = await workspace.page(ref), agent = await getClient(), shared = await workspace.signer();
       const host = agent.page(page.id, { applicationId: page.application.id });
       const privatePath = name => {
         if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name)) throw failure('invalid_private_name', 'Private record names are plain file names.');
         return join(page.directory, name);
       };
+      const defaultRoster = Object.freeze({
+        get primaryAgentId() { return null; },
+        get isPrimary() { return false; },
+        get agents() { return []; },
+        snapshot: () => ({ primary_agent_id: null, is_primary: false, agents: [] }),
+        onChange: () => () => {},
+      });
       return Object.freeze({
         workspace: root, service: config.service, agent: config.agent,
         page: Object.freeze({ id: page.id, slug: page.slug, name: page.name, applicationId: page.application.id,
           pageUrl: page.page_url, directory: page.directory, source: page.source }),
         host, signal, report,
+        roster: roster ?? defaultRoster,
         // Opaque signing authority stays in the Node-only context; never serialize it
         // into configuration, authored files, diagnostics or a checkpoint record.
         signer: Object.freeze({ publicKey: shared.publicKey, privateKey: shared.privateKey }),

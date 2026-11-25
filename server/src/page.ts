@@ -13,8 +13,9 @@ import { AGENT_SCOPES, accountActive, allows, authenticateLocalPage, currentPrin
 import { handleManagement } from "./management";
 import { currentIconRaster, iconRasterResponse, iconRasterTag, remoteIconSize, storeIconRaster } from "./icon-raster";
 import { addActivity } from "./activity";
-import { deleteAgentGrant, mirroredAgents, putAgentGrant } from "./agent-grants";
+import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimaryAgent } from "./agent-grants";
 import { listAccountAgents } from "./agents";
+import { handlePageMcp } from "./mcp-participant";
 import { publicBase } from "./urls";
 import { brandHead, brandMark, brandStyle } from "./brand";
 import { serviceStyle } from "./accounts/ui";
@@ -82,6 +83,9 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
   if (PEER_ROUTE.test(sub)) return handlePeers(t, req, url, sub, principal);
   if (sub === "application") return handleApplication(t, req, principal);
   if (sub === 'manage') return handleManagement(t, req, base, principal);
+  if (sub === 'mcp/grants' || sub === 'mcp/connect' || sub === 'mcp/rekey' || sub === 'mcp/sync' || /^mcp\/[A-Za-z0-9_-]{1,128}$/.test(sub)) {
+    return handlePageMcp(t, req, sub, principal);
+  }
   if (sub === 'service' && m === 'GET') return json(serviceDescriptor());
   if (sub === "trust-version" && m === "POST") {
     if (!allows(principal, "page.owner") || !session?.account_id) throw new HttpError(403, "forbidden");
@@ -111,12 +115,35 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     return new Response("Report received. Thank you.", { headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
   }
 
-  // The owner's per-agent grant checkboxes. Agents belong to the account; this page lists them.
+  // Unified page agent roster (non-display authenticated users can read; owner can toggle grants and choose primary).
   if (sub === "agents" && m === "GET") {
-    if (!allows(principal, "page.owner") || !principal.accountId) throw new HttpError(403, "forbidden");
+    if (principal.role === "display") throw new HttpError(403, "forbidden");
+    const roster = pageAgents(t);
+    const isOwner = allows(principal, "page.owner") && !!principal.accountId;
     const granted = new Set(mirroredAgents(t));
-    const agents = (await listAccountAgents(t.env, principal.accountId)).map(agent => ({ id: agent.id, name: agent.name, granted: granted.has(agent.id) }));
-    return json({ agents, dashboard: `${publicBase(t.env)}/dashboard#agents` }, 200, { "Cache-Control": "no-store" });
+    const account_agents = isOwner
+      ? (await listAccountAgents(t.env, principal.accountId!)).map(agent => ({
+          id: agent.id, handle: agent.handle, bio: agent.bio, public_key: agent.public_key, granted: granted.has(agent.id),
+        }))
+      : undefined;
+    return json({
+      ...roster,
+      can_manage: isOwner,
+      dashboard: `${publicBase(t.env)}/dashboard#agents`,
+      connections: `${publicBase(t.env)}/connections`,
+      ...(account_agents ? { account_agents } : {}),
+    }, 200, { "Cache-Control": "no-store" });
+  }
+  if (sub === "agents/primary" && m === "PUT") {
+    if (!allows(principal, "page.owner") || !principal.accountId) throw new HttpError(403, "forbidden");
+    await requireWritesOpen(t.env);
+    const b = await readJson(req, 4096);
+    if (b.agent_id !== null && typeof b.agent_id !== "string") {
+      throw new HttpError(400, "bad_request", "Expected { agent_id: string | null }");
+    }
+    if (!currentPrincipal(t, principal, key)) throw new HttpError(401, "unauthorized", "The owner session changed. Sign in again.");
+    const roster = setPrimaryAgent(t, b.agent_id, `owner:${principal.accountId}`);
+    return json(roster, 200, { "Cache-Control": "no-store" });
   }
   if (sub === "agents" && m === "POST") {
     if (!allows(principal, "page.owner") || !principal.accountId) throw new HttpError(403, "forbidden");
@@ -127,9 +154,9 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
     if (b.granted) {
       const agent = (await listAccountAgents(t.env, principal.accountId)).find(row => row.id === b.agent);
       if (!agent) throw new HttpError(404, "not_found", "No such agent on your account");
-      await putAgentGrant(t, principal.accountId, agent.id, agent.public_key, [...AGENT_SCOPES]);
+      await putAgentGrant(t, principal.accountId, agent.id, agent.handle, agent.bio, agent.public_key, [...AGENT_SCOPES]);
     } else await deleteAgentGrant(t, b.agent, `owner:${principal.accountId}`);
-    return json({ agent: b.agent, granted: b.granted });
+    return json({ agent: b.agent, granted: b.granted, roster: pageAgents(t) });
   }
   if (sub === "links" && m === "GET") {
     if (!allows(principal, "page.owner")) throw new HttpError(403, "forbidden");
@@ -204,7 +231,13 @@ export async function handlePage(t: Tendril, req: Request, url: URL): Promise<Re
 
   if (sub === "info" && m === "GET") {
     const v = servedVersion(t);
-    return json({ application: selectedApplication(t), id: t.tid, version: v, base, files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [], publication: publicationManifest(t, v, base), features: t.features() });
+    return json({
+      application: selectedApplication(t), id: t.tid, version: v, base,
+      files: v > 0 ? versionFiles(t, v).map((f) => f.path) : [],
+      publication: publicationManifest(t, v, base),
+      features: t.features(),
+      ...(principal.role !== "display" ? { agents: pageAgents(t) } : {}),
+    });
   }
 
   if (sub === "share-target" && m === "POST") {

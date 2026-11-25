@@ -1,9 +1,10 @@
--- Account-level maintenance agents and their explicit per-page grants.
+-- Account-level maintenance agents (self-chosen @handle + bio) and their explicit per-page grants.
 CREATE TABLE agents (
   id TEXT PRIMARY KEY CHECK (id GLOB 'ag_*'),
   account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE,
   owner_email TEXT,
-  name TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  bio TEXT NOT NULL DEFAULT '',
   token_hash TEXT NOT NULL UNIQUE,
   public_key TEXT NOT NULL,
   created_at INTEGER NOT NULL,
@@ -12,8 +13,8 @@ CREATE TABLE agents (
   CHECK (account_id IS NOT NULL OR owner_email IS NOT NULL)
 );
 
--- Names are unique among an account's live agents; revoked names may be reused.
-CREATE UNIQUE INDEX agents_account_name ON agents(account_id, name) WHERE account_id IS NOT NULL AND revoked_at IS NULL;
+-- Handles are unique case-insensitively among an account's live agents; revoked handles may be reused.
+CREATE UNIQUE INDEX agents_account_handle ON agents(account_id, lower(handle)) WHERE account_id IS NOT NULL AND revoked_at IS NULL;
 CREATE INDEX agents_owner_email ON agents(owner_email) WHERE account_id IS NULL;
 
 CREATE TABLE agent_grants (

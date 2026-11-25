@@ -1,138 +1,263 @@
 import { defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
 
-// Application-owned facts. These do not alter the journal's operation states.
-// Use the authenticated event author, never a claimed author in an input.
-const text = maxLength => ({ type: 'string', minLength: 1, maxLength });
-const object = properties => ({ type: 'object', properties,
-  required: Object.keys(properties), additionalProperties: false });
-const identity = { type: 'string', minLength: 64, maxLength: 64 };
-const reference = { requestAuthor: identity, requestOperationId: text(512) };
-const consumer = { consumerId: text(128), runId: text(128) };
-export const agentRequestTopics = Object.freeze([
-  'agent/request', 'agent/receipt', 'agent/answer', 'agent/heartbeat',
-]);
-const eventCommand = (description, topic, properties) => defineCommand({
-  description, input: object(properties),
-  prepare(input) {
-    for (const field of ['recipient', 'requestAuthor']) {
-      if (input[field] !== undefined && !/^[a-f0-9]{64}$/u.test(input[field])) {
-        throw Error('AGENT_REQUEST_IDENTITY_INVALID');
-      }
-    }
-    return program(emit(topic, input));
-  },
-});
+// Multi-agent Chronolog communication pipe.
+// Use the authenticated event.author, never a claimed author in an input.
+const str = (minLength, maxLength) => ({ type: 'string', minLength, maxLength });
+const hex64 = { type: 'string', minLength: 64, maxLength: 64 };
+const targetItem = { type: 'string', minLength: 1, maxLength: 64 };
+
+export const agentRequestTopics = Object.freeze(['agent/message', 'agent/receipt']);
+export const agentBusTopics = agentRequestTopics;
+
+const validRecipient = value => value === '*' || (typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value));
 
 export const agentRequestCommands = Object.freeze({
-  agentRequest: eventCommand('Ask a particular enrolled native participant for a reply.',
-    'agent/request', { recipient: identity, topic: text(128), text: text(8000) }),
-  agentReceipt: eventCommand('Acknowledge a request actually read by this consumer.',
-    'agent/receipt', { ...reference, ...consumer }),
-  agentAnswer: eventCommand('Retain an answer addressed to the full request identity.',
-    'agent/answer', { ...reference, ...consumer, text: text(8000) }),
-  agentHeartbeat: eventCommand('Report a successful consumer read or an explicit stop.',
-    'agent/heartbeat', { ...consumer, role: text(128),
-      topics: { type: 'array', items: text(128), minItems: 1, maxItems: 32 },
-      startedAtMs: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
-      state: { type: 'string', enum: ['listening', 'stopped'] } }),
+  agentMessage: defineCommand({
+    description: 'Post a durable message to the page chat or agent backchannel.',
+    input: {
+      type: 'object',
+      properties: {
+        channel: { type: 'string', enum: ['chat', 'agents'] },
+        to: { type: 'array', items: targetItem, maxItems: 32 },
+        text: str(1, 8000),
+        data: { type: 'string', maxLength: 16384 },
+        attachments: {
+          type: 'array',
+          maxItems: 16,
+          items: {
+            type: 'object',
+            properties: {
+              contentId: str(1, 128),
+              name: str(1, 200),
+              mime: str(1, 128),
+              size: { type: 'integer', minimum: 0, maximum: 500_000_000 },
+            },
+            required: ['contentId', 'name', 'mime'],
+            additionalProperties: false,
+          },
+        },
+        inReplyTo: {
+          type: 'object',
+          properties: { author: hex64, operationId: str(1, 512) },
+          required: ['author', 'operationId'],
+          additionalProperties: false,
+        },
+        hopCount: { type: 'integer', minimum: 0, maximum: 16 },
+        expectReply: { type: 'boolean' },
+        replyToUser: { type: 'boolean' },
+      },
+      required: ['channel', 'to', 'text'],
+      additionalProperties: false,
+    },
+    prepare(input) {
+      if (!Array.isArray(input.to) || input.to.some(item => !validRecipient(item))) {
+        throw Error('AGENT_MESSAGE_RECIPIENT_INVALID');
+      }
+      if (input.inReplyTo && !/^[a-f0-9]{64}$/u.test(input.inReplyTo.author)) {
+        throw Error('AGENT_MESSAGE_REPLY_AUTHOR_INVALID');
+      }
+      return program(emit('agent/message', input));
+    },
+  }),
+  agentReceipt: defineCommand({
+    description: 'Record a durable seen/thinking/done receipt for an agent message.',
+    input: {
+      type: 'object',
+      properties: {
+        messageAuthor: hex64,
+        messageOperationId: str(1, 512),
+        runId: str(1, 128),
+        state: { type: 'string', enum: ['seen', 'thinking', 'done', 'error'] },
+      },
+      required: ['messageAuthor', 'messageOperationId', 'runId', 'state'],
+      additionalProperties: false,
+    },
+    prepare(input) {
+      if (!/^[a-f0-9]{64}$/u.test(input.messageAuthor)) {
+        throw Error('AGENT_RECEIPT_AUTHOR_INVALID');
+      }
+      return program(emit('agent/receipt', input));
+    },
+  }),
 });
 
-const key = (...parts) => JSON.stringify(parts);
-function timestamp(value) {
-  // Signed author time is useful display evidence, not a server-certified clock.
+export const agentBusCommands = agentRequestCommands;
+
+const refKey = (author, operationId) => `${author}:${operationId}`;
+
+function parseTimestamp(value) {
   if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
   const result = Number(value);
   return Number.isSafeInteger(result) ? result : null;
 }
 
-/** One coherent materialized snapshot; rederiving also removes retracted facts. */
-export function readAgentInbox(view) {
-  const requests = new Map(), consumers = new Map();
+/** One coherent materialized snapshot of chat messages, agent backchannel activity, and receipts. */
+export function readAgentFeed(view) {
+  const messages = [];
+  const activity = [];
+  const receipts = {};
   let cursor;
   for (;;) {
-    const batch = view.readEvents({ topics: agentRequestTopics, limit: 128,
-      ...(cursor === undefined ? {} : { cursor }) });
+    const batch = view.readEvents({
+      topics: agentRequestTopics,
+      limit: 128,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
     for (const event of batch.events) {
-      const input = event.payload, atMs = timestamp(event.authorTimestampMs);
-      if (event.topic === 'agent/request') {
-        requests.set(key(event.author, event.operationId), {
-          requestAuthor: event.author, requestOperationId: event.operationId,
-          recipient: input.recipient, topic: input.topic, text: input.text,
-          sentAtMs: atMs, receipts: [], answers: [],
-        });
-      } else if (event.topic === 'agent/heartbeat') {
-        consumers.set(key(event.author, input.consumerId), {
-          author: event.author, consumerId: input.consumerId, runId: input.runId,
-          role: input.role, topics: input.topics, state: input.state,
-          startedAtMs: input.startedAtMs, lastSeenAtMs: atMs,
-        });
-      } else {
-        const request = requests.get(key(input.requestAuthor, input.requestOperationId));
-        // Another member may emit a fact, but cannot impersonate the recipient.
-        // Orphan references (including excluded or retracted facts) change no item.
-        if (!request || event.author !== request.recipient) continue;
-        const fact = { author: event.author, consumerId: input.consumerId,
-          runId: input.runId, operationId: event.operationId, eventId: event.id, atMs };
-        if (event.topic === 'agent/receipt') {
-          if (!request.receipts.some(item => item.author === fact.author
-            && item.consumerId === fact.consumerId && item.runId === fact.runId)) {
-            request.receipts.push(fact);
-          }
-        } else if (event.topic === 'agent/answer') {
-          request.answers.push({ ...fact, text: input.text });
-        }
+      const payload = event.payload ?? {};
+      const atMs = parseTimestamp(event.authorTimestampMs);
+      if (event.topic === 'agent/message') {
+        const entry = {
+          author: event.author,
+          operationId: event.operationId,
+          eventId: event.id,
+          atMs,
+          channel: payload.channel === 'agents' ? 'agents' : 'chat',
+          to: Array.isArray(payload.to) ? payload.to : [],
+          text: String(payload.text ?? ''),
+          ...(payload.data !== undefined ? { data: payload.data } : {}),
+          ...(Array.isArray(payload.attachments) ? { attachments: payload.attachments } : {}),
+          ...(payload.inReplyTo ? { inReplyTo: payload.inReplyTo } : {}),
+          hopCount: typeof payload.hopCount === 'number' ? payload.hopCount : 0,
+          expectReply: payload.expectReply !== false,
+          replyToUser: payload.replyToUser === true,
+        };
+        if (entry.channel === 'agents') activity.push(entry);
+        else messages.push(entry);
+      } else if (event.topic === 'agent/receipt') {
+        const key = refKey(payload.messageAuthor, payload.messageOperationId);
+        const list = (receipts[key] ??= []);
+        const item = {
+          author: event.author,
+          operationId: event.operationId,
+          eventId: event.id,
+          runId: payload.runId,
+          state: payload.state ?? 'seen',
+          atMs,
+        };
+        const existingIdx = list.findIndex(r => r.author === item.author && r.runId === item.runId);
+        if (existingIdx >= 0) list[existingIdx] = item;
+        else list.push(item);
       }
     }
-    if (!batch.hasMore) return { requests: [...requests.values()], consumers: [...consumers.values()] };
-    if (batch.cursor === cursor) throw Error('AGENT_INBOX_CURSOR_STALLED');
+    if (!batch.hasMore) return { messages, activity, receipts };
+    if (batch.cursor === cursor) throw Error('AGENT_FEED_CURSOR_STALLED');
     cursor = batch.cursor;
   }
 }
 
 export const agentRequestQueries = Object.freeze({
-  agentInbox: defineQuery({ description: 'Read addressed requests, receipts, answers and last consumer announcements.',
-    input: { type: 'null' }, read: readAgentInbox }),
+  agentFeed: defineQuery({
+    description: 'Read materialized chat messages, agent backchannel activity, and receipts.',
+    input: { type: 'null' },
+    read: readAgentFeed,
+  }),
 });
 
-/** Call again as the wall clock advances, even when there are no new events. */
-export function consumerPresence(consumer, {
-  now = Date.now(), staleAfterMs = 90_000, observationCurrent = false,
-} = {}) {
-  if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(staleAfterMs) || staleAfterMs < 1) {
-    throw Error('AGENT_PRESENCE_OPTIONS_INVALID');
+export const agentBusQueries = agentRequestQueries;
+
+/** Parse @handle, @all, and spoken prefixes ("Hey <handle>, ...") against the page roster. */
+export function parseAddressing(text, roster) {
+  const source = String(text ?? '');
+  const agents = Array.isArray(roster) ? roster : (roster?.agents ?? []);
+  const byHandle = new Map(agents.map(a => [String(a.handle ?? '').toLowerCase(), a]));
+  const to = [];
+  const handles = [];
+  let broadcast = false;
+
+  const addHandle = raw => {
+    const h = String(raw ?? '').toLowerCase();
+    if (!h) return;
+    if (h === 'all' || h === 'everyone') {
+      broadcast = true;
+      return;
+    }
+    const agent = byHandle.get(h);
+    if (!agent) return;
+    const key = agent.public_key ?? agent.publicKey;
+    if (key && !to.includes(key)) {
+      to.push(key);
+      handles.push(agent.handle);
+    }
+  };
+
+  for (const match of source.matchAll(/(?:^|[\s([{"'])@([a-z][a-z0-9_-]{1,31})\b/gi)) {
+    addHandle(match[1]);
   }
-  if (!consumer || !observationCurrent) return { status: 'unknown', consumer: consumer ?? null };
-  if (consumer.state === 'stopped') return { status: 'stopped', consumer };
-  const ageMs = consumer.lastSeenAtMs === null ? null : now - consumer.lastSeenAtMs;
-  if (ageMs === null || ageMs < 0 || consumer.startedAtMs > consumer.lastSeenAtMs) {
-    return { status: 'clock-skew', consumer };
+  const voiceLead = /^(?:hey|hi|ok|okay|ask|tell|yo)\s+([a-z][a-z0-9_-]{1,31})(?:[,:\s]|$)/i.exec(source.trim());
+  if (voiceLead) addHandle(voiceLead[1]);
+
+  if (broadcast) {
+    return { to: ['*'], handles: ['*'], explicit: true, broadcast: true };
   }
-  return { status: ageMs < staleAfterMs ? 'available' : 'stale', consumer, ageMs };
+  return { to, handles, explicit: to.length > 0, broadcast: false };
 }
 
-/** The durable request phase is separate from the caller's stored/materialized observations. */
-export function requestDelivery(request) {
-  if (!request) return 'unknown';
-  return request.answers.length ? 'answered' : request.receipts.length ? 'seen' : 'awaiting-receipt';
+/**
+ * Deterministic multi-agent response policy:
+ * - Never reply to own messages.
+ * - Stop when expectReply === false or hopCount >= maxHops.
+ * - Broadcast (`*`) triggers every agent.
+ * - Explicit `to` list triggers ONLY listed agents (primary steps back when a secondary is addressed).
+ * - General `chat` message (`to.length === 0`) triggers ONLY the primary agent (non-primary stays silent).
+ * - General `agents` backchannel message (`to.length === 0`) does not trigger automatic replies.
+ */
+export function shouldAgentRespond(message, { selfPublicKey, selfHandle, roster, maxHops = 5 } = {}) {
+  if (!message || !selfPublicKey) return false;
+  if (message.author === selfPublicKey) return false;
+  if (message.expectReply === false) return false;
+  const hopCount = typeof message.hopCount === 'number' ? message.hopCount : 0;
+  if (hopCount >= maxHops) return false;
+
+  const to = Array.isArray(message.to) ? message.to : [];
+  if (to.includes('*')) return true;
+  if (to.length > 0) return to.includes(selfPublicKey);
+
+  // Unaddressed message: only primary responds, and only on the user-facing chat channel.
+  if (message.channel === 'agents') return false;
+  const agents = Array.isArray(roster) ? roster : (roster?.agents ?? []);
+  const primaryId = Array.isArray(roster) ? null : (roster?.primary_agent_id ?? roster?.primaryId ?? null);
+  const selfEntry = agents.find(a =>
+    (a.public_key ?? a.publicKey) === selfPublicKey ||
+    (selfHandle && String(a.handle ?? '').toLowerCase() === String(selfHandle).toLowerCase()),
+  );
+  if (!selfEntry) return false;
+  if (primaryId) return selfEntry.id === primaryId;
+  return Boolean(selfEntry.is_primary ?? selfEntry.isPrimary);
 }
 
-// Ephemeral live presence & streaming reply previews over session.signals.
-// Writes ZERO durable Chronolog records so idle agents never consume journal history.
+/** Determine delivery status of a user message from receipts and replies. */
+export function messageDelivery(message, feed) {
+  if (!message) return 'delivered';
+  const replies = (feed?.messages ?? []).filter(m =>
+    m.inReplyTo?.author === message.author && m.inReplyTo?.operationId === message.operationId,
+  );
+  if (replies.length > 0) return 'answered';
+  const list = feed?.receipts?.[refKey(message.author, message.operationId)] ?? [];
+  if (list.some(r => r.state === 'done')) return 'answered';
+  if (list.some(r => r.state === 'thinking')) return 'thinking';
+  if (list.some(r => r.state === 'seen')) return 'seen';
+  return 'delivered';
+}
+
+// ---------------------------------------------------------------- Ephemeral Agent Cards & Streams
 
 const PRESENCE_TOPIC = 'agent/presence';
 const PRESENCE_PING_TOPIC = 'agent/presence/ping';
 const STREAM_TOPIC = 'agent/stream';
 
 /**
- * Native side: announces agent presence ephemerally over session.signals ONLY while
- * at least one peer is connected, and responds immediately to on-demand presence pings.
+ * Native agent side: announces an ephemeral Agent Card over session.signals ONLY while
+ * at least one peer is connected, and answers presence pings immediately.
+ * Writes ZERO durable Chronolog operations.
  */
 export function announceAgentPresence(session, {
-  consumerId,
+  handle = '',
+  bio = '',
+  capabilities = ['chat'],
+  isPrimary = false,
   runId = crypto.randomUUID(),
-  role = 'agent',
-  topics = ['chat'],
-  state = 'listening',
+  state = 'online',
   intervalMs = 15_000,
   ttlMs = 45_000,
   topic = PRESENCE_TOPIC,
@@ -143,19 +268,20 @@ export function announceAgentPresence(session, {
   const stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, signal, session.signal].filter(Boolean));
   const startedAtMs = Date.now();
-  let currentState = state;
+  let card = { handle, bio, capabilities, isPrimary, state };
 
   const hasPeer = () => (session.status?.connectedPeers ?? 0) > 0;
 
-  const publish = async (overrideState = currentState) => {
+  const publish = async (overrideState = card.state) => {
     if (lifetime.aborted) return;
     if (overrideState !== 'stopped' && !hasPeer()) return;
     try {
       await session.signals.send(topic, {
-        consumerId: consumerId || session.identity.publicKey,
+        handle: card.handle,
+        bio: card.bio,
+        capabilities: card.capabilities,
+        isPrimary: Boolean(card.isPrimary),
         runId,
-        role,
-        topics,
         state: overrideState,
         startedAtMs,
         atMs: Date.now(),
@@ -184,11 +310,12 @@ export function announceAgentPresence(session, {
   void publish();
 
   return Object.freeze({
-    setState(next) { currentState = next; void publish(next); },
+    setState(next) { card = { ...card, state: next }; void publish(next); },
+    updateCard(patch) { card = { ...card, ...patch }; void publish(); },
     ping: () => publish(),
     done: pingLoop,
     async close() {
-      currentState = 'stopped';
+      card = { ...card, state: 'stopped' };
       await publish('stopped');
       stop.abort();
     },
@@ -196,12 +323,10 @@ export function announceAgentPresence(session, {
 }
 
 /**
- * Browser side: watches ephemeral agent presence signals (with `includeLatest: true`
- * plus an immediate ping on connect) so the UI reflects live agent availability with
- * zero durable Chronolog reads or writes.
+ * Browser/agent side: watches ephemeral Agent Cards for ALL agents on the page,
+ * cross-checking Chronolog authority membership so UI status is always honest.
  */
-export function watchAgentPresence(session, {
-  peer,
+export function watchAgentsPresence(session, {
   topic = PRESENCE_TOPIC,
   pingTopic = PRESENCE_PING_TOPIC,
   staleAfterMs = 45_000,
@@ -211,30 +336,61 @@ export function watchAgentPresence(session, {
   if (!session?.signals) throw Error('AGENT_PRESENCE_SESSION_REQUIRED');
   const stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, signal, session.signal].filter(Boolean));
-  let latest = null;
-  let lastReceivedAtMs = 0;
+  const cards = new Map();
+  let enrolledKeys = new Set();
+
+  const refreshAuthority = async () => {
+    try {
+      const auth = typeof session.authority === 'function' ? await session.authority() : null;
+      const members = auth?.bundle?.memberships?.at(-1)?.payload?.members ?? auth?.members ?? [];
+      if (Array.isArray(members)) {
+        enrolledKeys = new Set(members.filter(m => m.reader || m.writer).map(m => m.publicKey));
+      }
+    } catch { /* Optional authority inspection */ }
+  };
 
   const snapshot = (now = Date.now()) => {
-    if (!latest) return { status: 'unknown', consumer: null, ageMs: null };
-    if (latest.state === 'stopped') return { status: 'stopped', consumer: latest, ageMs: now - lastReceivedAtMs };
-    const ageMs = Math.max(0, now - lastReceivedAtMs);
-    if ((session.status?.connectedPeers ?? 0) === 0) return { status: 'stale', consumer: latest, ageMs };
-    if (ageMs >= staleAfterMs) return { status: 'stale', consumer: latest, ageMs };
-    return { status: latest.state === 'busy' ? 'busy' : 'available', consumer: latest, ageMs };
+    const connected = (session.status?.connectedPeers ?? 0) > 0;
+    const out = {};
+    for (const key of enrolledKeys) {
+      out[key] = { enrolled: true, state: 'offline' };
+    }
+    for (const [author, entry] of cards) {
+      const ageMs = Math.max(0, now - entry.receivedAtMs);
+      const enrolled = enrolledKeys.size > 0 ? enrolledKeys.has(author) : true;
+      let state = 'offline';
+      if (entry.card.state === 'stopped') state = 'stopped';
+      else if (connected && ageMs < staleAfterMs) {
+        state = entry.card.state === 'busy' ? 'busy' : 'online';
+      }
+      out[author] = {
+        enrolled,
+        state,
+        handle: entry.card.handle || undefined,
+        bio: entry.card.bio || undefined,
+        capabilities: Array.isArray(entry.card.capabilities) ? entry.card.capabilities : undefined,
+        lastSeenAt: entry.receivedAtMs,
+        stoppedAt: entry.stoppedAtMs ?? null,
+      };
+    }
+    return out;
   };
+
   const emitChange = () => { try { onChange?.(snapshot()); } catch { /* ignore */ } };
 
   const requestPing = () => {
     if (lifetime.aborted) return;
     if ((session.status?.connectedPeers ?? 0) === 0) return;
-    void session.signals.send(pingTopic, { for: peer ?? null, atMs: Date.now() }, { ttlMs: 10_000, signal: lifetime }).catch(() => {});
+    void session.signals.send(pingTopic, { atMs: Date.now() }, { ttlMs: 10_000, signal: lifetime }).catch(() => {});
   };
 
   let watchedLink = null;
   const offStatus = session.onStatus(status => {
     const link = (status?.connectedPeers ?? 0) > 0 ? JSON.stringify([status.connectionRevision ?? null]) : null;
-    if (link !== null && link !== watchedLink) requestPing();
-    else emitChange();
+    if (link !== null && link !== watchedLink) {
+      void refreshAuthority().then(emitChange);
+      requestPing();
+    } else emitChange();
     watchedLink = link;
   });
 
@@ -243,21 +399,26 @@ export function watchAgentPresence(session, {
 
   const loop = (async () => {
     try {
-      for await (const frame of session.signals.subscribe({ topics: [topic], mode: 'latest', includeLatest: true, signal: lifetime })) {
-        if (peer && frame.authorId !== peer) continue;
+      for await (const frame of session.signals.subscribe({ topics: [topic], mode: 'all', includeLatest: true, signal: lifetime })) {
         if (!frame.payload || typeof frame.payload !== 'object') continue;
-        latest = { author: frame.authorId, ...frame.payload };
-        lastReceivedAtMs = Date.now();
+        const now = Date.now();
+        cards.set(frame.authorId, {
+          card: frame.payload,
+          receivedAtMs: now,
+          stoppedAtMs: frame.payload.state === 'stopped' ? now : null,
+        });
         emitChange();
       }
     } catch { /* closed */ }
   })();
 
+  void refreshAuthority().then(emitChange);
   requestPing();
 
   return Object.freeze({
     snapshot,
     ping: requestPing,
+    refreshAuthority,
     done: loop,
     close() { stop.abort(); },
   });
@@ -265,8 +426,9 @@ export function watchAgentPresence(session, {
 
 /** Native side: send an ephemeral streaming preview for an in-progress reply. */
 export async function streamAgentReply(session, {
-  requestAuthor,
-  requestOperationId,
+  messageAuthor,
+  messageOperationId,
+  handle = '',
   text,
   done = false,
   topic = STREAM_TOPIC,
@@ -274,40 +436,107 @@ export async function streamAgentReply(session, {
 }) {
   if (!session?.signals) throw Error('AGENT_STREAM_SESSION_REQUIRED');
   const payload = {
-    requestAuthor,
-    requestOperationId,
+    messageAuthor,
+    messageOperationId,
+    handle,
     text: String(text ?? '').slice(0, 8000),
     done: Boolean(done),
     atMs: Date.now(),
   };
-  // The complete signed frame has a 16 KiB ceiling; escaped JSON and Unicode
-  // can make an 8,000-character preview much larger than that.
   const encoder = new TextEncoder();
   while (encoder.encode(JSON.stringify(payload)).length > 12 * 1024) {
     if (!payload.text.length) throw Error('AGENT_STREAM_TOO_LARGE');
-    payload.text = Array.from(payload.text).slice(0, Math.floor(Array.from(payload.text).length * .8)).join('');
+    payload.text = Array.from(payload.text).slice(0, Math.floor(Array.from(payload.text).length * 0.8)).join('');
   }
   await session.signals.send(topic, payload, { ttlMs: 20_000, signal });
 }
 
-/** Browser side: subscribe to ephemeral streaming previews from a peer. */
-export function watchAgentStream(session, {
-  peer,
+/** Browser side: subscribe to concurrent ephemeral streaming previews across all agents. */
+export function watchAgentStreams(session, {
   topic = STREAM_TOPIC,
-  onChunk,
+  onChange,
   signal,
 } = {}) {
   if (!session?.signals) throw Error('AGENT_STREAM_SESSION_REQUIRED');
   const stop = new AbortController();
   const lifetime = AbortSignal.any([stop.signal, signal, session.signal].filter(Boolean));
+  const streams = new Map();
+
+  const emitChange = () => {
+    try { onChange?.([...streams.values()]); } catch { /* ignore */ }
+  };
+
   const loop = (async () => {
     try {
-      for await (const frame of session.signals.subscribe({ topics: [topic], mode: 'latest', signal: lifetime })) {
-        if (peer && frame.authorId !== peer) continue;
+      for await (const frame of session.signals.subscribe({ topics: [topic], mode: 'all', signal: lifetime })) {
         if (!frame.payload || typeof frame.payload !== 'object') continue;
-        try { onChunk?.({ author: frame.authorId, ...frame.payload }); } catch { /* ignore */ }
+        if (frame.payload.done || !String(frame.payload.text ?? '').trim()) {
+          streams.delete(frame.authorId);
+        } else {
+          streams.set(frame.authorId, {
+            id: frame.authorId,
+            author: frame.authorId,
+            senderHandle: frame.payload.handle || undefined,
+            messageAuthor: frame.payload.messageAuthor,
+            messageOperationId: frame.payload.messageOperationId,
+            text: String(frame.payload.text),
+            atMs: frame.payload.atMs ?? Date.now(),
+          });
+        }
+        emitChange();
       }
     } catch { /* closed */ }
   })();
-  return Object.freeze({ done: loop, close() { stop.abort(); } });
+
+  return Object.freeze({
+    snapshot: () => [...streams.values()],
+    done: loop,
+    close() { stop.abort(); },
+  });
+}
+
+/**
+ * Pure failover detector for primary agent unavailability.
+ * Returns null when suppressed (offline, no primary, healthy primary, or no healthy backup).
+ */
+export function evaluateFailover({
+  roster,
+  liveMap = {},
+  online = true,
+  lastPendingUserMessage = null,
+  primaryOfflineSinceMs = null,
+  now = Date.now(),
+  offlineThresholdMs = 30_000,
+  unackThresholdMs = 12_000,
+} = {}) {
+  if (!online) return null;
+  const agents = roster?.agents ?? [];
+  const primary = agents.find(a => a.id === roster?.primary_agent_id || a.is_primary) ?? null;
+  if (!primary || primary.kind === 'hosted-mcp') return null;
+
+  const primaryKey = primary.public_key ?? primary.publicKey;
+  const primaryLive = liveMap[primaryKey] ?? liveMap[primary.id];
+  const primaryHealthy = primaryLive?.state === 'online' || primaryLive?.state === 'busy';
+  if (primaryHealthy) return null;
+
+  const backups = agents.filter(a => {
+    if (a.id === primary.id) return false;
+    if (a.kind === 'hosted-mcp') return true;
+    const key = a.public_key ?? a.publicKey;
+    const st = liveMap[key] ?? liveMap[a.id];
+    return st?.state === 'online' || st?.state === 'busy';
+  });
+  if (backups.length === 0) return null;
+
+  const backup = backups[0];
+  if (primaryLive?.state === 'stopped') {
+    return { reason: 'stopped', primary, backup, backups, lastPendingUserMessage };
+  }
+  if (lastPendingUserMessage && lastPendingUserMessage.sentAtMs && (now - lastPendingUserMessage.sentAtMs) >= unackThresholdMs) {
+    return { reason: 'unacknowledged', primary, backup, backups, lastPendingUserMessage };
+  }
+  if (primaryOfflineSinceMs !== null && (now - primaryOfflineSinceMs) >= offlineThresholdMs) {
+    return { reason: 'offline', primary, backup, backups, lastPendingUserMessage };
+  }
+  return null;
 }

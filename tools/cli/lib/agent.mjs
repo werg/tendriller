@@ -28,6 +28,45 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     } catch { /* each session's signal reports its own cause */ }
   })();
   let granted = null, stopping = false, rescanTimer;
+  const rosters = new Map(); // pageId -> { primary_agent_id, is_primary, agents, listeners: Set }
+  const ensureRosterEntry = pageId => {
+    let r = rosters.get(pageId);
+    if (!r) {
+      r = { primary_agent_id: null, is_primary: false, agents: [], listeners: new Set() };
+      rosters.set(pageId, r);
+    }
+    return r;
+  };
+  const updatePageRoster = (pageId, data) => {
+    const entry = ensureRosterEntry(pageId);
+    const primaryId = data?.primary_agent_id ?? null;
+    const agents = Array.isArray(data?.agents) ? data.agents : entry.agents;
+    const isPrimary = typeof data?.is_primary === 'boolean'
+      ? data.is_primary
+      : primaryId === workspace.config.agent.id;
+    entry.primary_agent_id = primaryId;
+    entry.is_primary = isPrimary;
+    entry.agents = agents;
+    const snap = Object.freeze({ primary_agent_id: primaryId, is_primary: isPrimary, agents: Object.freeze([...agents]) });
+    for (const listener of entry.listeners) {
+      try { listener(snap); } catch { /* Listener errors cannot break hub delivery */ }
+    }
+    return snap;
+  };
+  const rosterHandleFor = pageId => {
+    const entry = ensureRosterEntry(pageId);
+    return Object.freeze({
+      get primaryAgentId() { return entry.primary_agent_id; },
+      get isPrimary() { return entry.is_primary; },
+      get agents() { return entry.agents; },
+      snapshot: () => Object.freeze({ primary_agent_id: entry.primary_agent_id, is_primary: entry.is_primary, agents: Object.freeze([...entry.agents]) }),
+      onChange(fn) {
+        entry.listeners.add(fn);
+        return () => { entry.listeners.delete(fn); };
+      },
+    });
+  };
+
   const hub = client.hub;
   const stopEvents = hub.events(event => void onHubEvent(event).catch(() => {}));
   const stopStatus = hub.onStatus(status => {
@@ -39,7 +78,10 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
 
   async function refreshGrants() {
     const next = new Set();
-    for await (const page of client.pages.all({ signal })) next.add(page.id);
+    for await (const page of client.pages.all({ signal })) {
+      next.add(page.id);
+      updatePageRoster(page.id, page);
+    }
     granted = next;
     return next;
   }
@@ -74,7 +116,11 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     const lifetime = entry.lifetime = new AbortController();
     const pageSignal = AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]);
     try {
-      const context = await workspace.pageContext(entry.slug, { signal: pageSignal, report: value => report({ page: id, slug: entry.slug, ...value }) });
+      const context = await workspace.pageContext(entry.slug, {
+        signal: pageSignal,
+        report: value => report({ page: id, slug: entry.slug, ...value }),
+        roster: rosterHandleFor(id),
+      });
       const module = await workspace.pageModule({ slug: entry.slug });
       if (typeof module.openPage !== 'function') throw Object.assign(Error(`pages/${entry.slug}/agent.mjs must export openPage(context)`), { code: 'page_module_invalid' });
       const owner = await module.openPage(context);
@@ -126,6 +172,12 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
       if (!listed.some(page => page.id === event.page))
         report({ page: event.page, state: 'granted_unregistered', next: `Register it with tendril page grant <slug> ${event.page}` });
       scheduleRescan();
+    } else if (event.kind === 'agents-changed') {
+      if (event.data && typeof event.data === 'object') {
+        updatePageRoster(event.page, event.data);
+      } else {
+        scheduleRescan(true);
+      }
     } else if (event.kind === 'revoked' || event.kind === 'page-deleted') {
       granted?.delete(event.page);
       await closePage(event.page, event.kind);
@@ -144,7 +196,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
       watcher.on('error', () => {});
     }
   } catch { /* recursive watches are optional; restart or attach after initialization */ }
-  report({ running: true, workspace: workspace.root, agent: workspace.config.agent.id, socket: supervisor.socketPath,
+  report({ running: true, workspace: workspace.root, agent: workspace.config.agent.id, handle: workspace.config.agent.handle, socket: supervisor.socketPath,
     terminal: 'tendril --page <slug> self', processLifetime: 'Until this process stops; pages keep their local data when it is not running.' });
   try {
     await rescan({ remote: true });

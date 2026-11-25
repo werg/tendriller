@@ -12,19 +12,21 @@ const page = { id: PAGE, name: 'Notes', page_url: `https://${PAGE}.pages.test/s/
 
 test('registration and join return a checked ta_ credential without any ambient authentication', async () => {
   const calls = [];
-  const fetch = async (url, init) => { calls.push({ url, init }); return Response.json({ id: 'ag_' + 'b'.repeat(26), name: 'laptop', token: TOKEN, account_state: 'unclaimed' }, { status: 201 }); };
+  const fetch = async (url, init) => { calls.push({ url, init }); return Response.json({ id: 'ag_' + 'b'.repeat(26), handle: 'laptop', bio: 'Dev agent', token: TOKEN, account_state: 'unclaimed' }, { status: 201 }); };
   const publicKey = 'A'.repeat(43);
-  const created = await registerAgent(service, { owner: 'owner@example.test', name: 'laptop', publicKey }, { fetch });
+  const created = await registerAgent(service, { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey }, { fetch });
   assert.equal(created.token, TOKEN);
+  assert.equal(created.handle, 'laptop');
   assert.equal(calls[0].url, service + '/api/agents');
   assert.equal(calls[0].init.headers.Authorization, undefined);
-  assert.deepEqual(JSON.parse(calls[0].init.body), { owner: 'owner@example.test', name: 'laptop', publicKey });
-  await joinAgent(service, { code: 'join-code', name: 'laptop', publicKey }, { fetch });
+  assert.deepEqual(JSON.parse(calls[0].init.body), { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey });
+  await joinAgent(service, { code: 'join-code', handle: 'laptop', publicKey }, { fetch });
   assert.equal(calls[1].url, service + '/api/agents/join');
-  await assert.rejects(registerAgent(service, { owner: 'bad', name: 'x', publicKey }, { fetch }), { name: 'ContractError' });
-  await assert.rejects(registerAgent(service, { owner: 'owner@example.test', name: 'x', publicKey },
-    { fetch: async () => Response.json({ id: 'ag_x', name: 'x', token: 'tk_old' }) }), { code: 'invalid_response' });
-  await assert.rejects(registerAgent('https://service.test/api', { owner: 'owner@example.test', name: 'x', publicKey }, { fetch }), { code: 'invalid_service_origin' });
+  await assert.rejects(registerAgent(service, { owner: 'bad', handle: 'ab', publicKey }, { fetch }), { name: 'ContractError' });
+  await assert.rejects(registerAgent(service, { owner: 'owner@example.test', handle: 'Bad Handle!', publicKey }, { fetch }), { name: 'ContractError' });
+  await assert.rejects(registerAgent(service, { owner: 'owner@example.test', handle: 'ab', publicKey },
+    { fetch: async () => Response.json({ id: 'ag_x', handle: 'ab', token: 'tk_old' }) }), { code: 'invalid_response' });
+  await assert.rejects(registerAgent('https://service.test/api', { owner: 'owner@example.test', handle: 'ab', publicKey }, { fetch }), { code: 'invalid_service_origin' });
 });
 
 test('the agent client is inert until used and bases page routes at /api/agent/pages/<id>', async () => {
@@ -34,14 +36,17 @@ test('the agent client is inert until used and bases page routes at /api/agent/p
     if (url.endsWith('/api/agent/pages') && init.method === 'POST') return Response.json(page, { status: 201 });
     if (url.includes('/api/agent/pages?cursor=next')) return Response.json({ pages: [{ ...page, id: 'bbbbbbbbbbbb' }], next_cursor: null });
     if (url.endsWith('/api/agent/pages')) return Response.json({ pages: [page], next_cursor: 'next' });
-    if (url.endsWith('/api/agent')) return Response.json({ id: 'ag_' + 'b'.repeat(26), grants: 2 });
+    if (url.endsWith('/api/agent')) return Response.json({ id: 'ag_' + 'b'.repeat(26), handle: 'laptop', bio: '', grants: 2 });
     return Response.json({ id: PAGE });
   };
   const client = createAgentClient({ service, token: TOKEN }, { fetch, WebSocket: hub.WebSocket });
   assert.equal(calls.length, 0); assert.equal(hub.connections.length, 0);
-  assert.deepEqual(Object.keys(client).sort(), ['close', 'hub', 'page', 'pages', 'request', 'self', 'service']);
+  assert.deepEqual(Object.keys(client).sort(), ['close', 'hub', 'page', 'pages', 'request', 'self', 'service', 'updateProfile']);
   assert.equal((await client.self()).grants, 2);
   assert.equal(calls[0].init.headers.Authorization, 'Bearer ' + TOKEN);
+  await client.updateProfile({ handle: 'atlas', bio: 'Primary assistant' });
+  assert.equal(calls.at(-1).init.method, 'PATCH');
+  assert.deepEqual(JSON.parse(calls.at(-1).init.body), { handle: 'atlas', bio: 'Primary assistant' });
   assert.deepEqual(await client.pages.create({ name: 'Notes' }), page);
   const all = []; for await (const value of client.pages.all()) all.push(value.id);
   assert.deepEqual(all, [PAGE, 'bbbbbbbbbbbb']);

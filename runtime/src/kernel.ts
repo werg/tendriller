@@ -16,6 +16,7 @@ import { createSignalBinding } from "../../contract/signals.mjs";
 import { createWakeLockLease } from "./wake-lock";
 import { createShareTarget } from "./share-target";
 import { createNotifications } from "./notifications";
+import { createAgentsStore } from "./agents";
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<ServiceWorkerRegistration | null> {
   if (!("serviceWorker" in navigator) || !cfg.publication) return null;
@@ -49,9 +50,10 @@ export interface RuntimeOptions {
 }
 export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): RuntimeApi {
   validateDocumentContext(cfg);
+  const agents = createAgentsStore(cfg);
   // The address bar keeps the page's own URL so a reload or new tab opens the latest
   // selected release. Opening an immutable /_publications/ID/ URL pins explicitly.
-  const updates = watchPublicationUpdates(cfg, { pinned: explicitlyPinned(cfg), watch: options.watchPublication === true });
+  const updates = watchPublicationUpdates(cfg, { pinned: explicitlyPinned(cfg), watch: options.watchPublication === true, onAgents: notice => agents.applyNotice(notice) });
   const core = createCore(cfg, options.application);
   let registration: Promise<ServiceWorkerRegistration> | undefined;
   const registerOffline = () => registration ??= registerServiceWorker(cfg, core).then(registered => {
@@ -96,7 +98,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     sensorChanged();
   });
   const shared: RuntimeServices = {
-    host: core.host, application: core.application, transport: transport.api, errors: errors.api,
+    host: core.host, application: core.application, agents: agents.api, transport: transport.api, errors: errors.api,
     signals: createSignalBinding(options.signals),
     on: (type, listener) => core.bus.on(type, listener),
     ready: () => core.ready(),

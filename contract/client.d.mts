@@ -1,8 +1,13 @@
 import type { ValidationIssue, PublicError } from './index.mjs';
 import type { ApplicationSelection } from './application.mjs';
-export interface AgentPage { id: string; name?: string; page_url: string; scopes?: string[]; application: ApplicationSelection; lifetime?: string; [key: string]: unknown }
+import type { PageAgentEntry } from './publication-watch.mjs';
+export interface AgentPage {
+  id: string; name?: string; page_url: string; scopes?: string[]; application: ApplicationSelection; lifetime?: string;
+  primary_agent_id?: string | null; is_primary?: boolean; agents?: PageAgentEntry[];
+  [key: string]: unknown;
+}
 export interface AgentPageList { pages: AgentPage[]; next_cursor?: string | null }
-export interface AgentCredential { id: string; name: string; token: string; account_state?: 'unclaimed' | 'claimed'; [key: string]: unknown }
+export interface AgentCredential { id: string; handle: string; bio?: string; token: string; account_state?: 'unclaimed' | 'claimed'; [key: string]: unknown }
 export interface ClientOptions { fetch?: typeof globalThis.fetch; WebSocket?: typeof globalThis.WebSocket; hub?: Partial<AgentHubOptions> }
 export interface RequestOptions { method?: string; body?: unknown; signal?: AbortSignal; headers?: Record<string, string> }
 /** A page client, based at /api/agent/pages/<id>. */
@@ -23,6 +28,7 @@ export interface AgentClient {
   readonly service: string;
   request<T = unknown>(path: string, options?: RequestOptions): Promise<T>;
   self(options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
+  updateProfile(body: { handle?: string; bio?: string }, options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
   readonly pages: {
     list(options?: { cursor?: string; signal?: AbortSignal }): Promise<AgentPageList>;
     all(options?: { signal?: AbortSignal }): AsyncIterable<AgentPage>;
@@ -40,7 +46,7 @@ export interface HubSocket extends EventTarget {
   send(data: string | ArrayBuffer | ArrayBufferView): void;
   close(code?: number, reason?: string): void;
 }
-export interface HubEvent { readonly page: string; readonly kind: 'grant' | 'revoked' | 'page-deleted' | 'publication' | string; readonly data: unknown }
+export interface HubEvent { readonly page: string; readonly kind: 'grant' | 'revoked' | 'page-deleted' | 'publication' | 'agents-changed' | string; readonly data: unknown }
 export interface HubStatus { readonly state: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'replaced' | 'revoked' | 'closed'; readonly retryInMs?: number; readonly reconnected?: boolean }
 export interface AgentHubOptions { service: string; token: string; WebSocket?: typeof globalThis.WebSocket; probe?: (options: { signal: AbortSignal }) => Promise<unknown>;
   retryMs?: number; maxRetryMs?: number; pingMs?: number; openTimeoutMs?: number; keepAlive?: boolean }
@@ -61,10 +67,10 @@ export function validateHubPath(path: string): string;
 export function createAgentHub(options: AgentHubOptions): AgentHub;
 export class ApiError extends Error { status: number; code: string; details?: ValidationIssue[]; error?: Partial<PublicError>; constructor(status: number, error?: Partial<PublicError>) }
 export function createAgentClient(credential: { service: string; token: string }, options?: ClientOptions): AgentClient;
-export function registerAgent(service: string, body: { owner: string; name: string; publicKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
+export function registerAgent(service: string, body: { owner: string; handle: string; bio?: string; publicKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
 /** Normalizes the host's {agent, token} registration answer (also an MCP register_agent result). */
 export function agentCredential(result: unknown): AgentCredential;
-export function joinAgent(service: string, body: { code: string; name: string; publicKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
+export function joinAgent(service: string, body: { code: string; handle: string; bio?: string; publicKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
 export interface ServiceDescriptor { contract: number; core_release: string; limits: Record<string, unknown> }
 export function describeService(service: string, options?: ClientOptions & { signal?: AbortSignal }): Promise<ServiceDescriptor>;
 export function requireService(descriptor: ServiceDescriptor, requirements?: { contract?: number }): ServiceDescriptor;

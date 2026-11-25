@@ -35,8 +35,7 @@ import { mountConnectedAgentChat } from '../../shared/ui/chat-session.mjs';
 const chat = await mountConnectedAgentChat({
   runtime: window.tendril,
   session,
-  peer: configuration.nativeDeviceId,
-  title: 'Home Server Agent',
+  title: 'Page Assistants',
   layout: 'dock',         // 'embedded' | 'drawer' | 'dock'
   consentMode: 'auto',    // Immediate 1-tap mic; browser permission is consent
   autoSendVoice: true,    // User can toggle "Send voice immediately" in the composer

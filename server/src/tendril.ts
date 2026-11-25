@@ -1,7 +1,6 @@
 import { isDiscoverySocket, closeDiscoverySocket } from './discovery';
 import { isSetupWatch, notifySetupChanged } from './setup-watch';
 import { adoptPreparedApplication, applicationPrepared, withAuthorityMutation } from './authority';
-import { adoptPreparedAssistant } from './assistant-admission';
 import { isPublicationWatch, notifyPublicationWatchers } from "./publication-watch";
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from './peers';
@@ -14,11 +13,7 @@ import runtimeRelease from './runtime-release.json';
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env';
 import { accountSuspendedNotice, ownerNotice, reporterAcknowledgement } from './abuse/notices';
-import { isAssistantActivity, upgradeAssistantActivity } from './assistant-activity';
-import { assistantRequest } from './assistant';
-import { reviewAssistant } from './assistant-admission';
-import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter } from './assistant-socket';
-import { nextAssistantDelivery, runAssistantDelivery } from './assistant-events';
+import { mcpRequest } from './mcp-participant';
 import { requireWritesOpen } from './service-state';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
@@ -29,7 +24,7 @@ import { Transactions, type CommitEffect } from './transactions';
 import { deleteUnreferencedContent } from './files';
 import { HttpError, json, readJson, toErrorResponse } from './http';
 import { parseShareExpiry } from './sharing';
-import { AGENT_PUBLIC_KEY_RE, handleAgentGrants, mirroredAgents, notifyAgentHub, notifyGrantedAgents, writeLocalGrant } from './agent-grants';
+import { AGENT_PUBLIC_KEY_RE, handleAgentGrants, mirroredAgents, notifyAgentHub, notifyGrantedAgents, validAgentBio, validAgentHandle, writeLocalGrant } from './agent-grants';
 import { AGENT_ID_RE, newLinkId, newPageKey, sha256Hex, safeEqual } from './ids';
 import type { Features } from './inject';
 import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, DAY, MB, HOUR, RESIDENT_LIMIT } from './limits';
@@ -59,7 +54,7 @@ export class Tendril extends DurableObject<Env> {
   private transactions: Transactions;
   private alarms: DeadlineAlarm;
   private handlingAlarm = false;
-  private assistantTail: Promise<unknown> = Promise.resolve();
+  private mcpTail: Promise<unknown> = Promise.resolve();
   contentOperations = new Map<string, Promise<unknown>>();
   private ownerClaimTail: Promise<void> = Promise.resolve();
   /** Test hook: milliseconds added to the clock. */
@@ -118,18 +113,14 @@ export class Tendril extends DurableObject<Env> {
 
   /** Agent/control admission precedes handling; page admission charges after authentication. */
   private async admitTraffic(kind: string): Promise<void> {
-    if (kind !== "agent" && kind !== "assistant") return;
+    if (kind !== "agent" && kind !== "mcp") return;
     await admitPageTraffic(this.env, this.tid, this.db.get<string | null>("owner_account", null));
   }
 
-  serializeAssistant<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.assistantTail.then(work);
-    this.assistantTail = result.catch(() => {});
+  serializeMcp<T>(work: () => Promise<T>): Promise<T> {
+    const result = this.mcpTail.then(work);
+    this.mcpTail = result.catch(() => {});
     return result;
-  }
-
-  async ensureAssistantDelivery(at: number): Promise<void> {
-    await this.alarms.ensure(Math.max(Date.now() + 1, at - this.skew));
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -181,22 +172,22 @@ export class Tendril extends DurableObject<Env> {
           files: this.db.all("SELECT version, path, type, size FROM version_files ORDER BY version DESC, path LIMIT 200"),
           activity: this.db.all("SELECT ts, kind, summary FROM activity ORDER BY seq DESC LIMIT 30") });
       }
-      if (kind === 'assistant' && req.method === 'POST') return await assistantRequest(this, req);
-      if (kind === 'assistant-review') return await reviewAssistant(this, req);
+      if (kind === 'mcp' && req.method === 'POST') return await mcpRequest(this, req);
       if (kind === 'agent-grant') return await handleAgentGrants(this, req, url);
       if (kind === 'agent-summary') {
         const agentId = req.headers.get(AGENT_HEADER) ?? '';
         if (!AGENT_ID_RE.test(agentId)) throw new HttpError(400, 'invalid_agent');
         return json(agentPageSummary(this, agentId));
       }
-      if (kind === 'assistant-activity') return await upgradeAssistantActivity(this, req);
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
         if (url.pathname === "/account/summary" && req.method === "GET") return json({
           name: this.db.get("name", "Tendril"), page_url: this.mainPageUrl(),
           icon: this.db.get<string | null>("icon", null), theme_color: this.db.get<string | null>("theme_color", null),
           version: this.db.get("current", 0), held: this.db.get("disabled", false),
           bytes: this.storageUsed(),
-          agents: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants")?.n ?? 0,
+          agents: (this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants")?.n ?? 0)
+            + (this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM mcp_connections")?.n ?? 0),
+          primary_agent_id: this.db.get<string | null>("primary_agent_id", null),
           guests_waiting: this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM guest_accounts WHERE approved = 0")?.n ?? 0,
           last_activity: this.db.one<{ ts: number; summary: string }>("SELECT ts, summary FROM activity ORDER BY seq DESC LIMIT 1"),
         });
@@ -248,8 +239,6 @@ export class Tendril extends DurableObject<Env> {
     if (isSetupWatch(ws)) { ws.close(1008, 'Setup watch is receive-only'); return; }
     if (isPublicationWatch(ws)) { ws.close(1008, "Publication watch is receive-only"); return; }
     if (isRelaySocket(ws)) { await handleRelayMessage(this, ws, message); return; }
-    if (isAssistantAdapter(ws)) { await handleAssistantFrame(this, ws, message); return; }
-    if (isAssistantActivity(ws)) { ws.close(1008, 'Activity sockets receive notices only'); return; }
     // Relay packets have separate packet/byte/credit bounds. Their unchanged
     // local credentials are cached; cold or invalidated credentials need SQL.
     try { await this.admitTraffic("agent"); }
@@ -263,12 +252,10 @@ export class Tendril extends DurableObject<Env> {
     try { ws.close(code === 1005 || code === 1006 ? 1000 : code, reason); } catch {}
     if (isPeerSocket(ws)) closePeer(this, ws);
     if (isRelaySocket(ws)) closeRelay(this, ws);
-    if (isAssistantAdapter(ws)) closeAssistantAdapter(this, ws);
   }
   async webSocketError(ws: WebSocket): Promise<void> {
     if (isDiscoverySocket(ws)) { closeDiscoverySocket(this, ws); try { ws.close(1011); } catch {} return; }
     if (isRelaySocket(ws)) { closeRelay(this, ws); return; }
-    if (isAssistantAdapter(ws)) { closeAssistantAdapter(this, ws); try { ws.close(1011); } catch {} return; }
     if (isPeerSocket(ws)) closePeer(this, ws);
     else try { ws.close(1011, "Participant transport failed"); } catch {}
   }
@@ -284,6 +271,8 @@ export class Tendril extends DurableObject<Env> {
     const id = req.headers.get("x-tendril-id")!;
     const agentId = req.headers.get(AGENT_HEADER) ?? "", publicKey = req.headers.get("x-tendril-agent-key") ?? "";
     if (!AGENT_ID_RE.test(agentId) || !AGENT_PUBLIC_KEY_RE.test(publicKey)) throw new HttpError(400, "invalid_agent");
+    const handle = validAgentHandle(req.headers.get("x-tendril-agent-handle") ?? "");
+    const bio = validAgentBio(req.headers.get("x-tendril-agent-bio") ?? "");
     const account = req.headers.get("x-account-id");
     const body = await readJson(req, 64 * 1024);
     const name = body.name === undefined ? "Tendril" : validName(body.name);
@@ -309,8 +298,8 @@ export class Tendril extends DurableObject<Env> {
         "INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at) VALUES ('l_main', ?, ?, 'owner', 'main', ?, NULL)",
         key, keyHash, now,
       );
-      addActivity(this, { kind: "created", summary: `Tendril "${name}" created by agent ${agentId}` });
-      return writeLocalGrant(this, agentId, publicKey, [...AGENT_SCOPES], "creator");
+      addActivity(this, { kind: "created", summary: `Tendril "${name}" created by @${handle}` });
+      return writeLocalGrant(this, agentId, handle, bio, publicKey, [...AGENT_SCOPES], "creator");
     });
     if (account) this.recordAccess();
     this.scheduleAlarm();
@@ -558,7 +547,6 @@ export class Tendril extends DurableObject<Env> {
         }
       }
     }
-    await adoptPreparedAssistant(this, accountId);
     await claimCreatorAgents(this.env, this.tid, accountId, identities);
     notifySetupChanged(this);
     const releasedAdmission = await this.env.ADMISSION.get(this.env.ADMISSION.idFromName("global"))
@@ -715,8 +703,6 @@ export class Tendril extends DurableObject<Env> {
     if (peerDue !== null) times.push(peerDue);
     const relayDue = nextRelayDeadline(this);
     if (relayDue !== null) times.push(relayDue);
-    const assistantDue = nextAssistantDelivery(this);
-    if (assistantDue !== null) times.push(assistantDue);
     if (lifetimeChangePending(this)) times.push(now + 5000);
     else if (expires !== null) times.push(expires);
     return this.alarms.ensure(Math.max(Math.min(...times) - this.skew, Date.now() + 1));
@@ -735,7 +721,6 @@ export class Tendril extends DurableObject<Env> {
       if (due !== null && due <= this.now() && !lifetimeChangePending(this)) { await this.destroy(); return; }
       expirePeers(this);
       await expireRelays(this);
-      if (nextAssistantDelivery(this) !== null) await runAssistantDelivery(this);
       if (this.db.get<number>('next_cleanup', 0) <= this.now()) await this.cleanup();
       const expires = this.expiresAt();
       if (expires !== null && expires <= this.now() && !lifetimeChangePending(this)) await this.destroy();

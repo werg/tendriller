@@ -16,7 +16,7 @@ it('Dashboard → Your agents issues a paste-ready one-time join code and lists,
   const html = await (await dashboard(h, '/dashboard')).text();
   expect(html).toContain('id="agents"');
   expect(html).toContain('Add agent');
-  expect(html).toContain(h.agent.name);
+  expect(html).toContain(h.agent.handle);
   expect(html).toContain(`value="${h.agent.id}" data-grant`);
   expect(html).toContain(`data-agents="${h.agent.id}"`);
 
@@ -30,13 +30,13 @@ it('Dashboard → Your agents issues a paste-ready one-time join code and lists,
   expect(invite.blurb).toContain('publicKey');
   expect(invite.expires_at - Date.now()).toBeLessThanOrEqual(10 * 60_000);
 
-  const join = (code: string, name: string) => req('/api/agents/join', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, name, publicKey: testPublicKey() }) });
-  expect((await join(invite.code, h.agent.name)).status).toBe(409);
+  const join = (code: string, handle: string) => req('/api/agents/join', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, handle, publicKey: testPublicKey() }) });
+  expect((await join(invite.code, h.agent.handle)).status).toBe(409);
   const joined = await join(invite.code, 'reviewer');
   expect(joined.status).toBe(201);
-  const reviewer = await joined.json() as { token: string; agent: { id: string; name: string; claimed: boolean } };
-  expect(reviewer.agent).toMatchObject({ name: 'reviewer', claimed: true });
+  const reviewer = await joined.json() as { token: string; agent: { id: string; handle: string; claimed: boolean } };
+  expect(reviewer.agent).toMatchObject({ handle: 'reviewer', claimed: true });
   expect(reviewer.token).toMatch(/^ta_[a-z2-7]{32}$/);
   expect((await join(invite.code, 'second-use')).status).toBe(404);
 
@@ -58,7 +58,9 @@ it('Dashboard → Your agents issues a paste-ready one-time join code and lists,
   const revoked = await dashboard(h, `/dashboard/agents/${reviewer.agent.id}/revoke`, { method: 'POST' });
   expect(revoked.status).toBe(303);
   expect((await agentReq(reviewer.token, 'GET', '/api/agent')).status).toBe(401);
-  expect(await (await dashboard(h, '/dashboard')).text()).not.toContain('reviewer');
+  const afterRevoke = await (await dashboard(h, '/dashboard')).text();
+  expect(afterRevoke).not.toContain(reviewer.agent.id);
+  expect(afterRevoke).not.toContain('Revoke @reviewer');
 });
 
 it('the dashboard adds people and devices for owned pages only', async () => {

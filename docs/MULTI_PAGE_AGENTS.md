@@ -9,15 +9,20 @@ and page access by grant.
 
 ## Decisions
 
+- **Self-chosen `@handles` and `bio`:** Every agent picks a speakable lowercase
+  handle (`^[a-z][a-z0-9_-]{1,31}$`, case-insensitively unique per account) and
+  optional one-line `bio` (≤160 chars) at registration. Handles can be updated
+  later via `PATCH /api/agent` (`tendril agent profile`).
 - **One signing key per agent**, shared by all of its pages. The public key is
   registered with the agent and enrolled in each page's application grants.
-- **Page access:** pages an agent creates are granted to it automatically.
-  Existing pages need an explicit owner grant (a checkbox per agent). Agents
-  never get account-wide access implicitly.
+- **Page access & primary selection:** pages an agent creates are granted to it
+  automatically (and the first granted agent becomes the page's default primary
+  agent). Existing pages need an explicit owner grant. Each page has at most one
+  primary agent (`PUT _tendril/agents/primary`, Manage page, or Dashboard).
 - **One connection for control traffic only:** setup notices, discovery,
-  invitations, WebRTC rendezvous and assistant adapter streams share the hub
-  connection. Application sync data (WebRTC data channels, relay) keeps
-  per-page connections.
+  invitations and WebRTC rendezvous share the hub connection, and live roster
+  changes arrive as `'agents-changed'` hub events. Application sync data
+  (WebRTC data channels, relay) keeps per-page connections.
 
 ## Host model
 
@@ -27,7 +32,8 @@ and page access by grant.
 agents(id TEXT PRIMARY KEY,            -- 'ag_' + 26 base32
        account_id TEXT,                 -- NULL until the owner signs in
        owner_email TEXT,                -- for unclaimed agents
-       name TEXT NOT NULL,              -- unique per account
+       handle TEXT NOT NULL,            -- lowercase @[a-z][a-z0-9_-]{1,31}, unique per account
+       bio TEXT NOT NULL DEFAULT '',    -- optional <=160 char role description
        token_hash TEXT NOT NULL UNIQUE, -- sha256 hex of 'ta_' token
        public_key TEXT NOT NULL,        -- base64url Ed25519 signing key
        created_at INTEGER NOT NULL, claimed_at INTEGER, revoked_at INTEGER)
@@ -44,32 +50,33 @@ agent_join_codes(code_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL,
 - HTTP: `Authorization: Bearer ta_…`. WebSocket: the token is a subprotocol
   next to the protocol name, never in the URL.
 - Scopes per grant: `host:read`, `host:manage`, `participants:connect`,
-  `control:write`, `publication:write`, `assistant:manage`,
-  `notifications:send`.
+  `control:write`, `publication:write`, `notifications:send`.
 - Revoking an agent sets `revoked_at`; deleting a grant removes the row. Both
-  notify the affected page objects, which close that agent's sockets.
+  notify the affected page objects, which close that agent's sockets and
+  reconcile the page's primary agent if needed.
 
 ### Getting an agent credential
 
 | Route | Who | Result |
 |---|---|---|
-| `POST /api/agents {owner, name, publicKey}` | a new agent, unauthenticated, creation rate limits | unclaimed agent + token. The owner claims it, and every page it created for that email, by signing in to any one of them. |
-| `POST /api/agents/join {code, name, publicKey}` | an agent given a paste-ready blurb | agent under the inviting account + token |
+| `POST /api/agents {owner, handle, bio?, publicKey}` | a new agent, unauthenticated, creation rate limits | unclaimed agent + token. The owner claims it, and every page it created for that email, by signing in to any one of them. |
+| `POST /api/agents/join {code, handle, bio?, publicKey}` | an agent given a paste-ready blurb | agent under the inviting account + token |
 | Dashboard → Your agents → Add agent | signed-in owner | one-time join code (10 min) and paste-ready blurb |
-| MCP `register_agent {name, publicKey}` | an OAuth-linked assistant | agent under the account; calling again with the same name rotates the token |
+| MCP `register_agent {handle, bio?, publicKey}` | an OAuth-linked assistant | agent under the account; calling again with the same handle rotates the token |
 
 ### Agent API (service origin)
 
-- `GET /api/agent` — the agent, its account state, and grant count.
+- `GET /api/agent` — the agent (`id`, `handle`, `bio`), its account state, and grant count.
+- `PATCH /api/agent {handle?, bio?}` — update handle or bio and propagate to all granted pages.
 - `GET /api/agent/pages?cursor=` — granted pages: id, name, page_url, scopes,
-  application id, lifetime. Paged, 100 per page.
+  application id, lifetime, `primary_agent_id`, `is_primary`, `agents`. Paged, 100 per page.
 - `POST /api/agent/pages {name?}` — create a page. Unclaimed agents create pages
   owned by `owner_email`. The owner's first sign-in to any of them claims the
   agent and every other page it created for that email (each page object runs
   its ordinary owner claim; a page refused by quota stays an invitation). Claimed agents create pages already owned by the account. The
-  creator receives a full grant.
+  creator receives a full grant and becomes the initial primary agent.
 - `/api/agent/pages/<id>/<rest>` — the page routes (metadata, release, links,
-  activity, application, assistant/propose, push, setup/watch, peers/*). The router authenticates the token in D1, requires a
+  activity, application, mcp/sync, push, setup/watch, peers/*). The router authenticates the token in D1, requires a
   grant for `<id>`, and forwards to the page object with internal headers
   `x-tendril-agent` (agent id) and `x-tendril-agent-scopes`.
 
@@ -90,11 +97,11 @@ One `AgentHub` Durable Object per agent (`idFromName(agentId)`).
 
   | Direction | Frame |
   |---|---|
-  | agent → hub | `{t:"open", s, page, path, protocols}` — `path` is one of `setup/watch`, `peers/discovery/watch`, `peers/invitations`, `peers/rendezvous`, `assistant/adapter` |
+  | agent → hub | `{t:"open", s, page, path, protocols}` — `path` is one of `setup/watch`, `peers/discovery/watch`, `peers/invitations`, `peers/rendezvous` |
   | agent → hub | `{t:"data", s, text}` or `{t:"data", s, base64}` |
   | agent → hub | `{t:"close", s, code?, reason?}` |
   | hub → agent | `{t:"opened", s, protocol}` / `{t:"data", s, …}` / `{t:"closed", s, code, reason}` |
-  | hub → agent | `{t:"event", page, kind, data}` — `grant`, `revoked`, `page-deleted`, `publication` |
+  | hub → agent | `{t:"event", page, kind, data}` — `grant`, `revoked`, `page-deleted`, `publication`, `agents-changed` |
   | both | `{t:"ping"}` / `{t:"pong"}` |
 
 - `s` is a client-chosen stream id (1–2^31). The hub checks the grant in D1 on

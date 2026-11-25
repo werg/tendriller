@@ -8,7 +8,6 @@
     "init": "node setup.mjs init",
     "build": "node setup.mjs build",
     "deploy": "node setup.mjs deploy",
-    "assistant:prepare": "node setup.mjs assistant",
     "sign-enrollment": "node setup.mjs sign-enrollment",
     "provisioning-request": "node setup.mjs provisioning-request",
     "import-provisioning": "node setup.mjs import-provisioning",

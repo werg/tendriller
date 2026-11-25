@@ -17,7 +17,7 @@ const SECRET_PATTERNS = [
   /ta_[a-z2-7]{32}/u,
   /td_a_[a-f0-9]{64}/u,
   /td_n_[a-f0-9]{64}/u,
-  /td_c_[a-f0-9-]{36}\.[a-f0-9]{64}/u,
+  /ta_[a-z2-7]{32}/u,
   /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u,
 ];
 

@@ -1,6 +1,7 @@
 import type { Env } from '../env';
 import { testAccountEnabled } from './test-access';
 import { safeEqual, sha256Hex } from '../ids';
+import { sealTokenWrapKey, unbase64url, unsealTokenWrapKey } from '../mcp-crypto';
 import { activeGrant, cleanup, postOnly, registeredGrant, revokeGrant, type OAuthGrant } from './oauth-data';
 import { requestedScopes } from './oauth-authorization';
 import { checkVerifier, form, oauthJson, randomToken, reject, signAccessToken, text, type OAuthClient, type OAuthConfig } from './oauth-support';
@@ -32,13 +33,13 @@ const liveGrantSql = `SELECT 1 FROM integration_oauth_grants g JOIN accounts a O
     AND a.suspended_at IS NULL AND a.deleting_at IS NULL`;
 
 /** Persist issuance before returning tokens. Rotation and its new tokens commit together. */
-async function issue(env: Env, config: OAuthConfig, grant: OAuthGrant, client: OAuthClient, scope: string, previousHash?: string): Promise<Response> {
+async function issue(env: Env, config: OAuthConfig, grant: OAuthGrant, client: OAuthClient, scope: string, wk?: string, previousHash?: string): Promise<Response> {
   const now = Date.now(), issuedAt = Math.floor(now / 1000), expiresAt = Math.min(Math.floor(grant.expires_at / 1000), issuedAt + config.accessTokenTtlSeconds);
   if (expiresAt <= issuedAt) reject('invalid_grant', 'Authorization expired');
   const jti = crypto.randomUUID();
   const token = await signAccessToken(config, { iss: config.issuer, sub: grant.account_id, aud: config.resource, client_id: client.id,
-    scope, iat: issuedAt, exp: expiresAt, jti, sid: grant.id });
-  const hash = await sha256Hex(token), refresh = client.allowRefresh ? 'rt_' + randomToken() : null;
+    scope, iat: issuedAt, exp: expiresAt, jti, sid: grant.id, ...(wk ? { wk } : {}) });
+  const hash = await sha256Hex(token), refresh = client.allowRefresh ? 'rt_' + randomToken() + (wk ? '.' + wk : '') : null;
   const refreshHash = refresh ? await sha256Hex(refresh) : null;
   const liveBindings = [grant.id, client.id, config.resource, now];
   const rotation = previousHash ? [env.ACCOUNTS.prepare(`UPDATE integration_oauth_refresh SET used_at=?,replacement_hash=?
@@ -82,21 +83,28 @@ export async function tokenEndpoint(req: Request, env: Env, config: OAuthConfig)
   if (type === 'authorization_code') {
     const raw = text(params.get('code'), 'authorization code', 128), hash = await sha256Hex(raw), uri = params.get('redirect_uri');
     if (!uri || !client.redirectUris.includes(uri)) reject('invalid_grant', 'Invalid authorization code or redirect URI');
-    const code = await env.ACCOUNTS.prepare('SELECT grant_id,redirect_uri,challenge,expires_at,used_at FROM integration_oauth_codes WHERE hash=?')
-      .bind(hash).first<{ grant_id: string; redirect_uri: string; challenge: string; expires_at: number; used_at: number | null }>();
+    const code = await env.ACCOUNTS.prepare('SELECT grant_id,redirect_uri,challenge,sealed_wrap_key,expires_at,used_at FROM integration_oauth_codes WHERE hash=?')
+      .bind(hash).first<{ grant_id: string; redirect_uri: string; challenge: string; sealed_wrap_key: string | null; expires_at: number; used_at: number | null }>();
     const grant = code && await activeGrant(env, config, code.grant_id);
     if (!code || !grant || grant.client_id !== client.id || code.redirect_uri !== uri) reject('invalid_grant', 'Invalid authorization code');
     await checkVerifier(params.get('code_verifier'), code!.challenge);
     if (code!.used_at !== null) { await revokeGrant(env, grant!.id); reject('invalid_grant', 'Authorization code was already used'); }
     if (code!.expires_at <= Date.now()) reject('invalid_grant', 'Authorization code expired');
-    const claimed = await env.ACCOUNTS.prepare(`UPDATE integration_oauth_codes SET used_at=? WHERE hash=? AND used_at IS NULL AND expires_at>?
+    // Atomically mark used and wipe sealed_wrap_key so no wrap private key remains in D1.
+    const claimed = await env.ACCOUNTS.prepare(`UPDATE integration_oauth_codes SET used_at=?, sealed_wrap_key=NULL WHERE hash=? AND used_at IS NULL AND expires_at>?
       AND EXISTS(${liveGrantSql}) RETURNING grant_id`).bind(Date.now(), hash, Date.now(), grant!.id, client.id, config.resource, Date.now()).first();
     if (!claimed) { await revokeGrant(env, grant!.id); reject('invalid_grant', 'Authorization code is no longer usable'); }
-    return issue(env, config, grant!, client, grant!.scope);
+    let wk: string | undefined;
+    if (code!.sealed_wrap_key) {
+      const wrapPriv = await unsealTokenWrapKey(env.OAUTH_SIGNING_JWK ?? '', hash, code!.sealed_wrap_key);
+      wk = await sealTokenWrapKey(env.OAUTH_SIGNING_JWK ?? '', grant!.id, wrapPriv);
+    }
+    return issue(env, config, grant!, client, grant!.scope, wk);
   }
   if (type === 'refresh_token') {
     if (!client.allowRefresh) reject('invalid_grant', 'This client cannot refresh access');
-    const hash = await sha256Hex(text(params.get('refresh_token'), 'refresh token', 128));
+    const rawRefresh = text(params.get('refresh_token'), 'refresh token', 256);
+    const hash = await sha256Hex(rawRefresh);
     const refresh = await env.ACCOUNTS.prepare('SELECT grant_id,used_at,expires_at FROM integration_oauth_refresh WHERE hash=?')
       .bind(hash).first<{ grant_id: string; used_at: number | null; expires_at: number }>();
     const grant = refresh && await activeGrant(env, config, refresh.grant_id);
@@ -104,7 +112,9 @@ export async function tokenEndpoint(req: Request, env: Env, config: OAuthConfig)
     if (refresh!.used_at !== null) { await revokeGrant(env, grant!.id); reject('invalid_grant', 'Refresh token reuse revoked this authorization'); }
     if (refresh!.expires_at <= Date.now()) reject('invalid_grant', 'Refresh token expired');
     const scope = requestedScopes(params.get('scope'), grant!.scope ? grant!.scope.split(' ') : []).join(' ');
-    return issue(env, config, grant!, client, scope, hash);
+    const dot = rawRefresh.indexOf('.');
+    const wk = dot > 0 ? rawRefresh.slice(dot + 1) : undefined;
+    return issue(env, config, grant!, client, scope, wk, hash);
   }
   return reject('unsupported_grant_type', 'Only authorization_code and configured refresh_token grants are supported');
 }
@@ -113,18 +123,30 @@ export async function inspectAccessToken(env: Env, config: OAuthConfig, token: s
   const hash = await sha256Hex(text(token, 'access token', 16384));
   const now = Date.now();
   const access = await env.ACCOUNTS.prepare(`SELECT tok.grant_id,tok.jti,tok.scope,tok.created_at,tok.expires_at,
-      g.account_id,g.client_id,g.scope AS grant_scope
+      g.account_id,g.client_id,g.scope AS grant_scope,g.wrap_public_key
     FROM integration_oauth_access tok JOIN integration_oauth_grants g ON g.id=tok.grant_id
     JOIN accounts a ON a.id=g.account_id
     WHERE tok.hash=? AND tok.expires_at>? AND g.resource=? AND g.revoked_at IS NULL AND g.expires_at>?
       AND a.suspended_at IS NULL AND a.deleting_at IS NULL`).bind(hash, now, config.resource, now)
-    .first<{ grant_id: string; jti: string; scope: string; created_at: number; expires_at: number;
-      account_id: string; client_id: string; grant_scope: string }>();
+    .first<{ grant_id: string; jti: string; scope: string; created_at: number; expires_at: number; account_id: string; client_id: string; grant_scope: string; wrap_public_key: string }>();
   if (!access || !testAccountEnabled(env, access.account_id) || !registeredGrant(config, { client_id: access.client_id, scope: access.grant_scope }) ||
       !registeredGrant(config, access)) return null;
-  return { active: true, token_type: 'Bearer', sub: access.account_id, iss: config.issuer, aud: config.resource,
+  let wrapPrivateKey: Uint8Array | null = null;
+  const parts = token.split('.');
+  if (parts.length === 3) {
+    try {
+      const claims = JSON.parse(new TextDecoder().decode(unbase64url(parts[1]))) as { wk?: unknown };
+      if (typeof claims.wk === 'string' && claims.wk) {
+        wrapPrivateKey = await unsealTokenWrapKey(env.OAUTH_SIGNING_JWK ?? '', access.grant_id, claims.wk);
+      }
+    } catch { /* Non-key-bearing token; hosted unwrap unavailable */ }
+  }
+  return {
+    active: true, token_type: 'Bearer', sub: access.account_id, iss: config.issuer, aud: config.resource,
     scope: access.scope, client_id: access.client_id, iat: Math.floor(access.created_at / 1000), exp: Math.floor(access.expires_at / 1000),
-    jti: access.jti, sid: access.grant_id };
+    jti: access.jti, sid: access.grant_id,
+    wrap_public_key: access.wrap_public_key, wrap_private_key: wrapPrivateKey,
+  };
 }
 
 export async function revoke(req: Request, env: Env, config: OAuthConfig): Promise<Response> {

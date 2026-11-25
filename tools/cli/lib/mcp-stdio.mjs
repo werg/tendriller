@@ -108,6 +108,52 @@ const TOOL_SPECS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'agents_list',
+    description: 'List all agents on this page (their @handles, bios, public keys, kind, and which agent is primary).',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'agent_message',
+    description: 'Post a durable multi-agent message on this page (chat or agents backchannel), resolving @handles to public keys.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        channel: { type: 'string', enum: ['chat', 'agents'], default: 'chat' },
+        to: { type: 'array', items: { type: 'string', minLength: 1, maxLength: 64 }, maxItems: 32 },
+        text: { type: 'string', minLength: 1, maxLength: 8000 },
+        data: {},
+        operationId: { type: 'string', minLength: 1, maxLength: 512 },
+        inReplyTo: {
+          type: 'object',
+          properties: { author: { type: 'string', minLength: 64, maxLength: 64 }, operationId: { type: 'string', minLength: 1, maxLength: 512 } },
+          required: ['author', 'operationId'],
+          additionalProperties: false,
+        },
+        hopCount: { type: 'integer', minimum: 0, maximum: 16 },
+        expectReply: { type: 'boolean', default: true },
+        replyToUser: { type: 'boolean', default: false },
+        wait: { type: 'string', enum: ['stored', 'materialized', 'retained', 'finalized'], default: 'materialized' },
+      },
+      required: ['text', 'operationId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'agent_ask',
+    description: 'Send a bounded ephemeral RPC call to another agent on this page by @handle or public key and await its JSON reply.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: 'string', minLength: 1, maxLength: 64 },
+        method: { type: 'string', minLength: 1, maxLength: 128 },
+        input: {},
+        timeoutMs: { type: 'integer', minimum: 500, maximum: 60000, default: 20000 },
+      },
+      required: ['to', 'method'],
+      additionalProperties: false,
+    },
+  },
 ];
 // Every page-scoped tool takes `page`; the agent program attaches to that page only.
 export const TOOLS = TOOL_SPECS.map(tool => tool.name === 'pages_list' ? tool : { ...tool, inputSchema: { ...tool.inputSchema,
@@ -158,6 +204,17 @@ function validateArguments(name, args) {
     if (args.tag !== undefined && (typeof args.tag !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(args.tag))) throw invalid('tag must be 1..64 alphanumeric/._- chars');
     if (args.badge !== undefined && (!Number.isSafeInteger(args.badge) || args.badge < 0 || args.badge > 999)) throw invalid('badge must be 0..999');
   }
+  if (name === 'agent_message') {
+    if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 8000) throw invalid('text must be 1..8000 chars');
+    if (typeof args.operationId !== 'string' || !args.operationId.trim() || args.operationId.length > 512) throw invalid('operationId required');
+    if (args.channel !== undefined && args.channel !== 'chat' && args.channel !== 'agents') throw invalid('channel must be chat or agents');
+    if (args.to !== undefined && (!Array.isArray(args.to) || args.to.length > 32 || args.to.some(x => typeof x !== 'string' || !x.trim()))) throw invalid('to must be an array of @handles, public keys, or *');
+  }
+  if (name === 'agent_ask') {
+    if (typeof args.to !== 'string' || !args.to.trim() || args.to.length > 64) throw invalid('to must be an agent @handle or 64-hex public key');
+    if (typeof args.method !== 'string' || !args.method.trim() || args.method.length > 128) throw invalid('method required');
+    if (args.timeoutMs !== undefined && (!Number.isSafeInteger(args.timeoutMs) || args.timeoutMs < 500 || args.timeoutMs > 60_000)) throw invalid('timeoutMs must be 500..60000');
+  }
   if (args.wait !== undefined && !['stored', 'materialized', 'retained', 'finalized'].includes(args.wait)) throw invalid('wait must be stored, materialized, retained or finalized');
   if (args.stopOnError !== undefined && typeof args.stopOnError !== 'boolean') throw invalid('stopOnError must be boolean');
 }
@@ -199,18 +256,90 @@ export async function handleStdioMcpMessage(pages, message, { signal } = {}) {
       const args = message.params.arguments ?? {};
       try { validateArguments(name, args); } catch (error) { return toolErr(error.code, error.message); }
       signal.throwIfAborted();
-      if (name === 'pages_list') return toolOk({ pages: await pages.list() });
+      if (name === 'pages_list') {
+        const self = typeof pages.self === 'function' ? pages.self() : null;
+        return toolOk({ ...(self ? { self } : {}), pages: await pages.list() });
+      }
       const owned = await pages.open(args.page, { signal });
       const { session } = owned;
+      const getRoster = async () => typeof owned.roster === 'function'
+        ? await owned.roster({ signal })
+        : { self: null, primary_agent_id: null, is_primary: false, agents: [] };
+      const resolveTarget = (raw, agents) => {
+        if (raw === '*') return '*';
+        if (/^[a-f0-9]{64}$/u.test(raw)) return raw;
+        const h = raw.replace(/^@+/u, '').toLowerCase();
+        const match = (agents ?? []).find(a => String(a.handle ?? '').toLowerCase() === h);
+        if (!match) throw Object.assign(new Error(`No agent @${h} on page ${args.page}.`), { code: 'unknown_agent_handle' });
+        return match.public_key;
+      };
       if (name === 'app_discover') {
+        const roster = await getRoster();
+        const primary = roster.agents.find(a => a.id === roster.primary_agent_id || a.is_primary);
         return toolOk({
           page: args.page,
           applicationId: session.applicationId,
           author: session.identity.publicKey,
+          self: roster.self,
+          isPrimary: Boolean(roster.is_primary),
+          primaryHandle: primary?.handle ?? null,
+          agents: roster.agents,
           mode: 'attach',
           status: session.status,
           definition: typeof session.describe === 'function' ? session.describe() : (await import('@chronolog/peer-session')).describeApplication(session.definition),
         });
+      }
+      if (name === 'agents_list') {
+        return toolOk({ page: args.page, ...await getRoster() });
+      }
+      if (name === 'agent_message') {
+        const roster = await getRoster();
+        const to = (args.to ?? []).map(item => resolveTarget(item, roster.agents));
+        const input = {
+          channel: args.channel ?? 'chat',
+          to,
+          text: args.text,
+          ...(args.data !== undefined ? { data: args.data } : {}),
+          ...(args.inReplyTo !== undefined ? { inReplyTo: args.inReplyTo } : {}),
+          ...(args.hopCount !== undefined ? { hopCount: args.hopCount } : {}),
+          ...(args.expectReply !== undefined ? { expectReply: args.expectReply } : {}),
+          ...(args.replyToUser !== undefined ? { replyToUser: args.replyToUser } : {}),
+        };
+        try {
+          const op = await session.command('agentMessage', input, { operationId: args.operationId });
+          return toolOk(await observeSubmission(op, args.wait ?? 'materialized', signal));
+        } catch (error) {
+          return toolOk(await uncertain(session, args.operationId, error));
+        }
+      }
+      if (name === 'agent_ask') {
+        const roster = await getRoster();
+        const targetKey = resolveTarget(args.to, roster.agents);
+        if (targetKey === '*') throw invalid('agent_ask requires a single target agent, not *');
+        const timeoutMs = args.timeoutMs ?? 20_000;
+        const reqId = crypto.randomUUID();
+        const scope = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+        const assemblies = new Map();
+        const waitReply = (async () => {
+          for await (const frame of session.signals.subscribe({ topics: ['agent/rpc/res'], mode: 'all', signal: scope })) {
+            if (frame.authorId !== targetKey) continue;
+            const p = frame.payload ?? {};
+            if (p.id !== reqId || p.r !== session.identity.publicKey) continue;
+            if (typeof p.error === 'string') throw Object.assign(new Error(p.error), { code: p.code || 'rpc_failed' });
+            const g = String(p.g ?? '0');
+            let bucket = assemblies.get(g);
+            if (!bucket) assemblies.set(g, bucket = { n: p.n, pieces: new Map() });
+            bucket.pieces.set(p.i, p.z);
+            if (bucket.pieces.size === bucket.n) {
+              const joined = Array.from({ length: bucket.n }, (_, i) => bucket.pieces.get(i)).join('');
+              return JSON.parse(joined);
+            }
+          }
+          throw Object.assign(new Error('Agent RPC stream closed before reply'), { code: 'rpc_closed' });
+        })();
+        await session.signals.send('agent/rpc/req', { id: reqId, to: targetKey, q: args.method, input: args.input ?? null }, { ttlMs: timeoutMs, signal: scope });
+        const reply = await waitReply;
+        return toolOk({ to: targetKey, method: args.method, reply });
       }
       if (name === 'state_query') {
         return toolOk(await session.query(args.query, args.input ?? null));

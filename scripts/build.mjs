@@ -116,7 +116,7 @@ export async function buildPublicArtifacts() {
       writeFileSync(join(sdk, folder, file), source);
     }
   }
-  writeJson(join(sdk, "package.json"), { name: "@tendriller/core", version: CORE_RELEASE, type: "module", description: "Tendriller page-host client and owned application session contract", exports: { ".": { types: "./client.d.mts", import: "./client.mjs" }, "./setup": { types: "./setup.d.mts", import: "./setup.mjs" }, "./authority": { types: "./authority.d.mts", import: "./authority.mjs" }, "./contract": { types: "./index.d.mts", import: "./index.mjs" }, "./onboarding": { types: "./onboarding.d.mts", import: "./onboarding.mjs" }, "./browser": { types: "./browser.d.mts" }, "./voice": { types: "./voice.d.mts" }, "./limits": { types: "./limits.d.mts", import: "./limits.mjs" }, "./application": { types: "./application.d.mts", import: "./application.mjs" }, "./signals": { types: "./signals.d.mts", import: "./signals.mjs" }, "./peers": { types: "./peers.d.mts", import: "./peers.mjs" }, "./assistant": { types: "./assistant.d.mts", import: "./assistant.mjs" }, "./archive": { types: "./archive.d.mts", import: "./archive.mjs" }, "./release-verify": { types: "./release-verify.d.mts", import: "./release-verify.mjs" }, "./probe": { types: "./transport-probe.d.mts", import: "./transport-probe.mjs" }, "./serverless": { types: "./serverless.d.mts", import: "./serverless.mjs" }, "./browser-owner": { types: "./session/browser.d.mts", import: "./session/browser.mjs" }, "./worker-owner": { types: "./session/worker.d.mts", import: "./session/worker.mjs" }, "./native-owner": { types: "./session/native.d.mts", import: "./session/native.mjs" }, "./ipc": { types: "./session/ipc.d.mts", import: "./session/ipc.mjs" }, "./participation": { types: "./session/participation.d.mts", import: "./session/participation.mjs" }, "./native-rtc": { types: "./session/native-rtc.d.mts", import: "./session/native-rtc.mjs" }, "./transport-diagnostics": { types: "./session/transport-diagnostics.d.mts", import: "./session/transport-diagnostics.mjs" }, "./diagnostics": { types: "./session/diagnostics.d.mts", import: "./session/diagnostics.mjs" }, "./collaboration": { types: "./collaboration/index.d.mts", import: "./collaboration/index.mjs" }, "./schema": "./v3.json" }, peerDependencies: { "@chronolog/peer-session": "*" }, peerDependenciesMeta: { "@chronolog/peer-session": { optional: true } }, tendriller: { contract: CONTRACT_VERSION } });
+  writeJson(join(sdk, "package.json"), { name: "@tendriller/core", version: CORE_RELEASE, type: "module", description: "Tendriller page-host client and owned application session contract", exports: { ".": { types: "./client.d.mts", import: "./client.mjs" }, "./setup": { types: "./setup.d.mts", import: "./setup.mjs" }, "./authority": { types: "./authority.d.mts", import: "./authority.mjs" }, "./contract": { types: "./index.d.mts", import: "./index.mjs" }, "./onboarding": { types: "./onboarding.d.mts", import: "./onboarding.mjs" }, "./browser": { types: "./browser.d.mts" }, "./voice": { types: "./voice.d.mts" }, "./limits": { types: "./limits.d.mts", import: "./limits.mjs" }, "./application": { types: "./application.d.mts", import: "./application.mjs" }, "./signals": { types: "./signals.d.mts", import: "./signals.mjs" }, "./peers": { types: "./peers.d.mts", import: "./peers.mjs" }, "./archive": { types: "./archive.d.mts", import: "./archive.mjs" }, "./release-verify": { types: "./release-verify.d.mts", import: "./release-verify.mjs" }, "./probe": { types: "./transport-probe.d.mts", import: "./transport-probe.mjs" }, "./serverless": { types: "./serverless.d.mts", import: "./serverless.mjs" }, "./browser-owner": { types: "./session/browser.d.mts", import: "./session/browser.mjs" }, "./worker-owner": { types: "./session/worker.d.mts", import: "./session/worker.mjs" }, "./native-owner": { types: "./session/native.d.mts", import: "./session/native.mjs" }, "./ipc": { types: "./session/ipc.d.mts", import: "./session/ipc.mjs" }, "./participation": { types: "./session/participation.d.mts", import: "./session/participation.mjs" }, "./native-rtc": { types: "./session/native-rtc.d.mts", import: "./session/native-rtc.mjs" }, "./transport-diagnostics": { types: "./session/transport-diagnostics.d.mts", import: "./session/transport-diagnostics.mjs" }, "./diagnostics": { types: "./session/diagnostics.d.mts", import: "./session/diagnostics.mjs" }, "./collaboration": { types: "./collaboration/index.d.mts", import: "./collaboration/index.mjs" }, "./schema": "./v3.json" }, peerDependencies: { "@chronolog/peer-session": "*" }, peerDependenciesMeta: { "@chronolog/peer-session": { optional: true } }, tendriller: { contract: CONTRACT_VERSION } });
   for (const [name, directory] of [["sdk", sdk], ["runtime", runtime]]) {
     const result = JSON.parse(execFileSync("npm", ["pack", "--json", "--pack-destination", dist], { cwd: directory, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }))[0];
     const target = join(dist, `tendriller-${name}-${CORE_RELEASE}.tgz`);
@@ -124,10 +124,7 @@ export async function buildPublicArtifacts() {
     if (join(dist, result.filename) !== target) rmSync(join(dist, result.filename));
   }
   for (const name of ["agent.md", "AGENTS.md", "llms.txt"]) copyFileSync(join(root, name), join(out, name));
-  const inboxSource = join(root, 'server/inbox');
-  const inbox = await build({ entryPoints: [join(inboxSource, 'app.mjs')], bundle: true, write: false, format: 'esm', minify: true });
-  writeFileSync(join(out, 'application-inbox.html'), readFileSync(join(inboxSource, 'template.html'), 'utf8')
-    .replace('<!-- APP -->', () => '<script type="module">' + inbox.outputFiles[0].text.replace(/<\/script/giu, '<\\/script') + '</script>'));
+  rmSync(join(out, 'application-inbox.html'), { force: true });
 
   for (const directory of ["docs", "legal"]) {
     const target = join(out, directory); rmSync(target, { recursive: true, force: true }); mkdirSync(target, { recursive: true });
@@ -158,9 +155,40 @@ export async function buildEngine() {
     return { provenanceSha256: sha256(bytes), files };
   };
   const authority = authoritySnapshot();
-  const result = await build({ entryPoints: [join(root, "server/src/index.ts")], outfile: join(dist, "engine/worker.mjs"), plugins: [releaseIdentity], bundle: true, platform: "browser", format: "esm", target: "es2022", external: ["cloudflare:workers"], metafile: true, logLevel: "warning" });
+  const wasmAssets = new Set();
+  const wasmBundlePlugin = {
+    name: 'worker-wasm-assets',
+    setup(builder) {
+      builder.onResolve({ filter: /(?:\.wasm$|^@jitl\/quickjs-ng-wasmfile-release-sync\/wasm$)/ }, args => {
+        let resolved;
+        if (args.path === '@jitl/quickjs-ng-wasmfile-release-sync/wasm') {
+          resolved = join(root, 'node_modules/@jitl/quickjs-ng-wasmfile-release-sync/dist/emscripten-module.wasm');
+        } else {
+          resolved = join(args.resolveDir, args.path);
+        }
+        const name = basename(resolved);
+        copyFileSync(resolved, join(dist, 'engine', name));
+        wasmAssets.add(name);
+        return { path: `./${name}`, external: true };
+      });
+    },
+  };
+  const result = await build({
+    entryPoints: [join(root, "server/src/index.ts")],
+    outfile: join(dist, "engine/worker.mjs"),
+    plugins: [releaseIdentity, wasmBundlePlugin],
+    bundle: true,
+    platform: "browser",
+    conditions: ["workerd", "worker", "browser", "import", "default"],
+    format: "esm",
+    target: "es2022",
+    external: ["cloudflare:workers"],
+    metafile: true,
+    logLevel: "warning",
+  });
   if (JSON.stringify(authoritySnapshot()) !== JSON.stringify(authority)) throw new Error('Authority package changed while building the Worker');
   writeJson(join(dist, "engine/authority-inputs.json"), authority);
+  writeJson(join(dist, "engine/wasm-assets.json"), [...wasmAssets].sort());
   writeJson(join(dist, "engine/inputs.json"), Object.keys(result.metafile.inputs).sort());
 }
 export async function buildAll() { await buildPublicArtifacts(); if (!process.argv.includes("--artifacts-only")) await buildEngine(); console.log("Built core SDK, runtime and engine artifacts"); }
@@ -168,7 +196,7 @@ if (!process.argv.includes("--skip-initial")) await buildAll();
 if (watching) {
   let timer, building = false, again = false;
   const rebuild = async () => { if (building) { again = true; return; } building = true; do { again = false; try { await buildAll(); } catch (error) { console.error(error); } } while (again); building = false; };
-  const watchers = ["runtime/src", "runtime/resources.mjs", "runtime/types", "server/src", "server/inbox", "contract", "session", "collaboration", "docs", "deploy", "legal", "agent.md", "AGENTS.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
+  const watchers = ["runtime/src", "runtime/resources.mjs", "runtime/types", "server/src", "contract", "session", "collaboration", "docs", "deploy", "legal", "agent.md", "AGENTS.md", "llms.txt"].map(path => watch(join(root, path), { recursive: true }, (_event, name) => {
     if (name === "runtime-release.json") return;
     clearTimeout(timer); timer = setTimeout(rebuild, 120);
   }));

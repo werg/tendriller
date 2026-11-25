@@ -10,13 +10,20 @@ it('retains a receive-only setup subscription through hibernation without an idl
   const before = await inDO(h.id, async t => ({ alarm: await t.ctx.storage.getAlarm(), rows: t.db.one('SELECT COUNT(*) AS n FROM sqlite_schema') }));
   const response = await api(h, 'GET', 'setup/watch', undefined, headers); expect(response.status).toBe(101);
   const socket = response.webSocket!; const ready = next(socket); socket.accept();
-  expect(await ready).toEqual({ type: 'setup', version: 1, assistant: { proposalId: null, approved: false, revision: null } });
+  expect(await ready).toEqual({ type: 'setup', version: 1, mcp: { connected: false, grants: [], updatedAt: 0 } });
   expect(await inDO(h.id, async t => ({ alarm: await t.ctx.storage.getAlarm(), rows: t.db.one('SELECT COUNT(*) AS n FROM sqlite_schema') }))).toEqual(before);
   const changed = next(socket);
   await inDO(h.id, t => {
-    t.transaction(() => { t.db.set('assistant_proposal', { id: 'a'.repeat(64) }); notifySetupChanged(t); });
+    const now = t.now();
+    t.transaction(() => {
+      t.db.run(
+        'INSERT INTO mcp_connections(grant_id,handle,bio,public_key,wrapped_keys,label,capabilities,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+        'grant-1', 'chatgpt', '', 'a'.repeat(64), new Uint8Array([1]).buffer, 'Notes', '{}', now, now,
+      );
+      notifySetupChanged(t);
+    });
   });
-  expect((await changed).assistant).toEqual({ proposalId: 'a'.repeat(64), approved: false, revision: null });
+  expect((await changed).mcp).toMatchObject({ connected: true, grants: ['grant-1'] });
   const closed = new Promise<number>(resolve => socket.addEventListener('close', e => resolve(e.code)));
   socket.send('{}'); expect(await closed).toBe(1008);
 });
@@ -37,8 +44,18 @@ it('publishes no notification for rolled-back writes and fences revoked credenti
   const response = await api(h, 'GET', 'setup/watch', undefined, headers), socket = response.webSocket!;
   const ready = next(socket); socket.accept(); await ready;
   await inDO(h.id, t => {
-    try { t.transaction(() => { t.db.set('assistant_proposal', { id: 'b'.repeat(64) }); notifySetupChanged(t); throw Error('rollback'); }); } catch {}
-    expect(t.db.get('assistant_proposal', null)).toBe(null);
+    const now = t.now();
+    try {
+      t.transaction(() => {
+        t.db.run(
+          'INSERT INTO mcp_connections(grant_id,handle,bio,public_key,wrapped_keys,label,capabilities,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)',
+          'grant-rb', 'chatgpt', '', 'b'.repeat(64), new Uint8Array([1]).buffer, 'Notes', '{}', now, now,
+        );
+        notifySetupChanged(t);
+        throw Error('rollback');
+      });
+    } catch {}
+    expect(t.db.all('SELECT grant_id FROM mcp_connections')).toEqual([]);
   });
   const closed = new Promise<number>(resolve => socket.addEventListener('close', e => resolve(e.code)));
   await inDO(h.id, t => { t.db.run('DELETE FROM agent_grants'); notifySetupChanged(t); });

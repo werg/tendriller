@@ -4,12 +4,10 @@
 // key exists, explicit native provisioning follows the owner's browser initialization, and the native MCP
 // participant is OPTIONAL (`tendril agent run`). The signed page reads and writes with its own browser
 // identity; no native process is a prerequisite.
-import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createAssistantKey, proposeApplicationAssistant } from '@tendriller/core/assistant';
 import { bytesToHex, eventExecutionManifest, executionManifestArtifacts } from '@chronolog/peer-session';
 import { adoptWorkspace, workspaceKey } from '@tendriller/tools/workspace';
 import { definition } from './review-domain.mjs';
@@ -20,14 +18,14 @@ import { prepareHost } from './support/prepare-host.mjs';
 import { publishPage } from './support/publish.mjs';
 
 const mode = process.argv[2], root = fileURLToPath(new URL('.', import.meta.url));
-const modes = ['setup', 'init', 'build', 'publish', 'signer-key', 'sign-enrollment', 'provisioning-request', 'import-provisioning', 'propose'];
+const modes = ['setup', 'init', 'build', 'publish', 'signer-key', 'sign-enrollment', 'provisioning-request', 'import-provisioning'];
 if (!modes.includes(mode)) throw Error('Choose ' + modes.join(', ') + '. Run the optional participant with: tendril agent run');
 
 if (mode === 'setup') {
   const [origin, name = 'Review checklist'] = process.argv.slice(3), accessToken = process.env.REVIEW_ACCESS_TOKEN;
   if (!origin || !accessToken) throw Error('Use: REVIEW_ACCESS_TOKEN=<linked account OAuth token with tendrils:create> node review-app.mjs setup SERVICE_ORIGIN [NAME]');
   if (!existsSync(join(root, 'tendriller.json'))) {
-    const { register_agent } = await workspaceKey(root, { service: origin, name: 'review-fixture' });
+    const { register_agent } = await workspaceKey(root, { service: origin, handle: 'review-fixture' });
     const result = await registerAgentThroughMcp(origin, accessToken, register_agent);
     const file = join(root, '.tendriller', 'register-agent-result.json');
     await mkdir(join(root, '.tendriller'), { recursive: true, mode: 0o700 });
@@ -83,12 +81,3 @@ if (mode === 'signer-key') {
   process.exit(0);
 }
 if (['sign-enrollment', 'provisioning-request', 'import-provisioning'].includes(mode)) { print(await provisionPage(context, mode, process.argv[3])); process.exit(0); }
-
-// propose: the exact owner-reviewed capability subset. Native participation is optional and connects only after approval.
-const options = { page: context.host,
-  key: await context.readPrivate('assistant-key.json', true) ?? await context.savePrivate('assistant-key.json', createAssistantKey()),
-  label: context.page.name ?? 'Review checklist', queries: ['checklist'], commands: ['completeItem'],
-  events: [{ name: 'item.completed', description: 'The synthetic checklist item ID that was completed.' }] };
-const proposal = await proposeApplicationAssistant(options);
-await context.savePrivate('assistant-proposal.json', { proposed: proposal.proposed, adapterHash: createHash('sha256').update(options.key).digest('hex') });
-print({ reviewUrl: proposal.reviewUrl, proposed: proposal.proposed, approved: proposal.approved });

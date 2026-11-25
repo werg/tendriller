@@ -108,7 +108,7 @@ export async function verifyWasmBuild(bytes, manifest) {
   await build();
   assert.deepEqual(await readCalls(), [{ bytes: wasm.toString(), wasmBytes: wasm.length }]);
   assert.equal((await readFile(new URL('engine/sqlite3.wasm', output))).toString(), wasm.toString());
-  assert.equal(bundled.length, 1);
+  assert.equal(bundled.length, 2);
   // The same hash and manifest checks still run before the verifier and the build leaves nothing publishable.
   await writeFile(join(engine, 'sqlite3.wasm'), 'wrong');
   await assert.rejects(build(), /no publishable dist[\s\S]*does not match/);

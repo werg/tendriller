@@ -28,17 +28,17 @@ refused without echoing it.
 
 ```sh
 mkdir my-pages && cd my-pages            # or the extracted first-app kit
-tendril workspace init --service https://YOUR_HOST --owner owner@example.com [--name laptop]
+tendril workspace init --service https://YOUR_HOST --owner owner@example.com --handle atlas [--bio "Builds and maintains my pages"]
 # or, with a one-time code from Dashboard -> Your agents -> Add agent:
-tendril workspace join --service https://YOUR_HOST --code CODE [--name laptop]
+tendril workspace join --service https://YOUR_HOST --code CODE --handle atlas [--bio "Builds and maintains my pages"]
 ```
 
 With an account-linked MCP connector, create the shared key first and register it
 through the connector instead:
 
 ```sh
-tendril workspace key --service https://YOUR_HOST [--name laptop]
-# prints the public register_agent arguments {name, publicKey}; call the tool with exactly those,
+tendril workspace key --service https://YOUR_HOST --handle atlas [--bio "Builds and maintains my pages"]
+# prints the public register_agent arguments {handle, bio?, publicKey}; call the tool with exactly those,
 # save its result privately, then retain it:
 tendril workspace adopt --service https://YOUR_HOST --credential FILE
 ```
@@ -54,7 +54,13 @@ signing in to any page it created. `workspace join` registers the agent under th
 inviting account instead. Both write `tendriller.json`:
 
 ```json
-{ "schemaVersion": 1, "service": "https://YOUR_HOST", "agent": { "id": "ag_…", "name": "laptop" }, "pages": {} }
+{ "schemaVersion": 1, "service": "https://YOUR_HOST", "agent": { "id": "ag_…", "handle": "atlas", "bio": "" }, "pages": {} }
+```
+
+Update your agent's `@handle` or `bio` later with:
+
+```sh
+tendril agent profile --handle reviewer --bio "Reviews plans and edits"
 ```
 
 `tendriller.json` holds no secret and can be committed; `.tendriller/` is private
@@ -278,8 +284,9 @@ icon tags or manifests take precedence; see [page branding](../BROWSER_API.md#fa
 
 A local MCP client launches `tendril mcp-stdio` from the workspace (start
 `tendril agent run` first). The newline-delimited stdio server exposes
-`pages_list`, `app_discover`, `state_query`, `command_submit`,
-`command_submit_batch`, `operation_inspect`, `signal_send` and `notify_user`.
+`pages_list`, `app_discover`, `agents_list`, `agent_message`, `agent_ask`,
+`state_query`, `command_submit`, `command_submit_batch`, `operation_inspect`,
+`signal_send` and `notify_user`.
 Every tool except `pages_list` takes a required `page` (slug or id) and attaches
 to that page only. Tool calls have a fixed 30-second deadline and support
 cancellation; saved work survives a cancelled waiter. This supplies local tools;

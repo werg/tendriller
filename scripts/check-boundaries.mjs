@@ -8,20 +8,32 @@ const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMa
 const application = /(?:^|[/\\])(?:tendriller-contrib|chronolog-db|components|cookbooks|recipes|examples)(?:[/\\]|$)|@tendriller\/(?:contrib|workflows)|@chronolog\//;
 const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelcontextprotocol|playwright|@playwright)(?:[/\\]|$)/;
 // The host admits portable control and declared input-schema verification.
-// Executable application logic stays with its participants.
+// Opt-in hosted MCP participants (`server/src/mcp-*.ts`) use portable `@chronolog/peer-session`
+// + in-memory DoltLite WASM + QuickJS WASM without storing plaintext keys at rest.
 const authorityImports = new Set([
-  'server/src/assistant.ts', 'server/src/authority.ts', 'server/src/authority-identity.ts',
+  'server/src/authority.ts', 'server/src/authority-identity.ts',
   'server/src/peer-publications.ts', 'server/src/peer-participant.ts',
 ]);
+const hostedMcpImports = new Set([
+  'server/src/mcp-participant.ts', 'server/src/mcp-sql.ts',
+]);
 const portableAuthority = new Set(['@chronolog/authority', ...['control', 'metadata', 'participant', 'publication', 'finality'].map(name => '@chronolog/authority/' + name)]);
+const portablePeerSession = new Set(['@chronolog/peer-session']);
 const controlArtifacts = new Set(['index', 'control', 'metadata', 'participant', 'publication', 'finality'].map(name => 'node_modules/@chronolog/authority/' + name + '.mjs'));
+const isPortablePeerSessionArtifact = input => /^node_modules\/@chronolog\/peer-session\/(?:index\.mjs|chunks\/[^/]+\.mjs)$/.test(input);
 for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {
   if (!/\.(ts|mjs|mts)$/.test(path)) continue;
-  for (const match of readFileSync(path, 'utf8').matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["']([^"']+)/g))
-    assert.ok(((authorityImports.has(relative(root, path)) && portableAuthority.has(match[1])) || !application.test(match[1])) && !tooling.test(match[1]), `${relative(root, path)} imports application/tool implementation ${match[1]}`);
+  const rel = relative(root, path);
+  if (rel.startsWith('server/src/vendor/doltlite/')) continue;
+  for (const match of readFileSync(path, 'utf8').matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["']([^"']+)/g)) {
+    const allowedChronolog =
+      (authorityImports.has(rel) && portableAuthority.has(match[1])) ||
+      (hostedMcpImports.has(rel) && portablePeerSession.has(match[1]));
+    assert.ok((allowedChronolog || !application.test(match[1])) && !tooling.test(match[1]), `${rel} imports application/tool implementation ${match[1]}`);
+  }
 }
 const engine = JSON.parse(readFileSync(join(root, 'dist/engine/inputs.json')));
-for (const input of engine) assert.ok((controlArtifacts.has(input) || !application.test(input)) && !tooling.test(input), `Worker includes application/tool dependency ${input}`);
+for (const input of engine) assert.ok((controlArtifacts.has(input) || isPortablePeerSessionArtifact(input) || !application.test(input)) && !tooling.test(input), `Worker includes application/tool dependency ${input}`);
 const workerSource = readFileSync(join(root, 'dist/engine/worker.mjs'), 'utf8');
 for (const match of workerSource.matchAll(/(?:from\s*|import\s*\()\s*["'](node:[^"']+)/g))
   assert.fail(`Unexpected native Worker dependency ${match[1]}`);
