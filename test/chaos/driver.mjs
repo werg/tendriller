@@ -23,7 +23,7 @@ export async function poll(read, done, { timeoutMs, intervalMs = 250 }) {
 
 /** Runtime handles beside the model: contexts, pages, device keys and collected messages. */
 export function createRuntime() {
-  return { profiles: new Map(), knownDevices: new Set(), deviceOf: new Map(), messages: [], step: 0, traces: [] };
+  return { profiles: new Map(), knownDevices: new Set(), deviceOf: new Map(), messages: [], recoveries: [], step: 0, traces: [] };
 }
 
 const pageUrl = (world, slug) => world.golden.pages[slug].page_url;
@@ -283,6 +283,7 @@ export async function readTabState(page) {
     submission: document.getElementById('submission-status')?.textContent ?? null,
     connection: document.getElementById('connection-slot')?.textContent?.trim().slice(0, 200) ?? null,
     draft: document.getElementById('note')?.value ?? null,
+    recovery: document.getElementById('recovery')?.hidden === false ? document.getElementById('recovery').textContent : null,
     html: document.documentElement.outerHTML.match(/chaos-ui-v\d+/g) ?? [],
     url: location.href,
   }));

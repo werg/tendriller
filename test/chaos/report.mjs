@@ -39,6 +39,8 @@ export function buildReport({ seed, config, golden, harness, browserVersion, sta
     actionCounts,
     actions: outcome.entries,
     notes: outcome.notes,
+    // "Selected history changed" notices seen in tabs (known operations excluded).
+    recoveries: outcome.recoveries ?? [],
     messages: outcome.messages,
     snapshots: outcome.snapshots,
     evidence,

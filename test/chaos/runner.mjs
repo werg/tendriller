@@ -53,6 +53,12 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
       if (!page || page.isClosed()) continue;
       const rows = await readTabRows(page).catch(() => null);
       if (!rows) continue;
+      // A "selected history changed" notice means known operations were excluded:
+      // record the first sighting per tab so a later convergence failure is explained.
+      const recovery = await page.evaluate(() => { const node = document.getElementById('recovery'); return node && !node.hidden ? node.textContent : null; }).catch(() => null);
+      const key = `${profile.id}/${tab.id}`;
+      if (recovery && runtime.recoveries.findLast(item => item.tab === key)?.text !== recovery.slice(0, 400))
+        runtime.recoveries.push({ tab: key, slug: tab.slug, step: entry.index, text: recovery.slice(0, 400) });
       count('unique-operation-ids'); count('single-application-per-intent'); count('known-authors'); count('page-isolation'); count('text-integrity');
       found.push(...checkViewSafety({ kind: 'tab', id: `${profile.id}/${tab.id}`, slug: tab.slug, rows }, context));
     }
@@ -269,6 +275,7 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
   }
   const messages = classifyMessages(runtime.messages, config.allowlist);
   return { entries, violations, convergence, snapshots, model, runtime, invariantChecks,
+    recoveries: runtime.recoveries,
     messages: { pageErrors: messages.failures, consoleErrors: messages.other.slice(0, 200), consoleErrorCount: messages.other.length,
       allowlisted: Object.entries(Object.groupBy(messages.allowlisted, item => item.rule)).map(([rule, items]) => ({ rule, count: items.length })) },
     notes: allNotes(model).map(({ text, ...note }) => ({ ...note, textLength: text?.length ?? null })) };

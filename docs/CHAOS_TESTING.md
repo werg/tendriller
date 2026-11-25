@@ -121,6 +121,9 @@ The report (`format: tendriller-chaos-report-v1`) contains:
   `error` (the action itself failed, which is reported but is not an invariant),
   `skipped` (its precondition no longer held during a replay) or `skipped-at-runtime`
   (for example, Save was disabled).
+- `recoveries`: every "Selected history changed … operations were excluded" notice a
+  tab showed, with its step. A convergence failure with a matching notice means the
+  product excluded saved work, not that delivery stalled.
 - `convergence`, `notes` (each submitted note with its origin, operation ID and status),
   `messages`, and the final `snapshots` of every agent query and tab.
 - `evidence`, only when the run fails: per-tab screenshots and states, Playwright traces
@@ -147,6 +150,20 @@ invariant as the original. The minimal sequence is written as its own replayable
    `test/chaos/invariants.mjs`. Make the check a pure function there, and call it from
    the sweep or heal in `test/chaos/runner.mjs`.
 4. Extend `test/chaos/chaos.test.mjs`. `npm run test:ci` runs it as part of `npm run check`.
+
+## Packet faults in the Docker lab
+
+`--network` actions need the isolated network lab container (`NET_ADMIN`, `TENDRILLER_NETWORK_LAB=1`).
+Its runner can start chaos in place of a qualification profile:
+
+```sh
+node test/e2e/network-qualification/run.mjs --output NEW_DIR --artifact-root . \
+  --node-binary /path/to/static/node --memory-mib 4096 --cpus 2 "--chaos=--seed 7 --steps 40 --browsers 2"
+```
+
+The report is written to `NEW_DIR/chaos.json`. The Node binary is mounted into the container, so it
+must be a self-contained build (a distribution `node` linked against `libnode.so` cannot start
+there). The agent actions need `kill` permission for the agent program inside the container.
 
 ## CI
 
