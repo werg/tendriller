@@ -250,3 +250,21 @@ test('private checkpoints reject concurrent writers and a different scope, prese
   assert.deepEqual(next.read(), { cursor: 'handled', pending: null });
   await next.close();
 });
+
+test('a fresh worker checkpoint does not repeat a request already answered in retained history', { timeout: 20000 }, async t => {
+  const f = await fixture(t), checkpointPath = await workerFiles(t), author = f.session.deviceId;
+  await f.command('agentRequest', { recipient: author, topic: 'chat', text: 'Already handled' }, 'historical-request');
+  await f.command('agentAnswer', { requestAuthor: author, requestOperationId: 'historical-request',
+    consumerId: 'assistant', runId: 'old-run', text: 'Previous durable result' }, 'previous-answer');
+  let calls = 0;
+  const stopped = new AbortController();
+  const run = runRequestWorker(f.session, { consumerId: 'assistant', topics: ['chat'],
+    checkpointPath, scope: 'same-page', signal: stopped.signal, async handleRequest() { calls++; return 'Duplicate'; } });
+  const ended = assert.rejects(run, error => error === stopped.signal.reason);
+  try { await waitForCheckpoint(checkpointPath); }
+  finally { stopped.abort(Error('Done')); await ended; }
+  assert.equal(calls, 0);
+  const request = (await f.session.query('agentInbox', null)).value.requests[0];
+  assert.equal(request.answers.length, 1);
+  assert.equal(request.receipts.length, 0);
+});
