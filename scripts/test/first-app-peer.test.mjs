@@ -1,120 +1,116 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { mkdtemp, mkdir, writeFile, readFile, rm, copyFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createInterface } from 'node:readline';
-import { closeTestPeer, nativeTestPeerSource } from '../first-app-peer.mjs';
+import { QUALIFICATION_SOCKET_ENV, connectQualificationPeer, qualificationPageSource } from '../first-app-peer.mjs';
 
-async function participant(t, { failInference = false, failPairing = false, orphan = false, fixtureTransport = false } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'peer-close-'));
-  const calls = join(directory, 'cleanup-calls');
-  await mkdir(join(directory, 'media'));
-  await mkdir(join(directory, 'helpers'));
-  await copyFile(new URL('../../docs/tutorial/shared/participant-lifecycle.mjs', import.meta.url),join(directory,'helpers/participant-lifecycle.mjs'));
-  await writeFile(join(directory, 'session.mjs'), `import {appendFile} from 'node:fs/promises';
-export async function openSession() {
-  const resource = setInterval(() => {}, 1000);
-  const watched=Promise.withResolvers();
-  return {
-    watchSetup(){return {closed:watched.promise,async close(){
-      await appendFile(${JSON.stringify(calls)},'pairing\\n');watched.resolve();
-      ${failPairing ? "throw Error('setup close failed');" : ''}
-    }};},
-    session:{deviceId:'fixture-device',participation:{status:{phase:'closed',connectedPeers:[]},onStatus(){return()=>{};}},close(){throw Error('Must close the entire owned bootstrap');}},
-    supervisor:{ownerInstanceId:'fixture-owner'},
-    async close(){await appendFile(${JSON.stringify(calls)},'owner\\n');clearInterval(resource);}};
-}`);
-  await writeFile(join(directory, 'helpers/signal-request.mjs'), 'export function serveSignalRequests(){return Promise.resolve();} export async function sendPieces(){return 0;}');
-  await writeFile(join(directory, 'media/inference-service.mjs'), `import {appendFile} from 'node:fs/promises';
-export function servePeerInference(){return {snapshot(){return {};},async close(){
-  await appendFile(${JSON.stringify(calls)},'inference\\n');
-  ${failInference ? "throw Error('inference close failed');" : ''}
-}};}`);
-  const transportModule = pathToFileURL(join(directory, 'transport.mjs')).href;
-  if (fixtureTransport) await writeFile(join(directory, 'transport.mjs'), `import {appendFile,readFile} from 'node:fs/promises';
-const pool=setInterval(()=>{},1000);
-export async function closeLocalTransport(){
-  const calls=await readFile(${JSON.stringify(calls)},'utf8');
-  if(!calls.endsWith('owner\\n'))throw Error('The application must close before its fixture transport');
-  await appendFile(${JSON.stringify(calls)},'transport\\n');clearInterval(pool);
-}`);
-  await writeFile(join(directory, 'peer.mjs'), orphan ? `import {createInterface} from 'node:readline';
-setInterval(() => {},1000);console.log(JSON.stringify({ready:true}));
-for await (const line of createInterface({input:process.stdin})) {
-  const request=JSON.parse(line);console.log(JSON.stringify({id:request.id,closed:true}));
-}` : nativeTestPeerSource({ evidenceBase64: 'AA==', browserDeviceId: 'a'.repeat(64), ...(fixtureTransport ? { transportModule } : {}) }));
-  const child = spawn(process.execPath, [join(directory, 'peer.mjs')], { stdio: ['pipe', 'pipe', 'pipe'] });
-  const ended = once(child, 'close'), ready = Promise.withResolvers(), waiting = new Map(), forced = [];
-  const kill = child.kill.bind(child);
-  child.kill = signal => { forced.push(signal); return kill(signal); };
-  let sequence = 0, stderr = '';
-  child.stderr.on('data', bytes => { stderr += bytes; });
-  createInterface({ input: child.stdout }).on('line', line => {
-    const value = JSON.parse(line);
-    if (value.ready) { ready.resolve(value); return; }
-    const held = waiting.get(value.id);
-    if (!held) return;
-    waiting.delete(value.id); clearTimeout(held.timer);
-    if (value.error) held.reject(Error(value.error)); else held.resolve(value);
-  });
-  child.once('close', code => {
-    const error = Error(`Fixture peer closed (${code}): ${stderr}`);
-    ready.reject(error);
-    for (const held of waiting.values()) { clearTimeout(held.timer); held.reject(error); }
-    waiting.clear();
-  });
+const browser = 'a'.repeat(64);
+const files = {
+  'node_modules/@chronolog/peer-session/package.json': JSON.stringify({ name: '@chronolog/peer-session', type: 'module',
+    exports: { '.': './index.mjs', './native': './native.mjs', './worker': './worker.mjs' } }),
+  'node_modules/@chronolog/peer-session/index.mjs': 'export async function verifyAuthorityBundle() {}',
+  'node_modules/@chronolog/peer-session/native.mjs': `export async function openNativeApplication() {
+  const calls = globalThis.__qualificationCalls;
+  if (globalThis.__qualificationFailOpen) throw Error('open failed');
+  return { deviceId: 'native-device', signal: new AbortController().signal, onStatus() {},
+    connectControlParticipant: () => ({}),
+    participation: { status: { phase: 'following', connectedPeers: [${JSON.stringify(browser)}], connectionRevision: 3 },
+      onStatus: () => () => {}, diagnostics: async () => [{ peerId: ${JSON.stringify(browser)}, kind: 'direct', sentReliableBytes: 1,
+        receivedReliableBytes: 2, sentLiveBytes: 3, receivedLiveBytes: 4 }] },
+    query: async () => ({ value: [{ text: 'retained' }], revision: { generation: 'g' } }),
+    command: async (_name, input, options) => ({ applied: async () => ({ outcome: 'accepted', operationId: options.operationId, text: input.text }) }),
+    async close() { calls.push('session'); } };
+}`,
+  'node_modules/@chronolog/peer-session/worker.mjs': `export function createApplicationOwner() {
+  return { ownerInstanceId: 'owner-instance', async close() { globalThis.__qualificationCalls.push('owner'); } };
+}`,
+  'node_modules/@tendriller/core/package.json': JSON.stringify({ name: '@tendriller/core', type: 'module',
+    exports: { './native-rtc': './native-rtc.mjs', './setup': './setup.mjs' } }),
+  'node_modules/@tendriller/core/native-rtc.mjs': 'export function participateNativeApplication() {}',
+  'node_modules/@tendriller/core/setup.mjs': 'export function watchApplicationSetup() { return { close() {} }; }',
+  'shared/native-page.mjs': 'export function pairingFor() { return { processPairings: async () => [] }; }',
+  'shared/participant-lifecycle.mjs': `export function superviseParticipant({ watch }) {
+  watch({ onChange() {}, onStatus() {} });
+  return { async close() { globalThis.__qualificationCalls.push('lifecycle'); } };
+}`,
+  'shared/media/inference-service.mjs': `export function servePeerInference({ allowedDevices }) {
+  return { snapshot: () => ({ admitted: 0, allowedDevices }), async close() { globalThis.__qualificationCalls.push('inference'); } };
+}`,
+  'shared/helpers/signal-request.mjs': `export function serveSignalRequests(_session, { signal }) {
+  return new Promise(resolve => signal.addEventListener('abort', () => { globalThis.__qualificationCalls.push('requests'); resolve(); }, { once: true }));
+}
+`,
+  'pages/notes/domain.mjs': 'export const definition = { name: "fixture" };',
+};
+
+async function fixture(t, { sources = [], failOpen = false } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'qualification-page-'));
+  const sockets = await mkdtemp(join(tmpdir(), 'qsock-'));
+  for (const [path, text] of Object.entries(files)) {
+    await mkdir(dirname(join(directory, path)), { recursive: true });
+    await writeFile(join(directory, path), text);
+  }
+  await writeFile(join(directory, 'pages/notes/agent.mjs'), qualificationPageSource({ evidenceBase64: 'AA==', qualificationSources: sources }));
+  const calls = globalThis.__qualificationCalls = [];
+  globalThis.__qualificationFailOpen = failOpen;
+  const previous = process.env[QUALIFICATION_SOCKET_ENV];
+  process.env[QUALIFICATION_SOCKET_ENV] = sockets;
   t.after(async () => {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    try { await ended; } finally { await rm(directory, { recursive: true, force: true }); }
+    if (previous === undefined) delete process.env[QUALIFICATION_SOCKET_ENV]; else process.env[QUALIFICATION_SOCKET_ENV] = previous;
+    delete globalThis.__qualificationFailOpen;
+    await rm(directory, { recursive: true, force: true }); await rm(sockets, { recursive: true, force: true });
   });
-  await ready.promise;
-  const peer = { child, request(action, _input, timeoutMs) {
-    const id = ++sequence;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { waiting.delete(id); reject(Error('Fixture reply deadline')); }, timeoutMs);
-      waiting.set(id, { resolve, reject, timer });
-      child.stdin.write(JSON.stringify({ id, action }) + '\n');
-    });
-  } };
-  return { peer, forced, calls: async () => (await readFile(calls, 'utf8')).trim().split('\n') };
+  const module = await import(pathToFileURL(join(directory, 'pages/notes/agent.mjs')).href + `?${Math.random()}`);
+  const context = { report() {}, page: { slug: 'notes' },
+    host: { peers: { application: async () => ({}), exchange: async () => ({}) } },
+    readPrivate: async () => ({}), openDevice: async () => ({ async close() { calls.push('device'); } }) };
+  return { module, context, calls, socket: join(sockets, 'notes.sock') };
 }
 
-test('generated first-app peer closes the whole owner once and exits naturally before qualification', { timeout: 5_000 }, async t => {
-  const f = await participant(t);
-  const result = await closeTestPeer(f.peer);
-  assert.deepEqual(result, { exitCode: 0, signal: null });
-  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
-  assert.deepEqual(f.forced, []);
-  assert.equal(await closeTestPeer(f.peer), result);
-  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
+test('the qualification page serves evidence actions over its private socket inside the agent program', async t => {
+  const f = await fixture(t);
+  const owner = await f.module.openPage(f.context);
+  assert.equal(owner.ownerInstanceId, 'owner-instance');
+  const peer = connectQualificationPeer(f.socket);
+  assert.deepEqual(await peer.request('self'), { deviceId: 'native-device', ownerInstanceId: 'owner-instance' });
+  assert.deepEqual((await peer.request('query')).value, [{ text: 'retained' }]);
+  assert.equal((await peer.request('command', { text: 'fixture', operationId: 'op-1' })).outcome, 'accepted');
+  assert.deepEqual(await peer.request('configure', { browserDeviceId: browser }), { configured: true });
+  assert.deepEqual(await peer.request('configure', { browserDeviceId: browser }), { configured: true }, 'Configuration is idempotent.');
+  await assert.rejects(peer.request('configure', { browserDeviceId: 'b'.repeat(64) }), /One qualified browser device/);
+  assert.deepEqual(await peer.request('transport-snapshot'), { connectionRevision: 3, browserLinks: 1, otherLinks: 0,
+    kind: 'direct', sentReliableBytes: 1, receivedReliableBytes: 2, sentLiveBytes: 3, receivedLiveBytes: 4 });
+  assert.equal((await peer.request('transport-wait', { kind: 'direct' })).kind, 'direct');
+  assert.deepEqual((await peer.request('participation-log')).current, { phase: 'following', peers: [browser] });
+  await assert.rejects(peer.request('unknown-action'), /Unknown test action/);
+  await owner.close();
+  assert.deepEqual(f.calls, ['requests', 'inference', 'lifecycle', 'owner']);
+  await assert.rejects(access(f.socket), { code: 'ENOENT' });
+  await owner.close();
+  assert.deepEqual(f.calls, ['requests', 'inference', 'lifecycle', 'owner'], 'Closing twice joins the one cleanup.');
 });
 
-test('inference cleanup failure still closes the owned participant and fails qualification', { timeout: 5_000 }, async t => {
-  const f = await participant(t, { failInference: true });
-  await assert.rejects(closeTestPeer(f.peer), /Native test participant cleanup failed/);
-  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
+test('qualification actions are dispatched by name and closed before the page owner', async t => {
+  const source = (async () => ({ actions: { 'fixture-echo': async ({ value }) => ({ value }) },
+    async close() { globalThis.__qualificationCalls.push('qualification'); } })).toString();
+  const f = await fixture(t, { sources: [source] });
+  const owner = await f.module.openPage(f.context);
+  assert.deepEqual(await connectQualificationPeer(f.socket).request('fixture-echo', { value: 7 }), { value: 7 });
+  await owner.close();
+  assert.deepEqual(f.calls, ['requests', 'qualification', 'lifecycle', 'owner']);
 });
 
-test('pairing cleanup failure still closes inference and the owner and fails qualification', { timeout: 5_000 }, async t => {
-  const f = await participant(t, { failPairing: true });
-  await assert.rejects(closeTestPeer(f.peer), /Native test participant cleanup failed/);
-  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner']);
+test('a failed open releases the device it opened and no socket remains', async t => {
+  const f = await fixture(t, { failOpen: true });
+  await assert.rejects(f.module.openPage(f.context), /open failed/);
+  assert.deepEqual(f.calls, ['device']);
+  await assert.rejects(access(f.socket), { code: 'ENOENT' });
 });
 
-test('fixture transport drains after the owned application and permits natural child exit', { timeout: 5_000 }, async t => {
-  const f = await participant(t, { fixtureTransport: true });
-  await closeTestPeer(f.peer);
-  assert.deepEqual(await f.calls(), ['pairing', 'inference', 'owner', 'transport']);
-  assert.deepEqual(f.forced, []);
-});
-
-test('an acknowledged but orphaned child is terminated as failure, never counted as clean shutdown', { timeout: 5_000 }, async t => {
-  const f = await participant(t, { orphan: true });
-  await assert.rejects(closeTestPeer(f.peer, { timeoutMs: 150 }), /did not exit after owned cleanup/);
-  assert.ok(f.forced.includes('SIGTERM'));
-  assert.notEqual(f.peer.child.signalCode, null);
+test('the harness request reports a closed participant instead of waiting', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'qsock-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await assert.rejects(connectQualificationPeer(join(directory, 'missing.sock')).request('self', {}, 500), { code: 'ENOENT' });
 });

@@ -66,12 +66,13 @@ export async function createRecoveryQualification(owned) {
           directReady: false, forwardReady: false, deliveryEntered: false, deliveryAborted: false,
           directCursor: initial.cursor, directOperations: [], watchBatches: [], checkpointSaves: 0 };
 
-        // This is an actual separate CLI process attached to the resident owner.
+        // This is an actual separate CLI process attached to this page's owner
+        // inside the running agent program (whose working directory is the workspace).
         // Starting without a cursor observes its initial batch; that observation
         // is explicitly distinct from our durable handled checkpoint above.
         const cli = join(process.cwd(), 'node_modules/@tendriller/tools/bin/tendril.mjs');
-        state.watch = spawn(process.execPath, [...process.execArgv, cli, '--session', join(process.cwd(), 'session.mjs'),
-          '--mode', 'attach', 'watch', '--events', '--topics', JSON.stringify(topics)],
+        state.watch = spawn(process.execPath, [...process.execArgv, cli, '--page', owned.slug,
+          'watch', '--events', '--topics', JSON.stringify(topics)],
         { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
         let stderr = '';
         state.watch.stderr.on('data', bytes => { stderr = (stderr + bytes.toString()).slice(-32_768); });
@@ -153,7 +154,7 @@ export async function createRecoveryQualification(owned) {
         assert.equal((await readCheckpoint()).cursor, initial.cursor);
         state.pendingCursor = state.directCursor;
         return { armed: true, deliveryPending: true, generation: initial.revision.generation,
-          ownerInstanceId: owned.supervisor.ownerInstanceId };
+          ownerInstanceId: owned.ownerInstanceId() };
       },
 
       async 'recovery-verify'() {
@@ -214,7 +215,7 @@ export async function createRecoveryQualification(owned) {
           deliveryInterrupted: state.deliveryAborted, oldCheckpointPreserved: state.checkpointSaves === 0,
           deliberateRescans: redelivered, reconciledEffects: durable.receipts[state.reference].effects,
           invalidTopicsRejected: true, invalidAnchorRejected: true, missingEvidenceStops: true,
-          ownerInstanceId: owned.supervisor.ownerInstanceId };
+          ownerInstanceId: owned.ownerInstanceId() };
       },
       async 'recovery-close'() { await close(); return { closed: true }; },
     },
@@ -239,7 +240,7 @@ export async function qualifyFirstAppRecovery({ browser, page, pageUrl, peer, ex
     await expect(fresh.locator('#connection-card')).toBeHidden();
     await expect(fresh.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
     const result = await peer.request('recovery-verify', {}, 45_000);
-    assert.equal(result.ownerInstanceId, before.ownerInstanceId, 'Enrollment must preserve the resident owner.');
+    assert.equal(result.ownerInstanceId, before.ownerInstanceId, 'Enrollment must preserve the page owner inside the agent program.');
     await fresh.locator('#note').fill('Browser command after reviewed recovery');
     await fresh.locator('#submit').click();
     await expect(fresh.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });

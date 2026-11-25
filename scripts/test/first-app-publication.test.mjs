@@ -58,7 +58,7 @@ setInterval(() => {}, 1000);`);
   });
   let publications = 0;
   const node = async args => {
-    const command = args[5];
+    const command = args[3];
     if (command === 'self') return JSON.stringify({ deviceId: author, endpoint: { ownerInstanceId: 'owner' } });
     if (command === 'publication') {
       if (publications++) throw completed;
@@ -97,13 +97,13 @@ setInterval(() => {}, 1000);`);
     return { toContain: value => poll(actual => actual.includes(value)),
       toBeGreaterThan: value => poll(actual => actual > value), toBe: value => poll(actual => actual === value) };
   };
-  const peer = { metadata: { ownerInstanceId: 'owner' }, async request(command) {
+  const peer = { async request(command) {
     return command === 'participation-log' ? { current: { peers: ['browser'] } }
-      : { participation: { connectionRevision: 1 } };
+      : command === 'self' ? { ownerInstanceId: 'owner' } : { participation: { connectionRevision: 1 } };
   } };
   const start = () => qualifyFirstAppPublication({ page, pageUrl: 'https://fixture/',
     publicationGateUrl: 'https://fixture/__first_app_publication', peer, expect,
-    app: directory, project: directory, preload, cli, node }).then(value => ({ value }), error => ({ error }));
+    workspace: directory, slug: 'notes', pageDirectory, preload, cli, node }).then(value => ({ value }), error => ({ error }));
   return { state, start, completed, index, proof, control };
 }
 

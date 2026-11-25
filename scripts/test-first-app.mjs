@@ -22,25 +22,39 @@ import { TUTORIAL_FILES } from './onboarding.mjs';
 import { readBrowserRtcEvidence, observeRtcTraffic, hasNonTurnTraffic } from './first-app-rtc-evidence.mjs';
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
+import { QUALIFICATION_SOCKET_ENV, connectQualificationPeer, qualificationPageSource } from './first-app-peer.mjs';
+import { qualifyFirstAppPublication } from './first-app-publication.mjs';
+import { prepareSignalQualification, createSignalQualification, qualifyFirstAppSignals } from './first-app-signals.mjs';
+import { createRecoveryQualification, qualifyFirstAppRecovery } from './first-app-recovery.mjs';
 import { CONTRACT_VERSION } from '../contract/index.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
 const { values } = parseArgs({ options: {
   'session-archive': { type: 'string' }, 'first-app-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
-  'native-only': { type: 'boolean' }, transport: {type:'string', default:'direct'},
-  'feedback-qualification': { type: 'boolean' },
+  'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' }, transport: {type:'string', default:'direct'},
+  'network-lab-profile': { type: 'string' }, 'feedback-qualification': { type: 'boolean' },
 } });
 if (!values['session-archive'] && !values['first-app-archive'])
-  throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only] [--report FILE] [--keep]; or --session-archive FILE for an explicit source/SQL composition.');
+  throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only | --feedback-qualification] [--report FILE] [--keep]; or --session-archive FILE [--sql-native-only] for an explicit source/SQL composition.');
 if (values['session-archive'] && values['first-app-archive']) throw Error('Use the companion inside the first-app archive; do not override its composition.');
+if (values['native-only'] && values['sql-native-only']) throw Error('Choose --native-only for notes pages or --sql-native-only for an inventory page.');
+if (values['first-app-archive'] && values['sql-native-only']) throw Error('The first-app release archive has the SQL-free events profile; pass the SQL archive with --session-archive.');
 if (!['direct','relay'].includes(values.transport)) throw Error('Choose --transport direct or relay for qualification.');
-// The signal, recovery and publication-gate feedback scenarios drove a bespoke
-// single-page native peer process; they are not yet expressed against the agent program.
-if (values['feedback-qualification'])
-  throw Error('Feedback qualification is not available for the agent workspace yet; run the ordinary first-app qualification.');
+if (values['network-lab-profile'] && (process.env.TENDRILLER_NETWORK_LAB !== '1' || values.transport !== 'direct' || !values['first-app-archive']))
+  throw Error('Network lab requires its isolated container, real RTC and an immutable first-app kit.');
+const sqlOnly = Boolean(values['sql-native-only']);
+const feedbackQualification = Boolean(values['feedback-qualification']);
+const networkLab = values['network-lab-profile'];
+if (feedbackQualification && (sqlOnly || values['native-only'] || networkLab))
+  throw Error('Feedback qualification requires the ordinary notes browser/native composition.');
+// Feedback and network scenarios ask the notes page owner inside the agent program
+// for evidence through a private qualification page module (scripts/first-app-peer.mjs).
+const qualification = feedbackQualification || Boolean(networkLab);
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
-const defaultReportPath = join(root, '.results/first-app.json');
+const defaultReportPath = feedbackQualification
+  ? join(root, '.results/first-app-feedback/first-app-feedback.json')
+  : join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`);
 const reportPath = resolve(values.report ?? defaultReportPath);
 const directory = await mkdtemp(join(tmpdir(), 'tfa-'));
 // A local cache can be reused without sharing the independent consumer install.
@@ -50,14 +64,19 @@ const SERVICE = 'https://service.localhost:8790';
 const execute = promisify(execFile);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const jsonFile = async path => JSON.parse(await readFile(path, 'utf8'));
-const report = { status: 'running', qualification: 'isolated-local-agent-workspace',
+const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-agent-workspace-sql'
+  : feedbackQualification ? 'isolated-local-agent-workspace-feedback' : 'isolated-local-agent-workspace',
   native_checks: 'running', browser_checks: 'not-run',
   limits: ['Synthetic local owner session; no OAuth provider tested.',
-    'Local Chromium and real native/browser RTC, with forced-failure relay qualification; no Internet NAT or physical mobile qualification.',
-    'Events-backed notes pages only; the SQL inventory template needs the SQL Chronolog archives.',
+    sqlOnly ? 'Native SQL inventory page only; no browser SQL, publication, cross-device transport, Internet or mobile qualification.'
+      : 'Local Chromium and real native/browser RTC, with forced-failure relay qualification; no Internet NAT or physical mobile qualification.',
+    sqlOnly ? 'The browser SQL inventory UI is qualified separately (test/e2e/sql-tutorial.spec.ts) with the --sql-browser WASM build.'
+      : 'Events-backed notes pages; the SQL inventory template is qualified with --sql-native-only and the SQL Chronolog archives.',
     'Scripted tutorial execution; not an unassisted fresh-agent usability result.',
     'An ordinary test-host WebSocket forwarding boundary isolates workerd issue #8185; the packed host is unchanged. Direct production TCP closure is not qualified.'], steps: [] };
-let host, agentProgram, browser, page, stage = 'preflight';
+if (feedbackQualification) report.limits.push('Private fixture clock controls are added to the downloaded page Worker and a private qualification page module replaces pages/notes/agent.mjs; shipped package bytes and freshness defaults are unchanged.');
+if (networkLab) report.limits.push('A private qualification page module replaces pages/notes/agent.mjs to report authenticated link evidence; shipped package bytes are unchanged.');
+let host, agentProgram, browser, labBrowser, page, peer, stage = 'preflight';
 const agentEvents = [];
 
 // Every request, including a followed redirect or literal IP, is restricted to
@@ -151,7 +170,9 @@ try {
   await mkdir(dirname(reportPath), { recursive: true });
   // Manual network qualification keeps current harness code, while archive
   // names/version belong to the selected immutable product graph.
-  const version = (await jsonFile(join(root, 'package.json'))).version;
+  const version = networkLab
+    ? await (await import('../test/e2e/network-qualification/anchor.mjs')).selectedProductVersion(root)
+    : (await jsonFile(join(root, 'package.json'))).version;
   const proof = await jsonFile(join(root, 'dist/provenance.json'));
   const toolsProof = await jsonFile(join(root, 'dist/tools-manifest.json'));
   const archives = Object.fromEntries(['sdk', 'tools', 'engine', 'runtime'].map(name =>
@@ -288,6 +309,10 @@ try {
   const sessionProof = await jsonFile(join(app, 'node_modules/@chronolog/peer-session/provenance.json'));
   assert.equal(sessionProof.dirty, false, 'Use a clean, explicitly selected public Chronolog archive.');
   report.chronolog = { source: sessionProof.source, dirty: sessionProof.dirty, sha256: sha256(await readFile(sessionArchive)) };
+  if (sqlOnly) {
+    assert.ok(sessionProof.sqlEngines?.includes('native'), '--sql-native-only requires a public Chronolog archive built with --sql-native.');
+    report.chronolog.native_engine = sessionProof.nativeEngine;
+  }
 
   const preload = join(directory, 'local-network.mjs');
   await writeFile(preload, `import { Agent, setGlobalDispatcher, WebSocket } from ${JSON.stringify(pathToFileURL(require.resolve('undici')).href)};
@@ -319,14 +344,25 @@ globalThis.WebSocket = class extends WebSocket {
   report.agent_id = workspaceFile.agent.id;
   passed('one unclaimed agent credential and shared signing key for the workspace');
 
-  // Two pages from one agent and one install. Both are prepared and published
+  // Two notes pages from one agent and one install. Both are prepared and published
   // before the owner signs in; signing in to either claims the agent and both pages.
+  // The SQL variant creates one inventory page with the native SQL engine.
   const pages = {};
-  for (const [slug, name] of [['notes', 'First-app qualification'], ['journal', 'Second page of the workspace']]) {
-    checkpoint(`create, initialize and build page ${slug} before owner claim`);
-    const created = await setup(['new', slug, '--template', 'notes', '--name', name]);
+  const evidencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
+  const specs = sqlOnly ? [['stock', 'Shared inventory', 'inventory']]
+    : [['notes', 'First-app qualification', 'notes'], ['journal', 'Second page of the workspace', 'notes']];
+  for (const [slug, name, template] of specs) {
+    checkpoint(`create, initialize${sqlOnly ? '' : ' and build'} page ${slug} before owner claim`);
+    const created = await setup(['new', slug, '--template', template, '--name', name]);
     assert.match(created.id, /^[a-z2-7]{12}$/);
-    const resumed = await setup(['new', slug, '--template', 'notes', '--name', name]);
+    if (qualification && slug === 'notes') {
+      // The notes page owner inside the agent program also serves private evidence.
+      await writeFile(join(app, 'pages/notes/agent.mjs'), qualificationPageSource({ evidenceBase64: evidencePng.toString('base64'),
+        networkQualification: Boolean(networkLab),
+        qualificationSources: feedbackQualification ? [createSignalQualification.toString(), createRecoveryQualification.toString()] : [] }));
+      if (feedbackQualification) await prepareSignalQualification(join(app, 'pages/notes'));
+    }
+    const resumed = await setup(['new', slug, '--template', template, '--name', name]);
     assert.equal(resumed.resumed, true); assert.equal(resumed.id, created.id, 'page:new retry must resume the same page.');
     const record = await jsonFile(join(app, '.tendriller/pages', created.id, 'page.json'));
     assert.equal(record.page_url, created.page_url);
@@ -335,6 +371,7 @@ globalThis.WebSocket = class extends WebSocket {
     const device = await jsonFile(join(app, '.tendriller/pages', created.id, 'initialized.json'));
     await setup(['init', slug]);
     assert.deepEqual(await jsonFile(join(app, '.tendriller/pages', created.id, 'initialized.json')), device, 'Initialization retry preserves identity.');
+    if (sqlOnly) { pages[slug] = { slug, id: created.id, page_url: created.page_url, application: record.application, device }; continue; }
     const built = (await setup(['build', slug])).built;
     const initial = await jsonFile(join(app, '.tendriller/pages', created.id, 'initial-input.json'));
     for (const path of await files(built)) {
@@ -347,16 +384,19 @@ globalThis.WebSocket = class extends WebSocket {
   }
   // One signing key per agent: every page's device signs with the shared agent key,
   // from its own device store.
-  assert.equal(pages.notes.device.deviceId, pages.journal.device.deviceId, 'Pages share the agent signing key.');
+  if (!sqlOnly) assert.equal(pages.notes.device.deviceId, pages.journal.device.deviceId, 'Pages share the agent signing key.');
   for (const item of Object.values(pages)) await readFile(join(app, '.tendriller/pages', item.id, 'device.sqlite'));
   const listed = await (await fetch(SERVICE + '/api/agent/pages', { headers: { Authorization: 'Bearer ' + agentToken } })).json();
-  assert.deepEqual(listed.pages.map(item => item.id).sort(), [pages.notes.id, pages.journal.id].sort(), 'The agent is granted the pages it created.');
+  assert.deepEqual(listed.pages.map(item => item.id).sort(), Object.values(pages).map(item => item.id).sort(), 'The agent is granted the pages it created.');
   report.pages = Object.fromEntries(Object.values(pages).map(item => [item.slug, { id: item.id, application_id: item.application.id, native_device_id: item.device.deviceId }]));
-  passed('two pages from one agent: exact page:new and init retries, private-only authored graphs');
+  passed(sqlOnly ? 'an inventory page from the agent: native SQL engine preflight, exact page:new and init retries'
+    : 'two pages from one agent: exact page:new and init retries, private-only authored graphs');
+  const primary = pages[specs[0][0]];
 
   checkpoint('start the one agent program');
   function startAgent() {
-    const child = spawn(process.execPath, ['--import', preload, cli, 'agent', 'run'], { cwd: app, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['--import', preload, cli, 'agent', 'run'], { cwd: app, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...(qualification ? { [QUALIFICATION_SOCKET_ENV]: qualificationSockets } : {}) } });
     let stderr = '';
     child.stderr.on('data', bytes => { stderr = (stderr + bytes.toString()).slice(-6_000); });
     const waiters = new Set();
@@ -386,6 +426,9 @@ globalThis.WebSocket = class extends WebSocket {
     return program;
   }
   const running = slug => value => value.page === pages[slug].id && value.state === 'running';
+  // The qualification page listens on <private test directory>/q/<slug>.sock.
+  const qualificationSockets = join(directory, 'q');
+  if (qualification) await mkdir(qualificationSockets, { mode: 0o700 });
   agentProgram = startAgent();
   await agentProgram.waitFor(value => value.hub === 'connected', 'a hub connection');
   for (const slug of Object.keys(pages)) {
@@ -395,11 +438,11 @@ globalThis.WebSocket = class extends WebSocket {
   }
   const status = await tendril(['status']);
   assert.equal(status.agentProgram.endpointRecorded, true);
-  assert.deepEqual(status.pages.map(item => item.granted), [true, true]);
+  assert.deepEqual(status.pages.map(item => item.granted), Object.keys(pages).map(() => true));
   passed('one agent program opens every initialized page with its own device and the shared signer');
 
-  checkpoint('publish both pages through the running agent program before owner claim');
-  for (const slug of Object.keys(pages)) {
+  checkpoint('publish every page through the running agent program before owner claim');
+  for (const slug of sqlOnly ? [] : Object.keys(pages)) {
     const operation = `first-app-${slug}-publication-1`;
     const publication = await tendril(['--page', slug, 'publish', pages[slug].built, '--operation', operation]);
     assert.ok(publication.publication.id);
@@ -411,10 +454,10 @@ globalThis.WebSocket = class extends WebSocket {
     pages[slug].publication = publication.publication.id;
   }
   report.publications = Object.fromEntries(Object.values(pages).map(item => [item.slug, item.publication]));
-  passed('signed publication per page through the attach socket, exact retry and receipt recovery');
+  if (!sqlOnly) passed('signed publication per page through the attach socket, exact retry and receipt recovery');
 
-  checkpoint('owner sign-in claims the agent and the page');
-  const localPage = new URL(pages.notes.page_url); localPage.port = '8790';
+  checkpoint('owner sign-in to one page claims the agent and every page it created');
+  const localPage = new URL(primary.page_url); localPage.port = '8790';
   const initialClaim = await fetch(localPage, { redirect: 'manual' });
   assert.equal(initialClaim.status, 302); await initialClaim.body?.cancel();
   const claim = await fetch(initialClaim.headers.get('Location'), { redirect: 'manual',
@@ -426,11 +469,49 @@ globalThis.WebSocket = class extends WebSocket {
   const claimed = await (await fetch(SERVICE + '/api/agent', { headers: { Authorization: 'Bearer ' + agentToken } })).json();
   assert.equal(claimed.account.claimed, true); assert.equal(claimed.account.email, 'owner@example.test');
   const ownerOf = async id => (await accounts.prepare('SELECT owner_account FROM tendrils WHERE id=?').bind(id).first())?.owner_account ?? null;
-  assert.equal(await ownerOf(pages.notes.id), 'e2e-owner');
-  // Each other page stays an owner invitation until the owner signs in to it.
-  assert.equal(await ownerOf(pages.journal.id), null);
-  passed('owner sign-in to one page claims that page and the agent');
+  for (const item of Object.values(pages)) assert.equal(await ownerOf(item.id), 'e2e-owner', `Signing in to one page claims ${item.slug} too.`);
+  passed('owner sign-in to one page claims the agent and every page it created for that owner');
 
+  if (sqlOnly) {
+    checkpoint('guarded SQL transactions through the agent program and exact demo retry');
+    const stock = args => tendril(['--page', 'stock', ...args]);
+    const empty = await stock(['query', 'inventory', 'null']);
+    assert.deepEqual(empty.value.stock, []); assert.deepEqual(empty.value.transfers, []);
+    const demo = JSON.parse(await node([join(app, 'setup.mjs'), 'demo', 'stock']));
+    assert.equal(demo.status, 'passed'); assert.deepEqual(demo.stock, { source: 7, destination: 3 });
+    assert.equal(demo.accepted, 'inventory-demo-transfer-v1'); assert.equal(demo.rejected, 'inventory-demo-rejected-v1');
+    const records = join(app, '.tendriller/pages', primary.id);
+    const saved = ['demo-transfer.json', 'demo-rejection.json', 'schema.json', 'descriptor.json', 'genesis-request.json'];
+    const fingerprints = await Promise.all(saved.map(name => readFile(join(records, name)).then(sha256)));
+    const retry = JSON.parse(await node([join(app, 'setup.mjs'), 'demo', 'stock']));
+    assert.deepEqual(retry, demo, 'SQL demo retry must use the retained original operation results.');
+    for (let i = 0; i < saved.length; i++)
+      assert.equal(sha256(await readFile(join(records, saved[i]))), fingerprints[i], `SQL retry changed ${saved[i]}.`);
+    const retainedSql = await stock(['query', 'inventory', 'null']);
+    assert.deepEqual(Object.fromEntries(retainedSql.value.stock.map(row => [row.id, row.units])), { destination: 3, source: 7 });
+    assert.equal(retainedSql.value.transfers.length, 1, 'Exact retry must not create another transfer receipt.');
+    assert.equal(retainedSql.value.activity.filter(event => event.topic === 'inventory.transferred').length, 1);
+    assert.equal((await stock(['operation', demo.accepted])).state.outcome, 'accepted');
+    const rejected = (await stock(['operation', demo.rejected])).state;
+    assert.equal(rejected.outcome, 'rejected'); assert.equal(rejected.rejectionCode, 'assert:insufficient_stock');
+    passed('guarded SQL transfer accepted; rejected transfer leaves balances, receipts and effective events unchanged');
+    checkpoint('reopen the SQL page in a restarted agent program');
+    assert.deepEqual(await agentProgram.stop(), { code: 0, signal: null }, 'SIGTERM closes the SQL page owner and exits cleanly.');
+    agentProgram = startAgent();
+    await agentProgram.waitFor(running('stock'), 'page stock running again');
+    assert.equal((await stock(['self'])).deviceId, primary.device.deviceId, 'The restarted agent reopens the same device.');
+    assert.deepEqual((await stock(['query', 'inventory', 'null'])).value, retainedSql.value, 'Reopened SQL state must be unchanged.');
+    assert.deepEqual(await jsonFile(join(records, 'initialized.json')), primary.device);
+    const finished = await agentProgram.stop(); agentProgram = undefined;
+    assert.deepEqual(finished, { code: 0, signal: null });
+    report.sql_demo = demo;
+    report.sql_retained = { stock: demo.stock, receipts: retainedSql.value.transfers.length,
+      transfer_events: retainedSql.value.activity.filter(event => event.topic === 'inventory.transferred').length };
+    passed('exact SQL demo retry and coherent queries/outcomes after an agent program restart');
+    report.status = 'partial'; report.native_checks = 'passed';
+    report.limits.push('Browser and published UI behavior omitted by --sql-native-only.');
+    console.log('First-app workspace native SQL checks passed; browser SQL qualification remains a separate check.');
+  } else {
   checkpoint('native commands through the attach socket');
   assert.deepEqual((await tendril(['--page', 'notes', 'query', 'notes', 'null'])).value, []);
   assert.equal((await tendril(['--page', 'notes', 'command', 'addNote', JSON.stringify({ text: 'Native setup and durable reopen' }),
@@ -461,11 +542,16 @@ globalThis.WebSocket = class extends WebSocket {
     // Context.ignoreHTTPSErrors does not cover subsequent SharedWorker fetches.
     // Trust only this loopback fixture certificate across Chromium targets.
     const certificatePin = await localCertificatePin();
-    browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+    const browserOptions = { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
       args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1',
-        `--ignore-certificate-errors-spki-list=${certificatePin}`] });
+        `--ignore-certificate-errors-spki-list=${certificatePin}`] };
+    if (networkLab) {
+      // Real visibility and lifecycle: no focus emulation in the lab browser context.
+      const { launchNetworkBrowser } = await import('../test/e2e/network-qualification/browser-launch.mjs');
+      labBrowser = await launchNetworkBrowser(browserOptions); browser = labBrowser.browser;
+    } else browser = await chromium.launch(browserOptions);
     report.browser = await browser.version();
-    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const context = labBrowser?.context ?? await browser.newContext({ viewport: { width: 390, height: 844 } });
     await context.addInitScript(({ mode }) => {
       const Native = globalThis.RTCPeerConnection;
       window.__firstAppRtcPeers = [];
@@ -513,6 +599,11 @@ globalThis.WebSocket = class extends WebSocket {
     checkpoint('a new browser on the first page sets itself up through the agent program');
     const browserDevice = await connectBrowser(page, 'notes');
     report.browser_device_id = browserDevice;
+    if (qualification) {
+      // The qualification page owner serves inference and link evidence for this browser only.
+      peer = connectQualificationPeer(join(qualificationSockets, 'notes.sock'));
+      await peer.request('configure', { browserDeviceId: browserDevice });
+    }
     await expect(page.locator('#notes')).toContainText('Native setup and durable reopen', { timeout: 30_000 });
     await shot(page, 'connected-mobile');
     const pairingEvent = agentEvents.find(value => value.page === pages.notes.id && value.pairing);
@@ -544,6 +635,24 @@ globalThis.WebSocket = class extends WebSocket {
     await expect(page.locator('#notes')).toContainText('Created by the agent', { timeout: 30_000 });
     passed(`browser and agent commands converge over the ${values.transport} transport`);
 
+    if (networkLab) {
+      checkpoint('qualify real packet faults and application recovery');
+      const { qualifyFirstAppNetwork } = await import('../test/e2e/network-qualification/first-app.mjs');
+      const { NETWORK_PROFILES } = await import('../test/e2e/network-qualification/scenarios.mjs');
+      const profiles = networkLab === 'suite' ? NETWORK_PROFILES : [networkLab];
+      report.network_qualification = { profiles: [], success: false };
+      try {
+        for (const profile of profiles) report.network_qualification.profiles.push(await qualifyFirstAppNetwork({ page, context, peer, expect,
+          transportCounters, evidencePng, browserDevice, sha256, profile }));
+        report.network_qualification.success = true;
+        report.network_note_count = (await peer.request('query')).value.length;
+      } catch (error) {
+        if (error.networkReport) report.network_qualification.profiles.push(error.networkReport);
+        throw error;
+      }
+      passed('real packet faults, lifecycle changes and recovery on the notes page owner inside the agent program');
+    }
+
     checkpoint('local data and drafts survive while the agent program is stopped; agent work converges on reopen');
     const stopped = await agentProgram.stop(); agentProgram = undefined;
     assert.deepEqual(stopped, { code: 0, signal: null }, 'SIGTERM closes every page owner, the hub and the attach socket.');
@@ -560,6 +669,7 @@ globalThis.WebSocket = class extends WebSocket {
     await page.goto('about:blank');
     agentProgram = startAgent();
     await agentProgram.waitFor(running('notes'), 'page notes running again');
+    if (peer) await peer.request('configure', { browserDeviceId: browserDevice });
     assert.equal((await tendril(['--page', 'notes', 'self'])).deviceId, pages.notes.device.deviceId, 'The restarted agent reopens the same device.');
     assert.equal((await tendril(['--page', 'notes', 'command', 'addNote', JSON.stringify({ text: 'Written while the browser was closed' }),
       '--operation', 'native-note-2'])).outcome, 'accepted');
@@ -577,7 +687,7 @@ globalThis.WebSocket = class extends WebSocket {
     checkpoint('a second page of the same workspace in another tab');
     const second = await context.newPage(); watchPage(second);
     const secondDevice = await connectBrowser(second, 'journal');
-    assert.equal(await ownerOf(pages.journal.id), 'e2e-owner', 'Opening the second page signed in claims it.');
+    assert.equal(await ownerOf(pages.journal.id), 'e2e-owner', 'The second page stays claimed by the owner sign-in to the first.');
     assert.notEqual(new URL(pages.journal.page_url).origin, new URL(pages.notes.page_url).origin, 'Pages keep separate origins.');
     await second.locator('#note').fill('Journal entry from the browser'); await second.locator('#submit').click();
     await expect(second.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
@@ -599,6 +709,21 @@ globalThis.WebSocket = class extends WebSocket {
       '--operation', 'late-note-1'])).outcome, 'accepted');
     passed('the agent program notices an initialized page without a restart');
 
+    if (feedbackQualification) {
+      await page.bringToFront();
+      checkpoint('publish signed UI while the page owner, an event consumer and the browser stay active');
+      report.publication_qualification = await qualifyFirstAppPublication({ page, pageUrl: pages.notes.page_url, peer, expect,
+        workspace: app, slug: 'notes', pageDirectory: pages.notes.built, preload, cli, node,
+        publicationGateUrl: new URL('/__first_app_publication', SERVICE).href });
+      passed('attached signed publication, staged assets, exact retry and selected-head preservation with uninterrupted work');
+      checkpoint('contain authentic stale signals on the live browser/agent connection');
+      report.signal_qualification = await qualifyFirstAppSignals({ page, peer, expect, transportCounters, transport: values.transport });
+      passed('exact signal freshness boundaries and bounded rejection counters preserve live transport and durable work');
+      checkpoint('enroll a new browser while direct, attached and forwarding consumers are active');
+      report.recovery_qualification = await qualifyFirstAppRecovery({ browser, page, pageUrl: pages.notes.page_url, peer, expect });
+      passed('browser enrollment returns consistent recovery evidence and explicit durable work reconciliation');
+    }
+
     report.note_counts = Object.fromEntries(await Promise.all(['notes', 'journal', 'late'].map(async slug =>
       [slug, (await tendril(['--page', slug, 'query', 'notes', 'null'])).value.length])));
     const finished = await agentProgram.stop(); agentProgram = undefined;
@@ -607,6 +732,7 @@ globalThis.WebSocket = class extends WebSocket {
     report.hub_connections = hubs;
     passed('agent program cleanup closes every page owner with a natural exit');
     report.status = 'passed'; report.browser_checks = 'passed';
+  }
   }
 
   checkpoint('the account-linked register_agent route');
@@ -635,9 +761,14 @@ globalThis.WebSocket = class extends WebSocket {
   console.log(`First-app workspace qualification ${report.status}. Synthetic local claim and transport limits are recorded in the report.`);
 } catch (error) {
   report.status = 'failed'; report.failed_stage = stage; report.error = error.message;
+  if (error.publicationQualification) report.publication_qualification = error.publicationQualification;
   if (report.native_checks === 'running') report.native_checks = 'failed';
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
   if (agentProgram) report.agent_stderr = agentProgram.stderr();
+  if (peer && agentProgram) {
+    report.native_inference_diagnostics = await peer.request('inference-status', {}, 5_000).catch(failure => ({ error: failure.message }));
+    report.native_session_diagnostics = await peer.request('diagnostics', {}, 5_000).catch(failure => ({ error: failure.message }));
+  }
   if (page && !page.isClosed()) {
     report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
       'connection-slot', 'peer-status', 'data-status', 'submission-status', 'result',
@@ -654,7 +785,7 @@ globalThis.WebSocket = class extends WebSocket {
 } finally {
   if (agentProgram) await agentProgram.stop().catch(error => { report.agent_cleanup = { status: 'failed', message: error.message }; });
   report.agent_events = agentEvents.slice(-80);
-  await browser?.close().catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
+  await (labBrowser ? labBrowser.close() : browser?.close())?.catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
   await mkdir(dirname(reportPath), { recursive: true });
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
   if (values.keep) console.log(`Private test directory retained: ${directory}`);

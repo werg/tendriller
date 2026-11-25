@@ -5,12 +5,14 @@ import { readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
-/** The actual packed CLI attaches while another CLI consumer and browser stay live. */
-export async function qualifyFirstAppPublication({ page, pageUrl, publicationGateUrl, peer, expect, app, project, preload, cli, node }) {
-  const args = ['--session', join(project, 'session.mjs'), '--mode', 'attach'];
+/** The actual packed CLI attaches to the page owner inside the running agent program
+ * while another CLI consumer and the browser stay live. `pageDirectory` is the page's
+ * built output (pages/<slug>/dist); `workspace` is the workspace root. */
+export async function qualifyFirstAppPublication({ page, pageUrl, publicationGateUrl, peer, expect, workspace, slug, pageDirectory, preload, cli, node }) {
+  const args = ['--page', slug];
   const attached = async command => JSON.parse(await node([cli, ...args, ...command]));
   const ownerBefore = await attached(['self']);
-  assert.equal(ownerBefore.endpoint.ownerInstanceId, peer.metadata.ownerInstanceId);
+  assert.equal(ownerBefore.endpoint.ownerInstanceId, (await peer.request('self')).ownerInstanceId);
   const browserDevice = await page.locator('#device-key').inputValue();
   // The preceding scenario reloads the browser; retained local notes alone do
   // not prove that its replacement authenticated transport has reconnected.
@@ -18,7 +20,7 @@ export async function qualifyFirstAppPublication({ page, pageUrl, publicationGat
     { timeout: 30_000 }).toContain(browserDevice);
   const diagnosticsBefore = await peer.request('diagnostics');
   const publicationBefore = await attached(['publication']);
-  const pageDirectory = join(app, 'page'), indexPath = join(pageDirectory, 'index.html');
+  const indexPath = join(pageDirectory, 'index.html');
   const proofPath = join(pageDirectory, 'resident-publication-proof.txt');
   const original = await readFile(indexPath, 'utf8');
   const firstHtml = original + '\n<!-- resident-owner-publication-one -->\n';
@@ -26,7 +28,7 @@ export async function qualifyFirstAppPublication({ page, pageUrl, publicationGat
   const proof = Buffer.from('attached-publication-proof\n' + 'p'.repeat(900_000));
   const proofHash = createHash('sha256').update(proof).digest('hex');
   const child = spawn(process.execPath, ['--import', preload, cli, ...args,
-    'watch', '--events', '--topics', '["note"]'], { cwd: project, stdio: ['ignore', 'pipe', 'pipe'] });
+    'watch', '--events', '--topics', '["note"]'], { cwd: workspace, stdio: ['ignore', 'pipe', 'pipe'] });
   const batches = [];
   let stderr = '', consumerFailure, consumerExit;
   const closed = new Promise(resolve => {

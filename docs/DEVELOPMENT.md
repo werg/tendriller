@@ -208,16 +208,18 @@ SDK, host or runtime import graph. Validate it with an exact Chronolog archive
 when changing application APIs. [The cold-start acceptance test](AGENT_ONBOARDING_TEST.md)
 measures the full domain-only journey separately from automated route/link tests.
 
-`test:first-app` downloads the starter from its own isolated host, installs only
-public archives in a temporary consumer, and exercises owner claim, descriptor
-configuration, initial generation selection, native commands and process reopen,
-signed publication, browser enrollment, shared state and uncertain-command retry
-after reload. It records source/archive identities and results in
-`.results/first-app.json`, with desktop and narrow-viewport homepage and connected
-starter screenshots. The photo flow transports actual encrypted session content
-and signals to an authorized native test participant. It uses an injected
-deterministic provider, verifies analysis makes no domain write, then commits only
-the person's edited observation and reopens it. It does not call a live AI service.
+`test:first-app` downloads the starter workspace from its own isolated host,
+installs only public archives in a temporary consumer, and drives it as documented:
+`tendril workspace init` for the owner email, two notes pages from one agent
+(`page:new`, `init` and `build` with exact retries), one `tendril agent run`,
+signed publication through the attach socket before claim, one owner sign-in that
+claims the agent and every page it created, attached CLI commands, automatic
+browser enrollment by the page owner, browser/agent convergence over the selected
+transport, local saving while the agent program is stopped with convergence after
+it restarts, a second page in another tab, a page initialized while the program
+runs, a clean SIGTERM exit and the account-linked `register_agent` route. It
+records source/archive identities and results in `.results/first-app.json`, with
+narrow-viewport screenshots of each connected page.
 Helper tests also cover stale reads, cancellation, uncertain operation states,
 failed preparation, fixed reviewed values and explicit reapplication lineage. The
 `Agent onboarding` workflow runs it with a pinned Chronolog source commit and
@@ -230,8 +232,10 @@ That mode verifies and installs the packages carried by the kit; the release
 workflow requires it before publication.
 
 The separate `test:first-app:feedback` gate uses that same package composition
-with private fixture clock controls in the downloaded browser Worker and native
-test participant. It exercises attached signed publication while an independent
+with private fixture clock controls in the downloaded page Worker and a private
+qualification page module written over `pages/notes/agent.mjs`; the agent program
+opens it like any page and it answers evidence requests on a private socket
+(`scripts/first-app-peer.mjs`). It exercises attached signed publication while an independent
 event consumer and browser stay active, exact and stale publication retries, the
 2000 ms signal-freshness boundary over the real connection, and enrollment while
 direct, attached and forwarding consumers hold work. Recovery checks require
@@ -261,8 +265,10 @@ run does not qualify browser transport.
 The workflow also builds the pinned optional SQL-native engine on its Node 24
 runner and runs `test:first-app -- --session-archive /absolute/sql-archive.tgz
 --sql-native-only`. That mode records `.results/first-app-sql.json` and qualifies
-the separate SQL starter's setup, signed schema, guarded transfer, atomic
-rejection, exact retry and native process reopen. It reports native coverage
+an inventory page of the workspace (`page:new --template inventory`): native
+engine preflight, setup, signed schema, guarded transfer through the running agent
+program (`npm run demo`), atomic rejection, exact retry and reopen after the agent
+program restarts. It reports native coverage
 explicitly and does not claim the supplied SQL browser Worker is qualified by
 that check. Engine archives must match the target Node/platform/architecture/libc
 requirements; an events-only archive cannot stand in for SQL.
