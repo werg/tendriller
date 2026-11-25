@@ -8,6 +8,8 @@ import { readPublishedManifest, verifyPublishedRelease } from './check-published
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const roots = ['dist/engine/', 'dist/runtime/', 'dist/sdk/', 'dist/tools/', 'server/public/'];
+// The gitignored runtime identity that source-bundled Workers import; the dev host runs the packed engine.
+const exactPaths = ['server/src/runtime-release.json'];
 
 /** An optional artifact directory contains the same manifest and complete release assets. */
 export async function prepareDevHostRelease({ release, directory, artifacts, manifestSha256, fetcher = globalThis.fetch, signal }) {
@@ -37,7 +39,7 @@ export async function prepareDevHostRelease({ release, directory, artifacts, man
     throw Error('This release has no sealed deployment. Select a source release that includes tendriller-deployment.tgz.');
   const archive = contents.get(deployment.file);
   const files = unpackTarGz(archive);
-  if ([...files.keys()].some(path => !roots.some(prefix => path.startsWith(prefix))))
+  if ([...files.keys()].some(path => !exactPaths.includes(path) && !roots.some(prefix => path.startsWith(prefix))))
     throw Error('The deployment contains a path outside the public release graph.');
   const proof = JSON.parse(Buffer.from(files.get('dist/engine/provenance.json') ?? []).toString('utf8'));
   if (proof.dirty !== false || proof.source !== release || proof.sourceTree !== manifest.source_tree || proof.storageSchemaRevision !== 11)
