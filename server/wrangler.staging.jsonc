@@ -22,15 +22,15 @@
     "bindings": [
       {
         "name": "TENDRIL",
-        "class_name": "TendrilS12"
+        "class_name": "TendrilS13"
       },
       {
         "name": "ADMISSION",
-        "class_name": "AdmissionS12"
+        "class_name": "AdmissionS13"
       },
       {
         "name": "AGENT_HUB",
-        "class_name": "AgentHubS12"
+        "class_name": "AgentHubS13"
       }
     ]
   },
@@ -48,7 +48,7 @@
         "AgentHub"
       ]
     },
-    { "tag": "storage-12", "new_sqlite_classes": ["TendrilS12", "AdmissionS12", "AgentHubS12"] }
+    { "tag": "storage-13", "new_sqlite_classes": ["TendrilS13", "AdmissionS13", "AgentHubS13"] }
   ],
   "d1_databases": [
     {

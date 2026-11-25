@@ -4,29 +4,30 @@ Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendrille
 
 ## Fresh storage baseline
 
-Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 12** (consolidated page, signed authority, publication, and assistant delivery tables). A mismatched existing schema is rejected before mutation, so provision a fresh Durable Object namespace.
+Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 13** (consolidated page, signed authority, publication, agent handle and hosted MCP participant tables). A mismatched existing schema is rejected before mutation, so provision a fresh Durable Object namespace.
 
 This pre-release target uses fresh matching storage only — there are no legacy migration paths or compatibility readers:
 1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and the ordered `server/migrations/0001_accounts.sql` (accounts, OAuth, assistant connections) and `0002_agents.sql` (agents, page grants, join codes) migrations (exported as `@tendriller/engine/accounts-schema`). Verify `d1_migrations` records both; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This initializes new storage only; it is not conversion of an older database.
-2. Provision fresh `Tendril`, `Admission` and `AgentHub` Durable Object namespaces (`Tendril` and `Admission` matching revision 12; `AgentHub` is one object per agent, holding its single control-traffic connection).
+2. Provision fresh `Tendril`, `Admission` and `AgentHub` Durable Object namespaces (`Tendril` and `Admission` matching revision 13; `AgentHub` is one object per agent, holding its single control-traffic connection).
 3. Missing or mismatched storage fails closed without mutating existing records.
 
 `scripts/provision.mjs` plans and provisions fresh named Worker, D1, R2, and domain resources and writes a complete Wrangler config. Review resource names and page-domain isolation before deploying.
 
-## Storage revision 12 in the existing s11 Workers
+## Storage revision 13 in the existing s11 Workers
 
-Revision 12 keeps the `tendriller-{staging,production}-s11` Worker scripts, their
+Revision 13 keeps the `tendriller-{staging,production}-s11` Worker scripts, their
 secrets, public routes and `FILES` buckets (content-addressed runtime files). It
 binds fresh storage instead: D1 `tendriller-{staging,production}-s12-accounts`
-and the Durable Object classes `TendrilS12`, `AdmissionS12` and `AgentHubS12`
-(migration tag `storage-12`). The engine exports the same implementations under
+(created for this cutover before the revision moved to 13; the name is only a
+label) and the Durable Object classes `TendrilS13`, `AdmissionS13` and
+`AgentHubS13` (migration tag `storage-13`). The engine exports the same implementations under
 both names; the unrevisioned `Tendril`/`Admission`/`AgentHub` namespaces are no
 longer bound, so their revision-11 data stays inert and is never read, migrated
 or deleted. A later storage revision repeats this with new class names and a
 fresh D1, instead of moving routes to a new Worker.
 
 For each environment: apply the D1 migrations to the fresh database, set its
-`*_STORAGE_SCHEMA` variable to `12`, deploy through the normal workflow, verify
+`*_STORAGE_SCHEMA` variable to `13`, deploy through the normal workflow, verify
 readiness and the deployment checks, and only then reopen creation with the
 conditional update below.
 
