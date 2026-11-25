@@ -103,10 +103,24 @@
           "pattern": "^[a-z2-7]{12}$"
         },
         "name": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "page_url": {
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "scopes": {
           "type": "array",
@@ -116,17 +130,24 @@
           "maxItems": 16
         },
         "application": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
             }
-          },
-          "required": [
-            "id"
-          ],
-          "additionalProperties": false
+          ]
         },
         "lifetime": {
           "type": "string"

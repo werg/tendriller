@@ -7,6 +7,7 @@ export const CORE_RELEASE = '0.3.0-rc.17';
 export const ROLES = Object.freeze(['owner', 'guest', 'display']);
 const string = { type: 'string' }, integer = { type: 'integer', minimum: 0 };
 const object = (properties, required = [], additionalProperties = false) => ({ type: 'object', properties, required, additionalProperties });
+const nullable = schema => ({ anyOf: [schema, { type: 'null' }] });
 const application = object({ id: { type: 'string', pattern: '^[0-9a-f]{64}$' } }, ['id']);
 const pageId = { type: 'string', pattern: '^[a-z2-7]{12}$' }, agentId = { type: 'string', pattern: '^ag_[a-z2-7]{26}$' };
 const email = { type: 'string', maxLength: 254, pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' };
@@ -19,8 +20,9 @@ export const schemas = Object.freeze({
   agentCredential: object({ id: agentId, name: string, token: { type: 'string', pattern: '^ta_[a-z2-7]{32}$' },
     account_state: { enum: ['unclaimed', 'claimed'] } }, ['id', 'name', 'token'], true),
   agentPageCreate: object({ name: { type: 'string', minLength: 1, maxLength: 200 } }),
-  agentPage: object({ id: pageId, name: string, page_url: string, scopes: { type: 'array', items: string, maxItems: 16 }, application,
-    lifetime: string }, ['id', 'page_url', 'application'], true),
+  // A listed page whose details are momentarily unavailable has null name, page_url and application.
+  agentPage: object({ id: pageId, name: nullable(string), page_url: nullable(string), scopes: { type: 'array', items: string, maxItems: 16 },
+    application: { anyOf: [application, { type: 'null' }] }, lifetime: string }, ['id', 'page_url', 'application'], true),
   agentPageList: object({ pages: { type: 'array', maxItems: 100, items: { $ref: '#/$defs/agentPage' } },
     next_cursor: { anyOf: [string, { type: 'null' }] } }, ['pages'], true),
   serviceDescriptor: object({ contract: { const: 3 }, core_release: string, limits: { type: 'object' } }, ['contract', 'core_release', 'limits']),

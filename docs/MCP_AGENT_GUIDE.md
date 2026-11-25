@@ -93,7 +93,7 @@ email, account credentials or application keys.
    `@tendriller/core/assistant` to the *existing* application participant, propose
    its declared capabilities before claim, and give the owner the ready page and
    returned permission-review URL. The supplied starter has `npm run assistant:prepare`
-   and `npm run serve` for this route. They choose what to expose. Keep that participant available for calls.
+   for this route, and `npx tendril agent run` keeps every page's participant running. They choose what to expose. Keep that participant available for calls.
 8. Refresh `list_tendrils`, call `describe_application`, make a real query and
    the requested command, then verify the applied result and retained state
    after reload. Use `topic: "delivery"` for the completion evidence and report

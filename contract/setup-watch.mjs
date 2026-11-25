@@ -67,7 +67,7 @@ export function watchApplicationSetup({ page, signal, onChange, onStatus = () =>
       // repaired by restoring its credential, and must remain visibly retrying.
       let applicationMissing = false;
       try {
-        await page.request('/self', { signal: AbortSignal.any([lifetime, AbortSignal.timeout(5000)]) });
+        await page.request('', { signal: AbortSignal.any([lifetime, AbortSignal.timeout(5000)]) });
       } catch (error) {
         if (error?.status === 404) applicationMissing = error.code === 'not_found';
         if ([401, 403].includes(error?.status)) { onStatus({ state: 'access_revoked' }); break; }

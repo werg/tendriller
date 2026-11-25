@@ -10,7 +10,7 @@ import { hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { createAgentClient, describeReadiness, describeService, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin } from '@tendriller/core';
+import { agentCredential, createAgentClient, describeReadiness, describeService, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin } from '@tendriller/core';
 
 export const WORKSPACE_FILE = 'tendriller.json';
 export const SLUG = /^[a-z0-9][a-z0-9-]{0,47}$/u;
@@ -162,7 +162,7 @@ export async function adoptWorkspace(root, { service, credential: file, kit, sig
   const paths = workspacePaths(root);
   if (!existsSync(paths.identity)) throw failure('agent_signer_missing', 'Run tendril workspace key first; the registered public key must be this workspace key.', 64);
   const result = await readJson(resolve(root, file));
-  const value = result?.structuredContent ?? result;
+  const value = agentCredential(result?.structuredContent ?? result);
   if (!/^ag_[a-z2-7]{26}$/u.test(value?.id ?? '') || !AGENT_TOKEN.test(value?.token ?? '') || typeof value?.name !== 'string')
     throw failure('invalid_agent_credential', 'The file does not hold a register_agent result {id, name, token}.', 64);
   const origin = requireServiceOrigin(service);

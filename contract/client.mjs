@@ -36,13 +36,20 @@ export async function registerAgent(service, body, { fetch: fetcher = globalThis
 export async function joinAgent(service, body, { fetch: fetcher = globalThis.fetch, signal } = {}) {
   return credential(service, '/api/agents/join', assertValid('agentJoin', body), fetcher, signal);
 }
+/** The host answers {agent, token}; callers keep the flat {id, name, token, account_state}. */
+export function agentCredential(result) {
+  const agent = result?.agent;
+  return agent && typeof agent === 'object'
+    ? { id: agent.id, name: agent.name, token: result.token, account_state: agent.claimed ? 'claimed' : 'unclaimed' }
+    : result;
+}
 async function credential(service, path, body, fetcher, signal) {
   const origin = requireServiceOrigin(service);
   const response = await fetcher(origin + path, { method: 'POST', redirect: 'error', cache: 'no-store', signal,
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   const result = await parse(response);
   if (!response.ok) throw new ApiError(response.status, result?.error);
-  return checked('agentCredential', result, response.status);
+  return checked('agentCredential', agentCredential(result), response.status);
 }
 
 /** One account-level agent credential for every granted page. Construction performs no network work. */

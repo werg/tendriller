@@ -237,14 +237,14 @@ async function listAgentPages(env: Env, agent: GrantedAgent, cursor: string | nu
     .all<{ page_id: string; scopes: string; granted_by: string; granted_at: number; lifetime: string; state: string }>();
   const visible = rows.results.slice(0, AGENT_PAGE_LIST_LIMIT);
   const pages = await Promise.all(visible.map(async row => {
-    let detail: { name?: string; page_url?: string; application_id?: string; expires_at?: number | null; claimed?: boolean } = {};
+    let detail: { name?: string; page_url?: string; application?: { id: string }; expires_at?: number | null; claimed?: boolean } = {};
     try {
       const response = await pageStub(env, row.page_id).fetch(new Request('https://tendril.internal/agent-summary', { headers: { [AGENT_HEADER]: agent.id } }));
       if (response.ok) detail = await response.json(); else await response.body?.cancel();
     } catch { /* One unavailable page must not hide the rest. */ }
     return { id: row.page_id, name: detail.name ?? null, page_url: detail.page_url ?? null, api: `${publicBase(env)}/api/agent/pages/${row.page_id}`,
       scopes: JSON.parse(row.scopes) as AgentScope[], granted_by: row.granted_by, granted_at: row.granted_at,
-      application_id: detail.application_id ?? null, lifetime: row.lifetime, state: row.state,
+      application: detail.application ?? null, lifetime: row.lifetime, state: row.state,
       claimed: detail.claimed ?? null, expires_at: detail.expires_at ?? null };
   }));
   return { pages, next_cursor: rows.results.length > AGENT_PAGE_LIST_LIMIT ? visible[visible.length - 1].page_id : null };

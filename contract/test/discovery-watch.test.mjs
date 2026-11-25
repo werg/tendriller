@@ -136,7 +136,7 @@ test('a newer controller fences the old watcher with 4000 without a reconnect co
 for(const status of [401,403,409]) test(`hidden upgrade refusal is terminal after authenticated self returns ${status}`, async t=>{
   t.mock.timers.enable({apis:['setTimeout']});let opens=0, probes=0;
   const peers=createPeersClient({base:'https://service.test/api/t/aaaaaaaaaaaa', socket:()=>{opens++;throw Error('hidden HTTP upgrade error');},
-    request:async(path,options)=>{probes++;assert.equal(path,'self');assert(options.signal instanceof AbortSignal);throw Object.assign(Error('refused'),{status});}});
+    request:async(path,options)=>{probes++;assert.equal(path,'');assert(options.signal instanceof AbortSignal);throw Object.assign(Error('refused'),{status});}});
   const watch=peers.watchDiscovery(peerId);
   await assert.rejects(watch.ready,{code:'discovery_access_revoked'});assert.equal((await watch.closed).code,4003);
   t.mock.timers.tick(86400000);await flush();assert.equal(opens,1);assert.equal(probes,1);
@@ -145,7 +145,7 @@ for(const status of [401,403,409]) test(`hidden upgrade refusal is terminal afte
 test('failure-only access diagnosis uses the agent credential and fetcher',async()=>{
   let probes=0; const hub=fakeHub();
   const client=createAgentClient({service:'https://service.test',token:TOKEN}, {WebSocket:hub.WebSocket,fetch:async(url,options)=>{
-    probes++;assert.equal(url,`https://service.test/api/agent/pages/${PAGE}/self`);
+    probes++;assert.equal(url,`https://service.test/api/agent/pages/${PAGE}/`);
     assert.equal(options.headers.Authorization,'Bearer '+TOKEN);
     return new Response('not JSON',{status:403});
   }});

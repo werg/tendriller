@@ -48,10 +48,11 @@ export function onboardingDescriptor(base) {
       service_descriptor: url('/api/service'),
       readiness: url('/api/readiness'),
       contract: url('/contract/v3.json'),
-      create_page: { method: 'POST', url: url('/api/tendrils'), required: ['owner'] },
+      register_agent: { method: 'POST', url: url('/api/agents'), required: ['owner', 'name', 'publicKey'] },
+      create_page: { method: 'POST', url: url('/api/agent/pages'), authorization: 'agent token' },
     },
     workflow: [
-      { id: 'create', action: 'Create a page; save its private setup handle and stable application.id. Continue preparing without waiting for claim.' },
+      { id: 'create', action: 'Register the agent once (one token, one signing key for all its pages), then create a page in the workspace and keep its stable application.id. Continue preparing without waiting for claim.' },
       { id: 'define', action: 'Define domain commands, queries and state in one Chronolog application.' },
       { id: 'configure', action: 'Create and retain the device identity and keys; configure authority and select the initial generation.' },
       { id: 'publish', action: 'Publish the complete signed UI before asking the owner to sign in; prepare any assistant-access proposal and start the native participant.' },

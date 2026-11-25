@@ -56,7 +56,8 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
       service_descriptor: origin + '/api/service',
       readiness: origin + '/api/readiness',
       contract: origin + '/contract/v3.json',
-      create_page: { method: 'POST', url: origin + '/api/tendrils', required: ['owner'] },
+      register_agent: { method: 'POST', url: origin + '/api/agents', required: ['owner', 'name', 'publicKey'] },
+      create_page: { method: 'POST', url: origin + '/api/agent/pages', authorization: 'agent token' },
     },
   });
   const navigation = [value.service, value.start_here, value.agent_instructions, value.starter, value.capabilities,
@@ -252,8 +253,8 @@ describe('public application onboarding', () => {
     expect(head.headers.get('Content-Disposition')).toBe(response.headers.get('Content-Disposition'));
     expect(await head.arrayBuffer()).toHaveProperty('byteLength', 0);
     for (const path of ['/docs/tutorial/index.html', '/docs/tutorial/page.mjs', '/docs/tutorial/worker.mjs', '/docs/tutorial/setup.mjs',
-      '/docs/tutorial/helpers/browser-profile.mjs', '/docs/tutorial/ui/showcase.html', '/docs/tutorial/ui/patterns.mjs', '/docs/tutorial/media/inference-client.mjs',
-      '/docs/tutorial/media/provider-openai.mjs', '/docs/tutorial/media/.env',
+      '/docs/tutorial/shared/helpers/browser-profile.mjs', '/docs/tutorial/shared/ui/showcase.html', '/docs/tutorial/shared/ui/patterns.mjs', '/docs/tutorial/shared/media/inference-client.mjs',
+      '/docs/tutorial/shared/media/provider-openai.mjs', '/docs/tutorial/shared/media/.env',
       '/docs/tutorial/sql/setup.mjs', '/docs/tutorial/sql/worker.mjs', '/docs/tutorial/sql/.tendriller/handle.json']) {
       const source = await req(path, { anonymous: true });
       expect(source.status, path).toBe(404);

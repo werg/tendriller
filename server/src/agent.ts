@@ -70,7 +70,7 @@ export async function handleAgent(t: Tendril, req: Request, url: URL): Promise<R
 export function agentPageSummary(t: Tendril, agentId: string) {
   const grant = localAgentGrant(t, agentId);
   return { id: t.tid, name: t.db.get('name', 'Tendril'), page_url: t.mainPageUrl(), lifetime: t.db.get('lifetime', 'ad_hoc'),
-    application_id: selectedApplication(t).id, claimed: t.db.get<string | null>('owner_account', null) !== null,
+    application: { id: selectedApplication(t).id }, claimed: t.db.get<string | null>('owner_account', null) !== null,
     expires_at: t.expiresAt(), scopes: grant?.scopes ?? [], granted_by: grant?.granted_by ?? null };
 }
 async function tendrilInfo(t: Tendril) {

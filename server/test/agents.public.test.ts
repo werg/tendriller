@@ -59,7 +59,7 @@ it('creates an unclaimed agent, lists only its granted pages and claims it with 
   const ids = [first.id, second.id].sort();
   expect(listed.pages.map(page => page.id)).toEqual(ids);
   expect(listed.pages[0]).toMatchObject({ scopes: expect.arrayContaining(['host:manage', 'publication:write']), granted_by: 'creator',
-    lifetime: 'ad_hoc', claimed: false, application_id: expect.stringMatching(/^[a-f0-9]{64}$/), page_url: expect.stringContaining('.tendriller.site/s/') });
+    lifetime: 'ad_hoc', claimed: false, application: { id: expect.stringMatching(/^[a-f0-9]{64}$/) }, page_url: expect.stringContaining('.tendriller.site/s/') });
   const after = await (await agentReq(agent.token, 'GET', `/api/agent/pages?cursor=${ids[0]}`)).json() as { pages: any[] };
   expect(after.pages.map(page => page.id)).toEqual([ids[1]]);
   expect((await agentReq(agent.token, 'GET', '/api/agent/pages?cursor=bad')).status).toBe(400);

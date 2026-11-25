@@ -41,7 +41,7 @@ test('invalid notices complete and detach handlers even if transport close fails
 });
 test('revoked upgrade credentials are diagnosed without endless failed sockets', async () => {
   let opens = 0; const states = [];
-  const watch = watchApplicationSetup({ page: fakePage(path => { assert.equal(path, '/self'); throw httpError(401); }), onChange() {}, onStatus: x => states.push(x), openSocket() { opens++; throw Error('upgrade rejected'); } });
+  const watch = watchApplicationSetup({ page: fakePage(path => { assert.equal(path, ''); throw httpError(401); }), onChange() {}, onStatus: x => states.push(x), openSocket() { opens++; throw Error('upgrade rejected'); } });
   await watch.closed; assert.equal(opens, 1); assert(states.some(x => x.state === 'access_revoked'));
 });
 test('cancellation stops a failed dial and its pending reconnect', async () => {
@@ -56,7 +56,7 @@ test('a missing application stays visible and retries with capped backoff instea
   const watch = watchApplicationSetup({ onChange() {}, onStatus: x => states.push(x),
     openSocket() { opens++; throw Error('upgrade rejected'); },
     page: fakePage(path => {
-      probes++; assert.equal(path, '/self');
+      probes++; assert.equal(path, '');
       throw Object.assign(httpError(404, 'not_found'), { message: 'No such tendril; private diagnostic' });
     }) });
   watch.closed.then(() => { ended = true; });

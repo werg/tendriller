@@ -111,13 +111,13 @@ it('provides a complete public MCP onboarding route without browsing or account 
   expect(start.readiness).toMatchObject({ serviceOrigin: origin, mode: 'open', creation: { available: true } });
   expect(start.setup.readinessUrl).toBe(origin + '/api/readiness');
   expect(start.text).toContain('Node 24');
-  expect(start.text).toContain('prepare_tendril_setup');
-  expect(start.text).toContain('inspect_tendril_setup');
-  expect(start.text).toContain('setup:finish');
+  expect(start.text).toContain('register_agent');
+  expect(start.text).toContain('tendril workspace adopt');
+  expect(start.text).not.toContain('prepare_tendril_setup');
   expect(start.text).not.toContain('https://tendriller.dev');
-  expect(start.onboarding.interfaces.create_page.url).toBe(origin + '/api/tendrils');
+  expect(start.onboarding.interfaces.create_page.url).toBe(origin + '/api/agent/pages');
   const build = await readGuide({ topic: 'build' });
-  expect(build.text).toContain('npm run create');
+  expect(build.text).toContain('npm run page:new');
   expect(build.text).toContain(origin + '/downloads/tendriller-first-app.tgz');
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
   try {
@@ -543,12 +543,20 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     const extraQuery = f === a ? ['privateNotes'] : [];
     const blueprints = { queries: [query, ...extraQuery], commands: [command],
       events: [{ name: eventName, description: 'An approved app event.' }] };
-    // The released contract helper still names the per-page API shape; route its
-    // requests to the granted agent page API, as the multi-page client does.
-    const contractApi = ISSUER + '/api/t/' + f.page.id, toAgentPath = (url: string) => new URL(url).pathname.replace('/api/t/' + f.page.id, pagePath);
-    const proposal = await proposeApplicationAssistant({ api: contractApi, token: f.page.token, key,
-      backupKeys: backupDevice ? [backupKey] : [], label: f.page.name,
-      ...blueprints, fetcher: (url, init) => request(toAgentPath(String(url)), bind, init) });
+    // A page client as createAgentClient().page(id) provides, over this test's request helper.
+    const page = {
+      async request(path: string, options: { method?: string; body?: unknown } = {}) {
+        const response = await request(pagePath + path, bind, { method: options.method ?? 'GET',
+          headers: { Authorization: 'Bearer ' + f.page.token, ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+          ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }) });
+        const result = await response.json() as any;
+        if (!response.ok) throw Object.assign(new Error(result?.error?.message ?? 'request failed'), { status: response.status, code: result?.error?.code });
+        return result;
+      },
+      socket() { throw new Error('This test supplies openSocket'); },
+    };
+    const proposal = await proposeApplicationAssistant({ page, key,
+      backupKeys: backupDevice ? [backupKey] : [], label: f.page.name, ...blueprints });
     expect(proposal.approved).toBe(false);
     expect(proposal.reviewUrl).toBe(ISSUER + reviewPath);
     await checkStatus(request(reviewPath, bind, { headers: { Cookie: f === a ? b.cookie : a.cookie } }), 404);
@@ -574,7 +582,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await checkStatus(review(blueprints.queries), 303);
     let dropNextResult = false, droppedResult: Record<string, any> | null = null;
     const start = (whichKey = key, peer = session) => {
-      const adapter = connectApplicationAssistant({ api: contractApi, key: whichKey, session: peer, tools: createScopedApplicationTools(peer, blueprints),
+      const adapter = connectApplicationAssistant({ page, key: whichKey, session: peer, tools: createScopedApplicationTools(peer, blueprints),
         openSocket: (_url, protocols) => {
           const socket = testPeerSocket(() => upgrade(protocols), traffic, 'rendezvous'), send = socket.send.bind(socket);
           socket.send = data => {

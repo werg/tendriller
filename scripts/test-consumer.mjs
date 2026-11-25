@@ -77,6 +77,7 @@ for (const api of [createApplicationAgentKey, proposeApplicationAssistant, conne
   createAssistantEventDelivery, pack, withSession, startServer]) assert.equal(typeof api, 'function');
 const accounts = new DatabaseSync(':memory:');
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/agents-schema')), 'utf8'));
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_grants'").get().name,
   'integration_oauth_grants');
 assert.equal(accounts.prepare("SELECT COUNT(*) AS count FROM assistant_connections").get().count, 0);

@@ -190,6 +190,6 @@ test('setup notices arrive over a hub stream and access failures are diagnosed w
   assert.deepEqual(notices, [notice]);
   connection.push({ t: 'closed', s: 1, code: 1006, reason: 'page restarted' });
   await watch.closed;
-  assert.deepEqual(probes, [{ url: `${service}/api/agent/pages/${PAGE}/self`, auth: 'Bearer ' + TOKEN }]);
+  assert.deepEqual(probes, [{ url: `${service}/api/agent/pages/${PAGE}`, auth: 'Bearer ' + TOKEN }]);
   assert.deepEqual(states, ['connected', 'access_revoked', 'closed']);
 });
