@@ -74,6 +74,15 @@ export async function runRequestWorker(session, {
           if (row.phase === 'completed') continue;
           if (row.phase === 'handling' || row.phase === 'uncertain') throw review();
           if (!['prepared', 'received', 'result'].includes(row.phase)) throw Error('AGENT_CONSUMER_CHECKPOINT_INVALID');
+          if (row.phase === 'prepared') {
+            const inbox = (await session.query('agentInbox', null)).value;
+            batchSignal.throwIfAborted();
+            if (!Array.isArray(inbox?.requests)) throw Error('AGENT_CONSUMER_INBOX_INVALID');
+            const existing = inbox.requests.find(request => request.requestAuthor === row.request.requestAuthor
+              && request.requestOperationId === row.request.requestOperationId);
+            if (!existing) throw Error('AGENT_CONSUMER_REVIEW_RECOVERY: request is absent from the current inbox.');
+            if (existing.answers?.length) { row.phase = 'completed'; await save(); continue; }
+          }
           presence.setState('busy');
           const reference = { requestAuthor: row.request.requestAuthor,
             requestOperationId: row.request.requestOperationId, consumerId, runId: row.runId };

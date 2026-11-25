@@ -191,6 +191,7 @@ test('lost answer acknowledgement retries the exact saved result without re-runn
   const session = {
     deviceId: f.session.deviceId, signal: f.session.signal, signals: f.session.signals,
     changes: f.session.changes.bind(f.session), onRecovery: f.session.onRecovery.bind(f.session),
+    query: f.session.query.bind(f.session),
     async readView() {
       const view = await f.session.readView(); views++;
       return { readEvents: view.readEvents.bind(view), async release() { await view.release(); views--; } };

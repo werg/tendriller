@@ -266,7 +266,11 @@ key and provider receipts to reconcile external effects. The worker persists a
 with `AGENT_CONSUMER_REVIEW_REQUIRED` on resume rather than repeating a possibly
 completed external effect.
 
-Keep the checkpoint private and persistent. Exact prepared receipt/answer inputs
+Run one logical handler for each recipient/topic. The checkpoint lock protects
+one file; it is not a distributed claim between workers using different files.
+On a deliberate first scan, the worker checks the current inbox and skips requests
+that already have durable answers. Keep the checkpoint private and persistent.
+Exact prepared receipt/answer inputs
 and work results survive restarts; the handled cursor advances after durable
 handling. A crash before checkpointing can redeliver work without changing its
 answer operation or input. Recovery and a checkpoint for a different scope stop
