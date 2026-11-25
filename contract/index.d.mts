@@ -44,6 +44,8 @@ export type RuntimeConfiguration = {
   application: import("./application.mjs").ApplicationSelection;
   /** Public resident introduction addresses supplied with the initial page. */
   peerBootstrap?: import("./peers.mjs").PeerBootstrap;
+  /** Owner pages only: draw the page's icon SVGs into 512px PNGs for Android home-screen installs. */
+  iconRaster?: { key: string };
 } & (
   /** Decoded logical path of this document, independently of the publication's root entry. */
   { publication: PublicationManifest; documentPath: string }

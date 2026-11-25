@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { vi, describe, expect, it } from 'vitest';
 import { api, apiJson, create, req } from './helpers';
 
 interface Manifest {
@@ -103,6 +103,9 @@ describe('page installation metadata', () => {
 
   it('uses custom installation artwork in supported formats and defaults for other formats', async () => {
     const handle = await create();
+    // Icon hosts are unreachable here, so sizes cannot be measured.
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, { status: 404 }));
+    try {
     for (const [icon, type] of [
       ['https://images.example.test/app.svg?version=2', 'image/svg+xml'],
       ['https://images.example.test/app.webp', 'image/webp'],
@@ -116,7 +119,9 @@ describe('page installation metadata', () => {
       const base = new URL(handle.page_url).pathname;
       const maskable = { src: `${base}_tendril/icon-maskable.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' };
       if (type) {
-        expect(manifest.icons).toEqual([{ src: icon, type, sizes: 'any', purpose: 'any' }, maskable]);
+        // Unmeasurable here (no network): the custom icon plus a sized PNG fallback, never the generated letter.
+        expect(manifest.icons).toEqual([{ src: icon, type, sizes: 'any', purpose: 'any' },
+          { src: '/_tendril/brand/icon-180.png', sizes: '180x180', type: 'image/png', purpose: 'any' }]);
       } else {
         expect(manifest.icons).toEqual([
           { src: '/_tendril/brand/icon-180.png', sizes: '180x180', type: 'image/png', purpose: 'any' },
@@ -125,5 +130,23 @@ describe('page installation metadata', () => {
         ]);
       }
     }
+    } finally { fetchMock.mockRestore(); }
+  });
+
+  it('lists a custom raster icon with its measured size so Android installs use it', async () => {
+    const handle = await create();
+    const header = new Uint8Array(24);
+    header.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+    new DataView(header.buffer).setUint32(16, 512); new DataView(header.buffer).setUint32(20, 512);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(header, { headers: { 'Content-Type': 'image/png' } }));
+    try {
+      const icon = 'https://images.example.test/dynamic-icon';
+      await apiJson(handle, 'PATCH', '', { icon });
+      const manifest = await (await req(handle.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
+      expect(manifest.icons).toEqual([{ src: icon, sizes: '512x512', type: 'image/png', purpose: 'any' }]);
+      // Measured once and remembered.
+      await req(handle.page_url + '_tendril/manifest.webmanifest');
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { fetchMock.mockRestore(); }
   });
 });

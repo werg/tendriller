@@ -24,6 +24,8 @@ export type InjectConfig = {
   features: Features;
   application: import("../../contract/application.mjs").ApplicationSelection;
   peerBootstrap?: import("../../contract/peers.mjs").PeerBootstrap;
+  /** Asks the owner's page to draw missing home-screen PNG icons (owner only). */
+  iconRaster?: { key: string };
   /** Server-rendered install branding, not part of the runtime configuration. */
   branding?: PageBranding;
 } & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
@@ -48,7 +50,7 @@ export function runtimeTags(cfg: InjectConfig, installTags = `<link rel="manifes
   const documentBase = publication ? publication.base + directory.split("/").map(encodeURIComponent).join("/") : cfg.base;
   const runtimeBase = publication?.runtime.base ?? `/_tendril/runtime/${runtimeRelease.id}/`;
   const conf = { id: cfg.id, base: cfg.base, version: cfg.version, documentPath: cfg.documentPath,
-    application: cfg.application, peerBootstrap: cfg.peerBootstrap,
+    application: cfg.application, peerBootstrap: cfg.peerBootstrap, ...(cfg.iconRaster ? { iconRaster: cfg.iconRaster } : {}),
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +
@@ -83,7 +85,7 @@ function installMetadata(html: string, cfg: InjectConfig): string {
   const branding = cfg.branding;
   const customFavicon = branding?.icon && !isEmojiIcon(branding.icon) ? branding.icon : null;
   const faviconType = customFavicon ? iconMediaType(customFavicon) : "image/svg+xml";
-  const customAppleIcon = branding?.icon && iconMediaType(branding.icon) === "image/png" ? branding.icon : null;
+  const customAppleIcon = branding?.appleIcon ?? (branding?.icon && iconMediaType(branding.icon) === "image/png" ? { href: branding.icon } : null);
   return [
     // Fetching a same-origin manifest still omits cookies without this attribute.
     !authoredManifest ? `<link rel="manifest" href="${attr(cfg.base)}_tendril/manifest.webmanifest" crossorigin="use-credentials">` : "",
@@ -91,7 +93,7 @@ function installMetadata(html: string, cfg: InjectConfig): string {
     // manifest's branding. Leave an authored manifest in charge of those defaults.
     !authoredManifest && !link("icon") ? `<link rel="icon" href="${attr(customFavicon ?? `${cfg.base}_tendril/icon.svg`)}"${faviconType ? ` type="${faviconType}"` : ""}${customFavicon ? "" : ' sizes="any"'}>` : "",
     !authoredManifest && !link("apple-touch-icon", "apple-touch-icon-precomposed") ? customAppleIcon
-      ? `<link rel="apple-touch-icon" href="${attr(customAppleIcon)}">`
+      ? `<link rel="apple-touch-icon" href="${attr(customAppleIcon.href)}"${customAppleIcon.sizes ? ` sizes="${attr(customAppleIcon.sizes)}"` : ""}>`
       : `<link rel="apple-touch-icon" href="/_tendril/brand/icon-180.png" sizes="180x180">` : "",
     !authoredManifest && !meta("theme-color") ? `<meta name="theme-color" content="${attr(branding?.themeColor ?? DEFAULT_THEME_COLOR)}">` : "",
     !authoredManifest && branding && !meta("apple-mobile-web-app-title")
