@@ -15,16 +15,16 @@ function tar(entries){
 function fixture(t,{proof={},source='a'.repeat(40),pin='file:archives/session.tgz',native=true,duplicate=false,transform=x=>x}={}){
  const dir=mkdtempSync(join(tmpdir(),'session-pin-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));mkdirSync(join(dir,'archives'));
  writeFileSync(join(dir,'package.json'),JSON.stringify({devDependencies:{'@chronolog/peer-session':pin}}));
- const provenance={format:'chronolog-peer-session-package/v1',repository:'werg/chronolog-db',source,sourceTree:'b'.repeat(40),dirty:false,profile:'peer-generation-v1',nativeRtc:true,sqlEngines:[],...proof};
+ const provenance={format:'chronolog-peer-session-package/v1',repository:'werg/chronolog-db',source,sourceTree:'b'.repeat(40),dirty:false,profile:'chronolog-crdt-v1',nativeRtc:true,sqlEngines:[],...proof};
  const entries=[['package/package.json',JSON.stringify({name:'@chronolog/peer-session',exports:{'./webrtc-native':{types:'./native.d.ts',import:'./native.mjs'}}})],['package/provenance.json',JSON.stringify(provenance)]];
  if(native)entries.push(['package/native.mjs','export const rtc = true;']);if(duplicate)entries.push(entries[1]);
  writeFileSync(join(dir,'archives/session.tgz'),transform(gzipSync(tar(entries))));return dir;
 }
 test('canonical helper reads the real package pin and is independent of installed dependencies',()=>{
- const actual=readSessionPin(root);assert.match(actual.source,/^[a-f0-9]{40}$/);assert.equal(actual.sql_archive,`chronolog-peer-session-${actual.source.slice(0,8)}-sql.tgz`);
+ const actual=readSessionPin(root);assert.match(actual.source,/^[a-f0-9]{40}$/);assert.deepEqual(Object.keys(actual),['source']);
 });
 test('selected local archive determines outputs when the source changes',t=>{
- for(const source of ['c'.repeat(40),'d'.repeat(40)])assert.deepEqual(readSessionPin(fixture(t,{source})),{source,sql_archive:`chronolog-peer-session-${source.slice(0,8)}-sql.tgz`});
+ for(const source of ['c'.repeat(40),'d'.repeat(40)])assert.deepEqual(readSessionPin(fixture(t,{source})),{source});
 });
 for(const[reason,proof]of[
  ['format',{format:'other'}],['repository',{repository:'other/chronolog-db'}],['short source',{source:'abc12345'}],['injected source',{source:'a'.repeat(40)+'\nsql_archive=other'}],['short tree',{sourceTree:'abc12345'}],['missing tree',{sourceTree:null}],['dirty',{dirty:true}],['unproven clean',{dirty:'false'}],['profile',{profile:'custom'}],['native RTC',{nativeRtc:false}],['SQL engine',{sqlEngines:['native']}],['missing SQL evidence',{sqlEngines:null}],
@@ -38,8 +38,8 @@ test('rejects a bad tar checksum even when gzip is valid',t=>{
 test('requires a local in-checkout tarball pin',t=>{
  for(const pin of ['https://example.invalid/session.tgz','^1.0.0','file:../outside.tgz','file:/tmp/outside.tgz','file:archives/session.zip'])assert.throws(()=>readSessionPin(fixture(t,{pin})));
 });
-test('CLI appends exactly two safe GitHub outputs before installation with no external commands',t=>{
+test('CLI appends only the exact safe source GitHub output before installation with no external commands',t=>{
  const dir=mkdtempSync(join(tmpdir(),'session-pin-output-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));const output=join(dir,'output');writeFileSync(output,'existing=value\n');
  const result=spawnSync(process.execPath,[join(root,'scripts/session-pin.mjs')],{cwd:dir,env:{...process.env,PATH:'',GITHUB_OUTPUT:output},encoding:'utf8'});assert.equal(result.status,0,result.stderr);assert.equal(result.stdout,'');
- const pin=readSessionPin(root);assert.equal(readFileSync(output,'utf8'),`existing=value\nsource=${pin.source}\nsql_archive=${pin.sql_archive}\n`);
+ const pin=readSessionPin(root);assert.equal(readFileSync(output,'utf8'),`existing=value\nsource=${pin.source}\n`);
 });

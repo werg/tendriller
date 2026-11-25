@@ -29,7 +29,7 @@ export async function runInference({ args = process.argv.slice(2), signal } = {}
     owned = await openSession({ signal }); onOwned?.();
     service = servePeerInference({ session: owned.session, allowedDevices, maxRequests, infer, signal,
       onStatus: status => console.log(JSON.stringify({ inference: status })) });
-    console.log(`Credential-protected inference peer: ${owned.session.deviceId}`);
+    console.log(`Credential-protected inference peer: ${owned.session.identity.publicKey}`);
     console.log('Requests and suggestions are visible to application readers. Provider credentials remain in this native process.');
     console.log('Suggestions require page review and a separate declared command. Ctrl-C closes the peer; restart explicitly renews this process budget.');
     await service.done;

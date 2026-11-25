@@ -24,7 +24,7 @@ for (const cleanupFailure of [false, true]) {
     await writeFile(join(directory, 'session.mjs'), `
 export async function openSession() {
   const listener = setInterval(() => {}, 1000);
-  return { session: { deviceId: 'test-device', close: async () => console.log('fixture:inner-session-only') },
+  return { session: { identity: { publicKey: 'a'.repeat(64) }, close: async () => console.log('fixture:inner-session-only') },
     async close() { clearInterval(listener); console.log('fixture:supervisor-closed'); } };
 }
 `);

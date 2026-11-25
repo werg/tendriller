@@ -36,13 +36,14 @@ export async function openSession({ signal, mode }) {
   const socket = new WebSocket('ws://127.0.0.1:${server.address().port}');
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }); });
   const record = value => appendFile(${JSON.stringify(calls)}, JSON.stringify(value)+'\\n');
-  const saved = { status:'saved', operationId:'stable-op', attemptId:'signed-original' };
+  const saved = { applicationId:'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',author:'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',authorTimestampMs:'1',proposalId:'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',operationId:'stable-op',stored:true,pending:'materializer',materialized:null,retained:[],finalized:false,excluded:false };
   const lost = () => Object.assign(Error(process.env.LARGE_ERROR ? 'x'.repeat(1024*1024) : 'Reply lost'), { code:'ACK_LOST',
     ...(process.env.FIXTURE_ERROR_EXIT === undefined ? {} : {exit:JSON.parse(process.env.FIXTURE_ERROR_EXIT)}) });
+  const handle={id:saved.proposalId,operationId:saved.operationId,stored:true,inspect:()=>saved,materialized:async()=>{throw lost();}};
   return { session: {
     query: async () => { if (process.env.LARGE_ERROR) throw lost(); return {value:process.env.LARGE_RESULT ? 'x'.repeat(1024*1024) : 'ready'}; },
-    command: async (_name, _input, options) => { await record({command:options.operationId}); return { applied:async()=>{throw lost();} }; },
-    operations: { get:async()=>saved },
+    command: async (_name, _input, options) => { await record({command:options.operationId}); return handle; },
+    operations: { get:async()=>handle },
     async *changes() {
       yield {watch:'started'};
       await new Promise((resolve,reject) => { if(signal.aborted) reject(signal.reason); else signal.addEventListener('abort',()=>reject(signal.reason),{once:true}); });
@@ -83,10 +84,10 @@ test('finite owned query exits after awaited cleanup despite an actual half-open
 });
 
 test('uncertain command and secondary cleanup failure retain the original signed operation evidence and exit failure', async t => {
-  const f = await fixture(t), result = await f.start(['command', 'addItem', '{}', '--operation', 'stable-op'], { CLOSE_FAIL: '1' }).result();
+  const f = await fixture(t), result = await f.start(['command', 'addItem', '{}', '--operation', 'stable-op', '--wait', 'materialized'], { CLOSE_FAIL: '1' }).result();
   const error = JSON.parse(result.stderr); assert.equal(result.code, 1); assert.equal(result.stdout, '');
   assert.equal(error.error.code, 'ACK_LOST'); assert.equal(error.cleanup.code, 'CLOSE_FAILED');
-  assert.deepEqual(error.operation, { status: 'saved', operationId: 'stable-op', attemptId: 'signed-original' });
+  assert.equal(error.operation.stored,true); assert.equal(error.operation.operationId,'stable-op'); assert.equal(error.operation.proposalId,'c'.repeat(64)); assert.equal(error.operation.materialized,null);
   assert.deepEqual((await readFile(f.calls, 'utf8')).trim().split('\n').map(JSON.parse), [{ command: 'stable-op' }]);
   assert.equal(JSON.parse(await readFile(f.cleanup)).finished, true);
 });
@@ -100,13 +101,13 @@ test('cleanup failure after a successful query remains a failure without printin
 test('caught errors normalize zero and invalid exit codes while preserving valid nonzero codes and cleanup evidence', async t => {
   const f = await fixture(t);
   for (const exit of [0, -1, 256, 1.5, '64', 64, 255]) {
-    const result = await f.start(['command', 'addItem', '{}', '--operation', 'stable-op'], {
+    const result = await f.start(['command', 'addItem', '{}', '--operation', 'stable-op', '--wait', 'materialized'], {
       CLOSE_FAIL: '1', FIXTURE_ERROR_EXIT: JSON.stringify(exit),
     }).result();
     assert.equal(result.code, Number.isInteger(exit) && exit >= 1 && exit <= 255 ? exit : 1);
     const error = JSON.parse(result.stderr);
     assert.equal(error.error.code, 'ACK_LOST'); assert.equal(error.cleanup.code, 'CLOSE_FAILED');
-    assert.equal(error.operation.operationId, 'stable-op'); assert.equal(error.operation.attemptId, 'signed-original');
+    assert.equal(error.operation.operationId, 'stable-op'); assert.equal(error.operation.proposalId, 'c'.repeat(64)); assert.equal(error.operation.stored,true);
     assert.equal(result.stdout, '');
   }
 });

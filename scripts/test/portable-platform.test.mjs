@@ -6,7 +6,6 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {once} from 'node:events';
 import {listenLocalIpc,connectLocalIpc,acquireAtomicLock} from '../../session/ipc.mjs';
-import {createPersistentOutbox} from '../../session/outbox.mjs';
 import {probeCapabilities} from '../../contract/transport-probe.mjs';
 import {packTarGz,unpackTarGz} from '../../contract/archive.mjs';
 import {extractVerifiedTarGz} from '../../contract/release-verify.mjs';
@@ -28,13 +27,10 @@ for(const preferredTransport of ['auto','loopback-tcp'])test(`real ${preferredTr
   } finally {socket.destroy();await listener.close();}
 });
 
-test('outbox reopens the original attempt; extraction and locks need no shell tools',async t=>{
+test('extraction and physical IPC locks need no shell tools',async t=>{
   const directory=await mkdtemp(join(await realpath(tmpdir()),'portable-state-'));t.after(()=>rm(directory,{recursive:true,force:true}));
   const lock=await acquireAtomicLock(directory,{probeReachable:async()=>false});
   try{await assert.rejects(acquireAtomicLock(directory,{probeReachable:async()=>false}),{code:'INSTANCE_UNRESPONSIVE'});}finally{await lock.release();}
-  const input={operationId:'original',appId:'app',deviceId:'device',command:'add',input:{text:'retained'}};
-  await (await createPersistentOutbox(directory)).record(input);
-  const reopened=await createPersistentOutbox(directory);assert.equal((await reopened.record(input)).operationId,'original');
   const archive=packTarGz([{path:'nested/file.txt',bytes:'portable'}]);
   assert.equal(new TextDecoder().decode(unpackTarGz(archive).get('nested/file.txt')),'portable');
   const result=extractVerifiedTarGz(archive,join(directory,'extract'),{expectedSha256:createHash('sha256').update(archive).digest('hex')});

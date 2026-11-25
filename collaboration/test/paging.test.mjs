@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { captureCollaborationReader } from '../paging.mjs';
 
-const revision={applicationId:'a'.repeat(64),historyId:'captured-history',generation:'b'.repeat(64),
-  point:{generation:'b'.repeat(64),sequence:1,head:'c'.repeat(64)},controlRevision:1,materializationRevision:'revision'};
+const revision={digest:'a'.repeat(64),view:'local',executionManifestDigest:'b'.repeat(64),policyDigest:'c'.repeat(64)};
 function fixture(query) {
   let opened=0,released=0,closed=0,detached=0;
   const lifetime=new AbortController(),calls=[];
@@ -11,19 +10,19 @@ function fixture(query) {
     if(query)return query(sql,...args);
     return{rows:sql==='SELECT 1'?[[1]]:sql.startsWith('SELECT COUNT(*)')?[[0]]:[]};
   },release(){released++;}};
-  return {view,calls,lifetime,session:{signal:lifetime.signal,async readView(){opened++;return view;},close(){closed++;},detach(){detached++;}},
+  return {view,calls,lifetime,session:{applicationId:'d'.repeat(64),signal:lifetime.signal,async readView(){opened++;return view;},close(){closed++;},detach(){detached++;}},
     counts:()=>({opened,released,closed,detached})};
 }
 function gate(){let release,enter;return{wait:new Promise(resolve=>{release=resolve;}),entered:new Promise(resolve=>{enter=resolve;}),release:()=>release(),enter:()=>enter()};}
 
 test('captured paging owns one immutable view and closes only its read resource',async()=>{
   const f=fixture(),reader=await captureCollaborationReader(f.session);
-  assert.deepEqual(f.calls,['SELECT 1']);assert.ok(Object.isFrozen(reader.revision));assert.ok(Object.isFrozen(reader.revision.point));
-  f.view.revision.historyId='caller-change';
+  assert.deepEqual(f.calls,['SELECT 1']);assert.ok(Object.isFrozen(reader.revision));assert.equal(reader.revision.view,'local');
+  f.view.revision.digest='e'.repeat(64);
   const [tasks,results,messages,thread,task,snapshot]=await Promise.all([
     reader.tasks(),reader.results(),reader.messages(),reader.thread({threadId:'thread'}),reader.inspect('task'),reader.snapshot(),
   ]);
-  assert.equal(tasks.value.page.revision.historyId,'captured-history');assert.equal(results.value.page.returned,0);
+  assert.equal(tasks.value.page.revision.digest,revision.digest);assert.equal(results.value.page.returned,0);
   assert.deepEqual(messages.value.messages,[]);assert.deepEqual(thread.value.messages,[]);
   assert.equal(task.value.task,null);assert.equal(snapshot.value.pages.tasks.total,0);
   assert.equal(tasks.revision,reader.revision);assert.equal(reader.closed,false);

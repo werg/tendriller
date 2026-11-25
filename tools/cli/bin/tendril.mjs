@@ -25,15 +25,14 @@ Start with a service domain (no saved handle or session required):
 Application session (--session /absolute/application.mjs):
   --mode attach | own | independent [--profile NAME] [--run RUN_ID]
   self | endpoints | doctor | describe | status | query <name> [json] | mcp-stdio
-  command <name> <json> --operation ID [--based-on JSON] [--saved | --shared]
-  command-batch <json-array> [--saved]
-  operation <id> | retry <id> [--saved]
-  reapply <old-id> <name> <json> --operation NEW_ID --based-on JSON
+  command <name> <json> --operation ID [--author-time MS] [--wait materialized|retained|finalized]
+  command-batch <json-array> [--wait materialized|retained|finalized]
+  operation <id> | retry <id> [--wait materialized|retained|finalized]
   events [--cursor CURSOR] [--topics JSON] [--limit N]
   watch [--events [--cursor CURSOR] [--topics JSON] [--limit N]]
   logs [--topics JSON] [--latest]
   signal <topic> <json> [--ttl MILLISECONDS]
-  recovery inspect | takeover --transition ID | handover <device> --transition ID
+  finality close|vote --through MS | finality submit <proofs-json>
   definition | publication | publication-operation <id>
   publish <directory> [--operation ID] [--entry index.html]
 
@@ -46,27 +45,27 @@ Host lifecycle (--tendril NAME, or TENDRIL_API and TENDRIL_TOKEN):
   activity [--after N] | remove --yes
 
 --timeout SECONDS bounds an invocation (default 30; watch waits until interrupted).
-watch --events emits retained batches with replay cursors. Owner loss exits nonzero;
+watch --events emits revision-scoped snapshots and explicit reset records. Owner loss exits nonzero;
 a running watch's timeout or interrupt exits 0 with progress on stderr.
 --pretty formats JSON. The session module may export attachSession({signal,profile,
 context}) returning {session,detach}; it is the default when available. Otherwise
 openSession({signal,mode,profile}) owns the retained profile and returns
 {session,control?,close?}. Attach failure never opens a second signer. Independent
 mode requires an explicitly provisioned --profile. Exiting an attachment only
-detaches that client. control is session.connectControlParticipant(...).
+detaches that client. control is a separate approved publisher/control port.
 Start with guide if you have a page handle but no application session. Page
 creation and owner sign-in do not themselves configure or connect that session.
-Chronolog owns signing, exact retry, durable identity and recovery. No host data
+Chronolog owns signing, exact retry, durable identity and operation-set reconciliation. No host data
 API or extra delivery queue is installed. A timed out waiter leaves its saved
 operation available under the original identity.`;
-const applicationCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'status', 'query', 'command', 'command-batch', 'operation', 'retry', 'reapply',
-  'events', 'watch', 'logs', 'signal', 'recovery', 'definition', 'publication', 'publication-operation', 'publish', 'mcp-stdio']);
+const applicationCommands = new Set(['self', 'endpoints', 'doctor', 'describe', 'status', 'query', 'command', 'command-batch', 'operation', 'retry',
+  'events', 'watch', 'logs', 'signal', 'finality', 'definition', 'publication', 'publication-operation', 'publish', 'mcp-stdio']);
 const flagsByCommand = {
-  self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'based-on', 'saved', 'shared'],
-  'command-batch': ['saved'], 'mcp-stdio': [], operation: [],
-  retry: ['saved'], reapply: ['operation', 'based-on', 'saved', 'shared'], events: ['cursor', 'topics', 'limit'], watch: ['events', 'cursor', 'topics', 'limit'],
+  self: [], endpoints: [], doctor: [], describe: [], status: [], query: [], command: ['operation', 'author-time', 'wait'],
+  'command-batch': ['wait'], 'mcp-stdio': [], operation: [],
+  retry: ['wait'], events: ['cursor', 'topics', 'limit'], watch: ['events', 'cursor', 'topics', 'limit'],
   logs: ['topics', 'latest'],
-  signal: ['ttl'], recovery: ['transition'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
+  signal: ['ttl'], finality: ['through'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['device', 'secret-env', 'project'],
   readiness: ['server'], new: ['owner', 'server', 'as'], info: ['show-url'], service: ['server'], meta: [], release: [], link: [], token: ['scopes'],
@@ -75,7 +74,7 @@ const flagsByCommand = {
 };
 const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0], status: [0, 0], query: [1, 2], command: [2, 2],
   'command-batch': [1, 1], 'mcp-stdio': [0, 0], operation: [1, 1], retry: [1, 1],
-  reapply: [3, 3], events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], recovery: [1, 2], definition: [0, 0], publication: [0, 0],
+  events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], finality: [1, 2], definition: [0, 0], publication: [0, 0],
   'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
   readiness: [0, 0], new: [0, 1], info: [0, 0], service: [0, 0], meta: [1, 1], release: [0, 0],
   link: [1, 2], token: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
@@ -177,11 +176,9 @@ async function main() {
   if (args.length < min || args.length > max) throw invalid(`Invalid arguments for ${cmd}; see --help`);
   if (cmd === 'service' && flags.server !== undefined && flags.tendril !== undefined)
     throw invalid('Choose public service --server URL or page-scoped service --tendril NAME');
-  if (flags.saved && flags.shared) throw invalid('Choose --saved or --shared');
   if (application && flags.mode !== undefined && !['attach', 'own', 'independent'].includes(flags.mode)) throw invalid('Use --mode attach, own, or independent');
   if (application && flags.mode === 'independent' && !flags.profile) throw invalid('--mode independent requires --profile');
   if (cmd === 'token' && flags.scopes !== undefined && args[0] !== 'create') throw invalid('--scopes applies only to token create');
-  if (cmd === 'reapply' && flags['based-on'] === undefined) throw invalid('reapply requires --based-on with the reviewed current revision');
   if (cmd === 'watch' && !flags.events && ['cursor', 'topics', 'limit'].some(name => flags[name] !== undefined))
     throw invalid('watch --cursor, --topics and --limit require --events');
   const watchOptions = cmd === 'watch' ? { events: Boolean(flags.events),

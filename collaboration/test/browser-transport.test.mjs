@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import { connectApplicationOwner } from '@chronolog/peer-session/browser';
+import { p, worker, browser, createPhysicalSession } from './physical-fixture.mjs';
+const PROTOCOL = 'chronolog/authored-session/owner/v1';
+const isClosed = frame => frame?.protocol === PROTOCOL && frame.kind === 'notice' && frame.topic === 'closed';
+const isHello = frame => frame?.protocol === PROTOCOL && frame.kind === 'response' && frame.id === 1 && frame.value?.binding;
+const isResponse = (frame, id) => frame?.kind === 'response' && frame.id === id;
 import { rootLifetimeLockName } from '../../session/root-lifetime.mjs';
 import { BROWSER_OWNER_PROTOCOL, createBroadcastOwner, createBroadcastEndpoint } from '../../session/browser-transport.mjs';
 
@@ -9,7 +13,7 @@ async function until(predicate, description = 'condition', timeoutMs = 3000) {
   const end = Date.now() + timeoutMs;
   while (!predicate()) { if (Date.now() > end) throw Error(`Timed out: ${description}`); await new Promise(setImmediate); }
 }
-async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequest, idleTimeoutMs = 60000 } = {}) {
+async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onQuery, idleTimeoutMs = 60000, maxRequests = 32 } = {}) {
   const witnesses = new Map(); let queries = 0;
   let query = async () => ({ held: [...witnesses.values()], pending: [] });
   const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
@@ -23,43 +27,68 @@ async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequ
   } } });
   const profileId = crypto.randomUUID(), channelName = `test:${profileId}`;
   const ownerChannel = new BroadcastChannel(channelName), observer = new BroadcastChannel(channelName);
-  const traffic = [], accepted = [], clients = [], ports = new Set(); let attachments = 0;
+  const traffic = [], accepted = [], clients = [], values = new Map(), held = new Set(); let attachments = 0;
   observer.addEventListener('message', ({ data }) => traffic.push(data));
-  const owner = { ownerInstanceId: crypto.randomUUID(), attach(endpoint) {
-    const listen = ({ data }) => {
-      const port = data.port, endpointId = crypto.randomUUID(); attachments++; ports.add(port);
-      port.addEventListener('message', ({ data: frame }) => {
-        accepted.push({ endpointId, frame });
-        if (onRequest) onRequest({ port, frame, endpointId });
-        else port.postMessage({ id: frame.id, value: frame.value, endpointId });
-      }); port.start(); if (!silent) port.postMessage({ ready: { endpointId, context: data.handshake.context } });
-    };
-    endpoint.addEventListener('message', listen);
-    return () => { endpoint.removeEventListener('message', listen); for (const port of ports) port.unref?.(); };
+  const definition = p.defineApplication({ id: 'broadcast-physical', version: '1', commands: {}, queries: {
+    echo: p.defineQuery({ description: 'Return a captured test value through the real owner query path', input: { type: 'string' },
+      read(_view, token) {
+        const request = values.get(token); if (!request) throw Error('UNREGISTERED_TEST_QUERY');
+        accepted.push({ endpointId: request.client.binding.endpointId, frame: request.frame, value: request.value });
+        if (!onQuery) return request.value;
+        return new Promise(resolve => {
+          const complete = value => { held.delete(complete); resolve(value); }; held.add(complete);
+          onQuery({ id: request.frame.id, value: request.value, complete, endpointId: request.client.binding.endpointId });
+        });
+      } }),
+  } });
+  const session = await createPhysicalSession({ definition }), initial = await session.readView(); await initial.release();
+  const actualOwner = worker.createApplicationOwner(session, { authorize: () => ({ maxRequests }) });
+  const owner = { ownerInstanceId: actualOwner.ownerInstanceId, attach(endpoint) {
+    attachments++;
+    // Fault injection may drop authentic output. All acceptance, binding,
+    // captured queries, RPC quotas and responses still belong to the real owner.
+    const proxy = Object.assign(new EventTarget(), { postMessage(frame) { if (!silent) endpoint.postMessage(frame); } });
+    const receive = ({ data }) => proxy.dispatchEvent(new MessageEvent('message', { data }));
+    endpoint.addEventListener('message', receive); const detach = actualOwner.attach(proxy);
+    return () => { endpoint.removeEventListener('message', receive); detach(); };
   } };
   const bridge = await createBroadcastOwner(ownerChannel, owner, { profileId, timeoutMs, maxRoutes, idleTimeoutMs });
   bridge.announce(); await until(() => traffic.some(frame => frame.type === 'ready'), 'owner announcement');
   const announcement = traffic.find(frame => frame.type === 'ready');
   async function attach({ waitReady = true, ...options } = {}) {
-    const channel = new BroadcastChannel(channelName), pair = new MessageChannel(), frames = [], replacements = [];
+    const channel = new BroadcastChannel(channelName), frames = [], replacements = [], attachment = crypto.randomUUID();
     const endpoint = createBroadcastEndpoint(channel, announcement, { profileId, livenessTimeoutMs: 1000,
       onReplaced: value => replacements.push(value), ...options });
-    const record = { channel, endpoint, port: pair.port1, frames, replacements };
-    clients.push(record); pair.port1.addEventListener('message', ({ data }) => frames.push(data)); pair.port1.start();
-    endpoint.postMessage({ protocol: 'chronolog/peer-session/owner/v2', handshake: { context: { viewId: `private-view-${clients.length}` } }, port: pair.port2 });
+    const record = { channel, endpoint, frames, replacements, attachment, nextId: 1 };
+    clients.push(record); endpoint.addEventListener('message', ({ data }) => frames.push(data));
+    endpoint.postMessage({ protocol: PROTOCOL, attachment, id: 1, kind: 'request', method: 'hello', args: [{ applicationId: session.applicationId, context: { viewId: `private-view-${clients.length}` } }] });
     record.waitReady = async () => {
-      await until(() => frames.some(frame => frame.ready), 'private facade handshake');
+      await until(() => frames.some(isHello), 'actual private owner hello');
+      record.binding = frames.find(isHello).value.binding;
       record.route = traffic.filter(frame => frame.type === 'hello').at(-1).route;
     };
     if (waitReady) await record.waitReady();
-    record.send = async (id, value) => {
-      pair.port1.postMessage({ id, value }); await until(() => frames.some(frame => frame.id === id), 'private response');
-      return frames.find(frame => frame.id === id);
+    record.request = (_label, value) => {
+      const id = ++record.nextId, token = crypto.randomUUID();
+      const frame = { protocol: PROTOCOL, attachment, id, kind: 'request', method: 'query', args: ['echo', token] };
+      values.set(token, { client: record, value, frame }); endpoint.postMessage(frame); return id;
+    };
+    record.send = async (label, value) => {
+      await record.resume(); const id = record.request(label, value); await until(() => frames.some(frame => isResponse(frame, id)), 'actual query response');
+      const response = frames.find(frame => isResponse(frame, id)); assert.equal(response.error, undefined); return response.value;
+    };
+    record.resume = async () => {
+      if (!record.parked) return;
+      await endpoint.resume(); const id = ++record.nextId;
+      endpoint.postMessage({ protocol: PROTOCOL, attachment, id, kind: 'request', method: 'attachment.resume', args: [] });
+      await until(() => frames.some(frame => isResponse(frame, id)), 'actual owner resumed the retained attachment');
+      assert.equal(frames.find(frame => isResponse(frame, id)).error, undefined); record.parked = false;
     };
     record.park = async () => {
-      record.endpoint.suspend();
-      const id = crypto.randomUUID(); pair.port1.postMessage({ id, method: 'endpoint.suspend' });
-      await until(() => frames.some(frame => frame.id === id), 'owner accepted suspension');
+      record.endpoint.suspend(); const id = ++record.nextId;
+      endpoint.postMessage({ protocol: PROTOCOL, attachment, id, kind: 'request', method: 'attachment.suspend', args: [] });
+      await until(() => frames.some(frame => isResponse(frame, id)), 'actual owner accepted suspension');
+      assert.equal(frames.find(frame => isResponse(frame, id)).error, undefined); record.parked = true;
     };
     return record;
   }
@@ -67,8 +96,9 @@ async function fixture({ timeoutMs = 200, maxRoutes = 32, silent = false, onRequ
     witnesses, get queries() { return queries; }, setQuery(value) { query = value; },
     get attachments() { return attachments; },
     async close() {
-      for (const client of clients) { await client.endpoint.close(); client.port.close(); client.channel.close(); }
-      await bridge.close(); ownerChannel.close(); observer.close(); for (const port of ports) port.close();
+      for (const resolve of held) resolve(undefined);
+      for (const client of clients) { await client.endpoint.close(); client.channel.close(); }
+      await bridge.close(); await actualOwner.close(); ownerChannel.close(); observer.close();
       if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator); else delete globalThis.navigator;
     } };
 }
@@ -99,13 +129,13 @@ test('observed route identifiers do not permit forgery, replay, reflection, or r
   f.observer.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'frame', direction: 'owner', ownerInstanceId: f.announcement.ownerInstanceId,
     route: left.route, frame: { id: 900, value: 'forged' } });
   f.observer.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'frame', direction: 'client', ownerInstanceId: f.announcement.ownerInstanceId,
-    route: left.route, frame: { ended: { code: 'ENDPOINT_STALE' } } });
+    route: left.route, frame: { protocol: PROTOCOL, kind: 'notice', topic: 'closed', value: 'ENDPOINT_STALE' } });
   f.observer.postMessage({ ...f.announcement, ownerInstanceId: crypto.randomUUID() });
   f.observer.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'retired', ownerInstanceId: f.announcement.ownerInstanceId, route: left.route });
   assert.equal((await left.send(2, 'left-still-valid')).value, 'left-still-valid');
   assert.equal((await right.send(2, 'right-still-valid')).value, 'right-still-valid');
-  assert.deepEqual(f.accepted.map(value => value.frame.value), ['original', 'left-still-valid', 'right-still-valid']);
-  assert.equal(left.frames.some(frame => frame.ended), false); assert.equal(left.replacements.length, 0);
+  assert.deepEqual(f.accepted.map(value => value.value), ['original', 'left-still-valid', 'right-still-valid']);
+  assert.equal(left.frames.some(isClosed), false); assert.equal(left.replacements.length, 0);
 });
 
 test('a recorded hello and ciphertext cannot resurrect a retired route or replay its commands', async t => {
@@ -127,9 +157,9 @@ test('a recorded hello and ciphertext cannot resurrect a retired route or replay
 test('a crashed owner expires the facade; suspension pauses liveness without claiming ownership', async t => {
   const f = await fixture(); t.after(() => f.close()); const client = await f.attach({ livenessTimeoutMs: 150 });
   await client.send(1, 'retained-operation'); client.endpoint.suspend(); f.ownerChannel.close();
-  await delay(230); assert.equal(client.frames.some(frame => frame.ended), false);
-  await assert.rejects(client.endpoint.resume(), /OWNER_UNREACHABLE/); await until(() => client.frames.some(frame => frame.ended), 'owner crash timeout');
-  assert.equal(client.frames.find(frame => frame.ended).ended.code, 'OWNER_UNREACHABLE');
+  await delay(230); assert.equal(client.frames.some(isClosed), false);
+  await assert.rejects(client.endpoint.resume(), /OWNER_UNREACHABLE/); await until(() => client.frames.some(isClosed), 'owner crash timeout');
+  assert.equal(client.frames.find(isClosed).value, 'OWNER_UNREACHABLE');
   assert.equal(client.replacements.length, 1); assert.equal(f.accepted.length, 1);
   await assert.rejects(client.endpoint.resume(), /ENDPOINT_STALE/);
 });
@@ -137,9 +167,10 @@ test('a crashed owner expires the facade; suspension pauses liveness without cla
 test('an unresponsive facade handshake times out without exposing its context to broadcasts', async t => {
   const f = await fixture({ silent: true }); t.after(() => f.close());
   const channel = new BroadcastChannel(f.channelName), endpoint = createBroadcastEndpoint(channel, f.announcement, { profileId: f.profileId });
+  const facade = new browser.WorkerApplicationSession(endpoint);
   t.after(async () => { await endpoint.close(); channel.close(); });
-  await assert.rejects(connectApplicationOwner(endpoint, { applicationId: 'a'.repeat(64), definitionId: 'absent', definitionVersion: '1',
-    context: { viewId: 'private-timeout-context' }, timeoutMs: 150 }), /TIMEOUT/);
+  await assert.rejects(facade.request('hello', [{ applicationId: 'a'.repeat(64), context: { viewId: 'private-timeout-context' } }], { timeoutMs: 150 }), /TIMEOUT/);
+  await facade.close().catch(() => {});
   assert.ok(!JSON.stringify(f.traffic).includes('private-timeout-context'));
 });
 
@@ -174,10 +205,16 @@ test('a burst of many signal-sized frames queues on the fallback route instead o
   // virtual-clock tests below retain the exact negative liveness fences.
   const f = await fixture({ timeoutMs: 30000 }); t.after(() => f.close());
   const client = await f.attach({ livenessTimeoutMs: 30000 }), piece = 'x'.repeat(15_000);
-  // An application reply of 200 pieces, posted without waiting, as an owner forwards live signals.
-  for (let id = 1; id <= 200; id++) client.port.postMessage({ id, value: piece });
-  await until(() => client.frames.filter(frame => frame.id).length === 200, 'all 200 replies', 30000);
-  assert.deepEqual(client.frames.filter(frame => frame.id).map(frame => frame.id), Array.from({ length: 200 }, (_value, index) => index + 1));
+  // Stay inside the real owner's RPC quota while delivering 200 legitimate
+  // signal-sized query responses through bounded encrypted queues.
+  for (let offset = 0; offset < 200; offset += 16) {
+    const ids = [];
+    for (let index = offset; index < Math.min(200, offset + 16); index++) ids.push(client.request(index, piece));
+    await until(() => ids.every(id => client.frames.some(frame => isResponse(frame, id))), 'bounded response batch', 30000);
+  }
+  const responses = client.frames.filter(frame => frame.kind === 'response' && frame.id > 1);
+  assert.equal(responses.length, 200); assert(responses.every(frame => frame.error === undefined && frame.value.value === piece));
+  assert.deepEqual(f.accepted.map(value => value.frame.id), Array.from({ length: 200 }, (_value, index) => index + 2));
   assert.deepEqual(client.replacements, []); assert.equal(f.bridge.routes, 1);
 });
 
@@ -204,8 +241,8 @@ for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay', 'late']
   test(`virtual elected liveness: ${mode} preserves the authenticated bounded fence`, async t => {
     const advance = virtualClock(t);
     let response;
-    const f = await fixture({ onRequest: value => {
-      if (value.frame.value === 'liveness baseline') value.port.postMessage({ id: value.frame.id, value: value.frame.value });
+    const f = await fixture({ onQuery: value => {
+      if (value.value === 'liveness baseline') value.complete(value.value);
       else response = value;
     } });
     t.after(async () => { t.mock.timers.reset(); await f.close(); });
@@ -218,7 +255,7 @@ for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay', 'late']
     const replay = f.traffic.find(packet => packet.type === 'sealed' && packet.direction === 'owner');
     assert.ok(replay);
     const output = pauseOwnerOutput(f, t);
-    client.port.postMessage({ id: 1, value: 'held' });
+    const heldId = client.request(1, 'held');
     await until(() => response, 'owner received private request');
     for (let second = 1; second <= (mode === 'late' ? 40 : mode === 'finite' ? 17 : ['hung', 'continuous'].includes(mode) ? 30 : 15); second++) {
       if (mode === 'late' && second === 10) request = { startedAt: 10000, deadline: 40000 };
@@ -226,29 +263,29 @@ for (const mode of ['finite', 'hung', 'passive', 'continuous', 'replay', 'late']
         // Keep the initial call through the first 5s pulse. Replacing it before
         // that sample would legitimately select a later first grace window.
         request = { startedAt: second * 1000, deadline: second * 1000 + 30000 };
-        client.port.postMessage({ id: second + 1, value: 'new caller request' });
+        const replacementId = client.request(second + 1, 'new caller request');
         // A caller can copy route/owner IDs, but cannot supply authenticated progress.
         f.observer.postMessage({ protocol: BROWSER_OWNER_PROTOCOL, type: 'frame', ownerInstanceId: f.announcement.ownerInstanceId,
           route: client.route, frame: { id: second, value: 'fake reply' } });
-        await until(() => response?.frame.id === second + 1, 'owner received replacement request');
+        await until(() => response?.id === replacementId, 'owner received replacement request');
       }
       if (mode === 'replay') f.observer.postMessage(replay);
       await advance(1000);
       if (second < (mode === 'late' ? 40 : ['hung', 'continuous'].includes(mode) ? 30 : 15) || mode === 'finite') {
-        assert.equal(client.frames.some(frame => frame.ended), false);
+        assert.equal(client.frames.some(isClosed), false);
       }
     }
     if (mode === 'finite') {
       request = null;
-      response.port.postMessage({ id: 1, value: 'finished at17s' });
+      response.complete('finished at17s');
       await until(() => output.queued.length >= 4, 'queued authenticated reply');
       output.flush();
-      await until(() => client.frames.some(frame => frame.id === 1), 'finite reply');
-      assert.equal(client.frames.find(frame => frame.id === 1).value, 'finished at17s');
-      assert.equal(client.frames.some(frame => frame.ended), false);
+      await until(() => client.frames.some(frame => isResponse(frame, heldId)), 'finite reply');
+      assert.equal(client.frames.find(frame => isResponse(frame, heldId)).value.value, 'finished at17s');
+      assert.equal(client.frames.some(isClosed), false);
     } else {
-      await until(() => client.frames.some(frame => frame.ended), 'bounded liveness termination');
-      assert.equal(client.frames.find(frame => frame.ended).ended.code, 'OWNER_UNREACHABLE');
+      await until(() => client.frames.some(isClosed), 'bounded liveness termination');
+      assert.equal(client.frames.find(isClosed).value, 'OWNER_UNREACHABLE');
       assert.equal(client.replacements.length, 1);
     }
   });
@@ -259,10 +296,10 @@ test('virtual elected resume needs real owner evidence after a long suspension',
   t.after(async () => { t.mock.timers.reset(); await f.close(); });
   const client = await f.attach({ livenessTimeoutMs: 15000 });
   client.endpoint.suspend(); await advance(45000);
-  assert.equal(client.frames.some(frame => frame.ended), false);
+  assert.equal(client.frames.some(isClosed), false);
   await client.endpoint.resume();
   await client.send(1, 'resumed-original-route');
-  assert.equal(client.frames.some(frame => frame.ended), false);
+  assert.equal(client.frames.some(isClosed), false);
 });
 
 test('virtual elected repeated resume cannot keep a silent owner alive; close fences the probe', async t => {
@@ -274,7 +311,7 @@ test('virtual elected repeated resume cannot keep a silent owner alive; close fe
   const first = client.endpoint.resume(), second = client.endpoint.resume();
   const failure = assert.rejects(first, /OWNER_UNREACHABLE/), duplicate = assert.rejects(second, /OWNER_UNREACHABLE/);
   await advance(15000); await failure; await duplicate;
-  await until(() => client.frames.some(frame => frame.ended), 'resume probe expiration');
+  await until(() => client.frames.some(isClosed), 'resume probe expiration');
   assert.equal(client.replacements.length, 1);
   t.mock.restoreAll();
   const another = await f.attach({ livenessTimeoutMs: 15000 });
@@ -325,7 +362,7 @@ test('elected suspended documents keep their route without page timers; a discar
   await alive.park(); await orphan.park();
   const before = f.queries;
   await until(() => f.queries >= before + 3, 'multiple parked sweeps');
-  assert.equal(f.bridge.routes, 2); assert.equal(alive.frames.some(frame => frame.ended), false);
+  assert.equal(f.bridge.routes, 2); assert.equal(alive.frames.some(isClosed), false);
   // Document destruction releases its browser lock without endpoint.detach.
   f.witnesses.delete(rootLifetimeLockName(f.profileId, orphan.route));
   await until(() => f.bridge.routes === 1, 'discarded document reclaimed');
@@ -353,7 +390,7 @@ for (const failure of ['reject', 'malformed', 'partial']) test(`elected parked s
     return failure === 'malformed' ? {} : { held: [{ name: 'unrelated', mode: 'exclusive' }] };
   });
   await until(() => f.queries >= before + 2, 'failed sweeps');
-  assert.equal(f.bridge.routes, 1); assert.equal(client.frames.some(frame => frame.ended), false);
+  assert.equal(f.bridge.routes, 1); assert.equal(client.frames.some(isClosed), false);
   f.setQuery(async () => ({ held: [...f.witnesses.values()] }));
   assert.equal((await client.send('preserved', 'healthy-frozen')).value, 'healthy-frozen');
 });
@@ -382,8 +419,8 @@ test('elected capacity admission has one bounded query and a late snapshot canno
   await delay(150); // Cross the configured query/admission deadline, not a readiness guess.
   resolve({ held: [] }); await new Promise(setImmediate);
   assert.equal(f.bridge.routes, 1); assert.equal(f.attachments, 1);
-  assert.equal(first.frames.some(frame => frame.ready), false); assert.equal(second.frames.some(frame => frame.ready), false);
-  assert.equal(alive.frames.some(frame => frame.ended), false);
+  assert.equal(first.frames.some(isHello), false); assert.equal(second.frames.some(isHello), false);
+  assert.equal(alive.frames.some(isClosed), false);
   assert.equal((await alive.send('after-timeout', 'preserved')).value, 'preserved');
 });
 
@@ -397,7 +434,7 @@ test('owner close fences an authenticated attach whose witness proof is still pe
   await f.bridge.close(); resolve({ held: [...f.witnesses.values()] });
   await new Promise(setImmediate); await new Promise(setImmediate);
   assert.equal(f.bridge.routes, 0); assert.equal(f.attachments, 0);
-  assert.equal(client.frames.some(frame => frame.ready), false);
+  assert.equal(client.frames.some(isHello), false);
 });
 
 test('endpoint close cancels a pending document lock promptly and fences its late native grant before hello', async t => {
@@ -412,4 +449,26 @@ test('endpoint close cancels a pending document lock promptly and fences its lat
   grant(); await new Promise(setImmediate); await new Promise(setImmediate);
   assert.equal(f.witnesses.size, 0); assert.equal(f.attachments, 0);
   assert.equal(f.traffic.some(frame => frame.type === 'hello'), false);
+});
+
+test('encrypted canonical cancellation cannot cross sibling attachments and frees only its actual owner request', async t => {
+  let held;
+  const f = await fixture({ maxRequests: 1, onQuery: request => { if (request.value === 'held') held = request; else request.complete(request.value); } });
+  t.after(() => f.close());
+  const left = await f.attach(), right = await f.attach();
+  const pending = left.request('held', 'held'); await until(() => held);
+  await right.send('same numeric RPC identity on another attachment', 'sibling healthy');
+  right.endpoint.postMessage({ protocol: PROTOCOL, attachment: right.attachment, id: pending, kind: 'cancel' });
+  assert.throws(() => right.endpoint.postMessage({ protocol: PROTOCOL, attachment: left.attachment, id: pending, kind: 'cancel' }), /OWNER_HANDSHAKE_INVALID/);
+  const denied = left.request('still held', 'sibling cancellation did not free my slot');
+  await until(() => left.frames.some(frame => isResponse(frame, denied)));
+  assert.equal(left.frames.find(frame => isResponse(frame, denied)).error, 'ENDPOINT_REQUEST_LIMIT');
+  left.endpoint.postMessage({ protocol: PROTOCOL, attachment: left.attachment, id: pending, kind: 'cancel' });
+  const ping = ++left.nextId;
+  left.endpoint.postMessage({ protocol: PROTOCOL, attachment: left.attachment, id: ping, kind: 'request', method: 'attachment.ping', args: [] });
+  await until(() => left.frames.some(frame => isResponse(frame, ping)));
+  assert.equal((await left.send('released quota', 'healthy after own cancel')).value, 'healthy after own cancel');
+  assert.equal((await right.send('retained sibling', 'still authorized')).value, 'still authorized');
+  assert.equal(left.frames.some(isClosed), false); assert.equal(right.frames.some(isClosed), false);
+  held.complete('late original result');
 });

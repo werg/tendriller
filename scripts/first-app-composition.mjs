@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
-import { packedArchive } from './release-composition.mjs';
+import { packedArchive, FIRST_APP_PROFILES, verifyFirstAppProfiles, verifyBrowserSqlSession } from './release-composition.mjs';
 import { verifyRuntimeManifest } from './runtime-manifest.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -14,7 +14,7 @@ const one = (items, predicate, label) => {
 };
 
 /** Bind the actual isolated host and all local core packages before starting it. */
-export async function verifyFirstAppComposition({ release, composition, coreProof, toolsProof, archives, version, contract }) {
+export async function verifyFirstAppComposition({ release, composition, coreProof, toolsProof, archives, version, contract, profile = 'events' }) {
   assert.equal(release.format, 'tendriller-core-release');
   assert.equal(composition.format, 'tendriller-release-composition-v1');
   assert.match(release.source_commit, /^[a-f0-9]{40}$/);
@@ -48,6 +48,30 @@ export async function verifyFirstAppComposition({ release, composition, coreProo
     assert.equal(bytes.byteLength, component.size, `The actual ${role} archive size does not match the first-app composition.`);
     const provenance = one((role === 'tools' ? toolsProof : coreProof).artifacts, item => item.file === file, `${role} provenance record`);
     assert.equal(provenance.sha256, component.sha256, `The ${role} provenance does not match the first-app composition.`);
+  }
+  verifyFirstAppProfiles(composition, release);
+  assert(Object.hasOwn(FIRST_APP_PROFILES, profile), 'Select the events or sql first-app profile explicitly.');
+  for (const role of ['authority', FIRST_APP_PROFILES[profile].session]) {
+    const component = one(composition.components, item => item.role === role, `${role} component`);
+    const record = one(release.artifacts, item => item.role === role, `${role} release artifact`);
+    assert.equal(typeof archives[role], 'string', `The selected ${role} archive is required.`);
+    assert.equal(basename(archives[role]), component.file);
+    for (const key of ['file', 'sha256', 'size']) assert.equal(component[key], record[key]);
+    const bytes = await readFile(archives[role]);
+    assert.equal(digest(bytes), component.sha256, `The actual ${role} archive does not match the first-app composition.`);
+    assert.equal(bytes.length, component.size);
+    const archive = packedArchive(archives[role]);
+    if (role === 'session-sql-browser') verifyBrowserSqlSession(archive, composition.chronolog.authority);
+    else {
+      const proof = archive.json('provenance.json'), source = composition.chronolog[role];
+      for (const key of ['repository', 'source', 'sourceTree', 'dirty']) assert.equal(proof[key], source[key]);
+      assert.equal(proof.profile, 'chronolog-crdt-v1');
+      assert.equal(proof.format, role === 'authority' ? 'chronolog-authority-package/v1' : 'chronolog-peer-session-package/v1');
+      if (role === 'session') {
+        assert.deepEqual(proof.sqlEngines, []);
+        assert(!Object.keys(archive.package.exports ?? {}).some(name => name === './sql' || name.startsWith('./sql-')));
+      }
+    }
   }
   const runtime = verifyRuntimeManifest(packedArchive(archives.runtime).json('assets/manifest.json'));
   assert.equal(runtime.id, composition.runtime, 'The packed runtime does not match the first-app runtime identity.');

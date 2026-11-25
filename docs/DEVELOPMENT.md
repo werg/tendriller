@@ -46,7 +46,7 @@ one fixed grace window, ending at its original request deadline (30 seconds from
 request start by default). Classification belongs to Chronolog's public
 `boundedRequest` getter; core does not inspect private RPC methods. New,
 cancelled, or replacement caller requests cannot slide the selected deadline.
-Only an authenticated owner response rearms the window. Passive applied/shared/
+Only an authenticated owner response rearms the window. Passive materialized/retained/
 event waits grant no grace; without a finite call the silence fence stays 15 seconds.
 
 This changes the **connection fence**, not RPC deadlines: with defaults, the first
@@ -78,7 +78,7 @@ or Safari/iOS behavior. Keep the [physical-device matrix](WAKE_WORD_QUALIFICATIO
 explicitly pending until actual devices have been exercised. Browser startup
 failures and missing assets are failures, never passing skips for a release.
 
-The application session's command/query/replication implementation is qualified in Chronolog and by independent contrib consumers. A static browser fixture does not establish RTC, recovery or database guarantees. The public host fixture permits combining those real boundaries without private imports.
+The application session's command/query/replication implementation is qualified in Chronolog and by independent contrib consumers. A static browser fixture does not establish RTC, convergence or database guarantees. The public host fixture permits combining those real boundaries without private imports.
 
 With a restored qualified deployment graph and the matching combined SQL consumer
 and WASM engine, run `E2E_CHRONOLOG_CONSUMER=/absolute/consumer E2E_CHRONOLOG_WASM=/absolute/wasm node node_modules/@playwright/test/cli.js test --config test/e2e/browser-sql-opening.playwright.config.ts`.
@@ -102,7 +102,7 @@ a coherent read, including changes arriving during that read. Deterministic
 blocked-read tests run in `test:ci`; the browser regression requires one initial
 view read on both peers. This removes fixture overlap without qualifying a kernel
 latency claim.
-Replication checks first observe the source's applied result within its declared
+Replication checks first observe the source's materialized result within its declared
 15-second bound, then start the unchanged five-second remote-display check.
 Fixed startup stages/timings and cached session-state diagnostics identify which
 boundary failed without logging keys, request bodies or authored data.
@@ -209,9 +209,9 @@ measures the full domain-only journey separately from automated route/link tests
 
 `test:first-app` downloads the starter from its own isolated host, installs only
 public archives in a temporary consumer, and exercises owner claim, descriptor
-configuration, initial generation selection, native commands and process reopen,
-signed publication, browser enrollment, shared state and uncertain-command retry
-after reload. It records source/archive identities and results in
+preparation, signed publication, owner sign-in with local browser initialization,
+native commands and process reopen, explicit key provisioning, convergent shared
+state and uncertain-operation retry after reload. It records source/archive identities and results in
 `.results/first-app.json`, with desktop and narrow-viewport homepage and connected
 starter screenshots. The photo flow transports actual encrypted session content
 and signals to an authorized native test participant. It uses an injected
@@ -275,9 +275,9 @@ scenario in [Agent onboarding](AGENT_ONBOARDING_TEST.md) for actual agent behavi
 link and consistency checks do not prove that an unfamiliar agent can finish.
 
 Account-bound setup retains one client credential and allocation across retries.
-Device pairing uses the browser's own key proof, a native member-only proposal that the host
-approves automatically when staged (no approval screen), and a durable ordering pause until
-the exact signed outcome is resolved.
+Device enrollment uses the browser's own key proof and an explicit owner grant. Additional
+devices receive keys through explicit authenticated provisioning. Neither pauses or selects
+application operations.
 The native participant uses hibernating setup notifications without idle polling;
 individual requests expire after ten minutes. Its lifetime is independent of the
 optional MCP adapter. Closing or restarting it does not erase uncertain work. Public SDK/endpoint and tutorial helper tests cover their named

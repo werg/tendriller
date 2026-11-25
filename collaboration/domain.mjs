@@ -1,5 +1,5 @@
-import { APPLICATION_COLLECTIVE_ID, defineApplication, defineCommand, defineQuery,
-  program, sqlStatement, emit } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery,
+  program, sqlStatement, platformOp, emit } from '@chronolog/peer-session';
 import { canonicalJson, COLLABORATION_LIMITS, CollaborationError, identifier, signerId, validateTarget } from './protocol.mjs';
 import { readCollaborationTasks, readCollaborationResults, readCollaborationMessages, readCollaborationThread, readCollaborationTask, readCollaborationSnapshot } from './paging-read.mjs';
 
@@ -8,8 +8,6 @@ const id = text(160), signer = text(64), json = text(8192);
 const integer = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const object = (properties, required = Object.keys(properties)) => ({ type: 'object', properties, required });
 const actor = 'lower(hex(chronolog_actor()))';
-// This reserved, engine-owned context exists only during an authenticated attempt.
-const generation = '(SELECT lower(hex(generation)) FROM chronolog_execution_context WHERE singleton=1 AND transaction_id=chronolog_transaction_id())';
 const j = (alias, key) => `json_extract(${alias}.body,'$.${key}')`;
 const event = (type, description, input, prepare) => defineCommand({ description, input,
   prepare(value) { return prepare(value); } });
@@ -17,9 +15,9 @@ const parse = (value, limit = 8192) => canonicalJson(JSON.parse(value), limit);
 // Colons are legal in identities; each tuple component needs its own boundary.
 const compositeRecordId = (type, ...parts) => `${type}:${parts.map(value => `${identifier(value).length}:${value}`).join('')}`;
 
-/** Shared immutable schema: every admitted signed raw program meets the same triggers. */
+/** Ordinary root-authored journal DDL: raw programs meet these domain triggers. */
 export function createCollaborationDefinition({ id: definitionId = 'tendriller-collaboration', version = '1',
-  administrators = [], limits: configured = {} } = {}) {
+  administrators = [], members = [], limits: configured = {} } = {}) {
   const limits = { ...COLLABORATION_LIMITS, ...configured };
   for (const [key, value] of Object.entries(limits)) {
     if (!Object.hasOwn(COLLABORATION_LIMITS, key) || !Number.isSafeInteger(value) || value < 1 || value > COLLABORATION_LIMITS[key])
@@ -32,16 +30,15 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
   const manage = `(NEW.author=${taskCreator} OR ${admin})`;
   const closed = `EXISTS (SELECT 1 FROM collab_journal WHERE task_id=NEW.task_id AND type IN ('cancel','finalize'))`;
   const validClaim = `EXISTS (SELECT 1 FROM collab_latest_claims c WHERE c.task_id=NEW.task_id AND c.slot_id=NEW.slot_id
-    AND c.type IN ('claim','rebind') AND c.author=NEW.author AND c.generation=NEW.generation
+    AND c.type IN ('claim') AND c.author=NEW.author AND lower(hex(c.proposal_id))=${body('claimProposalId')}
     AND ${j('c', 'epoch')}=${body('claimEpoch')} AND ${j('c','runId')}=${body('runId')}
     AND ${j('c','endpointIncarnation')}=${body('endpointIncarnation')}
-    AND ${body('generation')}=NEW.generation AND ${body('taskVersion')}=1)`;
+    AND ${body('taskVersion')}=1)`;
   const previousAccepted = `EXISTS (SELECT 1 FROM collab_journal WHERE task_id=NEW.task_id
     AND (slot_id=NEW.slot_id OR (SELECT json_extract(body,'$.responsePolicy') FROM collab_journal WHERE type='request' AND task_id=NEW.task_id)='firstAccepted')
     AND type='result' AND json_extract(body,'$.disposition')='accepted')`;
   const disposition = `CASE
     WHEN EXISTS (SELECT 1 FROM collab_journal WHERE task_id=NEW.task_id AND type='cancel') THEN 'cancelled'
-    WHEN ${body('generation')}<>NEW.generation THEN 'needsReview'
     WHEN ${validClaim} AND NOT (${closed}) AND NOT (${previousAccepted}) THEN 'accepted'
     ELSE 'superseded' END`;
   const assert = (predicate, code) => `SELECT chronolog_assert(COALESCE((${predicate}),0),'${code}');`;
@@ -52,8 +49,8 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
     AND ${value} NOT GLOB '*[^A-Za-z0-9_.:/-]*'`;
   const identityField = key => `json_type(NEW.body,'$.${key}')='text' AND ${identityValue(body(key))}`;
   const integerField = (key, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => `json_type(NEW.body,'$.${key}')='integer' AND ${body(key)} BETWEEN ${minimum} AND ${maximum}`;
-  const fenceFields = `${integerField('claimEpoch', 1)} AND ${stringField('generation', 64, 64)}
-    AND ${body('generation')} NOT GLOB '*[^0-9a-f]*' AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}`;
+  const fenceFields = `${integerField('claimEpoch', 1)} AND ${stringField('claimProposalId', 64, 64)}
+    AND ${body('claimProposalId')} NOT GLOB '*[^0-9a-f]*' AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}`;
   const encodedJson = (key, maximum) => `json_type(NEW.body,'$.${key}')='text' AND json_valid(${body(key)})
     AND length(CAST(${body(key)} AS BLOB))<=${maximum}`;
   const documentFields = `(NEW.type='request' AND key IN ('input','target','source','context'))
@@ -77,30 +74,28 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
     `CREATE TABLE collab_journal (
       id TEXT PRIMARY KEY NOT NULL CHECK(length(id) BETWEEN 1 AND 512),
       sequence INTEGER NOT NULL UNIQUE CHECK(sequence>0),
-      type TEXT NOT NULL CHECK(type IN ('request','claim','rebind','handoff','result','cancel','ackCancel','finalize','message')),
+      type TEXT NOT NULL CHECK(type IN ('request','claim','handoff','result','cancel','ackCancel','finalize','message')),
       task_id TEXT NOT NULL CHECK(length(task_id) BETWEEN 1 AND 160), slot_id TEXT NOT NULL,
-      author TEXT NOT NULL CHECK(length(author)=64), generation TEXT NOT NULL CHECK(length(generation)=64),
-      attempt_id BLOB NOT NULL CHECK(typeof(attempt_id)='blob' AND length(attempt_id)=32),
+      author TEXT NOT NULL CHECK(length(author)=64),
+      proposal_id BLOB NOT NULL CHECK(typeof(proposal_id)='blob' AND length(proposal_id)=32),
       body TEXT NOT NULL CHECK(json_valid(body) AND length(CAST(body AS BLOB))<=16384))`,
     'CREATE INDEX collab_by_task ON collab_journal(task_id,sequence)',
     'CREATE INDEX collab_by_type ON collab_journal(type,sequence)',
     'CREATE INDEX collab_by_task_type ON collab_journal(task_id,type,sequence)',
     'CREATE INDEX collab_by_slot ON collab_journal(task_id,slot_id,type,sequence)',
-    `CREATE VIEW collab_latest_claims AS SELECT c.* FROM collab_journal c WHERE c.type IN ('claim','rebind','handoff')
+    `CREATE VIEW collab_latest_claims AS SELECT c.* FROM collab_journal c WHERE c.type IN ('claim','handoff')
       AND NOT EXISTS (SELECT 1 FROM collab_journal n WHERE n.task_id=c.task_id AND n.slot_id=c.slot_id
-        AND n.type IN ('claim','rebind','handoff') AND n.sequence>c.sequence)`,
+        AND n.type IN ('claim','handoff') AND n.sequence>c.sequence)`,
     `CREATE TRIGGER collab_no_update BEFORE UPDATE ON collab_journal BEGIN ${assert('0','collab_immutable')} END`,
     `CREATE TRIGGER collab_no_delete BEFORE DELETE ON collab_journal BEGIN ${assert('0','collab_immutable')} END`,
     `CREATE TRIGGER collab_admission BEFORE INSERT ON collab_journal BEGIN
       ${assert(`NEW.author=${actor}`, 'collab_author')}
-      ${assert(`NEW.generation=${generation}`, 'collab_generation')}
-      ${assert('NEW.attempt_id IS chronolog_transaction_id()', 'collab_attempt')}
+      ${assert('NEW.proposal_id IS chronolog_transaction_id()', 'collab_proposal')}
       ${assert('NEW.sequence=(SELECT COALESCE(MAX(sequence),0)+1 FROM collab_journal)', 'collab_sequence')}
       ${assert(`(${identityValue('NEW.task_id')}) AND (NEW.slot_id='' OR (${identityValue('NEW.slot_id')}))`, 'collab_identity')}
       ${assert(`NEW.sequence<=${Number.MAX_SAFE_INTEGER} AND json_type(NEW.body)='object' AND CASE NEW.type
         WHEN 'request' THEN ${stringField('kind', 128)} AND ${stringField('title', 256)}
         WHEN 'claim' THEN ${integerField('epoch', 1)} AND ${integerField('taskVersion', 1, 1)} AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}
-        WHEN 'rebind' THEN ${integerField('epoch', 1)} AND ${integerField('taskVersion', 1, 1)} AND ${stringField('runId', 160)} AND ${stringField('endpointIncarnation', 200)}
         WHEN 'handoff' THEN ${integerField('epoch', 1)} AND ${stringField('reason', 1000)}
         WHEN 'result' THEN ${fenceFields} AND ${integerField('taskVersion', 1, 1)} AND ${identityField('resultId')}
         WHEN 'cancel' THEN ${integerField('expectedVersion')} AND ${stringField('reason', 1000)}
@@ -117,7 +112,7 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
         WHEN 'message' THEN ${encodedJson('source', 2048)} ELSE 1 END`, 'collab_json_fields')}
       ${assert(jsonStructure, 'collab_json_structure')}
       ${assert(`NEW.type IN ('request','message') OR EXISTS (SELECT 1 FROM collab_journal WHERE task_id=NEW.task_id AND type='request')`, 'collab_task_missing')}
-      ${assert(`NEW.type NOT IN ('claim','rebind','handoff','result','ackCancel') OR EXISTS
+      ${assert(`NEW.type NOT IN ('claim','handoff','result','ackCancel') OR EXISTS
         (SELECT 1 FROM collab_journal r, json_each(r.body,'$.slots') s WHERE r.type='request'
           AND r.task_id=NEW.task_id AND json_extract(s.value,'$.slotId')=NEW.slot_id)`, 'collab_slot_missing')}
     END`,
@@ -137,19 +132,16 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
         AND json_valid(${body('target')}) AND json_valid(${body('source')}) AND json_valid(${body('context')})
         AND json_type(NEW.body,'$.title')='text' AND length(${body('title')}) BETWEEN 1 AND 256`, 'collab_request_content')}
     END`,
-    `CREATE TRIGGER collab_claim BEFORE INSERT ON collab_journal WHEN NEW.type IN ('claim','rebind') BEGIN
-      ${assert(`(NOT (${closed}) OR (NEW.type='rebind' AND NOT EXISTS (SELECT 1 FROM collab_journal WHERE task_id=NEW.task_id AND type='finalize'))) AND NOT (${previousAccepted})`, 'collab_task_closed')}
+    `CREATE TRIGGER collab_claim BEFORE INSERT ON collab_journal WHEN NEW.type IN ('claim') BEGIN
+      ${assert(`NOT (${closed}) AND NOT (${previousAccepted})`, 'collab_task_closed')}
       ${assert(`${body('taskVersion')}=1 AND ${body('epoch')}=COALESCE((SELECT ${j('c','epoch')} FROM collab_latest_claims c WHERE c.task_id=NEW.task_id AND c.slot_id=NEW.slot_id),0)+1`, 'collab_claim_conflict')}
       ${assert(`length(${body('runId')}) BETWEEN 1 AND 160 AND length(${body('endpointIncarnation')}) BETWEEN 1 AND 200`, 'collab_claim_context')}
-      ${assert(`(NEW.type='rebind' AND EXISTS (SELECT 1 FROM collab_latest_claims c WHERE c.task_id=NEW.task_id AND c.slot_id=NEW.slot_id
-        AND c.type IN ('claim','rebind') AND c.author=NEW.author AND c.generation<>NEW.generation))
-        OR (NEW.type='claim' AND (
-          (NOT EXISTS (SELECT 1 FROM collab_latest_claims c WHERE c.task_id=NEW.task_id AND c.slot_id=NEW.slot_id)
-            AND EXISTS (SELECT 1 FROM collab_journal r,json_each(r.body,'$.slots') s,json_each(s.value,'$.eligibleSigners') e
-              WHERE r.type='request' AND r.task_id=NEW.task_id AND json_extract(s.value,'$.slotId')=NEW.slot_id AND e.value=NEW.author))
-          OR EXISTS (SELECT 1 FROM collab_latest_claims c WHERE c.task_id=NEW.task_id AND c.slot_id=NEW.slot_id AND c.type='handoff' AND ${j('c','assignee')}=NEW.author)))`, 'collab_claim_unauthorized')}
-      ${assert(`(SELECT COUNT(*) FROM collab_latest_claims c WHERE c.author=NEW.author AND c.type IN ('claim','rebind')
-        AND c.generation=NEW.generation AND NOT EXISTS (SELECT 1 FROM collab_journal e WHERE e.task_id=c.task_id AND
+      ${assert(`(NOT EXISTS (SELECT 1 FROM collab_latest_claims c WHERE c.task_id=NEW.task_id AND c.slot_id=NEW.slot_id)
+          AND EXISTS (SELECT 1 FROM collab_journal r,json_each(r.body,'$.slots') s,json_each(s.value,'$.eligibleSigners') e
+            WHERE r.type='request' AND r.task_id=NEW.task_id AND json_extract(s.value,'$.slotId')=NEW.slot_id AND e.value=NEW.author))
+        OR EXISTS (SELECT 1 FROM collab_latest_claims c WHERE c.task_id=NEW.task_id AND c.slot_id=NEW.slot_id AND c.type='handoff' AND ${j('c','assignee')}=NEW.author)`, 'collab_claim_unauthorized')}
+      ${assert(`(SELECT COUNT(*) FROM collab_latest_claims c WHERE c.author=NEW.author AND c.type IN ('claim')
+        AND NOT EXISTS (SELECT 1 FROM collab_journal e WHERE e.task_id=c.task_id AND
           (e.type IN ('cancel','finalize') OR (e.type='result' AND e.slot_id=c.slot_id AND json_extract(e.body,'$.disposition')='accepted'))))<${limits.activeClaimsPerSigner}`, 'collab_claim_capacity')}
     END`,
     `CREATE TRIGGER collab_handoff BEFORE INSERT ON collab_journal WHEN NEW.type='handoff' BEGIN
@@ -160,8 +152,8 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
     END`,
     `CREATE TRIGGER collab_result BEFORE INSERT ON collab_journal WHEN NEW.type='result' BEGIN
       ${assert(`EXISTS (SELECT 1 FROM collab_journal c WHERE c.task_id=NEW.task_id AND c.slot_id=NEW.slot_id
-        AND c.type IN ('claim','rebind') AND c.author=NEW.author AND ${j('c','epoch')}=${body('claimEpoch')}
-        AND c.generation=${body('generation')} AND ${j('c','runId')}=${body('runId')}
+        AND c.type IN ('claim') AND c.author=NEW.author AND ${j('c','epoch')}=${body('claimEpoch')}
+        AND lower(hex(c.proposal_id))=${body('claimProposalId')} AND ${j('c','runId')}=${body('runId')}
         AND ${j('c','endpointIncarnation')}=${body('endpointIncarnation')})`, 'collab_result_author')}
       ${assert(`${body('disposition')}=(${disposition})`, 'collab_result_disposition')}
       ${assert(`${body('outcome')} IN ('succeeded','failed') AND ${body('taskVersion')}=1
@@ -207,28 +199,27 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
     // A retry cannot substitute another author or a changed result payload.
     const base = result ? "json_remove(body,'$.disposition')" : 'body';
     const prepareDisposition = disposition.replaceAll('NEW.task_id','candidate.task_id').replaceAll('NEW.slot_id','candidate.slot_id')
-      .replaceAll('NEW.author','candidate.author').replaceAll('NEW.generation','candidate.generation').replaceAll('NEW.body','candidate.body');
+      .replaceAll('NEW.author','candidate.author').replaceAll('NEW.body','candidate.body');
     return program(
       sqlStatement(`SELECT chronolog_assert(NOT EXISTS (SELECT 1 FROM collab_journal WHERE id=? AND
         (type<>? OR task_id<>? OR slot_id<>? OR author<>${actor} OR ${base}<>?)),'collab_identity_conflict')`,
       [eventId, type, taskId, slotId, bodyJson]),
-      sqlStatement(`INSERT INTO collab_journal(id,sequence,type,task_id,slot_id,author,generation,attempt_id,body,chronolog_owner)
+      sqlStatement(`INSERT INTO collab_journal(id,sequence,type,task_id,slot_id,author,proposal_id,body)
         SELECT ?, (SELECT COALESCE(MAX(sequence),0)+1 FROM collab_journal), ?, candidate.task_id,candidate.slot_id,
-          candidate.author,candidate.generation,chronolog_transaction_id(),${result ? `json_set(candidate.body,'$.disposition',(${prepareDisposition}))` : 'candidate.body'},
-          (SELECT id FROM chronolog_principals WHERE key=?)
-        FROM (SELECT ? AS task_id,? AS slot_id,${actor} AS author,${generation} AS generation,? AS body) candidate
+          candidate.author,chronolog_transaction_id(),${result ? `json_set(candidate.body,'$.disposition',(${prepareDisposition}))` : 'candidate.body'}
+        FROM (SELECT ? AS task_id,? AS slot_id,${actor} AS author,? AS body) candidate
         WHERE NOT EXISTS (SELECT 1 FROM collab_journal WHERE id=?)`,
-      [eventId, type, APPLICATION_COLLECTIVE_ID, taskId, slotId, bodyJson, eventId]),
+      [eventId, type, taskId, slotId, bodyJson, eventId]),
       emit(`collab.${type}`, { taskId, ...(slotId ? { slotId } : {}), recordId: eventId }),
     );
   }
   const claimInput = object({ taskId: id, slotId: id, claimId: id, runId: id, endpointIncarnation: text(200),
     expectedEpoch: integer, taskVersion: { type: 'integer', minimum: 1, maximum: 1 } });
-  const claimCommand = kind => event(kind, `${kind === 'rebind' ? 'Explicitly revalidate an old-generation claim' : 'Atomically claim one eligible slot'}; conflicts never dispatch duplicate work`,
-    claimInput, ({ taskId, slotId, claimId, expectedEpoch, ...value }) => insert(kind, `${kind}:${claimId}`, taskId, slotId,
+  const claimCommand = event('claim', 'Provisionally claim one eligible slot at the current projection; late earlier operations can revise this outcome',
+    claimInput, ({ taskId, slotId, claimId, expectedEpoch, ...value }) => insert('claim', `claim:${claimId}`, taskId, slotId,
       { ...value, claimId, epoch: expectedEpoch + 1 }));
   const resultInput = object({ taskId: id, slotId: id, resultId: id, claimEpoch: integer, taskVersion: { type: 'integer', minimum: 1, maximum: 1 },
-    generation: signer, runId: id, endpointIncarnation: text(200), outcome: { type: 'string', enum: ['succeeded','failed'] }, content: json });
+    claimProposalId: signer, runId: id, endpointIncarnation: text(200), outcome: { type: 'string', enum: ['succeeded','failed'] }, content: json });
   const pageOptions = { limit: { type: 'integer', minimum: 1, maximum: 64 }, cursor: text(8192) };
   const queries = {
     'collab.snapshot': defineQuery({ description: 'Bounded coherent preview with explicit task, result and message continuations; presence is separate', input: { type: 'null' },
@@ -241,14 +232,14 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       input: object({ ...pageOptions, limit: { type: 'integer', minimum: 1, maximum: 32 }, creator: signer, eligibleSigner: signer,
         state: { type: 'string', enum: ['all','open','closed'] } }, []), read: (view, input) => readCollaborationTasks(view, input) }),
     'collab.results': defineQuery({ description: 'Page complete retained result evidence, including late and superseded work, within a captured revision',
-      input: object({ ...pageOptions, taskId: id, slotId: id, disposition: { type: 'string', enum: ['accepted','superseded','cancelled','needsReview'] } }, []),
+      input: object({ ...pageOptions, taskId: id, slotId: id, disposition: { type: 'string', enum: ['accepted','superseded','cancelled'] } }, []),
       read: (view, input) => readCollaborationResults(view, input) }),
     'collab.messages': defineQuery({ description: 'Page attributed durable messages, optionally selecting one thread', input: object({ ...pageOptions, threadId: id }, []),
       read: (view, input) => readCollaborationMessages(view, input) }),
     'collab.thread': defineQuery({ description: 'Page one durable thread without reading unrelated application history', input: object({ ...pageOptions, threadId: id }, ['threadId']),
       read: (view, input) => readCollaborationThread(view, input) }),
   };
-  return defineApplication({ id: definitionId, version, schema: program(...schema.map(value => sqlStatement(value))), commands: {
+  const definition = defineApplication({ id: definitionId, version, commands: {
     'collab.request': event('request', 'Create one addressed interaction with a frozen set of eligible contribution slots', object({
       interactionId: id, kind: text(128), title: text(256), input: json, target: text(2048), source: text(2048), context: text(2048),
       responsePolicy: { type: 'string', enum: ['one','allSlots','firstAccepted','manual'] },
@@ -260,17 +251,17 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       return insert('request', `request:${interactionId}`, interactionId, '', { ...value,
         input: parse(value.input, limits.payloadBytes), source: parse(value.source, 2048), context: parse(value.context, 2048), target: parse(value.target, 2048) });
     }),
-    'collab.claim': claimCommand('claim'), 'collab.rebind': claimCommand('rebind'),
+    'collab.claim': claimCommand,
     'collab.handoff': event('handoff', 'Explicitly supersede a claim and offer the slot to a named signing participant',
       object({ taskId: id, slotId: id, actionId: id, expectedEpoch: integer, assignee: signer, reason: text(1000) }),
       ({ taskId,slotId,actionId,expectedEpoch,...value }) => { signerId(value.assignee); return insert('handoff', `handoff:${actionId}`,taskId,slotId,{...value,epoch:expectedEpoch+1}); }),
-    'collab.result': event('result', 'Retain a result under its original complete claim fence; late work cannot overwrite an accepted result', resultInput,
+    'collab.result': event('result', 'Retain a result under its original complete claim fence; current derived disposition may revise after late earlier operations', resultInput,
       ({taskId,slotId,...value}) => insert('result',compositeRecordId('result',taskId,value.resultId),taskId,slotId,{...value,content:parse(value.content,limits.payloadBytes)},{result:true})),
     'collab.cancel': event('cancel','Request cancellation durably; existing external effects remain inspectable',
       object({taskId:id,actionId:id,expectedVersion:integer,reason:text(1000)}),
       ({taskId,actionId,...value}) => insert('cancel',`cancel:${actionId}`,taskId,'',value)),
     'collab.acknowledgeCancel': event('ackCancel','Acknowledge stopping this current claim without claiming an external effect was undone',
-      object({taskId:id,slotId:id,actionId:id,claimEpoch:integer,generation:signer,runId:id,endpointIncarnation:text(200)}),
+      object({taskId:id,slotId:id,actionId:id,claimEpoch:integer,claimProposalId:signer,runId:id,endpointIncarnation:text(200)}),
       ({taskId,slotId,actionId,...value}) => insert('ackCancel',`ack:${actionId}`,taskId,slotId,value)),
     'collab.finalize': event('finalize','Accept an attributed aggregate against the exact reviewed parent version and contribution set',
       object({taskId:id,actionId:id,expectedVersion:integer,resultIds:{type:'array',items:id,minItems:1,maxItems:limits.slots},content:json,allowPartial:{type:'boolean'}}),
@@ -279,4 +270,9 @@ export function createCollaborationDefinition({ id: definitionId = 'tendriller-c
       object({threadId:id,messageId:id,text:text(4000),source:text(2048),inReplyTo:id},['threadId','messageId','text','source']),
       ({threadId,messageId,...value}) => insert('message',compositeRecordId('message',threadId,messageId),threadId,'',{...value,messageId,source:parse(value.source,2048)})),
   }, queries });
+  // Ordinary root-authored DDL: call session.submit({program: initializationProgram, operationId})
+  // after enrolling the root principal. This is not a signed special-schema channel.
+  return Object.freeze({ definition, initializationProgram: program(...schema.map(value => sqlStatement(value)),
+    ...[...new Set(members.map(signerId))].map(member => platformOp.grant({ table: 'collab_journal',
+      grantee: Uint8Array.from(member.match(/../gu), byte => parseInt(byte, 16)), operations: ['insert'] }))) });
 }

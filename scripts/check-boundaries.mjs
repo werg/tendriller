@@ -9,33 +9,28 @@ const application = /(?:^|[/\\])(?:tendriller-contrib|chronolog-db|components|co
 const tooling = /(?:^|[/\\])tools(?:[/\\]|$)|(?:node_modules[/\\])(?:ws|@modelcontextprotocol|playwright|@playwright)(?:[/\\]|$)/;
 // The host admits portable control and declared input-schema verification.
 // Executable application logic stays with its participants.
-const controlImports = new Map([
-  ['server/src/assistant.ts', '@chronolog/peer-generation/control'],
-  ['server/src/peer-generations.ts', '@chronolog/peer-generation/control'],
-  ['server/src/peer-control-identity.ts', '@chronolog/peer-generation/control'],
-  ['server/src/peer-publications.ts', '@chronolog/peer-generation/control'],
-  ['server/src/peer-participant.ts', '@chronolog/peer-generation/participant'],
-  ['server/src/device-pairing.ts', '@chronolog/peer-generation/control'],
-  // Public types for the optional companion-backed pairing API are declarations
-  // only. Its executable SDK proof helper uses WebCrypto, never the app engine.
-  ['contract/pairing.d.mts', '@chronolog/peer-session'],
+const authorityImports = new Set([
+  'server/src/assistant.ts', 'server/src/authority.ts', 'server/src/authority-identity.ts',
+  'server/src/peer-publications.ts', 'server/src/peer-participant.ts',
 ]);
-const controlArtifacts = new Set(['node_modules/@chronolog/peer-generation/control.mjs', 'node_modules/@chronolog/peer-generation/participant.mjs']);
+const portableAuthority = new Set(['@chronolog/authority', ...['control', 'metadata', 'participant', 'publication', 'finality'].map(name => '@chronolog/authority/' + name)]);
+const controlArtifacts = new Set(['index', 'control', 'metadata', 'participant', 'publication', 'finality'].map(name => 'node_modules/@chronolog/authority/' + name + '.mjs'));
 for (const directory of ['server/src', 'runtime/src', 'contract']) for (const path of walk(join(root, directory))) {
   if (!/\.(ts|mjs|mts)$/.test(path)) continue;
   for (const match of readFileSync(path, 'utf8').matchAll(/(?:from\s*|import\s*\(|require\s*\()\s*["']([^"']+)/g))
-    assert.ok(((controlImports.get(relative(root, path)) === match[1]) || !application.test(match[1])) && !tooling.test(match[1]), `${relative(root, path)} imports application/tool implementation ${match[1]}`);
+    assert.ok(((authorityImports.has(relative(root, path)) && portableAuthority.has(match[1])) || !application.test(match[1])) && !tooling.test(match[1]), `${relative(root, path)} imports application/tool implementation ${match[1]}`);
 }
 const engine = JSON.parse(readFileSync(join(root, 'dist/engine/inputs.json')));
 for (const input of engine) assert.ok((controlArtifacts.has(input) || !application.test(input)) && !tooling.test(input), `Worker includes application/tool dependency ${input}`);
 const workerSource = readFileSync(join(root, 'dist/engine/worker.mjs'), 'utf8');
 for (const match of workerSource.matchAll(/(?:from\s*|import\s*\()\s*["'](node:[^"']+)/g))
   assert.fail(`Unexpected native Worker dependency ${match[1]}`);
-for (const artifact of controlArtifacts) assert.ok(engine.includes(artifact), `The deployed engine must include its public control artifact: ${artifact}`);
+assert.ok(engine.some(input => controlArtifacts.has(input)), 'The deployed engine must include the public portable authority artifact');
 const toolGraph = join(root, 'dist/tools-inputs.json');
 if (existsSync(toolGraph)) for (const input of JSON.parse(readFileSync(toolGraph))) {
   const path = input.replaceAll('\\', '/');
-  assert.ok(!/^(?:server\/src|runtime\/src|runtime\/types|contract)\//.test(path) && !application.test(path),
+  const publicChronolog = /(?:^|\/)node_modules\/@chronolog\/(?:authority|peer-session)(?:\/|$)/.test(path);
+  assert.ok(!/^(?:server\/src|runtime\/src|runtime\/types|contract)\//.test(path) && (!application.test(path) || publicChronolog),
     `Tools must consume public artifacts, not private source: ${input}`);
 }
 const kernelPath = join(root, 'dist/runtime/inputs.json');

@@ -1,11 +1,11 @@
 export interface NativeAttachmentPolicy {
-  capabilities?: readonly ('commands' | 'queries' | 'events' | 'content' | 'signals' | 'operations' | 'diagnostics' | 'ownerAdmin' | 'publish')[];
+  capabilities?: readonly ('commands' | 'queries' | 'events' | 'content' | 'signals' | 'operations' | 'diagnostics' | 'finality' | 'provisioning' | 'publish')[];
   commands?: readonly string[];
   queries?: readonly string[];
   identity?: { principalId?: string; agentBindingId?: string; deviceProfileId?: string };
   context?: { viewId?: string; documentPath?: string; publicationId?: string; runId?: string };
   contextEvidence?: 'caller-asserted' | 'owner-validated';
-  maxRequests?: number; maxStreams?: number; maxViews?: number;
+  maxRequests?: number; maxViews?: number; rawSubmit?: boolean; rawSql?: boolean;
   preserveOperationId?: boolean;
 }
 export interface NativeEndpoint {
@@ -23,7 +23,7 @@ export interface NativeControlProxy {
 }
 export interface NativeSessionOwner {
   readonly ownerInstanceId: string;
-  readonly session: { readonly applicationId: string; readonly deviceId: string; readonly signal?: AbortSignal; describe(): { id: string; version: string } };
+  readonly session: { readonly applicationId: string; readonly identity: { readonly publicKey: string }; readonly signal?: AbortSignal; readonly operations: { get(id: string): unknown } };
   readonly control?: NativeControlProxy;
   attach(endpoint: NativeEndpoint, policy?: NativeAttachmentPolicy): () => void;
   endpoints(): readonly unknown[];
@@ -31,7 +31,7 @@ export interface NativeSessionOwner {
 }
 export interface NativeBinding { id: string; revision: number; active: boolean; policy: NativeAttachmentPolicy }
 export interface NativeSessionSupervisor {
-  readonly profile: { version: 1; profileId: string; applicationId: string; deviceId: string; definitionId: string; definitionVersion: string };
+  readonly profile: { version: 1; profileId: string; applicationId: string; publicKey: string };
   readonly ownerInstanceId: string;
   readonly socketPath: string;
   readonly endpoint?: { readonly version: 1; readonly transport: 'unix-socket' | 'windows-named-pipe' | 'loopback-tcp'; readonly address?: string; readonly host?: '127.0.0.1'; readonly port?: number };
@@ -56,17 +56,17 @@ export interface NativeAttachedSession { readonly signal: AbortSignal; detach():
 export interface NativeOperationScope { readonly scopeOperationId:(localOperationId:string)=>string }
 export function attachNativeSession<Session extends NativeAttachedSession>(options: {
   directory: string; token: string;
-  connect(endpoint: NativeEndpoint, options: { applicationId: string; definitionId: string; definitionVersion: string;
+  connect(endpoint: NativeEndpoint, options: { applicationId: string;
     context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal }): Promise<Session>;
-  applicationId: string; definitionId: string; definitionVersion: string;
+  applicationId: string;
   context?: NativeAttachmentPolicy['context']; preserveOperationId?: boolean; timeoutMs?: number; signal?: AbortSignal;
 }): Promise<{ session: Session&NativeOperationScope; control: NativeControlProxy; mode: 'attach'; transport: string; detach(): Promise<void> }>;
 export function connectOrStartNativeSession<Session extends NativeAttachedSession>(options: {
   directory: string; profileId: string;
   openOwner(options: { signal?: AbortSignal; profileId: string }): NativeSessionOwner | Promise<NativeSessionOwner>;
-  connect(endpoint: NativeEndpoint, options: { applicationId: string; definitionId: string; definitionVersion: string;
+  connect(endpoint: NativeEndpoint, options: { applicationId: string;
     context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal }): Promise<Session>;
-  applicationId: string; definitionId: string; definitionVersion: string;
+  applicationId: string;
   bounded?: boolean; preferredTransport?: 'auto' | 'loopback-tcp';
   context?: NativeAttachmentPolicy['context']; timeoutMs?: number; signal?: AbortSignal;
 }): Promise<{ session: Session; mode: 'attach' | 'shared-owner' | 'bounded'; startedSupervisor?: boolean; supervisor?: NativeSessionSupervisor; detach(): Promise<void>; close(): Promise<void> }>;

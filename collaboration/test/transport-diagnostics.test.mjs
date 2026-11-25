@@ -13,7 +13,7 @@ test('transport observation never reads or probes until explicit refresh, and st
  t.mock.timers.enable({apis:['setTimeout']});const f=fixture(),view=createTransportDiagnostics(f.source);t.after(()=>view.close());
  assert.equal(view.status().authenticatedPeers,1);assert.equal(f.calls,0);t.mock.timers.tick(48*3600_000);assert.equal(f.calls,0);
  const sample=await view.refresh();assert.equal(f.calls,1);assert.equal(sample.sampled,true);assert.equal(sample.connections[0].kind,'direct');assert.equal(sample.connections[0].sentLiveBytes,2);
- f.change({phase:'recovering',connectedPeers:[id]});assert.equal(view.status().sampled,false);assert.equal(f.calls,1);
+ f.change({phase:'connecting',connectedPeers:[id]});assert.equal(view.status().sampled,false);assert.equal(f.calls,1);
  t.mock.timers.tick(48*3600_000);assert.equal(f.calls,1);
 });
 test('only authenticated rows are exposed, with bounded metadata and no identity, addresses or arbitrary errors',async()=>{
@@ -105,4 +105,17 @@ test('status and sample limitations remain independent',async()=>{
  const f=fixture(async()=>[row()]);f.source.status.connectedPeers=[id,...Array.from({length:64},(_,i)=>(i+1).toString(16).padStart(64,'0'))];
  const view=createTransportDiagnostics(f.source);assert.equal((await view.refresh()).limited,true);
  f.change({connectedPeers:f.source.status.connectedPeers.slice(0,64)});assert.equal(view.status().limited,false);assert.equal(f.calls,1);view.close();
+});
+
+test('the current session DTO preserves physical links to one signer and labels only measured reliable protocol bytes',async()=>{
+ const source={status:{phase:'ready',connectedPeers:2,connectionRevision:2},async diagnostics(){return[
+  {connectionId:'physical-a',peerId:id,kind:'unknown',sentReliableBytes:4,receivedReliableBytes:9},
+  {connectionId:'physical-b',peerId:id,kind:'unknown',sentReliableBytes:7,receivedReliableBytes:2},
+ ];}};
+ const inspector=createTransportDiagnostics(source);
+ try{const report=await inspector.refresh();assert.equal(report.phase,'connected');assert.equal(report.authenticatedPeers,1);assert.equal(report.connections.length,2);assert.equal(report.limited,false);
+  assert.deepEqual(report.connections.map(row=>row.sentReliableBytes),[4,7]);
+  for(const row of report.connections){assert.equal(row.kind,'unknown');assert.equal(row.sentBytes,null);assert.equal(row.sentLiveBytes,null);assert.equal(row.receivedLiveBytes,null);}
+  assert.doesNotMatch(JSON.stringify(report),/physical-a|physical-b/);
+ }finally{inspector.close();}
 });

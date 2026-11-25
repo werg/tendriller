@@ -26,12 +26,12 @@ export function participantModel(entries, { selfEndpoint, now = Date.now() } = {
 
 export function receiptModel(evidence) {
   const status=evidence?.status??'draft';
-  const labels={draft:'Draft on this view',saved:'Saved on the signing device',applied:evidence?.outcome==='rejected'?'Rejected in selected history':'Applied in selected history',
+  const labels={draft:'Draft on this view',stored:'Stored on the signing device',materialized:evidence?.outcome==='rejected'?'Rejected at this projection revision':'Materialized locally (provisional)',finalized:'Verified under configured finality',
     retained:'Retained by another signing participant',assigned:'Assigned to a worker',working:'Worker reported progress',
     delivered:'Delivered to the agent host',presented:'Presented on this view',completed:'Accepted result',
-    needsReview:'Review required after history changed',outcomeUnknown:'Outcome unknown',cancelRequested:'Cancellation requested',cancelled:'Cancellation accepted'};
+    outcomeUnknown:'Outcome unknown',cancelRequested:'Cancellation requested',cancelled:'Cancellation accepted'};
   return {status,label:labels[status]??status,detail:status==='delivered'?'Delivery does not establish a model turn or an answer.':
-    status==='applied'?'This outcome is conditional on selected history.':status==='cancelled'?'An already dispatched external effect may remain.':
+    status==='materialized'?'A late earlier operation can revise this outcome; this is not global exclusivity.':status==='cancelled'?'An already dispatched external effect may remain.':
       status==='outcomeUnknown'?'Inspect the original operation or provider receipt before repeating work.':'',reference:evidence?.reference??null};
 }
 

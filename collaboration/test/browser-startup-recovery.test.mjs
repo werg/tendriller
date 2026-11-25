@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay, setImmediate as nextTurn } from 'node:timers/promises';
-import { defineApplication, describeApplication, PEER_GENERATION_CAPABILITIES } from '@chronolog/peer-session';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { openBrowserOwner } from '../../session/browser.mjs';
 import { serveBrowserOwner } from '../../session/worker.mjs';
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, createBroadcastEndpoint } from '../../session/browser-transport.mjs';
 import { FixtureLocks } from './fixtures/locks.mjs';
+import { p, createPhysicalSession } from './physical-fixture.mjs';
 
 async function until(check) {
   const end = performance.now() + 2000;
@@ -14,7 +14,7 @@ async function until(check) {
 }
 async function fixture(t, { deadFirst = true, releaseOnHello = true } = {}) {
   const saved = new Map(['navigator', 'location', 'Worker', 'RTCPeerConnection'].map(name => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-  const locks = new FixtureLocks(), traffic = [], workers = [], routes = [], stop = new AbortController();
+  const locks = new FixtureLocks(), traffic = [], workers = [], routes = [];
   const request = locks.request.bind(locks), prefix = 'tendriller:root-lifetime:retained:';
   locks.request = (name, options, run) => {
     if (name.startsWith(prefix)) routes.push(name.slice(prefix.length));
@@ -23,11 +23,8 @@ async function fixture(t, { deadFirst = true, releaseOnHello = true } = {}) {
   let releaseOld, opened = 0, service, attachment; const siblings = [];
   const oldLease = locks.request('chronolog-owner:retained', { mode: 'exclusive' }, () => new Promise(resolve => { releaseOld = resolve; }));
   await until(() => releaseOld);
-  const description = describeApplication(defineApplication({ id: 'startup', version: '1', commands: {}, queries: {} }));
-  const session = { applicationId: 'a'.repeat(64), historyId: 'retained', storageId: 'retained', deviceId: 'b'.repeat(64), signal: stop.signal,
-    revision: null, status: { phase: 'ready', database: 'idle', role: 'coordinator', generation: 'c'.repeat(64), coordinator: 'b'.repeat(64), connectedPeers: 0 },
-    signals: { delivery: 'neighbors' }, describe: () => ({ ...description, capabilities: { ...PEER_GENERATION_CAPABILITIES, sql: false } }),
-    onStatus(listener) { listener(this.status); return () => {}; }, onRecovery: () => () => {}, async close() { stop.abort(Error('SESSION_CLOSED')); } };
+  // A real signed application session behind the public owner; only the browser transport is faked.
+  const session = await createPhysicalSession({ definition: p.defineApplication({ id: 'startup', version: '1', commands: {}, queries: {} }) });
   class Scope extends EventTarget { postMessage(data) { queueMicrotask(() => workers[0]?.dispatchEvent(new MessageEvent('message', { data }))); } close() {} }
   const scope = new Scope();
   class Worker extends EventTarget {
@@ -49,7 +46,7 @@ async function fixture(t, { deadFirst = true, releaseOnHello = true } = {}) {
   service = serveBrowserOwner({ scope, profileId: 'retained', rootLimits: { retireGraceMs: 0 }, async openSession() { opened++; return { session }; } });
   if (!deadFirst) releaseOld();
   t.after(async () => {
-    await attachment?.detach(); for(const sibling of siblings){await sibling.client.detach();await sibling.transport.close();sibling.channel.close();} releaseOld(); await oldLease; await service.close(); channel.close();
+    await attachment?.detach(); for(const sibling of siblings){await sibling.client.detach();await sibling.transport.close();sibling.channel.close();} releaseOld(); await oldLease; await service.close(); await session.close().catch(() => {}); channel.close();
     for (const [name, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name]; }
   });
   return { locks, ghost, channel, traffic, workers, routes, service, session, get opened() { return opened; },
@@ -57,11 +54,11 @@ async function fixture(t, { deadFirst = true, releaseOnHello = true } = {}) {
       const active = traffic.find(frame=>frame.type==='ready'&&frame.ownerInstanceId===service.owner.ownerInstanceId);
       const siblingChannel=new BroadcastChannel(ownerChannelName('retained'));
       const transport=createBroadcastEndpoint(siblingChannel,active,{profileId:'retained'});
-      const client=await connectApplicationOwner(transport,{applicationId:session.applicationId,definitionId:'startup',definitionVersion:'1'});
+      const client=await connectApplicationOwner(transport,{applicationId:session.applicationId});
       siblings.push({client,transport,channel:siblingChannel}); return client;
     },
     async open(options = {}) { attachment = await openBrowserOwner({ workerUrl: 'https://startup.test/worker.mjs', profileId: 'retained', requiresDedicatedWorker: true,
-      applicationId: session.applicationId, definitionId: 'startup', definitionVersion: '1', timeoutMs: 5000, persistStorage: false, storageKeepAliveMs: 0, ...options }); return attachment; } };
+      applicationId: session.applicationId, timeoutMs: 5000, persistStorage: false, storageKeepAliveMs: 0, ...options }); return attachment; } };
 }
 
 test('dead first announcement recovers through a new encrypted owner attachment using the same fenced candidate', async t => {
@@ -163,16 +160,9 @@ test('caller abort is terminal during provisional authentication and releases it
   assert.equal(f.opened, 0); assert.equal(f.traffic.filter(frame => frame.type === 'discover').length, 1);
 });
 
-test('authenticated contract mismatch fails once without rediscovery or terminating the candidate', async t => {
+test('authenticated application mismatch fails once without rediscovery or terminating the candidate', async t => {
   const f = await fixture(t, { deadFirst: false });
-  await assert.rejects(f.open({ definitionVersion: 'wrong' }), /CONTRACT_INCOMPATIBLE/);
+  await assert.rejects(f.open({ applicationId: 'e'.repeat(64) }), /ENDPOINT_APPLICATION_MISMATCH/);
   assert.equal(f.traffic.filter(frame => frame.type === 'discover').length, 1); assert.equal(f.opened, 1);
   assert.equal(f.session.signal.aborted, false); assert.equal(f.workers[0].terminated, false);
-});
-
-test('invalid ready metadata is definitive and is not retried as owner loss', async t => {
-  const f = await fixture(t, { deadFirst: false }); f.session.deviceId = 'invalid';
-  await assert.rejects(f.open(), /APPLICATION_WORKER_METADATA_INVALID/);
-  assert.equal(f.traffic.filter(frame => frame.type === 'discover').length, 1);
-  assert.equal(f.opened, 1);
 });

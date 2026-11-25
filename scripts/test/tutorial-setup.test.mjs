@@ -13,24 +13,34 @@ const handleFor = origin => ({ id: pageId, api: `${origin}/api/t/${pageId}`, tok
   page_url: `https://${pageId}.pages.example.test/s/${'a'.repeat(26)}/`, application: { id: 'a'.repeat(64) } });
 
 async function fixture(t, initialMode = 'open', variant = 'events') {
-  const directory = await mkdtemp(join(tmpdir(), 'tutorial-setup-'));
+  // The SQL starter imports the shared helpers from its parent, exactly as in the published kit layout.
+  const base = await mkdtemp(join(tmpdir(), 'tutorial-setup-')), directory = variant === 'sql' ? join(base, 'sql') : base;
+  await mkdir(join(base, 'helpers')); await mkdir(directory, { recursive: true });
+  await copyFile(join(root, 'docs/tutorial/helpers/prepare-host.mjs'), join(base, 'helpers/prepare-host.mjs'));
   const source = join(root, 'docs/tutorial', variant === 'sql' ? 'sql' : '');
   for (const name of ['setup.mjs', 'local.mjs', 'domain.mjs']) await copyFile(join(source, name), join(directory, name));
   let engine;
+  await mkdir(join(base, 'node_modules/@tendriller'), { recursive: true });
+  await symlink(resolve(root, 'dist/sdk'), join(base, 'node_modules/@tendriller/core'));
+  await mkdir(join(base, 'node_modules/@chronolog'), { recursive: true });
+  await symlink(resolve(root, 'node_modules/@chronolog/authority'), join(base, 'node_modules/@chronolog/authority'));
+  const session = resolve(root, 'node_modules/@chronolog/peer-session');
   if (variant === 'sql') {
-    // Qualify the actual downloadable setup and SDK HTTP boundary without
-    // compiling the optional SQL engine. Count whether its loader was reached.
+    // Qualify the actual downloadable setup and SDK HTTP boundary without compiling the optional SQL engine.
+    // The installed events session has no SQL-browser subpath, so only that subpath and the engine preparation are
+    // replaced; the real session remains the package root. Count whether the loader was reached.
+    const shim = join(base, 'node_modules/@chronolog/peer-session');
+    await mkdir(shim, { recursive: true });
+    await writeFile(join(shim, 'package.json'), JSON.stringify({ name: '@chronolog/peer-session', type: 'module', exports: { '.': './index.mjs', './sql-browser': './sql-browser.mjs' } }));
+    await writeFile(join(shim, 'index.mjs'), `export * from ${JSON.stringify(pathToFileURL(join(session, 'index.mjs')).href)};`);
+    await writeFile(join(shim, 'sql-browser.mjs'), 'export const createDoltLiteExecutionManifest = () => { throw Error("NOT_EXERCISED_BY_CREATE"); }; export const digestEngineManifest = () => { throw Error("NOT_EXERCISED_BY_CREATE"); };');
     await writeFile(join(directory, 'engine.mjs'), `
 export let calls = 0, failure;
 export const fail = value => { failure = value; };
-export async function createNativeEngine() { calls++; if (failure) throw failure; return {}; }
+export async function prepareBrowserEngine() { calls++; if (failure) throw failure; return {}; }
 `);
     engine = await import(pathToFileURL(join(directory, 'engine.mjs')).href);
-  }
-  for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session']]) {
-    await mkdir(join(directory, 'node_modules', scope), { recursive: true });
-    await symlink(resolve(root, source), join(directory, 'node_modules', scope, name));
-  }
+  } else await symlink(session, join(base, 'node_modules/@chronolog/peer-session'));
   let mode = initialMode, creationPaused = false, beforeServiceReply = () => {};
   const calls = [];
   const server = createServer(async (request, response) => {
@@ -57,7 +67,7 @@ export async function createNativeEngine() { calls++; if (failure) throw failure
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
-  t.after(async () => { await new Promise(resolve => server.close(resolve)); await rm(directory, { recursive: true, force: true }); });
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); await rm(base, { recursive: true, force: true }); });
   return { directory, origin, calls, engine, handle: handleFor(origin), setup: await import(pathToFileURL(join(directory, 'setup.mjs')).href),
     setMode: value => { mode = value; }, pauseAtCreation: () => { creationPaused = true; },
     beforeServiceReply: callback => { beforeServiceReply = callback; } };
@@ -68,13 +78,14 @@ test(`downloadable ${variant} setup resumes only the same service without creati
   const { directory, origin, calls, setup, setMode, engine } = await fixture(t, 'open', variant);
   const created = await setup.createProject(origin, 'owner@example.test');
   const saved = await readFile(join(directory, '.tendriller/handle.json'), 'utf8');
-  assert.equal(created.serviceOrigin, origin);
+  assert.equal(created.page_url, handleFor(origin).page_url);
+  assert.match(created.next, /No native data participant is required/);
   assert.deepEqual(calls, [['GET', '/api/readiness'], ['GET', '/api/service'], ['POST', '/api/tendrils']]);
   setMode('creation_paused');
   const resumed = await setup.createProject(origin, 'owner@example.test');
   assert.equal(resumed.resumed, true);
   assert.equal(resumed.page_url, created.page_url);
-  await assert.rejects(setup.createProject('https://production.example.test', 'owner@example.test'), { code: 'service_origin_mismatch' });
+  await assert.rejects(setup.createProject('https://production.example.test', 'owner@example.test'), { code: 'service_origin_mismatch', message: /original service origin/ });
   assert.equal(calls.length, 3);
   if (engine) assert.equal(engine.calls, 1, 'resumption and origin mismatch never load a native engine');
   assert.equal(await readFile(join(directory, '.tendriller/handle.json'), 'utf8'), saved);
@@ -121,7 +132,7 @@ test('create resumes reviewed credentials plus the retained descriptor after the
   assert.equal(resumed.resumed, true);
   assert.equal(resumed.page_url, f.handle.page_url);
   assert.deepEqual(f.calls, [], 'resuming this identity does not preflight or allocate a new page');
-  await assert.rejects(f.setup.createProject('https://different.example.test', 'owner@example.test'), { code: 'service_origin_mismatch' });
+  await assert.rejects(f.setup.createProject('https://different.example.test', 'owner@example.test'), { code: 'service_origin_mismatch', message: /original service origin/ });
   const local = await import(pathToFileURL(join(f.directory, 'local.mjs')).href);
   assert.deepEqual(await local.readHostHandle(), selected.handle);
   for (const [index, name] of ['host-credential.json', 'descriptor.json', 'device.sqlite'].entries())
@@ -177,14 +188,16 @@ test(`downloadable ${variant} setup preserves a recovery record restored during 
 });
 }
 
-test('an original handle does not hide a conflicting retained application descriptor', async t => {
-  const f = await fixture(t), privatePath = join(f.directory, '.tendriller');
+test('an original handle is resumed byte-for-byte with no network request, replacement page or native requirement', async t => {
+  const f = await fixture(t, 'creation_paused'), privatePath = join(f.directory, '.tendriller');
   await mkdir(privatePath, { mode: 0o700 });
   await writeFile(join(privatePath, 'handle.json'), JSON.stringify(f.handle));
-  await writeFile(join(privatePath, 'descriptor.json'), JSON.stringify({ payload: { applicationId: 'c'.repeat(64) } }));
-  await assert.rejects(f.setup.createProject(f.origin, 'owner@example.test'), { code: 'host_identity_required' });
-  assert.deepEqual(f.calls, []);
-  assert.deepEqual(JSON.parse(await readFile(join(privatePath, 'handle.json'), 'utf8')), f.handle);
+  await writeFile(join(privatePath, 'device.sqlite'), 'retained-signer-journal');
+  const before = await Promise.all(['handle.json', 'device.sqlite'].map(name => readFile(join(privatePath, name))));
+  const resumed = await f.setup.createProject(f.origin, 'owner@example.test');
+  assert.equal(resumed.resumed, true); assert.equal(resumed.page_url, f.handle.page_url);
+  assert.deepEqual(f.calls, [], 'resumption neither preflights nor allocates a page');
+  for (const [index, name] of ['handle.json', 'device.sqlite'].entries()) assert.deepEqual(await readFile(join(privatePath, name)), before[index]);
 });
 
 test('downloadable SQL setup diagnoses a missing engine after readiness but before page creation', async t => {

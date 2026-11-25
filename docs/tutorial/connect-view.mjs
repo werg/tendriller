@@ -1,9 +1,9 @@
 // A state-aware connection card for createOwnerConnection. One message, at most one
 // primary action, progress while setup runs, and technical details folded away.
-// While not connected, the app shows this card instead of empty or stale data.
+// The card never hides retained domain data or independent editable drafts.
 const STYLE = `.tc-card{display:flex;gap:.9rem;align-items:flex-start;background:#fff;color:#111a16;border:1px solid #dde5e0;border-radius:12px;padding:1rem 1.15rem;margin:1rem 0;box-shadow:0 1px 2px rgba(15,26,21,.05)}
 .tc-spinner{flex:none;width:1.15rem;height:1.15rem;margin-top:.15rem;border-radius:50%;border:2.5px solid #dde5e0;border-top-color:#146c4a;animation:tc-spin .9s linear infinite}
-.tc-card[data-phase=failed] .tc-spinner,.tc-card[data-phase=approve] .tc-spinner,.tc-card[data-phase=preview] .tc-spinner{display:none}
+.tc-card[data-phase=failed] .tc-spinner,.tc-card[data-phase=key-required] .tc-spinner,.tc-card[data-phase=preview] .tc-spinner{display:none}
 .tc-title{font-weight:650;font-size:.95rem;margin:0 0 .18rem}.tc-detail{margin:0;font-size:.88rem;color:#53665d}
 .tc-action{margin-top:.75rem;padding:.45rem .9rem;border:0;border-radius:8px;background:#146c4a;color:#fff;font:inherit;font-size:.88rem;font-weight:620;cursor:pointer}
 .tc-action:hover{background:#0f583c}

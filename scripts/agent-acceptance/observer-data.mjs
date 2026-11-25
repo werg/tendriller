@@ -47,20 +47,30 @@ export function recordFile(base, ref) {
 export function loadObserverConfig(path, request) {
   let config;
   try { config = recordFile('/', { file: path }).value; } catch (error) { throw error; }
-  same(config.protocol, 'tendriller-starter-observer-v1', 'observer-config-version');
+  same(config.protocol, 'tendriller-starter-observer-v2', 'observer-config-version');
   same(config.origin, request.origin, 'observer-origin');
-  const project = realpathSync(need(config.native?.project, 'native-project'));
+  const project = realpathSync(need(config.project, 'observer-project'));
   if (inside(project, realpathSync(path))) throw new MeasurementError('observer-config-inside-model-project', 'failed');
   // The project can be a selected nested directory within the fresh agent's workspace.
   if (!inside(realpathSync(request.project), project)) throw new MeasurementError('native-project-outside-this-run', 'failed');
-  const applicationId = need(config.applicationId, 'application-id'), historyId = need(config.historyId, 'history-id');
+  const applicationId = need(config.applicationId, 'application-id');
   if (!/^[a-f0-9]{64}$/.test(applicationId)) throw new MeasurementError('application-id-format', 'failed');
-  const deviceId = typeof config.native.deviceId === 'string' ? config.native.deviceId : recordFile(project, config.native.deviceId).value;
-  if (!/^[a-f0-9]{64}$/.test(need(deviceId, 'native-device-id'))) throw new MeasurementError('native-device-id-format', 'failed');
-  const descriptor = recordFile(project, need(config.native.descriptor, 'pinned-descriptor')).value;
-  same(descriptor.payload?.applicationId, applicationId, 'descriptor-application');
-  same(descriptor.payload?.historyId, historyId, 'descriptor-history');
-  const handle = recordFile(project, need(config.native.handle, 'host-handle')).value;
+  let deviceId, modulePath;
+  const descriptorRef = config.descriptor;
+  const descriptor = descriptorRef ? recordFile(project, descriptorRef).value : undefined;
+  if (descriptor?.record !== undefined) {
+    if (Object.keys(descriptor).length !== 1 || typeof descriptor.record !== 'string' || !/^(?:[a-f0-9]{2})+$/.test(descriptor.record))
+      throw new MeasurementError('pinned-descriptor-record', 'failed');
+    // Canonical bytes are decoded and signature/application pinned by the public
+    // authority verifier, not an ad-hoc JSON/bigint compatibility reader here.
+  } else if (descriptor) same(descriptor.payload?.applicationId, applicationId, 'descriptor-application');
+  if (config.native) {
+    deviceId = typeof config.native.deviceId === 'string' ? config.native.deviceId : recordFile(project, config.native.deviceId).value;
+    if (!/^[a-f0-9]{64}$/.test(need(deviceId, 'native-device-id'))) throw new MeasurementError('native-device-id-format', 'failed');
+    modulePath = realpathSync(resolve(project, config.native.module ?? 'session.mjs'));
+    if (!inside(project, modulePath)) throw new MeasurementError('native-module-outside-project', 'failed');
+  }
+  const handle = recordFile(project, need(config.handle, 'host-handle')).value;
   same(handle.application?.id, applicationId, 'handle-application');
   same(handle.api, request.origin + '/api/t/' + handle.id, 'handle-origin-and-page');
   if (!/^[a-z2-7]{12}$/.test(handle.id ?? '')) throw new MeasurementError('handle-page-id', 'failed');
@@ -69,9 +79,7 @@ export function loadObserverConfig(path, request) {
   if (page.protocol !== 'https:' || page.username || page.password || page.search || page.hash ||
       !page.hostname.startsWith(handle.id + '.') && !page.hostname.startsWith(handle.id + '--p-') ||
       !/^\/s\/[a-z2-7]{26}\/$/.test(page.pathname)) throw new MeasurementError('handle-page-url', 'failed');
-  const modulePath = realpathSync(resolve(project, config.native.module ?? 'session.mjs'));
-  if (!inside(project, modulePath)) throw new MeasurementError('native-module-outside-project', 'failed');
-  return { ...config, native: { ...config.native, project, modulePath, deviceId }, descriptor, handle };
+  return { ...config, project, native: config.native ? { ...config.native, project, modulePath, deviceId } : undefined, descriptor, handle };
 }
 
 /** Linux birth token prevents accepting an unrelated process after PID reuse. No signals are sent. */

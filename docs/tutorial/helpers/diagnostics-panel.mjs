@@ -37,10 +37,10 @@ export function mountDiagnosticsPanel(container, { appName = 'Tendriller app' } 
       storageBackend: 'unknown',
       storagePersisted: 'unknown',
     },
-    leaderStatus: 'unknown',
+    localOwnerStatus: 'unknown',
     transportReachability: { https: 'unknown', relayWebSocket: 'unknown', directWebRtc: 'unknown' },
-    coordinatorStatus: { role: 'unknown', phase: 'unknown', generation: null, connectedPeers: 0 },
-    lastAppliedOperationId: null,
+    sessionStatus: { phase: 'unknown', canAuthor: false, connectedPeers: 0 },
+    lastStoredOperationId: null,
     availabilityNotice: 'A closed or suspended browser tab cannot accept remote commands until reopened or handed off.',
   };
 
@@ -74,10 +74,10 @@ export function mountDiagnosticsPanel(container, { appName = 'Tendriller app' } 
 
   return Object.freeze({
     update(patch = {}) {
-      if (patch.leaderStatus !== undefined) state.leaderStatus = patch.leaderStatus;
+      if (patch.localOwnerStatus !== undefined) state.localOwnerStatus = patch.localOwnerStatus;
       if (patch.storageBackend !== undefined) state.capabilities.storageBackend = patch.storageBackend;
-      if (patch.lastAppliedOperationId !== undefined) state.lastAppliedOperationId = patch.lastAppliedOperationId;
-      if (patch.coordinatorStatus) Object.assign(state.coordinatorStatus, patch.coordinatorStatus);
+      if (patch.lastStoredOperationId !== undefined) state.lastStoredOperationId = patch.lastStoredOperationId;
+      if (patch.sessionStatus) Object.assign(state.sessionStatus, patch.sessionStatus);
       if (patch.transportReachability) Object.assign(state.transportReachability, patch.transportReachability);
       render();
     },

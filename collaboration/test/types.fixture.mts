@@ -7,7 +7,7 @@ import { serveBrowserOwner } from '../../session/worker.mjs';
 declare const native: ApplicationSession;
 declare const attached: WorkerApplicationSession;
 const nativeAttachment=await attachNativeSession({directory:'private-owner',token:'credential',connect:connectApplicationOwner,
-  applicationId:'application',definitionId:'definition',definitionVersion:'1'});
+  applicationId:'application'});
 const canonicalOperation:string=nativeAttachment.session.scopeOperationId('local-operation');void canonicalOperation;
 // @ts-expect-error the supervisor binding namespace cannot be replaced
 nativeAttachment.session.scopeOperationId=()=> 'forged';
@@ -29,22 +29,34 @@ if(acceptedResult){const disposition:'accepted'=acceptedResult.disposition;void 
   // @ts-expect-error current accepted summaries deliberately omit full content
   void acceptedResult.content;}
 await reader.thread({threadId:'thread',limit:16});await reader.close();
-await attachedClient.results({taskId:'task',disposition:'needsReview'});
+await attachedClient.results({taskId:'task',disposition:'superseded'});
 const ownReader=await nativeClient.capture();await ownReader.close();
 // @ts-expect-error thread pagination requires an exact thread identity
 await attachedClient.thread({limit:16});
 const reference=snapshot.value.tasks[0]?.operation;
-if(reference){const attempt:string=reference.attemptId;const history:string=reference.historyId;await nativeClient.inspectOperation(reference);void attempt;void history;}
-const store=createViewStore<{text:string}>({storage:localStorage,applicationId:'app',historyId:attached.historyId,profileId:'profile',viewId:'view'});
-// @ts-expect-error a partial reference cannot select a verified history
-await nativeClient.inspectOperation({applicationId:'app',author:'signer',operationId:'operation'});
+if(reference){const proposal:string=reference.proposalId;const author:string=reference.author;await nativeClient.inspectOperation(reference);void proposal;void author;}
+const store=createViewStore<{text:string}>({storage:localStorage,applicationId:'app',profileId:'profile',viewId:'view'});
+// @ts-expect-error actor provenance cannot be omitted
+await nativeClient.inspectOperation({applicationId:'app',operationId:'operation'});
 store.writeDraft({text:'hello'});const text:string|undefined=store.readDraft()?.text;void text;
 const people:ParticipantEntry[]=[{deviceId:'key',authorized:true,kind:'person'}];
 mountParticipantPanel({container:document.body,participants:people,onSelect:participant=>{const available:boolean=participant.canRequest;void available;}});
 const journal=await createSqliteEffectJournal({path:'effects.db',applicationId:'app',providerId:'provider'});
-const effects=createEffectDispatcher({journal,authorize:async()=>{},dispatch:async({idempotencyKey})=>({id:idempotencyKey})});
-await effects.execute({effectId:'effect',fence:{},input:{}});
+const effects=createEffectDispatcher({journal,session:native,authorize:async()=>{},dispatch:async({idempotencyKey})=>({id:idempotencyKey})});
+await effects.execute({effectId:'effect',fence:{claimProposalId:'a'.repeat(64)},input:{}});
 // @ts-expect-error request policy is a closed domain contract
 await attachedClient.request({kind:'review',title:'Review',input:null,target:{kind:'signer',deviceId:'key'},slots:[],responsePolicy:'all-connected-tabs'});
 // @ts-expect-error claims do not accept an arbitrary operation reference as an epoch
 await attachedClient.claim({taskId:'task',slotId:'slot',expectedEpoch:'latest'});
+
+const locallyStored:boolean=generated.stored;
+const current=await generated.inspect();const signedProposal:string=current.proposalId;
+const materialized=await generated.materialized();const digest:string=materialized.revision.digest;
+const coverage=await generated.retained();const finalized=await generated.finalized();
+// @ts-expect-error there is no ambiguous applied alias
+await generated.applied();
+// @ts-expect-error there is no ambiguous shared alias
+await generated.shared();
+// @ts-expect-error revisions do not contain a global ordering head
+materialized.revision.generation;
+void locallyStored;void signedProposal;void digest;void coverage;void finalized;

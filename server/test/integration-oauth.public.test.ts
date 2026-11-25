@@ -7,17 +7,33 @@ import { CORE_RELEASE } from '../../contract/index.mjs';
 import { oauthConfig, signAccessToken } from '../src/accounts/oauth-support';
 import { challengeFor } from '../src/accounts/oauth-support';
 import { sha256Hex } from '../src/ids';
-import { bytesDigest, bytesToHex, createApplicationTools, createScopedApplicationTools, forwardSessionEvents, describeApplication, eventExecutionManifest, executionManifestArtifacts, MemoryBytesStore,
-  openApplicationDevice, openPeerApplication, participantGrant, signTransitionRequest } from '@chronolog/peer-session';
+import { bytesToHex, createScopedApplicationTools, describeApplication, eventExecutionManifest, executionManifestArtifacts, openApplicationDevice, createApplicationSession } from '@chronolog/peer-session';
+import { createSigningIdentity, signAppDescriptor, signMembership, epochKeyCommitment, encodeRecord, recordDigest } from '@chronolog/authority';
+import { authorityRecord } from '../../contract/authority.mjs';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { resolveConnection } from '../src/assistant-shared';
 import { createPeersClient } from '../../contract/peers.mjs';
 import { defineApplication, defineCommand, defineQuery, emit, program, type ApplicationReadView } from '@chronolog/peer-session';
 import { connectApplicationAssistant, createAssistantKey, createApplicationAgentKey, createAssistantEventDelivery, proposeApplicationAssistant, type AssistantParticipant } from '../../contract/assistant.mjs';
 import { peerApiJson } from './peer-exchange';
-import { createPeerIdentity } from '@chronolog/peer-session';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 import { advance, create, inDO, runAlarm, stub, apiJson } from './helpers';
+
+class MemoryBytesStore {
+  private readonly bytes = new Map<string, Uint8Array>();
+  async get(key: string) { return this.bytes.get(key)?.slice() ?? null; }
+  async put(key: string, value: Uint8Array) { this.bytes.set(key, value.slice()); }
+}
+async function configureAssistantFixture(handle: {id: string;application: {id: string}}, tools: unknown, writers: readonly string[], manifest: string, epochKey: Uint8Array) {
+  const signer=await createSigningIdentity();
+  const descriptor=await signAppDescriptor({applicationId:handle.application.id,rootPrincipal:writers[0],authorityPublicKey:signer.publicKey,executionManifestDigest:manifest,finalityPolicy:{kind:'none'}},signer);
+  const membership=await signMembership({applicationId:handle.application.id,revision:0,previous:null,authorTimeAfterMs:-1n,epoch:0,
+    epochKeyDigest:await epochKeyCommitment(handle.application.id,0,epochKey),members:writers.map(publicKey=>({publicKey,reader:true,writer:true,administrator:true,publisher:false,finalizer:false}))},signer);
+  const bundle={descriptor,memberships:[membership]};
+  const configuration={tools,executionManifestDigest:manifest,executionProfile:'event-v1',publisherKeys:[signer.publicKey]},configurationDigest=await recordDigest(configuration);
+  await inDO(handle.id,t=>{t.db.set('application_configuration',configuration);t.db.set('application_configuration_digest',configurationDigest);t.db.set('application_authority',authorityRecord(encodeRecord(bundle)));});
+  return bundle;
+}
 
 const ISSUER = 'https://tendriller.dev', RESOURCE = ISSUER + '/mcp';
 const REDIRECT = 'https://chatgpt.com/connector_platform_oauth_redirect';
@@ -158,16 +174,9 @@ it('prepares assistant permissions before claim and activates their review only 
   const restore = await inDO(h.id, t => ({ OAUTH_CONFIG_JSON: t.env.OAUTH_CONFIG_JSON, OAUTH_SIGNING_JWK: t.env.OAUTH_SIGNING_JWK }));
   await inDO(h.id, t => { t.env.OAUTH_CONFIG_JSON = settings.OAUTH_CONFIG_JSON; t.env.OAUTH_SIGNING_JWK = settings.OAUTH_SIGNING_JWK; });
   try {
-    const device = await createPeerIdentity();
-    const configuration = { historyId: 'prepared-assistant', executionManifestDigest: '12'.repeat(32),
-      schemaAdministrator: device.publicKey, epoch: 0, keyDigest: '34'.repeat(32), members: [{ grant: participantGrant(device.publicKey, { administrator: true }) }],
-      schema: null, definition: { id: 'prepared-notes', version: '1', schema: null,
-        commands: [{ name: 'addNote', description: 'Add a note', input: { type: 'null' } }],
-        queries: [{ name: 'notes', description: 'Read notes', input: { type: 'null' } }] } };
-    const authority = await peerApiJson(h, 'control/configure', configuration);
-    await peerApiJson(h, 'control/select', { request: await signTransitionRequest({ applicationId: h.application.id,
-      profile: authority.descriptor.payload.profile, policy: authority.descriptor.payload.policy, transitionId: 'prepared-genesis',
-      requester: device.publicKey, coordinator: device.publicKey, expectedGeneration: null, controlRevision: 0, reason: 'create', base: null }, device) });
+    const device = await createSigningIdentity();
+    const tools={id:'prepared-notes',version:'1',commands:[{name:'addNote',description:'Add a note',input:{type:'null'}}],queries:[{name:'notes',description:'Read notes',input:{type:'null'}}]};
+    await configureAssistantFixture(h,tools,[device.publicKey],'12'.repeat(32),crypto.getRandomValues(new Uint8Array(32)));
     const key = createAssistantKey(), adapterHash = await sha256Hex(key);
     const input = { label: 'Prepared notes', adapterHashes: [adapterHash], queries: ['notes'], commands: ['addNote'], events: [] };
     const prepare = (body = input, token = h.token) => request(new URL(h.api).pathname + '/assistant/propose', settings, {
@@ -221,14 +230,13 @@ it('prepares assistant permissions before claim and activates their review only 
     const differentCredential = await (await prepare(input, delegated.token)).json() as { proposed: string; approved: boolean };
     expect(differentCredential.proposed).not.toBe(prepared.proposed); expect(differentCredential.approved).toBe(false);
     await prepare();
-    // Published operation schemas are immutable; changed schemas cannot reuse this approval.
-    const changedSchema = await request(new URL(h.api).pathname + '/peers/participant', settings, {
-      method: 'POST', headers: { Authorization: 'Bearer ' + h.token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ protocol: 'chronolog-participant-v1', applicationId: h.application.id, requestId: crypto.randomUUID(),
-        facet: 'control', action: 'configure', payload: { ...configuration, definition: { ...configuration.definition,
-          queries: [{ name: 'notes', description: 'Read notes', input: { type: 'string' } }] } } }),
+    // Owner approval is tied to the exact declared tool input contracts, not SQL schema.
+    const configuration=await inDO(h.id,t=>t.db.get<Record<string,unknown>>('application_configuration',{}));
+    const changedContract=await request(new URL(h.api).pathname+'/application',settings,{
+      method:'POST',headers:{Authorization:'Bearer '+h.token,'Content-Type':'application/json'},
+      body:JSON.stringify({...configuration,tools:{...tools,queries:[{name:'notes',description:'Read notes',input:{type:'string'}}]}}),
     });
-    expect(changedSchema.status).toBe(409); await changedSchema.text();
+    expect(changedContract.status).toBe(409);await changedContract.text();
     await inDO(h.id, t => t.db.set('owner_account', other.subject));
     try { const denied = await prepare(); expect(denied.status).toBe(403); await denied.text(); }
     finally { await inDO(h.id, t => t.db.set('owner_account', f.subject)); }
@@ -527,17 +535,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     const device = await openApplicationDevice({ store: new MemoryBytesStore(), create: true });
     const backupDevice = f === a ? await openApplicationDevice({ store: new MemoryBytesStore(), create: true }) : null;
     const epoch = crypto.getRandomValues(new Uint8Array(32)), manifest = await executionManifestArtifacts(await eventExecutionManifest());
-    const base = await peers.configureApplication({ historyId: 'generic-mcp-test', definition: describeApplication(definition),
-      schema: null, executionManifestDigest: bytesToHex(manifest.executionManifestDigest), schemaAdministrator: device.identity.publicKey,
-      epoch: 0, keyDigest: await bytesDigest(epoch), members: [{ grant: participantGrant(device.identity.publicKey, { administrator: true }) },
-        ...(backupDevice ? [{ grant: participantGrant(backupDevice.identity.publicKey) }] : [])],
-    });
-    const descriptor = base.descriptor.payload;
-    await peers.selectGeneration(await signTransitionRequest({ applicationId: descriptor.applicationId, profile: descriptor.profile,
-      policy: descriptor.policy, transitionId: 'initial', expectedGeneration: null, requester: device.identity.publicKey,
-      coordinator: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null,
-    }, device.identity));
-    const session = await openPeerApplication({ device, definition, authority: await peers.application(), epochKeys: new Map([[0, epoch]]) });
+    const bundle = await configureAssistantFixture(f.page,describeApplication(definition),[device.identity.publicKey,...(backupDevice?[backupDevice.identity.publicKey]:[])],bytesToHex(manifest.executionManifestDigest),epoch);
+    const session = await createApplicationSession({ device, definition, authority: bundle, epochKeys: new Map([[0, epoch]]) });
     sessions.push(session);
     const key = createAssistantKey(), backupKey = createAssistantKey(), reviewPath = '/connections/' + f.page.id;
     const extraQuery = f === a ? ['privateNotes'] : [];
@@ -552,7 +551,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     const upgrade = (protocols: string[]) => request(pagePath + '/assistant/adapter', bind, { headers: {
       Upgrade: 'websocket', 'Sec-WebSocket-Protocol': protocols.join(', '),
     } });
-    await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + session.deviceId]), 401);
+    await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + session.identity.publicKey]), 401);
     const review = async (queries: string[], origin = ISSUER) => {
       const page = await request(reviewPath, bind, { headers: { Cookie: f.cookie } });
       expect(page.status).toBe(200);
@@ -593,25 +592,25 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await vi.waitFor(() => expect(adapter.online).toBe(true));
     const startBackup = async () => {
       if (!backupDevice) throw Error('No backup configured');
-      const backup = await openPeerApplication({ device: backupDevice, definition, authority: await peers.application(), epochKeys: new Map([[0, epoch]]) });
+      const backup = await createApplicationSession({ device: backupDevice, definition, authority: bundle, epochKeys: new Map([[0, epoch]]) });
       sessions.push(backup);
-      await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + backup.deviceId]), 409);
+      await checkStatus(upgrade(['tendriller.application-mcp.v1', key, 'td_device_' + backup.identity.publicKey]), 409);
       const channel = 'backup:' + crypto.randomUUID();
-      const firstRelay = peers.relay(channel, session.deviceId, { remotePeerId: backup.deviceId });
-      const secondRelay = peers.relay(channel, backup.deviceId, { remotePeerId: session.deviceId });
+      const firstRelay = peers.relay(channel, session.identity.publicKey, { remotePeerId: backup.identity.publicKey });
+      const secondRelay = peers.relay(channel, backup.identity.publicKey, { remotePeerId: session.identity.publicKey });
       const [left, right] = await Promise.all([firstRelay, secondRelay].map(relay =>
         openWebSocketConnection(relay as Parameters<typeof openWebSocketConnection>[0], { ready: relay.ready })));
       const [primary, replica] = await Promise.all([
-        session.connectPeer({ connection: left, peerIdentity: backup.deviceId }),
-        backup.connectPeer({ connection: right, peerIdentity: session.deviceId }),
+        session.connectPeer({ connection: left, peerIdentity: backup.identity.publicKey }),
+        backup.connectPeer({ connection: right, peerIdentity: session.identity.publicKey }),
       ]);
       await Promise.all([primary.synchronize(), replica.synchronize()]);
-      // Protocol synchronization and MCP socket upgrade do not activate a cold
-      // replica's data layer. Prove a coherent applied read before treating it
-      // as a ready fallback; keep lazy activation outside the RPC call budget.
-      expect(backup.status.database).toBe('idle');
-      const primaryRead = await createApplicationTools(session).call('query', { name: query, input: null });
-      const backupRead = await createApplicationTools(backup).call('query', { name: query, input: null });
+      // The session opens its owned storage when created and materializes
+      // synchronized operations eagerly. Prove the database is ready and that a
+      // coherent applied read matches the primary before treating it as a fallback.
+      await vi.waitFor(() => expect(backup.status.database).toBe('ready'));
+      const primaryRead = await session.query(query,null);
+      const backupRead = await backup.query(query,null);
       expect(backupRead).toEqual(primaryRead);
       const standby = start(backupKey, backup);
       await vi.waitFor(() => expect(standby.online).toBe(true));
@@ -705,13 +704,15 @@ it('serves unrelated native applications through one MCP endpoint and retains in
 
     const capture = new AbortController();
     const bareAlarm = await inDO(b.page.id, async t => t.ctx.storage.getAlarm());
-    const consumer = forwardSessionEvents({
-      session: second.session, topics: ['reading'], signal: capture.signal,
-      deliver: createAssistantEventDelivery({ assistant: second.adapter }),
-      checkpoint: { load: () => undefined, save: () => capture.abort() },
-      project: event => ({ name: second.eventName, payload: event.payload }),
-    });
-    await consumer.catch(error => { if (!capture.signal.aborted) throw error; });
+    const forwardedBatch = await second.session.readEvents({topics:['reading']});
+    const deliver = createAssistantEventDelivery({assistant:second.adapter});
+    for(const event of forwardedBatch.events) {
+      const operation=await second.session.operations.get(event.proposalId),state=operation!.inspect();
+      await deliver({name:second.eventName,payload:event.payload,observation:{stored:state.stored,
+        materialized:state.materialized?{outcome:state.materialized.outcome,revision:state.materialized.revision}:null,
+        retained:state.retained,finalized:state.finalized,excluded:state.excluded}},event,forwardedBatch,capture.signal);
+    }
+    capture.abort();
     expect((await second.tool('read_application_events', { applicationId: second.id })).result.structuredContent.events)
       .toMatchObject([{ data: { payload: { value: 7 } } }]);
     await inDO(b.page.id, async t => {
@@ -729,7 +730,7 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     const view = await first.session.readView(), batch = view.readEvents({ topics: ['note'] });
     await view.release();
     expect(batch.events).toHaveLength(1);
-    const emitted = { name: 'note.added', sourceEventId: batch.events[0].id, generation: batch.revision.generation, payload: { ready: true } };
+    const emitted = { name: 'note.added', sourceEventId: batch.events[0].id, proposalId:batch.events[0].proposalId,revision:batch.revision,observation:{stored:true,materialized:{outcome:'accepted' as const,revision:batch.revision},retained:[],finalized:false,excluded:false}, payload: { ready: true } };
     // Establish the outage before enqueueing work. The real alarm may fire
     // immediately after publication; racing it here would test fixture timing.
     await inDO(a.page.id, t => { t.env.OAUTH_CONFIG_JSON = undefined; });
@@ -793,8 +794,8 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     await inDO(a.page.id, t => {
       t.transaction(() => {
         for (let i = 0; i < 258; i++)
-          t.db.run('INSERT INTO assistant_events(source_id,generation,name,payload,created_at) VALUES(?,?,?,?,?)',
-            'retention-fixture-' + i, later.generation, later.name, '{}', t.now());
+          t.db.run('INSERT INTO assistant_events(source_id,proposal_id,revision,facts,name,payload,created_at) VALUES(?,?,?,?,?,?,?)',
+            'retention-fixture-' + i, later.proposalId, JSON.stringify(later.revision), JSON.stringify({observation:later.observation,change:'upsert'}), later.name, '{}', t.now());
       });
     });
     await first.adapter.publish({ ...later, sourceEventId: 'new-inbox-tail' });
@@ -833,20 +834,20 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     // testing the separate already-offline-provider scenario.
     await vi.waitFor(async () => expect(await inDO(a.page.id, t =>
       t.ctx.getWebSockets('application-mcp').filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN).length)).toBe(1));
-    expect(backup.status).toMatchObject({ database: 'ready', phase: 'ready', connectedPeers: 1, generation: first.session.status.generation });
+    expect(backup.status).toMatchObject({ database: 'ready', phase: 'ready', connectedPeers: 1 });
     expect(first.session.signal.aborted).toBe(false);
     expect(standby.online).toBe(true);
     expect((await first.tool('query_application', { applicationId: first.id, query: 'notes', input: null })).result)
       .toMatchObject({ structuredContent: { value: [{ text: 'Rope checked' }] } });
     const unresolved = (await first.tool('call_application_command', write)).result.structuredContent;
-    expect(unresolved).toMatchObject({ code: 'operation_uncertain', outcome: 'uncertain', operationReference: { deviceId: first.session.deviceId } });
+    expect(unresolved).toMatchObject({ code: 'operation_uncertain', stored:false, operationReference: { deviceId: first.session.identity.publicKey } });
     expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.structuredContent.code)
       .toBe('provider_offline');
     const provider = (await first.tool('describe_application', { applicationId: first.id })).result.structuredContent.provider;
     await checkStatus(first.reviewAction('select-provider', { provider: await sha256Hex(first.backupKey), epoch: String(provider.selectionEpoch) }), 303);
     expect((await first.tool('call_application_command', { ...write, operationId: 'standby-write', input: { text: 'Backup checked' } })).result.isError)
       .toBeUndefined();
-    await vi.waitFor(async () => expect((await createApplicationTools(first.session).call('query', { name: 'notes', input: null }) as { value: unknown }).value)
+    await vi.waitFor(async () => expect((await first.session.query('notes',null) as { value: unknown }).value)
       .toMatchObject([{ text: 'Rope checked' }, { text: 'Backup checked' }]), { timeout: 5000 });
 
     // Model an internal request that was admitted by the gateway, then
@@ -885,24 +886,26 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     });
     const [reviewed, planned] = await Promise.all([agentWrite(reviewerKey, 2), agentWrite(plannerKey, 3)]);
     const reviewedRef = reviewed.result.structuredContent.operationReference, plannedRef = planned.result.structuredContent.operationReference;
-    expect(reviewedRef.deviceId).toBe(second.session.deviceId); expect(plannedRef.deviceId).toBe(second.session.deviceId);
+    expect(reviewedRef.deviceId).toBe(second.session.identity.publicKey); expect(plannedRef.deviceId).toBe(second.session.identity.publicKey);
     expect(reviewedRef.operationId).not.toBe(plannedRef.operationId);
     expect(reviewedRef.agentBindingId).toBe(reviewer.agentBindingId);
     expect((await agentWrite(reviewerKey, 2)).result.structuredContent.operationReference.operationId).toBe(reviewedRef.operationId);
     expect((await agentWrite(reviewerKey, 4)).result.structuredContent.code).toBe('operation_id_conflict');
     const inspection = (await second.tool('inspect_application_operation', { applicationId: second.id,
       bindingToken: reviewerKey, operationId: 'same-local-id' })).result.structuredContent;
-    expect(inspection.operationReference.attemptId).toMatch(/^[a-f0-9]{64}$/u);
+    expect(inspection.operationReference.proposalId).toMatch(/^[a-f0-9]{64}$/u);
     expect(inspection.operation.state.operationId).toBe(reviewedRef.operationId);
     expect((await second.tool('wait_application_operation', { applicationId: second.id, bindingToken: reviewerKey,
-      operationId: 'same-local-id' })).result.structuredContent.outcome).toBe('applied');
+      operationId: 'same-local-id' })).result.structuredContent.materialized.outcome).toBe('accepted');
+    expect((await second.tool('wait_application_operation', { applicationId: second.id, bindingToken: reviewerKey,
+      operationId: 'same-local-id', fact: 'finalized' })).result.structuredContent.code).toBe('finality_unsupported');
     expect((await second.tool('retry_application_operation', { applicationId: second.id, bindingToken: reviewerKey,
       operationId: 'same-local-id' })).result.structuredContent.operationReference.operationId).toBe(reviewedRef.operationId);
     const agentInbox = (await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey })).result.structuredContent;
     expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: plannerKey,
       after: agentInbox.next })).result.structuredContent).toMatchObject({ resetRequired: true, reason: 'binding_changed', events: [] });
     expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey,
-      after: { ...agentInbox.next, generation: 'f'.repeat(64) } })).result.structuredContent.reason).toBe('generation_changed');
+      after: { ...agentInbox.next, exportVersion: 'f'.repeat(64) } })).result.structuredContent.reason).toBe('export_changed');
     expect((await second.tool('read_application_events', { applicationId: second.id, bindingToken: reviewerKey,
       after: agentInbox.next, events: [] })).result.structuredContent.reason).toBe('filter_changed');
     const rotated = createApplicationAgentKey(reviewer.agentBindingId);
@@ -918,18 +921,18 @@ it('serves unrelated native applications through one MCP endpoint and retains in
     second.loseNextResult();
     const uncertain = (await second.tool('call_application_command', { applicationId: second.id, bindingToken: plannerKey,
       command: 'count', input: 5, operationId: 'reply-lost-after-save', context: { runId: 'original-run' } })).result.structuredContent;
-    expect(uncertain).toMatchObject({ code: 'operation_uncertain', outcome: 'uncertain', operationReference: { deviceId: second.session.deviceId } });
-    expect(['saved', 'applied']).toContain(second.lostResult()!.status);
-    expect(second.lostResult()!.attemptId).toMatch(/^[a-f0-9]{64}$/u);
+    expect(uncertain).toMatchObject({ code: 'operation_uncertain', stored:false, operationReference: { deviceId: second.session.identity.publicKey } });
+    expect(second.lostResult()!.state.stored).toBe(true);
+    expect(second.lostResult()!.state.proposalId).toMatch(/^[a-f0-9]{64}$/u);
     await vi.waitFor(() => expect(second.adapter.online).toBe(true), { timeout: 5000 });
     const restored = (await second.tool('inspect_application_operation', { applicationId: second.id,
       bindingToken: plannerKey, operationId: 'reply-lost-after-save' })).result.structuredContent;
-    expect(restored.operationReference).toMatchObject({ operationId: uncertain.operationReference.operationId,
-      attemptId: second.lostResult()!.attemptId, deviceId: second.session.deviceId, historyId: 'generic-mcp-test',
+    expect(restored.operationReference).toMatchObject({ requestOperationId: uncertain.operationReference.requestOperationId,
+      proposalId: second.lostResult()!.state.proposalId, deviceId: second.session.identity.publicKey,
       sourceContext: { runId: 'original-run', evidence: 'caller-asserted' } });
     const retried = (await second.tool('retry_application_operation', { applicationId: second.id,
       bindingToken: plannerKey, operationId: 'reply-lost-after-save' })).result.structuredContent;
-    expect(retried.operationReference.attemptId).toBe(restored.operationReference.attemptId);
+    expect(retried.operationReference.proposalId).toBe(restored.operationReference.proposalId);
     expect(retried.operationReference.sourceContext.runId).toBe('original-run');
     expect((await second.tool('query_application', { applicationId: second.id, bindingToken: plannerKey, query: 'readings', input: null }))
       .result.structuredContent.value.filter((value: { value: number }) => value.value === 5)).toHaveLength(1);

@@ -1,122 +1,44 @@
 ---
 name: connect-tendriller
-description: Build or connect a Tendriller application with UI and sensor input, link the user's account, and verify real application reads and writes from ChatGPT.
+description: Build or connect a browser-first Tendriller application, retain the user's account/device authority, and verify durable local writes, peer convergence and approved optional tools.
 ---
 
 # Build or connect a Tendriller application
 
-Start with `tendril_guide` (`topic: "start"`). It returns the maintained setup
-instructions directly, without requiring web browsing. Follow its `serviceOrigin`
-for every request and link, including staging. A custom MCP connection may not
-include this skill; the tool and server instructions provide the same entry path.
-If the installed catalog lacks `tendril_guide`, call `get_profile` or
-`list_tendrils` and read the returned `setup.startHere`, `setup.buildGuide` or
-`setup.discoveryUrl` directly. Refresh the tool catalog when available. Keep the
-returned origin; do not infer an environment from the plugin name or substitute
-another service.
+Start with `tendril_guide` (`topic: "start"`), then `topic: "build"`, `topic: "capabilities"`, and `topic: "delivery"`. Use `topic: "connect"` for an existing application, `topic: "sensors"` for capture consent, and `topic: "deployment"` only for an explicitly requested rollout. The tool returns maintained instructions and the selected `serviceOrigin`; keep every setup and discovery route on that exact origin, including staging. If absent, inspect `get_profile`/`list_tendrils` fields `setup.startHere`, `setup.buildGuide`, and `setup.discoveryUrl` and refresh the catalog; never infer production from a name or switch service origins. An empty application list does not mean creation is unavailable.
 
-For a **new page/application**, read `tendril_guide` with `topic: "build"` and
-`topic: "capabilities"`. Use the supplied native/browser starter, the supported
-HTTP page-creation API and the existing UI/sensor helper modules. Before
-downloading or installing packages, inspect this origin's `/api/readiness`
-(the returned `setup.readinessUrl`). Require the matching `serviceOrigin`,
-`mode: "open"` and `creation.available: true`. Stop on paused, read-only,
-unavailable or unsupported readiness and report `creation.nextAction`; do not
-repeat creation blindly or fall back to production. Follow the build guide and
-the discovery descriptor's `firstApp.release` to verify and install the immutable
-first-app kit and its exact local packages against the host identity.
+Before downloading/installing, read the exact service origin's `/api/service`, `/.well-known/tendriller.json` and `/api/readiness`. Require same-origin `mode:"open"` and `creation.available:true`. Otherwise stop and report its next action. Use the immutable `firstApp.release` kit, matching SDK/tools/**authority**/session archives, source/tree/hash composition and exact lockfile—not private kernel imports or mixed same-version builds.
 
-For linked-account creation, run `npm run setup:prepare -- SERVICE_ORIGIN NAME`
-in the retained starter project. Call `prepare_tendril_setup` with its printed
-public arguments using this connector's existing `tendrils:create` grant. The
-server resolves the owner; the local raw setup credential and OAuth credentials
-do not enter tool arguments. Save the public ready result and run `setup:finish`
-to reconstruct the same private handle. On a lost reply, inspect the original
-`operationId` with `inspect_tendril_setup`; never generate a replacement intent
-or fall back to anonymous creation. Follow the maintained build guide when the
-catalog or granted scope needs an update.
+## Create, prepare, publish, then initialize the browser
 
-Check that your
-execution environment supports Node 24, installing the exact packages, retained
-private storage and the required running participant. Provision early, initialize and publish the first signed version, prepare any
-assistant-access proposal, and start the participant before giving the owner the
-ready page and permission-review URLs. Never wait for claim or ask for a
-"claimed" reply before publishing. Use `topic: "delivery"` for completion evidence. Complete claim, authority/first generation, device
-connection, signed publication and bidirectional verification. Then follow
-`topic: "connect"` to expose selected app operations through MCP. If the necessary
-runtime is unavailable, read `topic: "deployment"` for measured hosting and handoff choices, name that prerequisite and offer a concrete handoff to a
-coding-agent/runtime with the same origin and guide. MCP alone does not host a
-new app's executable participant.
+For linked-account creation, run `npm run setup:prepare -- SERVICE_ORIGIN NAME` in the retained starter. Call `prepare_tendril_setup` with its exact printed **public** arguments under this connector's existing grant. The host derives the verified owner; local setup secrets/OAuth credentials do not enter tool arguments. Save its exact public ready result and run `setup:finish`. After a lost reply, use `inspect_tendril_setup` with the original operation ID, never a new intent or another account route.
 
-A full-featured or rich request requires domain views: conversations, timelines,
-searchable list/detail, named related links and reviewed edits. A JSON editor or
-field-by-field record form is only a diagnostic fallback. Reuse the importable
-patterns in the build guide. After the first working version, run the dedicated
-second-pass prompt in `topic: "delivery"`: walk every main flow in real desktop
-and phone-sized browsers from fresh profiles, check Back/deep links, keyboard,
-long content and loading/empty/error states, fix friction and report before/after
-screenshots per flow. Transport and persistence checks do not establish usability.
+Prepare early and publish the full signed UI **before the first browser key is known**. The starter's publisher key/policy are independent of the data descriptor, root, epoch keys and schema. `npm run init && npm run deploy` does not require a native data participant. Give the person the ready page URL and any separately prepared tool-consent URL without waiting for a “claimed” reply. They complete their own sign-in.
 
-Keep the starter's P2P-first participation helpers for both native and browser
-owners. They share one direct-WebRTC/relay-fallback policy and include the native
-RTC capability and browser provider. Do not construct another transport selector,
-ship an always-failing RTC stub or defer P2P setup. Follow the selected service's
-peer-connection guide and verify real application traffic with no hosted relay
-payload when direct connectivity is available; explicitly qualify forced fallback.
+The first owner browser proves its key and initializes the signed data root/membership/epoch commitment; actual keys are durably local before the proof. Retained identity/authority/keys/data reopen before background host refresh/discovery. A fresh additional browser cannot magically read old data: exact key proof, explicit independent crypto rights and recipient-bound wrapped-key transfer remain required. Crypto membership does not overwrite SQL collective/object/row/column permissions. There is no native-prepared prefix, ordering pause, selected-generation transition or compatibility path.
 
-Use the starter's reviewed browser pairing flow. The browser retains its own
-key and request; the existing native owner durably pauses ordering and stages
-the exact signed proposal before owner review. The service-origin review binds
-the fingerprint, account, narrow rights, generation and retained prefix. The
-native participant receives later pairing requests through a hibernating setup
-subscription, without idle polling. Individual reviews expire after ten minutes;
-uncertain replies and process restart preserve the ordering pause. Reopen that same participant and reconcile the original
-outcome rather than signing a replacement. A committed grant still needs a real
-session connection and cross-device command/read evidence.
+## Authoring, reactivity and optional finality
 
-Run the starter's assistant participant for ordinary approved queries and
-commands. Event forwarding is an explicit `--events` choice with its own owner
-review; it does not configure a subscription, extend the process lifetime or
-establish future chat wake.
+Ordinary offline-first apps default to finality `none`. Canonical order is solely signed author timestamp, signing key bytes and stable proposal-ID bytes. Submission acknowledges exact durable local storage, not remote execution. Distinguish **stored**, **materialized locally (revisable)**, **retained by peers**, **finalized**, and **excluded**. Preserve original IDs/time/bytes after uncertainty; inspect/retry the retained original, never silently retimestamp.
 
-For sensor work, read `tendril_guide` with `topic: "sensors"`. Inspect task-relevant
-keys with `tendril.capabilities(filter)`; use standard browser APIs and existing
-session signals/content/commands. Register custom resources before acquisition
-with `tendril.sensors.register({ kind, stop })`, check its cancellation signal
-after awaits, and return asynchronous cleanup. Reuse the guide's runnable
-observation reference and contrib snippets for freshness, coalescing and review.
-An agent-requested observation renders a local prompt; only a trusted local
-gesture starts capture, and explicit review authorizes sharing or retention.
+Save depends on local signer/storage/key prerequisites, not peers, a successful current/global read, native tools or a finalizer. Finality is optional inclusion/author-time closure evidence, never a sorter. Configured policy is not demonstrated provider availability. A closed frontier can exclude genuine unseen offline work behind it; explain this tradeoff and retain excluded originals. No-finality final waits explicitly fail as unsupported. Provisional claims do not establish global exclusivity or authorize irreversible external effects.
 
-For an **existing application**, call `list_tendrils`, then
-`describe_application`. An empty list means no assistant-connected applications
-for this account; it is not evidence of a missing plugin. For a known app, check
-its account and have its existing participant propose assistant access using
-`topic: "connect"`. Give the owner the returned review URL. They choose the
-queries, commands and events to share; do not silently replace their app.
+SQL schema, DML and permissions are ordinary authorized atomic transactions. Engine/platform manifests do not freeze database schema or require code publication for ALTER/CREATE/DROP. Existing consumer/tool/column approvals never silently expand after schema changes.
 
-When account linking is requested, follow ChatGPT's sign-in prompt. The person
-uses their normal GitHub or Google identity and reviews **Connect ChatGPT**.
-Give one step at a time and keep credentials and authorization codes out of chat.
-Ordinary calls use the OAuth-client binding; separate approved agent proofs are
-for independently revocable agents, not a mandatory first step for every user.
+Build real domain views: stable-ID lists/details, inspectors, reviewed edits and mobile navigation, not a JSON editor. Render coherent materialized snapshots plus separate local drafts/view state. Notifications invalidate/rederive; never append arrivals into another UI database. Late earlier operations can revise outcomes, rows, counts and schema. Missing-table/query errors mark the last snapshot not current without erasing unsent input or blocking unrelated local authoring.
 
-Verify a relevant query. Execute a write when requested and verify its applied
-result with a fresh read. Retain original operation IDs and inputs for uncertain
-retries. If the app is offline, resume its enrolled participant from the existing
-device store. Use `read_application_events` to catch up and keep its cursor.
-Verify a supported subscription before promising future background delivery;
-a page or mounted card does not guarantee a future wake of this conversation.
+## Verify rather than assume
 
-After a republish or participant restart, read the returned service origin's
-`/docs/AGENT_RESTART.md`. Reconnect attach clients to the retained owner, preserve
-handled cursors and exact pending inputs. For apps with a request consumer, verify
-heartbeat and request/receipt/answer behavior only through its declared capabilities;
-report missing support instead of inventing commands. For other apps, verify a
-domain command/read and reload. Use `/docs/AGENT_REQUESTS.md` for durable listener
-presence and addressed answers; applied journal state does not establish that an
-agent has read the request.
+Use existing device-local owner/root locks and direct-first RTC/two-lane encrypted relay helpers. Do not introduce another selector, always-failing RTC stub or app backend. Qualify actual authenticated data traffic/direct versus forced fallback. Native participants and tool providers are optional independently authorized processes; if used, report actual lifetime/private-state resume details. Their absence must affect only their features.
 
-For sign-in and linking recovery, use the returned service origin's
-`/docs/CHATGPT_INTEGRATION.md`. Users can revoke account access at
-`/oauth/connections` or app capabilities at `/connections` on that same origin.
+Exercise browser-first setup with no native process; real local command/materialization; complete-graph offline acknowledgment, CRUD and reload; explicit second-profile key provisioning; convergence and separate retention; late earlier state/schema changes; and signed publication. Run the dedicated second pass from `delivery` at desktop and **320px**, fresh profiles, every main flow, Back/deep links, keyboard/focus, long content and loading/empty/stale/error states. Retain before/after screenshots. Transport/persistence checks alone are not UX completion.
+
+## Optional tools, account linking and sensors
+
+For an existing app, use `list_tendrils` then `describe_application`. Existing participants propose only declared operations; the owner reviews exact queries/commands/events. Preserve independent consuming-agent approval and tool-provider idempotency. Do not silently replace the app or expand rights. Query/write responses carry revisable operation/snapshot facts. Event consumers must understand resets/retractions and finalized versus provisional evidence.
+
+Follow the person's normal account-linking prompt; credentials/codes stay out of chat. Ordinary calls use the existing OAuth-client binding. Separate proof bindings are for independently revocable agents, not a mandatory new identity for every call. Missing native/provider runtime is a named prerequisite for those optional tools, not browser data use.
+
+For sensors read `topic:"sensors"`. Inspect only relevant capabilities; use standard browser APIs, existing content/signals/commands and tracked asynchronous cancellation. An agent observation request displays a prompt only. A trusted local gesture starts capture; explicit consent/review authorizes sharing/retention. Missing inference disables analysis, not ordinary edits.
+
+For restart, consult same-origin `/docs/AGENT_RESTART.md`; preserve retained profiles, snapshot-aware cursors and original pending inputs. A live page, optional MCP socket or inbox does not guarantee future conversation wake. Report the process actually running, exact tests and unverified boundaries. Users revoke account access at `/oauth/connections` or app tool scopes at `/connections` on the same service origin. Use `topic:"troubleshooting"` for the exact next action; no automatic storage wipe or unrequested deployment is authorized.

@@ -41,7 +41,7 @@ export function createPeerInferenceClient({ session, workerDeviceId, prompt,
             const next = await iterator.next();
             if (next.done) throw lifetime.reason ?? inferenceError('unavailable');
             const item = next.value, reply = item.payload;
-            if (item.authorId !== workerDeviceId || item.scope !== session.applicationId || !reply || reply.recipient !== session.deviceId
+            if (item.authorId !== workerDeviceId || item.scope !== session.applicationId || !reply || reply.recipient !== session.identity.publicKey
               || reply.requestId !== requestId || reply.candidateId !== captured.id || reply.sha256 !== captured.sha256
               || !reference || reply.contentId !== reference.id) continue;
             if (reply.kind === 'error') throw inferenceError(reply.code);

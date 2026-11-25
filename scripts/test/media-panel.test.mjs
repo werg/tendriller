@@ -43,7 +43,7 @@ function panel(t, { prepareCommit, commit, capabilities = async () => ({ capabil
     status: () => ({ active: [], pending: [] }), on: () => () => {}, stopAll() {},
   } };
   const controls = mountReviewedMedia({ container: { querySelector: $ }, runtime, session: {},
-    nativeDeviceId: 'a'.repeat(64), getContext: () => ({ revision: { sequence: 1 } }),
+    inferenceParticipantKey: 'a'.repeat(64), getContext: () => ({ revision: { sequence: 1 } }),
     prepareCommit, commit, onVoiceDraft() {},
   });
   t.after(() => {
@@ -75,7 +75,7 @@ test('a failed preparation leaves reviewed input editable; a later preparation f
     },
     async commit(value) {
       submitted.push(value);
-      return { status: 'applied', outcome: 'accepted', operationId: value.operationId };
+      return { stored: true, materialized: { outcome: 'accepted' }, operationId: value.operationId };
     },
   });
   await ui.choose(); ui.edit('First human review'); ui.click('#media-commit');
@@ -92,7 +92,8 @@ test('a failed preparation leaves reviewed input editable; a later preparation f
   // still preserve the reviewed values already sent to preparation.
   ui.edit('Late synthetic edit');
   second.resolve();
-  await until(() => ui.$('#media-result').textContent.includes('Applied: accepted'));
+  await until(() => ui.$('#media-result').textContent.includes('Stored locally. Current materialization: accepted (revisable).'));
+  assert.match(ui.$('#media-result').textContent, /Peer retention and finality are separate\./);
   assert.equal(submitted.length, 1);
   assert.equal(submitted[0].reviewed.text, 'Revised human review');
   assert.equal(submitted[0].candidate.id, prepared[1].candidate.id);
@@ -120,29 +121,13 @@ test('discarding while content preparation is pending prevents a late command', 
   assert.equal(ui.$('#media-commit').disabled, false);
 });
 
-test('an uncertain review stays locked until its original operation or explicit reapplication lineage is applied', async t => {
-  const submitted = [];
-  const ui = panel(t, {
-    async prepareCommit() {},
-    async commit(value) { submitted.push(value); throw Error('The response wait ended.'); },
-  });
-  await ui.choose(); ui.edit('Uncertain observation'); ui.click('#media-commit');
-  await until(() => submitted.length === 1 && ui.$('#media-result').textContent.includes('response wait ended'));
-  assert.equal(ui.$('#media-review').readOnly, true);
+test('an uncertain review accepts only its original durable acknowledgment, not unrelated work', async t => {
+  const submitted = [], ui = panel(t, { prepareCommit: async () => {}, commit: async value => { submitted.push(value); throw Error('uncertain reply'); } });
+  await ui.choose(); ui.edit('reviewed'); ui.click('#media-commit'); await until(() => submitted.length === 1);
   assert.equal(ui.$('#media-new').disabled, true);
-  const applied = { status: 'applied', outcome: 'accepted', operationId: 'explicit-reapplication' };
-  ui.controls.resolved(applied);
-  assert.equal(ui.$('#media-new').disabled, true, 'An unrelated applied operation cannot resolve this review.');
-  ui.controls.resolved({ ...applied, status: 'saved' }, submitted[0].operationId);
-  assert.equal(ui.$('#media-new').disabled, true, 'Saved does not establish applied execution.');
-  ui.controls.resolved(applied, submitted[0].operationId);
-  assert.equal(ui.$('#media-new').disabled, false);
-  ui.click('#media-new');
-  assert.equal(ui.$('#media-preview').hidden, true);
-  assert.equal(ui.$('#media-review').readOnly, false);
-  assert.equal(submitted.length, 1, 'Resolving the UI never retries or reapplies a command itself.');
+  ui.controls.resolved({ stored: true, operationId: 'unrelated' }); assert.equal(ui.$('#media-new').disabled, true);
+  ui.controls.resolved({ stored: true, operationId: submitted[0].operationId, materialized: null }); assert.equal(ui.$('#media-new').disabled, false, 'Local durability permits another review without waiting for peers or materialization');
 });
-
 
 test('capability gating inspects only camera and microphone and preserves file and typed fallbacks', async t => {
   const filters = [];

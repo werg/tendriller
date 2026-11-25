@@ -72,12 +72,12 @@ export function serveObservations({
         if (envelope.scope !== session.applicationId
           || !allowed.has(envelope.authorId)
           || !key
-          || envelope.stream.target !== session.deviceId
+          || envelope.stream.target !== session.identity.publicKey
           || !connected(session, envelope.authorId)) continue;
 
         const input = envelope.payload;
         if (envelope.topic === TOPICS.stop) {
-          if (validStop(input) && input.recipient === session.deviceId && envelope.stream.streamId === input.streamId) {
+          if (validStop(input) && input.recipient === session.identity.publicKey && envelope.stream.streamId === input.streamId) {
             if (!streams.has(key) && streams.size >= 128) streams.delete(streams.keys().next().value);
             streams.set(key, { sequence: Infinity }); // Also fences Stop before the first sample.
             const current = states.get(envelope.authorId);
@@ -88,7 +88,7 @@ export function serveObservations({
           continue;
         }
 
-        if (!validSample(input) || input.recipient !== session.deviceId || envelope.stream.streamId !== input.streamId) continue;
+        if (!validSample(input) || input.recipient !== session.identity.publicKey || envelope.stream.streamId !== input.streamId) continue;
 
         const previous = streams.get(key);
         if (previous && (input.sequence <= previous.sequence

@@ -6,16 +6,17 @@ import { MCP_APPLICATION_EVENT, REQUEST_LIMIT, assistantOAuth, requireScope, str
 import { callerContext, CONSUMER_KEY, consumerCurrent, registerConsumer, requireConsumerOperation, resolveConsumer, selectedProvider } from './assistant-bindings';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { requireWritesOpen } from './service-state';
-import { withSelectedAssistantGeneration } from './peer-generations';
+import { withAssistantAuthority } from './authority';
 import { activeGrant } from './accounts/oauth-data';
 import { sha256Hex } from './ids';
 import { publicBase } from './urls';
 import type { Tendril } from './tendril';
-import { parseApplicationInput, type ApplicationInputSchema } from '@chronolog/peer-generation/control';
+import { assistantObservation } from '../../contract/assistant.mjs';
+import { parseApplicationInput, type ApplicationInputSchema } from '@chronolog/authority';
 
 type OperationContext = {
   operation_id: string; binding_id: string; client_operation_id: string; provider_binding_id: string;
-  source_generation: string; command: string; context: string; reference: string | null; device_id: string; input_hash: string;
+  command: string; context: string; reference: string | null; device_id: string; input_hash: string;
 };
 const operationQuery = `SELECT c.*,j.device_id,j.input_hash FROM assistant_operation_context c
   JOIN assistant_commands j ON j.operation_id=c.operation_id WHERE c.binding_id=? AND c.client_operation_id=?`;
@@ -23,7 +24,7 @@ const canonical = (value: unknown): string => JSON.stringify(value, (_key, item)
   item && typeof item === 'object' && !Array.isArray(item)
     ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : item);
 const operationMethods: Record<string, string> = {
-  inspect_application_operation: 'operation', retry_application_operation: 'retry', wait_application_operation: 'wait',
+  inspect_application_operation: 'inspect', retry_application_operation: 'retry', wait_application_operation: 'wait',
 };
 
 /** OAuth authenticates the host; the proof binding identifies an independently revocable consuming agent. */
@@ -86,7 +87,7 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
       caller: consumer, provider: provider && { ...provider, online: !!active, deviceId: active?.deviceId ?? null, connectionEpoch: active?.connectionEpoch ?? null },
       queries: approved.queries.filter(item => consumer.queries.includes(item.name)),
       commands: approved.commands.filter(item => consumer.commands.includes(item.name)), events: approved.events.filter(item => consumer.events.includes(item.name)),
-      operationTools: ['inspect_application_operation', 'retry_application_operation', 'wait_application_operation', 'reapply_application_operation'],
+      operationTools: ['inspect_application_operation', 'retry_application_operation', 'wait_application_operation'],
       eventDelivery: { webhook: MCP_APPLICATION_EVENT, catchUpTool: 'read_application_events', liveInboxTool: 'open_application_inbox',
         evidence: 'approved-exporter-assertion', retentionEvents: 256, cursorVersion: 1, conversationalWake: 'not-established' } } });
   }
@@ -109,8 +110,8 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
     return json({ value: await changeAssistantSubscription(t, approved, principal, method, params, req.signal) });
   }
 
-  const journalKind = operationMethods[method], isReapply = method === 'reapply_application_operation';
-  const isCommand = method === 'call_application_command' || isReapply;
+  const journalKind = operationMethods[method];
+  const isCommand = method === 'call_application_command';
   if (!isCommand && !journalKind && method !== 'query_application') throw new HttpError(404, 'method_not_found');
   const writes = isCommand || journalKind === 'retry', scope = writes ? 'applications:write' : 'applications:read';
   await checkGrant(scope); check();
@@ -119,7 +120,8 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
   if (journalKind && !existing) {
     throw new HttpError(404, 'operation_not_admitted', 'No admitted operation belongs to this binding and operation ID.');
   }
-  const kind = isReapply ? 'reapply' : journalKind ?? (isCommand ? 'command' : 'query');
+  if (journalKind === 'wait' && params.fact !== undefined && !['materialized', 'retained', 'finalized'].includes(String(params.fact))) throw new HttpError(400, 'invalid_arguments');
+  const kind = journalKind ?? (isCommand ? 'command' : 'query');
   const name = journalKind ? existing!.command : string(params[isCommand ? 'command' : 'query'], 128);
   if (!journalKind || journalKind === 'retry') {
     const operation = (writes ? approved.commands : approved.queries).find(item => item.name === name);
@@ -130,113 +132,109 @@ export async function assistantRequest(t: Tendril, req: Request): Promise<Respon
       catch { throw new HttpError(400, 'invalid_application_input', 'Input does not match the approved application operation schema.'); }
     }
   }
-  const original = isReapply ? t.db.one<OperationContext>(operationQuery, consumer.id,
-    string(params.originalOperationId, 200, /^[A-Za-z0-9_.:-]+$/u)) : null;
-  if (isReapply && !original) throw new HttpError(404, 'original_operation_not_admitted');
-  if (original?.client_operation_id === clientOperationId) throw new HttpError(409, 'reapply_requires_new_operation_id');
   const operationId = existing?.operation_id ??
     (clientOperationId && 'assistant_' + await sha256Hex(JSON.stringify([applicationId, consumer.id, clientOperationId])));
   const context = callerContext(params.context);
-  const inputHash = isCommand ? await sha256Hex(canonical([name, params.input, params.basedOn ?? null, original?.operation_id ?? null, context])) : null;
+  const inputHash = isCommand ? await sha256Hex(canonical([name, params.input, params.basedOn ?? null, context])) : null;
   if (existing && isCommand && existing.input_hash !== inputHash)
     throw new HttpError(409, 'operation_id_conflict', 'This operation ID already identifies different signed work.');
   const deadline = AbortSignal.any([req.signal, AbortSignal.timeout(7000)]), excluded = new Set<string>();
-  let selectedGeneration = '', selectedDevice = '', providerBinding = '', value: unknown, uncertain: string | null = null;
-  let readTimeout: { error: HttpError; generation: string } | undefined;
-  const reference = () => ({ applicationId, deviceId: selectedDevice || existing?.device_id, operationId,
-    generation: existing?.source_generation ?? selectedGeneration,
+  let selectedDevice = '', providerBinding = '', value: unknown, uncertain: string | null = null;
+  let readTimeout: HttpError | undefined;
+  const reference = () => ({ applicationId, deviceId: selectedDevice || existing?.device_id, requestOperationId: operationId,
     ...(existing?.reference ? JSON.parse(existing.reference) : {}), agentBindingId: consumer.id,
     providerBindingId: providerBinding || existing?.provider_binding_id,
     ...(existing ? { sourceContext: JSON.parse(existing.context) } : {}) });
   for (;;) {
-    const admitted = await withSelectedAssistantGeneration(t, async (generation, canUseDevice) => {
-      if (!generation) throw new HttpError(409, 'application_generation_missing');
+    const admitted = await withAssistantAuthority(t, async canUseDevice => {
       if (writes) await requireWritesOpen(t.env);
       check(); deadline.throwIfAborted();
       const online = (await onlineAssistantAdapters(t)).filter(candidate => !excluded.has(candidate.hash));
       const candidates = [];
       for (const candidate of online) if (await canUseDevice(candidate.deviceId, writes)) candidates.push(candidate);
       await checkGrant(scope); check(); deadline.throwIfAborted();
-      // Reread under the generation/authority serializer: concurrent calls using
+      // Reread under the authority serializer: concurrent calls using
       // one semantic ID must select the same signer and immutable digest.
       existing = clientOperationId ? t.db.one<OperationContext>(operationQuery, consumer.id, clientOperationId) : null;
       if (existing && existing.operation_id !== operationId) throw new HttpError(409, 'operation_id_conflict');
       if (existing && isCommand && existing.input_hash !== inputHash) throw new HttpError(409, 'operation_id_conflict');
       const provider = selectedProvider(t);
-      const adapter = existing ? candidates.find(candidate => candidate.deviceId === existing!.device_id)
+      const adapter = existing ? candidates.find(candidate => candidate.deviceId === existing!.device_id && candidate.bindingId === existing!.provider_binding_id)
         : writes ? candidates.find(candidate => candidate.hash === provider?.adapterHash) : candidates[0];
       if (!adapter) {
         if (existing) {
-          selectedGeneration = generation; selectedDevice = existing.device_id; providerBinding = existing.provider_binding_id;
-          return { generation, adapter: null, pending: null };
+          selectedDevice = existing.device_id; providerBinding = existing.provider_binding_id;
+          return { adapter: null, pending: null };
         }
         // Admission above rechecks the grant and connection. Exhausting read
         // fallbacks must not turn a connected participant's timeout into offline.
-        if (readTimeout) {
-          if (generation !== readTimeout.generation) throw new HttpError(409, 'application_generation_changed');
-          throw readTimeout.error;
-        }
+        if (readTimeout) throw readTimeout;
         throw new HttpError(503, writes ? 'provider_offline' : 'application_participant_offline',
           writes ? 'Start the selected provider or have the owner explicitly hand over new work. Existing operations keep their original signer.'
             : 'Start an enrolled application participant.');
       }
-      selectedGeneration = generation; selectedDevice = adapter.deviceId; providerBinding = adapter.bindingId;
+      selectedDevice = adapter.deviceId; providerBinding = adapter.bindingId;
       if (operationId && !existing) {
         if ((t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_commands')?.n ?? 0) >= 4096)
           throw new HttpError(429, 'application_operation_capacity');
         t.transaction(() => {
           t.db.run('INSERT INTO assistant_commands(operation_id,input_hash,device_id) VALUES(?,?,?)', operationId, inputHash, adapter.deviceId);
-          t.db.run(`INSERT INTO assistant_operation_context(operation_id,binding_id,client_operation_id,provider_binding_id,source_generation,command,context,created_at)
-            VALUES(?,?,?,?,?,?,?,?)`, operationId, consumer.id, clientOperationId, adapter.bindingId, generation, name,
+          t.db.run(`INSERT INTO assistant_operation_context(operation_id,binding_id,client_operation_id,provider_binding_id,command,context,created_at)
+            VALUES(?,?,?,?,?,?,?)`, operationId, consumer.id, clientOperationId, adapter.bindingId, name,
             JSON.stringify({ evidence: 'caller-asserted', ...context }), t.now());
         });
         existing = t.db.one<OperationContext>(operationQuery, consumer.id, clientOperationId!);
       }
-      return { generation, adapter, pending: callAssistantAdapter(t, adapter.socket, {
-        applicationId, generation, kind, name, input: params.input,
+      return { adapter, pending: callAssistantAdapter(t, adapter.socket, {
+        applicationId, kind, name, input: params.input,
+        ...(kind === 'wait' ? { fact: params.fact ?? 'materialized' } : {}),
         providerBindingId: adapter.bindingId, connectionEpoch: adapter.connectionEpoch,
         caller: { account: principal.account, agentBindingId: consumer.id, bindingRevision: consumer.revision,
           verification: consumer.verification, context: existing ? JSON.parse(existing.context) : { evidence: 'caller-asserted', ...context } },
         ...(operationId ? { operationId, ...(params.basedOn !== undefined ? { basedOn: params.basedOn } : {}) } : {}),
-        ...(original ? { originalOperationId: original.operation_id, originalAuthor: original.device_id } : {}),
       }, deadline, consumer.id) };
     });
     if (!admitted.pending) { uncertain = 'provider_offline'; break; }
     try { value = await admitted.pending; break; }
     catch (error) {
+      if (journalKind === 'wait' && error instanceof HttpError && error.extra?.providerCode === 'FINALITY_UNSUPPORTED')
+        throw new HttpError(400, 'finality_unsupported', 'This application has no configured finality; local storage and materialization remain available.');
       if (operationId) { uncertain = error instanceof HttpError ? error.code : 'operation_uncertain'; break; }
       if (!(error instanceof HttpError) || !['application_participant_offline', 'application_call_timed_out'].includes(error.code) || deadline.aborted) throw error;
-      if (error.code === 'application_call_timed_out') readTimeout = { error, generation: admitted.generation! };
+      if (error.code === 'application_call_timed_out') readTimeout = error;
       excluded.add(admitted.adapter!.hash);
     }
   }
-  await checkGrant(scope); check();
-  if (!operationId) return withSelectedAssistantGeneration(t, generation => {
-    check(); if (generation !== selectedGeneration) throw new HttpError(409, 'application_generation_changed');
-    return json({ value });
-  });
-  const state = isPlainObject(value) && isPlainObject(value.state) ? value.state : isPlainObject(value) ? value : null;
-  const nativeReference = isPlainObject(value) && isPlainObject(value.operationReference) ? value.operationReference : null;
-  if (nativeReference && (nativeReference.applicationId !== applicationId || nativeReference.deviceId !== selectedDevice || nativeReference.operationId !== operationId))
-    throw new HttpError(502, 'invalid_adapter_operation_reference');
-  if (state && (state.operationId !== operationId || state.author !== undefined && state.author !== selectedDevice))
-    throw new HttpError(502, 'invalid_adapter_operation_reference');
-  if (state?.attemptId && typeof state.attemptId === 'string') {
-    const retained = { attemptId: state.attemptId, generation: state.generation, deviceId: selectedDevice,
-      historyId: nativeReference?.historyId ?? null,
-      ...(isPlainObject(value) && isPlainObject(value.attempt) && isPlainObject(value.attempt.payload) && isPlainObject(value.attempt.payload.header) ?
-        { controlRevision: value.attempt.payload.header.controlRevision } : {}) };
-    t.db.run('UPDATE assistant_operation_context SET reference=? WHERE operation_id=?', JSON.stringify(retained), operationId);
-    existing = t.db.one<OperationContext>(operationQuery, consumer.id, clientOperationId!);
-  }
-  return withSelectedAssistantGeneration(t, generation => {
+  return withAssistantAuthority(t, async canUseDevice => {
+    await checkGrant(scope); check();
+    if (!await canUseDevice(selectedDevice, false)) throw new HttpError(403, 'adapter_device_not_enrolled');
+    if (!operationId) { check(); return json({ value }); }
+    const state = isPlainObject(value) && isPlainObject(value.state) ? value.state : isPlainObject(value) ? value : null;
+    const nativeReference = isPlainObject(value) && isPlainObject(value.operationReference) ? value.operationReference : null;
+    if (nativeReference && (nativeReference.applicationId !== applicationId || nativeReference.deviceId !== selectedDevice || typeof nativeReference.operationId !== 'string' || !nativeReference.operationId || nativeReference.operationId.length > 512))
+      throw new HttpError(502, 'invalid_adapter_operation_reference');
+    if (state && (!nativeReference || !isPlainObject(value) || value.requestOperationId !== operationId || state.operationId !== nativeReference.operationId || state.author !== selectedDevice || state.applicationId !== applicationId))
+      throw new HttpError(502, 'invalid_adapter_operation_reference');
+    if (state?.proposalId !== undefined) {
+      const proposalId = string(state.proposalId, 64, /^[a-f0-9]{64}$/u);
+      if (!nativeReference || nativeReference.proposalId !== proposalId)
+        throw new HttpError(502, 'invalid_adapter_operation_reference');
+      try {
+        if (state.materialized !== null && (!isPlainObject(state.materialized) || state.materialized.proposalId !== proposalId)) throw Error();
+        assistantObservation({stored:state.stored,materialized:isPlainObject(state.materialized)?{outcome:state.materialized.outcome,revision:state.materialized.revision}:null,
+          retained:state.retained,finalized:state.finalized,excluded:state.excluded});
+      } catch { throw new HttpError(502,'invalid_adapter_operation_observation'); }
+      const prior = existing?.reference ? JSON.parse(existing.reference) : null;
+      if (prior?.proposalId && (prior.proposalId !== proposalId || prior.operationId !== state.operationId)) throw new HttpError(502, 'adapter_proposal_identity_changed');
+      t.db.run('UPDATE assistant_operation_context SET reference=? WHERE operation_id=?', JSON.stringify({ proposalId, operationId: state.operationId }), operationId);
+      existing = t.db.one<OperationContext>(operationQuery, consumer.id, clientOperationId!);
+    }
     check();
-    const needsReview = state?.status === 'abandoned' || state?.status === 'needsReapply' || generation !== selectedGeneration;
-    const outcome = needsReview ? 'needs-review' : uncertain ? 'uncertain' : state?.status === 'applied'
-      ? state.outcome === 'rejected' ? 'rejected' : 'applied' : state?.status === 'saved' ? 'saved' : 'not-found';
-    return json({ value: { operationId: clientOperationId, operationReference: reference(), outcome,
-      operation: value ?? null,
+    return json({ value: { operationId: clientOperationId, operationReference: reference(),
+      stored: state?.stored === true, materialized: state?.materialized ?? null, retained: state?.retained ?? [],
+      finalized: state?.finalized === true, excluded: state?.excluded === true,
+      operation: value ?? null, evidence: 'approved-provider-assertion',
       ...(uncertain ? { code: 'operation_uncertain', reason: uncertain,
-        nextAction: 'Inspect this original operation; retry only with the same ID and inputs. Reapplication requires a new ID and explicit review.' } : {}) } });
+        nextAction: 'Inspect this original operation; retry only with the same ID, original provider and exact inputs.' } : {}) } });
   });
 }

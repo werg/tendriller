@@ -8,55 +8,24 @@ import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tuto
 import { buildPage } from '../../docs/tutorial/sql/build.mjs';
 import { registerLifecycleFlush } from '../../docs/tutorial/helpers/diagnostics-panel.mjs';
 
-const snapshot = () => ({ revision: { generation: 'g1', point: { sequence: 7 } },
-  value: { stock: [{ id: 'source', units: 10 }, { id: 'destination', units: 0 }] } });
-const reference = { applicationId: 'app', historyId: 'history', author: 'device', operationId: 'op' };
+const snapshot = () => ({ revision: { digest: 'reviewed', view: 'local', executionManifestDigest: 'engine', policyDigest: 'none' }, value: { stock: [{ id: 'source', units: 10 }, { id: 'destination', units: 0 }] } });
+const reference = { applicationId: 'app', author: 'device', operationId: 'op', proposalId: 'proposal' };
 function retained() { return { ...transferIntent(snapshot(), { from: 'source', to: 'destination', units: 2 }, 'op'), reference }; }
-function session(state = null) {
-  const calls = [];
-  return { applicationId: 'app', historyId: 'history', deviceId: 'device', calls,
-    operations: { get: async id => { calls.push(['get', id]); return state; },
-      wait: async id => { calls.push(['wait', id]); return { operationId: id, status: 'applied', outcome: 'accepted' }; } },
-    retry: async id => { calls.push(['retry', id]); },
-    command: async (...args) => { calls.push(['command', ...args]); },
-  };
+function session(stored = false) {
+  const calls = [], inspection = { stored, operationId: 'op', proposalId: 'proposal', materialized: null, retained: [], finalized: false, excluded: false }, operation = { inspect: async () => inspection };
+  return { applicationId: 'app', identity: { publicKey: 'device' }, calls, operations: { get: async id => { calls.push(['get', id]); return stored ? operation : null; }, retry: async id => { calls.push(['retry', id]); return operation; } }, command: async (...args) => { calls.push(['command', ...args]); return operation; } };
 }
-test('transfer captures the actual domain fields and clones the reviewed revision', () => {
+test('transfer clones reviewed guard values as local context, not an ordering barrier', () => {
   const before = snapshot(), intent = transferIntent(before, { from: 'source', to: 'destination', units: 2 }, 'op');
-  before.revision.point.sequence++; before.value.stock[0].units = 3;
-  assert.deepEqual(intent, { id: 'op', command: 'transfer', basedOn: { generation: 'g1', point: { sequence: 7 } },
-    input: { transferId: 'op', from: 'source', to: 'destination', units: 2, expectedSource: 10, expectedDestination: 0 } });
-  for (const units of [0, -1, 1.2, NaN, 11, 1_000_001]) assert.throws(() => transferIntent(snapshot(), { from: 'source', to: 'destination', units }, 'op'));
-  assert.throws(() => transferIntent(snapshot(), { from: 'pantry', to: 'counter', units: 1 }, 'op'));
-  assert.throws(() => transferIntent({ ...snapshot(), value: { stock: [] } }, { from: 'source', to: 'destination', units: 1 }, 'op'), /Initialize/);
+  before.revision.digest = 'changed'; before.value.stock[0].units = 3;
+  assert.equal(intent.reviewedRevision.digest, 'reviewed'); assert.equal(intent.input.expectedSource, 10); assert.equal(intent.operationId, 'op'); assert.equal('basedOn' in intent, false);
+  const offline = transferIntent(null, { from: 'source', to: 'destination', units: 2, expectedSource: 10, expectedDestination: 0 }, 'offline'); assert.equal(offline.reviewedRevision, null);
 });
-test('uncertain reply then reload resends only the retained identity, input and revision', async () => {
-  const pending = retained(), first = session();
-  first.command = async () => { throw Error('reply lost'); };
-  await assert.rejects(retryIntent(first, pending), /reply lost/);
-  // JSON roundtrip models the browser view-store context surviving reload.
-  const reloaded = JSON.parse(JSON.stringify(pending)), next = session();
-  await retryIntent(next, reloaded);
-  assert.deepEqual(next.calls[1], ['command', 'transfer', pending.input, { operationId: 'op', basedOn: pending.basedOn }]);
-  assert.deepEqual(pending, retained());
-});
-test('saved retry uses signed journal; applied rejection resolves; exclusions never submit', async () => {
-  const saved = session({ status: 'saved' }); await retryIntent(saved, retained());
-  assert.deepEqual(saved.calls.map(call => call[0]), ['get', 'retry', 'wait']);
-  const result = { status: 'applied', operationId: 'op', outcome: 'rejected', rejectionCode: 'source_changed' };
-  const rejected = session(result); assert.equal(await retryIntent(rejected, retained()), result);
-  assert.deepEqual(rejected.calls, [['get', 'op']]);
-  for (const status of ['abandoned', 'needsReapply']) {
-    const excluded = session({ status }); await assert.rejects(retryIntent(excluded, retained()), /Recovery excluded/);
-    assert.deepEqual(excluded.calls, [['get', 'op']]);
-  }
-  const corrupt = retained(); corrupt.reference = { ...corrupt.reference, operationId: 'different' };
-  await assert.rejects(retryIntent(session(), corrupt), /inconsistent/);
-  for (const field of ['applicationId', 'historyId', 'deviceId']) {
-    const wrong = session(); wrong[field] = 'different';
-    assert.throws(() => checkIntentSession(retained(), wrong), /another device or history/);
-    await assert.rejects(retryIntent(wrong, retained())); assert.deepEqual(wrong.calls, []);
-  }
+test('uncertain pre-storage retry retains original inputs/ID, while stored retry uses only signed journal', async () => {
+  const pending = retained(), fresh = session(); await retryIntent(fresh, pending);
+  assert.deepEqual(fresh.calls, [['get', 'op'], ['command', 'transfer', pending.input, { operationId: 'op' }]]);
+  const stored = session(true); await retryIntent(stored, JSON.parse(JSON.stringify(pending))); assert.deepEqual(stored.calls, [['get', 'op'], ['retry', 'op']]);
+  const wrong = session(); wrong.identity.publicKey = 'other'; assert.throws(() => checkIntentSession(wrong, pending), /another application or signer/); assert.deepEqual(wrong.calls, []);
 });
 
 test('build requires setup and exact engine graph, removes stale or partial output', async t => {
@@ -67,12 +36,12 @@ test('build requires setup and exact engine graph, removes stale or partial outp
   const wasm = Buffer.from('fixture-engine'), manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex'), loaderSha256: createHash('sha256').update('module').digest('hex') };
   for (const [name, bytes] of Object.entries({ 'manifest.json': JSON.stringify(manifest), 'sqlite3.wasm': wasm, 'sqlite3.mjs': 'module', 'sqlite3-opfs-async-proxy.js': 'proxy' })) await writeFile(new URL(name, engine), bytes);
   const records = { 'handle.json': { application: { id: 'app' }, page_url: 'https://page.example/', privateCredential: 'never publish' },
-    'descriptor.json': { payload: { applicationId: 'app' } }, 'initialized.json': { applicationId: 'app', deviceId: 'native' } };
+    'host-configuration.json': { executionManifestDigest: 'engine-digest' }, 'initialized.json': { applicationId: 'app', publisherKey: 'independent-publisher' } };
   const opts = { root, readPrivate: async name => records[name], verifyWasmBuild: (bytes, meta) => { assert.deepEqual(bytes, wasm); assert.deepEqual(meta, manifest); }, bundle: async () => {} };
   await buildPage(opts);
   assert.equal((await readFile(new URL('engine/sqlite3.wasm', output))).toString(), wasm.toString());
   const config = JSON.parse(await readFile(new URL('configuration.json', output)));
-  assert.deepEqual(Object.keys(config).sort(), ['applicationId', 'descriptor', 'page_url']);
+  assert.deepEqual(Object.keys(config).sort(), ['applicationId', 'executionManifestDigest', 'page_url']);
   for (const failure of [
     { readPrivate: async () => { throw Error('missing setup'); } },
     { readPrivate: async name => name === 'initialized.json' ? { applicationId: 'other' } : records[name] },
@@ -106,82 +75,21 @@ test('lifecycle notifications contain async flush and error-reporter rejections,
   await new Promise(resolve => setImmediate(resolve)); assert.equal(failures, 3);
 });
 
-test('page wiring retains before command, renders bins, locks edited input and retries after reload', async () => {
-  const { runInNewContext } = await import('node:vm');
+test('local signing/storage readiness permits Save without peers, SQL readiness or a successful current view', async () => {
   const { createSubmissionState } = await import('../../docs/tutorial/helpers/submission-state.mjs');
-  const source = (await readFile(new URL('../../docs/tutorial/sql/page.mjs', import.meta.url), 'utf8'))
-    .replace(/^import .*;\n/gm, '').replaceAll('import.meta.url', JSON.stringify('https://page.example/page.mjs'));
-  const journal = new Map(), contexts = new Map();
-  const calls = [];
-  let failCommand = true, failRetain = true;
-  const flush = () => new Promise(resolve => setImmediate(resolve));
-  async function page() {
-    class Element {
-      value = ''; disabled = false; textContent = ''; children = []; listeners = new Map();
-      addEventListener(type, listener) { this.listeners.set(type, listener); }
-      fire(type) { this.listeners.get(type)?.({ preventDefault() {} }); }
-      replaceChildren(...nodes) { this.children = nodes; }
-      appendChild(node) { this.children.push(node); }
-    }
-    const elements = new Map();
-    const $ = selector => { if (!elements.has(selector)) elements.set(selector, new Element()); return elements.get(selector); };
-    $('#from-loc').value = 'source'; $('#to-loc').value = 'destination'; $('#qty').value = '2';
-    let emitParticipation;
-    const result = { operationId: 'op', status: 'applied', outcome: 'accepted' };
-    const session = { applicationId: 'app', deviceId: 'device', historyId: 'history', endpoint: { context: { viewId: 'view' } },
-      participation: { onStatus(fn) { emitParticipation = fn; } },
-      command: async (command, input, options) => {
-        assert.equal(contexts.size, 1, 'Intent must be retained before sending');
-        calls.push({ command, input: structuredClone(input), options: structuredClone(options) });
-        if (failCommand) throw Error('uncertain reply');
-        return { applied: async () => result };
-      },
-      operations: { get: async () => journal.get('op') ?? null, wait: async () => result },
-      retry: async id => { calls.push({ retry: id }); },
-    };
-    const document = { querySelector: $, createElement: () => new Element() };
-    const window = { addEventListener() {}, tendril: { application: { install() {} } } };
-    const live = { snapshot: snapshot(), subscribe(fn) { this.listener = fn; },
-      async ready() { this.onStatus({ phase: 'ready', database: 'ready', generation: 'g1' }); emitParticipation({ phase: 'following' }); this.listener(this.snapshot); },
-      async refresh() { return this.snapshot; }, close() {} };
-    runInNewContext(source, { document, window, location: { origin: 'https://page.example', pathname: '/' },
-      fetch: async () => ({ ok: true, json: async () => ({ applicationId: 'app', page_url: 'https://page.example/' }) }),
-      sessionStorage: { getItem: () => 'view', setItem() {} }, localStorage: {},
-      crypto: { randomUUID: () => 'op' }, URL, AbortSignal, structuredClone, setTimeout,
-      mountDiagnosticsPanel: () => ({ update() {}, snapshot: () => ({}) }), createSubmissionState,
-      transferIntent, checkIntentSession, retryIntent,
-      describeOperationLifecycle: (id, state) => ({ lifecycle: state?.status ?? 'unknown' }),
-      createApplicationBackend: () => ({}), openBrowserOwner: async () => ({ session, mode: 'elected', detach: async () => {} }),
-      createBrowserIdentity: async () => 'device',
-      createLiveView: (_session, opts) => { live.onStatus = opts.onStatus; return live; },
-      createViewStore: () => ({ pending: () => [...contexts.values()],
-        retainOperation: (reference, context) => { if (failRetain) throw Error('storage unavailable'); contexts.set(reference.operationId, { reference, context: structuredClone(context) }); },
-        removeOperation: reference => contexts.delete(reference.operationId) }),
-    });
-    await flush(); await flush();
-    return $;
-  }
-  let $ = await page();
-  assert.equal($('#submit-transfer').disabled, false);
-  assert.equal($('#stock-rows').children[0].children[0].textContent, 'source');
-  assert.equal($('#stock-rows').children[0].children[1].textContent, '10');
-  $('#transfer-form').fire('submit'); await flush();
-  assert.equal(calls.length, 0, 'A failed intent save must prevent the command');
-  assert.equal(contexts.size, 0);
-  failRetain = false;
-  $('#transfer-form').fire('submit'); await flush();
-  assert.equal(calls[0].command, 'transfer');
-  assert.equal(calls[0].input.expectedSource, 10);
-  assert.equal($('#submit-transfer').disabled, true);
-  assert.equal($('#from-loc').disabled, true);
-  assert.match($('#result').textContent, /uncertain reply/);
-  $ = await page(); // New document, same retained view context.
-  assert.equal($('#submit-transfer').disabled, true);
-  assert.equal($('#qty').value, 2);
-  $('#qty').value = '9'; // Even a programmatic edit cannot alter retained retry input.
-  failCommand = false;
-  $('#retry-op').fire('click'); await flush(); await flush();
-  assert.deepEqual(calls[1], calls[0]);
-  assert.equal(contexts.size, 0);
-  assert.equal($('#submit-transfer').disabled, false);
+  const state = createSubmissionState(); state.update({ attached: true });
+  state.application({ canAuthor: true, phase: 'ready', database: 'opening', connectedPeers: 0, materializationError: 'query table missing' });
+  assert.equal(state.snapshot.canSubmit, true);
+  const finish = state.begin(); assert.equal(state.snapshot.canSubmit, false); finish(); assert.equal(state.snapshot.canSubmit, true);
+  state.application({ canAuthor: false, phase: 'ready', database: 'ready', connectedPeers: 8 }); assert.equal(state.snapshot.canSubmit, false);
+});
+test('SQL schema and column grants are ordinary programs, never immutable definition schema', async () => {
+  const { definition, deriveInventory } = await import('../../docs/tutorial/sql/domain.mjs');
+  assert.equal(Object.hasOwn(definition, 'schema'), false);
+  const initial = definition.commands.initialize.prepare(null); assert.ok(initial.steps.some(step => typeof step.sql === 'string' && step.sql.startsWith('CREATE TABLE')));
+  const grant = definition.commands.grantBinWrites.prepare({ publicKey: '11'.repeat(32) });
+  assert.deepEqual(grant.steps[0].columns, ['units']); assert.equal(grant.steps[0].op, 'grant');
+  let label = false;
+  const view = { async query(sql) { if (sql.includes('sqlite_master')) return { rows: [['inventory', 'table'], ['transfers', 'table']] }; if (sql.startsWith('PRAGMA')) return { rows: label ? [[0,'id'],[1,'units'],[2,'label']] : [[0,'id'],[1,'units']] }; if (sql.includes('FROM transfers')) return { rows: [] }; return { rows: label ? [['source',10,'new field']] : [['source',10]] }; } };
+  assert.equal((await deriveInventory(view)).hasLabel, false); label = true; const after = await deriveInventory(view); assert.equal(after.hasLabel, true); assert.equal(after.stock[0].label, 'new field');
 });

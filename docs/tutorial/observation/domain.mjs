@@ -1,8 +1,8 @@
 import { defineApplication, defineCommand, defineQuery, program, emit } from '@chronolog/peer-session';
 import { validFix, id } from './protocol.mjs';
 
-// Install this definition when creating a new observation example application.
-// Do not change the definition of an already initialized shared-notes history.
+// Version command/query behavior deliberately; no immutable definition or schema lock orders data.
+// Every query derives from one coherent materialized snapshot, with revisable outcomes.
 export const definition = defineApplication({ id: 'reviewed-observations', version: '1', commands: {
   retainObservation: defineCommand({
     description: 'Retain only a person-reviewed observation, with sample time, source, and stream correlation.',
@@ -29,7 +29,7 @@ export const definition = defineApplication({ id: 'reviewed-observations', versi
       const observations = []; let cursor;
       for (;;) {
         const batch = view.readEvents({ topics: ['reviewed-observation'], limit: 128, ...(cursor === undefined ? {} : { cursor }) });
-        for (const event of batch.events) observations.push({ ...event.payload, author: event.author, operationId: event.operationId });
+        for (const event of batch.events) observations.push({ ...event.payload, author: event.author, operationId: event.operationId, proposalId: event.proposalId });
         if (!batch.hasMore) return observations;
         if (cursor === batch.cursor) throw Error('OBSERVATION_CURSOR_STALLED');
         cursor = batch.cursor;

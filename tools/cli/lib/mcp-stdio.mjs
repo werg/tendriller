@@ -1,6 +1,7 @@
 // Local Stdio MCP Server (W5) for Grok Bot local MCP, Cursor, and local coding agents.
 // Implements JSON-RPC 2.0 over newline-delimited stdin/stdout backed directly by the opened session.
 import { once } from 'node:events';
+import { describeApplication } from '@chronolog/peer-session';
 import { resolveConfig } from './config.mjs';
 import { client as hostApiClient } from './api.mjs';
 
@@ -21,7 +22,7 @@ const TOOLS = [
         command: { type: 'string', minLength: 1 },
         input: {},
         operationId: { type: 'string', minLength: 1, maxLength: 512 },
-        wait: { type: 'string', enum: ['applied', 'recorded'], default: 'applied' },
+        wait: { type: 'string', enum: ['stored', 'materialized', 'retained', 'finalized'], default: 'stored' },
       },
       required: ['command', 'input', 'operationId'],
       additionalProperties: false,
@@ -29,7 +30,7 @@ const TOOLS = [
   },
   {
     name: 'command_submit_batch',
-    description: 'Submit an ordered batch of up to 32 idempotent commands.',
+    description: 'Submit a sequential submission batch of up to 32 idempotent commands.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -47,7 +48,7 @@ const TOOLS = [
             additionalProperties: false,
           },
         },
-        wait: { type: 'string', enum: ['applied', 'recorded'], default: 'applied' },
+        wait: { type: 'string', enum: ['stored', 'materialized', 'retained', 'finalized'], default: 'stored' },
         stopOnError: { type: 'boolean', default: false },
       },
       required: ['commands'],
@@ -106,14 +107,13 @@ const TOOLS = [
   },
 ];
 
-function lifecycleOf(operationId, state) {
-  if (!state) return { operationId, lifecycle: 'unknown', state: null };
-  if (state.status === 'applied') {
-    return { operationId, lifecycle: state.outcome === 'rejected' ? 'rejected' : 'applied', state };
-  }
-  if (state.status === 'saved') return { operationId, lifecycle: 'recorded', state };
-  if (['abandoned', 'needsReapply'].includes(state.status)) return { operationId, lifecycle: 'needs-review', state };
-  return { operationId, lifecycle: 'unknown', state };
+async function observationOf(session, operationId) {
+  const operation = await session.operations.get(operationId);
+  return { operationId, operation: operation ? await operation.inspect() : null };
+}
+async function observeSubmission(operation, wait, signal) {
+  if (wait !== undefined && wait !== 'stored') await operation[wait]({ signal });
+  return { operationId: operation.operationId, proposalId: operation.id, ...await operation.inspect() };
 }
 
 const invalid = message => Object.assign(new Error(message), { code: 'invalid_arguments' });
@@ -151,12 +151,12 @@ function validateArguments(name, args) {
     if (args.tag !== undefined && (typeof args.tag !== 'string' || !/^[A-Za-z0-9_.-]{1,64}$/.test(args.tag))) throw invalid('tag must be 1..64 alphanumeric/._- chars');
     if (args.badge !== undefined && (!Number.isSafeInteger(args.badge) || args.badge < 0 || args.badge > 999)) throw invalid('badge must be 0..999');
   }
-  if (args.wait !== undefined && !['recorded', 'applied'].includes(args.wait)) throw invalid('wait must be recorded or applied');
+  if (args.wait !== undefined && !['stored', 'materialized', 'retained', 'finalized'].includes(args.wait)) throw invalid('wait must be stored, materialized, retained or finalized');
   if (args.stopOnError !== undefined && typeof args.stopOnError !== 'boolean') throw invalid('stopOnError must be boolean');
 }
 async function uncertain(session, operationId, error) {
-  const state = await session.operations.get(operationId).catch(() => null);
-  return { operationId, lifecycle: 'unknown', state, error: { code: error?.code ?? 'operation_uncertain', message: error?.message ?? String(error) },
+  const observed = await observationOf(session, operationId).catch(() => ({ operationId, operation: null }));
+  return { ...observed, error: { code: error?.code ?? 'operation_uncertain', message: error?.message ?? String(error) },
     nextAction: 'Inspect this operationId. Retry only the original ID and input; an interrupted response does not establish rejection.' };
 }
 
@@ -195,10 +195,10 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
       if (name === 'app_discover') {
         return toolOk({
           applicationId: session.applicationId,
-          deviceId: session.deviceId,
+          author: session.identity.publicKey,
           mode: owned.mode ?? 'own',
           status: session.status,
-          descriptor: session.describe(),
+          definition: typeof session.describe === 'function' ? session.describe() : describeApplication(session.definition),
         });
       }
       if (name === 'state_query') {
@@ -223,15 +223,12 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
         return toolOk(await api.post('/push', payload, { signal }));
       }
       if (name === 'operation_inspect') {
-        const state = await session.operations.get(args.operationId);
-        return toolOk(lifecycleOf(args.operationId, state));
+        return toolOk(await observationOf(session, args.operationId));
       }
       if (name === 'command_submit') {
         try {
           const op = await session.command(args.command, args.input, { operationId: args.operationId });
-          if (args.wait === 'recorded') return toolOk(lifecycleOf(args.operationId, await op.get()));
-          const applied = await op.applied({ signal });
-          return toolOk({ operationId: args.operationId, lifecycle: applied.outcome === 'rejected' ? 'rejected' : 'applied', applied });
+          return toolOk(await observeSubmission(op, args.wait, signal));
         } catch (error) {
           return toolOk(await uncertain(session, args.operationId, error));
         }
@@ -244,13 +241,9 @@ export async function handleStdioMcpMessage(owned, message, { signal } = {}) {
           if (signal.aborted) break;
           try {
             const op = await session.command(item.command, item.input, { operationId: item.operationId });
-            if (args.wait === 'recorded') {
-              results.push({ ...lifecycleOf(item.operationId, await op.get()), command: item.command });
-            } else {
-              const applied = await op.applied({ signal });
-              results.push({ operationId: item.operationId, command: item.command, lifecycle: applied.outcome === 'rejected' ? 'rejected' : 'applied', applied });
-              if (args.stopOnError === true && applied.outcome === 'rejected') break;
-            }
+            const observed = await observeSubmission(op, args.wait, signal);
+            results.push({ ...observed, command: item.command });
+            if (args.stopOnError === true && observed.materialized?.outcome === 'rejected') break;
           } catch (error) {
             results.push({ ...await uncertain(session, item.operationId, error), command: item.command });
             if (args.stopOnError === true) break;

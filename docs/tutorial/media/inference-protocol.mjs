@@ -42,7 +42,7 @@ export function requestFingerprint(value) {
       : `{${Object.keys(item).sort().map(key => `${JSON.stringify(key)}:${canonical(item[key])}`).join(',')}}`;
   return canonical(value);
 }
-export function validRequest(value, { applicationId, historyId, workerDeviceId, maxEvidenceBytes }) {
+export function validRequest(value, { applicationId, workerDeviceId, maxEvidenceBytes }) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).sort().join(',') !== 'candidateId,context,prompt,reference,requestId,sha256,workerDeviceId'
     || value.workerDeviceId !== workerDeviceId || !validId(value.requestId) || !validId(value.candidateId)
@@ -50,8 +50,8 @@ export function validRequest(value, { applicationId, historyId, workerDeviceId, 
     || value.prompt.length > INFERENCE_LIMITS.promptCharacters) throw inferenceError('invalid');
   const ref = value.reference;
   if (!ref || typeof ref !== 'object' || Array.isArray(ref)
-    || Object.keys(ref).sort().join(',') !== 'applicationId,bytes,epoch,historyId,id,mediaType,profile'
-    || ref.profile !== 'peer-content-v1' || ref.applicationId !== applicationId || ref.historyId !== historyId
+    || Object.keys(ref).sort().join(',') !== 'applicationId,bytes,epoch,id,mediaType,profile'
+    || ref.profile !== 'authored-content-v1' || ref.applicationId !== applicationId
     || !digestPattern.test(ref.id) || !Number.isSafeInteger(ref.epoch) || ref.epoch < 0
     || !Number.isSafeInteger(ref.bytes) || ref.bytes < 1 || ref.bytes > maxEvidenceBytes
     || !MEDIA_TYPES.includes(ref.mediaType)) throw inferenceError('invalid');

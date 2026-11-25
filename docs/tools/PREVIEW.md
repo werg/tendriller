@@ -55,11 +55,12 @@ npm run peer
 ```
 
 Open the saved page URL and the selected release while signed in. If this
-browser is new, follow the supplied [enrollment step](../BUILD_AN_APP.md#6-enroll-and-connect-the-owners-browser),
+browser is new, follow the supplied [verification and second-device step](../BUILD_AN_APP.md#6-verify-local-use-offline-readiness-and-another-device),
 then connect it. Verify a browser command natively, a native command in the
 browser, and same-device reopening. Stop the peer before a CLI command needs
 the same native store, then resume it. The native peer must remain available
-for the starter's coordinator and key-donor role.
+only if it is the key-provisioning donor for that new browser or an optional
+agent service. Ordinary local Save does not depend on it.
 
 The publication operation ID identifies this exact authored graph. If its reply
 is uncertain, retry the same ID with unchanged files. A changed graph needs a
@@ -87,7 +88,7 @@ The named module must exist inside the authored graph and export
 
 | Field | Required behavior |
 | --- | --- |
-| `application` | The real common backend made by `createApplicationBackend({ id: session.applicationId, session })` from `@chronolog/peer-session/tendriller` |
+| `application` | The real common backend made by `createApplicationBackend(session)` from `@chronolog/peer-session/tendriller` |
 | `signals` (optional) | That session's actual live-signal surface |
 | `close()` | Detaches this preview from its owner and closes resources created exclusively for this preview; owner shutdown is a separate explicit lifecycle |
 

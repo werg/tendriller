@@ -1,216 +1,53 @@
 # Troubleshoot an application build
 
-Start with [Build an app](BUILD_AN_APP.md). Diagnose the first incomplete stage
-before changing architecture: **create → define state and UI → configure
-authority and select the first generation → publish → owner sign-in → connect and verify**. A page URL, an installed adapter, and
-a working shared application are different checkpoints.
-
-Keep the private handle, signer store, epoch keys and saved attempts intact while
-diagnosing. Share error codes, public device IDs and redacted status; keep bearer
-tokens, capability URLs, private keys and application data out of public logs and
-published assets. An uncertain response is a reason to inspect the existing work,
-not to create a replacement identity or backend.
+Locate the actual boundary. Do not respond to a late reply, missing key, stale query or absent agent by allocating a replacement app/device, changing an operation ID, clearing storage, inventing finality, or creating another backend. Use the exact selected service origin and [bootstrap contract](SESSION_BOOTSTRAP.md).
 
 ## MCP has no applications or the agent cannot find setup
 
-Call `tendril_guide` with `topic: "start"` for the maintained
-[MCP workflow](MCP_AGENT_GUIDE.md). If that tool is missing from an installed plugin, use the same-origin
-`setup.startHere` or `setup.discoveryUrl` returned by `get_profile` or
-`list_tendrils`, then refresh the plugin's tool catalog. A missing tool or guide
-does not authorize switching the application to a different service origin.
-An empty `list_tendrils` means no assistant-connected apps for that account. Use `topic: "build"` for a
-new application and its supported HTTP creation route, or `topic: "connect"`
-for the existing participant's proposal and owner review. Check Node 24, retained
-storage and actual process lifetime before promising a connected new app. A
-missing runtime requires a concrete runtime handoff, not another website plugin.
-
-Before installing packages for a new app, read the selected origin's
-`/api/readiness` and check `creation.available`, not just HTTP success. A paused
-service returns a concrete next action without creating an account or page.
-`mode: "unavailable"`, a network failure or an invalid response means stop setup;
-404 means the host needs the readiness endpoint. Keep the original service
-origin. Restoring creation is an operator action, not a reason to create on
-production or repeat rejected requests.
-
-If the guide tool is absent, refresh the client's cached tool catalog or recreate
-the custom connection after confirming the intended service origin and deployed
-release. Keep the same origin for all setup requests; do not switch staging to
-production to find an app.
+Read the selected connector's `tendril_guide` (`start`, `build`, `capabilities`, `delivery`, `troubleshooting`) and public service/discovery/readiness. An empty list is not lack of creation capability. With `tendrils:create`, retain `setup:prepare`'s original private intent, call `prepare_tendril_setup` using its public arguments, and pass the exact ready result to `setup:finish`. If the reply is lost, `inspect_tendril_setup` inspects that same operation. Missing catalog/scope/deployment support requires that exact update/owner approval; it does not authorize another client's credentials or service origin.
 
 ## Locate the missing checkpoint
 
-| Checkpoint | Evidence to inspect | What remains to do |
-| --- | --- | --- |
-| Host discovered | `GET /api/service` returns a compatible contract and limits. | Obtain compatible public artifacts and read the build guide. A descriptor does not open a session. |
-| Page created | The saved private handle contains `api`, `token`, `page_url` and `application.id`. | Prepare and publish the first UI, start the participant, and give the owner the ready page and permission-review URLs. Do not wait for a claimed reply. |
-| Owner claimed | The owner completed sign-in; inspect host info through `host.info()` or `tendril --tendril NAME info`. | Inspect the prepared authority and publication, then explicitly enroll devices and approve assistant access. An older unprepared page may still need configuration. |
-| Authority configured | Host info reports `configured: true`; `host.peers.application()` returns authority to verify and pin through Chronolog. | Select the first generation. Configuration retains the descriptor and controls but supplies no selected generation and starts no application process. |
-| Initial generation selected | The saved, signed creation transition has been submitted through `host.peers.selectGeneration(...)`; verified authority contains the selected generation. | Open the enrolled device's session with the matching definition, keys and persistent store. The tutorial's `init` step saves the exact transition before sending it and resumes that attempt after interruption. |
-| Browser binding installed | `tendril.application.available` is true; `ready()` resolves with the backend. | Inspect `session.status` and participation status for connectivity and the selected generation. |
-| Data path exercised | A declared command has an observed outcome and a coherent query shows the intended value. | Check the other peer and reopen the same device. A local result alone does not prove replication or resume. |
-| Code published | `control.publish(...)` returned a signed publication receipt; `control.publication()` verifies the selected release. | Open the actual published page and exercise its browser/session integration. |
-
-The CLI examples below assume the tools are installed and `./application.mjs` is
-your real application bootstrap exporting `openSession({ signal })`. If that file
-does not exist, return to [the build guide](BUILD_AN_APP.md) and complete setup;
-an empty module or invented `deployment.mjs` does not provide a session.
-
-```sh
-tendril --tendril NAME info
-tendril --session ./application.mjs status
-tendril --session ./application.mjs describe
-tendril --session ./application.mjs definition
-tendril --session ./application.mjs publication
-```
-
-These commands inspect different boundaries. Preserve the returned application
-ID, selected generation, public device ID, operation ID, publication ID and exact
-artifact versions in the private build record so mismatches are visible.
-
-## Host access, claim and package setup
-
-| Observation or code | Next action |
+| Symptom | Boundary and next action |
 | --- | --- |
-| `/api/service` returns HTML, a challenge, or `invalid_response` | Check that the URL is the service origin, not a page or agent API URL. Inspect HTTP status and content type. If ordinary automated clients are blocked before the Worker, report the host access problem with a redacted response. Do not treat it as a successful descriptor. |
-| `APPLICATION_WORKER_METADATA_INVALID` when attaching to a running owner | Check for a mixed package/owner composition, including an older owner missing current participation metadata. Preserve device identities, storage and original signed operation references. Close old app tabs, update native participants and the signed UI to the same qualified public package composition, then reopen the retained profile. Do not reset or clear app data. |
-| `contract_mismatch`, missing package export, or incompatible definition/engine artifacts | Compare the host contract, core release and exact installed artifact manifests. Follow [artifact acquisition](tools/ARTIFACTS.md) and the [release composition](RELEASE_COMPOSITION.md) record. Supply a compatible public Chronolog session archive; the core host's control dependency is not the full native/browser session package. Do not assume that unrelated latest package versions compose. |
-| `Unknown advertisement field` after a host upgrade | An older participant may still send `ttlMs`; current discovery uses an authenticated presence socket. Upgrade native and browser packages and copied starter code together from the selected host's exact kit, republish, and close old tabs before reopening the same retained profile. Follow the [rc.16 migration guide](MIGRATION_RC16_RC17.md#discovery-advertisements-no-longer-have-leases); removing one field from the old renewal loop is insufficient. |
-| `application_not_found`, or `404` with `error.code: "not_found"` and `No such tendril` from the application's authenticated `self` endpoint | Confirm the original service origin and handle. A deleted application or a fresh host storage deployment needs [explicit recreation](MIGRATION_RC16_RC17.md#recreate-after-a-host-storage-reset): retain the old private project, install the matching kit in a fresh directory, run `npm run create` and `npm run init` again, then publish and enroll using the new handle. Host credential renewal cannot restore a missing application. This is separate from data recovery. |
-| `unauthorized` from an agent API | Check the saved handle's service/API and current bearer token. For a claimed application, use [same-app owner delegation](BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss) to retain a reviewed credential with `npm run host:adopt`; do not create another page or signer. |
-| `setup_expired` or `setup_binding_inactive` after owner claim | The 24-hour setup credential or its original OAuth grant is no longer active. Have the same owner open `page_url` + `_tendril/manage`, choose **Add agent**, review the native scopes and save its one-use code privately. Redeem it with `npm run host:adopt -- SERVICE_ORIGIN .tendriller/delegation-code.txt`, then reopen the retained native device and verify existing data. Claim does not extend the setup credential. |
-| `setup_recovery_required` from `npm run create` | The directory retains setup, signer or recovery evidence without a usable handle. Preserve it and restore or continue the original application. A reviewed host credential plus the matching retained descriptor resumes the same page even when the original handle is missing; incomplete or conflicting evidence cannot authorize replacement creation. |
-| `adoption_outcome_unknown` | The one-use code may have been consumed without a retained response. Keep the private attempt. The owner inspects its named agent, disconnects that binding if present and explicitly approves another **Add agent** code. If a response was retained, the same helper reuses it and verifies current access without redeeming the code again. |
-| `host_credential_unverified` | The retained delegation response could not be verified through the same host's authenticated `self` endpoint. Inspect network state and the named binding with the owner. Keep the response; repeating verification sends no one-use code. A revoked binding needs a new reviewed delegation. |
-| `host_selection_changed` or `host_selection_busy` | A later renewal or another command owns credential selection. Do not roll back the later selected credential. Let the other command finish. After a crash, confirm all adoption commands have stopped before removing only `.tendriller/host-selection.lock` and resuming; retain all attempts and responses. |
-| `delegation_unavailable` | The selected host did not confirm the required `GET /api/adopt` capability. No code was submitted. Ask the operator to deploy the matching host and keep the original service origin. |
-| `host_identity_required` or `host_handle_mismatch` | Restore the original private checkpoint. If only host credentials were lost, retain the signed descriptor/device and save the original setup inspection as `.tendriller/account-setup-result.json`. With the connector disconnected, have the owner inspect `SERVICE_ORIGIN/dashboard/setups` and save its original page link as `.tendriller/owner-page-url.txt`. Resolve identity conflicts before delegation. Missing signing keys still require a device checkpoint or explicit application recovery. |
-| Sign-in is shown, `wrong_owner`, or `claimed` | Have the human open the returned owner `page_url` and sign in with the intended verified identity. If another account owns the page, report that mismatch. Agent credentials cannot claim the page on the owner's behalf. |
-| `forbidden` while configuring, or `account_required` while making a page resident | Confirm owner claim and the current account's authority. Host control configuration is owner administration. A page display role cannot perform it. Read the specific error message; `forbidden` can also mean revoked access. |
-| `lifetime_pending` | Inspect current host info and retry the same requested lifetime after account storage recovers. Do not alternate lifetime values to work around an uncertain account write. |
-| `quota`, `rate_limited`, or `peer_participant_busy` | Read the reported limit and service status; reduce concurrency or wait before a bounded retry. Preserve existing handles and operation identities. Do not repeatedly create pages to evade a limit. |
-
-Unclaimed pages expire after 24 hours. Creating another page is a new application
-setup decision, not a recovery mechanism for an existing claimed application.
-After a confirmed host storage reset, the old application itself is absent;
-follow the explicit recreation route above. Older rc.17 clients can incorrectly
-label this missing-application `404` as `access_revoked` and stop reconnecting.
-The corrected setup watcher reports `application_not_found` with recreation
-guidance and retries after 1, 2, 4 seconds, up to a 60-second maximum. A still-running
-process with that status is unhealthy. Retries do not create an app or change its
-handle; intentionally recreate and restart with the new handle, or have the host
-operator restore the original application. `401`/`403` remain access failures.
-These checks run after connection failure, not as polling on a healthy idle socket.
-
-The account-linked setup credential has its own 24-hour deadline even for a
-claimed resident page. The starter retains reviewed host credentials separately
-from the initial handle, so `project()` and terminal attachment resume the same
-application after owner delegation. Stop and restart an already running native
-participant to select the new credential. Assistant access tied to the former
-credential requires `npm run assistant:prepare` and a fresh owner permission
-review; the existing assistant key and event cursor can remain intact.
-See [membership](MEMBERSHIP.md) for the independent account and device rights.
-
-## Definition, authority and enrollment
-
-| Code | Next action |
-| --- | --- |
-| `peer_application_unconfigured` | Using the private setup credential, complete `host.peers.configureApplication(...)` before asking for owner sign-in with the real public definition, execution-manifest digest, schema administrator, epoch/key digest and initial device grants. SQL also needs its matching signed schema. Inspect authority after an uncertain response before repeating the exact configuration. Publishing HTML cannot configure the application. |
-| `PEER_NO_SELECTED_GENERATION` when opening the session | Configuration succeeded but the initial generation has not been selected. Resume the tutorial's `init` step or the complete [session bootstrap](SESSION_BOOTSTRAP.md): persist the signed creation transition, submit it through `host.peers.selectGeneration(...)`, verify the resulting authority, then open the session. Reuse a retained transition on an uncertain response; do not invent a replacement generation or start an empty session. |
-| `peer_definition_invalid` or `peer_schema_definition_mismatch` | Validate the actual application definition and, for SQL, prepare its schema with the matching public engine/session artifacts. Compare the signed definition/schema commitments instead of inventing digest values. |
-| `peer_application_immutable` | Read the configured definition and authority. The initial descriptor cannot be replaced by submitting different configuration. Resume that application or deliberately design a new application identity; preserve the existing page and data while deciding. |
-| `invalid_application`, `peer_application_identity`, or `peer_participant_scope_mismatch` | Compare the handle's 32-byte lowercase hex `application.id` with the session, runtime binding and participant request. A page ID, URL or device ID is not the application ID. |
-| `peer_account_binding_required`, `peer_account_binding_immutable`, or `peer_requester_account` | Inspect the signed grants and authenticated account bindings. Enroll the actual device under an admitted account through authorized control changes. An existing device key retains its original account; changing a payload role does not change authority. |
-| `peer_control_revision_mismatch` or `peer_transition_id_reused` | Inspect the current verified authority and the retained transition. An exact retry keeps its original signed bytes and transition ID. A changed control proposal is a new reviewed transition, not a modification of the saved request. |
-| `peer_control_state_missing`, `peer_control_state_mismatch`, or `peer_definition_state_mismatch` | Preserve the existing records and report the host consistency failure. Recreating a signer or empty authority would destroy the pinned trust relationship. Use explicit recovery with actual surviving evidence; do not fabricate it. |
-| `peer_controls_require_owner` or `peer_controls_require_resident` | Configured signed controls must retain their owner and resident storage. Claim release or lifetime downgrade is not an application reset. Use an explicitly authorized lifecycle decision for deletion. |
-
-A native device and browser device have separate signers. Page login grants host
-access; signed enrollment grants application rights. A public discovery entry only
-helps peers find each other. None of these replaces the others.
+| Readiness missing/malformed/unavailable, paused or read-only | Stop package acquisition/new allocation; report same-origin `creation.nextAction`. No fallback host or guessed compatibility. |
+| Immutable kit/manifest/hash/source differs | Operator must publish/qualify the matching SDK/tools/authority/session/runtime/host graph. Do not mix same-version archives. |
+| Private setup intent/handle unavailable | Restore its original verified private checkpoint. A public setup inspection cannot recreate the secret or authorize replacement allocation. |
+| Created page but no application authority | Expected before first browser enrollment. Prepare independent host config/publisher, publish, give the owner the ready page, then real sign-in/key proof. |
+| First browser root initialization denied | Verify actual owner account session, exact page Origin, signed key proof and epoch commitment; creator Bearer credentials cannot impersonate the browser owner. |
+| `AUTHORITY_CACHE_MISSING` on fresh device | Initial enrollment needs connectivity. Retained startup should reopen local verified metadata before background refresh. Preserve any original bootstrap key intent. |
+| Bootstrap key missing/commitment mismatch | Restore the original local key/identity records. Never generate another data key for an existing epoch/root. |
+| New browser key proved but Save unavailable | Explicit owner crypto grant and recipient-bound key provisioning are still required. Create/review its retained public request, wrap keys from an authorized donor, import only on that recipient. |
+| `member_key_proof_required` / inactive recipient account | Recipient must prove its exact key in an authenticated admitted account; owner grants do not silently invent that binding. |
+| `membership_head_changed` | Enrollment metadata changed. Inspect the exact original request and current head; obtain explicit new review if changed inputs are intended. This is not a data-order transition. |
+| Publisher denied or first browser unknown | Use the separately prepared host publisher key/policy. Data membership/root/schema is not a prerequisite for pre-owner UI publication. |
+| SQL engine/ABI/manifest unsupported | Install the matching qualified browser/native engine and public session composition. Do not replace with stock SQLite or bypass permissions. |
+| SQL table/query missing | Ordinary schema may not exist or may have changed during replay. Label the retained last snapshot not current, preserve local drafts, inspect catalog/outcomes, and submit authorized ordinary DDL if intended. |
+| SQL permission rejection | Crypto writer/administrator/finalizer is not namespace/object/row authority. The authorized signer must submit an explicit normal permission transaction. Existing column/tool approvals do not expand automatically. |
+| Zero peers / discovery or RTC unavailable | Local Save still works after key/storage bootstrap. Inspect optional direct RTC/relay routing, account access and bounded budgets; do not require a native process or current global read. |
+| Optional agent/provider offline | Only its tools/inference dispatch are unavailable. Ordinary browser data edits continue. Preserve provider idempotency and original operation references. |
+| Finality unsupported | Policy `none` deliberately has no finality. Display local revisable materialization and independent retention, not fake finalized status. |
+| Finalizer/quorum absent | Keep local authoring/provisional reads enabled. Configure/bring up actual authorized provider(s) and verified evidence; configuration alone is not availability. |
+| Closed-time exclusion | Preserve the original signed intent and show exclusion. Genuine unseen offline work behind a sealed frontier can be excluded; never silently retimestamp/resubmit. |
 
 ## Browser readiness, storage and peer connections
 
-| Observation or code | Next action |
-| --- | --- |
-| `backend_unavailable`, or `application.ready()` remains pending | Check browser module/Worker load errors and the real session bootstrap. Install `createApplicationBackend({ id: session.applicationId, session })` exactly once. `ready()` waits for installation; it does not construct the session. |
-| `invalid_backend` or `backend_already_selected` | Match the backend's application ID and public contract. Keep one owned session/binding for the page lifetime; reconnect through that session rather than installing a second backend. |
-| `signal_unavailable` | Install that same session's `signals` with `tendril.signals.install(session.signals)`. Live signals are disposable; successful send is not a durable application write. |
-| Adapter installed, but commands wait or no peers are visible | Inspect `session.status` and the one participation controller's status. Confirm the intended native process/browser Worker is running, has current grants and keys, and uses the same application. Check the host introduction adapter and actual environment RTC/relay openers. A resident host page does not keep an application coordinator running. |
-| `APPLICATION_DEVICE_NOT_FOUND`, `DEVICE_NOT_ENROLLED` in a delivered page | The browser has no grant yet. This is the connection component's setup step, not an error for the user. Keep `createOwnerConnection`; user-facing copy for every code is in [Connect the browser](APP_PATTERNS.md#connect-the-browser). |
-| `PAIRING_HISTORY_FULL` | Preserve the browser’s retained requests and existing device key. Ask the agent to inspect the host outcomes, then use the starter’s explicit `npm run enroll -- PUBLIC_KEY` administration route with the resident owner stopped, and restart that same participant. Reload the browser to attach to the enrolled device. Do not clear storage or generate another signer. |
-| `OWNER_BUSY` | Another owner holds this browser profile. Current pages attach to it (any tab, any release); the pairing Worker waits for the fence. If it persists, an older SDK is in use: update the starter files and core package. |
-| Connection status flips, or `SIGNAL_ROUTE_UNAVAILABLE` while a browser is open | Log `participation.status.connectedPeers` with timestamps on both sides to see which peer drops. Update to the current core (relay live window, fallback-route frame queue, owner retirement grace) and starter (8 MiB subscription queues). An app that detaches and reattaches on every error restarts the owner; let the connection component own reconnects. |
-| `SIGNAL_BACKPRESSURE` for a multi-piece reply, or "connected, waiting for data" | Use `helpers/signal-request.mjs` for bounded replies and retries when a piece encounters backpressure; it waits for the answering peer before the first request. Awaiting `send` means local acceptance, not network drain. The relay sender queue is 1 MiB; 8 MiB subscription queues are separate receiver limits. |
-| Owners see an old UI after reload | Pages show the latest release by default; an address containing `/_publications/ID/` is an explicit pin. Open the page's own URL. |
-| Direct RTC fails | Let the owned adapter use its bounded relay fallback. Inspect the selected transport and relay reachability. Do not add an application retry/election loop or a second participation controller. See [peer connections](PEER_CONNECTIONS.md). |
-| Participation reports `approval-required` | Display the exact current recovery proposal and its freshness/loss evidence. Call `approveRecovery(proposal.id)` only after that proposal is reviewed. Changed authority can invalidate it; do not approve an old proposal automatically. |
-| `status.database` is `idle` while signals/control work | This is expected before durable data is used. Exercise a real command or coherent query when the task needs retained state; adapter readiness does not activate the database. |
-| First data use fails or reopen cannot find the existing device store | Inspect the actual Worker error and storage capabilities. Keep the existing device's record-backend pin and signer. A capability probe can diagnose a fresh store's eligibility; it does not enroll a device, migrate a store or repair lost history. |
+A usable signing identity, verified membership and required keys plus durable local storage permit submission. Neither `connectedPeers`, a successful initial query nor finalizer readiness belongs in the ordinary Save condition. SQL activation/query errors are separate from local durable submission.
 
-An IndexedDB record backend does not establish SQL/WASM support. SQL has its own
-engine assets and capability requirements. Saving page code for offline use and
-adding it to the Home Screen are also separate from application-data durability
-and device enrollment. See [application storage](APPLICATION_BACKENDS.md) and
-[browser setup](BROWSER_API.md#home-screen-setup).
+`OWNER_BUSY` means attach to the existing retained profile owner, not steal its store. `OWNER_STORAGE_UNSUPPORTED` requires the engine's supported Worker mode with the same profile. A lost/stale attachment needs a fresh bounded local owner proof and inspection of original work. Preserve Web Locks/root lifetimes, physical storage fencing and exact signed operation bytes through hide/show, restart and uncertain calls.
 
-## Lost replies, operation outcomes and recovery
+Offline readiness requires the actual complete signed application/engine/runtime graph to be cached and acknowledged by `tendril.publication.saveOffline()`. A loaded tab, installed service worker or cached HTML alone is insufficient. Browser storage loss/eviction must be reported; page residency does not guarantee persistence or future execution.
 
-Use the original operation ID to inspect uncertain work:
+## Lost replies and revisable operation outcomes
 
-```sh
-tendril --session ./application.mjs operation add-item-1
-tendril --session ./application.mjs retry add-item-1
-```
+Submission resolves after local durable storage. A timeout is not proof of rejection or absence. Inspect `operations.get(id)` and `operation.inspect()`, retaining its authenticated application/author/proposal identity. `operations.retry(id)` keeps the original signer/time/core/bytes; repeat preparation only with the exact original command/input/ID when no signed record exists. Do not clear a draft before durable acknowledgment.
 
-| Observation | Meaning and next step |
-| --- | --- |
-| `saved` | The exact signed attempt is durable locally. It does not prove acceptance, applied execution or another peer's retention. Keep its identity and inspect/wait for progress. |
-| `applied` | Inspect accepted/rejected outcome, generation and revision. Query a coherent view in that selected history. Applied work can still be abandoned by explicit recovery. |
-| `shared` | Retained coverage is observed separately from application acceptance. It is not a promise that every peer has the data or that recovery can never exclude it. |
-| Timeout or disconnected waiter | The operation may already have been accepted. Inspect and retry the original saved attempt; cancelling the wait does not cancel the command. |
-| `abandoned` or `needsReapply` | Show the recovery and affected work. Capture the current view, review the original intent and guards, and deliberately reapply under a fresh operation ID linked to the original. Do not silently replay an abandoned branch. |
-
-Release each captured read view after use. A `changes` notification is an
-invalidation to reread, not a durable event cursor or an acknowledgement of an
-external effect. [The application contract](APPLICATION_BACKENDS.md) and
-[CLI recovery commands](tools/CLI.md) describe these boundaries.
+Materialized acceptance/rejection can change after an earlier operation, missing dependency, authority evidence, schema or finality update. Inspect the latest coherent revision. Retention evidence concerns named peer storage, not execution or finality. Operational engine failure and missing keys/bodies/proof predecessors are dependencies, not fabricated SQL rejection.
 
 ## Signed publication
 
-The host returns lowercase error codes. A directly called Chronolog API may
-report the corresponding uppercase `PEER_...` code.
-
-| Code | Next action |
-| --- | --- |
-| `peer_publication_forbidden` or `peer_publisher_account` | Check the real signing device's explicit `publisher: true` grant and its account enrollment. Control administrator or application writer rights alone do not grant publication. Have an authorized administrator grant the intended right; never substitute a different signer secretly. |
-| `peer_publication_control_changed` or `peer_publication_conflict` | Read and verify current authority and `control.publication()`. Check whether the original publication was already accepted. If preparing a changed release against a new head, review it and use a fresh operation ID. Keep the old signed attempt intact. |
-| `peer_publication_operation_reused` | The operation ID already binds different signed content. Retry the original intent exactly, or use a new operation ID for the intentionally changed release. |
-| `peer_publication_content_missing`, `peer_publication_assets_invalid`, `peer_publication_bytes_invalid`, or `peer_publication_asset_mismatch` | Repack the complete authored directory. Check sorted canonical paths, content hashes, sizes, media types, HTML entry and canonical base64 asset bytes. Supply every missing referenced asset. If the intended graph changes, prepare a new release rather than altering saved signed bytes. |
-| `peer_publication_semantics_mismatch` or `peer_publication_scope_mismatch` | Compare definition/engine commitments and application/history identity with verified authority. Publishing a different application's bundle cannot repair its bootstrap. |
-| `peer_publication_file_too_large`, `peer_publication_too_large`, or `peer_publication_history_limit` | Inspect effective host and publication limits. Reduce the authored graph where possible; a bounded history limit requires an explicit lifecycle decision. Do not split one coherent release into unsigned partial updates. |
-
-After a lost publish response, retry the original publication operation with the
-same files and saved intent. An accepted exact retry returns its original receipt.
-A loaded page may still be pinned to an earlier immutable publication; compare
-its publication identity before diagnosing a code update as missing. Restoring
-old code is a new signed publication, separate from application-data recovery.
+Verify the signed manifest, publisher policy, asset hashes, immutable publication ID and selected release receipt. Code publication revisions/concurrency are independent from application operation order and schema. Retry the original retained publication operation after an uncertain reply; never sign a replacement against a guessed head. Publish only the dedicated authored output, not private handles, identities, native journals or key material.
 
 ## Report the actual boundary
 
-Ordinary application commands, queries and live signals travel through peers.
-With a direct connection, the host can remain idle during those edits. Relay
-connections carry encrypted peer traffic through the host and consume bandwidth;
-coarse discovery renewal and explicit control/publication calls also use it.
-Do not interpret zero host application writes as a failed save, or claim zero
-host traffic for a relay-backed session.
-
-The ordinary host MCP endpoint administers host controls; it does not run domain
-commands or wake an agent conversation. For application tools, subscribed events,
-mounted UI handoff and the optional Workspace Agent route, use the separate
-[ChatGPT setup and recovery guide](CHATGPT_INTEGRATION.md#troubleshoot-setup).
-State which native process or integration actually
-consumes the application work and how long it remains available. If a prerequisite
-is missing, report the completed checkpoint, exact missing artifact/authority,
-redacted error, preserved work and next action. Keep a separate persistence
-service out of the repair unless the task requires a capability beyond the
-documented application contract and that architectural choice is explicit.
+Name the exact prerequisite, observed code/status, retained identity/operation, and next authorized action without exposing secrets. Report exact checks and untested boundaries under [delivery](AGENT_DELIVERY.md). An installed adapter, source change, static preview or old successful release is not a verified live replacement. No troubleshooting step authorizes an unrequested production deployment, storage wipe, compatibility stack or migration reader.

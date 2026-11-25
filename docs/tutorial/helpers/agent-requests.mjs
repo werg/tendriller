@@ -45,7 +45,7 @@ function timestamp(value) {
   return Number.isSafeInteger(result) ? result : null;
 }
 
-/** One coherent selected-history read; rebuilding also removes abandoned facts. */
+/** One coherent materialized snapshot; rederiving also removes retracted facts. */
 export function readAgentInbox(view) {
   const requests = new Map(), consumers = new Map();
   let cursor;
@@ -69,7 +69,7 @@ export function readAgentInbox(view) {
       } else {
         const request = requests.get(key(input.requestAuthor, input.requestOperationId));
         // Another member may emit a fact, but cannot impersonate the recipient.
-        // Orphan references (including facts excluded by recovery) change no item.
+        // Orphan references (including excluded or retracted facts) change no item.
         if (!request || event.author !== request.recipient) continue;
         const fact = { author: event.author, consumerId: input.consumerId,
           runId: input.runId, operationId: event.operationId, eventId: event.id, atMs };
@@ -110,7 +110,7 @@ export function consumerPresence(consumer, {
   return { status: ageMs < staleAfterMs ? 'available' : 'stale', consumer, ageMs };
 }
 
-/** The durable request phase is separate from the caller's saved/applied state. */
+/** The durable request phase is separate from the caller's stored/materialized observations. */
 export function requestDelivery(request) {
   if (!request) return 'unknown';
   return request.answers.length ? 'answered' : request.receipts.length ? 'seen' : 'awaiting-receipt';
@@ -155,7 +155,7 @@ export function announceAgentPresence(session, {
     if (overrideState !== 'stopped' && !hasPeer()) return;
     try {
       await session.signals.send(topic, {
-        consumerId: consumerId || session.deviceId,
+        consumerId: consumerId || session.identity.publicKey,
         runId,
         role,
         topics,
@@ -174,7 +174,7 @@ export function announceAgentPresence(session, {
   const pingLoop = (async () => {
     try {
       for await (const frame of session.signals.subscribe({ topics: [pingTopic], mode: 'all', signal: lifetime })) {
-        if (frame.authorId === session.deviceId) continue;
+        if (frame.authorId === session.identity.publicKey) continue;
         void publish();
       }
     } catch { /* closed */ }

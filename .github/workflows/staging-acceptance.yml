@@ -83,7 +83,7 @@ jobs:
           CHRONOLOG_SHA: ${{ steps.session.outputs.source }}
         run: |
           test "$(git rev-parse HEAD)" = "$CHRONOLOG_SHA"
-          node tools/package-peer-session.mjs --sql-native --sql-browser --output "$RUNNER_TEMP/chronolog-fixture/session"
+          node tools/package-peer-session.mjs --sql-native --sql-browser --wasm-dir "$RUNNER_TEMP/chronolog-fixture/wasm" --output "$RUNNER_TEMP/chronolog-fixture/session"
       - uses: actions/upload-artifact@v4
         with:
           name: staging-chronolog-fixture

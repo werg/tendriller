@@ -4,6 +4,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import test from 'node:test';
+import { tmpdir } from 'node:os';
+import { FIRST_APP_PROFILES } from '../release-composition.mjs';
+import { browserSqlArchive } from './helpers/browser-sql-archive.mjs';
 
 const fakeGh = `#!/usr/bin/env node
 import {copyFileSync,existsSync,readFileSync,readdirSync,writeFileSync,appendFileSync} from 'node:fs';
@@ -39,12 +42,12 @@ if(args[0]==='api'){
 `;
 
 function fixture(t) {
-  const scratch = resolve(import.meta.dirname, '../../.build');
+  const scratch = tmpdir();
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, 'release-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const dir of ['bin', 'dist', 'publisher', 'remote/assets']) mkdirSync(join(root, dir), { recursive: true });
-  for (const file of ['publish-release.mjs', 'release-composition.mjs', 'onboarding.mjs', 'runtime-manifest.mjs', 'archive-metadata.mjs'])
+  for (const file of ['publish-release.mjs', 'release-composition.mjs', 'onboarding.mjs', 'runtime-manifest.mjs', 'archive-metadata.mjs', 'session-pin.mjs'])
     copyFileSync(new URL('../' + file, import.meta.url), join(root, 'publisher', file));
   mkdirSync(join(root, 'plugin'), { recursive: true });
   copyFileSync(new URL('../../plugin/build.mjs', import.meta.url), join(root, 'plugin/build.mjs'));
@@ -54,6 +57,9 @@ function fixture(t) {
   writeFileSync(join(root, 'bin/package.json'), '{"type":"module"}');
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.2.3' }));
   writeFileSync(join(root, '.gitignore'), 'bin/\ndist/\nremote/\n');
+  const chronolog = { repository: 'werg/chronolog-db', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40), dirty: false };
+  const sql = browserSqlArchive(root,chronolog);
+  writeFileSync(join(root,'scripts/sql-browser-session.json'), JSON.stringify({archive:'sql-browser.tgz',sha256:sql.sha256}));
   execFileSync('git', ['init', '-q'], { cwd: root });
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['-c', 'user.name=Release test', '-c', 'user.email=release@example.test', 'commit', '-qm', 'Fixture source'], { cwd: root });
@@ -61,26 +67,26 @@ function fixture(t) {
   const sourceTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim();
   const digest = bytes => createHash('sha256').update(bytes).digest('hex');
   const component = (role, file, value) => {
-    const bytes = Buffer.from(typeof value === 'object' ? JSON.stringify(value) : value);
+    const bytes = Buffer.from(Buffer.isBuffer(value) ? value : typeof value === 'object' ? JSON.stringify(value) : value);
     writeFileSync(join(root, 'dist', file), bytes);
     return { role, file, size: bytes.length, sha256: digest(bytes),
       url: `https://github.com/werg/tendriller/releases/download/source-${source}/${file}` };
   };
   const identity = { repository: 'werg/tendriller', source, sourceTree, dirty: false };
-  const components = ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter'].map(role =>
+  const components = ['sdk', 'runtime', 'engine', 'tools', 'authority', 'session', 'starter'].map(role =>
     component(role, role === 'tools' ? 'tool.mjs' : role + '.tgz', `immutable ${role} bytes\n`));
-  const chronolog = { repository: 'werg/chronolog-db', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40), dirty: false };
+  components.push(component('session-sql-browser','sql-browser.tgz',sql.bytes));
   const compositionBody = { format: 'tendriller-release-composition-v1', version: '1.2.3', contract: 3,
-    core: identity, runtime: 'c'.repeat(64), chronolog: { session: chronolog, generation: chronolog }, components };
+    core: identity, runtime: 'c'.repeat(64), chronolog: { session: chronolog, authority: chronolog, 'session-sql-browser':chronolog }, profiles:FIRST_APP_PROFILES, components };
   const composition = { ...compositionBody, id: digest(JSON.stringify(compositionBody)) };
   const artifacts = [...components, component('plugin', 'tendriller-chatgpt-plugin.zip', 'plugin bytes'), component('composition', 'composition.json', composition),
-    component('first-app', 'first-app.tgz', 'complete first-app bytes'),
+    component('first-app', 'tendriller-first-app-1.2.3.tgz', 'complete first-app bytes'), component('first-app-sql','tendriller-first-app-sql-1.2.3.tgz','SQL kit'),
     component('core-provenance', 'provenance.json', { ...identity, artifacts: components.filter(item => ['sdk', 'runtime', 'engine'].includes(item.role)) }),
     component('tools-provenance', 'tools-manifest.json', { version: '1.2.3', contract: 3, runtime: composition.runtime,
       source_commit: source, source_tree: sourceTree, dirty: false, artifacts: components.filter(item => item.role === 'tools') })];
   const manifest = { format: 'tendriller-core-release', version: '1.2.3', contract: 3, runtime: composition.runtime,
     source_commit: source, source_tree: sourceTree, composition: { id: composition.id, file: 'composition.json' },
-    first_app: { file: 'first-app.tgz', profile: 'events', packages: ['sdk', 'tools', 'session'] }, artifacts };
+    first_app:{file:'tendriller-first-app-1.2.3.tgz',profile:'events',packages:FIRST_APP_PROFILES.events.packages,build_dependency:'esbuild@0.28.2'},first_apps:{sql:{file:'tendriller-first-app-sql-1.2.3.tgz',profile:'sql',packages:FIRST_APP_PROFILES.sql.packages,build_dependency:'esbuild@0.28.2'}}, artifacts };
   writeFileSync(join(root, 'dist/manifest.json'), JSON.stringify(manifest));
   const commands = () => existsSync(join(root, 'remote/commands.jsonl'))
     ? readFileSync(join(root, 'remote/commands.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : [];
@@ -177,7 +183,7 @@ test('publication refuses a checkout changed after release preparation', t => {
 
 test('publication refuses an incomplete composition before creating a release', t => {
   const f = fixture(t);
-  for (const role of ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter', 'composition', 'first-app', 'core-provenance', 'tools-provenance', 'plugin']) {
+  for (const role of ['sdk', 'runtime', 'engine', 'tools', 'authority', 'session', 'starter', 'composition', 'first-app', 'core-provenance', 'tools-provenance', 'plugin']) {
     f.setManifest({ artifacts: f.manifest.artifacts.filter(item => item.role !== role) });
     const result = f.publish();
     assert.notEqual(result.status, 0, role);

@@ -5,13 +5,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import { p, worker, browser, createPhysicalSession } from '../../collaboration/test/physical-fixture.mjs';
+const definition=p.defineApplication({id:'ergonomics',version:'1',commands:{add:p.defineCommand({description:'Retain one value',input:{type:'object',properties:{a:{type:'integer'}},required:['a'],additionalProperties:false},prepare:value=>p.program(p.emit('value',value))})},queries:{list:p.defineQuery({description:'Read materialized values',input:{type:'null'},read:view=>({count:view.readEvents({topics:['value']}).events.length})})}});
 
 import { packTarGz, unpackTarGz, listTarGz, readTarGzFile } from '../../contract/archive.mjs';
 import { createReleaseDownloader, extractVerifiedTarGz } from '../../contract/release-verify.mjs';
 import { probeCapabilities, detectProxyEnvironment } from '../../contract/transport-probe.mjs';
-import { createServerlessHostAdapter } from '../../contract/serverless.mjs';
 import { acquireAtomicLock, resolveUnixSocketPath, resolveWindowsPipePath } from '../../session/ipc.mjs';
-import { createPersistentOutbox } from '../../session/outbox.mjs';
 import { connectOrStartNativeSession } from '../../session/native.mjs';
 import { buildCompositionV2, COMPOSITION_V2_PROFILES } from '../release-composition.mjs';
 import { exportSourceHandoff } from '../../tools/cli/lib/handoff.mjs';
@@ -131,20 +131,6 @@ test('composition v2 supports all four explicit profiles including relay-only', 
   assert.equal(comp.profiles['sql-portable-relay-only'].wasmSql, true);
 });
 
-test('persistent pre-submission outbox preserves operation IDs and rejects payload conflicts', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'tendriller-outbox-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const outbox = await createPersistentOutbox(join(dir, 'state'));
-  const first = await outbox.record({ operationId: 'op-1', appId: 'a'.repeat(64), deviceId: 'd'.repeat(64), command: 'addNote', input: { text: 'hi' } });
-  assert.equal(first.status, 'recorded');
-  const repeat = await outbox.record({ operationId: 'op-1', appId: 'a'.repeat(64), deviceId: 'd'.repeat(64), command: 'addNote', input: { text: 'hi' } });
-  assert.equal(repeat.payloadHash, first.payloadHash);
-  await assert.rejects(outbox.record({ operationId: 'op-1', appId: 'a'.repeat(64), deviceId: 'd'.repeat(64), command: 'addNote', input: { text: 'changed' } }),
-    { code: 'OUTBOX_OPERATION_CONFLICT' });
-  await outbox.mark('op-1', 'applied');
-  assert.equal((await outbox.list({ pendingOnly: true })).length, 0);
-});
-
 test('cross-platform IPC naming, atomic lock stale recovery, and INSTANCE_UNRESPONSIVE safety', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'tendriller-ipc-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -168,66 +154,14 @@ test('connectOrStartNativeSession supports bounded zero-IPC mode and concurrent 
   const dir = mkdtempSync(join(tmpdir(), 'tendriller-cos-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const appId = '11'.repeat(32);
-  const deviceId = '22'.repeat(32);
-  const seenOps = [];
-  const fakeOwnerFactory = async () => {
-    const endpoints = [];
-    const session = {
-      applicationId: appId,
-      deviceId,
-      signal: new AbortController().signal,
-      describe: () => ({ id: 'demo', version: '1' }),
-    };
-    return {
-      ownerInstanceId: 'owner-1',
-      session,
-      endpoints: () => endpoints,
-      attach(endpoint, policy) {
-        const onMessage = event => {
-          const { port } = event.data;
-          port.addEventListener('message', msg => {
-            if (msg.data?.method === 'command') seenOps.push(msg.data.args[2].operationId);
-            port.postMessage({ id: msg.data?.id ?? 1, result: { ok: true, op: msg.data?.args?.[2]?.operationId }, snapshot: { status: { phase: 'ready' } } });
-          });
-          port.start();
-          port.postMessage({ ready: { applicationId: appId, deviceId, endpoint: { identity: policy.identity } } });
-        };
-        endpoint.addEventListener('message', onMessage);
-        return () => endpoint.removeEventListener('message', onMessage);
-      },
-      async close() {},
-    };
-  };
-  const fakeConnect = async (endpoint, opts) => {
-    const channel = new MessageChannel();
-    let readyData;
-    const readyPromise = new Promise(done => {
-      channel.port1.addEventListener('message', event => { if (event.data?.ready) done(event.data.ready); }, { once: true });
-    });
-    channel.port1.start();
-    endpoint.postMessage({ protocol: 'test', handshake: { applicationId: opts.applicationId }, port: channel.port2 });
-    readyData = await readyPromise;
-    const signal = new AbortController().signal;
-    return {
-      applicationId: readyData.applicationId,
-      deviceId: readyData.deviceId,
-      endpoint: readyData.endpoint,
-      signal,
-      callCommand(operationId) {
-        return new Promise(done => {
-          channel.port1.addEventListener('message', event => { if (event.data?.id === 7) done(event.data.result); }, { once: true });
-          channel.port1.postMessage({ id: 7, method: 'command', args: ['add', {}, { operationId }] });
-        });
-      },
-      async detach() { channel.port1.close(); },
-    };
-  };
-
+  let opened=0;
+  const openOwner=async()=>{opened++;return worker.createApplicationOwner(await createPhysicalSession({definition,applicationId:appId}));};
+  const connect=browser.connectApplicationOwner;
   // 1. Bounded zero-IPC mode
   const boundedDir = join(dir, 'bounded');
   const bounded = await connectOrStartNativeSession({
-    directory: boundedDir, profileId: 'p1', openOwner: fakeOwnerFactory, connect: fakeConnect,
-    applicationId: appId, definitionId: 'demo', definitionVersion: '1', bounded: true,
+    directory: boundedDir, profileId: 'p1', openOwner, connect,
+    applicationId: appId, bounded: true,
   });
   assert.equal(bounded.mode, 'bounded');
   assert.equal(existsSync(join(boundedDir, 'endpoint.json')), false);
@@ -237,18 +171,21 @@ test('connectOrStartNativeSession supports bounded zero-IPC mode and concurrent 
   const sharedDir = join(dir, 'shared');
   const [first, second] = await Promise.all([
     connectOrStartNativeSession({
-      directory: sharedDir, profileId: 'p1', openOwner: fakeOwnerFactory, connect: fakeConnect,
-      applicationId: appId, definitionId: 'demo', definitionVersion: '1', preferredTransport: 'loopback-tcp',
+      directory: sharedDir, profileId: 'p1', openOwner, connect,
+      applicationId: appId, preferredTransport: 'loopback-tcp',
     }),
     connectOrStartNativeSession({
-      directory: sharedDir, profileId: 'p1', openOwner: fakeOwnerFactory, connect: fakeConnect,
-      applicationId: appId, definitionId: 'demo', definitionVersion: '1', preferredTransport: 'loopback-tcp',
+      directory: sharedDir, profileId: 'p1', openOwner, connect,
+      applicationId: appId, preferredTransport: 'loopback-tcp',
     }),
   ]);
   assert.equal([first.startedSupervisor, second.startedSupervisor].filter(Boolean).length, 1);
-  const res = await first.session.callCommand('my-verbatim-op-42');
-  assert.equal(res.op, 'my-verbatim-op-42');
-  assert.deepEqual(seenOps, ['my-verbatim-op-42']);
+  assert.equal(first.session.identity.publicKey,second.session.identity.publicKey);
+  const operation=await first.session.command('add',{a:42},{operationId:'my-verbatim-op-42'});
+  assert.equal(operation.stored,true);await operation.materialized();
+  assert.equal((await operation.inspect()).operationId,'my-verbatim-op-42');
+  assert.equal((await second.session.query('list',null)).value.count,1);
+  assert.equal(opened,2,'one explicit bounded owner plus exactly one shared retained owner');
   const owner = first.startedSupervisor ? first : second;
   const peer = first.startedSupervisor ? second : first;
   await peer.detach();
@@ -272,56 +209,17 @@ test('source handoff blocks secrets and excludes device state', async t => {
 
 });
 
-test('local Stdio MCP handler and ServerlessHostAdapter execute unified five-step workflows', async () => {
-  const ops = new Map();
-  const fakeSession = {
-    applicationId: '33'.repeat(32),
-    deviceId: '44'.repeat(32),
-    status: { phase: 'ready', database: 'ready', role: 'coordinator', generation: 'g1', coordinator: '44'.repeat(32), connectedPeers: 0 },
-    describe: () => ({ id: 'demo', version: '1', commands: [{ name: 'add' }], queries: [{ name: 'list' }] }),
-    async query(name) { return { revision: { generation: 'g1', sequence: ops.size }, value: { name, count: ops.size } }; },
-    async command(name, input, { operationId }) {
-      const applied = { status: 'applied', outcome: 'accepted', operationId, sequence: ops.size + 1, generation: 'g1', command: name, input };
-      ops.set(operationId, applied);
-      return { get: async () => applied, applied: async () => applied };
-    },
-    operations: { get: async id => ops.get(id) ?? null },
-  };
-
-  // Stdio MCP
-  const init = await handleStdioMcpMessage({ session: fakeSession, mode: 'own' }, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
-  assert.equal(init.result.serverInfo.name, 'tendriller-local-stdio');
-  const batch = await handleStdioMcpMessage({ session: fakeSession, mode: 'own' }, {
-    jsonrpc: '2.0', id: 2, method: 'tools/call',
-    params: { name: 'command_submit_batch', arguments: { commands: [
-      { command: 'add', input: { a: 1 }, operationId: 'stdio-1' },
-      { command: 'add', input: { a: 2 }, operationId: 'stdio-2' },
-    ] } },
-  });
-  assert.equal(batch.result.structuredContent.results.length, 2);
-  assert.equal(batch.result.structuredContent.results[0].lifecycle, 'applied');
-
-  // ServerlessHostAdapter
-  const kv = new Map();
-  const adapter = createServerlessHostAdapter({
-    applicationId: '33'.repeat(32),
-    withLock: (_id, work) => work(),
-    retainTask: () => {},
-    storage: { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v); }, list: async () => [...kv.keys()] },
-    authorize: req => req.headers.get('Authorization') === 'Bearer ok',
-    openSession: async () => ({ session: fakeSession }),
-  });
-  const unauth = await adapter.handleRequest(new Request(`https://worker.test/v1/apps/${'33'.repeat(32)}/health`));
-  assert.equal(unauth.status, 401);
-  const cmdRes = await adapter.handleRequest(new Request(`https://worker.test/v1/apps/${'33'.repeat(32)}/commands`, {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ok', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ command: 'add', input: { a: 3 }, operationId: 'srv-1' }),
-  }));
-  assert.equal(cmdRes.status, 200);
-  assert.equal((await cmdRes.json()).lifecycle, 'applied');
-  const inspectRes = await adapter.handleRequest(new Request(`https://worker.test/v1/apps/${'33'.repeat(32)}/operations/srv-1`, {
-    headers: { Authorization: 'Bearer ok' },
-  }));
-  assert.equal((await inspectRes.json()).lifecycle, 'applied');
+test('local Stdio MCP batch acknowledges locally stored operations without conflating materialization or peer retention', async () => {
+  const session=await createPhysicalSession({definition,applicationId:'33'.repeat(32)});
+  try {
+    const init=await handleStdioMcpMessage({session,mode:'own'},{jsonrpc:'2.0',id:1,method:'initialize',params:{}});
+    assert.equal(init.result.serverInfo.name,'tendriller-local-stdio');
+    const batch=await handleStdioMcpMessage({session,mode:'own'},{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'command_submit_batch',arguments:{commands:[
+      {command:'add',input:{a:1},operationId:'stdio-1'},{command:'add',input:{a:2},operationId:'stdio-2'},
+    ]}}});
+    assert.equal(batch.result.structuredContent.results.length,2);
+    for(const result of batch.result.structuredContent.results){assert.equal(result.stored,true);assert.equal(result.finalized,false);assert.deepEqual(result.retained,[]);}
+    for(const id of ['stdio-1','stdio-2'])assert.equal((await(await session.operations.get(id)).materialized()).outcome,'accepted');
+    assert.equal((await session.query('list',null)).value.count,2);
+  } finally {await session.close();}
 });

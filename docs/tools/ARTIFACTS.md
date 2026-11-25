@@ -32,6 +32,6 @@ executes application semantics.
 
 Real common-session behavior is qualified by the independently packed consumers
 in tendriller-contrib: native events, native RTC, browser Worker/OPFS, guarded SQL
-and the actual workerd control participant. Reports name exact source and archive
+and the actual workerd authority participant. Reports name exact source and archive
 hashes. A dirty build remains development evidence; local traffic counters do
 not establish provider prices, deployed login or representative network behavior.

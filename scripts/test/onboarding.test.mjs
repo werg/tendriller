@@ -170,9 +170,9 @@ test('the installable MCP connection requests account setup permission explicitl
 });
 
 test('events and SQL starter qualification use the current pinned session source', () => {
-  const { source, sql_archive } = readSessionPin(root);
-  assert.match(source, /^[a-f0-9]{40}$/);
-  assert.equal(sql_archive, `chronolog-peer-session-${source.slice(0, 8)}-sql.tgz`);
+  const pin = readSessionPin(root);
+  assert.match(pin.source, /^[a-f0-9]{40}$/);
+  assert.deepEqual(Object.keys(pin), ['source'], 'No inferred SQL sibling archive');
   const workflow = readFileSync(join(root, '.github/workflows/agent-onboarding.yml'), 'utf8');
   assert(workflow.indexOf('path: core') < workflow.indexOf('node-version: 24'));
   assert(workflow.indexOf('node-version: 24') < workflow.indexOf('run: node scripts/session-pin.mjs'));
@@ -184,8 +184,12 @@ test('events and SQL starter qualification use the current pinned session source
   const service = readFileSync(join(root, '.github/workflows/service.yml'), 'utf8');
   assert(service.includes('npm run release:artifacts'), 'Events qualification prepares the pinned public session in the graph');
   assert(service.includes('test:first-app -- --first-app-archive'), 'Events qualification must use the exact kit');
-  assert(workflow.includes('SQL_ARCHIVE: ${{ steps.session.outputs.sql_archive }}'));
-  assert(workflow.includes('peer-session/$SQL_ARCHIVE'));
+  assert(workflow.includes('SQL_ARCHIVE: ${{ steps.native-sql.outputs.artifact }}'));
+  assert(workflow.includes('node tools/test-peer-session-sql.mjs --artifact "$SQL_ARCHIVE"'));
+  assert(workflow.includes('JSON.parse(readFileSync(process.env.RUNNER_TEMP'));
+  assert(workflow.includes('tendriller-first-app-sql-'));
+  assert(!workflow.includes('--sql-native-only'));
+  assert(!workflow.includes('steps.session.outputs.sql_archive'));
   assert(!/chronolog-peer-session-[a-f0-9]{8}-sql\.tgz/.test(workflow));
 });
 
@@ -194,8 +198,8 @@ test('live views have one SDK implementation and the starter page uses bounded i
   assert.equal(TUTORIAL_FILES.includes('helpers/live-view.mjs'), false);
   assert.equal(existsSync(join(root, 'docs/tutorial/helpers/live-view.mjs')), false, 'Copied live-view implementation');
   const source = readFileSync(join(root, 'docs/tutorial/page.mjs'), 'utf8');
-  assert.match(source, /import \{ createLiveView, createViewStore, operationReference \} from '@chronolog\/peer-session\/browser'/);
-  assert.match(source, /await liveView\.ready\(\{[^}]*timeoutMs: 30_000/);
+  assert.match(source, /import \{ createLiveView, createViewStore, createApplicationBackend \} from '@chronolog\/peer-session'/);
+  assert.match(source, /await (?:live|liveView)\.ready\(\{[^}]*timeoutMs: 30_000/);
 });
 
 

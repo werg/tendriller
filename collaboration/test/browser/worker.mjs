@@ -1,6 +1,5 @@
-import { defineApplication, defineCommand, defineQuery, emit, program, openPeerApplication,
-  MemoryBytesStore, createPeerIdentity, bytesDigest, participantGrant, signApplicationDescriptor,
-  signControlRevision, createGenerationRegistry, signTransitionRequest, applicationDefinitionDigest,
+import { defineApplication, defineCommand, defineQuery, emit, program, createApplicationSession,
+  createSigningIdentity, signAppDescriptor, signMembership, epochKeyCommitment, encodeRecord, decodeRecord,
   eventExecutionManifest, executionManifestArtifacts, bytesToHex } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '../../../session/worker.mjs';
@@ -26,7 +25,7 @@ navigator.locks.query=async()=>{queryCount++;const snapshot=await nativeQuery();
   for(const root of roots)if(!snapshot.held.some(lock=>lock.name===rootLifetimeLockName(profileId,root)))missingWitnesses.add(root);
   return snapshot;
 };
-const applicationId = '91'.repeat(32), encoder = new TextEncoder(), decoder = new TextDecoder();
+const applicationId = '91'.repeat(32);
 const definition = defineApplication({id:'owner-fixture',version:'1',commands:{say:defineCommand({description:'Retain test message',input:{type:'string',minLength:1,maxLength:128},prepare:text=>program(emit('message',{text}))})},
   queries:{messages:defineQuery({description:'Coherent test messages',input:{type:'null'},read:view=>view.readEvents()})}});
 const service=serveBrowserOwner({async load(){
@@ -37,19 +36,18 @@ const service=serveBrowserOwner({async load(){
   const device=await openBrowserDevice({name:profileId,create:true});let session;
   try{
     let raw=await device.store.get('test/authority'),key=await device.store.get('test/epoch');
-    if(!raw){const host=await createPeerIdentity();key=crypto.getRandomValues(new Uint8Array(32));
+    if(!raw){
+      const host=await createSigningIdentity();
+      if(!key){key=crypto.getRandomValues(new Uint8Array(32));await device.store.put('test/epoch',key);}
       const execution=await executionManifestArtifacts(await eventExecutionManifest());
-      const descriptor=await signApplicationDescriptor({applicationId,historyId:profileId,profile:'peer-generation-v1',policy:'eligible-members-v1',
-        controlPublicKey:host.publicKey,schemaAdministrator:device.identity.publicKey,executionManifestDigest:bytesToHex(execution.executionManifestDigest),
-        definitionDigest:await applicationDefinitionDigest(definition),schemaDigest:null},host);
-      const control=await signControlRevision({applicationId,profile:'peer-generation-v1',policy:'eligible-members-v1',revision:0,previous:null,epoch:0,
-        keyDigest:await bytesDigest(key),recoveryFloor:null,grants:[participantGrant(device.identity.publicKey,{administrator:true})]},host);
-      const registry=await createGenerationRegistry({store:new MemoryBytesStore(),descriptor,controls:[control],signer:host});
-      await registry.select(await signTransitionRequest({applicationId,profile:'peer-generation-v1',policy:'eligible-members-v1',transitionId:'initial',expectedGeneration:null,
-        requester:device.identity.publicKey,coordinator:device.identity.publicKey,controlRevision:0,reason:'create',base:null},device.identity));
-      raw=encoder.encode(JSON.stringify(await registry.read()));await device.store.put('test/authority',raw);await device.store.put('test/epoch',key);
+      const descriptor=await signAppDescriptor({applicationId,rootPrincipal:device.identity.publicKey,authorityPublicKey:host.publicKey,
+        executionManifestDigest:bytesToHex(execution.executionManifestDigest),finalityPolicy:{kind:'none'}},host);
+      const membership=await signMembership({applicationId,revision:0,previous:null,authorTimeAfterMs:-1n,epoch:0,
+        epochKeyDigest:await epochKeyCommitment(applicationId,0,key),members:[{publicKey:device.identity.publicKey,reader:true,writer:true,administrator:true,publisher:false,finalizer:false}]},host);
+      raw=encodeRecord({descriptor,memberships:[membership]});await device.store.put('test/authority',raw);
     }
-    session=await openPeerApplication({device,definition,authority:JSON.parse(decoder.decode(raw)),epochKeys:new Map([[0,key]]),signals:{localEcho:true,delivery:'neighbors'}});
+    if(!(key instanceof Uint8Array)||key.length!==32)throw Error('RETAINED_FIXTURE_EPOCH_KEY_MISSING');
+    session=await createApplicationSession({device,definition,authority:decodeRecord(raw),epochKeys:new Map([[0,key]])});
     return{session};
   }catch(error){if(session)await session.close();else await device.close();throw error;}
 }};

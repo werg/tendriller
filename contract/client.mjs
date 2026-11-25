@@ -22,11 +22,13 @@ function checked(schema, value, status) {
 export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch, applicationId } = {}) {
   const base = api.replace(/\/+$/, '');
   async function request(path, { method = "GET", body, signal, headers = {} } = {}, responseSchema) {
+    signal?.throwIfAborted();
     const response = await fetcher(base + path, {
       method, signal, headers: { ...headers, Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const text = await response.text();
+    signal?.throwIfAborted();
     let result;
     try { result = text ? JSON.parse(text) : undefined; }
     catch { throw new ApiError(response.status, { code: "invalid_response", message: "The service returned a non-JSON response" }); }

@@ -1,6 +1,7 @@
 // Public evidence is a closed vocabulary. Never retain URLs, headers, tokens, bodies, console/error text or traces.
 const steps = new Set(['launch-browser', 'open-login', 'fill-login', 'submit-login', 'wait-dashboard', 'open-claimed-page',
-  'wait-signed-page', 'verify-publication', 'open-permission-review', 'select-permissions', 'approve-permissions', 'wait-native-signer', 'replay-approved-proposal']);
+  'wait-signed-page', 'verify-publication', 'open-permission-review', 'select-permissions', 'approve-permissions', 'wait-native-signer', 'replay-approved-proposal',
+  'authorize-account', 'initialize-browser', 'provision-native', 'start-participant']);
 const names = new Set(['Error', 'TimeoutError', 'AssertionError', 'TypeError', 'RangeError', 'AbortError', 'SyntaxError']);
 const errorCodes = new Set(['quota','rate_limited','invalid_test_access','wrong_owner','owner_verification_required','account_deleting','claimed','application_not_found','forbidden','unavailable','read_only','creation_paused','not_found','invalid_code','invalid_confirmation','proposal_changed','adapter_agent_revoked']);
 const methods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH']);

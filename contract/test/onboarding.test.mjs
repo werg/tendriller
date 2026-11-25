@@ -18,6 +18,7 @@ test('onboarding identifies its canonical service and keeps every setup route on
     assert.deepEqual(descriptor.firstApp.release, {
       manifest: `https://github.com/werg/tendriller/releases/download/source-unbuilt/manifest.json`,
       archive: `https://github.com/werg/tendriller/releases/download/source-unbuilt/tendriller-first-app-${CORE_RELEASE}.tgz`,
+      sqlArchive: `https://github.com/werg/tendriller/releases/download/source-unbuilt/tendriller-first-app-sql-${CORE_RELEASE}.tgz`,
     });
   }
 });

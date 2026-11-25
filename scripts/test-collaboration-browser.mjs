@@ -11,7 +11,19 @@ const root=resolve(import.meta.dirname,'..'),out=join(root,'.results/collaborati
 await mkdir(out,{recursive:true});
 await build({absWorkingDir:root,entryPoints:{page:'collaboration/test/browser/page.mjs',worker:'collaboration/test/browser/worker.mjs'},
   bundle:true,splitting:true,format:'esm',platform:'browser',target:'es2022',outdir:out,outExtension:{'.js':'.mjs'}});
+await build({absWorkingDir:root,stdin:{contents:"export {openBrowserOwner,createBrowserIdentity} from './session/browser.mjs';export {serveBrowserOwner} from './session/worker.mjs';",resolveDir:root,loader:'js'},bundle:true,format:'esm',platform:'browser',target:'es2022',outfile:join(out,'passive.mjs')});
 const server=createServer(async(req,res)=>{const path=new URL(req.url,'http://localhost').pathname;
+  if(path==='/passive.html'){res.writeHead(200,{'content-type':'text/html'});res.end(`<!doctype html><title>Passive public import</title><script type="module">
+window.passiveReady=(async()=>{
+  const calls={};
+  for(const name of ['Worker','SharedWorker','BroadcastChannel','WebSocket','RTCPeerConnection'])if(typeof window[name]==='function')window[name]=class{constructor(){calls[name]=(calls[name]||0)+1;throw Error('EAGER_'+name);}};
+  const forbid=(object,name)=>{if(typeof object?.[name]!=='function')return;object[name]=()=>{calls[name]=(calls[name]||0)+1;throw Error('EAGER_'+name);};};
+  for(const name of ['getDirectory','persist','persisted','estimate'])forbid(navigator.storage,name);
+  for(const name of ['request','query'])forbid(navigator.locks,name);
+  forbid(indexedDB,'open');forbid(window,'fetch');
+  await import('/passive.mjs');return calls;
+})();
+</script>`);return;}
   if(path==='/'||path==='/board.html'||path==='/discussion.html'){res.writeHead(200,{'content-type':'text/html'});res.end('<!doctype html><title>Owner conformance</title><script type="module" src="/page.mjs"></script>');return;}
   if(!/^\/[A-Za-z0-9_.-]+\.mjs$/.test(path)){res.writeHead(404);res.end();return;}
   try{res.writeHead(200,{'content-type':'text/javascript'});res.end(await readFile(join(out,path.slice(1))));}catch{res.writeHead(404);res.end();}
@@ -34,6 +46,11 @@ try{
   if(qualifyLifecycle){lifecycleBrowser=await launchNetworkBrowser(launchOptions);browser=lifecycleBrowser.browser;}
   else browser=await chromium.launch({headless:true,...launchOptions});
   evidence.browser=browser.version();
+  await stage('passive-public-import-does-not-open-storage-workers-or-peer-discovery',async()=>{
+    const context=await browser.newContext(),page=await context.newPage();
+    try{await page.goto(base+'/passive.html');assert.deepEqual(await page.evaluate(()=>window.passiveReady),{});evidence.passivePublicImportLazy=true;}
+    finally{await context.close();}
+  });
   for(const mode of ['shared','elected']){
     const context=lifecycleBrowser?.context??await browser.newContext(),profile=`qualification-${mode}`,one=await context.newPage(),two=await context.newPage();
     observe(one,`${mode}:one`);observe(two,`${mode}:two`);
@@ -46,9 +63,10 @@ try{
       assert.equal(endpoint.ownerInstanceId,a.endpoint.ownerInstanceId,JSON.stringify(await one.evaluate(()=>window.reattachTrace)));
     });
     const b=await stage(`${mode}:second-attachment`,async()=>{await two.goto(url('discussion.html'));return two.evaluate(()=>window.ready);});
-    assert.equal(a.deviceId,b.deviceId);assert.equal(a.endpoint.ownerInstanceId,b.endpoint.ownerInstanceId);
+    assert.equal(a.publicKey,b.publicKey);assert.equal(a.endpoint.ownerInstanceId,b.endpoint.ownerInstanceId);
     assert.notEqual(a.endpoint.endpointIncarnation,b.endpoint.endpointIncarnation);assert.notEqual(a.endpoint.context.viewId,b.endpoint.context.viewId);
-    assert.equal(a.status.database,'idle');assert.equal(b.status.database,'idle');
+    assert.equal(a.status.canAuthor,true);assert.equal(b.status.canAuthor,true);
+    assert.notEqual(a.status.phase,'closed');assert.notEqual(b.status.phase,'closed');
     await stage(`${mode}:signal-subscription-readiness`,()=>two.evaluate(async()=>{
       const iterator=window.session.signals.subscribe({topics:['progress','fixture-ready'],mode:'latest',signal:AbortSignal.timeout(15000)})[Symbol.asyncIterator]();
       window.signalIterator=iterator;let received=false;
@@ -63,13 +81,13 @@ try{
     await stage(`${mode}:cross-endpoint-signal`,async()=>{
       await one.evaluate(()=>window.session.signals.send('progress',{run:'one'},{stream:{streamId:'run-one'}}));
       const signal=await two.evaluate(async()=>{const value=await window.signalNext;await window.signalIterator.return();return{value,status:window.session.status};});
-      assert.equal(signal.value.stream.endpointId,await one.evaluate(()=>window.session.endpoint.endpointId));assert.equal(signal.status.database,'idle');
+      assert.equal(signal.value.stream.endpointId,await one.evaluate(()=>window.session.endpoint.endpointId));assert.equal(signal.status.canAuthor,true);
     });
     await stage(`${mode}:drafts-and-commands`,async()=>{
       await one.evaluate(()=>window.viewStore.writeDraft({text:'board draft'}));await two.evaluate(()=>window.viewStore.writeDraft({text:'discussion draft'}));
       assert.equal(await one.evaluate(()=>window.viewStore.readDraft().text),'board draft');
-      await one.evaluate(async()=>{const op=await window.session.command('say','first',{operationId:'first'});await op.applied();});
-      await two.evaluate(async()=>{const op=await window.session.command('say','second',{operationId:'second'});await op.applied();});
+      await one.evaluate(async()=>{const op=await window.session.command('say','first',{operationId:'first'});await op.materialized();});
+      await two.evaluate(async()=>{const op=await window.session.command('say','second',{operationId:'second'});await op.materialized();});
       assert.equal(await two.evaluate(async()=>(await window.session.query('messages',null)).value.events.length),2);
     });
     await stage(`${mode}:suspend-resume`,async()=>{
@@ -83,7 +101,7 @@ try{
       const selected=mode==='elected'?two:one,sibling=mode==='elected'?one:two;
       const before=await selected.evaluate(()=>{window.freezeMarker=crypto.randomUUID();window.freezeEvents=[];
         for(const type of ['freeze','resume'])document.addEventListener(type,()=>window.freezeEvents.push(type));
-        return{marker:window.freezeMarker,endpoint:window.session.endpoint,deviceId:window.session.deviceId};});
+        return{marker:window.freezeMarker,endpoint:window.session.endpoint,publicKey:window.session.identity.publicKey};});
       const cdp=await context.newCDPSession(selected);let cover;
       try{
         await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:false});
@@ -98,8 +116,8 @@ try{
         await cdp.send('Page.setWebLifecycleState',{state:'active'});await cover.close();cover=undefined;await selected.bringToFront();
         await selected.waitForFunction(()=>window.freezeEvents.includes('resume'),null,{timeout:5000});
         await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='active'),before.endpoint.endpointId,{timeout:5000,polling:100});
-        const after=await selected.evaluate(async()=>({marker:window.freezeMarker,events:window.freezeEvents,endpoint:window.session.endpoint,deviceId:window.session.deviceId,aborted:window.session.signal.aborted,eventsRead:(await window.session.query('messages',null)).value.events.length}));
-        assert.equal(after.marker,before.marker);assert.deepEqual(after.events,['freeze','resume']);assert.deepEqual(after.endpoint,before.endpoint);assert.equal(after.deviceId,before.deviceId);assert.equal(after.aborted,false);assert.equal(after.eventsRead,2);
+        const after=await selected.evaluate(async()=>({marker:window.freezeMarker,events:window.freezeEvents,endpoint:window.session.endpoint,publicKey:window.session.identity.publicKey,aborted:window.session.signal.aborted,eventsRead:(await window.session.query('messages',null)).value.events.length}));
+        assert.equal(after.marker,before.marker);assert.deepEqual(after.events,['freeze','resume']);assert.deepEqual(after.endpoint,before.endpoint);assert.equal(after.publicKey,before.publicKey);assert.equal(after.aborted,false);assert.equal(after.eventsRead,2);
       }finally{await cdp.send('Page.setWebLifecycleState',{state:'active'}).catch(()=>{});await cover?.close();await cdp.detach();}
     });
     await stage(`${mode}:follower-reload-retains-view`,async()=>{
@@ -110,8 +128,8 @@ try{
       assert.equal(reloaded.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
     });
     if(qualifyLifecycle)await stage(`${mode}:frozen-document-discard-reclaims-root-capacity`,async()=>{
-        const before=await two.evaluate(async()=>({deviceId:window.session.deviceId,ownerInstanceId:window.session.endpoint.ownerInstanceId,
-          operation:await window.session.operations.inspect('first'),eventCount:(await window.session.query('messages',null)).value.events.length}));
+        const before=await two.evaluate(async()=>({publicKey:window.session.identity.publicKey,ownerInstanceId:window.session.endpoint.ownerInstanceId,
+          operation:await (await window.session.operations.get('first')).inspect(),eventCount:(await window.session.query('messages',null)).value.events.length}));
         // Both root/attachment limits are four. Retained siblings plus six
         // lost teardown notifications require actual witness reclamation.
         const wireProof=[],roots=[];
@@ -123,7 +141,7 @@ try{
             await orphan.goto(url('discussion.html',`orphan-${index}`)+'&lost-teardown=1');const attached=await orphan.evaluate(()=>window.ready);
             assert.equal(attached.mode,mode,'Another ownership route must not hide exhausted capacity');
             assert.equal(typeof attached.rootId,'string');roots.push(attached.rootId);
-            assert.equal(attached.deviceId,before.deviceId);assert.equal(attached.endpoint.ownerInstanceId,before.ownerInstanceId);
+            assert.equal(attached.publicKey,before.publicKey);assert.equal(attached.endpoint.ownerInstanceId,before.ownerInstanceId);
             const events=[];let frozen;const observed=new Promise(resolve=>{frozen=resolve;});
             await orphan.exposeBinding('__orphanLifecycle',(_source,type)=>{events.push(type);if(type==='freeze')frozen();});
             await orphan.evaluate(()=>{for(const type of ['freeze','resume'])document.addEventListener(type,()=>{void window.__orphanLifecycle(type);});});
@@ -141,8 +159,8 @@ try{
         }
         // A fresh root also forces admission GC for the final discarded root.
         assert.deepEqual(await two.evaluate(()=>window.cycleRoots(1)),[before.ownerInstanceId]);
-        const after=await two.evaluate(async()=>({deviceId:window.session.deviceId,ownerInstanceId:window.session.endpoint.ownerInstanceId,
-          operation:await window.session.operations.inspect('first'),eventCount:(await window.session.query('messages',null)).value.events.length}));
+        const after=await two.evaluate(async()=>({publicKey:window.session.identity.publicKey,ownerInstanceId:window.session.endpoint.ownerInstanceId,
+          operation:await (await window.session.operations.get('first')).inspect(),eventCount:(await window.session.query('messages',null)).value.events.length}));
         assert.deepEqual(after,before);assert.equal(await one.evaluate(()=>window.session.signal.aborted),false);
         const proof=await one.evaluate(roots=>window.fixtureOwnerProof(roots),roots);
         assert.deepEqual(proof.observedMissing,roots.map(()=>true),`The owner must observe every discarded document witness missing: ${JSON.stringify({tracked:proof.tracked,queries:proof.queryCount,missing:proof.observedMissing})}`);
@@ -156,8 +174,8 @@ try{
         const three=await context.newPage();observe(three,'shared:three');
         await three.goto(url('board.html','third-view')+'&variant=next');
         const c=await three.evaluate(()=>window.ready);
-        assert.equal(c.deviceId,a.deviceId);assert.equal(c.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-        await three.evaluate(async()=>{const op=await window.session.command('say','third',{operationId:'third'});await op.applied();});
+        assert.equal(c.publicKey,a.publicKey);assert.equal(c.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
+        await three.evaluate(async()=>{const op=await window.session.command('say','third',{operationId:'third'});await op.materialized();});
         await three.close();
       });
       await stage('shared:repeated-root-detach',async()=>{
@@ -165,7 +183,7 @@ try{
       });
       await stage('shared:local-detach-preserves-sibling',async()=>{
         await one.evaluate(()=>window.attachment.detach());
-        assert.equal(await two.evaluate(async()=>(await window.session.operations.inspect('first')).state.status),'applied');
+        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).inspect()).materialized.outcome),'accepted');
         await one.reload();const again=await one.evaluate(()=>window.ready);assert.equal(again.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
       });
       await stage('shared:underlying-session-close-and-reopen',async()=>{
@@ -173,13 +191,13 @@ try{
         await Promise.all([one.waitForFunction(()=>window.session.status.phase==='closed'),two.waitForFunction(()=>window.session.status.phase==='closed')]);
         await two.waitForFunction(async()=>!(await navigator.locks.query()).held.some(lock=>lock.name===`chronolog-owner:${window.ownerProfile}`));
         await two.reload();const reopened=await two.evaluate(()=>window.ready);
-        assert.equal(reopened.deviceId,a.deviceId);assert.notEqual(reopened.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-        assert.equal(await two.evaluate(async()=>(await window.session.operations.inspect('first')).state.status),'applied');
+        assert.equal(reopened.publicKey,a.publicKey);assert.notEqual(reopened.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
+        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).inspect()).materialized.outcome),'accepted');
       });
     }else{
       await stage('elected:local-detach-preserves-sibling',async()=>{
         await one.evaluate(()=>window.attachment.detach());
-        assert.equal(await two.evaluate(async()=>(await window.session.operations.inspect('first')).state.status),'applied');
+        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).inspect()).materialized.outcome),'accepted');
         assert.equal(await two.evaluate(()=>window.session.endpoint.ownerInstanceId),a.endpoint.ownerInstanceId);
         assert.notEqual(await two.evaluate(()=>window.session.status.phase),'closed');
       });
@@ -187,12 +205,12 @@ try{
         // Physical page death can terminate its dedicated Worker. A retired
         // local attachment alone must not do so while an authenticated sibling lives.
         await one.close();await two.waitForFunction(()=>window.session.status.phase==='closed');
-        await two.reload();const reopened=await two.evaluate(()=>window.ready);assert.equal(reopened.deviceId,a.deviceId);
+        await two.reload();const reopened=await two.evaluate(()=>window.ready);assert.equal(reopened.publicKey,a.publicKey);
         assert.notEqual(reopened.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-        assert.equal(await two.evaluate(async()=>(await window.session.operations.inspect('first')).state.status),'applied');
+        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).inspect()).materialized.outcome),'accepted');
       });
     }
-    evidence.scenarios.push({mode,oneSigner:true,twoDocuments:true,duplicateViewFenced:true,protocolOnlyCold:true,signedLocalSignals:true,
+    evidence.scenarios.push({mode,oneSigner:true,twoDocuments:true,duplicateViewFenced:true,localAuthoringAvailable:true,signedLocalSignals:true,
       concurrentCommands:true,independentDrafts:true,...(mode==='shared'?{otherWorkerVersionAttaches:true}:{}),samePageReattachKeepsOwner:true,suspendResume:true,automaticChromiumFreezeResume:qualifyLifecycle,frozenDiscardCapacityReclaimed:qualifyLifecycle,frozenDiscardCount:qualifyLifecycle?6:0,detachPreservesSibling:true,detachOrCrashReopen:true,
       asyncIdentityBootstrap:true,participantFocus:true,reloadPreservesDraft:true,...(mode==='shared'?{boundedRootReuse:true,sessionCloseReleasesFence:true}:{})});
     if(lifecycleBrowser)await Promise.all(context.pages().map(page=>page.close()));else await context.close();

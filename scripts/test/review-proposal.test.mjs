@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { installReviewFixtureSources, validateReviewProposal } from '../review/fixture.mjs';
+import { installReviewFixtureSources, validateReviewProposal, REVIEW_FIXTURE_FILES } from '../review/fixture.mjs';
 
 const proposed = 'a'.repeat(64);
 test('proposal validation rejects missing or malformed identities before replay equality', () => {
@@ -23,11 +23,11 @@ test('installed fixture propose CLI exposes identity and approval on replay whil
   installReviewFixtureSources(resolve(import.meta.dirname, '../..'), project);
   // Substitute only public package boundaries; execute the actual copied CLI and
   // its durable proposal write. No native owner or remote account is opened.
-  for (const name of ['@tendriller/core', '@chronolog/peer-session']) {
+  for (const name of ['@tendriller/core', '@chronolog/peer-session', '@chronolog/authority']) {
     const directory = join(project, 'node_modules', name);
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, 'package.json'), JSON.stringify({ type: 'module', exports: { '.': './stub.mjs', './*': './stub.mjs' } }));
-    const sources = ['review-app.mjs', 'review-domain.mjs'].map(file => readFileSync(join(project, file), 'utf8')).join('\n');
+    const sources = REVIEW_FIXTURE_FILES.filter(([file]) => file.endsWith('.mjs')).map(([file]) => readFileSync(join(project, file), 'utf8')).join('\n');
     const exports = new Set([...sources.matchAll(/import\s*\{([^}]+)\}\s*from\s*['"](@[^'"]+)['"]/g)]
       .filter(match => match[2] === name || match[2].startsWith(name + '/'))
       .flatMap(match => match[1].split(',').map(value => value.trim())));
@@ -54,4 +54,17 @@ test('installed fixture propose CLI exposes identity and approval on replay whil
     });
     assert.deepEqual(readFileSync(keyPath), beforeKey);
   }
+});
+
+test('fixture sources contain no removed ordering bootstrap, native-required claim, fake owner or host-owned data', () => {
+  const root = resolve(import.meta.dirname, '../..');
+  const removed = /schemaAdministrator|participantGrant|signTransitionRequest|selectGeneration|connectControlParticipant|configureApplication|openNativeApplication|createGenerationRegistry|orderingPause|processPairings|pending-publication|example\.invalid|createPage\(|\.deviceId\b|owner_account_id/;
+  for (const [file, source] of REVIEW_FIXTURE_FILES) {
+    const text = readFileSync(resolve(root, source), 'utf8');
+    assert.doesNotMatch(text, removed, file);
+  }
+  const app = readFileSync(resolve(root, 'plugin/review-app.mjs'), 'utf8');
+  // Browser-first: the page is signed and published before any browser key exists, and native participation is explicitly optional.
+  assert.match(app, /optional: true/); assert.match(app, /needs no native process/);
+  assert.doesNotMatch(app, /must remain running for reviewer reads, writes/);
 });

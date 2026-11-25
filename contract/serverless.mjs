@@ -51,19 +51,45 @@ export function createTransactionalBytesStore(backend) {
     },
   });
 }
-const lifecycle = state => {
-  if(state?.status==='abandoned'||state?.status==='needsReapply')return state.status;
-  if(state?.status==='saved')return 'recorded';
-  if(state?.status==='applied')
-    return state.outcome==='rejected'?'rejected':state.outcome==='accepted'?'applied':'unknown';
-  return 'unknown';
+const FACTS = Object.freeze(['stored', 'materialized', 'retained', 'finalized']);
+const WAIT_CODES = new Set(['serverless_deadline', 'OPERATION_WAIT_TIMEOUT']);
+const text = value => typeof value === 'string' ? value : null;
+/** Explicit plain-data projection. A session handle, session or owner is never serialized. */
+function project(inspection) {
+  if (!inspection || typeof inspection !== 'object') throw fail('SERVERLESS_SESSION_INVALID', 'The session returned an invalid operation inspection.');
+  const done = inspection.materialized;
+  return {
+    applicationId: text(inspection.applicationId), author: text(inspection.author), authorTimestampMs: text(inspection.authorTimestampMs),
+    proposalId: text(inspection.proposalId), operationId: text(inspection.operationId),
+    stored: inspection.stored === true, pending: text(inspection.pending),
+    materialized: done ? {outcome: text(done.outcome), rejectionCode: text(done.rejectionCode), failingStatementIndex: Number.isInteger(done.failingStatementIndex) ? done.failingStatementIndex : null,
+      revision: done.revision ? {digest: text(done.revision.digest), view: text(done.revision.view), executionManifestDigest: text(done.revision.executionManifestDigest), policyDigest: text(done.revision.policyDigest)} : null} : null,
+    retained: Array.isArray(inspection.retained) ? inspection.retained.map(item => ({peer: text(item?.payload?.peer), storageId: text(item?.payload?.storageId)})) : [],
+    finalized: inspection.finalized === true, excluded: inspection.excluded === true,
+  };
+}
+const handleOf = value => {
+  if (!value || typeof value.inspect !== 'function') throw fail('SERVERLESS_SESSION_INVALID', 'The session must return operation handles with inspect().');
+  return value;
 };
+const waitValid = wait => wait === undefined || FACTS.includes(wait);
+function supported(session, wait) {
+  if (wait === 'finalized' && session?.authority?.descriptor?.finalityPolicy?.kind === 'none')
+    throw fail('finality_unsupported', 'This application uses the no-finality policy; finalized waits are unsupported.', 409);
+}
+/** Waits for one independent fact. `stored` (the default) performs no network or materialization wait. */
+async function observe(handle, wait, signal, timeoutMs) {
+  if (wait === 'materialized') await handle.materialized({signal, timeoutMs});
+  else if (wait === 'retained') await handle.retained({signal, timeoutMs});
+  else if (wait === 'finalized') await handle.finalized({signal, timeoutMs});
+  return project(handle.inspect());
+}
 const operationIdValid = value => typeof value==='string' && value.length>0 && value.length<=512 && [...value].every(character=>character.charCodeAt(0)>=32);
 const commandInput = item => {
   if(!item || typeof item!=='object' || Array.isArray(item) || !Object.hasOwn(item,'input') || typeof item.command!=='string' || !item.command.length || item.command.length>128 ||
     !operationIdValid(item.operationId) ||
-    item.wait!==undefined && !['recorded','applied'].includes(item.wait))
-    throw fail('invalid_command','Supply a command, an own input field, original operationId and optional recorded/applied wait.',400);
+    !waitValid(item.wait) || Object.keys(item).some(key=>!['command','input','operationId','wait'].includes(key)))
+    throw fail('invalid_command','Supply command, input, original operationId and an optional wait of stored, materialized, retained or finalized. No other fields are accepted.',400);
   return item;
 };
 async function readJson(request, signal, maximum) {
@@ -149,29 +175,29 @@ export function createServerlessHostAdapter({applicationId,storage,withLock,open
           try{payload={query:url.searchParams.get('query'),input:JSON.parse(encoded)};}catch{throw fail('invalid_json','Invalid query input.',400);}
         }
         if(typeof payload.query!=='string'||!payload.query.length||payload.query.length>128)throw fail('invalid_query','Supply a query name.',400);
-        return active(scope.signal,({session})=>session.query(payload.query,payload.input??null));
+        return active(scope.signal,async({session})=>{
+          const result=await session.query(payload.query,payload.input??null);
+          if(!result||result.applicationId!==applicationId||!('revision' in result)||!('value' in result))throw fail('SERVERLESS_SESSION_INVALID','A query must return {applicationId, revision, value} for this application.');
+          return {applicationId:result.applicationId,revision:result.revision,value:result.value};
+        });
       }
       if((rest==='/commands'||rest==='/commands/batch')&&request.method==='POST'){
         const body=await readJson(request,scope.signal,maxBodyBytes);batch=rest.endsWith('/batch');
         if(batch&&(!Array.isArray(body.commands)||body.commands.length>64))throw fail('invalid_batch','Supply 0..64 commands.',400);
         const commands=batch?body.commands.map(commandInput):[commandInput(body)];
         if(new Set(commands.map(item=>item.operationId)).size!==commands.length)throw fail('invalid_batch','Each batch operationId must be distinct.',400);
-        results=commands.map(item=>({operationId:item.operationId,command:item.command,lifecycle:'not_submitted'}));
+        results=commands.map(item=>({operationId:item.operationId,command:item.command,submission:'not_submitted'}));
         await active(scope.signal,async({session},signal)=>{
+          for(const item of commands)supported(session,item.wait);
           for(let index=0;index<commands.length;index++){
             signal.throwIfAborted();const item=commands[index];
-            // From this boundary onward a failure may hide a retained command.
-            results[index]={...results[index],lifecycle:'unknown'};
-            try{
-              const op=await session.command(item.command,item.input,{operationId:item.operationId,...(item.basedOn===undefined?{}:{basedOn:item.basedOn})});
-              signal.throwIfAborted();
-              const state=item.wait==='recorded'?await op.get():await op.applied({signal});
-              results[index]={...results[index],lifecycle:lifecycle(state),[item.wait==='recorded'?'state':'applied']:state};
-            }catch(error){
-              if(['abandoned','needsReapply'].includes(error?.operation?.status))results[index]={...results[index],lifecycle:error.operation.status,state:error.operation};
-              throw error;
-            }
-            if(!['applied','rejected','recorded'].includes(results[index].lifecycle))throw fail('operation_recovery_required','Inspect the original operation before deliberate recovery.',409);
+            // From this boundary onward a failure may hide a durably stored command.
+            results[index]={...results[index],submission:'uncertain'};
+            const handle=handleOf(await session.command(item.command,item.input,{operationId:item.operationId}));
+            // Returning means the exact signed intent is durable in the owned store.
+            results[index]={...results[index],submission:'stored',operation:project(handle.inspect())};
+            signal.throwIfAborted();
+            results[index]={...results[index],wait:item.wait??'stored',operation:await observe(handle,item.wait,signal,timeoutMs)};
           }
         });
         return batch?{results,complete:true}:results[0];
@@ -179,8 +205,15 @@ export function createServerlessHostAdapter({applicationId,storage,withLock,open
       if(rest.startsWith('/operations/')&&request.method==='GET'){
         let operationId;try{operationId=decodeURIComponent(rest.slice('/operations/'.length));}catch{throw fail('invalid_operation','Invalid operation ID.',400);}
         if(!operationIdValid(operationId))throw fail('invalid_operation','Invalid operation ID.',400);
-        const state=await active(scope.signal,({session})=>session.operations.get(operationId));
-        return {operationId,lifecycle:lifecycle(state),state};
+        const wait=url.searchParams.get('wait')??undefined;
+        if(!waitValid(wait))throw fail('invalid_wait','The wait must be stored, materialized, retained or finalized.',400);
+        const operation=await active(scope.signal,async({session},signal)=>{
+          const handle=await session.operations.get(operationId);
+          if(handle===null||handle===undefined)throw fail('operation_not_found','This device has no such operation.',404);
+          supported(session,wait);
+          return observe(handleOf(handle),wait,signal,timeoutMs);
+        });
+        return {operationId,operation};
       }
       throw fail('not_found','Unknown serverless route.',404);
     }
@@ -188,9 +221,13 @@ export function createServerlessHostAdapter({applicationId,storage,withLock,open
     catch(error){
       const detail={error:errorInfo(error),...(error?.cleanupErrors?{cleanupErrors:error.cleanupErrors}:{})};
       if(results){
-        const unknown=results.some(item=>item.lifecycle==='unknown');
-        const status=unknown?202:results.some(item=>['abandoned','needsReapply'].includes(item.lifecycle))?409:Number.isInteger(error?.status)?error.status:500;
-        return respond(batch?{...detail,results,complete:false}:{...results[0],...detail},status);
+        const uncertain=results.some(item=>item.submission==='uncertain');
+        const stored=results.some(item=>item.submission==='stored');
+        // A durable stored operation with an unfinished wait is accepted work, not a failure to submit.
+        const pendingWait=stored&&(WAIT_CODES.has(error?.code)||scope.signal.aborted);
+        const status=uncertain||pendingWait?202:Number.isInteger(error?.status)?error.status:error?.code==='OPERATION_EXCLUDED'?409:500;
+        const body=error?.code==='OPERATION_EXCLUDED'&&error.inspection?{...detail,excludedOperation:project(error.inspection)}:detail;
+        return respond(batch?{...body,results,complete:false}:{...results[0],...body},status);
       }
       return respond(detail,Number.isInteger(error?.status)?error.status:scope.signal.aborted?504:500);
     }finally{scope.dispose();}

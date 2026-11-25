@@ -36,7 +36,7 @@ window.ready=(async()=>{
   if(query.get('identity')==='create'){await createBrowserIdentity({workerUrl,profileId});const retained=new URL(location.href);retained.searchParams.delete('identity');history.replaceState(null,'',retained);}
   window.ownerStage='attachment';
   const ownerOptions={workerUrl,profileId,...(query.has('lost-teardown')?{timeoutMs:5000}:{}),
-    applicationId:'91'.repeat(32),definitionId:'owner-fixture',definitionVersion:'1',mode:query.get('mode')||'shared',
+    applicationId:'91'.repeat(32),mode:query.get('mode')||'shared',
     context:{viewId:sessionStorage.getItem('fixture-view')||query.get('view')||crypto.randomUUID(),documentPath:location.pathname,publicationId:'fixture-publication'}};
   const attachment=await openBrowserOwner(ownerOptions);
   sessionStorage.setItem('fixture-view',attachment.session.endpoint.context.viewId);
@@ -54,7 +54,7 @@ window.ready=(async()=>{
     for(let index=0;index<count;index++){
       const current=await openBrowserOwner({...ownerOptions,context:{documentPath:location.pathname}});
       if(ownerOptions.mode==='shared'&&current.mode!=='shared'){await current.detach();throw Error('FIXTURE_SHARED_OWNER_REQUIRED');}
-      instances.add(current.session.endpoint.ownerInstanceId);await current.session.authority();await current.detach();
+      instances.add(current.session.endpoint.ownerInstanceId);await current.session.query('messages',null);await current.detach();
     }
     return [...instances];
   };
@@ -70,5 +70,5 @@ window.ready=(async()=>{
     window.fixtureControl=control;
   };
   window.ownerProfile=profileId;window.ownerStage='ready';
-  return{mode:attachment.mode,endpoint:attachment.session.endpoint,deviceId:attachment.session.deviceId,status:attachment.session.status,rootId:window.fixtureDocumentRoot};
+  return{mode:attachment.mode,endpoint:attachment.session.endpoint,publicKey:attachment.session.identity.publicKey,status:attachment.session.status,rootId:window.fixtureDocumentRoot};
 })().catch(error=>{window.ownerStage=`failed:${window.ownerStage}`;window.ownerFailure={name:error.name,code:error.code,message:error.message};throw error;});

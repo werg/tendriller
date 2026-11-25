@@ -104,8 +104,7 @@ export function serveBrowserOwner(options) {
         lifetime.signal.throwIfAborted();
         owned = await openSession({ signal: lifetime.signal, openDirectConnection: rtc.openDirectConnection }); lifetime.signal.throwIfAborted();
         if (!owned?.session) throw Error('OWNER_SESSION_REQUIRED');
-        owner = createApplicationOwner(owned.session, { ...ownerOptions, host: owned.control,
-          ...(owned.prepareCommand ? { prepareCommand: owned.prepareCommand } : {}) });
+        owner = createApplicationOwner(owned.session, ownerOptions);
         sessionAborted = () => { void close().catch(() => {}); };
         owned.session.signal.addEventListener('abort', sessionAborted, { once: true });
         if (owned.session.signal.aborted) sessionAborted();
@@ -228,7 +227,16 @@ export function serveBrowserOwner(options) {
         record.witness = witness;
         await open(false); lifetime.signal.throwIfAborted(); if (record.disposed) return;
         if (typeof BroadcastChannel === 'function') void serveBroadcast();
-        if (!record.detach) record.detach = owner.attach(endpoint);
+        if (!record.detach) {
+          // The RPC attachment must not own the physical bootstrap port. Its
+          // close reclaims this root through the same lifetime/listener cleanup.
+          const rpc = Object.assign(new EventTarget(), { postMessage: frame => post(endpoint, frame), close: () => dispose(record) });
+          const forward = ({ data }) => { if (data?.protocol === 'chronolog/authored-session/owner/v1') rpc.dispatchEvent(new MessageEvent('message', { data })); };
+          endpoint.addEventListener('message', forward);
+          let detach;
+          try { detach = owner.attach(rpc); } catch (error) { endpoint.removeEventListener('message', forward); throw error; }
+          record.detach = () => { endpoint.removeEventListener('message', forward); detach(); };
+        }
         record.lifetime?.close();
         record.lifetime = lifetimes.register(record.rootId, witness, () => dispose(record, 'ENDPOINT_STALE'));
         record.ready = true; renew(record);

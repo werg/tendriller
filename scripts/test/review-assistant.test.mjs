@@ -5,20 +5,20 @@ import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
-import { installReviewFixtureSources } from '../review/fixture.mjs';
+import { installReviewFixtureSources, REVIEW_FIXTURE_FILES } from '../review/fixture.mjs';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const proposalId = 'a'.repeat(64);
 const notice = (approved, revision = 'first', id = proposalId) => ({ type: 'setup', version: 1, assistant: { proposalId: id, approved, revision: approved ? revision : null } });
-async function fixture(t, { forwardingError, expectedProposalId = proposalId, processPairings } = {}) {
+async function fixture(t, { forwardingError, expectedProposalId = proposalId, legacyHooks = {} } = {}) {
   const root = resolve(import.meta.dirname, '../..'), project = mkdtempSync(join(tmpdir(), 'review-approval-'));
   t.after(() => rmSync(project, { recursive: true, force: true }));
   const files = installReviewFixtureSources(root, project);
-  assert.equal(files.length, 4);
+  assert.equal(files.length, REVIEW_FIXTURE_FILES.length);
   assert.deepEqual(readFileSync(join(project,'support/participant-lifecycle.mjs')), readFileSync(join(root,'docs/tutorial/helpers/participant-lifecycle.mjs')));
   const { superviseReviewAssistant, retainedReviewProposal } = await import(pathToFileURL(join(project,'review-assistant.mjs')).href);
   const native = new AbortController(), channel = Promise.withResolvers(), adapters = [], forwarded = [], reports = [];
   let callbacks;
-  const lifecycle = superviseReviewAssistant({ session: { signal: native.signal }, expectedProposalId, processPairings,
+  const lifecycle = superviseReviewAssistant({ session: { signal: native.signal }, expectedProposalId, ...legacyHooks,
     watch(value) { callbacks=value; return { closed:channel.promise,close(){channel.resolve();} }; },
     startAdapter({ signal,onStatus }) {
       const done=Promise.withResolvers(), adapter={signal,onStatus,done,closes:0}; adapters.push(adapter);
@@ -69,8 +69,11 @@ test('foreign first approval is never adopted and a retained proposal must match
   assert.equal(f.retainedReviewProposal(record,'DIFFERENT_PRIVATE_KEY'),undefined);
   assert.equal(f.retainedReviewProposal(null,key),undefined);
 });
-test('missing own proposal identity keeps MCP stopped while the same watcher still handles reviewed pairing',async t=>{
-  let pairs=0;const f=await fixture(t,{expectedProposalId:null,processPairings:async()=>{pairs++;return [];}});
-  f.send(notice(true));await flush();await flush();assert.equal(pairs,1);assert.equal(f.adapters.length,0);assert.equal(f.native.signal.aborted,false);
-  assert(f.reports.some(x=>x.state==='assistant_proposal_identity_required'));
+test('missing own proposal identity keeps MCP stopped while the native lifetime and consent watcher continue',async t=>{
+  // Removed pairing hooks stay uncalled even if an old caller still passes them.
+  const removed=name=>()=>{throw Error(name+' was removed');};
+  const f=await fixture(t,{expectedProposalId:null,legacyHooks:{processPairings:removed('processPairings')}});
+  f.send(notice(true));await flush();await flush();assert.equal(f.adapters.length,0);assert.equal(f.native.signal.aborted,false);
+  assert(f.reports.some(x=>x.state==='assistant_proposal_identity_required'&&x.participantRunning));
+  assert(!f.reports.some(x=>x.pairing||x.state==='pairing_unavailable'));
 });

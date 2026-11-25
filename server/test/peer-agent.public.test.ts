@@ -2,13 +2,14 @@ import { expect, it } from 'vitest';
 import { api, apiJson, create, inDO, req } from './helpers';
 import { peerApi } from './peer-exchange';
 
-it('creates an independent stable application identity and leaves control explicitly unconfigured', async () => {
+it('creates an independent stable application identity and leaves authority explicitly unprepared', async () => {
   const h = await create();
   expect(h.application.id).toMatch(/^[0-9a-f]{64}$/); expect(h.application.id).not.toContain(h.id);
-  expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configured: false });
-  expect((await peerApi(h, 'control/read')).status).toBe(409);
+  const unprepared = { selection: h.application, configuration: null, publicationAuthority: null, authority: null };
+  expect(await apiJson(h, 'GET', 'application')).toEqual(unprepared);
+  expect((await peerApi(h, 'publication/read')).status).toBe(409);
   await inDO(h.id, t => { t.ctx.abort('Stable identity restart'); }).catch(() => {});
-  expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configured: false });
+  expect(await apiJson(h, 'GET', 'application')).toEqual(unprepared);
   const other = await create(); expect(other.application.id).not.toBe(h.application.id);
 });
 it.each(['interactive', 'dashboard'])('uses the same owned application contract for %s pages', async mode => {

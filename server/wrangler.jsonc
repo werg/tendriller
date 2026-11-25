@@ -8,7 +8,7 @@
     "directory": "./public",
     "binding": "ASSETS",
     "run_worker_first": [
-      "/*", "!/_tendril/runtime/b79c4a438a62dc41072ae61ccc26cc3e91633b5d46a919222f4741b06b5c075f/*",
+      "/*", "!/_tendril/runtime/a7dc053a23b36be3841660f38641aade5e5501becb13f5342ea4b0c9ff7613b1/*",
       "!/_tendril/brand/icon-64.png", "!/_tendril/brand/icon-180.png",
       "!/_tendril/brand/logo.png", "!/_tendril/brand/logo.webp",
       "!/_tendril/brand/favicon.ico", "!/favicon.ico"

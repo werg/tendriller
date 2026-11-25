@@ -1,14 +1,14 @@
 # Host operations
 
-Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendriller/engine`) with a filtered Chronolog control participant and optional account-linked `/mcp` gateway. Application execution stays on enrolled peers.
+Tendriller deploys one application-neutral Cloudflare Worker engine (`@tendriller/engine`) with a filtered Chronolog authority and publication participant and optional account-linked `/mcp` gateway. Application execution stays on enrolled peers.
 
 ## Fresh storage baseline
 
-Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 11** (consolidated page, pairing, publication, and assistant delivery tables).
+Check the current Durable Object schema revision with `node scripts/storage-schema.mjs`: **revision 12** (consolidated page, signed authority, publication, and assistant delivery tables). A mismatched existing schema is rejected before mutation, so provision a fresh Durable Object namespace.
 
 This pre-release target uses fresh matching storage only — there are no legacy migration paths or compatibility readers:
 1. Initialize fresh D1 `ACCOUNTS` using Wrangler `d1 migrations apply ACCOUNTS --remote --config <selected-config>` and the single unified `server/migrations/0001_accounts.sql` baseline (exported as `@tendriller/engine/accounts-schema`, account-setup schema revision 3). Verify `d1_migrations` records `0001_accounts.sql`; applying raw SQL alone leaves the journal empty and makes the next CI apply attempt duplicate table creation. This initializes new storage only; it is not conversion of an older database.
-2. Provision fresh `Tendril` and `Admission` Durable Object namespaces matching revision 11.
+2. Provision fresh `Tendril` and `Admission` Durable Object namespaces matching revision 12.
 3. Missing or mismatched storage fails closed without mutating existing records.
 
 `scripts/provision.mjs` plans and provisions fresh named Worker, D1, R2, and domain resources and writes a complete Wrangler config. Review resource names and page-domain isolation before deploying.
@@ -187,7 +187,7 @@ no data export, namespace transfer, resource deletion or local process restart.
 
 Run `npm run check:release` against a clean commit checkpoint and verify `dist/provenance.json` and `dist/manifest.json` hashes before staging or production deployment. Deployment restores the exact sealed deployment archive (`--no-bundle`); it never rebuilds bytes on the fly.
 
-- Verify control outages separately from coordinator loss: direct peer sessions continue working while the host is unreachable.
+- Verify host outages separately from peer availability: initialized devices keep authoring and materializing locally, and direct peer sessions continue working while the host is unreachable.
 - Verify host restart preserves signed authority, publication head, historical immutable code, and idempotent retries. Code rollback is always a new signed publication.
 
 ## Isolated branch previews

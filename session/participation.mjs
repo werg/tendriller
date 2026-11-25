@@ -1,23 +1,113 @@
 import { createPeerIntroductions } from '../contract/introductions.mjs';
+import { authorityRecordBytes } from '../contract/authority.mjs';
+import { decodeRecord } from '@chronolog/authority';
 import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
-
 import { PEER_TRANSPORT_POLICY } from '../contract/transport-policy.mjs';
 export { PEER_TRANSPORT_POLICY };
-
-/** Platform adapters supply only RTC mechanics. The owned session controls
- * discovery, authentication, connection budgets, fallback and recovery. */
-export function participateApplication(session, { peers, control, openDirectConnection,
-  configuration = PEER_TRANSPORT_POLICY.configuration,
-  directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, connections, recovery, onTransport } = {}) {
-  if (typeof session?.participate !== 'function' || typeof openDirectConnection !== 'function')
-    throw Object.assign(Error('Use the native participant or browser-owner RTC adapter.'), { code: 'PEER_TRANSPORT_REQUIRED' });
-  if (onTransport !== undefined && typeof onTransport !== 'function') throw TypeError('onTransport must be a function');
-  const adapter = createPeerIntroductions({ peers, identity: session.deviceId, directTimeoutMs,
+const failureCode = (cause, fallback) => { const code = cause?.code ?? cause?.message; return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,95}$/.test(code) ? code : fallback; };
+const pause = (ms, signal) => new Promise(resolve => {
+  const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+  const timer = setTimeout(done, ms); timer.unref?.(); signal.addEventListener('abort', done, { once: true });
+  if (signal.aborted) done();
+});
+/** Optional background introductions. Local authoring and opening never wait for this controller. */
+export function participateApplication(session, { peers, openDirectConnection,
+  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, onTransport } = {}) {
+  if (typeof session?.connectPeer !== 'function' || typeof session.device?.storageId !== 'string' || !session.device.storageId || typeof openDirectConnection !== 'function') throw TypeError('Provide an owned operation-set session and RTC adapter');
+  const stop = new AbortController(), signal = AbortSignal.any([stop.signal, session.signal]);
+  const adapter = createPeerIntroductions({ peers, identity: session.identity.publicKey, directTimeoutMs,
     openDirectConnection: options => openDirectConnection({ ...options, configuration, timeoutMs: directTimeoutMs }),
-    openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }),
-    ...(onTransport ? { onTransport } : {}),
+    openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }), onTransport });
+  const links = new Map(), opening = new Map(), listeners = new Set(), descriptions = new Map();
+  let error = null, advertising, refreshing, dirty = false, retry, retryCount = 0, connectionRevision = 0;
+  const status = () => Object.freeze({ phase: signal.aborted ? 'closed' : links.size ? 'connected' : opening.size ? 'connecting' : 'disconnected', connectedPeers: Object.freeze([...links.keys()].sort()), connectionRevision, pendingConnections: opening.size, error });
+  const changed = () => { for (const listener of listeners) { try { listener(status()); } catch {} } };
+  function scheduleRetry() {
+    if (retry || signal.aborted) return;
+    retry = setTimeout(() => { retry = undefined; void advertise(); void refresh(); }, Math.min(30_000, 1000 * 2 ** Math.min(retryCount++, 5)));
+    retry.unref?.();
+  }
+  function advertise() {
+    if (signal.aborted || advertising) return advertising;
+    // The actual public session owns its retained storage identity on device.
+    // One charged request waits for both current socket lifetimes. Failed or
+    // replaced lifetimes retry this same routing hint, never application data.
+    advertising = adapter.discovery.advertise({ identity: session.identity.publicKey, storageId: session.device.storageId }, { signal }).then(() => {
+      if (error?.startsWith('advertise:')) { error = null; changed(); }
+    }, cause => {
+      if (!signal.aborted) { error = `advertise:${failureCode(cause, 'advertisement_unavailable')}`; changed(); scheduleRetry(); }
+    }).finally(() => { advertising = undefined; });
+    return advertising;
+  }
+  async function connect(peer, invitation) {
+    if (signal.aborted || peer.identity === session.identity.publicKey || links.has(peer.identity) || opening.has(peer.identity) || links.size + opening.size >= 8) return;
+    // Exactly one side proactively dials; the other always accepts its invitation.
+    if (invitation === undefined && session.identity.publicKey > peer.identity) return;
+    const controller = new AbortController(), connectionSignal = AbortSignal.any([signal, controller.signal]);
+    opening.set(peer.identity, controller); changed(); let connection;
+    try {
+      connection = await adapter.transport.open({ peer, ...(invitation === undefined ? {} : { invitation }) }, { signal: connectionSignal });
+      const link = await session.connectPeer({ connection, peerIdentity: peer.identity, signal: connectionSignal });
+      if (signal.aborted || link.signal.aborted) { await link.close(); if (!signal.aborted) scheduleRetry(); return; }
+      links.set(peer.identity, link); descriptions.set(peer.identity, adapter.transport.describe(connection)); connectionRevision++; error = null; retryCount = 0;
+      link.signal.addEventListener('abort', () => { if (links.get(peer.identity) === link) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; } changed(); scheduleRetry(); }, { once: true });
+    } catch (cause) {
+      try { await connection?.close(); } catch {}
+      if (!signal.aborted) { error = `connect:${failureCode(cause, 'peer_connection_unavailable')}`; scheduleRetry(); }
+    } finally { opening.delete(peer.identity); changed(); }
+  }
+  async function refresh() {
+    dirty = true; if (refreshing) return refreshing;
+    refreshing = (async () => {
+      while (dirty && !signal.aborted) {
+        dirty = false;
+        try {
+          // Cached local authority has already opened. Refresh is untrusted signed evidence, not an opening gate.
+          const metadata = await peers.application({ signal });
+          if (metadata.authority) await session.authority.merge(decodeRecord(authorityRecordBytes(metadata.authority)));
+          const directory = await adapter.discovery.read({ signal });
+          for (const peer of directory) if (session.authority.grant(peer.identity)?.reader) void connect(peer);
+          if (error?.startsWith('discovery:')) error = null;
+        } catch (cause) { if (!signal.aborted) { error = `discovery:${failureCode(cause, 'discovery_unavailable')}`; scheduleRetry(); } }
+        changed();
+      }
+    })().finally(() => { refreshing = undefined; });
+    return refreshing;
+  }
+  async function observe(kind, consume) {
+    let failures = 0;
+    while (!signal.aborted) {
+      try { if (kind === 'invitations') void advertise(); for await (const value of adapter.discovery[kind]({ signal })) { failures = 0; await consume(value); } }
+      catch (cause) { if (!signal.aborted) { error = `discovery:${failureCode(cause, 'discovery_unavailable')}`; changed(); } }
+      if (!signal.aborted) { scheduleRetry(); await pause(Math.min(30_000, 1000 * 2 ** Math.min(failures++, 5)), signal); }
+    }
+  }
+  const notifications = observe('notifications', async notification => {
+    if (notification.type === 'ready') {
+      // Advertising waits for both socket lifetimes, but no data submission waits for advertising.
+      void advertise();
+    }
+    void refresh();
   });
-  return session.participate({ control, ...adapter,
-    ...(connections ? { connections } : {}), ...(recovery ? { recovery } : {}),
+  const invitations = observe('invitations', async invitation => {
+    if (session.authority.grant(invitation.peer.identity)?.reader) void connect(invitation.peer, invitation.token);
+    else void refresh().then(() => { if (session.authority.grant(invitation.peer.identity)?.reader) return connect(invitation.peer, invitation.token); });
+  });
+  const stopAuthority = session.authority.subscribe(() => { void advertise(); void refresh(); });
+  const closed = new Promise(resolve => {
+    let stopping = false;
+    const shutdown = () => {
+      if (stopping) return; stopping = true; stopAuthority(); clearTimeout(retry);
+      for (const controller of opening.values()) controller.abort(signal.reason);
+      void Promise.allSettled([...links.values()].map(link => link.close())).finally(async () => { links.clear(); descriptions.clear(); connectionRevision++; changed(); await Promise.allSettled([notifications, invitations]); resolve(); });
+    };
+    signal.addEventListener('abort', shutdown, { once: true }); if (signal.aborted) shutdown();
+  });
+  void refresh();
+  return Object.freeze({ get status() { return status(); }, signal, closed,
+    onStatus(listener) { listeners.add(listener); try { listener(status()); } catch {} return () => listeners.delete(listener); },
+    async diagnostics() { return [...links.keys()].map(peerId => ({ peerId, ...descriptions.get(peerId) })); },
+    reconsiderConnections() { return refresh(); }, resume() { return refresh(); },
+    async close() { stop.abort(new Error('PARTICIPATION_CLOSED')); await closed; },
   });
 }

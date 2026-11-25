@@ -1,15 +1,14 @@
 import { beforeAll, expect, it, vi } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { createPeerIdentity, participantGrant, signTransitionRequest, generationStartRoot,
-  type AuthorityBundle, type SignedGeneration } from '@chronolog/peer-generation/control';
+import { createSigningIdentity, signAppDescriptor, signMembership, encodeRecord } from '@chronolog/authority';
+import { authorityRecord } from '../../contract/authority.mjs';
 import { create, inDO } from './helpers';
-import { peerApiJson } from './peer-exchange';
 import { authenticateAgentToken } from '../src/access';
 import { assistantRequest } from '../src/assistant';
 import { selectProvider } from '../src/assistant-bindings';
 
 const origin = 'https://tendriller.dev', scope = 'applications:read applications:write';
-const definition = { id: 'read-routing', version: '1', schema: null,
+const definition = { id: 'read-routing', version: '1',
   queries: [{ name: 'notes', description: 'Notes', input: { type: 'null' } }],
   commands: [{ name: 'append', description: 'Append', input: { type: 'null' } }] } as const;
 let signing: string;
@@ -23,21 +22,14 @@ function deferred<T>() {
   return { promise, resolve };
 }
 async function fixture(count = 1) {
-  const handle = await create({ listener: false }), device = await createPeerIdentity();
-  const authority = await peerApiJson<AuthorityBundle>(handle, 'control/configure', {
-    historyId: 'read-routing', executionManifestDigest: '12'.repeat(32),
-    definition,
-    schemaAdministrator: device.publicKey, epoch: 0, keyDigest: '34'.repeat(32),
-    members: [{ grant: participantGrant(device.publicKey, { administrator: true }) }],
-  });
-  const select = async (current: SignedGeneration | null) => peerApiJson<SignedGeneration>(handle, 'control/select', {
-    request: await signTransitionRequest({ applicationId: handle.application.id, profile: authority.descriptor.payload.profile,
-      policy: authority.descriptor.payload.policy, transitionId: crypto.randomUUID(), requester: device.publicKey,
-      coordinator: device.publicKey, expectedGeneration: current?.id ?? null, controlRevision: 0,
-      reason: current ? 'takeover' : 'create', base: current ? { point: { generation: current.id, sequence: 0,
-        root: await generationStartRoot(current) }, receipt: null, bridge: [] } : null }, device),
-  });
-  const generation = await select(null), grant = crypto.randomUUID(), now = Date.now();
+  const handle = await create({ listener: false }), device = await createSigningIdentity();
+  const descriptor = await signAppDescriptor({applicationId:handle.application.id,rootPrincipal:device.publicKey,
+    authorityPublicKey:device.publicKey,executionManifestDigest:'12'.repeat(32),finalityPolicy:{kind:'none'}},device);
+  const membership = await signMembership({applicationId:handle.application.id,revision:0,previous:null,authorTimeAfterMs:-1n,
+    epoch:0,epochKeyDigest:'34'.repeat(32),members:[{publicKey:device.publicKey,reader:true,writer:true,administrator:true,publisher:false,finalizer:false}]},device);
+  const authority = authorityRecord(encodeRecord({descriptor,memberships:[membership]}));
+  await inDO(handle.id,t=>t.db.set('application_authority',authority));
+  const grant = crypto.randomUUID(), now = Date.now();
   const account = await inDO(handle.id, t => t.db.get<string>('owner_account', ''));
   await env.ACCOUNTS.prepare(`INSERT INTO integration_oauth_grants(id,account_id,client_id,resource,scope,created_at,expires_at)
     VALUES(?,?,'read-routing',?,?,?,?)`).bind(grant, account, origin + '/mcp', scope, now, now + 3600000).run();
@@ -78,7 +70,7 @@ async function fixture(count = 1) {
     }));
     return response.json();
   });
-  return { handle, grant, generation, select, calls, clients, run,
+  return { handle, grant, calls, clients, run,
     timeout() { expect(timers.length).toBeGreaterThan(0); timers.shift()!(); },
     close() { spy.mockRestore(); for (const client of clients) client.close(); },
   };
@@ -122,18 +114,20 @@ it('rechecks authorization instead of returning a remembered timeout after revoc
     f.timeout(); await result;
   } finally { f.close(); }
 });
-it('rechecks the selected generation before returning a remembered timeout', async () => {
-  const f = await fixture();
+it('changing the tool provider is dispatch policy, not a read projection invalidation', async () => {
+  const f = await fixture(2);
   try {
-    const pending = f.run(), result = expect(pending).rejects.toMatchObject({ status: 409, code: 'application_generation_changed' });
-    await f.calls[0].promise; await f.select(f.generation); f.timeout(); await result;
+    const pending = f.run();const call=await f.calls[0].promise;
+    await inDO(f.handle.id,t=>selectProvider(t,'2'.repeat(64)));
+    f.clients[0].send(JSON.stringify({type:'result',id:call.id,value:['current-read']}));
+    expect(await pending).toEqual({value:['current-read']});
   } finally { f.close(); }
 });
 it('keeps timed out writes uncertain under their original operation identity', async () => {
   const f = await fixture();
   try {
     const pending = f.run('call_application_command'); await f.calls[0].promise; f.timeout();
-    expect(await pending).toMatchObject({ value: { operationId: 'original-write', outcome: 'uncertain',
+    expect(await pending).toMatchObject({ value: { operationId: 'original-write', stored:false, materialized:null, finalized:false,
       code: 'operation_uncertain', reason: 'application_call_timed_out' } });
   } finally { f.close(); }
 });

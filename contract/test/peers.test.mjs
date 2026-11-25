@@ -28,8 +28,11 @@ test('the host package exports introductions without a second application framin
   assert.equal(typeof peers.createPeerRendezvous, 'function');
 });
 
-test('portable peer admission includes database opening without granting it to the host', () => {
-  const request = { facet: 'database', action: 'open' };
-  assert.equal(peers.participantAccepts(peers.PEER_PARTICIPANT_POLICY, request), true);
-  assert.equal(peers.participantAccepts(peers.CONTROL_PARTICIPANT_POLICY, request), false);
+test('the host control client refuses raw application data before HTTP and exposes no data/order actions', async () => {
+  let requests = 0;
+  const client = peers.createPeersClient({ base: 'https://host.test', request: async () => { requests++; } });
+  for (const input of [{ facet: 'database', action: 'submit', payload: { program: 'not host data' } }, { record: '00', applicationData: [] }, { record: 'AA' }]) await assert.rejects(client.participant(input), { code: 'authority_record_invalid' });
+  assert.equal(requests, 0);
+  for (const name of ['submit', 'range', 'coverage', 'selectGeneration', 'administerGeneration']) assert.equal(client[name], undefined);
+  assert.equal(typeof client.prepare, 'function'); assert.equal(typeof client.enroll, 'function'); assert.equal(typeof client.grant, 'function');
 });

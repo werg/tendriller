@@ -1,7 +1,7 @@
 import type { ApplicationSession, ApplicationSessionOwner, ApplicationOwnerOptions } from '@chronolog/peer-session';
 export interface BrowserOwnerConfiguration {
   profileId:string;
-  openSession:(options:{signal:AbortSignal;openDirectConnection:(options:import('@chronolog/peer-session/webrtc').WebRtcOptions)=>Promise<import('@chronolog/peer-session/webrtc').WorkerWebRtcConnection>})=>Promise<{session:ApplicationSession;control?:ApplicationOwnerOptions['host'];prepareCommand?:ApplicationOwnerOptions['prepareCommand'];close?:()=>Promise<void>}>;
+  openSession:(options:{signal:AbortSignal;openDirectConnection:(options:import('@chronolog/peer-session/webrtc').WebRtcOptions)=>Promise<import('@chronolog/peer-session/webrtc').WorkerWebRtcConnection>})=>Promise<{session:ApplicationSession;close?:()=>Promise<void>}>;
   createIdentity?:(options:{signal:AbortSignal})=>Promise<string>;
   ownerOptions?:ApplicationOwnerOptions;
   /** Bounded SharedWorker bootstrap roots; expiry detaches only that root, never the owner lock. */

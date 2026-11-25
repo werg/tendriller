@@ -12,85 +12,41 @@ async function directory(t) {
   return path;
 }
 
-test('command batches validate later envelopes before submitting earlier commands', async () => {
-  let commands = 0;
-  await assert.rejects(runSessionCommand({ session: { command() { commands++; } } }, 'command-batch', [JSON.stringify([
-    { command: 'add', input: {}, operationId: 'first' }, null,
-  ])]), /Every batched command/);
-  assert.equal(commands, 0);
-});
-
-test('an uncertain batch keeps earlier results and does not submit later commands', async () => {
-  const calls = [], saved = { status: 'saved', operationId: 'second' };
-  const session = {
-    command: async (_name, _input, { operationId }) => {
-      calls.push(operationId);
-      return { applied: async () => {
-        if (operationId === 'second') throw Error('lost reply');
-        return { status: 'applied', outcome: 'accepted' };
-      } };
-    }, operations: { get: async () => saved },
-  };
-  const result = await runSessionCommand({ session }, 'command-batch', [JSON.stringify(
-    ['first', 'second', 'third'].map(operationId => ({ command: 'add', input: {}, operationId })),
-  )]);
-  assert.deepEqual(calls, ['first', 'second']);
-  assert.equal(result.complete, false);
-  assert.equal(result.nextIndex, 2);
-  assert.equal(result.results[0].lifecycle, 'applied');
-  assert.equal(result.results[1].lifecycle, 'unknown');
-  assert.deepEqual(result.results[1].state, saved);
-});
-
-test('missing application setup reports the next step before issuing session work', async () => {
-  let called = false;
-  await assert.rejects(withSession(undefined, () => { called = true; }),
-    error => /page handle does not open a Chronolog session/.test(error.message) && /BUILD_AN_APP\.md/.test(error.message));
-  assert.equal(called, false);
-  await assert.rejects(runSessionCommand({ session: {} }, 'publication', []),
-    error => /session-owned control participant/.test(error.message) && /publisher grant/.test(error.message));
-});
-
-test('commands preserve exact operation identity and captured revision without a tool retry queue', async () => {
-  const calls = [], revision = { generation: 'selected', point: { sequence: 4 } };
-  const operation = { status: 'saved', operationId: 'intent-1', attemptId: 'signed-original' };
-  const session = { command: async (...args) => { calls.push(args); return { get: async () => operation }; } };
-  assert.deepEqual(await runSessionCommand({ session }, 'command', ['claim', '{"id":"task"}'], {
-    operation: 'intent-1', 'based-on': JSON.stringify(revision), saved: true,
-  }), operation);
-  assert.deepEqual(calls, [['claim', { id: 'task' }, { operationId: 'intent-1', basedOn: revision }]]);
-  await assert.rejects(runSessionCommand({ session }, 'command', ['claim', '{}']), /stable operation identity/);
-  assert.equal(calls.length, 1);
-});
-
-test('an interrupted applied waiter retains its original saved operation for inspection', async () => {
-  const expected = Error('reply unavailable'), saved = { status: 'saved', operationId: 'original', attemptId: 'attempt' };
+const facts = id => ({ applicationId: 'app', author: 'author', proposalId: 'proposal', operationId: id, stored: true, pending: null, materialized: null, retained: [], finalized: false, excluded: false });
+test('batch validates every envelope before storing any command', async () => {
   let calls = 0;
-  const session = { command: async () => { calls++; return { applied: async () => { throw expected; } }; },
-    operations: { get: async id => { assert.equal(id, 'original'); return saved; } } };
-  await assert.rejects(runSessionCommand({ session }, 'command', ['post', '{}'], { operation: 'original' }),
-    error => error === expected && error.operation === saved);
-  assert.equal(calls, 1);
+  await assert.rejects(runSessionCommand({ session: { command() { calls++; } } }, 'command-batch', [JSON.stringify([{ command: 'add', input: {}, operationId: 'one' }, null])]), /Every batch item/);
+  assert.equal(calls, 0);
 });
-
-test('retry and reviewed reapply call the same session journal with distinct intent semantics', async () => {
-  const calls = [], session = {
-    retry: async id => calls.push(['retry', id]), operations: { get: async id => ({ operationId: id, status: 'saved' }) },
-    reapply: async (...args) => { calls.push(['reapply', ...args]); return { get: async () => ({ operationId: 'new' }) }; },
-  };
-  assert.equal((await runSessionCommand({ session }, 'retry', ['original'], { saved: true })).operationId, 'original');
-  await runSessionCommand({ session }, 'reapply', ['original', 'claim', '{"id":"task"}'], {
-    operation: 'new', 'based-on': '{"generation":"recovered"}', saved: true,
-  });
-  assert.deepEqual(calls, [['retry', 'original'], ['reapply', 'original', 'claim', { id: 'task' },
-    { operationId: 'new', basedOn: { generation: 'recovered' } }]]);
+test('default command acknowledges local storage without waiting for materialization or peers', async () => {
+  const calls = [], observation = facts('stable');
+  const operation = { inspect: async () => observation, materialized: () => assert.fail('not an authoring gate') };
+  const session = { command: async (...args) => { calls.push(args); return operation; } };
+  assert.deepEqual(await runSessionCommand({ session }, 'command', ['post', '{"text":"offline"}'], { operation: 'stable', 'author-time': '9223372036854775807' }), observation);
+  assert.deepEqual(calls, [['post', { text: 'offline' }, { operationId: 'stable', authorTimestampMs: 9223372036854775807n }]]);
 });
-
-test('coherent event reads always release their captured view, including a stale cursor failure', async () => {
-  let released = 0;
-  const session = { readView: async () => ({ readEvents: () => { throw Error('CURSOR_RECOVERED'); }, release: () => { released++; } }) };
-  await assert.rejects(runSessionCommand({ session }, 'events', [], { cursor: 'old-generation' }), /CURSOR_RECOVERED/);
-  assert.equal(released, 1);
+test('an explicit materialization wait preserves original stored intent on uncertainty', async () => {
+  const failure = Error('wait interrupted'), observation = facts('original'), operation = { inspect: async () => observation, materialized: async () => { throw failure; } };
+  const session = { command: async () => operation, operations: { get: async () => operation } };
+  await assert.rejects(runSessionCommand({ session }, 'command', ['post', '{}'], { operation: 'original', wait: 'materialized' }), error => error === failure && error.operation === observation);
+});
+test('retry calls only the existing operation journal, never a replacement command', async () => {
+  const observation = facts('original'), ids = [], session = { operations: { retry: async id => { ids.push(id); return { inspect: async () => observation }; } } };
+  assert.deepEqual(await runSessionCommand({ session }, 'retry', ['original']), observation); assert.deepEqual(ids, ['original']);
+});
+test('batch reports independent local facts and stops at an uncertain original', async () => {
+  const calls = [], operation = id => ({ inspect: async () => facts(id) });
+  const session = { command: async (_name, _input, { operationId }) => { calls.push(operationId); if (operationId === 'two') throw Error('uncertain store reply'); return operation(operationId); }, operations: { get: async id => operation(id) } };
+  const result = await runSessionCommand({ session }, 'command-batch', [JSON.stringify(['one', 'two', 'three'].map(operationId => ({ operationId, command: 'post', input: {} })))]);
+  assert.deepEqual(calls, ['one', 'two']); assert.equal(result.complete, false); assert.equal(result.results[0].observation.stored, true); assert.equal(result.results[1].observation.operationId, 'two');
+});
+test('missing setup names the boundary without issuing work', async () => {
+  let called = false; await assert.rejects(withSession(undefined, () => { called = true; }), /BUILD_AN_APP/); assert.equal(called, false);
+  await assert.rejects(runSessionCommand({ session: {} }, 'publication', []), /independently authorized publisher/);
+});
+test('coherent event read releases its captured snapshot on cursor errors', async () => {
+  let released = false; const session = { readView: async () => ({ readEvents() { throw Error('EVENT_CURSOR_REVISION_MISMATCH'); }, release() { released = true; } }) };
+  await assert.rejects(runSessionCommand({ session }, 'events', [], { cursor: 'other-snapshot' }), /REVISION_MISMATCH/); assert.equal(released, true);
 });
 
 test('session bootstrap ownership closes actual resources on failed actions and cancellation', async t => {
@@ -171,26 +127,20 @@ export async function openSession({mode,profile}) {
 test('self and endpoint diagnostics expose the actual attachment provenance', async () => {
   const endpoint = { ownerInstanceId: 'owner', endpointId: 'endpoint', capabilities: ['queries'],
     identity: { agentBindingId: 'agent' }, context: { runId: 'review' } };
-  const owned = { mode: 'attach', session: { applicationId: 'application', deviceId: 'signer', endpoint,
+  const owned = { mode: 'attach', session: { applicationId: 'application', identity: { publicKey: 'signer' }, endpoint,
     describe: () => ({ id: 'definition' }), status: { phase: 'ready' }, endpoints: async () => [endpoint] } };
   assert.deepEqual(await runSessionCommand(owned, 'self', []), { mode: 'attach', applicationId: 'application',
-    historyId: null, deviceId: 'signer', endpoint });
+    identity: { publicKey: 'signer' }, endpoint });
   const diagnostic = await runSessionCommand(owned, 'doctor', []);
   assert.deepEqual(diagnostic.identity.endpoint.identity, endpoint.identity); assert.deepEqual(diagnostic.capabilities, ['queries']);
   assert.equal(diagnostic.protocol, 'tendriller.diagnostics.v1'); assert.equal(diagnostic.assessment, 'ready');
   assert.deepEqual(await runSessionCommand(owned, 'endpoints', []), [endpoint]);
 });
 
-test('attached recovery uses the owner administration facade without opening a control signer', async () => {
-  const calls = [], signal = new AbortController().signal;
-  const owned = { mode: 'attach', session: { recovery: {
-    takeover: async options => { calls.push(['takeover', options]); return null; },
-    handover: async options => { calls.push(['handover', options]); return null; },
-  } } };
-  await runSessionCommand(owned, 'recovery', ['takeover'], { transition: 'reviewed-1' }, { signal });
-  await runSessionCommand(owned, 'recovery', ['handover', 'successor'], { transition: 'reviewed-2' }, { signal });
-  assert.deepEqual(calls, [['takeover', { transitionId: 'reviewed-1', signal }],
-    ['handover', { transitionId: 'reviewed-2', coordinator: 'successor', signal }]]);
+test('optional finality is an explicit author-time provider request, not a write gate', async () => {
+  const calls = [], session = { finality: { closeAuthorTime: async input => { calls.push(input); return { closedThroughMs: input.throughMs }; } } };
+  assert.deepEqual(await runSessionCommand({ session }, 'finality', ['close'], { through: '123' }), { closedThroughMs: 123n });
+  assert.deepEqual(calls, [{ throughMs: 123n }]);
 });
 
 test('publication sends a complete signed graph through the owned control participant', async t => {

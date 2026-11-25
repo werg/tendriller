@@ -1,146 +1,128 @@
-// Run this public-package consumer from its own private working directory.
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
-import { resolve } from 'node:path';
-import { createClient, createPage } from '@tendriller/core';
-import { participateNativeApplication } from '@tendriller/core/native-rtc';
-import { createNativeSessionSupervisor } from '@tendriller/core/native-owner';
+// Run this public-package consumer from its own private working directory. It adapts the current starter:
+// account-linked setup, independent publisher policy, a complete signed browser page published before any
+// browser key exists, explicit native provisioning, and an OPTIONAL native assistant participant. The
+// signed page reads and writes with its own browser identity; the native process is never a prerequisite.
+import { createHash, randomUUID } from 'node:crypto';
+import { readdir, readFile, rm, mkdir, writeFile, copyFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { prepareTendrilSetup, createSetupIntent, completeSetupIntent } from '@tendriller/core/setup';
 import { connectApplicationAssistant, createAssistantKey, createAssistantEventDelivery, proposeApplicationAssistant } from '@tendriller/core/assistant';
-import { bytesDigest, bytesToHex, createScopedApplicationTools, forwardSessionEvents, describeApplication, eventExecutionManifest,
-  executionManifestArtifacts, participantGrant, signTransitionRequest, signPublicationManifest, verifyAuthorityBundle } from '@chronolog/peer-session';
-import { openNativeApplication, openNativeDevice } from '@chronolog/peer-session/native';
-import { createApplicationOwner } from '@chronolog/peer-session/worker';
+import { bytesToHex, createScopedApplicationTools, forwardSessionEvents, describeApplication, eventExecutionManifest,
+  executionManifestArtifacts, importSigningIdentity, signPublicationManifest } from '@chronolog/peer-session';
 import { definition } from './review-domain.mjs';
-import { watchApplicationSetup } from '@tendriller/core/setup';
+import * as local from './review-local.mjs';
+import { createNativeBootstrap } from './support/native-session.mjs';
+import { prepareHost } from './support/prepare-host.mjs';
 import { superviseReviewAssistant, retainedReviewProposal } from './review-assistant.mjs';
 
-const directory = resolve('.private');
-await mkdir(directory, { recursive: true, mode: 0o700 });
-async function read(name) {
-  try { return JSON.parse(await readFile(resolve(directory, name), 'utf8')); }
-  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-}
-async function save(name, value) {
-  const temporary = resolve(directory, name + '.' + randomUUID());
-  await writeFile(temporary, JSON.stringify(value) + '\n', { mode: 0o600, flag: 'wx', flush: true });
-  await rename(temporary, resolve(directory, name));
-  return value;
-}
-const mode = process.argv[2];
-if (mode === 'create') {
-  const access = JSON.parse(await readFile(process.argv[3], 'utf8'));
-  const handle = await read('handle.json') ?? await save('handle.json', await createPage(access.origin,
-    { owner: `${access.accountId}@example.invalid`, name: process.argv[4] ?? 'Review checklist' }));
-  console.log(JSON.stringify({ pageUrl: handle.page_url }));
+const { readPrivate, savePrivate, replacePrivate, project } = local;
+const mode = process.argv[2], root = fileURLToPath(new URL('.', import.meta.url));
+const nativeModes = new Set(['init-device', 'status', 'diagnostics', 'sign-enrollment', 'provisioning-request', 'import-provisioning']);
+const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const types = { html: 'text/html; charset=utf-8', mjs: 'text/javascript', js: 'text/javascript', json: 'application/json', css: 'text/css' };
+
+if (mode === 'setup') {
+  // The linked account's OAuth grant (tendrils:create) names the owner; no owner identity is supplied here.
+  const [origin, name = 'Review checklist'] = process.argv.slice(3), accessToken = process.env.REVIEW_ACCESS_TOKEN;
+  if (!origin || !accessToken) throw Error('Use: REVIEW_ACCESS_TOKEN=<linked account OAuth token with tendrils:create> node review-app.mjs setup SERVICE_ORIGIN [NAME]');
+  let handle = await readPrivate('handle.json', true);
+  if (!handle) {
+    const retained = await readPrivate('account-setup.json', true);
+    const store = { load: async id => retained?.operationId === id ? retained : null, save: (_id, intent) => savePrivate('account-setup.json', intent) };
+    const intent = await createSetupIntent(origin, { operationId: retained?.operationId ?? `review-setup-${randomUUID()}`, name }, { store });
+    handle = await savePrivate('handle.json', await completeSetupIntent(intent, await prepareTendrilSetup(intent, { accessToken })));
+  }
+  console.log(JSON.stringify({ pageUrl: handle.page_url, applicationId: handle.application.id }));
   process.exit(0);
 }
-const handle = await read('handle.json');
-if (!handle) throw Error('Run create first');
-const host = createClient(handle, { applicationId: handle.application.id });
+if (mode === 'init') {
+  const { handle, host } = await project();
+  const executionManifestDigest = bytesToHex((await executionManifestArtifacts(await eventExecutionManifest())).executionManifestDigest);
+  console.log(JSON.stringify(await prepareHost({ handle, host, readPrivate, savePrivate, definition, describeApplication, executionManifestDigest, executionProfile: 'events' })));
+  process.exit(0);
+}
+if (mode === 'build') {
+  // The bundler is a build-time tool, not a runtime dependency of the signed page or the native participant.
+  const { build } = await import(process.env.REVIEW_ESBUILD_MODULE ?? 'esbuild');
+  const { handle } = await project(), configuration = await readPrivate('host-configuration.json'), output = new URL('./page/', import.meta.url);
+  await rm(output, { recursive: true, force: true });
+  try {
+    await mkdir(output);
+    await writeFile(new URL('configuration.json', output), JSON.stringify({ applicationId: handle.application.id, page_url: handle.page_url,
+      serviceOrigin: new URL(handle.api).origin, pageId: handle.id, executionManifestDigest: configuration.executionManifestDigest }, null, 2) + '\n');
+    await copyFile(new URL('./review-index.html', import.meta.url), new URL('index.html', output));
+    await build({ absWorkingDir: root, entryPoints: { page: 'review-page.mjs', worker: 'review-worker.mjs' }, outdir: fileURLToPath(output),
+      bundle: true, splitting: true, format: 'esm', platform: 'browser', target: 'es2022', outExtension: { '.js': '.mjs' }, chunkNames: 'chunks/[name]-[hash]' });
+  } catch (error) { await rm(output, { recursive: true, force: true }); throw error; }
+  console.log('Built the complete page/ graph. Publish it before the owner browser key exists.');
+  process.exit(0);
+}
+if (mode === 'publish') {
+  const { handle, host } = await project(), files = [], assets = new Map(), base = new URL('./page/', import.meta.url);
+  async function visit(directory, prefix = '') {
+    for (const item of await readdir(directory, { withFileTypes: true })) {
+      const path = prefix + item.name;
+      if (item.isSymbolicLink()) throw Error('Publication must not contain symbolic links');
+      if (item.isDirectory()) await visit(new URL(item.name + '/', directory), path + '/');
+      else if (item.isFile()) {
+        const bytes = await readFile(new URL(item.name, directory)), digest = hash(bytes);
+        files.push({ path, hash: digest, size: bytes.length, type: types[path.split('.').at(-1)] ?? 'application/octet-stream' });
+        assets.set(digest, { hash: digest, bytes: bytes.toString('base64') });
+      }
+    }
+  }
+  await visit(base); files.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const graph = hash(JSON.stringify(files)), recordName = `publication-${graph}.json`;
+  let publication = await readPrivate(recordName, true);
+  if (!publication) {
+    const [metadata, previous] = await Promise.all([host.peers.application(), host.peers.publication()]), scope = metadata.publicationAuthority;
+    if (!scope) throw Error('Run init before publishing');
+    const publisher = await importSigningIdentity(await readPrivate('publisher.json'));
+    publication = await savePrivate(recordName, await signPublicationManifest({ applicationId: handle.application.id, membershipId: scope.grantId, author: publisher.publicKey,
+      operationId: `publish-${graph}`, revision: previous === null ? 0 : previous.publication.payload.revision + 1, previous: previous?.publication.id ?? null,
+      executionManifestDigest: scope.executionManifestDigest, entry: 'index.html', files }, publisher));
+  }
+  const receipt = await host.peers.publish(publication, [...assets.values()]);
+  if (receipt.publication.id !== publication.id) throw Error('PUBLICATION_MISMATCH');
+  console.log(JSON.stringify({ pageUrl: handle.page_url, publicationId: publication.id, version: receipt.version }));
+  process.exit(0);
+}
+
+const native = createNativeBootstrap({ definition, local });
+if (nativeModes.has(mode)) {
+  const result = await native.main(process.argv.slice(2));
+  if (result) console.log(JSON.stringify(result));
+  process.exit(process.exitCode ?? 0);
+}
+const { handle } = await project();
 const options = { api: handle.api, token: handle.token,
-  key: await read('assistant-key.json') ?? await save('assistant-key.json', createAssistantKey()),
-  label: handle.name, queries: ['checklist'], commands: ['completeItem'],
+  key: await readPrivate('assistant-key.json', true) ?? await savePrivate('assistant-key.json', createAssistantKey()),
+  label: handle.name ?? 'Review checklist', queries: ['checklist'], commands: ['completeItem'],
   events: [{ name: 'item.completed', description: 'The synthetic checklist item ID that was completed.' }] };
 if (mode === 'propose') {
   const proposal = await proposeApplicationAssistant(options);
-  await save('assistant-proposal.json', { proposed: proposal.proposed, adapterHash: createHash('sha256').update(options.key).digest('hex') });
+  await savePrivate('assistant-proposal.json', { proposed: proposal.proposed, adapterHash: createHash('sha256').update(options.key).digest('hex') });
   console.log(JSON.stringify({ reviewUrl: proposal.reviewUrl, proposed: proposal.proposed, approved: proposal.approved }));
   process.exit(0);
 }
-if (!['init', 'run'].includes(mode)) throw Error('Choose create, init, propose, or run');
-const existing = await read('initialized.json');
-if (mode === 'init' && existing) {
-  console.log('Review application already initialized');
-  process.exit(0);
-}
-let device, session, supervisor;
+if (mode !== 'run') throw Error('Choose setup, init, build, publish, init-device, sign-enrollment, provisioning-request, import-provisioning, status, diagnostics, propose, or run');
+
+// Optional native participant: it opens its own cached, explicitly provisioned store and serves the reviewed MCP adapter.
+const stop = new AbortController();
+process.once('SIGINT', () => stop.abort()); process.once('SIGTERM', () => stop.abort());
+const owned = await native.openSession({ signal: stop.signal });
+let lifecycle;
 try {
-  if (mode === 'init') {
-    device = await openNativeDevice({ path: resolve(directory, 'device.sqlite'), create: true });
-    const initial = await read('initial.json') ?? await save('initial.json', {
-      historyId: `review-${randomUUID()}`, epochKey: randomBytes(32).toString('base64'),
-    });
-    const epochKey = new Uint8Array(Buffer.from(initial.epochKey, 'base64'));
-    const execution = await executionManifestArtifacts(await eventExecutionManifest());
-    const authority = await host.peers.configureApplication({ historyId: initial.historyId,
-      definition: describeApplication(definition), schema: null, executionManifestDigest: bytesToHex(execution.executionManifestDigest),
-      schemaAdministrator: device.identity.publicKey, epoch: 0, keyDigest: await bytesDigest(epochKey),
-      members: [{ grant: participantGrant(device.identity.publicKey, { administrator: true, publisher: true }) }] });
-    await verifyAuthorityBundle(authority);
-    const descriptor = authority.descriptor;
-    const transition = await read('transition.json') ?? await save('transition.json', await signTransitionRequest({
-      applicationId: handle.application.id, profile: descriptor.payload.profile, policy: descriptor.payload.policy,
-      transitionId: randomUUID(), expectedGeneration: null, coordinator: device.identity.publicKey,
-      requester: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null,
-    }, device.identity));
-    await host.peers.selectGeneration(transition);
-    session = await openNativeApplication({ device, definition, authority: await host.peers.application(), epochKeys: new Map([[0, epochKey]]) });
-    await session.query('checklist', null);
-    await save('descriptor.json', descriptor);
-    await save('initialized.json', { deviceId: session.deviceId });
-    console.log('Review application initialized with two synthetic items');
-  } else {
-    supervisor = await createNativeSessionSupervisor({ directory: resolve(directory, 'owner'), profileId: 'review', bindings: [],
-      openOwner: async () => {
-        const authority = await host.peers.application();
-        await verifyAuthorityBundle(authority, await read('descriptor.json'));
-        device = await openNativeDevice({ path: resolve(directory, 'device.sqlite') });
-        session = await openNativeApplication({ device, definition, authority });
-        const controlHost = { exchange: (message, options) => host.peers.exchange(message, options) };
-        const control = session.connectControlParticipant(controlHost);
-        await participateNativeApplication(session, { peers: host.peers, control });
-        return createApplicationOwner(session, { host: controlHost });
-      } });
-    const stop = new AbortController();
-    process.once('SIGINT', () => stop.abort()); process.once('SIGTERM', () => stop.abort());
-    const expectedProposalId = retainedReviewProposal(await read('assistant-proposal.json'), options.key);
-    const lifecycle = superviseReviewAssistant({ session, signal: stop.signal, expectedProposalId,
-      watch: callbacks => watchApplicationSetup({ api: handle.api, token: handle.token, ...callbacks }),
-      startAdapter: callbacks => connectApplicationAssistant({ ...options, session, tools: createScopedApplicationTools(session, options), ...callbacks }),
-      onOnline: (assistant, signal) => forwardSessionEvents({ session, topics: ['completed'], signal,
-        deliver: createAssistantEventDelivery({ assistant }),
-        checkpoint: { load: async () => (await read('event-cursor.json')) ?? undefined, save: cursor => save('event-cursor.json', cursor) },
-        project: event => ({ name: 'item.completed', payload: { id: event.payload.id } }) }),
-    });
-    let lastHtml;
-    const publishView = async () => {
-      const { value } = await session.query('checklist', null);
-      const html = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        + '<title>Review checklist</title><style>body{font:18px/1.6 system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem}li{margin:1rem 0}</style>'
-        + '<h1>Review checklist</h1><p>Shared synthetic data for testing Tendriller. Ask the connected assistant to read or complete an item.</p><ul>'
-        + value.map(item => `<li>${item.complete ? '✓ Complete' : 'Incomplete'} · ${item.label}</li>`).join('')
-        + `</ul><p>This is a signed snapshot. <a href="${handle.page_url}">Open the latest snapshot</a> after changing an item.</p></html>`;
-      if (html === lastHtml) return;
-      let pending = await read('pending-publication.json');
-      if (!pending) {
-        const previous = await host.peers.publication(), current = await host.peers.application();
-        const bytes = new TextEncoder().encode(html), hash = await bytesDigest(bytes), descriptor = current.descriptor.payload;
-        pending = await save('pending-publication.json', { html, publication: await signPublicationManifest({
-          applicationId: handle.application.id, historyId: descriptor.historyId, profile: descriptor.profile,
-          controlRevision: current.controls.at(-1).payload.revision, author: device.identity.publicKey,
-          operationId: randomUUID(), revision: previous ? previous.publication.payload.revision + 1 : 0,
-          previous: previous?.publication.id ?? null, definitionDigest: descriptor.definitionDigest,
-          executionManifestDigest: descriptor.executionManifestDigest, entry: 'index.html',
-          files: [{ path: 'index.html', hash, size: bytes.length, type: 'text/html' }],
-        }, device.identity), assets: [{ hash, bytes: Buffer.from(bytes).toString('base64') }] });
-      }
-      const result = await host.peers.publish(pending.publication, pending.assets);
-      if (result.publication.id !== pending.publication.id) throw Error('PUBLICATION_MISMATCH');
-      lastHtml = pending.html;
-      await save('pending-publication.json', null);
-      if (html !== lastHtml) await publishView();
-    };
-    const updates = (async () => {
-      await publishView();
-      for await (const _ of session.changes({ signal: stop.signal })) await publishView();
-    })();
-    console.log('Review participant running; it must remain running for reviewer reads, writes, and signed page updates.');
-    try { await Promise.all([updates, lifecycle.done]); }
-    catch (error) { if (!stop.signal.aborted) throw error; }
-    finally { stop.abort(); await lifecycle.close(); await Promise.allSettled([updates]); }
-  }
-} finally {
-  if (supervisor) await supervisor.close();
-  else if (session) await session.close();
-  else await device?.close();
-}
+  const { session } = owned, expectedProposalId = retainedReviewProposal(await readPrivate('assistant-proposal.json', true), options.key);
+  lifecycle = superviseReviewAssistant({ session, signal: stop.signal, expectedProposalId, watch: owned.watchSetup,
+    startAdapter: callbacks => connectApplicationAssistant({ ...options, session, tools: createScopedApplicationTools(session, options), ...callbacks }),
+    onOnline: (assistant, signal) => forwardSessionEvents({ session, topics: ['completed'], signal,
+      deliver: createAssistantEventDelivery({ assistant }),
+      checkpoint: { load: async () => (await readPrivate('event-checkpoint.json', true)) ?? undefined, save: state => replacePrivate('event-checkpoint.json', state) },
+      project: event => ({ name: 'item.completed', payload: { id: event.payload.id } }) }),
+    report: value => console.log(JSON.stringify(value)),
+  });
+  console.log(JSON.stringify({ state: 'participant_running', applicationId: session.applicationId, publicKey: session.identity.publicKey,
+    optional: true, note: 'Optional MCP participant. The signed page needs no native process; it must stay running only for reviewed assistant reads and writes.' }));
+  await lifecycle.done;
+} finally { try { await lifecycle?.close(); } finally { await owned.close(); } }

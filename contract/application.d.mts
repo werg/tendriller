@@ -1,121 +1,102 @@
-/** Application identity is independent from the page host and membership keys. */
+/** Host handle identity is independent from the application's data and publication grants. */
 export interface ApplicationSelection { readonly id: string }
-export interface ApplicationSubmitOptions {
-  readonly operationId: string;
-  /** Captured applied revision used as an ordering barrier. */
-  readonly basedOn?: string;
+export interface ApplicationSubmitOptions { readonly operationId?: string; readonly authorTimestampMs?: bigint }
+export interface ApplicationRevisionState {
+  readonly digest: string;
+  readonly view: 'local' | 'final';
+  readonly executionManifestDigest: string;
+  readonly policyDigest: string;
 }
-export interface ApplicationOperationIdentity { readonly operationId: string }
-export interface ApplicationAttemptIdentity extends ApplicationOperationIdentity {
-  readonly attemptId: string;
-  readonly generation: string;
-}
-export interface AppliedApplicationOperation extends ApplicationAttemptIdentity {
-  readonly status: 'applied';
-  readonly author: string;
-  readonly sequence: number;
+export interface MaterializedApplicationOperation {
+  readonly proposalId: string;
+  readonly revision: ApplicationRevisionState;
   readonly outcome: 'accepted' | 'rejected';
   readonly rejectionCode: string | null;
+  readonly failingStatementIndex: number | null;
 }
-/** Applied outcomes remain conditional on selected ancestry; sharing is separate retention evidence. */
-export type ApplicationOperation =
-  | (ApplicationAttemptIdentity & { readonly status: 'saved' })
-  | AppliedApplicationOperation
-  | (ApplicationAttemptIdentity & { readonly status: 'abandoned' | 'needsReapply'; readonly selectedGeneration: string; readonly previous: AppliedApplicationOperation | null });
-export interface ApplicationOperations<Operation extends ApplicationOperation = ApplicationOperation> {
-  get(operationId: string): Operation | null | Promise<Operation | null>;
-  subscribe(options: { readonly operationId: string; readonly signal?: AbortSignal }): AsyncIterable<Operation>;
-}
-/** Backend-authenticated provenance, never copied from an application payload. */
-export interface ApplicationEventOrigin {
-  readonly kind: string;
-  readonly authorId: string;
+export interface ApplicationOperationInspection {
+  readonly applicationId: string;
+  readonly author: string;
+  readonly authorTimestampMs: string | null;
+  readonly proposalId: string;
   readonly operationId: string;
+  readonly stored: boolean;
+  readonly pending: 'body' | 'key' | 'authority' | 'materializer' | null;
+  readonly materialized: MaterializedApplicationOperation | null;
+  readonly retained: readonly unknown[];
+  readonly finalized: boolean;
+  readonly excluded: boolean;
+}
+export interface ApplicationWaitOptions { readonly signal?: AbortSignal; readonly timeoutMs?: number }
+export interface ApplicationOperation {
+  readonly id: string;
+  readonly operationId: string;
+  readonly stored: true;
+  inspect(): ApplicationOperationInspection | Promise<ApplicationOperationInspection>;
+  materialized(options?: ApplicationWaitOptions): Promise<MaterializedApplicationOperation>;
+  retained(options?: ApplicationWaitOptions): Promise<readonly unknown[]>;
+  finalized(options?: ApplicationWaitOptions): Promise<MaterializedApplicationOperation>;
+}
+export interface ApplicationOperations {
+  get(operationId: string): ApplicationOperation | null | Promise<ApplicationOperation | null>;
+  /** Retry this original signer's retained signed proposal without minting or retimestamping work. */
+  retry(operationId: string): Promise<ApplicationOperation>;
+  subscribe(options: { readonly operationId: string; readonly signal?: AbortSignal }): AsyncIterable<ApplicationOperationInspection>;
 }
 export interface ApplicationEvent {
   readonly id: string;
   readonly proposalId: string;
-  readonly eventOrdinal: number;
+  readonly operationId: string;
+  readonly author: string;
+  readonly authorTimestampMs: string;
   readonly topic: string;
   readonly payload: unknown;
-  readonly origin: ApplicationEventOrigin;
 }
-export interface ApplicationEventTransaction { readonly proposalId: string; readonly events: readonly ApplicationEvent[] }
-export interface ApplicationEventBatch {
-  readonly transactions: readonly ApplicationEventTransaction[];
-  /** Delivery progress. The consumer atomically commits its own state and processed cursor. */
-  readonly scannedThrough: string;
-  readonly hasMore: boolean;
-  readonly revision: string;
-}
-export interface ApplicationEventReadOptions {
-  readonly cursor?: string;
-  readonly topics?: readonly string[];
-  readonly limit?: number;
-  readonly signal?: AbortSignal;
-}
-export interface ApplicationEvents<Submission extends ApplicationOperation = ApplicationOperation> {
-  publish(topic: string, payload: unknown, options: ApplicationSubmitOptions): Promise<Submission>;
+/** Cursors are bound to the captured operation-set revision; changed projections require a fresh read. */
+export interface ApplicationEventBatch { readonly revision: ApplicationRevisionState; readonly events: readonly ApplicationEvent[]; readonly cursor: string; readonly hasMore: boolean }
+export interface ApplicationEventReadOptions { readonly cursor?: string; readonly topics?: readonly string[]; readonly limit?: number; readonly signal?: AbortSignal }
+export interface ApplicationEvents {
+  publish(topic: string, payload: unknown, options?: ApplicationSubmitOptions): Promise<ApplicationOperation>;
   read(options?: ApplicationEventReadOptions): Promise<ApplicationEventBatch>;
-  /** Pulling the next batch is explicit backpressure; delivery is at least once. */
-  subscribe(options?: ApplicationEventReadOptions): AsyncIterable<ApplicationEventBatch>;
 }
-export type ApplicationView = 'applied';
-export interface ApplicationRevisionState { readonly view: 'applied'; readonly revision: string; readonly generation: string }
-export type ApplicationReadView<QueryResult = unknown, Parameter = unknown> = ApplicationRevisionState & {
+export type ApplicationView = 'local' | 'final';
+export interface ApplicationReadView<QueryResult = unknown, Parameter = unknown> {
+  readonly applicationId: string;
+  readonly revision: ApplicationRevisionState;
   query(query: string, parameters?: readonly Parameter[]): QueryResult | Promise<QueryResult>;
   readEvents(options?: ApplicationEventReadOptions): ApplicationEventBatch | Promise<ApplicationEventBatch>;
   release(): void | Promise<void>;
-};
-export interface ApplicationRecoveryNotice {
-  readonly previousGeneration: string;
-  readonly generation: string;
-  readonly adopted: { readonly generation: string; readonly sequence: number; readonly root: string } | null;
-  readonly revision: string;
-  readonly abandoned: readonly ApplicationOperation[];
-  readonly unknownLoss: boolean;
 }
-export type ApplicationChange = ApplicationRevisionState & {
-  readonly kind?: 'update' | 'recovery';
-  readonly recovery?: ApplicationRecoveryNotice;
-};
+export interface ApplicationChange {
+  readonly kind: 'materialized' | 'finalized' | 'dependency';
+  readonly revision: ApplicationRevisionState;
+  readonly revisedProposalIds: readonly string[];
+}
 export interface ApplicationChangeOptions { readonly view?: ApplicationView; readonly signal?: AbortSignal }
-/** One application session owns commands, coherent applied views, operations and explicit recovery. */
-export interface ApplicationBackend<Program = unknown, Submission extends ApplicationOperation = ApplicationOperation, QueryResult = unknown, Parameter = unknown> {
-  readonly id: string;
-  /** Owner-bound attachment identity; document/run context retains its declared evidence level. */
-  readonly endpoint?: Readonly<{ ownerInstanceId: string; endpointId: string; endpointIncarnation: string;
-    context: Readonly<{ viewId?: string; documentPath?: string; publicationId?: string; runId?: string }>;
-    evidence: 'owner-bound'; contextEvidence: 'caller-asserted' | 'owner-validated' }> | null;
-  readonly capabilities: readonly string[];
+export interface ApplicationStatus {
+  readonly canAuthor: boolean;
+  readonly phase: 'ready' | 'awaiting-keys' | 'closed';
+  readonly database: 'idle' | 'opening' | 'ready' | 'failed' | 'closed';
+  readonly connectedPeers: number;
+  readonly pendingOperations: number;
+  readonly materializationError: string | null;
+}
+/** Submission resolves only after the exact signed intent is durable locally, independent of network/finality. */
+export interface ApplicationBackend<Program = unknown, QueryResult = unknown, Parameter = unknown> {
+  readonly applicationId: string;
   readonly status: ApplicationStatus;
-  /** Reports current state once, then actual session changes; installs no polling. */
+  readonly signal?: AbortSignal;
   onStatus(listener: (status: ApplicationStatus) => void): () => void;
-  onRecovery(listener: (notice: ApplicationRecoveryNotice) => void): () => void;
-  inspectRecovery(): Promise<readonly ApplicationRecoveryNotice[]>;
-  submit(program: Program, options: ApplicationSubmitOptions): Promise<Submission>;
-  /** Coalesced invalidations; capture readView for data. Recovery resets are explicit. */
+  submit(input: ApplicationSubmitOptions & { readonly program: Program }): Promise<ApplicationOperation>;
   changes(options?: ApplicationChangeOptions): AsyncIterable<ApplicationChange>;
   readView(options?: { readonly view?: ApplicationView }): ApplicationReadView<QueryResult, Parameter> | Promise<ApplicationReadView<QueryResult, Parameter>>;
-  readonly events: ApplicationEvents<Submission>;
-  readonly operations: ApplicationOperations<Submission>;
-}
-export interface ApplicationStatus {
-  readonly phase: 'ready' | 'waiting' | 'recovering' | 'awaiting-keys' | 'closed';
-  /** Durable data lifecycle; protocol traffic and backend installation stay available while idle. */
-  readonly database: 'idle' | 'opening' | 'ready' | 'failed' | 'closed';
-  readonly role: 'coordinator' | 'follower';
-  readonly generation: string;
-  readonly coordinator: string;
-  readonly connectedPeers: number;
+  readonly operations: ApplicationOperations;
 }
 export interface ApplicationBinding {
   readonly selection: ApplicationSelection;
   readonly backend: ApplicationBackend;
-  /** Installation availability only; this does not claim synchronization or coordinator reachability. */
   readonly available: boolean;
   ready(): Promise<ApplicationBackend>;
-  /** A page installs exactly one matching backend. There is no runtime failover. */
   install(backend: ApplicationBackend): void;
 }
 export declare class ApplicationError extends Error { readonly code: string; constructor(code: string, message: string) }
@@ -124,5 +105,4 @@ export declare function createApplicationBinding(selection: ApplicationSelection
 export declare function assertApplicationTopic(topic: unknown): string;
 export declare function assertApplicationOperationId(id: unknown): string;
 export declare function applicationFilter(topics?: readonly string[]): readonly string[] | null;
-/** Conversation messages are ordinary durable events with stable caller-owned IDs. */
-export declare function publishConversation<Submission extends ApplicationOperation>(events: ApplicationEvents<Submission>, message: { readonly messageId: string; readonly text: string; readonly inReplyTo?: string }, options: ApplicationSubmitOptions): Promise<Submission>;
+export declare function publishConversation(events: ApplicationEvents, message: { readonly messageId: string; readonly text: string; readonly inReplyTo?: string }, options?: ApplicationSubmitOptions): Promise<ApplicationOperation>;

@@ -1,553 +1,78 @@
 # Reuse the application helpers
 
-Import the shared observer from the SDK. Adapt the other UI components from the
-[first-app source archive](/downloads/tendriller-first-app.tgz) beside your authored `page.mjs`:
-
-```js
-import { createOwnerConnection, describeConnectionError } from './connection.mjs';
-import { mountConnectionView } from './connect-view.mjs';
-import { createLiveView } from '@chronolog/peer-session/browser';
-import { createOperationView } from './helpers/operation-view.mjs';
-import { createReviewedInput } from './helpers/reviewed-input.mjs';
-```
-
-`createLiveView` is a public SDK composition helper. The other modules are
-executable application source supplied in the first-app archive. The
-starter's `page.mjs` already uses the first two. Its `media/panel.mjs` composes
-reviewed input with camera/file capture, an explicit inference request and a
-declared evidence command. The [capability map](CAPABILITIES.md) points to the
-other supplied modules.
-
-Use the real native session or the browser facade returned by
-`openBrowserOwner`. [Build an app](BUILD_AN_APP.md) supplies that complete
-bootstrap, enrollment and publication path. These helpers observe and interact
-with its existing session. They do not own its signer, database, transport,
-recovery policy or process lifetime.
+Start with [browser-first setup](BUILD_AN_APP.md), [ownership/bootstrap](SESSION_BOOTSTRAP.md), and [capabilities](CAPABILITIES.md). A rich application needs domain views, not a JSON editor or a form mirroring storage fields.
 
 ## Connect the browser
 
-Every delivered page uses the connection component. **Do not ship the old
-two-button flow** ("Request browser access" / "Connect existing device"), a
-stepper, or raw error codes. Opening the page is the whole flow:
+`worker.mjs` opens retained identity/authority/keys locally, then `createApplicationSession`. `page.mjs` uses `openBrowserOwner` and installs `createApplicationBackend(session)` into the runtime. `helpers/browser-profile.mjs` supplies the same stable profile for every document. Never gate Save on network/discovery/native-provider/finalizer reachability.
 
-```js
-const pairing = createBrowserPairing({ configuration, profileId, workerUrl: new URL('./pairing-worker.mjs', import.meta.url) });
-const view = mountConnectionView(document.querySelector('#connection-slot'));
-const connection = createOwnerConnection({ configuration, pairing, appName: 'Shared notes',
-  // Attach (openBrowserOwner), start the app's views, and return once data is usable.
-  // Throw the attach error unchanged: its code tells the component to set up, wait or retry.
-  connect: connectSession,
-  onState(state) { view.render(state); document.querySelector('#app').hidden = state.phase !== 'connected'; } });
-void connection.start();
-```
-
-| Browser state | What the person sees | Action |
-| --- | --- | --- |
-| Enrolled (every later visit, any tab) | Nothing; the app opens | none |
-| New browser, request being prepared | "Setting up this browser…" with progress | none |
-| Prepared | The service-origin approval opens once, returns by itself | one **Approve** tap there |
-| Approved, native owner committing | "Finishing setup…" | none |
-| Another tab is starting the owner | "Connecting…" | none (retries) |
-| Declined | "The request was declined" | **Ask again** |
-| Signed out, private mode, other failures | Plain words from `describeConnectionError`; code under *Technical details* | **Reload** or **Try again** where useful |
-
-While not connected, show only this card: no empty tables, "no data yet" or
-stale-data warnings above it. Keep data views hidden until `phase` is
-`connected`. Pass `onOwnerReplaced: reloadOnOwnerReplaced()` to
-`openBrowserOwner`; the runtime binding installs once per page, so install it
-only after `connect` has made the app usable.
-
-User-facing copy for the codes an app can meet (developer causes are in
-[troubleshooting](TROUBLESHOOTING.md)):
-
-| Code | Message |
-| --- | --- |
-| `APPLICATION_DEVICE_NOT_FOUND`, `DEVICE_NOT_ENROLLED` | Not an error: "Setting up this browser…", then the approval |
-| `OWNER_BUSY`, `OWNER_UNREACHABLE`, `ENDPOINT_STALE` | "Connecting…" (another tab is starting); retried |
-| `pairing_account_required`, 401 | "Sign in to continue" · Reload |
-| `PAIRING_STORAGE_REQUIRED`, `PAIRING_LOCK_REQUIRED`, `QuotaExceededError` | "This browser can't keep the app's key" · use a normal tab |
-| `pairing_rate_limited`, `pairing_ledger_full` | "Too many attempts"; retried |
-| `denied` | "The request was declined" · Ask again |
-| network and timeouts | "The connection is slow. Retrying…" |
-
-Large live answers: a reply of several signals (each at most 16 KiB) can be sent
-with the maintained `helpers/signal-request.mjs`, which reserves signed-frame overhead,
-bounds replies and retries backpressure. The shared P2P-first transport carries
-them directly where possible; the hosted relay is fallback only. Reassembly binds
-the request recipient and computation generation, not just a bare request ID.
-
-### Views that fit the data
-
-A structured record editor (JSON or a plain form of fields) is a fallback, never
-the deliverable for a "full-featured" or "rich" request. Build list/detail with
-search and filter, an inspector side panel, diff/compare views, inline editing
-with review and undo, timelines and conversations, tables with named links,
-and explicit empty and loading states. Walk the flows on a phone-sized viewport
-and desktop before delivery ([acceptance bar](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable)).
-
-## Full-duplex dashboards and data feeds
-
-For dashboards where an agent runs on a cloud server or home server and the user
-opens the page on a phone, tablet or laptop, compose `ui/dashboard.mjs`,
-`helpers/data-feed.mjs`, `ui/chat-session.mjs`, and `helpers/dev-telemetry.mjs`:
-
-```js
-// Native agent process (secrets & local API access stay strictly native):
-import { serveDataFeeds } from './helpers/data-feed.mjs';
-const feeds = serveDataFeeds(session, {
-  cpu: { pollMs: 5_000, fetch: async () => readHostMetrics() },
-  orders: { maxAgeMs: 10_000, fetch: async (query) => fetchPrivateApi(query) },
-});
-
-// Browser page:
-import { useDataFeed } from './helpers/data-feed.mjs';
-import { mountDashboardShell, mountMetricCard, mountFeedbackCard } from './ui/dashboard.mjs';
-import { mountDevTelemetry } from './helpers/dev-telemetry.mjs';
-
-const shell = mountDashboardShell(document.querySelector('#app'), {
-  title: 'Home Server', session,
-  onRefresh: () => cpuFeed.refresh(),
-});
-const cpuCard = mountMetricCard(shell.grid, {
-  title: 'CPU Load', unit: '%',
-  onAskAgent: ({ title, latest }) => { chat.setContext({ label: title, data: latest }); chat.open(); },
-});
-const cpuFeed = useDataFeed(session, {
-  peer: configuration.nativeDeviceId, feed: 'cpu',
-  onUpdate: state => state.data && cpuCard.update({ value: state.data.pct, fetchedAtMs: state.fetchedAtMs }),
-});
-const telemetry = mountDevTelemetry({ session, runtime: window.tendril });
-```
-
-`serveDataFeeds` polls only while a peer is connected, skips unchanged snapshots,
-caches in RAM, broadcasts deltas over `session.signals` (`feed/<name>`), and serves
-on-demand or large (>10 KiB, up to 4 MiB) pulls via `helpers/signal-request.mjs`—all
-with **zero durable Chronolog writes**. Reserve Chronolog commands for durable user
-decisions, chat turns, and retained observations.
+The first owner browser initializes local data keys after actual sign-in/key proof. A fresh second browser stays keyless until explicit reviewed crypto membership and recipient-bound wrapped-key transfer. Use `helpers/provisioning-view.mjs`; no ordering pause or native-prepared prefix exists. SQL permission grants remain ordinary transactions, separate from crypto membership.
 
 ## Domain views you can import
 
-The first-app archive includes `ui/patterns.mjs` and a complete, dependency-free
-`ui/showcase.html` / `ui/showcase.mjs` example. Serve the extracted starter over
-local HTTP and open `/ui/showcase.html`; it uses synthetic training episodes to
-show useful actions before long system context, named related links and reviewed
-inline changes. It is a UI specimen, not a connected or persistent application.
-
-```js
-import {
-  mountListDetail, mountInspector, mountComparison, mountInlineReview, mountViewState,
-} from './ui/patterns.mjs';
-```
-
-| Pattern | Interface | Behavior and application responsibility |
-| --- | --- | --- |
-| Searchable list/detail | `mountListDetail(container, { records, filters, renderDetail, routeKey?, searchLabel? })` | Records contain `id`, `title`, optional `subtitle`, `status` and `searchText`. Filters are `[value, label]` pairs. Search, filter and selected record are URL-addressable; Back and reload restore them. `setRecords(records)` accepts the next coherent query value; `close()` disposes listeners and the active detail. Filtering is over that authorized value, not a second backend query. |
-| Inspector | `mountInspector(container, { onClose })` | `show(title, { focus })`, `content`, `hide()` and `close()` support a desktop side panel and narrow detail view. The list/detail composition provides Back to list and restores focus. A standalone inspector supplies its own navigation callback. |
-| Compare | `mountComparison(container, { before, after, label? })` | Readable before/after text with explicit headings. Authored values are inserted as text. `close()` removes it. Adapt the presentation for domain fields or line-level code diffs. |
-| Inline edit, review and undo | `mountInlineReview(container, { label, value, onSave, onUndo? })` | Keeps an editable draft, previews exact before/after values, saves only reviewed text and offers undo only with an injected callback. The callbacks receive `{ before, after }`; confirm an accepted applied result before returning `{ confirmed: true, value }`. Failure or uncertainty locks the editor until explicit `reconcile(confirmedValue)`; it does not resubmit or pretend a failed write was cancelled. `close()` stops rendering, not a dispatched command. |
-| Empty/loading/error | `mountViewState(container)` then `render({ phase, title, detail?, action? })` | `loading` exposes busy status, `error` exposes an alert, `empty` explains the next action, and `ready` hides the card. An optional action is `{ label, run }`; wire it to a real operation. `close()` removes the view. |
-| Connection | `mountConnectionView(container)` from `connect-view.mjs` | Use the real `createOwnerConnection` state and action. The specimen renders the same component; [the complete connection route](#connect-the-browser) stays authoritative. |
-
-`renderDetail(record, container)` renders the domain view and may return a cleanup
-function. Search/filter/navigation retain that view while its record object is
-unchanged; replacing a record in `setRecords` disposes and rebuilds it. Keep edited
-and uncertain work in the app's draft/submission controller when live snapshots
-replace objects. Do not use an inspector rerender as a command cancellation.
-Give independent list/detail instances distinct `routeKey` values. The helper
-preserves unrelated URL parameters.
-
-A connected app feeds one declared query through `createLiveView`, adapts those
-records for the list, and injects existing command handlers into the editor. Capture
-the coherent revision and original operation ID before dispatch. Save and undo
-must both use guarded domain commands; an undo is new reviewed work, not deletion
-of a journal event. Use the operation/submission helpers below for uncertainty and
-recovery. Application content never becomes `innerHTML` in these components.
+- **List/detail with stable IDs:** the event notes page derives complete rows from one captured materialized event snapshot. Links select `#note=ID`; the detail is an inspector, while the editor owns separate local drafts per entity. Reordered snapshots do not overwrite textarea values.
+- **Relational list/detail/catalog:** the SQL page derives inventory balances, transfer receipts and schema introspection from one captured view. It recomputes counts and detail text; incoming ALTER exposes current fields without publishing code. Missing tables/columns leave the last successful snapshot visible and explicitly **not current**.
+- **Reviewed comparison/edit:** use `ui/` list/detail, inspector and reviewed-edit examples for long domain content. Put previous/current/reviewed values beside one another. Submission captures the reviewed guard values; a new snapshot never silently edits the person's pending guard/draft.
+- **View-state persistence:** `createViewStore({storage,applicationId,profileId,viewId})` stores independent drafts and original operation references. Wrap unavailable/quota-failing browser storage with an honest visible fallback; do not claim a volatile draft survives reload.
 
 ### Desktop: search, inspector and reviewed comparison
 
-![Episode list, inspector, model actions and before/after review on desktop](assets/app-patterns-desktop.png)
+Use keyed entity nodes and explicit selected IDs, not arrival indexes. Reconcile text/rows and order from each snapshot; preserve the active node, focus and scroll. Keep the draft editor separate from inspector rendering. Display changed/retracted outcomes and provenance in the operation inspector rather than incrementing counters from event arrivals.
 
 ### Phone: a focused detail with a route back
 
-![Phone-sized episode detail with folded long context and reviewed edit](assets/app-patterns-phone.png)
+At 320px use a 16px side gutter with no page horizontal scroll. Stable-ID fragments/deep links and Back must preserve draft state. Keep labels, keyboard focus, long text and cancel/save actions reachable. Hiding an optional agent/media panel must not hide ordinary domain editing.
 
 ### Empty, loading, error and connection states
 
-![Importable loading, empty, error and approval connection components](assets/app-patterns-states.png)
+Keep draft fields editable during opening. Enable durable Save when `status.canAuthor` confirms local signing/storage prerequisites, even with zero peers or SQL still materializing. A query error is a view error, not loss of the local intent or a reason to block unrelated offline submissions. Display loading, never-initialized schema, empty domain and stale-last-snapshot states distinctly.
 
-These are real Chromium captures of the supplied specimen, at 1200×1100 and
-390×844 viewports. Reproduce the behavior check with
-`node --test scripts/test/browser/ui-patterns.test.mjs` in the source repository;
-set `UPDATE_PATTERN_SCREENSHOTS=1` to refresh the images after reviewing a change.
-The check covers fresh contexts, search/filter, named links, deep links, Back,
-reload, keyboard focus, review/save/undo, uncertainty locking and narrow overflow.
-It does not establish live pairing, replication or physical-phone behavior.
-
-## Durable agent requests and listener status
-
-For work a native agent must consume, use the executable
-[request, receipt, answer and heartbeat pattern](AGENT_REQUESTS.md). It retains
-full operation references, author timestamps and last-seen consumer records for
-late-joining pages. Show saved/applied journal state separately from seen/answered
-work, and keep stale listener status visible on the request. An attached peer is
-not evidence of a running consumer. After a release or owner replacement, follow
-the [consumer restart checklist](AGENT_RESTART.md).
-
-## 1. A coherent live query
-
-This function mounts the first-app `notes` query into its existing HTML elements.
-Call it after opening the session. When adapting `page.mjs`, replace the
-corresponding existing rendering block instead of installing duplicate observers.
+## 1. A coherent reactive query
 
 ```js
-import { createOwnerConnection, describeConnectionError } from './connection.mjs';
-import { mountConnectionView } from './connect-view.mjs';
-import { createLiveView } from '@chronolog/peer-session/browser';
+const live = createLiveView(session, async view => {
+  const rows = await view.query('SELECT id,units FROM inventory ORDER BY id');
+  return rows.rows.map(([id,units]) => ({id,units}));
+}, {onError(error) {
+  showLastSnapshotAsNotCurrent(error); // keep drafts untouched
+}});
+live.subscribe(({value,revision}) => renderDomain(value, revision));
+```
 
-export function mountNotes(session, root = document) {
-  const list = root.querySelector('#notes');
-  const status = root.querySelector('#data-status');
-  const recovery = root.querySelector('#recovery');
-  const error = root.querySelector('#result');
-  const refreshButton = root.querySelector('#refresh');
-  const report = failure => { error.textContent = failure.message; };
+A notification invalidates/rederives. It does not append a network arrival to a second mutable UI store. Materialized revisions bind exact effective operation/execution/policy inputs; they are not globally allocated sequences. Provisional event cursors are snapshot-scoped; restart a coherent derivation when the projection changes. Captured reads remain coherent and must be released.
 
-  const view = createLiveView(session, {
-    query: 'notes', input: null,
-    onStatus(value) {
-      status.textContent = `Application: ${value.phase}; data: ${value.database}`;
-    },
-    onRecovery(notice) {
-      recovery.hidden = false;
-      recovery.textContent = `Selected history changed. Excluded known operations: ${notice.abandoned.length}; unknown loss: ${notice.unknownLoss}`;
-    },
-    onError: report,
-  });
-  const unsubscribe = view.subscribe(({ value }) => {
-    list.replaceChildren(...value.map(note => {
-      const item = document.createElement('li');
-      item.textContent = `${note.text} — ${note.author.slice(0, 12)}`;
-      return item;
-    }));
-  });
-  const refresh = () => { void view.refresh().catch(report); };
-  refreshButton.addEventListener('click', refresh);
+## 2. Independent operation facts
 
-  return {
-    view,
-    close() {
-      refreshButton.removeEventListener('click', refresh);
-      unsubscribe();
-      view.close();
-    },
-  };
+```js
+const operation = await session.submit({program,operationId});
+showStoredLocally(operation.id); // exact signed intent is durable
+const observation = await operation.inspect();
+// stored, pending, materialized, retained, finalized, excluded
+for await (const next of session.operations.subscribe({operationId,signal})) {
+  renderOperationFacts(next); // later materialized outcomes can revise
 }
 ```
 
-`createLiveView` subscribes to real session changes and recovery, starts an
-initial query, and coalesces invalidations. It serializes its reads and ignores
-a result superseded by a later invalidation. It does not compare revision
-numbers to guess which generation wins. Every delivered snapshot is one
-`{ revision, value }` from the declared query's coherent view.
+`materialized()` is current local execution, not irrevocable success. `retained()` is authenticated availability evidence from named peers, not execution/finality. `finalized()` requires the chosen proof policy and complete replay; on policy `none` it explicitly rejects as unsupported. Optional finalizers never control ordinary Save.
 
-| Surface | Contract |
-| --- | --- |
-| `createLiveView(session, { query, input, onSnapshot?, onStatus?, onRecovery?, onError?, signal? })` | Captures the query input once and observes the existing session |
-| `view.subscribe(listener)` | Receives coherent snapshots; immediately receives the last snapshot when available; returns an unsubscribe function |
-| `await view.ready({ signal?, timeoutMs? })` | Waits for the first coherent read within a fixed 30-second default deadline; `PEER_RECOVERING` waits for readiness/change events on the same session, while fatal errors reject |
-| `await view.refresh()` | Requests a fresh coherent snapshot; overlapping requests can resolve from the same latest read |
-| `view.snapshot` | Last successful snapshot, or `null` before one arrives |
-| `view.status`, `view.error` | Separate session status and last read/observation error |
-| `view.close()` | Stops this observer and rejects its outstanding refresh waiters; does not close the session |
+## 3. Preserve uncertain intent before dispatch
 
-While `ready()` is waiting, expected initial `PEER_RECOVERING` is retained in
-`view.error` without calling `onError`. Fatal errors and explicit refresh failures
-still call `onError`.
+Retain the chosen semantic operation ID and reviewed inputs before the first RPC. After an uncertain response, inspect that original ID. If signed work exists, `session.operations.retry(id)` retries its exact bytes/time/identity and wakes dependencies/replication; it never mints work. If preparation was never stored, only repeat the exact retained command/input/ID. Clear an editor draft only after local durable acknowledgment, and only if it is still the exact text/context that was sent. Keep rejected/excluded originals inspectable. There is no automatic new-identity retimestamping path.
 
-Treat snapshot values as read-only. Keep the revision with its value when
-preparing a command. To change a query filter, close the old view and construct
-a new one with the new input. Do not merge independently queried values and
-label the result a single coherent snapshot; define one domain query that reads
-the related values together.
+`helpers/submission-state.mjs` deliberately has no peer, current-global-read or finalizer gate. Use `helpers/cli-lifetime.mjs`/owned signals for optional native process cleanup. Detaching a view cancels observation, not the durable proposal.
 
-`session.changes()` is a stream of invalidations, not an event replay log.
-Retained events belong in a declared query or an explicit history consumer.
-Connection progress is also separate: observe `session.participation.onStatus`
-for peer connectivity. A backend being installed is not proof that keys,
-materialization or peers are ready.
+## 4. Ordinary schema and permission edits
 
-Closing this helper ignores late reads because `session.query` has no per-query
-cancellation argument. The component that owns the application must still close
-the session, RTC bridge and Worker when its lifetime ends. See
-[the owned-session contract](APPLICATION_BACKENDS.md).
+The SQL starter's `initialize`, `addLabels`, and `grantBinWrites` commands submit the same canonical programs as data edits. Authorized DDL/DML/platform grants share author-time replay and atomic rollback. There is no static schema digest, special initialization channel or mandatory code publication.
 
-## 2. An operation's actual state and separate retention evidence
+A late earlier DDL transaction can revise an already displayed SQL outcome. Do not dependency-sort DDL ahead of author time. Query the current catalog from each captured snapshot and adapt the next form/query. Existing column grants and approved tool schemas do not silently expand when columns appear. Keep creation-namespace/object ALTER/DROP/index/trigger permissions distinct from ordinary data writing and finalizer rights.
 
-Observe the journal with its original operation identity. The optional
-`operation` parameter is the actual handle returned by `session.command` or
-`session.reapply`:
+## 5. Optional finality, providers and reviewed media
 
-```js
-import { createOperationView } from './helpers/operation-view.mjs';
+`helpers/finality-view.mjs` exposes an explicit local browser provider action, not an automatic write gate. Warn before closing author time: unseen genuine offline work behind the frontier may be excluded. Fixed-validator quorums require actual votes. Configuration alone is not qualified provider availability.
 
-export function watchOperation(session, operationId, output, operation) {
-  const view = createOperationView(session, {
-    operationId, operation,
-    onChange({ state, coverage, waitingForShared, recovery }) {
-      output.textContent = JSON.stringify({
-        operationId,
-        state,
-        observedRetentionReceipts: coverage?.length ?? null,
-        waitingForShared,
-        recovery,
-      }, null, 2);
-    },
-    onError(error) {
-      output.textContent = `${operationId}: observation unavailable (${error.message}); inspect the original operation.`;
-    },
-  });
-  return view;
-}
-```
+Camera/file preview and analysis are separate stages. Keep explicit consent before sharing content with a named inference provider, permit cancellation, and let the person edit suggestions before a declared domain command. Missing agents disable only their tools/analysis. Session signals are disposable previews/progress; they do not persist domain state or establish exclusivity. Provisional claims are not authority for irreversible effects. See [reviewed input](AI_INPUT.md), [sensors](SENSORS.md), [signals](APPLICATION_SIGNALS.md), and optional `ui/`/`media/` modules.
 
-An ID-only view is useful after reload. It can inspect the saved attempt and its
-current state without inventing another command. The helper's state is the
-actual `inspection.state` returned by `session.operations.inspect`, including
-its accepted/rejected outcome and rejection code where applicable.
+## Full-duplex presentation and feeds
 
-| Observation | What the UI should say |
-| --- | --- |
-| `state === null` | No saved attempt is visible here; keep the original input and identity while resolving the initial call |
-| `state.status === 'saved'` | The attempt is saved on this device; applied execution has not been observed |
-| `state.status === 'applied'`, `outcome === 'accepted'` | The operation was accepted in the reported selected history |
-| `state.status === 'applied'`, `outcome === 'rejected'` | Execution rejected the program; show the rejection code and current state |
-| `abandoned` or `needsReapply` | Inspect recovery and the current application view before offering deliberate reapplication |
-| `coverage !== null` | Peer retention receipts were observed for that attempt; this is a separate observation |
-
-There is no synthesized `shared` journal status. If you have the original
-operation handle, request retention observation separately:
-
-```js
-const coverage = await operationView.waitForShared({
-  signal: AbortSignal.timeout(15_000),
-});
-```
-
-`waitForShared` uses that handle's `shared()` method. It does not publish another
-command or interpret an elapsed timeout as lost data. An ID-only reopened helper
-deliberately reports coverage as unknown; it rejects `waitForShared` instead of
-fabricating a receipt. Previously observed retention evidence can remain visible
-after recovery. It does not prevent that recovery from excluding the operation.
-
-`operationView.refresh()` returns its latest inspection snapshot.
-`operationView.retry()` retries a visible saved attempt under the same identity;
-it refuses an absent attempt or one requiring reviewed reapplication.
-`operationView.close()` stops observation, not the command or session. Aborting
-an applied/shared waiter also cancels only the waiter.
-
-## 3. Preserve uncertain intent before the first dispatch
-
-Chronolog owns the signed attempt and its delivery. The UI still needs enough
-local information to identify a first call whose reply was lost before the
-page received its handle. Save one pending reference **before** calling
-`session.command`: the command name, exact input, operation ID and captured
-revision. The starter also keeps the original identity when explicitly
-reapplying. This reference is not another delivery queue.
-
-Here is a small executable submission function for the existing `addNote`
-command. It refuses another submission while the prior reference is unresolved:
-
-```js
-const pendingKey = session =>
-  `app:${session.applicationId}:device:${session.deviceId}:pending`;
-
-export async function submitNote(session, liveView, text, storage = localStorage) {
-  const key = pendingKey(session);
-  if (storage.getItem(key)) throw Error('Inspect or retry the unresolved operation first.');
-  const observed = await liveView.refresh();
-  // Another user action may have completed while the view was loading.
-  if (storage.getItem(key)) throw Error('Another operation is already unresolved.');
-  const record = {
-    id: crypto.randomUUID(), command: 'addNote', input: { text: text.trim() },
-    basedOn: observed.revision,
-  };
-  if (!record.input.text || record.input.text.length > 2000) {
-    throw Error('Write a note of 1–2000 characters first.');
-  }
-  storage.setItem(key, JSON.stringify(record)); // A failed write prevents dispatch.
-  const operation = await session.command(record.command, record.input, {
-    operationId: record.id, basedOn: record.basedOn,
-  });
-  return { record, operation };
-}
-```
-
-After a successful return, attach an operation view and await `operation.applied`
-with a bounded waiter. If either call fails or times out, retain the reference.
-Only an observed accepted/rejected outcome or a deliberate recovery decision can resolve
-it. The supplied page clears its active pending reference after observing an
-`applied` result and displays accepted versus rejected separately.
-
-An explicit **Retry original** action must also handle the case where the first
-call never became visible in the journal:
-
-```js
-export async function retryOriginal(session, record) {
-  const current = await session.operations.get(record.id);
-  if (['abandoned', 'needsReapply'].includes(current?.status)) {
-    throw Error('Review the current state and original attempt before reapplying.');
-  }
-  if (current) {
-    await session.retry(record.id);
-  } else {
-    const options = { operationId: record.id, basedOn: record.basedOn };
-    if (record.reapplies) {
-      await session.reapply(record.reapplies, record.command, record.input, options);
-    } else {
-      await session.command(record.command, record.input, options);
-    }
-  }
-  return session.operations.wait(record.id, { signal: AbortSignal.timeout(15_000) });
-}
-```
-
-The record must belong to this application and existing device. Do not create a
-new signer to resolve an old pending action. Never replace the saved input or
-`basedOn` revision during a retry. An edited request is new work and needs a
-separate decision after the uncertain original is resolved.
-
-Reapplication is different: after showing the current coherent state, ask the
-person to review the domain values and guards. Save a new pending reference
-containing `reapplies: originalId`, then call:
-
-```js
-const operation = await originalOperationView.reapply({
-  name: reviewedRecord.command,
-  input: reviewedRecord.input,
-  operationId: reviewedRecord.id,
-  basedOn: reviewedRecord.basedOn,
-});
-```
-
-The helper verifies that the original is currently `abandoned` or `needsReapply`;
-it does not make the domain review or authorization decision. It never chooses
-a new ID. For SQL, retain the actual row preconditions in the new program as
-well as the coherent revision; see [guarded transactions](STATE_MODELS.md).
-
-## 4. Capture, analyze, edit, then commit once
-
-Use `createReviewedInput` to keep asynchronous evidence work attached to the
-candidate and task the person actually selected. The supplied
-`media/panel.mjs` is the complete page integration; [Reviewed AI input](AI_INPUT.md)
-provides camera/file, inference peer and provider setup. Its imports include:
-
-```js
-import { createReviewedInput } from './helpers/reviewed-input.mjs';
-import { createPeerInferenceClient } from './media/inference-client.mjs';
-
-const inference = createPeerInferenceClient({
-  session,
-  workerDeviceId: configuration.nativeDeviceId,
-  prompt: 'Describe the visible evidence as editable notes. State uncertainty.',
-});
-```
-
-`configuration.nativeDeviceId` identifies the intended enrolled native peer; it
-is a public key, not a credential. The native service must be explicitly enabled
-for this browser with its own request budget and chosen provider. Provider keys
-stay in that process. Calling an analyzer is an explicit external-data and cost
-decision; importing the modules does not make that decision.
-
-Inside the supplied panel, the page injects `prepareEvidence` as `prepareCommit`
-and `submitEvidence` as `commit`. Preparation stages any missing content,
-validates the values and persists the complete pending reference before the panel
-calls `review.commit`. A preparation failure leaves the candidate available for
-review; it has dispatched no command. The commit callback dispatches only the
-matching prepared intent. The controller composition is ordinary JavaScript:
-
-```js
-const review = createReviewedInput({
-  analyze: input => inference.analyze(input),
-  commit, // Injected page.mjs submitEvidence callback, not another backend.
-  onChange(snapshot) {
-    container.querySelector('#media-status').textContent = snapshot.phase;
-  },
-});
-```
-
-The generic controller's exact interfaces are:
-
-| Call | Result and boundary |
-| --- | --- |
-| `createReviewedInput({ analyze, commit, onChange?, signal?, maxBytes? })` | Creates a page-local controller; default evidence bound is 8 MiB |
-| `await review.capture({ blob, context, signal? })` | Copies a nonempty immutable Blob, hashes it and captures plain-JSON context; returns a candidate with `id`, `blob`, `sha256`, `type`, `size`, `context` |
-| `await review.analyze({ signal? })` | Calls `analyze({ candidate, signal })`; stores a plain-JSON suggestion without overwriting reviewed edits |
-| `review.edit(value)` | Captures the explicitly reviewed plain-JSON values; invalidates in-flight analysis |
-| `await review.commit({ operationId, signal? })` | Calls the supplied `commit({ candidate, reviewed, operationId, signal })` once; requires prior explicit edit/review |
-| `review.cancel()` | Before dispatch, cancels pending work and discards the local candidate/review |
-| `review.close()` | Ends this controller; late work cannot update it |
-
-Capture the application context before starting asynchronous work. The starter
-uses the revision attached to its displayed notes view. A mutable task UI should
-also capture the intended task ID and relevant row values; completing analysis
-must not reread whichever task is selected later. The generic helper preserves
-context but does not enforce domain invariants. Use the SQL command's guards
-when a task, balance or reservation can change during review.
-
-The inference adapter returns `{ suggestion, source }`, where `source` binds the
-candidate ID, SHA-256 and a real session `ContentReference`. Keep that source
-association when editing the suggested text. The supplied page's durable commit
-uses the settled command shape:
-
-```js
-const input = {
-  text: reviewed.text,
-  source: reviewed.source,
-  capturedRevision: JSON.stringify(candidate.context.revision),
-};
-// Persist this complete input, operationId and basedOn in the app's pending
-// reference before dispatch; media/panel.mjs and page.mjs provide that path.
-const operation = await session.command('addEvidence', input, {
-  operationId,
-  basedOn: candidate.context.revision,
-});
-const outcome = await operation.applied({ signal });
-```
-
-The source has `{ candidateId, sha256, reference }`. It must still identify the
-captured candidate and the analyzed content. The person's editable text is
-separate from those source bindings. `addEvidence` emits a retained note with
-the reviewed source; an inference reply does not invoke that command by itself.
-
-For manual review without Analyze, preparation stages the captured Blob on the
-person's explicit Save action and constructs the source itself, before
-`review.commit`. A provider request is optional; the same reviewed command and
-journal still apply. The panel holds the reviewed text read-only during
-preparation and after dispatch so it cannot diverge from the prepared intent.
-
-The helper's phases describe its UI workflow. `submitted` means its commit
-callback returned a plain-JSON result; the callback and the real journal establish
-whether the command is saved or applied. The supplied callback awaits the
-actual applied outcome.
-
-After a commit is dispatched, this controller is permanently a **single
-submission controller**. It rejects retake, edit, cancel and a second commit,
-and provides no implicit retry/reapply. A rejected Promise or aborted response wait leaves the operation ID
-visible as `uncertain`; it cannot establish that no command was saved. Resolve
-that identity through the real operation journal and the pending-reference flow
-above. A deliberate new capture uses a new controller only after the application
-has resolved or explicitly separated the previous work.
-
-The controller does not persist a Blob, restore its candidate after reload,
-retain content on peers, or save the application's pending reference. Those are
-application-owned decisions. The supplied inference callback stages immutable
-content for the actual analysis request; content staging and provider completion
-still do not establish command acceptance or retained peer coverage. If reload
-resume is required, preserve the appropriate content reference and reviewed
-input explicitly. Do not serialize a live stream, provider key or signing key
-into page storage.
-
-On component teardown, close the review controller and inference client, release
-camera/voice resources, and then let the application owner close its session.
-The full source demonstrates that cleanup. For the distinction between layout
-and a connected preview of these behaviors, use [Preview](tools/PREVIEW.md).
+Existing `ui/dashboard.mjs`, `ui/chat-session.mjs`, and `helpers/data-feed.mjs` are optional presentation/live-signal consumers, not a second persistence framework. Bind them to current coherent snapshots and explicitly approved agent scopes. No native process is necessary for independent browser authoring. Verify their actual supported APIs against the matching package composition and [delivery flow matrix](AGENT_DELIVERY.md#the-user-experience-is-part-of-the-deliverable).

@@ -9,6 +9,7 @@ and kit, as described in [Build an app](docs/BUILD_AN_APP.md).
 
 ## Unreleased
 
+- Documentation follows the authored operation-set refactor: operations are signed, stored locally and unioned, and replicas order them only by signed author time, signing key and stable proposal ID. The docs drop generation, coordinator, takeover and reapplication guidance, and separate stored, materialized, retained and optionally finalized observations. This documentation entry records no release qualification.
 - Require a separate, evidenced domain-UX review on desktop and phone viewports.
   The starter ships importable list/detail, inspector, compare, reviewed edit/undo
   and view-state patterns with a browser-tested specimen and screenshots. Fixes #71.

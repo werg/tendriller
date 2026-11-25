@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
 import {BROWSER_OWNER_PROTOCOL} from '../../session/browser-transport.mjs';
 import {BROWSER_RTC_PROTOCOL} from '../../session/browser-rtc.mjs';
-import {defineApplication,defineQuery,describeApplication,PEER_GENERATION_CAPABILITIES} from '@chronolog/peer-session';
+import {p,createPhysicalSession} from './physical-fixture.mjs';
 
 // Real public owner composition and Chronolog attachment RPC. Only RTC mechanics
 // are stubbed: this fixture verifies lifecycle/provider ownership, not P2P data.
@@ -44,7 +44,7 @@ class PageClock{
 async function until(predicate,label){const end=Date.now()+3000;while(!predicate()){if(Date.now()>end)throw Error('FIXTURE_WAIT: '+label);await delay(2);}}
 async function bounded(promise,label){let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('FIXTURE_WAIT: '+label)),3000);})]);}finally{clearTimeout(timer);}}
 
-async function fixture(t,mode,opening={}){
+async function fixture(t,mode,opening={},{pumpClock=false}={}){
  const directory=await mkdtemp(join(tmpdir(),'browser-freeze-')),clock=new PageClock(),doc=new EventTarget(),events=new EventTarget();
  doc.visibilityState='visible';doc.hidden=false;
  const keys=['navigator','location','document','window','SharedWorker','Worker','RTCPeerConnection','addEventListener','removeEventListener','dispatchEvent','__freezeClock','__freezeProbe','__freezeWorkerChannel'];
@@ -53,17 +53,16 @@ async function fixture(t,mode,opening={}){
  const deliver=send=>{if(gate.silent)return;if(gate.hold)gate.queued.push(send);else send();};
  const NativeChannel=globalThis.BroadcastChannel;
  class WorkerChannel extends NativeChannel{constructor(...args){super(...args);channels.push(this);}postMessage(value){deliver(()=>super.postMessage(value));}}
- const stop=new AbortController(),signalListeners=new Set();
- const signals={delivery:'neighbors',async send(topic,payload){for(const receive of signalListeners)receive({topic,payload});return null;},async *subscribe({signal}){
-  const queue=[];let wake;const receive=value=>{queue.push(value);wake?.();},ended=()=>wake?.();signalListeners.add(receive);signal.addEventListener('abort',ended,{once:true});
-  try{while(!signal.aborted){if(!queue.length)await new Promise(resolve=>{wake=resolve;});if(!signal.aborted&&queue.length)yield queue.shift();}}finally{signalListeners.delete(receive);signal.removeEventListener('abort',ended);}
- }};
- const definition=defineApplication({id:'freeze-fixture',version:'1',commands:{},queries:{state:defineQuery({description:'Read retained fixture identity',input:{type:'null'},read:()=>[]})}}),description=describeApplication(definition);
- const revision={applicationId:'a'.repeat(64),historyId:'retained',generation:'c'.repeat(64),point:{generation:'c'.repeat(64),sequence:0,root:'d'.repeat(64)},controlRevision:0,materializationRevision:'0'};
- const session={applicationId:'a'.repeat(64),historyId:'retained',storageId:'retained',deviceId:'b'.repeat(64),signal:stop.signal,revision:null,
-  status:{phase:'ready',database:'idle',role:'coordinator',generation:'c'.repeat(64),coordinator:'b'.repeat(64),connectedPeers:0},signals,
-  describe:()=>({...description,capabilities:{...PEER_GENERATION_CAPABILITIES,sql:false}}),onStatus(fn){fn(this.status);return()=>{};},onRecovery:()=>()=>{},
-  async query(){return{revision,value:['retained identity']};},async close(){stop.abort(Error('FIXTURE_OWNER_CLOSED'));}};
+ // A real signed application session behind the real public owner. Only the signal
+ // subscription count is observed (delegating to the real channel) to prove parking
+ // never cancels an active owner-side stream.
+ const definition=p.defineApplication({id:'freeze-fixture',version:'1',commands:{},queries:{state:p.defineQuery({description:'Read retained fixture identity',input:{type:'null'},read:()=>['retained identity']})}});
+ const session=await createPhysicalSession({definition});let signalObservers=0;
+ const subscribe=session.signals.subscribe.bind(session.signals);
+ session.signals.subscribe=options=>({[Symbol.asyncIterator](){
+  const iterator=subscribe(options)[Symbol.asyncIterator]();signalObservers++;let ended=false;const end=()=>{if(!ended){ended=true;signalObservers--;}};
+  return{async next(){try{const result=await iterator.next();if(result.done)end();return result;}catch(error){end();throw error;}},async return(value){end();return iterator.return?.(value)??{done:true,value};},[Symbol.asyncIterator](){return this;}};
+ }});
  class Scope extends EventTarget{postMessage(value){deliver(()=>queueMicrotask(()=>pageWorker?.dispatchEvent(new MessageEvent('message',{data:value}))));}close(){}connect(port){this.dispatchEvent(Object.assign(new Event('connect'),{ports:[port]}));}}
  const scope=new Scope();
  function outgoing(port){const post=port.postMessage.bind(port);port.postMessage=(...args)=>{const frame=args[0];if(gate.holdSuspendAck&&frame?.type==='root.result'&&rootRequests.get(frame.id)==='root.suspend'){gate.suspendAcks.push(()=>post(...args));return;}deliver(()=>post(...args));};}
@@ -91,7 +90,9 @@ async function fixture(t,mode,opening={}){
  // This listener is installed after the real Worker ingress handler. Its
  // synchronous RTC dispatch has applied the hint before this observer runs.
  scope.addEventListener('message',({data})=>{if(data?.protocol===BROWSER_RTC_PROTOCOL&&data.payload?.type==='availability')dedicatedAvailability.push(data.payload.available);});
- attachment=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0,onOwnerReplaced:value=>replaced.push(value),...opening}),'initial attach');
+ // A failed attachment's cleanup waits on bounded page-clock deadlines; drive the frozen page clock only when the caller expects that failure.
+ const pump=pumpClock?setInterval(()=>clock.advance(1000),5):undefined;
+ attachment=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,persistStorage:false,storageKeepAliveMs:0,onOwnerReplaced:value=>replaced.push(value),...opening}),'initial attach').finally(()=>clearInterval(pump));
  await until(()=>clock.heartbeats.length>0,'initial heartbeat armed');
  async function workerBarrier(available){
   if(mode==='shared'){
@@ -111,13 +112,13 @@ async function fixture(t,mode,opening={}){
  }
  async function sibling(){
   const previous=globalThis.document,next=new EventTarget();next.hidden=false;next.visibilityState='visible';Object.defineProperty(globalThis,'document',{configurable:true,value:next});
-  try{const value=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,definitionId:definition.id,definitionVersion:definition.version,persistStorage:false,storageKeepAliveMs:0}),'sibling attach');siblingAttachments.push(value);return value;}finally{Object.defineProperty(globalThis,'document',{configurable:true,value:previous});}
+  try{const value=await bounded(page.openBrowserOwner({workerUrl:'https://fixture.test/worker.mjs',profileId:'retained',applicationId:session.applicationId,persistStorage:false,storageKeepAliveMs:0}),'sibling attach');siblingAttachments.push(value);return value;}finally{Object.defineProperty(globalThis,'document',{configurable:true,value:previous});}
  }
- return{attachment,clock,doc,events,probe,gate,replaced,session,sibling,workerBarrier,rootRequests,registerOriginal(){const root=sharedRoots[0];root.port.postMessage({protocol:BROWSER_RTC_PROTOCOL,profileId:'retained',rootId:root.id,payload:{protocol:BROWSER_RTC_PROTOCOL,type:'register',available:true}});},get signalObservers(){return signalListeners.size;},openDirect:options=>openDirectConnection({timeoutMs:1000,...options}),get opened(){return opened;},get held(){return Number(locks.held.has(ownerLockName));},get heldOwner(){return Number(locks.held.has(ownerLockName));},get rootDocLocks(){return [...locks.held.keys()].filter(name=>name!==ownerLockName).length;},locks};
+ return{attachment,clock,doc,events,probe,gate,replaced,session,sibling,workerBarrier,rootRequests,registerOriginal(){const root=sharedRoots[0];root.port.postMessage({protocol:BROWSER_RTC_PROTOCOL,profileId:'retained',rootId:root.id,payload:{protocol:BROWSER_RTC_PROTOCOL,type:'register',available:true}});},get signalObservers(){return signalObservers;},openDirect:options=>openDirectConnection({timeoutMs:1000,...options}),get opened(){return opened;},get held(){return Number(locks.held.has(ownerLockName));},get heldOwner(){return Number(locks.held.has(ownerLockName));},get rootDocLocks(){return [...locks.held.keys()].filter(name=>name!==ownerLockName).length;},locks};
 }
 
 for(const mode of['shared','elected'])for(const event of['freeze','visibilitychange'])for(const manual of[false,true])test(`${mode} automatic ${event} pauses synchronously and authenticated resume preserves the owner${manual?' with coalesced BFCache calls':''}`,async t=>{
- const f=await fixture(t,mode),session=f.attachment.session,identity={deviceId:session.deviceId,historyId:session.historyId,storageId:session.storageId,ownerInstanceId:session.endpoint.ownerInstanceId};
+ const f=await fixture(t,mode),session=f.attachment.session,identity={publicKey:session.identity.publicKey,ownerInstanceId:session.endpoint.ownerInstanceId};
  const previousHeartbeats=f.clock.heartbeats,initialProviders=f.probe.active.size;
  f.doc.hidden=true;f.doc.visibilityState='hidden';f.doc.dispatchEvent(new Event(event));
  assert(previousHeartbeats.every(key=>!f.clock.tasks.has(key)),'freeze must cancel the existing local pulse synchronously, before a Promise or microtask');
@@ -130,7 +131,7 @@ for(const mode of['shared','elected'])for(const event of['freeze','visibilitycha
  await until(()=>f.clock.heartbeats.length>0,'authenticated resume arms a fresh heartbeat');f.clock.runDue();
  assert.deepEqual((await bounded(session.query('state',null),'query after resume')).value,['retained identity']);
  assert.equal(f.replaced.length,0);assert.equal(session.signal.aborted,false);assert.equal(f.opened,1);assert.equal(f.held,1);assert.equal(f.attachment.session,session);
- assert.deepEqual({deviceId:session.deviceId,historyId:session.historyId,storageId:session.storageId,ownerInstanceId:session.endpoint.ownerInstanceId},identity);
+ assert.deepEqual({publicKey:session.identity.publicKey,ownerInstanceId:session.endpoint.ownerInstanceId},identity);
  const providers=f.probe.active.size,started=f.probe.started;assert(providers>0);
  f.doc.hidden=false;f.doc.visibilityState='visible';f.doc.dispatchEvent(new Event('resume'));await bounded(Promise.all([f.attachment.resume(),f.attachment.resume()]),'repeated active resume');
  assert.equal(f.probe.active.size,providers);assert.equal(f.probe.started,started,'duplicate resume must not create another RTC provider');assert.deepEqual(f.clock.errors,[]);
@@ -197,7 +198,7 @@ for(const mode of ['shared','elected'])test(`${mode} observational parking forwa
  const after=await bounded(connection.roundTrip(packet),'hidden provider forwards RTC packet');
  assert.deepEqual(after.packet,packet);assert.equal(after.providerId,before.providerId);assert.equal(connection.signal.aborted,false);
  assert.deepEqual((await bounded(f.attachment.session.query('state',null),'background query')).value,['retained identity']);
- await f.attachment.session.signals.send('position',{x:7});assert.deepEqual((await bounded(nextSignal,'background signal stream')).value,{topic:'position',payload:{x:7}});assert.equal(f.signalObservers,1,'observation parking must not cancel active signal streams');
+ await f.attachment.session.signals.send('position',{x:7});const delivered=(await bounded(nextSignal,'background signal stream')).value;assert.equal(delivered.topic,'position');assert.deepEqual(delivered.payload,{x:7});assert.equal(delivered.scope,f.session.applicationId);assert.equal(delivered.authorId,f.session.identity.publicKey);assert.equal(f.signalObservers,1,'observation parking must not cancel active signal streams');
  assert.equal(f.replaced.length,0);assert.equal(f.opened,1);
  // Merely hidden providers remain eligible. Only a frozen provider is skipped
  // for new opens; selection must not abort its retained connection.
@@ -343,10 +344,13 @@ test('fixture Web Locks reject signal plus ifAvailable just like Chromium',async
  const locks=new FixtureLocks();await assert.rejects(locks.request('document',{ifAvailable:true,signal:new AbortController().signal},()=>assert.fail('invalid request must not run')),error=>error.name==='NotSupportedError');
  assert.deepEqual(await locks.query(),{held:[],pending:[]});
 });
-test('document witness outlives opening cancellation and detaches without releasing the owner',async t=>{
+test('caller signal abort detaches only its attachment, releasing the document witness without releasing the owner',async t=>{
  const opening=new AbortController(),f=await fixture(t,'shared',{signal:opening.signal});assert.equal(f.rootDocLocks,1);assert.equal(f.heldOwner,1);
- opening.abort(Error('OPENING_ATTEMPT_FINISHED'));await f.workerBarrier();assert.equal(f.rootDocLocks,1);assert.equal(f.attachment.session.signal.aborted,false);
- await f.attachment.detach();await until(()=>f.rootDocLocks===0,'document witness released on detach');assert.equal(f.heldOwner,1);
+ opening.abort(Error('CALLER_CLOSED'));await until(()=>f.attachment.session.signal.aborted,'caller abort detaches the attachment');
+ // Detach waits on bounded page-clock deadlines; drive the frozen page clock as fixture cleanup does.
+ for(let i=0;i<100&&f.rootDocLocks;i++){await delay(2);f.clock.advance(1000);}
+ await until(()=>f.rootDocLocks===0,'document witness released on caller abort');assert.equal(f.heldOwner,1);assert.equal(f.session.signal.aborted,false);assert.equal(f.opened,1);
+ await f.attachment.detach();assert.equal(f.heldOwner,1);
 });
 test('a successful shared attachment retires its opening deadline without dropping its witness',async t=>{
  const f=await fixture(t,'shared',{timeoutMs:100});await f.workerBarrier();await f.attachment.session.query('state',null);f.clock.advance(101);await f.workerBarrier();
@@ -354,6 +358,6 @@ test('a successful shared attachment retires its opening deadline without droppi
  assert.deepEqual((await f.attachment.session.query('state',null)).value,['retained identity']);
 });
 test('failed SharedWorker attachment releases its document witness without discarding retained owner',async t=>{
- await assert.rejects(fixture(t,'shared',{definitionId:'wrong-definition'}),/CONTRACT_INCOMPATIBLE/);
+ await assert.rejects(fixture(t,'shared',{applicationId:'e'.repeat(64)},{pumpClock:true}),/ENDPOINT_APPLICATION_MISMATCH/);
  const locks=await navigator.locks.query();assert.equal(locks.held.filter(lock=>lock.name!=='chronolog-owner:retained').length,0);assert.equal(locks.held.filter(lock=>lock.name==='chronolog-owner:retained').length,1);
 });

@@ -45,13 +45,20 @@ jobs:
       - run: npm ci
         working-directory: core
       - name: Build the exact native SQL engine for this runner
+        id: native-sql
         working-directory: chronolog
         env:
           CHRONOLOG_SHA: ${{ steps.session.outputs.source }}
         run: |
           test "$(git rev-parse HEAD)" = "$CHRONOLOG_SHA"
           corepack pnpm install --frozen-lockfile
-          node tools/package-peer-session.mjs --sql-native
+          node tools/package-peer-session.mjs --sql-native --output "$RUNNER_TEMP/native-sql-session" > "$RUNNER_TEMP/native-sql-package.jsonl"
+          node --input-type=module <<'JS'
+          import {readFileSync, appendFileSync} from 'node:fs';
+          const result = JSON.parse(readFileSync(process.env.RUNNER_TEMP + '/native-sql-package.jsonl', 'utf8').trim().split('\n').at(-1));
+          if (result.dirty !== false || result.source !== process.env.CHRONOLOG_SHA || !result.artifact.startsWith(process.env.RUNNER_TEMP + '/')) throw Error('Native SQL package source/path mismatch');
+          appendFileSync(process.env.GITHUB_OUTPUT, `artifact=${result.artifact}\n`);
+          JS
       - uses: actions/download-artifact@v4
         with:
           name: public-packages
@@ -60,16 +67,23 @@ jobs:
         working-directory: core
         env:
           TENDRILLER_EXPECTED_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
-      - name: Exercise SQL initialization, guarded writes and reopen
-        working-directory: core
+      - name: Exercise native SQL initialization, guarded writes and reopen
+        working-directory: chronolog
         env:
-          SQL_ARCHIVE: ${{ steps.session.outputs.sql_archive }}
-        run: npm run test:first-app -- --session-archive "$GITHUB_WORKSPACE/chronolog/artifacts/peer-session/$SQL_ARCHIVE" --sql-native-only
+          SQL_ARCHIVE: ${{ steps.native-sql.outputs.artifact }}
+        run: node tools/test-peer-session-sql.mjs --artifact "$SQL_ARCHIVE" --output "$RUNNER_TEMP/native-sql-qualification"
+      - name: Qualify the exact browser SQL first-app kit without a native application engine
+        working-directory: core
+        run: |
+          node node_modules/@playwright/test/cli.js install --with-deps chromium
+          npm run test:first-app -- --first-app-archive "dist/tendriller-first-app-sql-$(node -p "require('./package.json').version").tgz"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: sql-starter-qualification
-          path: core/.results/first-app-sql.json
+          path: |
+            core/.results/first-app-sql.json
+            ${{ runner.temp }}/native-sql-qualification/report.json
           include-hidden-files: true
           if-no-files-found: ignore
       - uses: actions/cache@v4
@@ -94,7 +108,7 @@ jobs:
           CHRONOLOG_SHA: ${{ steps.session.outputs.source }}
         run: |
           test "$(git rev-parse HEAD)" = "$CHRONOLOG_SHA"
-          node tools/package-peer-session.mjs --sql-native --sql-browser --output "$RUNNER_TEMP/chronolog-fixture/session"
+          node tools/package-peer-session.mjs --sql-native --sql-browser --wasm-dir "$RUNNER_TEMP/chronolog-fixture/wasm" --output "$RUNNER_TEMP/chronolog-fixture/session"
       - name: Install the exact SQL consumer and pinned Chromium
         working-directory: core
         run: |

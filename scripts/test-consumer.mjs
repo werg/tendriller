@@ -41,8 +41,8 @@ try {
   assert.deepEqual(packagesProof.artifacts.map(item => item.name), ['@tendriller/core', '@tendriller/runtime', '@tendriller/engine']);
   for (const artifact of packagesProof.artifacts)
     assert.equal(createHash('sha256').update(readFileSync(join(root, 'dist', artifact.file))).digest('hex'), artifact.sha256);
-  const peerProof = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/peer-generation-provenance.json')));
-  assert.equal(peerProof.dirty, false); assert.equal(peerProof.profile, 'peer-generation-v1');
+  const peerProof = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/authority-provenance.json')));
+  assert.equal(peerProof.dirty, false); assert.equal(peerProof.profile, 'chronolog-crdt-v1');
   assert.ok(peerProof.inputs.every(input => !/(?:materializer|peer-session|transport-ssb|node-core\/src\/node\.ts|node:)/.test(input)));
   assert.equal(existsSync(join(directory, 'node_modules/@chronolog')), false, 'The engine embeds its portable participant dependency');
   for (const key of ['./records', './members', './scopes', './host']) assert.equal(core.exports[key], undefined);
@@ -60,7 +60,8 @@ assert.equal(onboardingDescriptor('https://example.test').firstApp.release.manif
 import { createAssistantKey, createApplicationAgentKey, proposeApplicationAssistant,
   connectApplicationAssistant, createAssistantEventDelivery } from '@tendriller/core/assistant';
 import { createSignalBinding } from '@tendriller/core/signals';
-import { createParticipantRequest, createParticipantResponse, createPeerIntroductions } from '@tendriller/core/peers';
+import { authorityRecord, authorityRecordBytes, createAuthorityClient } from '@tendriller/core/authority';
+import { createPeerIntroductions } from '@tendriller/core/peers';
 import { startRuntime } from '@tendriller/runtime/kernel';
 import { createVoice, mountVoiceControls, SPEECH_DOWNLOAD_BYTES } from '@tendriller/runtime/voice';
 import { pack } from '@tendriller/tools/pack';
@@ -91,7 +92,7 @@ assertValid('create', {owner:'owner@example.test', application});
 assert.throws(() => requireService({contract:2,core_release:'old',limits:{}}), /contract/);
 let requests = 0;
 const client = createClient({api:'https://host.test/api/t/test',token:'private'}, {applicationId: application.id, fetch: async (_url, init) => {
-  requests++; return Response.json(createParticipantResponse(JSON.parse(init.body), null));
+  requests++; return Response.json({ record: JSON.parse(init.body).record });
 }});
 assert.deepEqual(Object.keys(client).sort(), ['info', 'peers', 'request', 'service']);
 assert.equal(requests, 0);
@@ -100,10 +101,12 @@ const introductions = createPeerIntroductions({ peers: client.peers, identity: '
 assert.equal(typeof introductions.discovery.invitations, 'function');
 assert.equal(typeof introductions.transport.open, 'function');
 assert.equal(requests, 0);
-const request = createParticipantRequest({applicationId: application.id, facet:'publication', action:'read', payload:{}});
-assert.equal((await client.peers.exchange(request)).payload, null);
+const request = authorityRecord(Uint8Array.of(0));
+assert.deepEqual(authorityRecordBytes(await client.peers.participant(request)), Uint8Array.of(0));
+assert.equal(typeof createAuthorityClient, 'function');
 assert.equal(requests, 1);
-await assert.rejects(client.peers.exchange({...request, facet:'database', action:'submit'}), {code:'PEER_PARTICIPANT_FACET_FORBIDDEN'});
+assert.equal(client.peers.exchange, undefined, 'No old facet transport remains');
+assert.throws(() => authorityRecordBytes({record:'zz'}), {code:'authority_record_invalid'});
 assert.equal(requests, 1);
 const selection = createApplicationBinding(application);
 assert.throws(() => selection.backend, {code:'backend_unavailable'});
@@ -119,7 +122,8 @@ import type {ApplicationBackend, ApplicationOperation} from '@tendriller/core/ap
 import {createApplicationBinding} from '@tendriller/core/application';
 import {startRuntime} from '@tendriller/runtime/kernel';
 import {createVoice, mountVoiceControls, type WakeState, type VoiceConsent} from '@tendriller/runtime/voice';
-import {createPeerIntroductions, type ParticipantRequest} from '@tendriller/core/peers';
+import {createPeerIntroductions} from '@tendriller/core/peers';
+import type {AuthorityRecord} from '@tendriller/core/authority';
 declare const application: ApplicationBackend;
 declare const runtime: RuntimeApi;
 const voice = createVoice(runtime, { consent(request: Readonly<VoiceConsent>) { return request.purpose === 'wake'; }, transcript(text: string) {} });
@@ -136,14 +140,16 @@ const installChoice:'accepted'|'dismissed'|'unavailable'=await page.installation
 const offInstallation:()=>void=page.installation.on(status => { const platform:'ios'|'android'|'desktop'=status.platform; void platform; });
 void installState; void installChoice; offInstallation();
 const binding = createApplicationBinding(cfg.application, application);
-const operation: ApplicationOperation = await binding.backend.submit({}, {operationId:'exact-id'});
-if (operation.status === 'applied') { const outcome:'accepted'|'rejected'=operation.outcome; void outcome; }
+const operation: ApplicationOperation = await binding.backend.submit({program:{},operationId:'exact-id'});
+const inspection = await operation.inspect();
+const stored:boolean=inspection.stored;
+if (inspection.materialized) { const outcome:'accepted'|'rejected'=inspection.materialized.outcome; void outcome; }
 const view = await binding.backend.readView();
-const applied:'applied'=view.view;
+const viewKind:'local'|'final'=view.revision.view;
 await view.query('items'); await view.readEvents(); await view.release();
-application.onRecovery(notice => { const loss:boolean=notice.unknownLoss; void loss; });
-application.onStatus(status => { const peers:number=status.connectedPeers; void peers; });
-await application.inspectRecovery();
+application.onStatus(status => { const canAuthor:boolean=status.canAuthor; const peers:number=status.connectedPeers; void canAuthor; void peers; });
+const finalView=await application.readView({view:'final'}); await finalView.release();
+void application.operations.get(operation.operationId); void stored;
 const client = createClient({api:'https://host.test',token:'private'}, {applicationId: cfg.application.id});
 const origin: string = requireServiceOrigin('https://host.test');
 const readiness: ServiceReadiness = await describeReadiness(origin, {signal:new AbortController().signal});
@@ -158,16 +164,18 @@ const raw = await introductions.transport.open({ peer: { identity:'56'.repeat(32
 const kind:'raw'=raw.kind; void kind;
 
 void createPage('https://host.test', {owner:'owner@example.test',application:cfg.application});
-declare const message: ParticipantRequest;
-void client.peers.exchange(message);
+declare const message: AuthorityRecord;
+void client.peers.participant(message);
 void createVoice(page, {consent:async()=>true,transcript:()=>{},status:()=>{}});
 // @ts-expect-error There is no parallel runtime profile.
 runtime.kind;
 // @ts-expect-error Host state is not an application backend.
 runtime.state;
-// @ts-expect-error No alternate finality view.
-application.readView({view:'final'});
-void applied;
+// @ts-expect-error No ordering-recovery API exists.
+application.inspectRecovery();
+// @ts-expect-error Durable storage does not expose an ambiguous applied alias.
+operation.applied();
+void viewKind;
 `);
   writeFileSync(join(directory, 'worker.mts'), `
 import worker, {Admission, Tendril} from '@tendriller/engine';
@@ -175,7 +183,7 @@ import {initializeTestService, createTestPage} from '@tendriller/engine/testing'
 void initializeTestService([{name:'empty.sql',queries:[]}]);
 async function test() {
   const page = await createTestPage({application:{id:'12'.repeat(32)}});
-  await page.exchange('control/read'); await page.asset('page.mjs'); await page.restart();
+  await page.exchange({record:'00'}); await page.asset('page.mjs'); await page.restart();
 }
 void test;
 export {Admission, Tendril};
@@ -203,80 +211,127 @@ import { createNativeAttachmentKey, createNativeSessionSupervisor, attachNativeS
 import { diagnoseApplicationSession } from '@tendriller/core/diagnostics';
 import { createTransportDiagnostics, readTransportDiagnostics } from '@tendriller/core/transport-diagnostics';
 import { createSetupIntent, setupRequest, completeSetupIntent, inspectTendrilSetup } from '@tendriller/core/setup';
-import { createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge } from '@tendriller/core/pairing';
-import { openPeerApplication, createApplicationOwner, createLiveView, forwardSessionEvents, createScopedApplicationTools, createViewStore, operationReference } from '@chronolog/peer-session';
+import { createAuthorityClient, authorityRecord, authorityRecordBytes } from '@tendriller/core/authority';
+import { createApplicationSession, createLiveView, createScopedApplicationTools, createViewStore } from '@chronolog/peer-session';
+import { createApplicationOwner } from '@chronolog/peer-session/worker';
+import { operationReference } from '@tendriller/core/collaboration';
 import { openNativeDevice } from '@chronolog/peer-session/native';
 import { connectApplicationOwner, createLiveView as createBrowserLiveView } from '@chronolog/peer-session/browser';
 for (const api of [createCollaborationDefinition, createCollaborationClient, openBrowserOwner,
   createBrowserIdentity, serveBrowserOwner, createNativeSessionSupervisor, attachNativeSession,
-  diagnoseApplicationSession, createLiveView, createBrowserLiveView, forwardSessionEvents, createScopedApplicationTools,
-  createViewStore, operationReference, createTransportDiagnostics, readTransportDiagnostics, openPeerApplication, createApplicationOwner,
+  diagnoseApplicationSession, createLiveView, createBrowserLiveView, createScopedApplicationTools,
+  createViewStore, operationReference, createTransportDiagnostics, readTransportDiagnostics, createApplicationSession, createApplicationOwner,
   openNativeDevice, connectApplicationOwner, createSetupIntent, setupRequest, completeSetupIntent,
-  inspectTendrilSetup, createDevicePairingClient, signDevicePairingChallenge, validateDevicePairingChallenge]) assert.equal(typeof api, 'function');
+  inspectTendrilSetup, createAuthorityClient, authorityRecord, authorityRecordBytes]) assert.equal(typeof api, 'function');
+const collaboration = createCollaborationDefinition({id:'consumer', version:'1'});
+assert.equal(collaboration.definition.schema, undefined);
+assert.equal(collaboration.definition.commands['collab.rebind'], undefined);
+assert.ok(collaboration.initializationProgram.steps.some(step => typeof step.sql === 'string' && step.sql.startsWith('CREATE TABLE')));
+const reference = operationReference({applicationId:'a'.repeat(64),identity:{publicKey:'b'.repeat(64)}},'exact-handle');
+assert.equal(reference.proposalId,undefined);
+assert.equal('generation' in reference,false);
 assert.match(createNativeAttachmentKey(), /^td_n_[a-f0-9]{64}$/);
 `);
   run(process.execPath, ['collaboration.mjs']);
   writeFileSync(join(directory, 'collaboration.mts'), `
 import type {} from '@tendriller/core/browser';
 import { createApplicationAgentKey, proposeApplicationAssistant, connectApplicationAssistant, createAssistantEventDelivery,
-  type AssistantParticipant, type AssistantCallerContext } from '@tendriller/core/assistant';
-import { createCollaborationDefinition, createCollaborationClient, type CollaborationSession } from '@tendriller/core/collaboration';
+  type AssistantParticipant, type AssistantCallerContext, type AssistantObservation } from '@tendriller/core/assistant';
+import { createCollaborationDefinition, createCollaborationClient, type VerifiedOperationReference } from '@tendriller/core/collaboration';
 import { openBrowserOwner, type BrowserOwnerOptions } from '@tendriller/core/browser-owner';
 import { serveBrowserOwner, type BrowserOwnerConfiguration } from '@tendriller/core/worker-owner';
 import { createNativeSessionSupervisor, attachNativeSession, type NativeSessionOwner } from '@tendriller/core/native-owner';
 import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/core/diagnostics';
 import { createTransportDiagnostics, readTransportDiagnostics, type TransportDiagnosticReport } from '@tendriller/core/transport-diagnostics';
-import { defineApplication, defineQuery, createLiveView, createScopedApplicationTools, forwardSessionEvents, type LiveView, type LiveViewSession, type ApplicationSession } from '@chronolog/peer-session';
+import { defineApplication, defineQuery, createApplicationSession, createLiveView, createScopedApplicationTools,
+  type LiveView, type ApplicationSession, type MaterializedRevision, type OperationInspection,
+  type SignedProvisioningRequest, type SignedProvisioningPackage } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
+import type { ApplicationDevice } from '@chronolog/peer-session';
+import { createAuthorityClient, type EnrollmentChallenge } from '@tendriller/core/authority';
 import { createSetupIntent, completeSetupIntent, type SetupIntent, type SetupResult } from '@tendriller/core/setup';
-import { createDevicePairingClient, signDevicePairingChallenge, type DevicePairingChallenge } from '@tendriller/core/pairing';
 declare const setupIntent: SetupIntent;
 declare const setupResult: SetupResult;
-declare const pairingChallenge: DevicePairingChallenge;
 const restored = await completeSetupIntent(setupIntent, setupResult);
-const pairingClient = createDevicePairingClient({url: restored.api + '/peers/pairing'});
-void createSetupIntent; void pairingClient; void signDevicePairingChallenge; void pairingChallenge;
-declare const session: CollaborationSession;
+const authorityClient = createAuthorityClient(async (path, options) => ({path, options}));
+declare const enrollment: EnrollmentChallenge;
+const enrolledApplicationId: string = enrollment.applicationId;
+void restored; void createSetupIntent; void authorityClient; void enrolledApplicationId;
 declare const owner: NativeSessionOwner;
 declare const browser: BrowserOwnerOptions;
 declare const worker: BrowserOwnerConfiguration;
-const definition = createCollaborationDefinition({id:'consumer',version:'1'});
-const client = createCollaborationClient({session});
-const report: DiagnosticReport = await diagnoseApplicationSession(session);
+const collaboration = createCollaborationDefinition({id:'consumer',version:'1',members:['a'.repeat(64)]});
+declare const nativeSession: ApplicationSession;
+declare const browserSession: WorkerApplicationSession;
+const client = createCollaborationClient({session:nativeSession});
+const browserClient = createCollaborationClient({session:browserSession});
+const report: DiagnosticReport = await diagnoseApplicationSession(nativeSession);
 const attached = await openBrowserOwner(browser);
-const browserView = createLiveView(attached.session, {query:'notes'});
+const browserView = createLiveView(attached.session, async view => {
+  const rows = await view.query('SELECT title FROM notes');
+  return rows.rows.map(row => String(row[0]));
+});
 const viewDefinition = defineApplication({id:'views',version:'1',commands:{},queries:{notes:defineQuery({description:'Read notes',input:{type:'null'},read:()=>['typed']})}});
-declare const nativeSession: ApplicationSession<typeof viewDefinition>;
-declare const browserSession: WorkerApplicationSession<typeof viewDefinition>;
+declare const device: ApplicationDevice;
+const opened = await createApplicationSession({device,definition:viewDefinition,applicationId:'a'.repeat(64)});
+const initialized = await nativeSession.submit({program:collaboration.initializationProgram,operationId:'root-initialization',authorTimestampMs:1n});
+const stored: boolean = initialized.stored;
+const inspected: OperationInspection = await initialized.inspect();
+const originalProposal: string = inspected.proposalId;
+const pendingMaterializer: 'body'|'key'|'authority'|'materializer'|null = inspected.pending;
+const projected = await initialized.materialized();
+const projectionRevision: MaterializedRevision = projected.revision;
+const peerEvidence = await initialized.retained({timeoutMs:1000});
+const finalResult = await initialized.finalized({timeoutMs:1000});
+const localOnly: boolean = stored && !inspected.finalized;
+void originalProposal; void pendingMaterializer; void projectionRevision; void peerEvidence; void finalResult; void localOnly;
+// @ts-expect-error Storage, projection and retention have independent APIs.
+initialized.applied();
+// @ts-expect-error There is no ambiguous shared acknowledgement.
+initialized.shared();
+// @ts-expect-error Schema is ordinary authorized DDL, not immutable setup metadata.
+collaboration.definition.schema;
+const provisioningRequest: SignedProvisioningRequest = await browserSession.provisioning.createProvisioningRequest();
+const provisioningPackage: SignedProvisioningPackage = await nativeSession.provisioning.exportProvisioning(provisioningRequest);
+await browserSession.provisioning.importProvisioning(provisioningPackage);
+await browserSession.mergeAuthority(nativeSession.authority.bundle());
 const assistant = connectApplicationAssistant({api:'https://service.example/api/t/aaaaaaaaaaaa',key:'td_a_'+'a'.repeat(64),
   session:nativeSession,tools:createScopedApplicationTools(nativeSession,{queries:['notes']})});
-const forwarded:Promise<void>=forwardSessionEvents({session:nativeSession,
-  checkpoint:{load:()=>undefined,save:()=>{}},project:event=>({name:'note',payload:{id:event.id}}),
-  deliver:createAssistantEventDelivery({assistant})});
-void forwarded;
-const inspector=createTransportDiagnostics(browserSession.participation);
+const delivery = createAssistantEventDelivery({assistant});
+declare const observation: AssistantObservation;
+await delivery({name:'note',payload:{id:originalProposal},observation}, {id:'event',proposalId:originalProposal}, {revision:projectionRevision}, nativeSession.signal);
+const inspector=createTransportDiagnostics(browserSession);
 const transportReport:TransportDiagnosticReport=await inspector.refresh();
-const oneShot:TransportDiagnosticReport=await readTransportDiagnostics(nativeSession.participation);
-if(browserSession.participation)window.tendril.transport.install(browserSession.participation);
+const oneShot:TransportDiagnosticReport=await readTransportDiagnostics(nativeSession);
+window.tendril.transport.install(browserSession);
 void transportReport;void oneShot;inspector.close();
-const typedBrowserView = createLiveView(browserSession, {query:'notes',input:null});
-const nativeView = createLiveView(nativeSession, {query:'notes',input:null});
-declare const typedQuery: LiveViewSession<'notes', null, readonly string[]>;
-const typedView: LiveView<readonly string[]> = createLiveView(typedQuery, {query:'notes',input:null,
-  onSnapshot(snapshot) { const values: readonly string[] = snapshot.value; void values; }});
-// @ts-expect-error Query names remain constrained by the typed session.
-createLiveView(typedQuery, {query:'unknown',input:null});
-// @ts-expect-error Query input remains constrained by the typed session.
-createLiveView(typedQuery, {query:'notes',input:3});
+const typedView: LiveView<readonly string[]> = createLiveView(opened, async view => {
+  const rows = await view.query('SELECT title FROM notes');
+  const applicationId: string = view.applicationId;
+  void applicationId;
+  return rows.rows.map(row => String(row[0]));
+});
 const coherent = await typedView.ready({timeoutMs:30000});
-const selectedGeneration: string = coherent.revision.generation;
-void selectedGeneration; browserView.close(); typedBrowserView.close(); nativeView.close(); typedView.close();
+const digest: string = coherent.revision.digest;
+const viewKind: 'local'|'final' = coherent.revision.view;
+const values: readonly string[] = coherent.value;
+// @ts-expect-error Typed derivation does not degrade its values to any.
+const wrongValues: readonly number[] = coherent.value;
+// @ts-expect-error Revisions are operation-set digests, not selected ordering heads.
+coherent.revision.generation;
+const captured = await browserClient.capture();
+const tasks = await captured.tasks({limit:8});
+const provenance: VerifiedOperationReference|undefined = tasks.value.tasks[0]?.operation;
+const signedActor: string|undefined = provenance?.author;
+const stableProposal: string|undefined = provenance?.proposalId;
+void digest; void viewKind; void values; void wrongValues; void signedActor; void stableProposal;
+await captured.close(); browserView.close(); typedView.close();
 await attached.detach();
 const serving = serveBrowserOwner(worker);
 const supervisor = await createNativeSessionSupervisor({directory:'/private',profileId:'consumer',openOwner:()=>owner});
 const key: string = createApplicationAgentKey();
-void proposeApplicationAssistant; void connectApplicationAssistant; void attachNativeSession;
-void definition; void client; void report; void serving; void supervisor; void key;
+void proposeApplicationAssistant; void attachNativeSession;
+void collaboration; void client; void report; void serving; void supervisor; void key;
 declare const participant: AssistantParticipant;
 declare const caller: AssistantCallerContext;
 void participant; void caller;

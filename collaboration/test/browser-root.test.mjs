@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import { defineApplication, describeApplication, PEER_GENERATION_CAPABILITIES } from '@chronolog/peer-session';
+import { p, createPhysicalSession } from './physical-fixture.mjs';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { serveBrowserOwner } from '../../session/worker.mjs';
 import { createSharedRootEndpoint } from '../../session/browser-root.mjs';
@@ -35,7 +35,7 @@ function next(port, predicate, timeoutMs = 1500) {
     port.addEventListener('message', receive); port.start?.();
   });
 }
-async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = false } = {}) {
+async function fixture(t, { rootLimits, ownerOptions, load, delayedClose = false, incumbent = false } = {}) {
   const witnesses = new Map(), witnessHandles = []; let queryCalls = 0, query = async () => ({ held: [...witnesses.values()], pending: [] });
   const pageLocks = clientId => ({
     query: () => query(),
@@ -53,15 +53,16 @@ async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = 
     if (held) return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
     held++; try { return await run({}); } finally { held--; }
   } } } });
-  const scope = new Scope(), controller = new AbortController(), ports = [], transports = [];
+  const scope = new Scope(), ports = [], transports = []; let session;
+  const controller = { abort() { void session?.close(); } };
   let finishClose; const closeGate = delayedClose ? new Promise(resolve => { finishClose = resolve; }) : Promise.resolve();
-  const description = describeApplication(defineApplication({ id: 'root-fixture', version: '1', commands: {}, queries: {} })); let closing;
-  const session = { applicationId: 'a'.repeat(64), historyId: 'root-fixture', storageId: 'retained', deviceId: 'b'.repeat(64),
-    signal: controller.signal, revision: null, status: { phase: 'ready', database: 'idle', role: 'coordinator', generation: 'c'.repeat(64), coordinator: 'b'.repeat(64), connectedPeers: 0 }, signals: { delivery: 'neighbors' },
-    describe: () => ({ ...description, capabilities: { ...PEER_GENERATION_CAPABILITIES, sql: false } }), onStatus(listener) { listener(this.status); return () => {}; }, onRecovery: () => () => {},
-    close() { return closing ??= Promise.resolve().then(async () => { controller.abort(Error('TEST_SESSION_ENDED')); await closeGate; resourceClosed = true; }); },
-  };
-  const config = { profileId: 'retained', openSession: async () => { opened++; return { session }; }, rootLimits };
+  const definition = p.defineApplication({ id: 'root-fixture', version: '1', commands: {}, queries: {} });
+  const config = { profileId: 'retained', async openSession({ signal }) {
+    signal.throwIfAborted(); opened++;
+    session = await createPhysicalSession({ definition, close: async () => { await closeGate; resourceClosed = true; } });
+    if (signal.aborted) { await session.close(); throw signal.reason; }
+    return { session };
+  }, rootLimits, ownerOptions };
   const service = serveBrowserOwner({ scope, ...(load ? { load: () => load(config) } : config) });
   t.after(async () => {
     finishClose?.(); for (const witness of witnessHandles) await witness.release(); for (const transport of transports) await transport.close(); await service.close();
@@ -86,10 +87,10 @@ async function fixture(t, { rootLimits, load, delayedClose = false, incumbent = 
     const connection = root(), ready = await connection.boot(); assert.equal(ready.type, 'ready');
     const transport = createSharedRootEndpoint(connection.port, { profileId: 'retained', rootId: connection.rootId,
       ownerInstanceId: ready.ownerInstanceId, livenessTimeoutMs: 200 }); transports.push(transport);
-    const client = await connectApplicationOwner(transport, { applicationId: session.applicationId, definitionId: description.id, definitionVersion: description.version, timeoutMs: 1000 });
+    const client = await connectApplicationOwner(transport, { applicationId: session.applicationId });
     return { ...connection, transport, client };
   }
-  return { scope, session, controller, service, root, attach, finishClose, witnesses,
+  return { scope, get session() { return session; }, controller, service, root, attach, finishClose, witnesses,
     get queryCalls() { return queryCalls; }, setQuery(value) { query = value; },
     get held() { return held; }, get resourceClosed() { return resourceClosed; }, get opened() { return opened; } };
 }
@@ -107,6 +108,16 @@ test('repeated direct facade detaches reclaim root listeners and capacity withou
   assert.equal((await sibling.client.endpoints()).length, 1);
 });
 
+test('actual owner attachment quota failure removes every physical root listener without closing its healthy sibling', async t => {
+  const f = await fixture(t, { rootLimits: { maxPorts: 3 }, ownerOptions: { maxAttachments: 1 } });
+  const healthy = await f.attach(), denied = f.root(), response = await denied.boot();
+  assert.equal(response.type, 'failure'); assert.equal(response.code, 'OWNER_ATTACHMENT_LIMIT');
+  await until(() => denied.server.closed, 'over-quota root closed'); assert.equal(denied.server.listeners.size, 0);
+  assert.equal((await healthy.client.endpoints()).length, 1); assert.equal(healthy.client.signal.aborted, false);
+  await healthy.client.detach(); const replacement = await f.attach();
+  assert.equal(replacement.client.identity.publicKey, f.session.identity.publicKey); assert.equal(f.opened, 1);
+});
+
 test('pending roots are bounded and explicit cancellation or timeout releases them before configuration resolves', async t => {
   let configure; const configured = new Promise(resolve => { configure = resolve; });
   const f = await fixture(t, { load: async value => { await configured; return value; }, rootLimits: { maxPorts: 1, pendingTimeoutMs: 100 } });
@@ -118,7 +129,7 @@ test('pending roots are bounded and explicit cancellation or timeout releases th
   const denied = await next(extra.port, data => data.type === 'failure'); assert.equal(denied.code, 'OWNER_BUSY');
   await until(() => idle.server.closed, 'pending root expiry');
   assert.equal(idle.server.listeners.size, 0); assert.equal(f.opened, 0); assert.equal(f.held, 0);
-  const attached = await f.attach(); assert.equal(attached.client.status.database, 'idle');
+  const attached = await f.attach(); assert.equal(attached.client.status.canAuthor, true); assert.notEqual(attached.client.status.phase, 'closed');
 });
 
 for (const action of ['suspend','park']) test(`SharedWorker leases respect ${action} and reclaim only an unreachable root`, async t => {
@@ -163,7 +174,7 @@ test('retiring an elected owner preserves attached siblings and closes only afte
   for (let index = 0; index < 2; index++) {
     const channel = new BroadcastChannel(ownerChannelName('retained'));
     const endpoint = createBroadcastEndpoint(channel, ready, { profileId: 'retained', livenessTimeoutMs: 1000 });
-    const client = await connectApplicationOwner(endpoint, { applicationId: f.session.applicationId, definitionId: 'root-fixture', definitionVersion: '1', timeoutMs: 1000 });
+    const client = await connectApplicationOwner(endpoint, { applicationId: f.session.applicationId });
     clients.push(client); t.after(async () => { await endpoint.close(); channel.close(); });
   }
   await clients[0].detach();

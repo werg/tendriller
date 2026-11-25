@@ -13,12 +13,12 @@ async function fixture(t) {
   t.after(() => rm(root, { recursive: true, force: true }));
   return { path: join(root, 'effects.sqlite'), applicationId: 'test-application', providerId: 'mail-provider' };
 }
-const command = { effectId: 'notify-review', fence: { generation: 'selected', requestId: 'review', claimVersion: 2 }, input: { subject: 'Review' } };
+const command = { effectId: 'notify-review', fence: { claimProposalId: 'a'.repeat(64), requestId: 'review', claimVersion: 2 }, input: { subject: 'Review' } };
 
 test('a lost provider receipt is retained independently and reconciles without a second dispatch', async t => {
   const options = await fixture(t); let journal = await createSqliteEffectJournal(options), calls = 0, providerKey;
   t.after(() => journal.close());
-  let effects = createEffectDispatcher({ journal, authorize: async () => {}, dispatch: async value => {
+  let effects = createEffectDispatcher({ allowProvisionalEffects: true, journal, authorize: async () => {}, dispatch: async value => {
     calls++; providerKey = value.idempotencyKey; throw Error('provider accepted but connection was lost');
   } });
   await assert.rejects(effects.execute(command), error => error.code === 'EFFECT_OUTCOME_UNKNOWN');
@@ -26,14 +26,14 @@ test('a lost provider receipt is retained independently and reconciles without a
   assert.equal(providerKey, journal.idempotencyKey(command.effectId));
   assert.equal((await lstat(options.path)).mode & 0o777, 0o600);
   await journal.close(); journal = await createSqliteEffectJournal(options);
-  effects = createEffectDispatcher({ journal, authorize: async () => {}, dispatch: async () => { calls++; return {}; } });
+  effects = createEffectDispatcher({ allowProvisionalEffects: true, journal, authorize: async () => {}, dispatch: async () => { calls++; return {}; } });
   assert.equal((await effects.execute(command)).status, 'outcomeUnknown'); assert.equal(calls, 1);
-  effects = createEffectDispatcher({ journal, authorize: async () => {}, dispatch: async () => { calls++; return {}; },
+  effects = createEffectDispatcher({ allowProvisionalEffects: true, journal, authorize: async () => {}, dispatch: async () => { calls++; return {}; },
     reconcile: async (id, record) => { assert.equal(id, command.effectId); assert.equal(record.idempotencyKey, providerKey); return { providerReceipt: 'already-sent' }; } });
   assert.equal((await effects.execute(command)).status, 'completed');
   assert.equal((await journal.inspect(command.effectId)).receipt.providerReceipt, 'already-sent');
   assert.equal((await effects.execute(command)).status, 'completed'); assert.equal(calls, 1);
-  await assert.rejects(effects.execute({ ...command, fence: { ...command.fence, generation: 'recovered' } }), error => error.code === 'EFFECT_ID_CONFLICT');
+  await assert.rejects(effects.execute({ ...command, fence: { ...command.fence, claimProposalId: 'b'.repeat(64) } }), error => error.code === 'EFFECT_ID_CONFLICT');
   await assert.rejects(effects.execute({ ...command, input: { subject: 'different effect' } }), error => error.code === 'EFFECT_ID_CONFLICT');
   assert.notEqual(providerKey, (await createSqliteEffectJournal({ ...options, path: join(options.path + '.separate', 'effects.sqlite'), applicationId: 'other-app' })
     .then(async other => { try { return other.idempotencyKey(command.effectId); } finally { await other.close(); } })));
@@ -44,8 +44,8 @@ test('concurrent processes or dispatchers share admission, preserve terminal rec
   t.after(() => Promise.all([first.close(), second.close()]));
   let calls = 0, complete;
   const waiting = new Promise(resolve => { complete = resolve; });
-  const a = createEffectDispatcher({ journal: first, authorize: async () => {}, dispatch: async () => { calls++; await waiting; return { sent: true }; } });
-  const b = createEffectDispatcher({ journal: second, authorize: async () => {}, dispatch: async () => { calls++; return { sent: true }; } });
+  const a = createEffectDispatcher({ allowProvisionalEffects: true, journal: first, authorize: async () => {}, dispatch: async () => { calls++; await waiting; return { sent: true }; } });
+  const b = createEffectDispatcher({ allowProvisionalEffects: true, journal: second, authorize: async () => {}, dispatch: async () => { calls++; return { sent: true }; } });
   const pending = a.execute(command); await new Promise(resolve => setImmediate(resolve));
   assert.equal((await b.execute(command)).status, 'outcomeUnknown'); assert.equal(calls, 1);
   complete(); assert.equal((await pending).status, 'completed');
@@ -68,7 +68,7 @@ import {createEffectDispatcher} from ${JSON.stringify(new URL('../local.mjs', im
 const {options,command}=JSON.parse(process.env.TENDRILLER_EFFECT_TEST);
 const journal=await createSqliteEffectJournal(options);
 setInterval(()=>{},1000);
-await createEffectDispatcher({journal,authorize:async()=>{},dispatch:async()=>{process.stdout.write('dispatching\\n');return new Promise(()=>{});}}).execute(command);`;
+await createEffectDispatcher({ allowProvisionalEffects: true,journal,authorize:async()=>{},dispatch:async()=>{process.stdout.write('dispatching\\n');return new Promise(()=>{});}}).execute(command);`;
   const child = spawn(process.execPath, ['--input-type=module', '-e', source], {
     env: { ...process.env, TENDRILLER_EFFECT_TEST: JSON.stringify({ options, command }) }, stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -80,6 +80,6 @@ await createEffectDispatcher({journal,authorize:async()=>{},dispatch:async()=>{p
   const journal = await createSqliteEffectJournal(options); t.after(() => journal.close());
   assert.equal((await journal.inspect(command.effectId)).status, 'dispatching');
   let sends = 0;
-  const effects = createEffectDispatcher({ journal, authorize: async () => {}, dispatch: async () => { sends++; return {}; }, reconcile: async () => ({ providerReceipt: 'recovered-receipt' }) });
+  const effects = createEffectDispatcher({ allowProvisionalEffects: true, journal, authorize: async () => {}, dispatch: async () => { sends++; return {}; }, reconcile: async () => ({ providerReceipt: 'recovered-receipt' }) });
   assert.equal((await effects.execute(command)).status, 'completed'); assert.equal(sends, 0);
 });

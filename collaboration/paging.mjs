@@ -33,7 +33,7 @@ export async function captureCollaborationReader(session, { signal } = {}) {
     // capability now so restricted attachments never receive a usable reader.
     await view.query('SELECT 1', []); held();
     const revision = frozen(structuredClone(view.revision));
-    const captured = Object.freeze({ revision, async query(...args) {
+    const captured = Object.freeze({ revision, applicationId: session.applicationId, async query(...args) {
       held();
       try { const result = await view.query(...args); held(); return result; }
       catch (error) { held(); throw error; }

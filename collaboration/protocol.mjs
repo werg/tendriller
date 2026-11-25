@@ -1,6 +1,23 @@
 /** Optional collaboration contracts. Routing is never a grant or a privacy boundary. */
-import { SessionError, canonicalJson, identifier, operationReference, signerId } from '@chronolog/peer-session';
-export { canonicalJson, identifier, operationReference, signerId };
+import { SessionError, canonicalJson } from '@chronolog/peer-session';
+export { canonicalJson };
+export function identifier(value, name = 'identity') {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,159}$/u.test(value)) throw new CollaborationError('INVALID_IDENTITY', `Invalid ${name}`);
+  return value;
+}
+export function signerId(value) {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/u.test(value)) throw new CollaborationError('INVALID_SIGNER');
+  return value;
+}
+/** Only an authenticated journal inspection may supply an authored proposal identity. */
+export function operationReference(session, operationId, inspection) {
+  const applicationId = signerId(session.applicationId), author = signerId(session.identity?.publicKey);
+  if (typeof operationId !== 'string' || !operationId || operationId.length > 512 || /[\u0000-\u001f\u007f]/u.test(operationId)) throw new CollaborationError('INVALID_IDENTITY');
+  operationId = typeof session.scopeOperationId === 'function' ? session.scopeOperationId(operationId) : operationId;
+  if (inspection && (inspection.applicationId !== applicationId || inspection.author !== author || inspection.operationId !== operationId))
+    throw new CollaborationError('OPERATION_REFERENCE_CONFLICT');
+  return Object.freeze({ applicationId, author, operationId, ...(inspection ? { proposalId: signerId(inspection.proposalId) } : {}) });
+}
 
 export const COLLABORATION_PROTOCOL = 'tendriller.collaboration.v1';
 export const COLLABORATION_LIMITS = Object.freeze({ slots: 32, activeClaimsPerSigner: 8,
@@ -13,13 +30,15 @@ const actions = {
   RECIPIENT_UNAVAILABLE: 'Choose an authorized recipient or retain the request for later.',
   CLAIM_CONFLICT: 'Inspect the current claim and observe it or choose another task.',
   CLAIM_SUPERSEDED: 'Inspect the current claim; do not repeat the external action.',
-  CURSOR_RESET_REQUIRED: 'Review the new generation or filter and explicitly reset this consumer.',
-  RECOVERY_REVIEW_REQUIRED: 'Inspect the original operation and deliberately rebind or reapply.',
+  CURSOR_RESET_REQUIRED: 'Review the new projection revision or filter and explicitly reset this consumer.',
   EFFECT_OUTCOME_UNKNOWN: 'Reconcile the original effect identity before dispatching again.',
 };
 export class CollaborationError extends SessionError {
   constructor(code, message = code, scope = {}) {
-    super(code, message, scope, actions);
+    super(code, message);
+    this.scope = Object.freeze({ ...scope });
+    this.retrySafe = false;
+    this.nextAction = actions[code] ?? 'Inspect the original operation and current projection before retrying.';
     this.name = 'CollaborationError';
   }
 }
@@ -69,19 +88,19 @@ export function prepareCollaborationCommand(endpoint, name, input, deviceId) {
   if (name === 'collab.request' || name === 'collab.message') return { ...input, source: canonicalJson(source, 2048) };
   // Result/acknowledgement fences name the original claim, possibly delivered
   // later by another attachment of the same signer. They are checked in SQL.
-  if (['collab.claim', 'collab.rebind'].includes(name))
+  if (name === 'collab.claim')
     return { ...input, endpointIncarnation: endpoint.endpointIncarnation,
       ...(context.runId ? { runId: context.runId } : {}) };
   return input;
 }
 export function consumerCursor(scope, sequence) {
-  for (const name of ['applicationId', 'consumerId', 'generation', 'filterVersion']) identifier(scope[name], name);
+  for (const name of ['applicationId', 'consumerId', 'revisionDigest', 'filterVersion']) identifier(scope[name], name);
   if (!Number.isSafeInteger(sequence) || sequence < 0) throw new CollaborationError('INVALID_CURSOR');
   return Object.freeze({ protocol: COLLABORATION_PROTOCOL, ...scope, sequence });
 }
 export function validateConsumerCursor(cursor, scope, { retainedFrom = 0 } = {}) {
   if (!cursor || cursor.protocol !== COLLABORATION_PROTOCOL ||
-    ['applicationId', 'consumerId', 'generation', 'filterVersion'].some(key => cursor[key] !== scope[key]) ||
+    ['applicationId', 'consumerId', 'revisionDigest', 'filterVersion'].some(key => cursor[key] !== scope[key]) ||
     !Number.isSafeInteger(cursor.sequence) || cursor.sequence < retainedFrom)
     throw new CollaborationError('CURSOR_RESET_REQUIRED', 'The consumer scope or retained history changed', { ...scope, retainedFrom });
   return cursor;

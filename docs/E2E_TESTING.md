@@ -13,7 +13,7 @@ Choose a test boundary that exercises the claim being made. Core browser composi
 | `npm run test:tools` | Session CLI, exact-file preview and extracted self-contained archive |
 | `npm run test:browser` | Browser code retention, sensor controls, local host claim/origin/signed-release flow, speech and preview |
 
-The runtime browser fixture serves immutable assets only. It does not emulate an application database or protocol executor. Application binding tests exercise installation; actual command/query/recovery semantics are tested with Chronolog sessions and independent contrib qualification.
+The runtime browser fixture serves immutable assets only. It does not emulate an application database or protocol executor. Application binding tests exercise installation; actual command/query/convergence semantics are tested with Chronolog sessions and independent contrib qualification.
 
 ## Local host and public fixture
 

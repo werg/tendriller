@@ -1,7 +1,9 @@
 # Request-driven session hosting
 
-`@tendriller/core/serverless` adapts an already configured application session to
-finite HTTPS requests. It supplies no identity, permissions, engine or storage
+`@tendriller/core/serverless` is an explicit, optional request-driven hosting
+adapter. No application requires it for browser reads, durable local writes or
+peer convergence. It adapts an already configured application session to finite
+HTTPS requests. It supplies no identity, permissions, engine or storage
 owner election. Use the matching public Chronolog session/engine and preserve the
 same device and original operation IDs between requests.
 
@@ -24,8 +26,9 @@ Construct `createServerlessHostAdapter` with all of:
   task-lifetime guarantee; a no-op is valid only if that guarantee already covers
   the entire physical operation and cleanup. The hook receives an observed,
   settling Promise, so request errors are not duplicated in host error logs.
-- `openSession({store, signal})`, returning `{session, flush?, close?}`. Flush
-  persists the original saved intents even on command wait failure. Close releases
+- `openSession({store, signal})`, returning `{session, flush?, close?}`. The session
+  is the common Chronolog `ApplicationSession`. Flush persists the original stored
+  intents even when an optional wait fails. Close releases
   that request's owned resources; it does not rotate the device identity.
 
 The default response deadline is 30 seconds (`timeoutMs`, maximum 120 seconds).
@@ -42,15 +45,57 @@ Promise or a lock alone does not guarantee post-response execution in a Worker.
 This can block subsequent requests; it cannot admit a second writer.
 Do not treat cancellation as permission to start another device or unlock storage.
 
-Command responses distinguish `recorded`, `applied`, `rejected`, `unknown`,
-`abandoned`, `needsReapply`, and `not_submitted`. An uncertain attempted command
-returns HTTP 202 with its original ID and error, rather than claiming rejection.
-Inspect `/v1/apps/APP_ID/operations/OPERATION_ID`; never create a new ID to replace
-an uncertain command. Recovery states require deliberate application recovery.
-Batch error responses retain completed results and identify the unsubmitted tail
-with `complete: false`. Flush/close failures remain errors even after a known
-applied result; the known result is retained alongside them. A primary execution
-failure remains primary, with `cleanupErrors` reported separately.
+## Routes, commands and operation facts
+
+All routes sit under `/v1/apps/APP_ID/` and require `authorize`.
+
+| Route | Behavior |
+| --- | --- |
+| `GET health` | Authorized liveness; opens no session. |
+| `POST query` / `GET query?query=&input=` | `session.query(name, input)`, returned as `{applicationId, revision, value}`. Any other shape, or another application ID, is `SERVERLESS_SESSION_INVALID`. |
+| `POST commands`, `POST commands/batch` | `session.command(command, input, {operationId})`. |
+| `GET operations/OPERATION_ID[?wait=FACT]` | Inspect the operation through `session.operations.get(id)`. Unknown IDs return 404 `operation_not_found`. |
+
+A command body has exactly `command`, `input`, the original `operationId` and an
+optional `wait`. Any other field is rejected with 400. There is no `basedOn`
+ordering prerequisite, because the session orders operations by signed author time
+and never by request order. The adapter has no retry route or queue: retry is
+the same command body with the same `operationId`, which the session resolves to
+the original signed proposal.
+
+`wait` selects one independent fact to observe before responding:
+
+| `wait` | Meaning |
+| --- | --- |
+| `stored` (default) | `session.command` resolved, so the exact signed intent is durable in the owned store. No network, materialization or retention wait. |
+| `materialized` | The current accepted or rejected outcome exists at a revision. It remains revisable by earlier operations. |
+| `retained` | Authenticated peer retention evidence exists. |
+| `finalized` | Closed-time finality verifies under the configured policy. Under the `none` policy it is rejected as `finality_unsupported` (409) before submission, so no command is stored for it. |
+
+The old `recorded`, `applied`, `saved` and `shared` values, and the
+`lifecycle` ladder with `abandoned` and `needsReapply`, do not exist. Unknown
+values are rejected with no aliases.
+
+Each command result is `{operationId, command, submission, wait, operation}`.
+`submission` is `not_submitted`, `uncertain` (attempted, but the durable storage
+reply was not observed) or `stored`. `operation` is an explicit plain-data
+projection of the session's operation inspection: `applicationId`, `author`,
+`authorTimestampMs`, `proposalId`, `operationId`, `stored`, `pending`,
+`materialized` (`outcome`, `rejectionCode`, `failingStatementIndex` and revision
+digests), `retained` (`peer`, `storageId`), `finalized` and `excluded`. The
+session, its operation handle, private owner state and signed evidence bytes are
+never serialized.
+
+An `uncertain` submission returns HTTP 202 with its original ID and error. A
+`stored` command whose wait reaches its deadline or wait timeout also returns 202,
+because the work is durable. Inspect the operation rather than creating a new ID.
+An operation that a configured closed frontier excluded fails its wait with 409,
+`excludedOperation` and `excluded: true`. Its original intent stays inspectable
+and is never retimestamped or resubmitted. Batch error responses retain completed
+results and identify the unsubmitted tail with `complete: false`. Flush/close
+failures remain errors even after known results, which are retained alongside
+them. A primary execution failure remains primary, with `cleanupErrors` reported
+separately.
 
 `storage.list()` may return a Durable Object-style `Map<string, bytes>` snapshot
 or an array of keys. Map values are copied directly, without rereading newer rows.

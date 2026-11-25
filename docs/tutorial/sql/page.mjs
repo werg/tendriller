@@ -1,166 +1,123 @@
-import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/browser-owner';
-import { createLiveView, createViewStore, describeOperationLifecycle } from '@chronolog/peer-session/browser';
-import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
-import { mountDiagnosticsPanel } from '../helpers/diagnostics-panel.mjs';
+import { createOperationView } from '../helpers/operation-view.mjs';
+import { openBrowserOwner } from '@tendriller/core/browser-owner';
+import { createLiveView, createViewStore, createApplicationBackend } from '@chronolog/peer-session';
+import { browserProfileId } from '../helpers/browser-profile.mjs';
 import { createSubmissionState } from '../helpers/submission-state.mjs';
-import { transferIntent, checkIntentSession, retryIntent } from './ui-state.mjs';
-
-const $ = selector => document.querySelector(selector);
-const diagnostics = mountDiagnosticsPanel($('#diagnostics-slot'), { appName: 'Shared Inventory (SQL)' });
-let session, attachment, liveView, store, pending, options, working = false;
+import { mountProvisioning } from '../helpers/provisioning-view.mjs';
+import { mountFinality } from '../helpers/finality-view.mjs';
+import { deriveInventory } from './domain.mjs';
+const $ = id => document.querySelector(id), configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => { if (!response.ok) throw Error('Configuration unavailable'); return response.json(); });
+const profileId = browserProfileId(configuration.applicationId);
+let storage, viewId;
+try { storage = localStorage; viewId = sessionStorage.getItem(`${profileId}:view`) || crypto.randomUUID(); sessionStorage.setItem(`${profileId}:view`, viewId); }
+catch { const map = new Map(); storage = { get length() { return map.size; }, key: i => [...map.keys()][i], getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) }; viewId = crypto.randomUUID(); }
+const local = createViewStore({ storage, applicationId: configuration.applicationId, profileId, viewId });
+const read = (key, fallback) => { try { return local.readDraft(key) ?? fallback; } catch { return fallback; } };
+const save = (key, value) => { try { local.writeDraft(value, key); } catch { $('#result').textContent = 'Draft/reference storage failed. Copy unsent fields and the original operation ID before leaving this page.'; } };
+const draftIds = ['from', 'to', 'units', 'expected-source', 'expected-destination', 'bin-id', 'bin-units', 'bin-expected', 'bin-label', 'sql-grantee', 'author-time'];
+const draft = read('draft', {}); for (const id of draftIds) if ($('#' + id)) { $('#' + id).value = draft[id] ?? ''; $('#' + id).addEventListener('input', () => { draft[id] = $('#' + id).value; save('draft', draft); }); }
+const intents = read('intents', {}); $('#op-id').value = read('selected-operation', '');
+let session, attachment, live, snapshot, stale = false, inspectionToken = 0;
+let operationView, observedOperationId;
+const nodes = new Map();
+const selected = () => new URLSearchParams(location.hash.slice(1)).get('bin');
+const submission = createSubmissionState(state => { for (const button of document.querySelectorAll('[data-write]')) button.disabled = !state.canSubmit; $('#inspect').disabled = !state.canInspect; $('#retry').disabled = !state.canRetry; $('#submission-status').textContent = state.message; });
+submission.update({ selected: $('#op-id').value, pending: intents[$('#op-id').value] ?? null });
+function renderDetail() {
+  const id = selected(), bin = snapshot?.value.stock.find(row => row.id === id);
+  $('#bin-detail').textContent = bin ? `${bin.id}: ${bin.units} units${bin.label !== undefined ? ` · label ${bin.label || '(empty)'}` : ''}. ${stale ? 'Last snapshot, not current.' : 'Current local projection, revisable.'}` : id ? 'The selected stable bin ID is absent from this projection.' : 'Select a bin to inspect its current balance.';
+}
+function render(value) {
+  snapshot = value; stale = false; $('#view-error').hidden = true;
+  const active = document.activeElement, x = scrollX, y = scrollY, wanted = new Set(value.value.stock.map(row => row.id));
+  for (const [id, node] of nodes) if (!wanted.has(id)) { node.row.remove(); nodes.delete(id); }
+  for (const bin of value.value.stock) {
+    let node = nodes.get(bin.id);
+    if (!node) { const row = document.createElement('tr'), idCell = document.createElement('td'), link = document.createElement('a'), units = document.createElement('td'), label = document.createElement('td'); idCell.append(link); row.append(idCell, units, label); node = { row, link, units, label }; nodes.set(bin.id, node); }
+    node.link.textContent = bin.id; const detailUrl = new URL(location.href); detailUrl.hash = 'bin=' + encodeURIComponent(bin.id); node.link.href = detailUrl.href; node.units.textContent = String(bin.units); node.label.textContent = bin.label ?? ''; node.label.hidden = !value.value.hasLabel; $('#stock').append(node.row);
+  }
+  $('#label-heading').hidden = !value.value.hasLabel; $('#label-editor').hidden = !value.value.hasLabel;
+  $('#summary').textContent = `${value.value.stock.length} bins · ${value.value.stock.reduce((sum, row) => sum + row.units, 0)} total units · local snapshot ${value.revision.digest.slice(0, 12)} (revisable)`;
+  $('#schema').textContent = `Current columns: ${value.value.columns.join(', ')}. Catalog: ${value.value.catalog.map(item => `${item.name} (${item.type})`).join(', ')}`;
+  $('#receipts').replaceChildren(...value.value.transfers.map(receipt => { const item = document.createElement('li'); item.textContent = `${receipt.units} units: ${receipt.from} → ${receipt.to}. Stable receipt ${receipt.id}.`; return item; }));
+  renderDetail(); if (active?.isConnected && active !== document.activeElement) active.focus({ preventScroll: true }); scrollTo(x, y);
+}
+window.addEventListener('hashchange', renderDetail);
+function show(inspection) {
+  submission.update({ observed: inspection });
+  const peerRetention = inspection.retained.filter(item => item.signer !== session.identity.publicKey);
+  $('#result').textContent = `Operation ${inspection.operationId}\nProposal ${inspection.proposalId}\nStored locally: ${inspection.stored}\nMaterialized locally: ${inspection.materialized ? inspection.materialized.outcome + (inspection.materialized.rejectionCode ? ` (${inspection.materialized.rejectionCode})` : '') + ' — revisable' : inspection.excluded ? 'not executed — excluded by verified author-time evidence' : 'pending'}\nRetained by peers: ${peerRetention.length ? peerRetention.map(row => row.signer).join(', ') : 'no evidence'}\nFinalized: ${inspection.finalized}\nExcluded: ${inspection.excluded}\n${inspection.pending ? `Waiting for ${inspection.pending}` : ''}`;
+}
+function stopOperationObservation() { operationView?.close(); operationView = undefined; observedOperationId = undefined; }
+function observeSelectedOperation() {
+  const id = $('#op-id').value;
+  if (operationView && observedOperationId === id) return operationView;
+  stopOperationObservation(); if (!session || !id) return;
+  observedOperationId = id;
+  operationView = createOperationView(session, { operationId: id,
+    onChange({ inspection }) {
+      if (id !== $('#op-id').value) return;
+      if (inspection) show(inspection);
+      else { submission.update({ observed: null }); $('#result').textContent = 'No local signed proposal was found for this ID. Retry only its exact retained intent after an uncertain reply.'; }
+    }, onError(error) { if (id === $('#op-id').value) report(error); } });
+  return operationView;
+}
+async function inspect() { await observeSelectedOperation()?.refresh(); }
 const report = error => { $('#result').textContent = error.message ?? String(error); };
-const submission = createSubmissionState(state => {
-  $('#submit-transfer').disabled = !state.canSubmit;
-  $('#retry-op').disabled = !state.canRetry;
-  $('#inspect-op').disabled = !state.canInspect;
-  $('#refresh').disabled = !state.attached || state.working;
-  $('#op-id').disabled = state.working;
-  for (const id of ['from-loc', 'to-loc', 'qty']) $('#' + id).disabled = Boolean(state.pending) || state.working;
-  $('#operation-status').textContent = state.pending ? `Retained ${state.pending.id}. Inspect or retry the original reviewed transfer.`
-    : state.canSubmit ? 'Ready to review and transfer units.' : 'Waiting for connection and a coherent inventory read.';
-});
-function retain(intent) {
-  const reference = { applicationId: session.applicationId, historyId: session.historyId,
-    author: session.deviceId, operationId: intent.id };
-  store.retainOperation(reference, intent); // Failure must prevent sending.
-  pending = { ...intent, reference };
-  $('#op-id').value = intent.id;
-  submission.update({ pending, selected: intent.id, observed: null });
-}
-function showState(state) {
-  const id = $('#op-id').value.trim();
-  $('#result').textContent = JSON.stringify({ reviewed: pending, summary: describeOperationLifecycle(id, state), state }, null, 2);
-  submission.update({ observed: state });
-  if (state?.status === 'applied' && pending?.id === state.operationId) {
-    if (state.outcome === 'accepted') diagnostics.update({ lastAppliedOperationId: state.operationId });
-    store.removeOperation(pending.reference); pending = null;
-    submission.update({ pending });
-  }
-}
-function renderStock(snapshot) {
-  $('#revision-label').textContent = `Generation ${snapshot.revision.generation.slice(0, 12)} · seq ${snapshot.revision.point.sequence}`;
-  const tbody = $('#stock-rows'); tbody.replaceChildren();
-  for (const row of snapshot.value.stock) {
-    const tr = document.createElement('tr');
-    for (const value of [row.id, String(row.units)]) {
-      const td = document.createElement('td'); td.textContent = value; tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-  if (!snapshot.value.stock.length) {
-    const tr = document.createElement('tr'), td = document.createElement('td'); td.colSpan = 2;
-    td.textContent = 'No bins yet. Run npm run demo in the native SQL project, then refresh.'; tr.appendChild(td); tbody.appendChild(tr);
-  }
-  submission.read(snapshot);
-}
-async function boot() {
-  const response = await fetch(new URL('./configuration.json', import.meta.url));
-  if (!response.ok) throw Error('Missing configuration.json. Run npm run init and npm run build, then publish page/.');
-  const configuration = await response.json();
-  if (new URL(configuration.page_url).origin !== location.origin)
-    throw Error('Open the signed published page at its authorized origin. A local preview cannot use its account or device.');
-  const profileId = `tendriller-inventory-${configuration.applicationId}`;
-  const viewKey = `${profileId}:sql-view`;
-  let viewId = sessionStorage.getItem(viewKey) || crypto.randomUUID(); sessionStorage.setItem(viewKey, viewId);
-  const loadStore = () => {
-    store = createViewStore({ storage: localStorage, applicationId: configuration.applicationId, profileId, viewId });
-    const saved = store.pending()[0]; pending = saved ? { ...saved.context, reference: saved.reference } : null;
-    if (pending) {
-      $('#op-id').value = pending.id;
-      $('#from-loc').value = pending.input.from; $('#to-loc').value = pending.input.to; $('#qty').value = pending.input.units;
-      $('#result').textContent = JSON.stringify({ retained: pending }, null, 2);
-    }
-    submission.update({ pending, selected: $('#op-id').value });
-  };
-  loadStore();
-  options = { workerUrl: new URL('./worker.mjs', import.meta.url), profileId,
-    applicationId: configuration.applicationId, definitionId: 'shared-inventory', definitionVersion: '1',
-    requiresDedicatedWorker: true, context: { viewId, documentPath: location.pathname } };
-  $('#create-device').disabled = false;
-  attachment = await openBrowserOwner(options); session = attachment.session;
-  if (session.endpoint.context.viewId !== viewId) { viewId = session.endpoint.context.viewId; sessionStorage.setItem(viewKey, viewId); loadStore(); }
-  if (pending) checkIntentSession(pending, session);
-  $('#device-key').value = session.deviceId; $('#create-device').disabled = true;
-  $('#close').disabled = false;
-  diagnostics.update({ leaderStatus: attachment.mode, storageBackend: 'opfs-sql-wasm' });
-  liveView = createLiveView(session, { query: 'inventory', input: null,
-    onStatus(status) {
-      $('#session-status').textContent = `${status.phase} · db ${status.database} · role ${status.role}`;
-      submission.application(status); diagnostics.update({ coordinatorStatus: status });
-    },
-    onRecovery() { submission.update({ coherent: false }); report(Error('Selected history changed. Inspect retained operations before reviewing new balances.')); },
-    onError(error) { submission.update({ coherent: false }); report(error); },
-  });
-  liveView.subscribe(renderStock);
-  session.participation.onStatus(status => {
-    const connected = submission.snapshot.connected; submission.participation(status);
-    if (!connected && submission.snapshot.connected) void liveView.refresh().catch(report);
-  });
-  submission.update({ attached: true });
-  await liveView.ready({ timeoutMs: 30_000 });
-  if (!window.tendril) throw Error('Open the signed published Tendriller page.');
-  window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
-  window.tendril.signals?.install(session.signals);
-  window.tendril.transport?.install(session.participation);
-  $('#create-device').disabled = true;
-}
-async function action(kind, run) {
-  if (working) return;
-  let release;
-  working = true;
+async function command(name, input, intent = undefined) {
+  const done = submission.begin(intent ? 'retry' : 'submit');
   try {
-    if (kind === 'inspect') {
-      if (!submission.snapshot.canInspect) throw Error('Connect this browser before inspecting its retained operation.');
-      submission.update({ working: true }); release = () => submission.update({ working: false });
-    } else release = submission.begin(kind);
-    await run(); }
-  catch (error) { report(Error(`${error.message ?? error}${pending ? ' Preserve this operation ID and reviewed input; inspect or retry the original attempt.' : ''}`)); }
-  finally { working = false; release?.(); }
+    if (!intent) {
+      const authorTime = $('#author-time')?.value;
+      if (authorTime && !/^(?:0|[1-9][0-9]{0,18})$/.test(authorTime)) throw Error('Author time must be an exact nonnegative int64');
+      intent = { operationId: crypto.randomUUID(), command: name, input, ...(authorTime ? { authorTimestampMs: authorTime } : {}) };
+      intents[intent.operationId] = intent; save('intents', intents);
+    }
+    $('#op-id').value = intent.operationId; save('selected-operation', intent.operationId); submission.update({ selected: intent.operationId, pending: intent, observed: null });
+    const retained = await session.operations.get(intent.operationId);
+    const operation = retained ? await session.operations.retry(intent.operationId) : await session.command(intent.command, intent.input, { operationId: intent.operationId, ...(intent.authorTimestampMs ? { authorTimestampMs: BigInt(intent.authorTimestampMs) } : {}) });
+    show(await operation.inspect()); observeSelectedOperation();
+  } catch (error) { $('#result').textContent = submission.failure(error, intent); }
+  finally { done(); }
 }
-$('#transfer-form').addEventListener('submit', event => {
-  event.preventDefault();
-  void action('submit', async () => {
-    // Capture exactly the balances displayed for review, before any asynchronous work.
-    const intent = transferIntent(liveView.snapshot, { from: $('#from-loc').value, to: $('#to-loc').value, units: Number($('#qty').value) }, crypto.randomUUID());
-    retain(intent);
-    const handle = await session.command(intent.command, intent.input, { operationId: intent.id, basedOn: intent.basedOn });
-    showState(await handle.applied({ signal: AbortSignal.timeout(15_000) })); await liveView.refresh();
-  });
-});
-$('#retry-op').addEventListener('click', () => { void action('retry', async () => { showState(await retryIntent(session, pending)); await liveView.refresh(); }); });
-$('#inspect-op').addEventListener('click', () => {
-  void action('inspect', async () => { if (pending) checkIntentSession(pending, session); showState(await session.operations.get($('#op-id').value.trim())); });
-});
-$('#op-id').addEventListener('input', () => submission.update({ selected: $('#op-id').value.trim(), observed: null }));
-$('#refresh').addEventListener('click', () => { void liveView?.refresh().catch(report); });
-$('#create-device').addEventListener('click', () => {
-  $('#create-device').disabled = true;
-  void createBrowserIdentity(options).then(key => {
-    $('#device-key').value = key;
-    $('#result').textContent = `Verify this browser public key, stop the native peer, then run npm run enroll -- ${key} in the original SQL project. Restart npm run peer and reload this page. Keep this browser profile and all private native records.`;
-  }).catch(report).finally(() => { $('#create-device').disabled = Boolean(session); });
-});
-$('#export-diagnostics').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(diagnostics.snapshot(), null, 2)], { type: 'application/json' });
-  const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = 'tendriller-sql-diagnostics.json'; link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-});
-async function close() {
-  submission.update({ attached: false, coherent: false }); liveView?.close();
-  await attachment?.detach(); attachment = session = undefined;
-  $('#close').disabled = true; $('#session-status').textContent = 'Detached. Reload to reconnect. Other views and the native peer keep their own lifetimes.';
-}
-$('#close').addEventListener('click', () => { void close().catch(report); });
-window.addEventListener('pagehide', event => {
-  submission.update({ coherent: false });
-  if (event.persisted) void attachment?.suspend().catch(report);
-  else void close().catch(report);
-});
-window.addEventListener('pageshow', event => { if (event.persisted && attachment) void attachment.resume().then(() => liveView.refresh()).catch(report); });
-void boot().catch(async error => {
-  $('#session-status').textContent = 'Connection unavailable'; report(error);
-  submission.update({ attached: false, coherent: false }); liveView?.close();
-  try { await attachment?.detach(); } catch (cleanup) { report(Error(`${error.message}; detach failed: ${cleanup.message}. Reload with this same browser profile.`)); }
-  attachment = session = undefined;
-  $('#create-device').disabled = !options; $('#close').disabled = true;
-});
+const number = id => { if ($('#' + id).value === '') throw Error(`Enter the reviewed ${id.replaceAll('-', ' ')}`); const value = Number($('#' + id).value); if (!Number.isSafeInteger(value) || value < 0 || value > 1_000_000) throw Error('Units must be an integer between 0 and 1000000'); return value; };
+const action = callback => event => { event.preventDefault(); try { Promise.resolve(callback(event)).catch(report); } catch (error) { report(error); } };
+$('#review-balances').addEventListener('click', action(() => {
+  const from = snapshot?.value.stock.find(row => row.id === $('#from').value), to = snapshot?.value.stock.find(row => row.id === $('#to').value);
+  if (!from || !to) throw Error('Both selected bins must be present in your last local snapshot to copy balances; you may instead type the balances you reviewed.');
+  $('#expected-source').value = String(from.units); $('#expected-destination').value = String(to.units);
+  for (const id of ['expected-source', 'expected-destination']) draft[id] = $('#' + id).value; save('draft', draft);
+}));
+$('#transfer').addEventListener('submit', action(() => command('transfer', { transferId: crypto.randomUUID(), from: $('#from').value, to: $('#to').value, units: number('units'), expectedSource: number('expected-source'), expectedDestination: number('expected-destination') })));
+$('#bin-form').addEventListener('submit', action(event => {
+  const id = $('#bin-id').value, selectedAction = event.submitter?.value ?? 'add';
+  if (selectedAction === 'add') return command('addBin', { id, units: number('bin-units') });
+  if (selectedAction === 'label') return command('setLabel', { id, label: $('#bin-label').value });
+  return command(selectedAction === 'delete' ? 'deleteBin' : 'setUnits', { id, expectedUnits: number('bin-expected'), ...(selectedAction === 'edit' ? { units: number('bin-units') } : {}) });
+}));
+$('#initialize').addEventListener('click', action(() => command('initialize', null)));
+$('#add-labels').addEventListener('click', action(() => command('addLabels', null)));
+$('#sql-grant').addEventListener('click', action(() => command('grantBinWrites', { publicKey: $('#sql-grantee').value })));
+$('#op-id').addEventListener('input', () => { ++inspectionToken; const id = $('#op-id').value; save('selected-operation', id); submission.update({ selected: id, pending: intents[id] ?? null, observed: null }); observeSelectedOperation(); });
+$('#inspect').addEventListener('click', action(inspect));
+$('#retry').addEventListener('click', action(async () => { const id = $('#op-id').value, intent = intents[id]; if (intent) return command(intent.command, intent.input, intent); const operation = await session.operations.retry(id); show(await operation.inspect()); observeSelectedOperation(); }));
+$('#offline').addEventListener('click', action(async () => { $('#offline-status').textContent = 'Saving and verifying the complete immutable application and engine graph…'; try { const value = await window.tendril.publication.saveOffline(); $('#offline-status').textContent = `Offline ready: publication ${value.id}. Local identity, keys and operation history are separate retained device state.`; } catch (error) { $('#offline-status').textContent = `Not offline ready: ${error.message}`; } }));
+try {
+  attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, requiresDedicatedWorker: true, context: { viewId }, timeoutMs: 30_000 });
+  session = attachment.session; $('#public-key').value = session.identity.publicKey;
+  submission.update({ attached: true });
+  session.onStatus(status => { submission.application(status); $('#session-status').textContent = `${status.canAuthor ? 'Local signing/storage ready' : 'Explicit key provisioning required'} · ${status.connectedPeers} peers · SQL ${status.database}. Stored submission does not wait for peers or a read.`; });
+
+  window.tendril.application.install(createApplicationBackend(session));
+  window.tendril.signals.install(session.signals);
+  window.tendril.transport.install(session);
+  mountProvisioning({ root: $('#provisioning'), session, peers: window.tendril.host.peers, local }); mountFinality({ root: $('#finality'), session });
+  const viewError = error => { stale = true; $('#view-error').hidden = false; $('#view-error').textContent = `View not current: ${error.message}. The last snapshot and your local drafts are retained. On a fresh app, create the initial tables with the ordinary transaction button; storing that intent does not wait for this read.`; $('#summary').textContent = snapshot ? `${snapshot.value.stock.length} bins in last snapshot — not current` : 'No current domain snapshot; schema may not exist yet.'; renderDetail(); };
+  live = createLiveView(session, deriveInventory, { onError: viewError });
+  live.subscribe(render);
+  try { await live.ready({ timeoutMs: 30_000 }); } catch (error) { viewError(error); }
+  window.tendril.ready();
+  if ($('#op-id').value) void inspect().catch(report);
+} catch (error) { $('#session-status').textContent = `Local opening failed: ${error.message}. Preserve this browser's private identity/store and reload after fixing its named prerequisite.`; }
+window.addEventListener('pagehide', event => { stopOperationObservation(); if (event.persisted) void attachment?.suspend().catch(report); else { live?.close(); void attachment?.detach().catch(() => {}); } });
+window.addEventListener('pageshow', event => { if (event.persisted) void attachment?.resume().then(() => { observeSelectedOperation(); return live?.refresh(); }).catch(report); });

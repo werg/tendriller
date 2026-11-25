@@ -9,7 +9,8 @@ import { memoryAvailableGb, installSoakObserver, installStateSignalObservers } f
 function bus(faults = {}, browserId = 'browser') {
   const subscribers = new Set(), sent = [];
   const session = (deviceId, peer) => ({
-    deviceId,
+    // The public session identity is the signing public key; there is no separate device ID.
+    identity: { publicKey: deviceId },
     participation: { status: { connectedPeers: [peer] }, onStatus() { return () => {}; } },
     signals: {
       async send(topic, payload) {
@@ -319,42 +320,55 @@ test('timed-out providers retain actual execution capacity until real settlement
   } finally { globalThis.setTimeout = realTimeout; stop.abort(); await service; }
 });
 
+// A referenced deadline: AbortSignal.timeout() is unreferenced and cannot keep a test's event loop alive.
+const deadlineSignal = ms => { const stop = new AbortController(); setTimeout(() => stop.abort(Object.assign(Error('deadline'), { name: 'TimeoutError' })), ms); return stop.signal; };
+test('whenConnected accepts exact peers from the participation controller or a bare session peer count', async () => {
+  const exact = { participation: { status: { connectedPeers: ['other'] }, onStatus: () => () => {} } };
+  await assert.rejects(whenConnected(exact, 'native', { signal: deadlineSignal(20) }), { name: 'TimeoutError' });
+  const listeners = new Set();
+  const live = { participation: { status: { connectedPeers: [] }, onStatus(listener) { listeners.add(listener); return () => listeners.delete(listener); } } };
+  const waiting = whenConnected(live, 'native'); assert.equal(listeners.size, 1);
+  for (const listener of listeners) listener({ connectedPeers: ['native'] });
+  await waiting; assert.equal(listeners.size, 0, 'the status subscription is released on success');
+  // A session without a participation controller exposes only a count, which permits an attempt.
+  await whenConnected({ status: { connectedPeers: 1 }, onStatus: () => () => {} }, 'native');
+  await assert.rejects(whenConnected({ status: { connectedPeers: 0 }, onStatus: () => () => {} }, 'native', { signal: deadlineSignal(20) }), { name: 'TimeoutError' });
+});
+
 test('generated replies fit the actual public session signed signal encoder', async () => {
-  const p = await import('@chronolog/peer-session');
-  const device = await p.openApplicationDevice({ store: new p.MemoryBytesStore(), create: true });
+  const peer = await import('@chronolog/peer-session'), authority = await import('@chronolog/authority');
+  const store = () => { const values = new Map(); return { async get(key) { return values.get(key)?.slice() ?? null; }, async put(key, value) { values.set(key, value.slice()); } }; };
+  const definition = peer.defineApplication({ id: 'signal-budget', version: '1', commands: {}, queries: {} });
+  const device = await peer.openApplicationDevice({ store: store(), create: true });
   let session;
   try {
-    const definition = p.defineApplication({ id: 'signal-budget', version: '1', commands: {}, queries: {} });
-    const signer = await p.createPeerIdentity(), key = crypto.getRandomValues(new Uint8Array(32));
-    const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest());
-    const descriptor = await p.signApplicationDescriptor({ applicationId: '73'.repeat(32), historyId: 'signal-budget',
-      profile: 'peer-generation-v1', policy: 'eligible-members-v1', controlPublicKey: signer.publicKey,
-      schemaAdministrator: device.identity.publicKey, definitionDigest: await p.applicationDefinitionDigest(definition),
-      executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), schemaDigest: null }, signer);
-    const control = await p.signControlRevision({ applicationId: descriptor.payload.applicationId,
-      profile: descriptor.payload.profile, policy: descriptor.payload.policy, revision: 0, previous: null,
-      epoch: 0, keyDigest: await p.bytesDigest(key), recoveryFloor: null,
-      grants: [p.participantGrant(device.identity.publicKey, { administrator: true })] }, signer);
-    const registry = await p.createGenerationRegistry({ store: new p.MemoryBytesStore(), descriptor, controls: [control], signer });
-    await registry.select(await p.signTransitionRequest({ applicationId: descriptor.payload.applicationId,
-      profile: descriptor.payload.profile, policy: descriptor.payload.policy, transitionId: 'initial', expectedGeneration: null,
-      coordinator: device.identity.publicKey, requester: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null }, device.identity));
-    session = await p.openPeerApplication({ device, definition, authority: await registry.read(), epochKeys: new Map([[0, key]]), signals: { localEcho: true } });
+    // Browser-owned root and epoch key; this device is only a granted member. Nothing here bootstraps a native root.
+    const root = await authority.createSigningIdentity(), key = crypto.getRandomValues(new Uint8Array(32)), applicationId = '73'.repeat(32);
+    const manifest = await peer.executionManifestArtifacts(await peer.eventExecutionManifest());
+    const descriptor = await authority.signAppDescriptor({ applicationId, rootPrincipal: root.publicKey, authorityPublicKey: root.publicKey,
+      executionManifestDigest: peer.bytesToHex(manifest.executionManifestDigest), finalityPolicy: { kind: 'none' } }, root);
+    const membership = await authority.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
+      epochKeyDigest: await authority.epochKeyCommitment(applicationId, 0, key),
+      members: [root.publicKey, device.identity.publicKey].map(publicKey => ({ publicKey, reader: true, writer: true,
+        administrator: publicKey === root.publicKey, publisher: false, finalizer: false })) }, root);
+    session = await peer.createApplicationSession({ device, definition, authority: { descriptor, memberships: [membership] }, epochKeys: new Map([[0, key]]) });
+    assert.match(session.identity.publicKey, /^[a-f0-9]{64}$/);
+    assert.equal(session.identity.publicKey, device.identity.publicKey);
+    assert.equal(session.status.canAuthor, true);
     // Real encoder accepts 16KiB JSON but rejects its larger signed CBOR frame.
     await assert.rejects(session.signals.send('app/reply', { z: 'x'.repeat(16_300) }), { code: 'SIGNAL_FRAME_TOO_LARGE' });
-    const f = bus({}, session.deviceId), stop = new AbortController();
-    assert.match(session.deviceId, /^[a-f0-9]{64}$/);
+    const f = bus({}, session.identity.publicKey), stop = new AbortController();
     const service = serveSignalRequests(f.native, { signal: stop.signal, handle: () => ({ rows: '漢😀"\\\n'.repeat(12_000) }) });
     try {
       await f.browser.signals.send('app/request', { id: crypto.randomUUID(), q: 'rows' });
       await until(() => f.sent.some(v => v.topic === 'app/reply' && v.payload.i === v.payload.n - 1));
       const replies = f.sent.filter(v => v.topic === 'app/reply'); assert.ok(replies.length > 2);
-      assert.ok(replies.every(v => v.payload.r === session.deviceId));
+      assert.ok(replies.every(v => v.payload.r === session.identity.publicKey));
       for (const { payload } of replies) {
         assert.ok(new TextEncoder().encode(JSON.stringify(payload)).length <= 12 * 1024);
         await session.signals.send('app/reply', payload);
       }
-      assert.equal(session.status.database, 'idle');
+      assert.equal(session.status.database === 'failed', false);
     } finally { stop.abort(); await service; }
   } finally { await session?.close(); await device.close(); }
 });

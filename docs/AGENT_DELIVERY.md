@@ -1,202 +1,65 @@
-# Deliver a running connected application
+# Deliver a running application
 
-When a user gives you a Tendriller domain and asks for an app, the intended result
-is its **working hosted page, connected application session and verified signed
-publication**. Provisioning, enrollment, publication and starting the participant
-are part of that task. Source files support the result; a ZIP or local preview
-alone does not establish it.
+A request to build an app includes setup, signed publication, real device-owned data, offline use and verification. Source files, an installed adapter, a native process alone, or an HTML preview do not complete it. Begin at [Build an app](BUILD_AN_APP.md); select existing [capabilities](CAPABILITIES.md) and [patterns](APP_PATTERNS.md).
 
 ## Start provisioning early
 
-1. Read the selected connector's service origin and `/api/readiness` before
-   installing or building. Stop if creation is paused or readiness is unavailable;
-   keep the same origin. Then read `/api/service`, onboarding descriptor and
-   [capability map](CAPABILITIES.md). Identify the smallest native application path.
-2. Obtain the owner's verified email if it is missing. Use the supplied create
-   command and retain the private setup handle. Continue through authority,
-   initial generation, bundling and signed publication before requesting sign-in.
-3. Start the native participant and prepare any assistant-access proposal. Give
-   the owner the ready `page_url` and actual permission-review URL together.
-   Do not stop at an unclaimed handle, ask for a "claimed" reply, or postpone
-   publication until sign-in. If the URL was already shared, keep preparing.
-4. Sign-in adopts the already-published app; no agent redeployment is necessary.
-   Browser enrollment and assistant consent remain explicit authority decisions.
-   Use their concrete public keys and permission-review forms for those actions.
-5. Perform real shared commands in both directions and verify reopening before
-   calling the app complete. Report the running process and saved resume state.
+Read the exact service's `/api/service`, discovery and `/api/readiness` before package acquisition. Continue only with open creation readiness. Retain the original account-linked setup intent/handle across lost replies and use `inspect_tendril_setup`, not a replacement intent. The host derives the verified owner.
 
-If an action is blocked, preserve completed setup and name the exact missing
-permission, compatible artifact or runtime capability. Distinguish **not yet
-attempted** from **attempted and failed**, with the observed error. An unfamiliar
-bootstrap is work to perform; it is not evidence of a platform failure or a reason
-to silently switch the user's application to another stack.
+Choose finality/availability semantics explicitly (`none` by default), prepare the independent publisher policy and publish the complete signed UI **before the first browser key is known**. Give the human the ready page URL without asking for a claimed reply. They perform their own sign-in. The first browser proves its key and initializes its root/membership and actual local keys without a native process. Additional devices require explicit account/key proof, owner rights review and recipient-bound key provisioning.
 
-## Keep the native participant alive
+## Browser and optional process lifetime
 
-The starter provides a complete persistent device/session owner:
+The browser's owned signer/store can durably author with no peer, agent server or finalizer. Cached local authority/identity/data open before remote refresh/discovery. Live synchronization requires participating devices/routing to be available; stopping them does not revoke the browser's local Save capability.
 
-```sh
-npm run serve
-```
+An optional native participant/tool provider must use its original private store and real process lifetime. Report its PID/process manager, start command, retained state location and stop/resume behavior only when actually established. A detached child may die when the execution environment ends. Do not call it permanent, resident or resumable merely because an adapter is installed. Root locks protect one physical profile, not global data order.
 
-The process participates in the selected application and observes real changes.
-It stays alive until stopped, including while MCP access is unapproved or its
-optional adapter is disconnected. Authenticated setup notifications let later
-devices pair without restarting it, with no idle status polling. Its private
-device store must survive future
-invocations. Start it in the supported execution environment and retain enough
-process information to monitor, stop and restart it. The CLI and this process
-cannot simultaneously own the same native store. Ordinary CLI queries and
-commands use `--mode attach` while the supervisor runs. Stop the peer before
-standalone publication/enrollment with `--mode own`, then reopen the same profile.
+A configured finalizer can be browser/native/host placed under the same proof contract. Report actual tested provider availability separately from policy configuration. Its absence may delay finality, never local authoring/provisional reads. Explain sealed-time exclusion of unseen offline work and preserve excluded original intents visibly.
 
-For an agent integration, connect the session's public application tools and
-changes to the agent's actual execution loop. `createApplicationTools` and
-`serveApplicationToolLines` from `@chronolog/peer-session` are the public tooling
-primitives. Merely printing changes in a terminal does not make an LLM respond.
+## An existing conversation
 
-Name the process lifetime explicitly:
-
-| Environment | Honest delivery statement |
-| --- | --- |
-| A process verified running during the current task | The page and native peer exchanged work during this run; identify the active process and how to resume it |
-| A durable machine/service with a configured, verified process owner | Identify that owner, its restart mechanism and the persistent device location; test a restart |
-| A temporary agent execution environment | State its known lifetime or that lifetime is unverified; arrange a supported persistent participant if ongoing service is required |
-| Only the hosted page remains | The signed UI is available, but ongoing native coordination or agent responses still require the relevant participant |
-
-Record whether a private checkpoint actually exists in storage that survives the
-execution environment, and verify a same-device reopen before calling it
-resumable. A local ZIP or failed upload is not a verified remote checkpoint.
-Stop the owner before copying its private database unless the storage API
-provides a consistent backup. Exclude tokens, epoch keys and device databases
-from public source archives and authored page assets.
-
-Page residency retains hosted control and code. It does not run a native process,
-retain every application's data, or prevent browser suspension. The first-app
-browser has explicit reader/writer grants and relies on its native coordinator
-for applied writes. Changing that availability policy requires deliberate grants
-and recovery choices, not a silent identity reset.
-
-## An existing ChatGPT conversation
-
-A user saying “connect this app to this conversation” has asked for an additional
-host integration. The ordinary Tendriller MCP endpoint administers host/control
-operations; application tools execute in the owned Chronolog session. The
-optional [Cloudflare assistant](CLOUDFLARE_ASSISTANT.md) adds same-origin
-OAuth-protected application tools, explicit MCP Events subscriptions and a
-live inbox card. Use its route table and
-`describe_application` to establish the connection's capabilities.
-
-Claim, assistant permission review, and browser device enrollment are separate
-states. A successful sign-in in the person's browser does not authenticate an
-agent's independent browser. Keep that page at the owner sign-in handoff until
-its own session is authenticated, then verify the displayed device public key.
-Do not report a proposed review URL or an open socket alone as a completed
-browser/MCP connection. A preview relay is optional; when unavailable, use the
-actual published page for supported browser verification and state any remaining
-browser execution limit explicitly.
-
-These routes do not provide or qualify a universal ChatGPT conversation wake
-adapter. OAuth ownership alone does not subscribe a conversation. Establish
-whether the actual agent host supports the selected route before promising
-replies after its current turn/process ends. The
-[resuming-agent cookbook](https://github.com/werg/tendriller-contrib/blob/main/cookbooks/connect-resuming-agent/COOKBOOK.md)
-requires a real host admission/wake mechanism and probes across turn completion.
-Its historical bridge links are not an active implementation to install.
-
-Complete the authorized app provisioning and current live exchange first. If
-conversation resumption remains unavailable, report that specific remaining
-boundary, the still-working page/session functionality and a concrete supported
-process handoff. Do not call a generic connected socket a verified chat handoff.
+Page residency, a durable operation set, an optional MCP gateway, hibernating sockets and retained inboxes do not establish supported future wake or handoff to an existing ChatGPT/other assistant conversation. Say which actively running process observes work. Do not imply conversation execution after it ends.
 
 ## Evidence in the final handoff
 
-Lead with the live page and its current state. Include the facts the user needs
-to return to the application:
+Provide the ready page URL and concise evidence:
 
-| Item | Required evidence |
-| --- | --- |
-| Live application | Actual page URL, application identity and owner claim status |
-| Selected code | Signed publication receipt and the visible release tested |
-| Connected state | A browser command observed natively and a native command observed in the browser |
-| Retained work | Same-device browser reload and native reopen, with the original work still present |
-| Agent/process | What is running, where, its known lifetime, and the exact resume command |
-| Reuse | Which supplied session, helper and capability modules the app uses |
-| First visit and later visits | From a fresh phone-sized profile: the page connects with at most one approval tap on the service origin and no other setup UI; a reload and a second tab connect with none |
-| User experience | Before/after screenshots of every main flow on a phone-sized viewport and on desktop (below) |
-| Remaining boundary | Concrete unverified or blocked behavior, including conversation wake if relevant |
+- Verified signed publication ID/receipt and exact package/source composition tested.
+- First browser initialized after owner sign-in with **no native data process**.
+- A real command acknowledged **stored locally**, then its coherent **materialized locally** result (revisable).
+- Offline graph acknowledgment, disconnect, offline CRUD and reload retaining identity/drafts/operations.
+- A second genuinely separate profile/device first keyless, then explicitly proved/granted/provisioned; both replicas converge from authenticated operations.
+- Authenticated peer retention evidence, separately from execution. Configured finality is `none`, pending, verified finalized, or excluded as actually observed; never report fake finality.
+- Late earlier state/schema/outcome revisions and preserved draft/focus/deep links.
+- Actual browser/optional native/provider lifetimes, private-state resume path and explicit untested boundaries.
+
+No plaintext keys/private host handles enter authored assets, screenshots or shared reports. Production deployment is a separate action. When blocked, name the exact prerequisite and next action from [troubleshooting](TROUBLESHOOTING.md), complete safe setup already possible, and report the missing verification honestly.
 
 ## The user experience is part of the deliverable
 
-Plumbing evidence (receipts, commands both ways, reload) does not show that the
-app is usable. Before delivery, run a dedicated UX pass after the first working
-version:
-
-1. Walk every main user flow end to end in a real browser, from a fresh profile,
-   on a phone-sized viewport and on desktop. Take screenshots.
-2. Judge each screen and fix friction before delivering: visual hierarchy and the
-   one obvious next action, density, empty, loading and error states, long content
-   (truncate or fold, never a wall of raw text), named links instead of raw URLs,
-   URL-addressable state with a working back button, and keyboard use.
-3. While disconnected, show one clear connection state
-   ([the connection component](APP_PATTERNS.md#connect-the-browser)), not empty
-   dashboards, stale-data warnings or raw error codes.
-4. Design views that fit the data: conversations, timelines, diffs, tables with
-   named links, inline editing with previews. A structured record editor (JSON or
-   a form of fields) is a fallback, never the deliverable when the request is a
-   "full-featured" or "rich" experience.
-5. Report before/after screenshots and what changed.
-
 ### Run a separate second pass
 
-After the implementation works, use this prompt as a new review task:
+After the first working version, use this dedicated prompt:
 
-> Act as the person using this app for the first time. List their main goals and
-> walk each one from arrival through its visible outcome on desktop and phone.
-> Start with fresh browser profiles, then check later visits. For each flow,
-> inspect hierarchy, density, the next action, keyboard focus, Back/deep links,
-> long content, loading, empty data and recoverable errors. Compare the screen to
-> the domain task, including named relationships and the most useful content
-> first. Capture a before screenshot, fix the friction you find, repeat the flow,
-> and capture the after screenshot. Verify that review, save, cancellation and
-> undo have their stated effects and preserve uncertain operations. Report the
-> evidence per flow and any checks still blocked. Do not declare completion
-> from transport checks or a generic record editor.
+> Act as a first-time user at desktop and 320px phone width in fresh browser profiles. Exercise every domain flow without reading implementation code. Find observed friction in local opening, sign-in/key provisioning, offline Save/reload, domain navigation/editing, revisable operation facts, schema changes and optional feature availability. Verify keyboard/focus, Back/deep links, long content and cancellation. Fix concrete observed problems and retain before/after screenshots. Do not replace domain views with storage forms or treat transport tests as UX completion.
 
-Use a flow matrix in the handoff, with one row per main user goal and additional
-rows for failure states that change the next action:
+| Flow | Required observation |
+| --- | --- |
+| Fresh owner | Signed UI already published; first sign-in/key proof initializes locally; no native process or extra ordering approval |
+| New second profile | Keyless state honest; exact fingerprint/independent grant review; wrapped-key import; no magic old-data access |
+| Local Save | Enabled by local signer/store prerequisites even with zero peers, stale view, unavailable agent/finalizer |
+| Offline reload | Complete immutable graph saved; identity/keys/data and separate unsent drafts remain |
+| CRUD/list/detail | Stable entities update/move/disappear; derived counts/detail recompute; selection and local editor remain distinct |
+| Concurrent/late earlier work | Current success/rejection/events revise; original intent remains inspectable; no silent retimestamp/new ID |
+| SQL DDL/permissions | Ordinary authorized CREATE/ALTER/DROP and grants; schema-only invalidation; missing query labels last snapshot not current; unrelated authoring survives |
+| Operation inspector | Stored/materialized/retained/finalized/excluded separate; exact original retry; no ambiguous success label |
+| Optional features | Agent-only tools/analysis unavailable locally without disabling edits; explicit media consent/cancellation |
+| Optional finality | None/pending/certified/excluded honest; browser provider tested without native; closure warning and complete proof/dependency boundary |
+| Navigation/accessibility | Deep links, Back, keyboard, focus, scroll and long text at desktop/320px; no horizontal page overflow |
+| Lifecycle/errors | Loading/empty/stale/error states; abrupt owner/process restart, uncertain reply and same-intent retry; device locks retained |
 
-| Flow | Desktop and phone evidence | Required observations |
-| --- | --- | --- |
-| First visit / return | Fresh profiles, then reload and a second tab | One meaningful connection state, correct next action, retained work |
-| Find / inspect | Search, filter, select, direct URL, reload, Back | Named links, useful detail first, preserved navigation and focus |
-| Change / review | Edit, compare, save, cancel, undo if supported | Visible draft vs. saved result, error recovery, no duplicate uncertain command |
-| Long / missing / unavailable data | Realistic long content, zero records, slow read, failed read | Readable density, folded context, useful empty states, honest progress and retry |
-| Keyboard / narrow screen | Tab, Shift-Tab, Enter, visible focus; phone-width tap targets | Reachable controls, no trapped focus, no obscured controls or accidental horizontal scroll |
-
-For each row record the actual viewport (for example 1440×900 and 390×844),
-browser, tested page/publication, steps, outcome, before/after image links and
-what changed. An unchanged flow may reference the same image with an explicit
-“no change needed” finding; never invent a before screenshot. Screenshots are
-review evidence, while the steps establish behavior. A phone-sized desktop
-browser verifies responsive layout, not physical-device permissions or durability.
-If a real browser or approval is unavailable, state the exact remaining check
-and complete the accessible flows without calling the whole app verified.
-
-Supply editable source alongside this evidence when useful. Do not describe source
-delivery as a deployed or connected application. The
-[fresh-agent acceptance procedure](AGENT_ONBOARDING_TEST.md) scores the live result
-and records whether the agent actually attempted provisioning.
+Capture before/after screenshots for fixed friction and name the exact flows/viewports exercised. Static previews, source-only tests and deterministic provider fixtures do not establish live OAuth, Internet NAT, physical mobile execution or real inference-provider behavior.
 
 ## Verify consumers after a release or restart
 
-Follow the [re-arm checklist](AGENT_RESTART.md) after republishing or replacing the
-native participant. State which owner and consumer processes must remain alive,
-and preserve their retained profiles, exact operations and handled cursors.
-An attach client does not survive owner replacement automatically. For apps with
-a request consumer, verify its recent check-in and request/receipt/answer flow
-using its declared capabilities; report missing liveness/receipt support rather
-than inventing commands. Other apps retain the ordinary domain command/read and
-reload checks. `applied` and peer connectivity alone do not establish that an
-agent read work. Use the [request lifecycle pattern](AGENT_REQUESTS.md) when a
-new domain needs durable listener presence and addressed answers.
+Re-run public-package Workerd, browser, RTC/relay, SQL native/WASM and first-app composition gates against the exact new graph. Historical successful receipts do not qualify this protocol. Do not keep an old ordering path, compatibility reader or migration layer to satisfy old tests. State exact commands run and their limits. Preserve existing private device state; an artifact mismatch never authorizes deletion or an unrequested production rollout.

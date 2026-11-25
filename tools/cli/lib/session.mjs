@@ -74,12 +74,27 @@ export function jsonInput(value, description = 'JSON input') {
   if (value === undefined) throw Error(`Supply ${description}`);
   try { return JSON.parse(value); } catch { throw Error(`Invalid ${description}`); }
 }
+const authorTime = value => {
+  if (typeof value !== 'string' || !/^(?:0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > (1n << 63n) - 1n) throw Error('Author time must be an exact nonnegative int64 decimal string');
+  return BigInt(value);
+};
 const identity = options => ({ operationId: required(options.operation, '--operation with a stable operation identity'),
-  ...(options['based-on'] === undefined ? {} : { basedOn: jsonInput(options['based-on'], 'captured revision JSON') }) });
+  ...(options['author-time'] === undefined ? {} : { authorTimestampMs: authorTime(options['author-time']) }) });
 const controlOf = owned => {
-  if (!owned.control) throw Error('This action requires the session-owned control participant returned by openSession. Connect it with session.connectControlParticipant({ exchange }) and return { session, control }; see /docs/BUILD_AN_APP.md. Signed publication also requires an explicit publisher grant, independent of page access.');
+  if (!owned.control) throw Error('This action needs an independently authorized publisher/control port returned by the bootstrap. No data root or native participant is required to prepare/publish the browser-first starter.');
   return owned.control;
 };
+async function inspection(session, id) {
+  const operation = await session.operations.get(id);
+  return operation === null ? null : operation.inspect();
+}
+async function observe(operation, options, signal) {
+  if (options.wait !== undefined) {
+    if (!['materialized', 'retained', 'finalized'].includes(options.wait)) throw Error('Use --wait materialized, retained, or finalized');
+    await operation[options.wait]({ signal });
+  }
+  return operation.inspect();
+}
 
 /** Call one public command. Operation identities and exact retry semantics stay in Chronolog. */
 export async function runSessionCommand(owned, command, args, options = {}, { signal } = {}) {
@@ -88,72 +103,45 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
   if (command === 'describe') return session.describe();
   if (command === 'status') return session.status;
   if (command === 'self') return { mode: owned.mode ?? 'own', applicationId: session.applicationId,
-    historyId: session.historyId ?? null, deviceId: session.deviceId, endpoint: session.endpoint ?? null };
+    identity: session.identity, endpoint: session.endpoint ?? null };
   if (command === 'endpoints') {
     if (typeof session.endpoints !== 'function') throw Error('Endpoint diagnostics require an attached application owner.');
     return session.endpoints();
   }
   if (command === 'doctor') return diagnoseApplicationSession(session, { mode: owned.mode ?? 'own', signal });
   if (command === 'query') return session.query(required(args[0], 'a query name'), jsonInput(args[1] ?? '{}'));
-  if (command === 'operation') return session.operations.inspect(required(args[0], 'an operation identity'));
-  if (command === 'command' || command === 'reapply') {
+  if (command === 'operation') return inspection(session, required(args[0], 'an operation identity'));
+  if (command === 'command') {
     const metadata = identity(options);
-    const operation = command === 'command'
-      ? await session.command(required(args[0], 'a command name'), jsonInput(args[1]), metadata)
-      : await session.reapply(required(args[0], 'the abandoned operation identity'), required(args[1], 'a command name'), jsonInput(args[2]), metadata);
-    if (options.saved) return operation.get();
     try {
-      const applied = await operation.applied({ signal });
-      return options.shared ? { applied, retained: await operation.shared({ signal }) } : applied;
+      const operation = await session.command(required(args[0], 'a command name'), jsonInput(args[1]), metadata);
+      return await observe(operation, options, signal);
     } catch (error) {
-      // A cancelled waiter does not cancel or replace its saved signed attempt.
-      error.operation = await session.operations.get(metadata.operationId).catch(() => null);
-      throw error;
+      error.operation = await inspection(session, metadata.operationId).catch(() => null); throw error;
     }
   }
   if (command === 'command-batch') {
     const items = jsonInput(args[0], 'command batch JSON array');
-    if (!Array.isArray(items) || items.length > 64) throw Error('Supply a JSON array of 0..64 command objects.');
+    if (!Array.isArray(items) || items.length > 64) throw Error('Supply a JSON array of 0..64 command objects');
     for (const item of items) {
-      if (!item || typeof item !== 'object' || Array.isArray(item) ||
-          Object.keys(item).some(key => !['operationId', 'command', 'input', 'basedOn'].includes(key)) ||
-          !Object.hasOwn(item, 'input')) throw Error('Every batched command needs a name, input and stable operationId.');
-      required(item.operationId, 'operationId on every batched command');
-      required(item.command, 'command name on every batched command');
+      if (!item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(key => !['operationId', 'command', 'input', 'authorTimestampMs'].includes(key)) || !Object.hasOwn(item, 'input')) throw Error('Every batch item needs command, input and stable operationId');
+      required(item.operationId, 'operationId on every command'); required(item.command, 'command name');
+      if (item.authorTimestampMs !== undefined) authorTime(item.authorTimestampMs);
     }
     const results = [];
     for (const item of items) {
       if (signal?.aborted) break;
-      const opId = item.operationId;
       try {
-        const handle = await session.command(item.command, item.input, {
-          operationId: opId, ...(item.basedOn === undefined ? {} : { basedOn: item.basedOn }),
-        });
-        if (options.saved) {
-          const state = await handle.get();
-          results.push({ operationId: opId, command: item.command,
-            lifecycle: state?.status === 'applied' ? state.outcome === 'rejected' ? 'rejected' : 'applied'
-              : state?.status === 'saved' ? 'recorded' : 'unknown', state });
-        } else {
-          const applied = await handle.applied({ signal });
-          results.push({ operationId: opId, command: item.command, lifecycle: applied.outcome === 'rejected' ? 'rejected' : 'applied', applied });
-        }
+        const operation = await session.command(item.command, item.input, { operationId: item.operationId, ...(item.authorTimestampMs === undefined ? {} : { authorTimestampMs: authorTime(item.authorTimestampMs) }) });
+        results.push({ operationId: item.operationId, command: item.command, observation: await observe(operation, options, signal) });
       } catch (error) {
-        results.push({ operationId: opId, command: item.command, lifecycle: 'unknown',
-          state: await session.operations.get(opId).catch(() => null),
-          error: { code: error?.code ?? 'operation_uncertain', message: error?.message ?? String(error) },
-          nextAction: 'Inspect this original operation before retrying. Keep its ID and input unchanged.' });
-        break;
+        results.push({ operationId: item.operationId, command: item.command, observation: await inspection(session, item.operationId).catch(() => null),
+          error: { code: error?.code ?? 'operation_uncertain', message: error?.message ?? String(error) }, nextAction: 'Inspect this original ID; exact retry never changes authored time or signed intent.' }); break;
       }
     }
-    return { results, complete: results.length === items.length, nextIndex: results.length };
+    return { results, complete: results.length === items.length && results.every(item => !item.error), nextIndex: results.length };
   }
-
-  if (command === 'retry') {
-    const operationId = required(args[0], 'the original operation identity');
-    await session.retry(operationId);
-    return options.saved ? session.operations.get(operationId) : session.operations.wait(operationId, { signal });
-  }
+  if (command === 'retry') return observe(await session.operations.retry(required(args[0], 'the original operation identity')), options, signal);
   if (command === 'events') {
     const view = await session.readView();
     try { return await view.readEvents({ ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
@@ -161,18 +149,14 @@ export async function runSessionCommand(owned, command, args, options = {}, { si
       ...(options.limit === undefined ? {} : { limit: Number(options.limit) }) }); }
     finally { await view.release(); }
   }
-  if (command === 'recovery') {
-    if (args[0] === 'inspect') return session.recovery.inspect();
-    const transitionId = required(options.transition, '--transition with a stable transition identity');
-    if (owned.mode === 'attach') {
-      if (args[0] === 'takeover') return session.recovery.takeover({ transitionId, signal });
-      if (args[0] === 'handover') return session.recovery.handover({ transitionId, coordinator: required(args[1], 'the successor device identity'), signal });
-      throw Error('Use recovery inspect, takeover, or handover <coordinator>');
+  if (command === 'finality') {
+    if (args[0] === 'close') return session.finality.closeAuthorTime({ throughMs: authorTime(required(options.through, '--through with an explicit author-time frontier')) });
+    if (args[0] === 'vote') return session.finality.voteAuthorTime({ throughMs: authorTime(required(options.through, '--through with an explicit author-time frontier')) });
+    if (args[0] === 'submit') {
+      const [{ decodeRecord }, { authorityRecordBytes }] = await Promise.all([import('@chronolog/authority'), import('@tendriller/core/authority')]);
+      return session.finality.submitProofs(decodeRecord(authorityRecordBytes(jsonInput(args[1], 'canonical hex finality proof record'))));
     }
-    const control = controlOf(owned);
-    if (args[0] === 'takeover') return session.recovery.takeover(control, { transitionId });
-    if (args[0] === 'handover') return session.recovery.handover(control, { transitionId, coordinator: required(args[1], 'the successor device identity') });
-    throw Error('Use recovery inspect, takeover, or handover <coordinator>');
+    throw Error('Use finality close, vote, or submit; none is explicitly unsupported and unavailable finalizers never block local submission');
   }
   if (command === 'definition') return controlOf(owned).definition();
   if (command === 'publication') return controlOf(owned).publication();
@@ -258,6 +242,25 @@ export async function watchSignals(owned, emit, { signal, topics = ['dev/telemet
   return { mode: 'signals', topics, count, reason: signal?.reason?.code === 'invocation_timeout' ? 'timeout' : 'interrupted' };
 }
 
+// Subscribe before observing initial local state, so a quiet retained owner is
+// immediately useful and an invalidation during the first capture is not lost.
+async function* initialAndChanges(session, signal) {
+  const stop = new AbortController(), lifetime = AbortSignal.any([stop.signal, signal, session.signal].filter(Boolean));
+  const changes = session.changes({ signal: lifetime })[Symbol.asyncIterator]();
+  let pending = Promise.resolve(changes.next());
+  pending.catch(() => {});
+  try {
+    yield { kind: 'status', status: session.status };
+    while (!lifetime.aborted) {
+      const next = await pending;
+      if (next.done) return;
+      yield next.value;
+      if (lifetime.aborted) return;
+      pending = Promise.resolve(changes.next()); pending.catch(() => {});
+    }
+  } finally { stop.abort(); await changes.return?.(); }
+}
+
 /** Pulling the next change is backpressure. Emitted cursors are not processing receipts. */
 export async function watchSession(owned, emit, { signal, events = false, cursor, topics, limit } = {}) {
   const session = owned.session;
@@ -274,19 +277,21 @@ export async function watchSession(owned, emit, { signal, events = false, cursor
   };
   try {
     signal?.throwIfAborted();
-    for await (const change of session.changes({ signal })) {
+    for await (const change of initialAndChanges(session, signal)) {
       signal?.throwIfAborted();
       if (!events) { await emitDelivered(change); continue; }
+      if (lastRevision && change.revision?.digest === lastRevision.digest) continue;
       const view = await session.readView();
       let viewFailure, viewFailed = false;
       try {
+        if (lastRevision && lastRevision.digest !== view.revision.digest) await emitDelivered({ kind: 'reset', reason: 'materialization-revised', revision: view.revision, events: [], cursor: null, hasMore: true });
         for (;;) {
           signal?.throwIfAborted();
           const batch = await view.readEvents({ ...(lastCursor === null ? {} : { cursor: lastCursor }),
             ...(topics === undefined ? {} : { topics }), ...(limit === undefined ? {} : { limit }) });
           if (batch.hasMore && batch.cursor === lastCursor)
             throw Object.assign(Error('Event cursor did not advance; inspect the retained history before restarting'), { code: 'EVENT_CURSOR_STALLED' });
-          if (batch.cursor !== lastCursor) await emitDelivered(batch);
+          if (batch.cursor !== lastCursor) await emitDelivered({ kind: 'snapshot', ...batch });
           if (!batch.hasMore) break;
         }
       } catch (error) {

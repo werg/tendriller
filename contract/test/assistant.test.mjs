@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAssistantEventDelivery } from '../assistant.mjs';
+import { createAssistantEventDelivery, assistantRevision, assistantObservation } from '../assistant.mjs';
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 async function startupFixture(t, options = {}) {
@@ -13,7 +13,7 @@ async function startupFixture(t, options = {}) {
     close(code = 1000) { this.readyState = 3; this.dispatchEvent(Object.assign(new Event('close'), { code })); }
   }
   const participant = connectApplicationAssistant({ api: 'https://staging.example/api/t/aaaaaaaaaaaa',
-    key: 'td_a_' + 'a'.repeat(64), session: { deviceId: 'b'.repeat(64), signal: stop.signal }, tools: { execute: async () => {} },
+    key: 'td_a_' + 'a'.repeat(64), session: { identity: { publicKey: 'b'.repeat(64) }, signal: stop.signal }, tools: { operationId: async id => id, execute: async () => {} },
     onStatus: value => reports.push(value), ...options,
     openSocket: () => { attempts++; if (attempts < (options.succeedAt ?? Infinity)) throw Error('awaiting owner consent'); return socket = new Socket(); },
   });
@@ -66,33 +66,35 @@ test('a raw unscoped tool service fails before opening a hosted connection', asy
 
 test('the hosted adapter uses scoped execute and preserves the canonical signed reference on its wire', async t => {
   const { connectApplicationAssistant } = await import('../assistant.mjs');
-  const stop = new AbortController(), calls = [], frames = [], generation = 'a'.repeat(64), author = 'b'.repeat(64);
+  const stop = new AbortController(), calls = [], frames = [], author = 'b'.repeat(64);
   let socket;
   class Socket extends EventTarget {
     readyState = 0;
     send(data) { frames.push(JSON.parse(data)); }
     close(code = 1000) { this.readyState = 3; this.dispatchEvent(Object.assign(new Event('close'), { code })); }
   }
-  const reference = { applicationId: 'c'.repeat(64), historyId: 'history', author,
-    operationId: 'scoped/original-id', attemptId: 'd'.repeat(64), generation };
+  const reference = { applicationId: 'c'.repeat(64), author,
+    operationId: 'scoped/original-id', proposalId: 'd'.repeat(64) };
   const participant = connectApplicationAssistant({ api: 'https://service.example/api/t/aaaaaaaaaaaa', key: 'td_a_' + 'e'.repeat(64),
-    session: { applicationId: reference.applicationId, historyId: reference.historyId, deviceId: author, status: { generation }, signal: stop.signal },
-    tools: { execute: async (call, options) => {
+    session: { applicationId: reference.applicationId, identity: { publicKey: author }, signal: stop.signal },
+    tools: { operationId: async (raw,context) => { assert.equal(raw,'gateway-request');assert.equal(context.caller,'binding');return reference.operationId; }, execute: async (call, options) => {
       calls.push({ call, options });
-      return { operationId: reference.operationId, operationReference: reference };
+      return { state: { ...reference, stored: true }, operationReference: reference };
     } }, openSocket() {
       socket = new Socket(); queueMicrotask(() => { socket.readyState = 1; socket.dispatchEvent(new Event('open')); }); return socket;
     } });
   t.after(() => participant.close()); await participant.waitUntilOnline();
-  const message = { type: 'call', id: 'call-1', applicationId: reference.applicationId, generation,
-    kind: 'operation', name: 'addNote', operationId: reference.operationId };
+  const message = { type: 'call', id: 'call-1', applicationId: reference.applicationId,
+    kind: 'inspect', name: 'addNote', operationId: 'gateway-request',
+    caller: { account: 'owner', agentBindingId: 'binding', bindingRevision: 1, verification: 'approved-binding', context: {} } };
   socket.dispatchEvent(Object.assign(new Event('message'), { data: JSON.stringify(message) }));
   await flush(); await flush();
-  assert.equal(calls.length, 1); assert.equal(calls[0].call.kind, 'operation'); assert.equal(calls[0].call.name, 'addNote');
-  assert.equal(calls[0].call.operationId, reference.operationId); assert(calls[0].options.signal instanceof AbortSignal);
+  assert.equal(calls.length, 1); assert.equal(calls[0].call.kind, 'inspect'); assert.equal(calls[0].call.name, 'addNote');
+  assert.equal(calls[0].call.operationId, 'gateway-request'); assert(calls[0].options.signal instanceof AbortSignal);
+  assert.equal(calls[0].options.caller,'binding');assert.equal(calls[0].options.callerContext.agentBindingId,'binding');
   const { author: _author, ...wire } = reference;
   assert.deepEqual(frames.find(frame => frame.id === message.id), { type: 'result', id: message.id,
-    value: { operationId: reference.operationId, operationReference: { ...wire, deviceId: author } } });
+    value: { state: { ...reference, stored: true }, requestOperationId: 'gateway-request', operationReference: { ...wire, deviceId: author } } });
 });
 
 test('event delivery does not publish or report a skip after cancellation during an internal wait', async () => {
@@ -101,13 +103,34 @@ test('event delivery does not publish or report a skip after cancellation during
   const deliver = createAssistantEventDelivery({ assistant: {
     waitUntilOnline: () => gate.promise, publish: async () => { published++; },
   }, onSkipped: () => skipped++ });
-  const pending = deliver({ name: 'note', payload: null }, { id: 'event-1' }, { revision: { generation: 'a'.repeat(64) } }, stop.signal);
+  const pending = deliver({ name: 'note', payload: null }, { id: 'event-1' }, { revision: { digest: 'a'.repeat(64), view: 'local', executionManifestDigest: 'b'.repeat(64), policyDigest: 'c'.repeat(64) } }, stop.signal);
   stop.abort(cause); gate.resolve(); await assert.rejects(pending, error => error === cause);
   assert.equal(published, 0); assert.equal(skipped, 0);
 
   const second = new AbortController(), response = Promise.withResolvers();
   const late = createAssistantEventDelivery({ assistant: { waitUntilOnline: async () => {}, publish: () => response.promise },
-    onSkipped: () => skipped++ })({ name: 'note', payload: null }, { id: 'event-2' }, { revision: { generation: 'a'.repeat(64) } }, second.signal);
+    onSkipped: () => skipped++ })({ name: 'note', payload: null }, { id: 'event-2' }, { revision: { digest: 'a'.repeat(64), view: 'local', executionManifestDigest: 'b'.repeat(64), policyDigest: 'c'.repeat(64) } }, second.signal);
   await flush(); second.abort(cause); response.reject(Object.assign(Error('declined'), { code: 'event_not_approved' }));
   await assert.rejects(late, error => error === cause); assert.equal(skipped, 0);
+});
+
+test('revision envelopes separate operation-set identity from independent exporter observations',()=>{
+  const revision={digest:'a'.repeat(64),view:'local',executionManifestDigest:'b'.repeat(64),policyDigest:'c'.repeat(64)};
+  const observed={stored:true,materialized:{outcome:'accepted',revision},retained:[],finalized:false,excluded:false};
+  assert.deepEqual(assistantRevision(revision),revision);assert.deepEqual(assistantObservation(observed),observed);
+  assert.throws(()=>assistantRevision({...revision,generation:'old-order'}),{code:'INVALID_PROJECTION_REVISION'});
+  assert.throws(()=>assistantRevision({...revision,digest:'arrival-12'}),{code:'INVALID_PROJECTION_REVISION'});
+  assert.throws(()=>assistantObservation({...observed,materialized:null,finalized:true}),{code:'INVALID_OPERATION_OBSERVATION'});
+  assert.throws(()=>assistantObservation({...observed,finalized:true,excluded:true}),{code:'INVALID_OPERATION_OBSERVATION'});
+  assert.throws(()=>assistantObservation({...observed,applied:true}),{code:'INVALID_OPERATION_OBSERVATION'});
+});
+
+test('event delivery carries stable proposal identity, revision and retraction instead of append-arrival state',async()=>{
+  const revision={digest:'a'.repeat(64),view:'local',executionManifestDigest:'b'.repeat(64),policyDigest:'c'.repeat(64)};
+  const observation={stored:true,materialized:null,retained:[],finalized:false,excluded:false},published=[];
+  const deliver=createAssistantEventDelivery({assistant:{waitUntilOnline:async()=>{},publish:async value=>{published.push(value);}}});
+  await deliver({name:'changed',payload:null,observation,change:'retract'},{id:'stable-event',proposalId:'d'.repeat(64)},{revision},new AbortController().signal);
+  assert.equal(published[0].proposalId,'d'.repeat(64));assert.equal(published[0].sourceEventId,'stable-event');
+  assert.equal(published[0].change,'retract');assert.deepEqual(published[0].revision,revision);assert.deepEqual(published[0].observation,observation);
+  assert.equal('generation' in published[0],false);
 });

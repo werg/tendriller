@@ -89,11 +89,12 @@ test('review fixture imports import-only consumer exports through ESM resolution
   try {
     for (const [name, value] of [['@tendriller/core', 'core'], ['@chronolog/peer-session', 'session']]) {
       const directory = join(project, 'node_modules', name); mkdirSync(directory, { recursive: true });
-      writeFileSync(join(directory, 'package.json'), JSON.stringify({ name, type: 'module', exports: { '.': { import: './index.mjs' } } }));
+      writeFileSync(join(directory, 'package.json'), JSON.stringify({ name, type: 'module', exports: { '.': { import: './index.mjs' }, './authority': { import: './authority.mjs' } } }));
       writeFileSync(join(directory, 'index.mjs'), `export const identity = ${JSON.stringify(value)};`);
+      writeFileSync(join(directory, 'authority.mjs'), `export const identity = ${JSON.stringify(value + '-authority')};`);
     }
     const modules = await importReviewPackages(project);
-    assert.equal(modules.core.identity, 'core'); assert.equal(modules.session.identity, 'session');
+    assert.equal(modules.core.identity, 'core'); assert.equal(modules.session.identity, 'session'); assert.equal(modules.coreAuthority.identity, 'core-authority');
     assert(!readdirSync(project).some(name => name.startsWith('.review-imports-')));
     rmSync(join(project, 'node_modules/@chronolog/peer-session'), { recursive: true });
     await assert.rejects(importReviewPackages(project));

@@ -244,9 +244,9 @@ export async function qualifyFirstAppNetwork({ page, context, peer, expect, tran
       signal.throwIfAborted();
       await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 30_000 });
       await peer.request('query');
-      // Direct application recovery does not imply the independent setup-watch
-      // backoff and its initial pairing read have completed. Await real callbacks.
-      setupReadiness = await peer.request('setup-ready', {}, 60_000);
+      // The optional native participant must still hold its local storage and key
+      // prerequisites. Peer routes and finality are reported separately, never required here.
+      setupReadiness = await peer.request('local-ready', {}, 60_000);
       assert.equal(setupReadiness.after.ready, true);
     },
     async cleanup() {

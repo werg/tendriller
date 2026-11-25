@@ -2,191 +2,348 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { build } from 'esbuild';
 
-// Real page/DOM and UI helpers; deterministic session boundary, no RTC claim.
+// The actual docs/tutorial page, helpers and DOM in Chromium. Deterministic session boundary: the browser owner is a
+// fixture implementing the current public session surface (identity, status/onStatus, readView/onChange,
+// command, operations.get/retry/subscribe). No RTC, host, finality provider or native participant is claimed.
 // Run: node --test scripts/test/browser/starter-submission.test.mjs
-test('starter readiness, retained retry/reload, rejection and reconnect in Chromium', {timeout:20000}, async t => {
-  // Use the actual runtime registration binding over the built public SDK
-  // observer, so additions to the page contract cannot disappear into a stub.
-  const transport = await build({ entryPoints: ['runtime/src/transport.ts'], bundle: true, write: false, format: 'iife', globalName: 'FixtureTransport',
-    plugins: [{name: 'public-transport', setup(build) {
-      build.onResolve({filter: /session\/transport-diagnostics\.mjs$/}, () => ({path: new URL('../../../dist/sdk/session/transport-diagnostics.mjs', import.meta.url).pathname}));
-    }}],
-  });
-  const bundle = await build({ entryPoints: ['docs/tutorial/page.mjs'], bundle: true, write: false, format: 'esm',
-    plugins: [{ name: 'session-fixture', setup(build) {
-      build.onResolve({ filter: /^(?:@tendriller\/core\/browser-owner|@chronolog\/peer-session\/tendriller|\.\/pairing-browser\.mjs)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
-      build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `
-        export const createApplicationBackend = () => ({});
-        export const requestPersistentStorage = async () => null;
-        export const createBrowserPairing = () => ({read: () => null});
-        export async function openBrowserOwner({context}) {
+const root = fileURLToPath(new URL('../../../', import.meta.url));
+const session = root + 'node_modules/@chronolog/peer-session/index.mjs';
+
+async function bundles() {
+  // The real runtime registration binding over the built public transport observer, so additions to the page
+  // contract cannot disappear into a stub.
+  const transport = await build({ entryPoints: [root + 'runtime/src/transport.ts'], bundle: true, write: false, format: 'iife', globalName: 'FixtureTransport',
+    plugins: [{ name: 'public-transport', setup(builder) {
+      builder.onResolve({ filter: /session\/transport-diagnostics\.mjs$/ }, () => ({ path: root + 'dist/sdk/session/transport-diagnostics.mjs' }));
+    } }] });
+  const page = await build({ entryPoints: [root + 'docs/tutorial/page.mjs'], bundle: true, write: false, format: 'esm', platform: 'browser',
+    plugins: [{ name: 'current-contract-fixture', setup(builder) {
+      builder.onResolve({ filter: /^@tendriller\/core\/browser-owner$/ }, args => ({ path: args.path, namespace: 'fixture' }));
+      builder.onResolve({ filter: /^@tendriller\/core\/authority$/ }, () => ({ path: root + 'contract/authority.mjs' }));
+      // The real peer-session view store, live view and domain definitions; only the backend registration is a no-op.
+      builder.onResolve({ filter: /^@chronolog\/peer-session$/ }, args => ({ path: args.path, namespace: 'fixture-session' }));
+      builder.onLoad({ filter: /.*/, namespace: 'fixture-session' }, () => ({ resolveDir: root, contents:
+        `export * from ${JSON.stringify(session)}; export const createApplicationBackend = () => ({});` }));
+      builder.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `
+        export async function openBrowserOwner({ context }) {
           window.ownerAttachments = (window.ownerAttachments ?? 0) + 1;
-          const statuses = [], recoveries = [], participation = [];
-          const status = {phase:'ready',database:'ready',generation:'e'.repeat(64)};
-          const participationStatus = {phase:'following',connectedPeers:[],connectionRevision:0};
-          window.transportReads = 0;
-          const revision = {generation:'e'.repeat(64)};
-          let resolveRead, fail = false, hold = true, lose = true, beforeSave = false, cancelApplied = false;
-          const saved = JSON.parse(localStorage.getItem('fixture-saved') || '{}');
-          const calls = [];
-          const session = { applicationId:'c'.repeat(64), historyId:'history', deviceId:'b'.repeat(64), endpoint:{context},
-            signals: {}, signal: new AbortController().signal,
-            onStatus(fn) {statuses.push(fn); fn(status); return () => {};},
-            onRecovery(fn) {recoveries.push(fn); return () => {};},
-            participation: {status:participationStatus,async diagnostics(){window.transportReads++;return [];},onStatus(fn) {participation.push(fn); fn({...participationStatus}); return () => {};}},
-            changes() {return {async *[Symbol.asyncIterator]() {await new Promise(() => {});}};},
-            async query() {if (hold) await new Promise(r => resolveRead = r); if(fail) throw Error('Read unavailable'); return {revision,value:[]};},
-            async command(name,input,options) {
-              calls.push({name,input,options});
-              if(beforeSave) throw Error('Intent retained but no saved acknowledgment');
-              saved[options.operationId] = {operationId:options.operationId,status:lose?'saved':'applied',outcome:lose?undefined:'accepted',attemptId:'a'.repeat(64),generation:'e'.repeat(64),author:'b'.repeat(64),historyId:'history'};
-              localStorage.setItem('fixture-saved',JSON.stringify(saved));
-              if(lose) throw Error('Reply lost');
-              return {operationId:options.operationId, applied: async () => {if(cancelApplied) throw Error('TEST_APPLIED_WAITER_CANCELLED'); return saved[options.operationId];}, shared:async()=>[]};
-            },
-            async reapply(original,name,input,options) {calls.push({reapplies:original}); return this.command(name,input,options);},
-            async retry(id) {calls.push({retry:id}); saved[id] = {...saved[id],status:'applied',outcome:'rejected',rejectionCode:'STALE'};},
-            operations: {get:async id=>saved[id] || null, inspect:async id=>({state:saved[id] || null}),wait:async id=>saved[id]},
+          if (sessionStorage.getItem('fixture-fail-open')) throw Object.assign(Error('Owner unreachable'), { code: 'OWNER_UNREACHABLE' });
+          const author = 'b'.repeat(64), other = 'd'.repeat(64), applicationId = 'c'.repeat(64);
+          // Durable local store across reloads: operations and materialized events survive like the retained owner profile.
+          const store = JSON.parse(localStorage.getItem('fixture-store') || '{"ops":[],"events":[],"version":0}');
+          const persist = () => localStorage.setItem('fixture-store', JSON.stringify(store));
+          const status = { canAuthor: true, phase: 'ready', database: 'ready', connectedPeers: 0, pendingOperations: 0, materializationError: null };
+          const statusListeners = new Set(), changeListeners = new Set(), factListeners = new Set(), calls = [];
+          const mode = { hold: false, failRead: false, loseReply: false, beforeSave: false, rejectOnRetry: false };
+          let readGate, releaseRead; const gate = () => { readGate = new Promise(resolve => { releaseRead = resolve; }); }; gate();
+          const emitStatus = () => { for (const fn of [...statusListeners]) fn({ ...status }); };
+          const changed = () => { for (const fn of [...changeListeners]) fn({ kind: 'materialized', revision: revision(), revisedProposalIds: [] }); for (const fn of [...factListeners]) fn(); };
+          const revision = () => ({ digest: 'revision-' + store.version, view: 'local', executionManifestDigest: 'e'.repeat(64), policyDigest: 'f'.repeat(64) });
+          const find = id => store.ops.find(op => op.operationId === id || op.proposalId === id);
+          const inspection = op => ({ applicationId, author, authorTimestampMs: '1000', proposalId: op.proposalId, operationId: op.operationId,
+            stored: true, pending: null, materialized: op.materialized ? { proposalId: op.proposalId, revision: revision(), failingStatementIndex: null, ...op.materialized } : null,
+            retained: (op.retained ?? []).map(signer => ({ signer })), finalized: op.finalized === true, excluded: op.excluded === true });
+          const handle = op => ({ id: op.proposalId, operationId: op.operationId, stored: true, inspect: () => inspection(op) });
+          const apply = op => {
+            store.events = store.events.filter(event => event.operationId !== op.operationId);
+            if (op.materialized?.outcome === 'accepted') store.events.push({ id: 'event-' + op.proposalId, proposalId: op.proposalId, operationId: op.operationId, author, authorTimestampMs: '1000', topic: op.topic, payload: op.input });
+            store.version++; persist(); changed();
           };
-          window.fixture = {calls, release() {hold=false; resolveRead?.();}, fail(value) {fail=value;},
-            connection(phase) {participationStatus.phase=phase;participation.forEach(fn=>fn({...participationStatus}));},
-            recovery() {recoveries.forEach(fn=>fn({abandoned:[],unknownLoss:false}));},
-            abandon(id) {saved[id] = {...saved[id],status:'needsReapply'};}, hold() {hold=true;}, beforeSave(value) {beforeSave=value;}, responseLoss(value) {lose=value;}, cancelApplied(value) {cancelApplied=value;}, session};
-          return {session,detach:async()=>{},suspend:async()=>{},resume:async()=>{}};
+          const owner = { applicationId, historyId: 'history', identity: { publicKey: author }, endpoint: { context }, signals: {}, signal: new AbortController().signal,
+            get status() { return { ...status }; },
+            onStatus(fn) { statusListeners.add(fn); fn({ ...status }); return () => statusListeners.delete(fn); },
+            onChange(fn) { changeListeners.add(fn); return () => changeListeners.delete(fn); },
+            // The transport observer is sampled only when a user asks for diagnostics.
+            async diagnostics() { window.transportReads++; return []; },
+            async readView() {
+              if (mode.hold) await readGate;
+              if (mode.failRead) throw Error('Read unavailable');
+              return { applicationId, revision: revision(), release() {}, query() { return { columns: [], rows: [] }; },
+                readEvents(options = {}) { const topics = options.topics; return { revision: revision(), events: structuredClone(store.events.filter(event => !topics || topics.includes(event.topic))), cursor: '', hasMore: false }; } };
+            },
+            async command(name, input, options) {
+              calls.push({ name, input, options });
+              if (mode.beforeSave) throw Error('Intent retained but no saved acknowledgment');
+              const op = { operationId: options.operationId, proposalId: 'p'.repeat(60) + String(store.ops.length).padStart(4, '0'), name, input,
+                topic: name === 'putNote' ? 'note.put' : 'note.deleted', materialized: { outcome: 'accepted', rejectionCode: null }, retained: [], finalized: false, excluded: false };
+              store.ops.push(op); apply(op);
+              if (mode.loseReply) throw Error('Reply lost');
+              return handle(op);
+            },
+            operations: {
+              get: async id => { const op = find(id); return op ? handle(op) : null; },
+              async retry(id) {
+                calls.push({ retry: id }); const op = find(id);
+                if (mode.rejectOnRetry) { op.materialized = { outcome: 'rejected', rejectionCode: 'STALE' }; apply(op); }
+                else changed();
+                return handle(op);
+              },
+              subscribe({ operationId, signal }) {
+                return { async *[Symbol.asyncIterator]() {
+                  let dirty = true, wake; const listener = () => { dirty = true; wake?.(); }; factListeners.add(listener); signal?.addEventListener('abort', listener);
+                  try { while (!signal?.aborted) { if (!dirty) await new Promise(resolve => { wake = resolve; }); if (signal?.aborted) break; dirty = false; const op = find(operationId); if (op) yield inspection(op); } }
+                  finally { factListeners.delete(listener); signal?.removeEventListener('abort', listener); }
+                } };
+              },
+            },
+          };
+          window.fixture = { calls, session: owner, store,
+            canAuthor(value) { status.canAuthor = value; emitStatus(); }, phase(value) { status.phase = value; emitStatus(); }, database(value) { status.database = value; emitStatus(); },
+            peers(count) { status.connectedPeers = count; emitStatus(); },
+            holdRead(value) { mode.hold = value; if (value) gate(); else releaseRead(); }, failRead(value) { mode.failRead = value; changed(); },
+            loseReply(value) { mode.loseReply = value; }, beforeSave(value) { mode.beforeSave = value; }, rejectOnRetry(value) { mode.rejectOnRetry = value; },
+            fact(operationId, patch) { Object.assign(find(operationId), patch); store.version++; persist(); changed(); },
+            peerNote(noteId, text) { store.events.push({ id: 'peer-' + noteId, proposalId: 'q'.repeat(64), operationId: 'peer-op-' + noteId, author: other, authorTimestampMs: '2000', topic: 'note.put', payload: { noteId, text } }); store.version++; persist(); changed(); },
+            removeNote(noteId) { store.events = store.events.filter(event => event.payload.noteId !== noteId); store.version++; persist(); changed(); },
+          };
+          return { session: owner, detach: async () => {}, suspend: async () => {}, resume: async () => {} };
         }
       ` }));
     } }] });
-  const html = await readFile(new URL('../../../docs/tutorial/index.html', import.meta.url));
-  const server = createServer((req, res) => {
-    res.setHeader('Content-Type', req.url === '/page.mjs' ? 'text/javascript' : req.url === '/configuration.json' ? 'application/json' : 'text/html');
-    res.end(req.url === '/page.mjs' ? bundle.outputFiles[0].text : req.url === '/configuration.json'
-      ? JSON.stringify({applicationId:'c'.repeat(64),nativeDeviceId:'a'.repeat(64),page_url:`http://127.0.0.1:${server.address().port}/`}) : html);
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const browser = await chromium.launch({headless:true, executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined});
-  t.after(async () => { await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
-  const page = await browser.newPage({viewport:{width:390,height:844}});
-  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  return { transport: transport.outputFiles[0].text, page: page.outputFiles[0].text, html: await readFile(root + 'docs/tutorial/index.html') };
+}
+
+const built = await bundles();
+const server = createServer((req, res) => {
+  const path = new URL(req.url, 'http://fixture').pathname;
+  res.setHeader('Content-Type', path === '/page.mjs' ? 'text/javascript' : path === '/configuration.json' ? 'application/json' : 'text/html');
+  res.end(path === '/page.mjs' ? built.page : path === '/configuration.json'
+    ? JSON.stringify({ applicationId: 'c'.repeat(64), page_url: `http://127.0.0.1:${server.address().port}/` }) : built.html);
+});
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined });
+test.after(async () => { await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+const url = `http://127.0.0.1:${server.address().port}/`;
+
+async function open(t, { failOpen = false } = {}) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  t.after(() => context.close());
+  const page = await context.newPage(), errors = [];
+  page.setDefaultTimeout(8000);
+  page.on('pageerror', error => errors.push(error.message));
   const runtimeFixture = () => {
-    window.tendril = {transport:FixtureTransport.createTransportBinding().api,application:{install(){}},signals:{install(){}},on:()=>()=>{},sensors:{status:()=>({active:[],pending:[]}),on:()=>()=>{},stopAll(){}}};
+    window.transportReads = 0;
+    window.tendril = { transport: FixtureTransport.createTransportBinding().api, application: { install() {} }, signals: { install() {} }, on: () => () => {},
+      host: { peers: { application: async () => ({ authority: null }), challenge: async () => { throw Error('not used'); } } },
+      publication: { saveOffline: async () => ({ id: 'fixture-publication' }) }, ready() { window.tendrilReady = true; },
+      sensors: { status: () => ({ active: [], pending: [] }), on: () => () => {}, stopAll() {} } };
   };
-  await page.addInitScript({content: transport.outputFiles[0].text + ';(' + runtimeFixture.toString() + ')();'});
-  const url = `http://127.0.0.1:${server.address().port}/`;
-  // The page attaches by itself (connection component); there is no connect button.
-  await page.goto(url); await page.waitForFunction(() => window.fixture);
-  const enabled = id => page.locator(id).isEnabled();
-  await page.locator('#note').fill('Preserved draft');
-  await page.locator('#note').press('Tab');
-  assert.equal(await page.locator('#operation-id').evaluate(element => element === document.activeElement), true);
-  assert.equal(await enabled('#submit'), false);
-  assert.equal(await enabled('#media-file'), false, await page.locator('#result').textContent());
-  // Even synthetic/keyboard submission cannot bypass readiness.
-  await page.locator('#form').dispatchEvent('submit');
-  assert.match(await page.locator('#result').textContent(), /No new operation was submitted/);
-  assert.equal(await page.locator('#operation-id').inputValue(), '');
-  await page.evaluate(() => fixture.release());
+  await page.addInitScript({ content: built.transport + ';(' + runtimeFixture.toString() + ')();' });
+  if (failOpen) await page.addInitScript(() => sessionStorage.setItem('fixture-fail-open', '1'));
+  await page.goto(url);
+  return { page, errors, context };
+}
+const settled = page => page.waitForFunction(() => window.fixture);
+const enabled = (page, id) => page.locator(id).isEnabled();
+const facts = page => page.locator('#operation-status').textContent();
+
+test('Save depends only on local signer/storage: it works offline with a held or failed read and no peers', { timeout: 30000 }, async t => {
+  const { page, errors } = await open(t);
+  await settled(page);
+  await page.evaluate(() => fixture.holdRead(true));
+  // No successful query, no connected peers, no finalizer or agent: the draft can still be stored locally.
   await page.waitForFunction(() => !document.querySelector('#submit').disabled);
-  assert.equal(await enabled('#media-file'), true);
+  assert.equal(await page.evaluate(() => fixture.session.status.connectedPeers), 0);
+  assert.match(await page.locator('#submission-status').textContent(), /Save is available, including offline/);
+  await page.locator('#note').fill('Offline draft');
+  await page.locator('#submit').click();
+  await page.waitForFunction(() => document.querySelector('#note').value === '');
+  const [call] = await page.evaluate(() => fixture.calls);
+  assert.equal(call.name, 'putNote'); assert.equal(call.input.text, 'Offline draft');
+  assert.equal(call.options.operationId, await page.locator('#operation-id').inputValue());
+  assert.match(await facts(page), /Stored locally: yes/);
+  assert.match(await facts(page), /Materialized locally: accepted/);
+  assert.match(await facts(page), /Retained by peers: no authenticated evidence/);
+  assert.match(await facts(page), /Finalized: no/);
+  // A failing read neither disables Save nor claims the list is current.
+  await page.evaluate(() => { fixture.holdRead(false); fixture.failRead(true); });
+  await page.waitForFunction(() => document.querySelector('#view-error').textContent.includes('Read unavailable'));
+  assert.match(await page.locator('#view-error').textContent(), /Local Save remains independent/);
+  assert.equal(await enabled(page, '#submit'), true);
+  assert.equal(await page.evaluate(() => window.transportReads), 0, 'registration and Save never sample or probe the participant');
   assert.equal(await page.evaluate(() => window.tendril.transport.status().state), 'available');
-  assert.equal(await page.evaluate(() => window.transportReads), 0, 'registration must not sample or probe the participant');
-  await page.evaluate(() => fixture.fail(true));
-  await page.locator('#submit').click();
-  await page.waitForFunction(() => document.querySelector('#result').textContent.includes('Read unavailable'));
-  assert.doesNotMatch(await page.locator('#result').textContent(), /Inspect or retry/);
-  assert.equal(await page.locator('#operation-id').inputValue(), '');
-  assert.equal(await page.locator('#note').inputValue(), 'Preserved draft');
-  await page.evaluate(() => fixture.fail(false)); await page.locator('#refresh').click();
+  assert.deepEqual(errors, []);
+});
+
+test('Save follows signing and storage prerequisites, never peers, database state or finality', { timeout: 30000 }, async t => {
+  const { page, errors } = await open(t);
+  await settled(page);
   await page.waitForFunction(() => !document.querySelector('#submit').disabled);
-  await page.locator('#submit').click();
-  await page.waitForFunction(() => document.querySelector('#result').textContent.includes('Reply lost'));
-  const id = await page.locator('#operation-id').inputValue(); assert.ok(id);
-  assert.equal(await enabled('#submit'), false); assert.equal(await enabled('#retry'), true);
-  const retained = await page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.includes(':operation:')).map(([, value]) => JSON.parse(value)));
-  assert.equal(retained.length, 1);
-  assert.equal(retained[0].reference.operationId, id);
-  const command = await page.evaluate(() => fixture.calls[0]);
-  assert.deepEqual(command.input, {text:'Preserved draft'});
-  await page.reload(); await page.waitForFunction(() => window.fixture);
+  await page.evaluate(() => { fixture.peers(3); fixture.database('opening'); fixture.peers(0); });
+  assert.equal(await enabled(page, '#submit'), true);
+  await page.evaluate(() => fixture.database('failed'));
+  assert.equal(await enabled(page, '#submit'), true);
+  await page.locator('#note').fill('Preserved draft');
+  // Keys missing: honest explanation, and even a synthetic/keyboard submission cannot bypass it.
+  await page.evaluate(() => fixture.canAuthor(false));
+  assert.equal(await enabled(page, '#submit'), false);
+  assert.match(await page.locator('#submission-status').textContent(), /explicit key provisioning/);
+  await page.locator('#form').dispatchEvent('submit');
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('explicit key provisioning'));
+  assert.equal(await page.locator('#operation-id').inputValue(), '');
+  assert.deepEqual(await page.evaluate(() => fixture.calls), []);
   assert.equal(await page.locator('#note').inputValue(), 'Preserved draft');
-  assert.equal(await page.locator('#operation-id').inputValue(), id);
-  assert.equal(await enabled('#retry'), false);
-  await page.evaluate(() => fixture.release()); await page.waitForFunction(() => !document.querySelector('#retry').disabled);
-  await page.waitForFunction(() => Object.entries(localStorage).some(([key, value]) => key.includes(':operation:') && JSON.parse(value).reference.attemptId));
-  await page.locator('#retry').click(); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
-  assert.deepEqual(await page.evaluate(() => fixture.calls), [{retry:id}]);
-  assert.match(await page.locator('#result').textContent(), /rejected/);
-  assert.equal(await page.locator('#note').inputValue(), 'Preserved draft');
-  assert.equal(await enabled('#retry'), false);
-  // A lost first RPC with only a retained intent retries exact input/revision/ID.
-  await page.evaluate(() => fixture.beforeSave(true));
-  await page.locator('#submit').click();
-  await page.waitForFunction(() => document.querySelector('#result').textContent.includes('no saved acknowledgment'));
-  const intentId = await page.locator('#operation-id').inputValue();
-  const intentCommand = await page.evaluate(() => fixture.calls.at(-1));
-  await page.locator('#note').fill('A newer editable draft');
-  await page.reload(); await page.waitForFunction(() => window.fixture);
-  await page.evaluate(() => {fixture.responseLoss(false); fixture.release();});
-  await page.waitForFunction(() => !document.querySelector('#retry').disabled);
-  await page.locator('#retry').click(); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
-  assert.deepEqual(await page.evaluate(() => fixture.calls), [intentCommand]);
-  assert.equal(await page.locator('#operation-id').inputValue(), intentId);
-  assert.equal(await page.locator('#note').inputValue(), 'A newer editable draft');
-  await page.locator('#submit').click(); await page.waitForFunction(() => document.querySelector('#note').value === '');
-  assert.match(await page.locator('#result').textContent(), /accepted/);
-  // A cancelled applied waiter does not revoke an independently observed
-  // applied result. This is the fast-observer race on elected browser owners.
-  await page.locator('#note').fill('Observed despite waiter cancellation');
-  await page.evaluate(() => fixture.cancelApplied(true));
-  await page.locator('#submit').click();
-  await page.waitForFunction(() => document.querySelector('#result').textContent.includes('TEST_APPLIED_WAITER_CANCELLED'));
-  const cancelledId = await page.locator('#operation-id').inputValue();
-  await page.waitForFunction(id => document.querySelector('#operation-status').textContent.includes(id + ': Applied: accepted.'), cancelledId);
-  assert.equal(await enabled('#submit'), true);
-  assert.equal(await enabled('#retry'), false);
-  const remaining = await page.evaluate(id => Object.entries(localStorage).filter(([key, value]) =>
-    key.includes(':operation:') && JSON.parse(value).reference.operationId === id), cancelledId);
-  assert.deepEqual(remaining, [], 'A verified applied result resolves the retained reference, even when its waiter was cancelled.');
-  await page.evaluate(() => fixture.cancelApplied(false));
-  await page.evaluate(() => {fixture.hold(); fixture.connection('recovering');});
-  assert.equal(await enabled('#submit'), false); assert.equal(await enabled('#media-file'), false);
-  await page.evaluate(() => fixture.connection('following'));
-  assert.equal(await enabled('#submit'), false);
-  await page.evaluate(() => fixture.release()); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
-  await page.evaluate(() => {fixture.hold(); fixture.recovery();}); assert.equal(await enabled('#submit'), false);
-  await page.evaluate(() => fixture.release()); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  // The owner closing removes the storage prerequisite; the draft stays editable.
+  await page.evaluate(() => { fixture.canAuthor(true); fixture.phase('closed'); });
+  assert.equal(await enabled(page, '#submit'), false);
+  assert.match(await page.locator('#submission-status').textContent(), /Local storage is unavailable/);
+  assert.equal(await enabled(page, '#note'), true);
+  await page.evaluate(() => fixture.phase('ready'));
+  await page.waitForFunction(() => !document.querySelector('#submit').disabled);
   assert.equal(await page.locator('#note').getAttribute('aria-describedby'), 'draft-help submission-status');
   assert.equal(await page.locator('#submission-status').getAttribute('role'), 'status');
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
-  await page.locator('#note').fill('Explicit reapplication');
-  await page.evaluate(() => fixture.responseLoss(true));
+  assert.deepEqual(errors, []);
+});
+
+test('an uncertain reply retains the exact original operation ID and retries that same stored operation across reload', { timeout: 30000 }, async t => {
+  const { page, errors } = await open(t);
+  await settled(page);
+  await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  await page.evaluate(() => fixture.loseReply(true));
+  await page.locator('#note').fill('Preserved draft');
   await page.locator('#submit').click();
-  await page.waitForFunction(() => document.querySelector('#result').textContent.includes('Reply lost'));
-  const abandonedId = await page.locator('#operation-id').inputValue();
-  await page.evaluate(id => fixture.abandon(id), abandonedId);
-  await page.locator('#inspect').click(); await page.waitForFunction(() => !document.querySelector('#reapply').disabled);
-  assert.equal(await enabled('#retry'), false);
-  await page.locator('#reapply').click();
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('Reply lost'));
+  const id = await page.locator('#operation-id').inputValue(); assert.ok(id);
+  assert.match(await facts(page), new RegExp('Inspect or retry the retained operation ' + id));
+  // The signed operation is already stored locally even though the reply was lost.
+  await page.locator('#inspect').click();
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('Stored locally: yes'));
+  assert.equal(await page.locator('#note').inputValue(), 'Preserved draft', 'only a durable acknowledgment clears the exact sent draft');
+  assert.equal(await enabled(page, '#retry'), true);
+  await page.reload(); await settled(page);
+  assert.equal(await page.locator('#operation-id').inputValue(), id);
+  assert.equal(await page.locator('#note').inputValue(), 'Preserved draft');
   await page.waitForFunction(() => !document.querySelector('#retry').disabled);
-  const replacementId = await page.locator('#operation-id').inputValue();
-  assert.notEqual(replacementId, abandonedId);
-  const reapplied = await page.evaluate(() => fixture.calls.slice(-2));
-  assert.deepEqual(reapplied[0], {reapplies:abandonedId});
-  assert.equal(reapplied[1].options.operationId, replacementId);
-  await page.locator('#retry').click(); await page.waitForFunction(() => !document.querySelector('#submit').disabled);
-  assert.deepEqual(await page.evaluate(() => fixture.calls.at(-1)), {retry:replacementId});
-  await page.locator('#close').click(); assert.equal(await enabled('#submit'), false);
-  assert.equal(await enabled('#note'), true);
-  // Close while the next initial read is still pending. Releasing that read must
-  // not install a backend or start another owner attachment behind the closed UI.
-  await page.reload(); await page.locator('#close:enabled').waitFor();
-  await page.locator('#close').click(); await page.evaluate(() => fixture.release());
-  await page.waitForFunction(() => document.querySelector('#connection').textContent === 'Connection closed');
-  await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 1600)));
-  assert.equal(await page.evaluate(() => window.ownerAttachments), 1);
-  assert.equal(await enabled('#close'), false);
-  assert.equal(await page.locator('#app-content').isHidden(), true);
+  await page.evaluate(() => fixture.loseReply(false));
+  await page.locator('#retry').click();
+  await page.waitForFunction(() => document.querySelector('#note').value === '');
+  // Retry re-offers the original stored operation: no second command, no new ID, no retimestamp.
+  assert.deepEqual(await page.evaluate(() => fixture.calls), [{ retry: id }]);
+  assert.equal(await page.locator('#operation-id').inputValue(), id);
+  assert.equal(await page.evaluate(() => fixture.store.ops.length), 1);
+  assert.equal(await page.evaluate(() => fixture.store.events.length), 1, 'exactly one event for the one original operation');
+  assert.deepEqual(errors, []);
+});
+
+test('a lost first call with only a retained intent retries the exact original input and ID while the draft stays editable', { timeout: 30000 }, async t => {
+  const { page, errors } = await open(t);
+  await settled(page);
+  await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  await page.evaluate(() => fixture.beforeSave(true));
+  await page.locator('#note').fill('Original reviewed text');
+  await page.locator('#submit').click();
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('no saved acknowledgment'));
+  const id = await page.locator('#operation-id').inputValue(), first = await page.evaluate(() => fixture.calls.at(-1));
+  assert.equal(await page.evaluate(() => fixture.store.ops.length), 0, 'nothing was stored');
+  await page.locator('#note').fill('A newer editable draft');
+  await page.reload(); await settled(page);
+  assert.equal(await page.locator('#operation-id').inputValue(), id);
+  assert.equal(await page.locator('#note').inputValue(), 'A newer editable draft');
+  await page.waitForFunction(() => !document.querySelector('#retry').disabled);
+  await page.evaluate(() => fixture.beforeSave(false));
+  await page.locator('#retry').click();
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('Stored locally: yes'));
+  const calls = await page.evaluate(() => fixture.calls);
+  assert.deepEqual(calls.at(-1), first, 'the retry uses the original input and operation ID, not the newer draft');
+  assert.equal(calls.at(-1).input.text, 'Original reviewed text');
+  assert.match(await facts(page), /Original reviewed text: Original reviewed text/);
+  assert.equal(await page.locator('#note').inputValue(), 'A newer editable draft', 'a different draft is never cleared by the original acknowledgment');
+  assert.deepEqual(errors, []);
+});
+
+test('a materialized rejection of the original operation stays visible, retryable by ID and never silently re-signed', { timeout: 30000 }, async t => {
+  const { page, errors } = await open(t);
+  await settled(page);
+  await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  await page.locator('#note').fill('Concurrent edit');
+  await page.locator('#submit').click();
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('Materialized locally: accepted'));
+  const id = await page.locator('#operation-id').inputValue();
+  assert.equal(await page.evaluate(() => fixture.store.events.length), 1);
+  // Earlier work arriving later revises the outcome; the original intent remains inspectable.
+  await page.evaluate(() => fixture.rejectOnRetry(true));
+  await page.locator('#retry').click();
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('(STALE)'));
+  assert.match(await facts(page), /Materialized locally: rejected \(STALE\)/);
+  assert.match(await facts(page), /Stored locally: yes/);
+  assert.equal(await page.evaluate(() => fixture.store.events.length), 0, 'the rejected operation no longer contributes a note');
+  assert.equal(await page.locator('#count').textContent().then(text => text.startsWith('0 notes')), true);
+  assert.equal(await page.locator('#operation-id').inputValue(), id);
+  assert.deepEqual((await page.evaluate(() => fixture.calls)).map(call => call.retry ?? call.name), ['putNote', id]);
+  assert.equal(await page.evaluate(() => fixture.store.ops.length), 1, 'no replacement operation was signed');
+  assert.deepEqual(errors, []);
+});
+
+test('stored, materialized, retained and finalized observations update independently without another click', { timeout: 30000 }, async t => {
+  const { page, errors } = await open(t);
+  await settled(page);
+  await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  await page.locator('#note').fill('Observed note'); await page.locator('#submit').click();
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('Stored locally: yes'));
+  const id = await page.locator('#operation-id').inputValue();
+  const peer = 'd'.repeat(64);
+  await page.evaluate(([id, peer]) => fixture.fact(id, { retained: [peer] }), [id, peer]);
+  await page.waitForFunction(peer => document.querySelector('#operation-status').textContent.includes('Retained by peers: ' + peer), peer);
+  assert.match(await facts(page), /Materialized locally: accepted/, 'retention does not change execution');
+  assert.match(await facts(page), /Finalized: no/);
+  await page.evaluate(id => fixture.fact(id, { finalized: true }), id);
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('Finalized: yes'));
+  assert.match(await facts(page), new RegExp('Retained by peers: ' + peer), 'finality does not erase or imply retention');
+  await page.evaluate(id => fixture.fact(id, { finalized: false, excluded: true, materialized: null }), id);
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('excluded by verified author-time evidence'));
+  assert.match(await facts(page), /original signed intent remains inspectable/);
+  // An ID that was never stored locally is reported honestly and cannot be retried as if it existed.
+  await page.locator('#operation-id').fill('never-stored');
+  await page.waitForFunction(() => document.querySelector('#operation-status').textContent.includes('No local signed proposal was found'));
+  assert.equal(await enabled(page, '#retry'), false);
+  assert.deepEqual(errors, []);
+});
+
+test('incoming earlier work rederives the list while the focused draft, unsent text and selection stay put', { timeout: 30000 }, async t => {
+  const { page, errors } = await open(t);
+  await settled(page);
+  await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  await page.evaluate(() => fixture.peerNote('shared', 'Peer note'));
+  await page.waitForFunction(() => document.querySelector('#count').textContent.startsWith('1 note'));
+  await page.locator('#notes a').click();
+  await page.waitForFunction(() => document.querySelector('#detail-text').textContent.includes('Peer note'));
+  await page.locator('#note').fill('Unsent local text'); await page.locator('#note').focus();
+  await page.evaluate(() => fixture.peerNote('second', 'Second peer note'));
+  await page.waitForFunction(() => document.querySelector('#count').textContent.startsWith('2 notes'));
+  assert.equal(await page.locator('#note').evaluate(element => element === document.activeElement), true, 'incoming data never steals focus');
+  assert.equal(await page.locator('#note').inputValue(), 'Unsent local text');
+  assert.equal(new URL(page.url()).hash, '#note=shared', 'selection is by stable ID in the deep link');
+  assert.match(await page.locator('#detail-text').textContent(), /Peer note/);
+  // The selected record disappearing is explained; the unsent draft still survives and the link stays shareable.
+  await page.evaluate(() => fixture.removeNote('shared'));
+  await page.waitForFunction(() => document.querySelector('#count').textContent.startsWith('1 note'));
+  assert.match(await page.locator('#detail-text').textContent(), /absent from the/);
+  assert.equal(await page.locator('#note').inputValue(), 'Unsent local text');
+  await page.reload(); await settled(page);
+  assert.equal(await page.locator('#note').inputValue(), 'Unsent local text', 'the draft survives reload separately from shared state');
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+  assert.deepEqual(errors, []);
+});
+
+test('an unreachable local owner keeps the draft editable, explains itself and reattaches on explicit retry', { timeout: 30000 }, async t => {
+  const { page, errors } = await open(t, { failOpen: true });
+  await page.waitForFunction(() => document.querySelector('#connection-status').textContent.includes('Local session could not open'));
+  assert.equal(await enabled(page, '#submit'), false);
+  assert.equal(await enabled(page, '#note'), true);
+  assert.match(await page.locator('#submission-status').textContent(), /Opening this device’s retained local session/);
+  await page.locator('#note').fill('Typed while unavailable');
+  assert.equal(await page.locator('#reconnect').isVisible(), true);
+  await page.evaluate(() => sessionStorage.removeItem('fixture-fail-open'));
+  await page.locator('#reconnect').click();
+  await settled(page);
+  await page.waitForFunction(() => !document.querySelector('#submit').disabled);
+  assert.equal(await page.locator('#note').inputValue(), 'Typed while unavailable');
+  assert.equal(await page.evaluate(() => window.ownerAttachments), 2);
+  assert.equal(await page.locator('#reconnect').isHidden(), true);
   assert.deepEqual(errors, []);
 });

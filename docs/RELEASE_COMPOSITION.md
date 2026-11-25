@@ -5,7 +5,7 @@ to verify a published tuple and propose dependent pin PRs without copying source
 constants among workflows and tests. Normal qualification, review and production
 readiness gates still apply.
 
-Tendriller hosts the page and its controls. Chronolog owns the application session, durable history, and peer replication. The cookbook repository supplies independent examples and black-box qualification. A green check in any one repository does not prove that three new commits work together.
+Tendriller hosts the page and its controls. Chronolog owns the application session, the authored operation set, and peer replication. The cookbook repository supplies independent examples and black-box qualification. A green check in any one repository does not prove that three new commits work together.
 
 ## Choose exact source
 
@@ -45,10 +45,10 @@ substitute a registry package or rebuild a moving companion branch.
 | SDK, runtime, engine and tools | Archive SHA-256 and size, core source commit/tree, clean provenance, contract and runtime ID |
 | First-app source | Allowlisted starter archive SHA-256 and size, checked byte-for-byte against this core checkpoint |
 | Chronolog session | Public archive SHA-256 and size, full source commit/tree, clean events profile |
-| Embedded generation controls | Full source commit/tree and clean provenance inside the hashed engine archive |
+| Chronolog authority | Portable authority/publication/finality package (`chronolog-authority-package/v1`, profile `chronolog-crdt-v1`) with full source commit/tree and clean provenance, also embedded and verified inside the hashed engine archive |
 
 The versioned `tendriller-first-app-VERSION.tgz` contains that starter,
-`composition.json` and local SDK/tools/session packages. `manifest.json` binds
+`composition.json` and local SDK, tools, authority and session packages. `manifest.json` binds
 the kit's own bytes, the separate composition file and build provenance. Its
 composition ID does not include the kit hash, avoiding a self-referential archive.
 `SHA256SUMS` covers every published component. Preserve the whole manifest and

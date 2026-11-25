@@ -4,14 +4,15 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { RELEASE_DOWNLOAD_LIMITS, createReleaseDownloader, readPublishedManifest } from '../contract/release-verify.mjs';
+import { verifyFirstAppProfiles } from './release-composition.mjs';
 
 export { RELEASE_DOWNLOAD_LIMITS, readPublishedManifest };
 const hash = value => createHash('sha256').update(value).digest('hex');
 const sha256 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const commit = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
 const fail = (code, message) => { throw Object.assign(Error(message), { code }); };
-const componentRoles = ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter'];
-const requiredRoles = [...componentRoles, 'composition', 'first-app', 'core-provenance', 'tools-provenance', 'plugin'];
+const componentRoles = ['sdk', 'runtime', 'engine', 'tools', 'authority', 'session', 'session-sql-browser', 'starter'];
+const requiredRoles = [...componentRoles, 'composition', 'first-app', 'first-app-sql', 'core-provenance', 'tools-provenance', 'plugin'];
 
 function releaseDownload(base, options = {}) {
   return createReleaseDownloader(base, options);
@@ -70,6 +71,8 @@ export async function verifyPublishedRelease(expected, { fetcher = globalThis.fe
       composition.components.some(item => !item || typeof item !== 'object' || Array.isArray(item)) ||
       componentRoles.some(role => composition.components.filter(item => item.role === role).length !== 1))
     fail('release_identity_mismatch', 'The published composition does not match the complete prepared release identity.');
+  try { verifyFirstAppProfiles(composition, manifest); }
+  catch (error) { fail('release_identity_mismatch', error.message); }
   for (const item of composition.components) {
     const artifact = byRole(item.role);
     if (artifact?.file !== item.file || artifact.sha256 !== item.sha256 || artifact.size !== item.size)

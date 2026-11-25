@@ -16,11 +16,10 @@ export function createApplicationBinding(selection, initial) {
   const ready = new Promise(resolve => { resolveReady = resolve; });
   const install = value => {
     if (backend) fail('backend_already_selected', 'The application backend cannot change within a page history');
-    if (!value || value.id !== selected.id || !Array.isArray(value.capabilities) || typeof value.submit !== 'function' ||
+    if (!value || value.applicationId !== selected.id || typeof value.submit !== 'function' ||
         typeof value.readView !== 'function' || typeof value.changes !== 'function' || !value.status ||
-        ['onStatus', 'onRecovery', 'inspectRecovery'].some(key => typeof value[key] !== 'function') || !value.events || ['publish', 'read', 'subscribe'].some(key => typeof value.events[key] !== 'function') ||
-        !value.operations || ['get', 'subscribe'].some(key => typeof value.operations[key] !== 'function'))
-      fail('invalid_backend', 'The backend must implement the public contract and selected identity');
+        typeof value.onStatus !== 'function' || !value.operations || ['get', 'retry', 'subscribe'].some(key => typeof value.operations[key] !== 'function'))
+      fail('invalid_backend', 'Install the selected owned application session with durable submission and coherent local reads');
     backend = value;
     resolveReady(value);
   };

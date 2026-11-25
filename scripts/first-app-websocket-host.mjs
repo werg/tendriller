@@ -33,6 +33,9 @@ export function createFirstAppRequestActivity() {
     if (path.endsWith('/publication-ready')) return 'publication-watch';
     // Directory read/advertise/withdraw and invitation sends are facets of
     // this same POST endpoint. Path-only evidence cannot distinguish actions.
+    if (path.endsWith('/peers/discovery')) return 'discovery';
+    if (path.endsWith('/peers/invite')) return 'invitation-send';
+    if (path.endsWith('/peers/enrollment')) return 'enrollment';
     if (path.endsWith('/peers/participant')) return 'peer-participant';
     if (path.endsWith('/peers/bootstrap')) return 'peer-bootstrap';
     if (path.endsWith('/peers/pairing')) return 'peer-pairing';
@@ -54,6 +57,7 @@ export function createFirstAppRequestActivity() {
         category: category(new URL(request.url).pathname) };
       if (items.length === 256) items.shift();
       items.push(item);
+      return item;
     },
     snapshot() {
       return { items: items.map(item => ({ ...item })), dropped: sequence - items.length,
@@ -64,18 +68,27 @@ export function createFirstAppRequestActivity() {
 
 export const FIRST_APP_WEBSOCKET_PROXY_WORKER = `
 const requests = (${createFirstAppRequestActivity.toString()})();
+const failures=[];
+const failed=value=>{if(failures.length===64)failures.shift();failures.push(value);};
 const traffic = { instance: null, httpRequests: 0, relayUpgrades: 0,
   relayBinaryFrames: 0, relayBinaryBytes: 0 };
 export default {
   async fetch(request, env) {
     traffic.instance ??= crypto.randomUUID();
     if (new URL(request.url).pathname === '/__first_app_transport')
-      return Response.json({ ...traffic, requestActivity: requests.snapshot() }, { headers: { 'Cache-Control': 'no-store' } });
+      return Response.json({ ...traffic, requestActivity: requests.snapshot(), failures: failures.map(value=>({...value})) }, { headers: { 'Cache-Control': 'no-store' } });
     traffic.httpRequests++;
-    requests.record(request);
+    const receipt=requests.record(request);
     const relay = new URL(request.url).pathname.endsWith('/peers/relay');
     const response = await env.PACKED_HOST.fetch(request);
-    if (!response.webSocket) return response;
+    if (!response.webSocket) {
+      if(response.status>=400){
+        let code=null;
+        if((response.headers.get('Content-Type')??'').includes('json'))try{const value=await response.clone().json();const candidate=value.error?.code;if(typeof candidate==='string'&&/^[A-Za-z0-9_]{1,96}$/.test(candidate))code=candidate;}catch{}
+        failed({sequence:receipt.sequence,category:receipt.category,status:response.status,code});
+      }
+      return response;
+    }
 
     if (relay) traffic.relayUpgrades++;
     const upstream = response.webSocket;
@@ -89,6 +102,7 @@ export default {
         to.send(event.data);
       });
       from.addEventListener('close', event => {
+        if(event.code!==1000)failed({sequence:receipt.sequence,category:receipt.category,webSocketClose:event.code});
         if (event.code === 1005) to.close();
         else if (event.code === 1006) to.close(1011, 'Test host WebSocket closed abnormally');
         else to.close(event.code, event.reason);

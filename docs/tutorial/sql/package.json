@@ -2,14 +2,18 @@
   "name": "tendriller-shared-inventory",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "engine": "node engine.mjs",
     "create": "node setup.mjs create",
     "init": "node setup.mjs init",
-    "enroll": "node setup.mjs enroll",
     "build": "node build.mjs",
     "peer": "node session.mjs",
-    "demo": "node demo.mjs"
+    "demo": "node demo.mjs",
+    "deploy": "npm run build && node publish.mjs",
+    "setup:prepare": "node account-setup.mjs prepare",
+    "setup:finish": "node account-setup.mjs finish"
   }
 }

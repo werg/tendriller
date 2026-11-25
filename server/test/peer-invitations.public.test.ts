@@ -1,4 +1,4 @@
-import { peerApi, peerApiJson, peerOwnerApi, participantMessage, participantPayload } from './peer-exchange';
+import { peerApi, peerApiJson, peerOwnerApi } from './peer-exchange';
 import { expect, it } from 'vitest';
 import { createPeerInvitationListener, PEER_INVITATION_LIMITS as LIMITS, PEER_INVITATION_PROTOCOL } from '../../contract/peers.mjs';
 import { api, create, inDO, req } from './helpers';
@@ -10,22 +10,22 @@ const headers = { Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PEER_INVITATIO
 
 it('accepts a late join through a hibernatable listener with no expiry timer or idle host requests', async () => {
   const page = await createTestPage({ application: { id: '0b4bafac142b1f628224036aeb8ef8ef2781259163d7f4ef6e8320527bde1116' } });
-  const listener = createPeerInvitationListener(page.ownerInvitationSocket('coordinator'), 'coordinator');
+  const listener = createPeerInvitationListener(page.ownerInvitationSocket('existing-peer'), 'existing-peer');
   try {
     await listener.ready;
     const idle = page.hostTraffic;
     await page.advance(10 * 60_000);
     expect(page.hostTraffic).toEqual(idle);
-    const guest = await page.participant(), invitation = { peerId: 'coordinator', channel: 'late-channel', requesterPeerId: 'new-peer' };
-    expect((await guest.exchange('ephemeral/invite', invitation)).status).toBe(200);
+    const guest = await page.participant(), invitation = { peerId: 'existing-peer', channel: 'late-channel', requesterPeerId: 'new-peer' };
+    expect((await guest.api('POST', 'peers/invite', invitation)).status).toBe(200);
     const reader = listener.invitations[Symbol.asyncIterator]();
     expect((await reader.next()).value).toEqual({ channel: 'late-channel', requesterPeerId: 'new-peer' });
-    expect((await guest.exchange('ephemeral/invite', invitation)).status).toBe(200);
+    expect((await guest.api('POST', 'peers/invite', invitation)).status).toBe(200);
     expect(listener.stats.receivedInvitations).toBe(1);
     expect(page.hostTraffic.httpRequests - idle.httpRequests).toBe(2);
     expect(page.hostTraffic.invitationUpgrades).toBe(1);
     expect(page.hostTraffic.rendezvousUpgrades).toBe(0);
-    expect((await guest.exchange('ephemeral/invite', { ...invitation, command: { sql: 'not a host command' } })).status).toBe(400);
+    expect((await guest.api('POST', 'peers/invite', { ...invitation, command: { sql: 'not a host command' } })).status).toBe(400);
     listener.close(); expect((await reader.next()).done).toBe(true);
   } finally { listener.close(); }
 });
@@ -95,7 +95,7 @@ it('limits invitation rate independently of consumed queue slots and resets only
   const listener = createPeerInvitationListener(page.ownerInvitationSocket('target'), 'target');
   await listener.ready;
   const reader = listener.invitations[Symbol.asyncIterator]();
-  const invite = (channel: string) => page.exchange('ephemeral/invite', { peerId: 'target', channel, requesterPeerId: 'source' });
+  const invite = (channel: string) => page.api('POST', 'peers/invite', { peerId: 'target', channel, requesterPeerId: 'source' });
   try {
     for (let i = 0; i < LIMITS.invitationsPerMinute; i++) {
       expect((await invite(`connection-${i}`)).status).toBe(200);

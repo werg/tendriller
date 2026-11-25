@@ -1,8 +1,8 @@
 import { beforeAll, expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { createPeerIdentity, participantGrant, signTransitionRequest, type AuthorityBundle } from '@chronolog/peer-generation/control';
+import { createSigningIdentity, signAppDescriptor, signMembership, encodeRecord } from '@chronolog/authority';
+import { authorityRecord } from '../../contract/authority.mjs';
 import { create, inDO } from './helpers';
-import { peerApiJson } from './peer-exchange';
 import { authenticateAgentToken } from '../src/access';
 import { selectProvider } from '../src/assistant-bindings';
 import { route } from '../src/router';
@@ -12,7 +12,7 @@ import { sha256Hex } from '../src/ids';
 const ORIGIN = 'https://tendriller.dev';
 const SCOPE = 'applications:read applications:write tendrils:list';
 const DEFINITION = {
-  id: 'http-gateway-test', version: '1', schema: null,
+  id: 'http-gateway-test', version: '1',
   queries: [{ name: 'notes', description: 'Notes', input: { type: 'null' } }],
   commands: [{ name: 'add', description: 'Add', input: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false } }],
 } as const;
@@ -25,20 +25,12 @@ beforeAll(async () => {
 
 it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP commands over real OAuth + DO admission', async () => {
   const handle = await create({ listener: false });
-  const device = await createPeerIdentity();
-  const authority = await peerApiJson<AuthorityBundle>(handle, 'control/configure', {
-    historyId: 'gw-history', executionManifestDigest: '12'.repeat(32), definition: DEFINITION,
-    schemaAdministrator: device.publicKey, epoch: 0, keyDigest: '34'.repeat(32),
-    members: [{ grant: participantGrant(device.publicKey, { administrator: true }) }],
-  });
-  const gen = await peerApiJson<{ id: string }>(handle, 'control/select', {
-    request: await signTransitionRequest({
-      applicationId: handle.application.id, profile: authority.descriptor.payload.profile,
-      policy: authority.descriptor.payload.policy, transitionId: crypto.randomUUID(),
-      requester: device.publicKey, coordinator: device.publicKey, expectedGeneration: null,
-      controlRevision: 0, reason: 'create', base: null,
-    }, device),
-  });
+  const device = await createSigningIdentity();
+  const descriptor=await signAppDescriptor({applicationId:handle.application.id,rootPrincipal:device.publicKey,authorityPublicKey:device.publicKey,
+    executionManifestDigest:'12'.repeat(32),finalityPolicy:{kind:'none'}},device);
+  const membership=await signMembership({applicationId:handle.application.id,revision:0,previous:null,authorTimeAfterMs:-1n,epoch:0,epochKeyDigest:'34'.repeat(32),
+    members:[{publicKey:device.publicKey,reader:true,writer:true,administrator:true,publisher:false,finalizer:false}]},device);
+  await inDO(handle.id,t=>t.db.set('application_authority',authorityRecord(encodeRecord({descriptor,memberships:[membership]}))));
 
   const account = await inDO(handle.id, t => t.db.get<string>('owner_account', ''));
   const grant = crypto.randomUUID();
@@ -72,23 +64,20 @@ it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP co
     const [client, server] = Object.values(new WebSocketPair());
     t.ctx.acceptWebSocket(server, ['application-mcp']);
     server.serializeAttachment({ tag: 'application-mcp', adapterHash: hash, deviceId: device.publicKey, connectionEpoch: 1 });
-    client.addEventListener('message', event => {
+    client.addEventListener('message', async event => {
       const msg = JSON.parse(event.data as string);
       if (msg.type !== 'call') return;
+      if (msg.kind === 'command') recordedOps.set(msg.operationId,{operationId:msg.operationId,text:msg.input.text});
+      const revision={digest:await sha256Hex(JSON.stringify([...recordedOps.values()])),view:'local',executionManifestDigest:'12'.repeat(32),policyDigest:'34'.repeat(32)};
       if (msg.kind === 'query') {
-        client.send(JSON.stringify({ type: 'result', id: msg.id, value: { revision: { generation: gen.id, sequence: recordedOps.size }, value: [...recordedOps.values()] } }));
-      } else if (msg.kind === 'command') {
-        recordedOps.set(msg.operationId, { operationId: msg.operationId, text: msg.input.text });
-        client.send(JSON.stringify({
-          type: 'result', id: msg.id,
-          value: { state: { status: 'applied', outcome: msg.input.text === 'reject' ? 'rejected' : 'accepted', operationId: msg.operationId, author: device.publicKey, generation: gen.id, sequence: recordedOps.size, attemptId: 'att-' + recordedOps.size } },
-        }));
-      } else if (msg.kind === 'operation') {
-        const hit = recordedOps.get(msg.operationId);
-        client.send(JSON.stringify({
-          type: 'result', id: msg.id,
-          value: hit ? { state: { status: 'applied', outcome: hit.text === 'reject' ? 'rejected' : 'accepted', operationId: msg.operationId, author: device.publicKey, generation: gen.id, sequence: 1, attemptId: 'att-1' } } : null,
-        }));
+        client.send(JSON.stringify({type:'result',id:msg.id,value:{revision,value:[...recordedOps.values()]}}));
+      } else if (msg.kind === 'command' || msg.kind === 'inspect') {
+        const hit=recordedOps.get(msg.operationId),proposalId=await sha256Hex(msg.operationId),operationId='signed-'+msg.operationId;
+        const reference={applicationId:handle.application.id,deviceId:device.publicKey,operationId,proposalId};
+        const state=hit?{applicationId:handle.application.id,author:device.publicKey,operationId,proposalId,stored:true,pending:null,
+          materialized:{proposalId,revision,outcome:hit.text==='reject'?'rejected':'accepted',rejectionCode:hit.text==='reject'?'fixture_rejection':null,failingStatementIndex:null},
+          retained:[],finalized:false,excluded:false}:null;
+        client.send(JSON.stringify({type:'result',id:msg.id,value:hit?{requestOperationId:msg.operationId,state,operationReference:reference}:null}));
       }
     });
     client.accept();
@@ -147,16 +136,16 @@ it('serves outbound HTTPS polling gateway (/v1/apps/:appId/*) and batched MCP co
       }),
     }), testEnv);
     expect(batchRes.status).toBe(200);
-    const batchJson = await batchRes.json<{ results: { ok: boolean; operationId: string; result: { outcome: string } }[] }>();
-    expect(batchJson.results.map(r => [r.ok, r.operationId, r.result.outcome])).toEqual([
-      [true, 'http-op-1', 'applied'],
-      [true, 'http-op-2', 'applied'],
+    const batchJson = await batchRes.json<{ results: { ok: boolean; operationId: string; result: { materialized: {outcome: string} } }[] }>();
+    expect(batchJson.results.map(r => [r.ok, r.operationId, r.result.materialized.outcome])).toEqual([
+      [true, 'http-op-1', 'accepted'],
+      [true, 'http-op-2', 'accepted'],
     ]);
 
     // 3. HTTPS Polling Gateway operation inspect + query + events
     const inspectRes = await route(new Request(`${ORIGIN}/v1/apps/${handle.application.id}/operations/http-op-1`, { headers: authHeader }), testEnv);
     expect(inspectRes.status).toBe(200);
-    expect((await inspectRes.json<{ outcome: string }>()).outcome).toBe('applied');
+    expect((await inspectRes.json<{ materialized: {outcome: string} }>()).materialized.outcome).toBe('accepted');
 
     const queryRes = await route(new Request(`${ORIGIN}/v1/apps/${handle.application.id}/query`, {
       method: 'POST', headers: authHeader, body: JSON.stringify({ query: 'notes', input: null }),

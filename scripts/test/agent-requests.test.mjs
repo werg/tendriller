@@ -4,7 +4,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as p from '@chronolog/peer-session';
-import { openNativeDevice, openNativeApplication } from '@chronolog/peer-session/native';
+import { authorityForDevices } from '../../collaboration/test/physical-fixture.mjs';
+import { openNativeDevice } from '@chronolog/peer-session/native';
 import { agentRequestCommands, agentRequestQueries, consumerPresence, readAgentInbox,
   requestDelivery } from '../../docs/tutorial/helpers/agent-requests.mjs';
 
@@ -17,40 +18,23 @@ async function fixture(t) {
   let device = await openNativeDevice({ path, create: true }), session;
   t.after(async () => { try { if (session) await session.close(); else await device.close(); }
     finally { await rm(directory, { recursive: true, force: true }); } });
-  const signer = await p.createPeerIdentity(), epochKey = crypto.getRandomValues(new Uint8Array(32));
-  const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest());
-  const descriptor = await p.signApplicationDescriptor({ applicationId: '73'.repeat(32),
-    historyId: 'agent-requests-test', profile: 'peer-generation-v1', policy: 'eligible-members-v1',
-    controlPublicKey: signer.publicKey, schemaAdministrator: device.identity.publicKey,
-    definitionDigest: await p.applicationDefinitionDigest(definition),
-    executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), schemaDigest: null }, signer);
-  const control = await p.signControlRevision({ applicationId: descriptor.payload.applicationId,
-    profile: descriptor.payload.profile, policy: descriptor.payload.policy, revision: 0,
-    previous: null, epoch: 0, keyDigest: await p.bytesDigest(epochKey), recoveryFloor: null,
-    grants: [p.participantGrant(device.identity.publicKey, { administrator: true, publisher: true })] }, signer);
-  const registry = await p.createGenerationRegistry({ store: new p.MemoryBytesStore(),
-    descriptor, controls: [control], signer });
-  await registry.select(await p.signTransitionRequest({ applicationId: descriptor.payload.applicationId,
-    profile: descriptor.payload.profile, policy: descriptor.payload.policy, transitionId: 'initial',
-    expectedGeneration: null, coordinator: device.identity.publicKey, requester: device.identity.publicKey,
-    controlRevision: 0, reason: 'create', base: null }, device.identity));
-  const open = async () => openNativeApplication({ device, definition,
-    authority: await registry.read(), epochKeys: new Map([[0, epochKey]]) });
+  const { authority, key: epochKey } = await authorityForDevices([device], { applicationId: '73'.repeat(32) });
+  const open = async () => p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
   session = await open();
   return { get session() { return session; },
     async reopen() { await session.close(); session = undefined;
       device = await openNativeDevice({ path }); session = await open(); },
     async command(name, input, operationId) {
       const operation = await session.command(name, input, { operationId });
-      const outcome = await operation.applied({ signal: AbortSignal.timeout(5000) });
+      const outcome = await operation.materialized({ signal: AbortSignal.timeout(5000) });
       assert.equal(outcome.outcome, 'accepted'); return operation;
     } };
 }
 
 test('public native session retains full request identity, author time, receipt, answer and heartbeat after reopen', { timeout: 20_000 }, async t => {
   const f = await fixture(t), operationId = 'namespaced-request-' + 'x'.repeat(350);
-  const author = f.session.deviceId, startedAtMs = Date.now();
-  await assert.rejects(f.session.command('agentRequest', {
+  const author = f.session.identity.publicKey, startedAtMs = Date.now();
+  await assert.rejects(async () => f.session.command('agentRequest', {
     recipient: 'z'.repeat(64), topic: 'analysis', text: 'Invalid address',
   }, { operationId: 'invalid-address' }), /AGENT_REQUEST_IDENTITY_INVALID/);
   await f.command('agentRequest', { recipient: author, topic: 'analysis', text: 'What changed?' }, operationId);
@@ -107,7 +91,7 @@ test('pagination binds receipt/answer to both request author and full ID, reject
   assert.equal(requestDelivery(result[1]), 'awaiting-receipt');
   assert.equal(read(rows.slice(2)).requests.length, 0, 'excluded/orphan facts cannot resurrect a request');
   assert.equal(requestDelivery(read(rows.slice(0, 2)).requests[0]), 'awaiting-receipt',
-    're-reading a selected prefix drops receipts and answers outside it');
+    're-deriving the coherent snapshot removes receipts and answers absent from it');
 });
 
 test('late readers see announcements, stale age changes without an event, restart replaces run and disconnected observations stay unknown', () => {

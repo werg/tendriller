@@ -4,6 +4,18 @@ import { connectApplicationOwner, SessionError } from '@chronolog/peer-session/b
 import { BROWSER_OWNER_PROTOCOL, ownerChannelName, ownerWorkerName, createBroadcastEndpoint, isOwnerAnnouncement } from './browser-transport.mjs';
 import { createSharedRootEndpoint, createRootRtcEndpoint } from './browser-root.mjs';
 
+/** Cancellation/deadlines belong to the local attachment attempt, never the hello wire payload. */
+async function connectFacade(endpoint, {applicationId,context}, {signal,timeoutMs=30000}={}) {
+  signal?.throwIfAborted(); let cancelled=false, timer, abort;
+  const opening=connectApplicationOwner(endpoint,{applicationId,...(context===undefined?{}:{context})});
+  void opening.then(session=>{if(cancelled)void session.detach().catch(()=>{});},()=>{});
+  try { return await Promise.race([opening,new Promise((_,reject)=>{
+    abort=()=>{cancelled=true;reject(signal.reason);}; signal?.addEventListener('abort',abort,{once:true});
+    timer=setTimeout(()=>{cancelled=true;reject(new SessionError('OWNER_UNREACHABLE'));},timeoutMs);
+    if(signal?.aborted)abort();
+  })]); } finally { clearTimeout(timer);signal?.removeEventListener('abort',abort); }
+}
+
 function waitFor(endpoint,predicate,{signal,timeoutMs=30000}={}){
   signal?.throwIfAborted();return new Promise((resolve,reject)=>{
     const finish=(error,value)=>{clearTimeout(timer);endpoint.removeEventListener('message',message);endpoint.removeEventListener('error',failed);signal?.removeEventListener('abort',abort);error?reject(error):resolve(value);};
@@ -48,8 +60,7 @@ export async function openBrowserOwner(options){
   const timeoutMs=options.timeoutMs??30000;
   if(!Number.isFinite(timeoutMs)||timeoutMs<=0)throw new SessionError('OWNER_CONFIGURATION_INVALID','Opening timeout must be finite and positive');
   const deadline=performance.now()+timeoutMs;
-  const handshake={applicationId:options.applicationId,definitionId:options.definitionId,
-    definitionVersion:options.definitionVersion,context:options.context??{},signal:options.signal,timeoutMs:options.timeoutMs};
+  const handshake={applicationId:options.applicationId,context:options.context??{}};
   if(!shared)return elected(url,options,handshake,deadline);
   for(let attempt=0;;attempt++){
     try{
@@ -131,7 +142,8 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     // Pause the local fence synchronously, before promises or RTC cleanup. A
     // hidden page retains its RTC provider and can still process allowed inputs.
     try{if(transport.park)transport.park({frozen});else transport.suspend();}catch{}
-    try{void Promise.resolve(session.suspend()).catch(()=>{});}catch{}
+    // Parking observation only pauses this document's liveness clock. Suspending
+    // the authenticated attachment would reject queries and end live streams.
   }
   function resumeObservation(){
     if(detached||!observationPaused||suspended||explicitSuspended||away())return Promise.resolve(session);
@@ -173,7 +185,7 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     document?.removeEventListener?.('visibilitychange',visibility);
     document?.removeEventListener?.('freeze',freeze);
     document?.removeEventListener?.('resume',resume);
-    session.signal.removeEventListener('abort',ended);globalThis.removeEventListener?.('pagehide',leaving);
+    session.signal.removeEventListener('abort',ended);options.signal?.removeEventListener('abort',cancelAttachment);globalThis.removeEventListener?.('pagehide',leaving);
     releasing=(async()=>{
       const failures=[];
       try{
@@ -198,7 +210,10 @@ function facade({session,transport,channel,worker,route,options,provider:initial
     transport?.relinquish();void release().catch(()=>{});
   };
   globalThis.addEventListener?.('pagehide',leaving);
+  const cancelAttachment=()=>{void Promise.resolve(session.detach()).catch(()=>{}).finally(()=>release().catch(()=>{}));};
+  options.signal?.addEventListener('abort',cancelAttachment,{once:true});
   session.signal.addEventListener('abort',ended,{once:true});
+  if(options.signal?.aborted)cancelAttachment();
   if(session.signal.aborted)ended();
   function changeResidency(nextSuspended){
     explicitSuspended=nextSuspended;
@@ -271,7 +286,7 @@ async function sharedRoute(url,options,handshake,budgetMs){
     rtc=createRootRtcEndpoint(worker.port,{profileId:options.profileId,rootId:id});provider=registerBrowserRtcProvider(rtc,{signal});
     const active=await ready;checkOpening();transport=createSharedRootEndpoint(worker.port,{profileId:options.profileId,rootId:id,
       ownerInstanceId:active.ownerInstanceId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000,rtc});
-    const session=await connectApplicationOwner(transport,{...handshake,signal});checkOpening();
+    const session=await connectFacade(transport,handshake,{signal,timeoutMs:options.timeoutMs??30000});checkOpening();
     return facade({session,transport,provider,worker,route:'shared',options,releaseRootLock});
   }catch(error){
     try{
@@ -291,7 +306,7 @@ async function attachExisting(options,handshake,waitMs){
     let active;try{active=await ready;}catch(error){if(error?.code==='OWNER_UNREACHABLE'){channel.close();return null;}throw error;}
     transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,onReplaced:options.onOwnerReplaced,livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
     const provider=registerBrowserRtcProvider(transport.rtc,{signal:options.signal??new AbortController().signal});
-    let session;try{session=await connectApplicationOwner(transport,handshake);}catch(error){await provider.close();throw error;}
+    let session;try{session=await connectFacade(transport,handshake,{signal:options.signal,timeoutMs:options.timeoutMs??30000});}catch(error){await provider.close();throw error;}
     return facade({session,transport,provider,channel,route:'existing',options});
   }catch(error){await transport?.close();channel.close();throw error;}
 }
@@ -346,7 +361,7 @@ async function elected(url,options,handshake,deadline){
         transport=createBroadcastEndpoint(channel,active,{profileId:options.profileId,
           onReplaced:value=>{if(session)options.onOwnerReplaced?.(value);},livenessTimeoutMs:options.livenessTimeoutMs,requestTimeoutMs:options.timeoutMs??30000});
         provider=registerBrowserRtcProvider(transport.rtc,{signal:attempt.signal});
-        session=await connectApplicationOwner(transport,{...handshake,signal:options.signal?AbortSignal.any([options.signal,attempt.signal]):attempt.signal});check();
+        session=await connectFacade(transport,handshake,{signal:options.signal?AbortSignal.any([options.signal,attempt.signal]):attempt.signal,timeoutMs:options.timeoutMs??30000});check();
       }catch(error){
         let cleanupFailed=false;try{await whileOpening(closeRoute());}catch{cleanupFailed=true;}
         if(!(error===expired||['APPLICATION_WORKER_READY_TIMEOUT','OWNER_UNREACHABLE','ENDPOINT_STALE'].includes(error?.code??error?.message)))throw error;

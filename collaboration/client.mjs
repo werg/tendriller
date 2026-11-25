@@ -32,12 +32,12 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
   const incarnation = endpoint?.endpointIncarnation ?? `native-${crypto.randomUUID()}`;
   const currentRun = runId ?? context.runId ?? `run-${crypto.randomUUID()}`;
   let detached = false;
-  const source = { deviceId: session.deviceId, endpointId: endpoint?.endpointId ?? null,
+  const source = { deviceId: session.identity.publicKey, endpointId: endpoint?.endpointId ?? null,
     endpointIncarnation: incarnation, ownerInstanceId: endpoint?.ownerInstanceId ?? null, runId: currentRun,
     ...context, evidence: endpoint ? 'owner-bound' : 'signer-context', contextEvidence: 'caller-asserted' };
   function active() { if (detached) throw new CollaborationError('ENDPOINT_STALE'); }
   async function submit(name, input, options = {}) {
-    active(); const localOperationId = identifier(options.operationId ?? crypto.randomUUID(), 'operation');
+    active(); const localOperationId = options.operationId ?? crypto.randomUUID();
     let reference = operationReference(session, localOperationId);
     const operationId = reference.operationId;
     const identities = { operationId, localOperationId, ...Object.fromEntries([
@@ -45,20 +45,20 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
     ].filter(key => input[key] !== undefined).map(key => [key, identifier(input[key], key)])),
     ...(name === 'collab.request' ? { taskId: input.interactionId } : {}) };
     const submission = immutableJson({ command: name, input, identities,
-      ...(options.basedOn ? { basedOn: options.basedOn } : {}), source });
+      ...(options.authorTimestampMs !== undefined ? { authorTimestampMs: options.authorTimestampMs.toString() } : {}), source });
     try {
       // Persist the generated identities and original immutable input before the
       // first uncertain boundary. The owner receives that exact input snapshot.
-      store?.retainOperation(reference, submission);
-      const operation = await session.command(name, submission.input, { ...options, operationId,
-        ...(submission.basedOn ? { basedOn: submission.basedOn } : {}) });
-      const saved = await operation.get().catch(() => null);
+      store?.writeDraft(submission, `submission:${operationId}`);
+      const operation = await session.command(name, submission.input, { operationId, ...(submission.authorTimestampMs !== undefined ? { authorTimestampMs: BigInt(submission.authorTimestampMs) } : {}) });
+      const saved = await operation.inspect();
       reference = operationReference(session, operationId, saved);
       store?.retainOperation(reference, submission);
-      // Avoid mutating a frozen public handle or manufacturing an applied outcome.
+      // Storage success never fabricates materialization, retention or finality.
       return Object.freeze({ operationId, reference, identities: submission.identities, submission,
-        get: (...args) => operation.get(...args), applied: (...args) => operation.applied(...args),
-        shared: (...args) => operation.shared(...args),
+        stored: operation.stored, proposalId: reference.proposalId,
+        inspect: (...args) => operation.inspect(...args), materialized: (...args) => operation.materialized(...args),
+        retained: (...args) => operation.retained(...args), finalized: (...args) => operation.finalized(...args),
       });
     } catch (error) { throw submissionFailure(error, reference, submission); }
   }
@@ -67,27 +67,21 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
   const inspect = async taskId => { active(); return session.query('collab.task', { taskId: identifier(taskId) }); };
   function operationScope(reference) {
     active();
-    if (!reference || reference.applicationId !== session.applicationId ||
-        typeof reference.historyId !== 'string' || !reference.historyId || reference.historyId !== session.historyId)
-      throw new CollaborationError('OPERATION_SCOPE_MISMATCH', 'Select the original application and verified history before inspecting or retrying');
-    identifier(reference.operationId, 'operation'); signerId(reference.author);
+    if (!reference || reference.applicationId !== session.applicationId) throw new CollaborationError('OPERATION_SCOPE_MISMATCH');
+    if (typeof reference.operationId !== 'string' || !reference.operationId || reference.operationId.length > 512 || /[\u0000-\u001f\u007f]/u.test(reference.operationId)) throw new CollaborationError('OPERATION_SCOPE_MISMATCH');
+    signerId(reference.author);
+    if (reference.proposalId !== undefined) signerId(reference.proposalId);
   }
   async function inspectOperation(reference) {
     operationScope(reference);
-    const inspected = await session.operations.inspect(reference.operationId, { author: reference.author });
-    if (!inspected) return null;
-    const { state, attempt } = inspected, header = attempt?.payload?.header;
-    // The saved/abandoned state need not contain an author. Use the inspected
-    // signed attempt, never the current signer or a caller's provenance label.
-    if (!header || header.applicationId !== reference.applicationId || header.author !== reference.author ||
-        header.operationId !== reference.operationId || state?.operationId !== reference.operationId ||
-        typeof attempt.id !== 'string' || !attempt.id || state.attemptId !== attempt.id ||
-        typeof header.generation !== 'string' || !header.generation || state.generation !== header.generation ||
-        (state.author !== undefined && state.author !== header.author) ||
-        (reference.attemptId !== undefined && reference.attemptId !== attempt.id) ||
-        (reference.generation !== undefined && reference.generation !== header.generation))
-      throw new CollaborationError('OPERATION_REFERENCE_CONFLICT', 'The retained reference does not match the original signed attempt');
-    return inspected;
+    // Look up through the owning public journal, then compare authenticated provenance.
+    const operation = await session.operations.get(reference.proposalId ?? reference.operationId);
+    if (!operation) return null;
+    const state = await operation.inspect();
+    if (state.applicationId !== reference.applicationId || state.author !== reference.author || state.operationId !== reference.operationId ||
+        !/^[a-f0-9]{64}$/u.test(state.proposalId) || reference.proposalId !== undefined && state.proposalId !== reference.proposalId)
+      throw new CollaborationError('OPERATION_REFERENCE_CONFLICT', 'The retained reference does not match the authenticated authored proposal');
+    return state;
   }
   return Object.freeze({ session, endpoint, runId: currentRun, source: Object.freeze(source),
     request(input, options) {
@@ -97,7 +91,6 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
         responsePolicy: input.responsePolicy ?? 'one' }, options);
     },
     claim(input, options) { return submit('collab.claim', fence({ ...input, claimId: input.claimId ?? crypto.randomUUID(), taskVersion: input.taskVersion ?? 1, expectedEpoch: input.expectedEpoch ?? 0 }), options); },
-    rebind(input, options) { return submit('collab.rebind', fence({ ...input, claimId: input.claimId ?? crypto.randomUUID(), taskVersion: input.taskVersion ?? 1 }), options); },
     handoff(input, options) { return submit('collab.handoff', { ...input, actionId: input.actionId ?? crypto.randomUUID() }, options); },
     result(input, options) { return submit('collab.result', fence({ ...input, resultId: input.resultId ?? crypto.randomUUID(),
       taskVersion: input.taskVersion ?? 1, outcome: input.outcome ?? 'succeeded', content: canonicalJson(input.content) }), options); },
@@ -123,7 +116,7 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
         for (;;) {
           const snapshot = await inspect(taskId), task = snapshot.value.task;
           if (!task) throw new CollaborationError('INTERACTION_UNAVAILABLE', 'The selected history does not contain this request', { taskId });
-          if (['completed','cancelled','needsReview'].includes(task.status)) return { ...snapshot.value, revision: snapshot.revision };
+          if (['completed','cancelled'].includes(task.status)) return { ...snapshot.value, revision: snapshot.revision, finality: snapshot.revision.view === 'final' ? 'finalized' : 'pending' };
           const change = await next;
           if (change.done) throw new CollaborationError('OWNER_UNREACHABLE');
           next = changes.next(); void next.catch(() => {});
@@ -133,11 +126,11 @@ export function createCollaborationClient({ session, endpoint = session?.endpoin
     inspectOperation,
     async retry(reference) {
       operationScope(reference);
-      if(reference.author!==session.deviceId)
+      if(reference.author!==session.identity.publicKey)
         throw new CollaborationError('ORIGINAL_SIGNER_REQUIRED', 'Exact retry must use the original owning journal');
       if (!await inspectOperation(reference))
         throw new CollaborationError('OPERATION_UNAVAILABLE', 'The original owning journal does not retain this operation; do not create a replacement');
-      return session.retry(reference.operationId);
+      return session.operations.retry(reference.proposalId ?? reference.operationId);
     },
     async detach() { if(detached)return; detached=true; if(typeof session.detach==='function')await session.detach(); },
   });

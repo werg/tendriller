@@ -1,52 +1,27 @@
 import { browserProfileId } from './helpers/browser-profile.mjs';
-import { verifyAuthorityBundle } from '@chronolog/peer-session';
-import { openBrowserDevice, openBrowserApplication } from '@chronolog/peer-session/worker';
-import { createPeersClient } from '@tendriller/core/peers';
+import { bootstrapBrowser } from './helpers/browser-bootstrap.mjs';
+import { createApplicationSession } from '@chronolog/peer-session';
+import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
 import { participateApplication } from '@tendriller/core/participation';
 import { definition } from './domain.mjs';
-
 serveBrowserOwner({ async load({ signal }) {
-const configuration = await fetch(new URL('./configuration.json', import.meta.url), { signal }).then(response => {
-  if (!response.ok) throw Error('Application configuration is unavailable.');
-  return response.json();
-});
-const profileId = browserProfileId(configuration.applicationId);
-return { profileId,
-  async createIdentity() {
-    const device = await openBrowserDevice({ name: profileId, create: true });
-    try { return device.identity.publicKey; } finally { await device.close(); }
-  },
-  async openSession({ signal, openDirectConnection }) {
-    if (new URL(configuration.page_url).origin !== self.location.origin)
-      throw Error('Enroll and connect from the signed publication at its own host origin.');
-    const device = await openBrowserDevice({ name: profileId });
-    let session;
-    try {
-      const base = new URL('_tendril/', configuration.page_url);
-      const peers = createPeersClient({ base: base.href, applicationId: configuration.applicationId,
-        async request(path, { method = 'GET', body, signal: requestSignal } = {}) {
-          const response = await fetch(new URL(path, base), { method, signal: requestSignal, credentials: 'same-origin', cache: 'no-store',
-            ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
-          const value = await response.json();
-          if (!response.ok) throw Object.assign(Error(value.error?.message || `Host request failed (${response.status})`), {
-            code: value.error?.code, status: response.status });
-          return value;
-        },
-      });
-      const authority = await peers.application();
-      const verified = await verifyAuthorityBundle(authority, configuration.descriptor);
-      if (!verified.grant(device.identity.publicKey)?.reader)
-        throw Object.assign(Error('This browser is not enrolled yet. The connection component requests access and opens the one-tap approval on the service origin; keep the native peer running to commit it.'), { code: 'DEVICE_NOT_ENROLLED' });
-      signal.throwIfAborted();
-      // Queues sized for multi-piece live replies (each signal is at most 16 KiB): a
-      // page reading a reply of a few hundred KB must not overflow its subscription.
-      session = await openBrowserApplication({ device, definition, authority,
-        signals: { localEcho: true, delivery: 'neighbors', limits: { maxSubscriptions: 256, maxQueuedSignals: 1024, maxQueuedBytes: 8 * 1024 * 1024 } } });
-      const control = session.connectControlParticipant({ exchange: (message, options) => peers.exchange(message, options) });
-      await participateApplication(session, { peers, control, openDirectConnection });
-      return { session, control };
-    } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
-  },
-};
-}});
+  const response = await fetch(new URL('./configuration.json', import.meta.url), { signal });
+  if (!response.ok) throw Error('Application configuration is unavailable');
+  const configuration = await response.json(), profileId = browserProfileId(configuration.applicationId);
+  return { profileId,
+    async createIdentity() { const device = await openBrowserDevice({ name: profileId, create: true }); try { return device.identity.publicKey; } finally { await device.close(); } },
+    async openSession({ signal, openDirectConnection }) {
+      // create:true initializes an empty profile only; retained signer/binding mismatches always fail closed.
+      const device = await openBrowserDevice({ name: profileId, create: true });
+      let session, participation;
+      try {
+        const { authority, peers } = await bootstrapBrowser({ configuration, device, signal });
+        session = await createApplicationSession({ device, definition, authority });
+        participation = participateApplication(session, { peers, openDirectConnection });
+        Object.defineProperty(session, 'participation', { value: participation });
+        return { session, async close() { await participation.close(); } };
+      } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
+    },
+  };
+} });

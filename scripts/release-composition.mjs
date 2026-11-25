@@ -7,6 +7,30 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync
 import { basename, dirname, join, resolve } from 'node:path';
 import { TUTORIAL_DOWNLOAD, TUTORIAL_FILES, tutorialSource, copyTutorialSources } from './onboarding.mjs';
 import { verifyRuntimeManifest } from './runtime-manifest.mjs';
+import { readBrowserSqlPin } from './session-pin.mjs';
+import { isDeepStrictEqual } from 'node:util';
+
+export const FIRST_APP_PROFILES = Object.freeze({
+  events: Object.freeze({ session: 'session', packages: Object.freeze(['sdk', 'tools', 'authority', 'session']) }),
+  sql: Object.freeze({ session: 'session-sql-browser', packages: Object.freeze(['sdk', 'tools', 'authority', 'session-sql-browser']) }),
+});
+
+export function verifyFirstAppProfiles(composition, manifest) {
+  if (!isDeepStrictEqual(composition.profiles, FIRST_APP_PROFILES))
+    throw Error('The current release requires exact events and browser SQL composition profiles.');
+  for (const [profile, spec] of Object.entries(FIRST_APP_PROFILES)) {
+    const kit = profile === 'events' ? manifest.first_app : manifest.first_apps?.sql;
+    const file = `tendriller-first-app-${profile === 'sql' ? 'sql-' : ''}${manifest.version}.tgz`;
+    if (kit?.profile !== profile || kit.file !== file || !isDeepStrictEqual(kit.packages, spec.packages) ||
+        kit.build_dependency !== 'esbuild@0.28.2' ||
+        manifest.artifacts?.filter(item => item.role === (profile === 'events' ? 'first-app' : 'first-app-sql') && item.file === file).length !== 1)
+      throw Error(`Release discovery must bind its exact ${profile} first-app kit and selected packages.`);
+  }
+  const authority = composition.chronolog?.authority;
+  cleanIdentity(authority ?? {}, 'werg/chronolog-db', 'Composition authority');
+  for (const role of ['session', 'session-sql-browser'])
+    cleanIdentity(composition.chronolog?.[role] ?? {}, 'werg/chronolog-db', `Composition ${role}`, authority);
+}
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
@@ -14,9 +38,9 @@ const writeJson = (path, value) => writeFileSync(path, JSON.stringify(value, nul
 const fail = message => { throw Error(message); };
 const sha = /^[0-9a-f]{40}$/;
 const roles = ['sdk', 'runtime', 'engine', 'tools'];
-export const REQUIRED_SDK_EXPORTS = ['.', './contract', './onboarding', './setup', './pairing', './application', './signals', './peers',
+export const REQUIRED_SDK_EXPORTS = ['.', './contract', './onboarding', './setup', './authority', './application', './signals', './peers',
   './assistant', './archive', './release-verify', './probe', './serverless',
-  './browser-owner', './worker-owner', './native-owner', './ipc', './outbox', './participation', './native-rtc',
+  './browser-owner', './worker-owner', './native-owner', './ipc', './participation', './native-rtc',
   './transport-diagnostics', './diagnostics', './collaboration', './schema'];
 
 export const COMPOSITION_V2_PROFILES = Object.freeze({
@@ -85,6 +109,33 @@ export function packedArchive(path) {
   return { read, json: parsed, package: parsed('package.json'), has: name => entries.includes(prefix + name) };
 }
 
+export function verifyBrowserSqlSession(archive, expected) {
+  const proof = archive.json('provenance.json');
+  const identity = cleanIdentity(proof, 'werg/chronolog-db', 'Browser SQL session dependency', expected);
+  if (archive.package.name !== '@chronolog/peer-session' || proof.format !== 'chronolog-peer-session-package/v1' ||
+      proof.profile !== 'chronolog-crdt-v1' || JSON.stringify(proof.sqlEngines) !== JSON.stringify(['browser']) ||
+      proof.nativeRtc !== false || proof.nativeEngine !== undefined || archive.package.os || archive.package.cpu ||
+      archive.package.libc || archive.package.imports || archive.package.dependencies?.werift ||
+      archive.package.dependencies?.['fs-native-extensions'] || archive.has('engine/index.cjs') || archive.has('engine/build/Release/doltlite.node'))
+    fail('Browser SQL requires a portable browser-only session archive, without native SQL or RTC.');
+  packageExports(archive, ['.', './browser', './worker', './sql', './sql-browser', './websocket'], 'Browser SQL session');
+  if (!proof.sha256 || typeof proof.sha256 !== 'object' || Array.isArray(proof.sha256) || !Object.keys(proof.sha256).length)
+    fail('Browser SQL session must bind every packaged execution input.');
+  for (const [file, hash] of Object.entries(proof.sha256)) {
+    if (!/^[a-f0-9]{64}$/.test(hash) || file.startsWith('/') || file.split('/').includes('..') || digest(archive.read(file)) !== hash)
+      fail(`Browser SQL session input digest mismatch: ${file}`);
+  }
+  for (const file of ['wasm/manifest.json', 'wasm/sqlite3.wasm', 'wasm/sqlite3.mjs', 'wasm/sqlite3-opfs-async-proxy.js'])
+    if (!proof.sha256[file]) fail(`Browser SQL session is missing verified WASM input: ${file}`);
+  const manifest = archive.json('wasm/manifest.json');
+  const wasm = archive.read('wasm/sqlite3.wasm'), loader = archive.read('wasm/sqlite3.mjs');
+  if (manifest.wasmSha256 !== digest(wasm) || manifest.loaderSha256 !== digest(loader) || manifest.wasmBytes !== wasm.length ||
+      proof.wasmEngine?.wasmSha256 !== manifest.wasmSha256 || proof.wasmEngine?.loaderSha256 !== manifest.loaderSha256 ||
+      proof.wasmEngine?.wasmBytes !== manifest.wasmBytes || proof.wasmEngine?.toolchain !== manifest.toolchain)
+    fail('Browser SQL WASM assets must match their engine manifest and session provenance.');
+  return identity;
+}
+
 function packageExports(archive, required, label) {
   const exports = archive.package.exports;
   if (!exports || required.some(name => {
@@ -120,7 +171,7 @@ export function verifyReleaseArtifacts(root, manifest) {
       manifest.source_tree !== identity.sourceTree || !Number.isSafeInteger(manifest.contract) ||
       manifest.contract < 1 || !/^[a-f0-9]{64}$/.test(manifest.runtime ?? ''))
     fail('Release manifest must identify the exact clean source tree, contract and runtime.');
-  const required = [...roles, 'session', 'starter', 'composition', 'first-app', 'core-provenance', 'tools-provenance', 'plugin'];
+  const required = [...roles, 'authority', 'session', 'session-sql-browser', 'starter', 'composition', 'first-app', 'first-app-sql', 'core-provenance', 'tools-provenance', 'plugin'];
   if (!Array.isArray(manifest.artifacts) || manifest.artifacts.length !== required.length + (manifest.artifacts.some(item => item.role === 'deployment') ? 1 : 0) ||
       required.some(role => manifest.artifacts.filter(item => item.role === role).length !== 1))
     fail('Release manifest must contain the complete SDK/runtime/engine/tools/session/starter composition and its proofs.');
@@ -138,7 +189,7 @@ export function verifyReleaseArtifacts(root, manifest) {
   }
   const byRole = Object.fromEntries(manifest.artifacts.map(item => [item.role, item]));
   if (manifest.composition?.file !== byRole.composition.file || manifest.first_app?.file !== byRole['first-app'].file ||
-      manifest.first_app?.profile !== 'events' || JSON.stringify(manifest.first_app?.packages) !== JSON.stringify(['sdk', 'tools', 'session']))
+      manifest.first_app?.profile !== 'events' || JSON.stringify(manifest.first_app?.packages) !== JSON.stringify(['sdk', 'tools', 'authority', 'session']))
     fail('Release discovery must reference its exact composition and complete events first-app kit.');
   const composition = json(join(dist, byRole.composition.file));
   const { id, ...body } = composition;
@@ -147,14 +198,19 @@ export function verifyReleaseArtifacts(root, manifest) {
       composition.contract !== manifest.contract || composition.runtime !== manifest.runtime)
     fail('Release composition identity does not match the manifest and its contents.');
   cleanIdentity(composition.core ?? {}, 'werg/tendriller', 'Release composition source', identity);
-  for (const role of ['session', 'generation'])
+  for (const role of ['session', 'authority'])
     cleanIdentity(composition.chronolog?.[role] ?? {}, 'werg/chronolog-db', `Release composition ${role}`);
-  const componentRoles = [...roles, 'session', 'starter'];
+  verifyFirstAppProfiles(composition, manifest);
+  const componentRoles = [...roles, 'authority', 'session', 'session-sql-browser', 'starter'];
   if (!Array.isArray(composition.components) || composition.components.length !== componentRoles.length ||
       componentRoles.some(role => {
         const entries = composition.components.filter(item => item.role === role);
         return entries.length !== 1 || ['file', 'size', 'sha256'].some(key => entries[0][key] !== byRole[role][key]);
       })) fail('Release manifest and composition must bind the same complete component graph.');
+  const sqlPin = readBrowserSqlPin(root);
+  if (sqlPin.sha256 !== byRole['session-sql-browser'].sha256)
+    fail('Release browser SQL archive must match its explicit source pin.');
+  verifyBrowserSqlSession(packedArchive(join(dist, byRole['session-sql-browser'].file)), composition.chronolog.authority);
   const core = json(join(dist, byRole['core-provenance'].file));
   const tools = json(join(dist, byRole['tools-provenance'].file));
   cleanIdentity(core, 'werg/tendriller', 'Release core provenance', identity);
@@ -188,7 +244,7 @@ export function prepareRelease({ root, version, contract }) {
   }
   packageExports(packages.sdk, REQUIRED_SDK_EXPORTS, 'SDK');
   packageExports(packages.runtime, ['./kernel', './voice', './manifest'], 'Runtime');
-  packageExports(packages.engine, ['.', './provenance', './peer-generation-provenance'], 'Engine');
+  packageExports(packages.engine, ['.', './provenance', './authority-provenance'], 'Engine');
   packageExports(packages.tools, ['./pack', './session', './preview'], 'Tools');
   const runtime = verifyRuntimeManifest(packages.runtime.json('assets/manifest.json'));
   for (const asset of runtime.assets) {
@@ -204,25 +260,58 @@ export function prepareRelease({ root, version, contract }) {
   cleanIdentity(hostProof, 'werg/tendriller', 'Packed engine provenance', identity);
   for (const [file, hash] of Object.entries(hostProof.files ?? {}))
     if (digest(packages.engine.read(file)) !== hash) fail(`Packed engine provenance mismatch: ${file}`);
-  const generationProof = packages.engine.json('peer-generation-provenance.json');
-  const generation = cleanIdentity(generationProof, 'werg/chronolog-db', 'Embedded generation dependency');
-  if (generationProof.profile !== 'peer-generation-v1') fail('Embedded generation profile is not supported.');
+  const authorityBytes = packages.engine.read('authority-provenance.json');
+  const authorityProof = JSON.parse(authorityBytes.toString('utf8'));
+  const authority = cleanIdentity(authorityProof, 'werg/chronolog-db', 'Embedded authority dependency');
+  if (authorityProof.profile !== 'chronolog-crdt-v1' || authorityProof.format !== 'chronolog-authority-package/v1')
+    fail('Embedded authority profile is not supported.');
+  const authorityInputBytes = packages.engine.read('authority-inputs.json');
+  const authorityInputs = JSON.parse(authorityInputBytes.toString('utf8'));
+  if (hostProof.files?.['authority-provenance.json'] !== digest(authorityBytes) ||
+      hostProof.files?.['authority-inputs.json'] !== digest(authorityInputBytes) ||
+      authorityInputs.provenanceSha256 !== digest(authorityBytes) ||
+      JSON.stringify(authorityInputs.files) !== JSON.stringify(authorityProof.sha256))
+    fail('The engine must bind the exact authority bytes used when compiling its Worker.');
 
   const pin = json(join(root, 'package.json')).devDependencies?.['@chronolog/peer-session'];
   if (typeof pin !== 'string' || !pin.startsWith('file:')) fail('Pin the public Chronolog session archive in package.json.');
   const sessionPath = resolve(root, pin.slice(5)), sessionArchive = packedArchive(sessionPath);
   const sessionProof = sessionArchive.json('provenance.json');
   const session = cleanIdentity(sessionProof, 'werg/chronolog-db', 'Chronolog session dependency');
-  if (sessionArchive.package.name !== '@chronolog/peer-session' || sessionProof.profile !== 'peer-generation-v1' ||
-      !Array.isArray(sessionProof.sqlEngines) || sessionProof.sqlEngines.length !== 0)
+  if (sessionArchive.package.name !== '@chronolog/peer-session' || sessionProof.profile !== 'chronolog-crdt-v1' ||
+      sessionProof.format !== 'chronolog-peer-session-package/v1' ||
+      !Array.isArray(sessionProof.sqlEngines) || sessionProof.sqlEngines.length !== 0 ||
+      Object.keys(sessionArchive.package.exports ?? {}).some(name => name === './sql' || name.startsWith('./sql-')))
     fail('The first-app composition requires the pinned SQL-free public session package.');
+  if (session.source !== authority.source || session.sourceTree !== authority.sourceTree)
+    fail('Session and embedded authority must come from the same clean Chronolog checkpoint.');
   packageExports(sessionArchive, ['.', './native', './browser', './worker', './webrtc', './webrtc-native', './websocket'], 'Chronolog session');
   if (sessionProof.nativeRtc !== true || sessionArchive.package.dependencies?.werift !== '0.27.0' ||
       sessionArchive.package.peerDependencies?.werift !== undefined || sessionArchive.package.peerDependenciesMeta?.werift !== undefined)
     fail('The default session must include native RTC with the normal pinned werift@0.27.0 dependency.');
+  const authorityPin = json(join(root, 'package.json')).devDependencies?.['@chronolog/authority'];
+  if (typeof authorityPin !== 'string' || !authorityPin.startsWith('file:'))
+    fail('Pin the public Chronolog authority archive in package.json.');
+  const authorityPath = resolve(root, authorityPin.slice(5)), authorityArchive = packedArchive(authorityPath);
+  if (authorityArchive.package.name !== '@chronolog/authority' ||
+      digest(authorityArchive.read('provenance.json')) !== digest(authorityBytes))
+    fail('The first-app authority archive must exactly match the dependency embedded in the Worker.');
+  packageExports(authorityArchive, ['.', './control', './metadata', './participant', './publication', './finality'], 'Chronolog authority');
+  for (const [file, hash] of Object.entries(authorityProof.sha256))
+    if (digest(authorityArchive.read(file)) !== hash) fail(`Authority archive digest mismatch: ${file}`);
+  const authorityFile = `chronolog-authority-${authority.source}.tgz`;
+  copyFileSync(authorityPath, join(dist, authorityFile));
+  components.push(component(dist, 'authority', authorityFile));
   const sessionFile = `chronolog-peer-session-${session.source}.tgz`;
   copyFileSync(sessionPath, join(dist, sessionFile));
   components.push(component(dist, 'session', sessionFile));
+  const sqlPin = readBrowserSqlPin(root), sqlArchive = packedArchive(sqlPin.archive);
+  const sqlSession = verifyBrowserSqlSession(sqlArchive, authority);
+  const sqlSessionFile = `chronolog-peer-session-${sqlSession.source}-sql-browser.tgz`;
+  copyFileSync(sqlPin.archive, join(dist, sqlSessionFile));
+  const sqlComponent = component(dist, 'session-sql-browser', sqlSessionFile);
+  if (sqlComponent.sha256 !== sqlPin.sha256) fail('Browser SQL session changed during release preparation.');
+  components.push(sqlComponent);
 
   const starterFile = `tendriller-starter-${version}.tgz`;
   const starterPath = join(root, 'server/public', TUTORIAL_DOWNLOAD);
@@ -236,32 +325,44 @@ export function prepareRelease({ root, version, contract }) {
   copyFileSync(starterPath, join(dist, starterFile));
   components.push(component(dist, 'starter', starterFile));
   const compositionBody = { format: 'tendriller-release-composition-v1', version, contract, core: identity,
-    runtime: runtime.id, chronolog: { session, generation }, components };
+    runtime: runtime.id, chronolog: { session, authority, 'session-sql-browser': sqlSession }, profiles: FIRST_APP_PROFILES, components };
   const composition = { ...compositionBody, id: digest(JSON.stringify(compositionBody)) };
   writeJson(join(dist, 'composition.json'), composition);
 
-  const firstAppFile = `tendriller-first-app-${version}.tgz`, directory = mkdtempSync(join(dist, 'first-app-'));
-  try {
-    // Exact allowlisted bytes checked against the served starter above. Never
-    // package an existing developer application directory or its private state.
-    copyTutorialSources(root, directory);
-    copyFileSync(join(dist, 'composition.json'), join(directory, 'composition.json'));
-    mkdirSync(join(directory, 'packages'));
-    const localPackages = components.filter(item => ['sdk', 'tools', 'session'].includes(item.role));
-    for (const item of localPackages) copyFileSync(join(dist, item.file), join(directory, 'packages', item.file));
-    writeFileSync(join(directory, 'packages/SHA256SUMS'), localPackages.map(item => `${item.sha256}  ${item.file}`).join('\n') + '\n');
-    execFileSync('tar', [...ARCHIVE_METADATA,
-      '-czf', join(dist, firstAppFile), '-C', directory, ...TUTORIAL_FILES, 'composition.json', 'packages']);
-  } finally { rmSync(directory, { recursive: true, force: true }); }
+  const firstApps = {};
+  for (const [profile, spec] of Object.entries(FIRST_APP_PROFILES)) {
+    const file = `tendriller-first-app-${profile === 'sql' ? 'sql-' : ''}${version}.tgz`;
+    const directory = mkdtempSync(join(dist, 'first-app-'));
+    try {
+      // Only allowlisted maintained sources and this profile's exact packages;
+      // never a developer application's private state or a native SQL binary.
+      copyTutorialSources(root, directory);
+      if (profile === 'sql') {
+        mkdirSync(join(directory, 'sql/engine'), { recursive: true });
+        for (const name of ['manifest.json', 'sqlite3.mjs', 'sqlite3.wasm', 'sqlite3-opfs-async-proxy.js'])
+          writeFileSync(join(directory, 'sql/engine', name), sqlArchive.read(`wasm/${name}`));
+      }
+      copyFileSync(join(dist, 'composition.json'), join(directory, 'composition.json'));
+      writeJson(join(directory, 'first-app-profile.json'), { profile, ...spec });
+      mkdirSync(join(directory, 'packages'));
+      const localPackages = components.filter(item => spec.packages.includes(item.role));
+      for (const item of localPackages) copyFileSync(join(dist, item.file), join(directory, 'packages', item.file));
+      writeFileSync(join(directory, 'packages/SHA256SUMS'), localPackages.map(item => `${item.sha256}  ${item.file}`).join('\n') + '\n');
+      execFileSync('tar', [...ARCHIVE_METADATA,
+        '-czf', join(dist, file), '-C', directory, ...TUTORIAL_FILES, 'composition.json', 'first-app-profile.json', 'packages', ...(profile === 'sql' ? ['sql/engine'] : [])]);
+      firstApps[profile] = { file, profile, packages: [...spec.packages], build_dependency: 'esbuild@0.28.2' };
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }
   buildPlugin(root);
-  const extras = [component(dist, 'plugin', 'tendriller-chatgpt-plugin.zip'), component(dist, 'composition', 'composition.json'), component(dist, 'first-app', firstAppFile),
+  const extras = [component(dist, 'plugin', 'tendriller-chatgpt-plugin.zip'), component(dist, 'composition', 'composition.json'),
+    component(dist, 'first-app', firstApps.events.file), component(dist, 'first-app-sql', firstApps.sql.file),
     component(dist, 'core-provenance', 'provenance.json'), component(dist, 'tools-provenance', 'tools-manifest.json')];
   const releaseUrl = `https://github.com/werg/tendriller/releases/download/source-${identity.source}`;
   const artifacts = [...components, ...extras].map(item => ({ ...item, url: `${releaseUrl}/${item.file}`,
     type: item.file.endsWith('.tgz') ? 'application/gzip' : item.file.endsWith('.zip') ? 'application/zip' : 'application/json' }));
   const manifest = { format: 'tendriller-core-release', version, contract, source_commit: identity.source,
     source_tree: identity.sourceTree, runtime: runtime.id, composition: { id: composition.id, file: 'composition.json' },
-    first_app: { file: firstAppFile, profile: 'events', packages: ['sdk', 'tools', 'session'], build_dependency: 'esbuild@0.28.2' }, artifacts };
+    first_app: firstApps.events, first_apps: { sql: firstApps.sql }, artifacts };
   writeJson(join(dist, 'manifest.json'), manifest);
   writeFileSync(join(dist, 'SHA256SUMS'), artifacts.map(item => `${item.sha256}  ${item.file}`).join('\n') + '\n');
   return manifest;

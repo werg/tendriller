@@ -1,32 +1,23 @@
-// Reviewed intent is retained before an RPC. The session owns signed attempts.
-export function transferIntent(snapshot, { from, to, units }, operationId) {
-  if (!['source', 'destination'].includes(from) || !['source', 'destination'].includes(to) || from === to)
-    throw Error('Choose two different inventory bins.');
-  if (!Number.isSafeInteger(units) || units < 1 || units > 1_000_000) throw Error('Enter 1–1,000,000 whole units.');
-  const balances = new Map(snapshot.value.stock.map(row => [row.id, row.units]));
-  const expectedSource = balances.get(from), expectedDestination = balances.get(to);
-  if (![expectedSource, expectedDestination].every(value => Number.isSafeInteger(value) && value >= 0))
-    throw Error('Initialize both bins with npm run demo on the native participant, then refresh.');
-  if (units > expectedSource || expectedDestination + units > 1_000_000) throw Error('The reviewed balances cannot support this transfer.');
-  return structuredClone({ id: operationId, command: 'transfer', basedOn: snapshot.revision,
-    input: { transferId: operationId, from, to, units, expectedSource, expectedDestination } });
+// Reviewed guard values are local draft context, never an application ordering barrier.
+export function transferIntent(snapshot, input, operationId) {
+  if (typeof operationId !== 'string' || !operationId) throw Error('Retain a stable operation ID before dispatch');
+  const from = String(input.from), to = String(input.to), units = Number(input.units);
+  const expectedSource = input.expectedSource ?? snapshot?.value.stock.find(row => row.id === from)?.units;
+  const expectedDestination = input.expectedDestination ?? snapshot?.value.stock.find(row => row.id === to)?.units;
+  if (!from || !to || from === to || !Number.isSafeInteger(units) || units <= 0 || units > 1_000_000 ||
+      ![expectedSource, expectedDestination].every(value => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000)) throw Error('Review valid bins, quantity and exact balances');
+  return structuredClone({ operationId, command: 'transfer', input: { transferId: input.transferId ?? operationId, from, to, units, expectedSource, expectedDestination }, reviewedRevision: snapshot?.revision ?? null });
 }
-
-export function checkIntentSession(pending, session) {
-  if (!pending.id || pending.reference?.operationId !== pending.id || pending.command !== 'transfer' || pending.input?.transferId !== pending.id)
-    throw Error('The retained transfer reference is inconsistent. Preserve the original view store and signed journal for inspection; do not send a replacement.');
-  if (pending.reference.applicationId !== session.applicationId || pending.reference.author !== session.deviceId ||
-      pending.reference.historyId !== session.historyId)
-    throw Error('This retained operation belongs to another device or history. Reopen its original browser profile and history; do not replace the intent.');
+export function checkIntentSession(session, pending) {
+  const reference = pending.reference;
+  if (reference && (reference.applicationId !== session.applicationId || reference.author !== session.identity.publicKey)) throw Error('Original intent belongs to another application or signer');
+  if (typeof pending.operationId !== 'string' || !pending.operationId || pending.command !== 'transfer') throw Error('Retained transfer intent is invalid');
+  return pending;
 }
-
 export async function retryIntent(session, pending) {
-  checkIntentSession(pending, session);
-  const state = await session.operations.get(pending.id);
-  if (state?.status === 'applied') return state;
-  if (['abandoned', 'needsReapply'].includes(state?.status))
-    throw Error('Recovery excluded this attempt. Review the original history and current balances before explicitly reapplying; this tutorial does not reapply automatically.');
-  if (state) await session.retry(pending.id);
-  else await session.command(pending.command, pending.input, { operationId: pending.id, basedOn: pending.basedOn });
-  return session.operations.wait(pending.id, { signal: AbortSignal.timeout(15_000) });
+  checkIntentSession(session, pending);
+  const retained = await session.operations.get(pending.operationId);
+  const operation = retained ? await session.operations.retry(pending.operationId) : await session.command(pending.command, pending.input,
+    { operationId: pending.operationId, ...(pending.authorTimestampMs === undefined ? {} : { authorTimestampMs: BigInt(pending.authorTimestampMs) }) });
+  return operation.inspect();
 }

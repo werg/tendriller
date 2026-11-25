@@ -15,10 +15,10 @@ Call `tendril_guide` with `topic: "start"` for the [MCP workflow](MCP_AGENT_GUID
 
 ## Enroll an application
 
-1. Build and publish the app through [Build an app](BUILD_AN_APP.md) so its signed definition, initial generation, and native Chronolog participant exist (this can happen before owner claim).
+1. Build and publish the app through [Build an app](BUILD_AN_APP.md) so its signed UI, authority metadata and native Chronolog participant exist (this can happen before owner claim).
 2. Generate and privately store an adapter key (`createAssistantKey()`), plus up to two distinct `backupKeys` for standby enrolled devices if needed. Propose the exact queries, commands, and event projections declared by the signed definition.
 3. Give the owner the published page URL and `proposal.reviewUrl`. Once claimed, the owner reviews and approves exact capabilities at `/connections`. Editing capabilities keeps unchanged grants/subscriptions; removing an event or changing its projection clears its retained inbox/subscriptions.
-4. Attach `connectApplicationAssistant` to the running Chronolog session, connect the MCP client to `<PUBLIC_BASE>/mcp`, and verify `list_tendrils`, `describe_application`, a read query, and an applied command.
+4. Attach `connectApplicationAssistant` to the running Chronolog session, connect the MCP client to `<PUBLIC_BASE>/mcp`, and verify `list_tendrils`, `describe_application`, a read query, and a command whose materialized outcome you inspect.
 
 ```js
 import { createScopedApplicationTools, forwardSessionEvents } from '@chronolog/peer-session';
@@ -56,8 +56,8 @@ await forwardSessionEvents({
 ### Execution and retry semantics
 
 - **Authorization & routing:** the Worker verifies the adapter key and device against signed Chronolog grants. Reads can route to any eligible approved replica; new writes route to one owner-selected provider. Each WebSocket connection carries a monotonic epoch so replaced sockets cannot act for their successor.
-- **Exact retries:** Tendriller retains the input digest and original signing device per `operationId`. Retries target that same signer and never silently move a saved operation to a different device. Use `inspect_application_operation`, `retry_application_operation`, or bounded `wait_application_operation` for uncertain outcomes; use `reapply_application_operation` with a new ID to deliberately link replacement work.
-- **Event forwarding:** Chronolog's `forwardSessionEvents` owns recovery, cancellation, read views, and checkpoint advancement. Tendriller's `createAssistantEventDelivery` supplies host acknowledgement/retry and owner-declined projection handling (`onSkipped`). The checkpoint advances only after delivery completes.
+- **Exact retries:** Tendriller retains the input digest and original signing device per `operationId`. Retries target that same signer and never silently move a saved operation to a different device. Use `inspect_application_operation`, `retry_application_operation`, or bounded `wait_application_operation` for uncertain outcomes. There is no reapplication tool: replacement work is a newly reviewed operation with a new ID, never a silent retimestamp of the original.
+- **Event forwarding:** Chronolog's `forwardSessionEvents` owns cancellation, revision-bound read views, and checkpoint advancement. Tendriller's `createAssistantEventDelivery` supplies host acknowledgement/retry and owner-declined projection handling (`onSkipped`). The checkpoint advances only after delivery completes.
 - **Double scoping:** both the host gateway and the local participant (`createScopedApplicationTools` + `@tendriller/core/assistant`) enforce the exact allowed command/query set. Stop the adapter via `assistant.close()` or closing its session.
 
 ## Independently acting agents (consumer bindings)
@@ -73,8 +73,8 @@ Each binding gets isolated `operationId` namespaces, subscriptions, cursors, and
 
 ## Events, catch-up, and live inbox
 
-- **MCP Events (`application.event`):** subscribe with `application_id` and an approved `event` name. Callbacks are challenge-verified, signed with HMAC-SHA256 (Web Crypto), fenced by selected generation and live OAuth grant, and retried via the page Durable Object alarm with backoff. Inspect pending/terminal receipts via `get_application_delivery`.
-- **Turn-based catch-up (`read_application_events`):** retain the full opaque `next` cursor (app, binding, export version, generation, filter, sequence). Boundary changes return `resetRequired` and a reset cursor.
+- **MCP Events (`application.event`):** subscribe with `application_id` and an approved `event` name. Callbacks are challenge-verified, signed with HMAC-SHA256 (Web Crypto), fenced by the approved export version and live OAuth grant, and retried via the page Durable Object alarm with backoff. Inspect pending/terminal receipts via `get_application_delivery`.
+- **Turn-based catch-up (`read_application_events`):** retain the full opaque `next` cursor (app, binding, export version, filter, and a host delivery sequence that is not application order). Boundary changes return `resetRequired` and a reset cursor.
 - **Live inbox (`open_application_inbox`):** mounts an MCP Apps card over a hibernating WebSocket using a short-lived ticket; clicking **Check inbox in this chat** prompts a follow-up turn. See [ChatGPT integration](CHATGPT_INTEGRATION.md).
 
 ## Resource bounds and cost

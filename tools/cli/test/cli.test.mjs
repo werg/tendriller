@@ -13,8 +13,8 @@ import { saveConfig } from '../lib/config.mjs';
 
 const run = promisify(execFile), cli = fileURLToPath(new URL('../bin/tendril.mjs', import.meta.url));
 test('CLI accepts explicit stable operation flags and refuses missing values', () => {
-  assert.deepEqual(parseArgs(['command', 'claim', '{}', '--operation', 'claim-1', '--saved']), {
-    cmd: 'command', args: ['claim', '{}'], flags: { operation: 'claim-1', saved: true },
+  assert.deepEqual(parseArgs(['command', 'claim', '{}', '--operation', 'claim-1', '--wait', 'materialized']), {
+    cmd: 'command', args: ['claim', '{}'], flags: { operation: 'claim-1', wait: 'materialized' },
   });
   assert.throws(() => parseArgs(['command', 'claim', '{}', '--operation']), /needs a value/);
   assert.throws(() => intFlag('1.5', 'timeout', 30), /safe integer/);
@@ -37,9 +37,8 @@ test('invalid ownership mode or missing independent profile is rejected before b
   await assert.rejects(run(process.execPath, [cli, 'self', '--mode', 'independent', '--session', 'missing.mjs']),
     error => error.code === 64 && /requires --profile/.test(error.stderr));
 });
-test('reapplication cannot be issued without a reviewed revision', async () => {
-  await assert.rejects(run(process.execPath, [cli, 'reapply', 'old', 'claim', '{}', '--operation', 'new']),
-    error => error.code === 64 && /--based-on/.test(error.stderr));
+test('removed ordering commands are not accepted as aliases', async () => {
+  for (const command of ['reapply', 'recovery']) await assert.rejects(run(process.execPath, [cli, command]), error => error.code === 64 && /Unknown command/.test(error.stderr));
 });
 
 test('CLI deadline remains explicit when cancellation closes an in-flight session', async t => {

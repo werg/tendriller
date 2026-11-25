@@ -1,117 +1,33 @@
-# Shared inventory: optional SQL starter
+# Browser-first ordinary SQL inventory
 
-Follow [Choose retained state](https://tendriller.dev/docs/STATE_MODELS.md).
-This directory is a separate application with its own private handle and device
-store. It does not convert or overwrite the Shared Notes application.
+This is a separate application with its own retained private handle and profile. Follow the selected origin's [Build an app](https://tendriller.dev/docs/BUILD_AN_APP.md) and [state-model guide](https://tendriller.dev/docs/STATE_MODELS.md): verify open readiness before acquisition/creation and install the exact public SDK/tools/authority/SQL-capable session plus qualified browser engine graph. Never mix same-version archives or use private kernel imports.
 
-Use the selected service's `/api/readiness` before acquiring or building the
-optional SQL packages. `create` repeats that anonymous check and the host
-contract check before loading native SQL code, then verifies the engine before
-creating a page. Paused, read-only, unavailable or unsupported readiness stops
-setup without private state or a production fallback. A saved handle resumes
-only against the same service origin, without creating another page or reopening
-an engine; retain the original directory and signing identity on resume.
-
-`domain.mjs` declares the schema, a one-time seed command, and one guarded
-transfer that changes two bins, inserts a receipt and emits an event atomically.
-`setup.mjs` creates and configures the hosted application with its signed schema
-and exact engine manifest. `session.mjs` reopens and participates through the
-same public application session used by the events starter. `demo.mjs` checks
-accepted and rejected transfers and retained state after a close/reopen.
-
-The native path requires a Chronolog archive built with `--sql-native` and the
-patched native engine. The default events archive cannot run this directory.
-`worker.mjs` supplies the owning browser composition of the same domain. Browser
-SQL additionally needs `--sql-browser`, the exact separately built WASM assets,
-an enrolled browser and a supported OPFS SQL VFS. `index.html` and `page.mjs`
-provide the inventory UI; installing an events archive does not qualify SQL.
-The native tutorial requires Node 24 or newer.
-
-Run this directory within the downloaded starter kit: its standalone peer uses
-the shipped `../helpers/cli-lifetime.mjs`. Ctrl-C awaits the SQL session and
-supervisor cleanup, flushes output, then disposes only the standalone process.
-Cleanup/flush failure stays nonzero. Imported `openSession` and `runPeer` leave
-process lifetime to their caller.
-
-The native peer runs a private supervisor. Normal CLI invocations attach to it;
-use `--mode own` for an explicit one-off command while the owner is stopped.
-Browser documents use `openBrowserOwner` with `requiresDedicatedWorker: true`
-against this directory's bundled `worker.mjs`. Synchronous OPFS APIs are not
-available in SharedWorker in the qualified browser. Automatic mode therefore
-elects a dedicated Worker under an exclusive Web Lock; forcing shared mode
-returns `OWNER_STORAGE_UNSUPPORTED` before opening storage. All documents attach
-to that one SQL owner, and detaching a document does not close sibling views.
-The lazy WASM/VFS lifetime belongs to the owner, with database handles closed
-before pool cleanup.
-
-With the resident SQL peer running, `node session.mjs diagnostics` (or
-`node session.mjs status PROFILE`) takes one local authenticated-link sample and
-detaches. It opens no SQL engine or signing store. Counters are per current link,
-reset on replacement, and do not measure billing or applied/retained operations.
-See [transport diagnostics](https://tendriller.dev/docs/TRANSPORT_DIAGNOSTICS.md).
-
-
-Build and publish the SQL page from this directory after same-origin readiness
-and package acquisition described in the state-model guide:
-Prepare all four engine files and publish the complete page before owner
-sign-in. Prepared and claimed pages use the same advertised file-size budget;
-claim is not a prerequisite for uploading the WASM engine.
+Use the advertised immutable SQL kit. It supplies the exact browser engine graph; setup verifies and copies the four package-public WASM assets to `engine/`: `manifest.json`, `sqlite3.mjs`, `sqlite3.wasm`, `sqlite3-opfs-async-proxy.js`. It rejects a different retained graph and derives deterministic execution semantics from the verified browser manifest **without a native data process/addon**.
 
 ```sh
-npm run create -- https://YOUR_SERVICE VERIFIED_OWNER_EMAIL "Shared inventory"
+npm run create -- https://YOUR_SELECTED_SERVICE owner@example.com "Shared inventory"
 npm run init
-npm run demo
-# Install the matching combined --sql-native --sql-browser session archive in
-# the parent starter, together with its public SDK/tools and esbuild dependency.
-# Copy manifest.json, sqlite3.mjs, sqlite3.wasm and sqlite3-opfs-async-proxy.js
-# from that exact build into this directory's engine/ (not into page/).
-npm run build
-npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --operation inventory-release-1
-npm run peer
+npm run deploy
+# Give the owner the ready page URL now; they complete sign-in/key proof locally.
 ```
 
-The owner signs in at the ready page URL. Build/publish before claim; the host
-handle alone is not a connected application. Publish only `page/`. The build
-requires initialized matching public configuration, verifies WASM bytes and the
-installed SQL package's supported manifest, copies all four engine files, and
-removes stale/partial output on any failure. It never falls back to a static
-preview. Runtime still verifies the signed authority and execution-manifest
-binding before opening SQL. Keep `.tendriller/`, keys, stores and signed attempts
-outside published assets. On an uncertain publication reply, preserve the exact
-output and operation ID and inspect/retry the original publication.
+The publisher key is independent from the as-yet-unknown data root. `page/` contains only the complete public authored graph. `.tendriller/`, signing identities, device journals and plaintext keys are private and never published. Retain exact original setup/publication attempts after uncertain replies.
 
-A new browser deliberately chooses **Create or resume browser device**. It shows
-its own stored public key without exporting its signing identity. Verify that
-key; stop the native peer before running `npm run enroll -- PUBLIC_KEY` in this
-same SQL project, then restart `npm run peer` and reload the page in the same
-browser profile. This is explicit native administrator enrollment, not the
-Shared Notes owner-review pairing workflow. Lost enrollment replies reuse the
-saved signed request. Keep the native coordinator running for writes and epoch
-key delivery. Signing in alone does not enroll a device.
+The first owner browser initializes its local keys and signed root/membership. A fresh additional browser remains keyless until explicit key proof, independent crypto grants and recipient-bound wrapping/import. Crypto writer/admin/finalizer rights are not SQL object/namespace/row permissions. The SQL Worker uses its supported dedicated-Worker VFS mode and preserves one physical store owner.
 
-The table renders `inventory.stock` as `{ id, units }`. Transfer captures the
-displayed revision and both reviewed balances and sends `transfer` with
-`transferId`, `from`, `to`, `units`, `expectedSource`, `expectedDestination`.
-Guards execute atomically; changed balances reject the whole operation. The UI
-retains the exact intent before its first RPC. Until an applied accepted or
-rejected outcome is observed, new transfers are blocked; inspect or retry the
-original operation, including after reload. Retry uses the session's saved
-attempt when present, otherwise resends the original input and revision. It
-never silently re-reviews changed balances. Recovery exclusions require explicit
-review of the original history and current balances; this UI does not reapply
-automatically or discard unresolved intent. Applied does not prove peer retention.
+## Domain flows
 
-**Detach this view** releases only this attachment, preserving device storage,
-history and pending intent. Other browser views and the native peer have their
-own lifetimes. Reload resumes the same profile. Do not erase browser site data
-or `.tendriller/` to repair setup. The diagnostics JSON is unencrypted health
-information, not an encrypted checkpoint, backup or migration export. Lifecycle
-callbacks cannot guarantee storage flush on eviction; the page saves intent
-before commands rather than relying on shutdown.
+- **Create initial tables and rows** is an ordinary authorized atomic CREATE/INSERT/emit program, not a unique schema bootstrap channel.
+- **Create/edit/delete bin** use stable IDs and normal row ownership/permission checks.
+- **Reviewed transfer** captures explicit source/destination balances and runs guards, both updates, receipt insertion and emit atomically at its signed author-time position. No JavaScript prior read substitutes for the SQL guards.
+- **Add label column** submits ordinary ALTER without republishing code. Catalog/forms rederive from the next coherent materialized snapshot.
+- **Grant units updates and receipt inserts** is an explicit ordinary platform-permission transaction. Its column scope does not silently expand when `label` appears.
+- The optional exact author-time field demonstrates late earlier DDL revising a previously displayed SQL success/rejection. Never dependency-sort DDL ahead of author time.
 
-Qualification must use the exact published graph: demonstrate a transfer, its
-applied read on another participant, persistence after reload and verified signed
-publication. Pure Node UI/build tests cover reviewed guards, uncertain retry and
-failed-output cleanup; they do not qualify browser SQL, OPFS, enrollment or
-transport. Existing remote browser SQL regressions cover their own SQL fixture,
-not automatically this inventory UI. Run full browser qualification remotely.
+Submission acknowledges durable local signed intent, with no peer/native/finalizer/current-global-read prerequisite. Coherent materialization and SQL rejection/success are revisable until the chosen finality says otherwise. Retention is independent named-peer evidence. Default no-finality is complete and explicitly rejects final waits as unsupported. Optional frontier closure can exclude genuine unseen offline work behind it; originals remain inspectable without retimestamping.
+
+The page derives rows/counts/detail/catalog from coherent snapshots while keeping local drafts/reviewed guards separate. A missing table or stale query marks the last snapshot **not current**, preserving drafts/focus/deep links and unrelated offline authoring. Complete-graph offline acknowledgment includes the real engine files; HTML or installation alone is not offline readiness.
+
+`session.mjs` and `engine.mjs` are optional explicitly provisioned native capabilities, not prerequisites for browser operation. Native engine source/ABI must match the qualified WASM/profile. `demo.mjs` reads the existing initialized/provisioned application; it does not create another root, seed a special schema or select application history.
+
+Qualify actual browser-first setup, offline CRUD/reload, separate-device crypto provisioning plus ordinary SQL grants, RTC/forced relay, schema-only invalidation, late DDL outcome revision, rejected cross-object DDL and native/WASM parity at desktop/320px. Report exact evidence and untested boundaries; native-only or static-preview tests do not qualify browser SQL.

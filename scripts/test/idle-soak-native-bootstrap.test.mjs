@@ -6,19 +6,24 @@ import { nativeCoverage, nativeAssistantStatus, nativeAssistantBusy, nativeStopp
 import { quietBoundary } from '../idle-soak/warmup.mjs';
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const readiness=f=>f.messages.filter(x=>x.idleSoakReady===1||x.idleSoakCoverage===1);
-function fixture({assistant=true,events=false,queryFailure=false,missingPairings=false,changesNeedOwnerClose=false}={}) {
- const stop=new AbortController(),sessionStop=new AbortController(),query=Promise.withResolvers(),reconciliation=Promise.withResolvers();
- const calls=[],messages=[],wakeups=[];let status,notify,observed,reconcile,assistantReport,opens=0,closes=0,assistantCalls=0,supervisorCloses=0;
- const session={signal:sessionStop.signal,participation:{onStatus(fn){status=fn;return()=>calls.push('unsubscribe');}},
+// The owned bootstrap exposes the application session (identity, status/onStatus with `canAuthor`, changes,
+// query) and a SEPARATE top-level participation controller. Local readiness is stored authority and keys, never
+// a connected route; the soak additionally waits for an actual connected route before it reports coverage.
+function fixture({assistant=true,events=false,queryFailure=false,missingParticipation=false,changesNeedOwnerClose=false}={}) {
+ const stop=new AbortController(),sessionStop=new AbortController(),query=Promise.withResolvers();
+ const calls=[],messages=[],wakeups=[];let status,sessionStatus,notify,observed,assistantReport,setupChange,opens=0,closes=0,assistantCalls=0,supervisorCloses=0;
+ const session={signal:sessionStop.signal,status:{canAuthor:false,phase:'ready',database:'ready'},
+  onStatus(fn){sessionStatus=fn;return()=>calls.push('session-unsubscribe');},
   query(name,input){calls.push(['query',name,input]);return query.promise;},
   changes({signal}){if(changesNeedOwnerClose)signal=sessionStop.signal;return{async *[Symbol.asyncIterator](){
     while(!signal.aborted){const change=await new Promise(resolve=>{const abort=()=>resolve(null);signal.addEventListener('abort',abort,{once:true});notify=value=>{signal.removeEventListener('abort',abort);resolve(value);};if(signal.aborted)abort();});if(change===null)break;yield change;}
   }};}};
- const owned={session,watchSetup(){calls.push('watch');},processPairings:missingPairings?undefined:async options=>{calls.push(['reconcile',options]);return reconciliation.promise;},
+ const participation={onStatus(fn){status=fn;return()=>calls.push('unsubscribe');}};
+ const owned={session,...(missingParticipation?{}:{participation}),watchSetup(callbacks){calls.push('watch');setupChange=callbacks.onChange;return{closed:new Promise(()=>{}),close(){}};},
   close:async()=>{closes++;sessionStop.abort();calls.push('close');}};
  const deps={openSession:async()=>{opens++;return owned;},
-  superviseParticipant(options){assert.equal(assistant,false);observed=options.owned;reconcile=observed.processPairings;return{close:async()=>{supervisorCloses++;}};},
-  async runAssistant(options,hooks){assistantCalls++;calls.push(['assistant',options.events]);observed=await hooks.open();assert.equal(observed.session,session);reconcile=observed.processPairings;assistantReport=hooks.report;
+  superviseParticipant(options){assert.equal(assistant,false);observed=options.owned;options.watch({onChange(){} ,onStatus(){}});return{close:async()=>{supervisorCloses++;}};},
+  async runAssistant(options,hooks){assistantCalls++;calls.push(['assistant',options.events]);observed=await hooks.open();assert.equal(observed.session,session);assistantReport=hooks.report;
     try{await new Promise(resolve=>{options.signal.addEventListener('abort',resolve,{once:true});if(options.signal.aborted)resolve();});}finally{await observed.close();}
   },
   // These are operator-only work, never bootstrap hooks.
@@ -26,48 +31,61 @@ function fixture({assistant=true,events=false,queryFailure=false,missingPairings
  const task=runNativeBootstrap({assistant,events,signal:stop.signal,record:kind=>wakeups.push(kind),send:value=>messages.push(value)},deps);
  task.catch(()=>{});
  if(queryFailure)query.reject(Error('query failed'));
- return{task,stop,query,reconciliation,calls,messages,wakeups,session,owned,
-  status:value=>status(value),change:value=>notify(value),reconcile:(...args)=>reconcile(...args),assistantReport:value=>assistantReport(value),
+ return{task,stop,query,calls,messages,wakeups,session,owned,
+  status:value=>status(value),canAuthor:value=>{session.status={...session.status,canAuthor:value};sessionStatus(session.status);},
+  change:value=>notify(value),setupNotice:value=>setupChange(value),assistantReport:value=>assistantReport(value),
   stats:()=>({opens,closes,assistantCalls,supervisorCloses}),get observed(){return observed;}};
 }
-const readyStatus={phase:'following',error:null,recovery:null};
+const connected={phase:'connected',error:null};
 test('flags preserve native-only default and require assistant for events',()=>{
  assert.deepEqual({...bootstrapOptions([])},{assistant:false,events:false});
  assert.deepEqual({...bootstrapOptions(['--assistant','--events'])},{assistant:true,events:true});
  assert.throws(()=>bootstrapOptions(['--events']),/EVENTS_REQUIRE_ASSISTANT/);
  assert.throws(()=>bootstrapOptions(['--setup']));
 });
-test('assistant readiness requires actual adapter online, native participation, successful reconciliation and query',async()=>{
+
+const ready=async f=>{await flush();f.canAuthor(true);f.status(connected);};
+test('assistant readiness requires adapter online, local authoring ability, a connected route and the activation query',async()=>{
  const f=fixture({events:true});await flush();assert.deepEqual(f.stats(),{opens:1,closes:0,assistantCalls:1,supervisorCloses:0});
  assert.deepEqual(f.calls.filter(x=>Array.isArray(x)&&x[0]==='assistant'),[['assistant',true]]);
  f.assistantReport({state:'participant_running',private:'MUST_NOT_LEAK'});f.assistantReport({assistant:{state:'connected'}});
- f.status({phase:'connected'});const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;
  f.query.resolve({revision:{},value:[]});await flush();assert.equal(readiness(f).length,0);
- f.assistantReport({state:'adapter_online'});await flush();assert.equal(readiness(f).length,0);
- f.status({...readyStatus,recovery:{id:'review'}});assert.equal(readiness(f).length,0);
- f.status(readyStatus);assert.deepEqual(readiness(f),[{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',wakeups:true,modelTurns:false,eventsForwarding:true},{idleSoakReady:1}]);
- f.status(readyStatus);f.assistantReport({state:'adapter_online'});assert.equal(readiness(f).length,2);
+ f.assistantReport({state:'adapter_online'});await flush();assert.equal(readiness(f).length,0,'online provider alone is not coverage');
+ f.status(connected);assert.equal(readiness(f).length,0,'a connected route without stored keys/authority cannot author');
+ f.canAuthor(true);assert.deepEqual(readiness(f),[{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',wakeups:true,modelTurns:false,eventsForwarding:true},{idleSoakReady:1}]);
+ f.status(connected);f.canAuthor(true);f.assistantReport({state:'adapter_online'});assert.equal(readiness(f).length,2);
  assert(!JSON.stringify(f.messages).includes('MUST_NOT_LEAK'));
- f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert(f.calls.includes('unsubscribe'));
+ f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert(f.calls.includes('unsubscribe'));assert(f.calls.includes('session-unsubscribe'));
+});
+test('local readiness is independent of the network, and the soak separately waits for an actual connected route',async()=>{
+ const f=fixture({assistant:false});await flush();f.query.resolve({});await flush();
+ f.canAuthor(true);assert.equal(readiness(f).length,0,'stored authority alone does not start a network soak');
+ f.status({phase:'connecting',error:null});f.status({phase:'disconnected',error:'ROUTE_LOST'});assert.equal(readiness(f).length,0);
+ f.status(connected);assert.equal(readiness(f).length,2);
+ // Losing the route or the grant after the one-shot report never closes or restarts the native owner.
+ f.status({phase:'disconnected',error:null});f.canAuthor(false);assert.equal(readiness(f).length,2);assert.equal(f.stats().closes,0);
+ f.stop.abort();await f.task;assert.equal(f.stats().closes,1);
 });
 test('an earlier online callback is invalidated by adapter loss before the remaining readiness conditions',async()=>{
  const f=fixture();await flush();f.assistantReport({state:'adapter_online'});f.assistantReport({assistant:{state:'disconnected'}});
- f.status(readyStatus);const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;f.query.resolve({});await flush();assert.equal(readiness(f).length,0);
+ f.canAuthor(true);f.status(connected);f.query.resolve({});await flush();assert.equal(readiness(f).length,0);
  f.assistantReport({state:'adapter_online'});assert.equal(f.messages.at(-1).idleSoakReady,1);f.stop.abort();await f.task;
 });
-test('native-only mode still counts real reconciliation, participation and change callbacks and closes once',async()=>{
- const f=fixture({assistant:false});await flush();f.status(readyStatus);const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;f.query.resolve({});await flush();
+test('native-only mode counts participation, change and consent-notice callbacks and closes once',async()=>{
+ const f=fixture({assistant:false});await ready(f);f.query.resolve({});await flush();
  assert.equal(f.messages[0].bootstrapScope,'native-only-without-mcp-adapter');assert.equal(f.messages[0].eventsForwarding,false);assert.equal(f.stats().assistantCalls,0);
- const before=f.wakeups.length;f.change({kind:'applied'});await flush();assert.equal(f.wakeups.length,before+1);
- await f.reconcile({signal:f.stop.signal});assert.equal(f.wakeups.length,before+2);assert(f.wakeups.every(x=>x==='wakeups'));
+ const before=f.wakeups.length;f.change({kind:'materialized'});await flush();assert.equal(f.wakeups.length,before+1);
+ f.status(connected);assert.equal(f.wakeups.length,before+2);assert(f.wakeups.every(x=>x==='wakeups'));
+ f.setupNotice({type:'setup',version:1,assistant:{proposalId:null,approved:false,revision:null}});assert.equal(f.wakeups.length,before+3,'a consent notification is an actual wake');
+ assert(f.calls.includes('watch'));
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert.equal(f.stats().supervisorCloses,1);
 });
 test('failed activation or an outdated starter cannot emit readiness or leak a second owner',async()=>{
  const failed=fixture({queryFailure:true});await assert.rejects(failed.task,/query failed/);assert.equal(readiness(failed).length,0);assert.equal(failed.stats().opens,1);assert.equal(failed.stats().closes,1);
- const old=fixture({missingPairings:true});await assert.rejects(old.task,/CURRENT_EVENT_DRIVEN_STARTER_REQUIRED/);assert.equal(readiness(old).length,0);assert.equal(old.stats().assistantCalls,0);assert.equal(old.stats().closes,1);
+ const old=fixture({missingParticipation:true});await assert.rejects(old.task,/CURRENT_EVENT_DRIVEN_STARTER_REQUIRED/);assert.equal(readiness(old).length,0);assert.equal(old.stats().assistantCalls,0);assert.equal(old.stats().closes,1);
 });
 test('abort cancels blocked activation, closes the canonical open hook and never emits late readiness',async()=>{
- const f=fixture();await flush();f.status(readyStatus);const pass=f.reconcile({signal:f.stop.signal});f.reconciliation.resolve([]);await pass;f.assistantReport({state:'adapter_online'});
+ const f=fixture();await ready(f);f.assistantReport({state:'adapter_online'});
  f.stop.abort();await f.task;f.query.resolve({});await flush();assert.equal(readiness(f).length,0);assert.equal(f.stats().closes,1);assert.equal(f.stats().opens,1);
  let opened=false;await assert.rejects(runNativeBootstrap({assistant:true,signal:AbortSignal.abort(Error('stopped')),record(){},send(){}},{openSession(){opened=true;}}),/stopped/);assert.equal(opened,false);
 });
@@ -81,7 +99,6 @@ test('coverage IPC uses a fixed native scope whitelist and MCP does not imply ob
   assert.equal(report(s).counts.modelTurns,null);assert.equal(report(s).coverage.bootstrapScope,bootstrapScope);
  }
 });
-
 
 test('latest assistant state gates a full quiet interval; a brief disconnect records state without killing native',async t=>{
  t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});
@@ -106,18 +123,15 @@ test('assistant status IPC changes only on actual boolean transitions and cleanu
  assert.equal(f.messages.at(-1).online,false);assert.equal(f.stats().closes,1);assert.equal(readiness(f).length,0);
 });
 
-test('online provider, participation and query cannot bypass an unfinished or failed initial reconciliation',async()=>{
- const f=fixture();await flush();f.status(readyStatus);f.query.resolve({});f.assistantReport({state:'adapter_online'});await flush();
- assert.equal(readiness(f).length,0);
- const pass=f.reconcile({signal:f.stop.signal});const rejected=assert.rejects(pass,/reconcile failed/);f.reconciliation.reject(Error('reconcile failed'));await rejected;await flush();
+test('online provider, route and query cannot bypass a missing local authoring ability',async()=>{
+ const f=fixture();await flush();f.status(connected);f.query.resolve({});f.assistantReport({state:'adapter_online'});await flush();
  assert.equal(readiness(f).length,0);assert.equal(f.stats().closes,0);
+ f.canAuthor(true);assert.equal(readiness(f).length,2);
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);
 });
 
-
 test('event activity failure blocks readiness and quiet without disconnecting the provider',async()=>{
- const f=fixture({events:true});await flush();f.status(readyStatus);f.query.resolve({});
- const pass=f.reconcile();f.reconciliation.resolve([]);await pass;
+ const f=fixture({events:true});await ready(f);f.query.resolve({});
  f.assistantReport({state:'adapter_activity_failed'});f.assistantReport({state:'adapter_online'});await flush();
  assert.equal(readiness(f).length,0);assert.equal(f.stats().closes,0);
  const s=newState({hours:48});nativeCoverage(s,{idleSoakCoverage:1,bootstrapScope:'native-with-mcp-adapter',eventsForwarding:true});
@@ -129,8 +143,8 @@ test('event activity failure blocks readiness and quiet without disconnecting th
 });
 
 test('activity failure after one-shot ready updates the quiet gate without restarting the native lifetime',async()=>{
- const f=fixture({events:true});await flush();f.status(readyStatus);f.query.resolve({});
- const pass=f.reconcile();f.reconciliation.resolve([]);await pass;f.assistantReport({state:'adapter_online'});await flush();
+ const f=fixture({events:true});await ready(f);f.query.resolve({});
+ f.assistantReport({state:'adapter_online'});await flush();
  assert.equal(readiness(f).length,2);
  const s=newState({hours:48});for(const m of f.messages){nativeCoverage(s,m);nativeAssistantStatus(s,m);}
  assert.equal(nativeAssistantBusy(s),false);
@@ -140,13 +154,10 @@ test('activity failure after one-shot ready updates the quiet gate without resta
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);
 });
 
-
 test('abort closes the shared owner before awaiting readers blocked on owner transport', {timeout:1000}, async()=>{
- const f=fixture({assistant:false,changesNeedOwnerClose:true});await flush();f.status(readyStatus);f.query.resolve({});
- const pass=f.reconcile();f.reconciliation.resolve([]);await pass;await flush();
+ const f=fixture({assistant:false,changesNeedOwnerClose:true});await ready(f);f.query.resolve({});await flush();
  f.stop.abort();await f.task;assert.equal(f.stats().closes,1);assert.equal(f.stats().supervisorCloses,1);
 });
-
 
 test('dedicated process disposal requires completed owned shutdown and flushes its receipt before exit',async()=>{
  const f=fixture({assistant:false}),gate=Promise.withResolvers(),close=f.owned.close;let returned=false;

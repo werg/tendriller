@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import { RELEASE_DOWNLOAD_LIMITS, verifyPublishedRelease, readPublishedManifest } from '../check-published-release.mjs';
 
+import { FIRST_APP_PROFILES } from '../release-composition.mjs';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const json = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
 
@@ -16,18 +17,22 @@ function fixture() {
       type: file.endsWith('.tgz') ? 'application/gzip' : 'application/json' };
   };
   const components = ['sdk', 'runtime', 'engine', 'tools'].map(role => artifact(role, `tendriller-${role}-${version}.tgz`));
+  components.push(artifact('authority', `chronolog-authority-${'d'.repeat(40)}.tgz`));
   components.push(artifact('session', `chronolog-peer-session-${'d'.repeat(40)}.tgz`));
+  components.push(artifact('session-sql-browser', `chronolog-peer-session-${'d'.repeat(40)}-sql-browser.tgz`));
   components.push(artifact('starter', `tendriller-starter-${version}.tgz`));
   const body = { format: 'tendriller-release-composition-v1', version, contract: 3,
     core: { repository: 'werg/tendriller', source, sourceTree: tree, dirty: false }, runtime,
-    chronolog: { session: { source: 'd'.repeat(40) } },
+    profiles: FIRST_APP_PROFILES,
+    chronolog: Object.fromEntries(['authority', 'session', 'session-sql-browser'].map(role => [role, {repository:'werg/chronolog-db',source:'d'.repeat(40),sourceTree:'e'.repeat(40),dirty:false}])),
     components: components.map(({ role, file, sha256, size }) => ({ role, file, sha256, size })) };
   const composition = { ...body, id: hash(JSON.stringify(body)) };
   const manifest = { format: 'tendriller-core-release', version, contract: 3, source_commit: source,
     source_tree: tree, runtime, composition: { id: composition.id, file: 'composition.json' },
-    first_app: { file: `tendriller-first-app-${version}.tgz`, profile: 'events' },
+    first_app: { file: `tendriller-first-app-${version}.tgz`, profile: 'events', packages: FIRST_APP_PROFILES.events.packages, build_dependency: 'esbuild@0.28.2' },
+    first_apps: {sql: {file:`tendriller-first-app-sql-${version}.tgz`,profile:'sql',packages:FIRST_APP_PROFILES.sql.packages,build_dependency:'esbuild@0.28.2'}},
     artifacts: [...components, artifact('composition', 'composition.json', json(composition)),
-      artifact('first-app', `tendriller-first-app-${version}.tgz`),
+      artifact('first-app', `tendriller-first-app-${version}.tgz`), artifact('first-app-sql', `tendriller-first-app-sql-${version}.tgz`),
       artifact('core-provenance', 'provenance.json'), artifact('tools-provenance', 'tools-manifest.json'), artifact('plugin', 'tendriller-chatgpt-plugin.zip')] };
   const expected = { sourceCommit: source, coreRelease: version, runtimeId: runtime,
     compositionId: composition.id, manifestSha256: '' };
@@ -49,10 +54,30 @@ function fixture() {
 test('the same exact published composition verifies the kit and every public component anonymously', async () => {
   const f = fixture(), result = await f.check();
   assert.equal(result.compositionId, f.expected.compositionId);
-  assert.equal(result.artifacts, 11);
-  assert.equal(f.calls.length, 12, 'Manifest plus every asset, with no fallback lookup.');
+  assert.equal(result.artifacts, 14);
+  assert.equal(f.calls.length, 15, 'Manifest plus every asset, with no fallback lookup.');
   for (const item of f.manifest.artifacts) assert(f.calls.some(call => call.url === item.url));
   assert(f.calls.every(call => call.url.startsWith(f.base + '/')));
+});
+
+test('current baseline rejects missing SQL profiles, mismatched source trees and native kit package selection', async () => {
+  for (const mutate of [
+    f => { delete f.composition.profiles; },
+    f => { f.composition.chronolog['session-sql-browser'].sourceTree = 'f'.repeat(40); },
+    f => { delete f.manifest.first_apps; },
+    f => { f.manifest.first_apps.sql.packages = ['sdk', 'tools', 'authority', 'session']; },
+  ]) {
+    const f = fixture();
+    f.composition.profiles = structuredClone(f.composition.profiles);
+    f.manifest.first_apps = structuredClone(f.manifest.first_apps);
+    mutate(f);
+    const { id: _id, ...body } = f.composition;
+    f.composition.id = hash(JSON.stringify(body)); f.expected.compositionId = f.composition.id; f.manifest.composition.id = f.composition.id;
+    const bytes = json(f.composition); f.bytes.set('composition.json', bytes);
+    Object.assign(f.manifest.artifacts.find(item => item.role === 'composition'), { sha256: hash(bytes), size: bytes.length });
+    f.saveManifest();
+    await assert.rejects(f.check(), { code: 'release_identity_mismatch' });
+  }
 });
 
 test('missing or old public manifests stop before any fallback or asset acquisition', async () => {
@@ -65,7 +90,7 @@ test('missing or old public manifests stop before any fallback or asset acquisit
 });
 
 test('a published manifest with a missing kit or companion cannot pass', async t => {
-  for (const role of ['first-app', 'session', 'sdk', 'tools']) await t.test(role, async () => {
+  for (const role of ['first-app', 'first-app-sql', 'authority', 'session', 'session-sql-browser', 'sdk', 'tools']) await t.test(role, async () => {
     const f = fixture(); f.bytes.delete(f.manifest.artifacts.find(item => item.role === role).file);
     await assert.rejects(f.check(), { code: 'release_unavailable' });
   });

@@ -6,6 +6,8 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { verifyFirstAppComposition } from '../first-app-composition.mjs';
+import { FIRST_APP_PROFILES } from '../release-composition.mjs';
+import { browserSqlArchive } from './helpers/browser-sql-archive.mjs';
 import { runtimeManifest } from '../runtime-manifest.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -32,13 +34,24 @@ async function fixture(t) {
     archives[role] = path;
     components.push({ role, file, sha256: digest(bytes), size: bytes.byteLength });
   }
+  const chronolog = {repository:'werg/chronolog-db',source:'c'.repeat(40),sourceTree:'d'.repeat(40),dirty:false};
+  for (const role of ['authority','session']) {
+    const dir=join(directory,role); await mkdir(join(dir,'package'),{recursive:true});
+    await writeFile(join(dir,'package/package.json'),JSON.stringify({name:role==='authority'?'@chronolog/authority':'@chronolog/peer-session'}));
+    await writeFile(join(dir,'package/provenance.json'),JSON.stringify({...chronolog,profile:'chronolog-crdt-v1',format:role==='authority'?'chronolog-authority-package/v1':'chronolog-peer-session-package/v1',sqlEngines:[]}));
+    const file=role+'.tgz',path=join(directory,file);execFileSync('tar',['-czf',path,'-C',dir,'package']);archives[role]=path;
+    const bytes=await readFile(path);components.push({role,file,sha256:digest(bytes),size:bytes.length});
+  }
+  const sql = browserSqlArchive(directory, chronolog);
+  archives['session-sql-browser'] = sql.path;
+  components.push({role:'session-sql-browser',file:'sql-browser.tgz',sha256:sql.sha256,size:sql.bytes.length});
   const source = { source: 'a'.repeat(40), sourceTree: 'b'.repeat(40), dirty: false };
   const composition = { format: 'tendriller-release-composition-v1', version, contract,
-    runtime: runtime.id, core: source, components };
+    runtime: runtime.id, core: source, profiles:FIRST_APP_PROFILES, chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,chronolog])), components };
   identify(composition);
   const release = { format: 'tendriller-core-release', version, contract, runtime: runtime.id,
     source_commit: source.source, source_tree: source.sourceTree,
-    composition: { id: composition.id }, artifacts: structuredClone(components) };
+    composition: { id: composition.id }, first_app:{file:`tendriller-first-app-${version}.tgz`,profile:'events',packages:FIRST_APP_PROFILES.events.packages,build_dependency:'esbuild@0.28.2'}, first_apps:{sql:{file:`tendriller-first-app-sql-${version}.tgz`,profile:'sql',packages:FIRST_APP_PROFILES.sql.packages,build_dependency:'esbuild@0.28.2'}}, artifacts: [...structuredClone(components),{role:'first-app',file:`tendriller-first-app-${version}.tgz`},{role:'first-app-sql',file:`tendriller-first-app-sql-${version}.tgz`}] };
   const coreProof = { ...source, artifacts: structuredClone(components.filter(item => item.role !== 'tools')) };
   const toolsProof = { version, contract, runtime: runtime.id, source_commit: source.source,
     source_tree: source.sourceTree, dirty: false, artifacts: structuredClone(components.filter(item => item.role === 'tools')) };
@@ -47,6 +60,13 @@ async function fixture(t) {
     identify(composition); release.composition.id = composition.id;
   } };
 }
+
+test('exact browser SQL first-app preflight binds the selected portable archive without a native SQL engine', async t => {
+  const f = await fixture(t);
+  await verifyFirstAppComposition({ ...f, profile: 'sql' });
+  await writeFile(f.archives['session-sql-browser'], 'changed portable archive');
+  await assert.rejects(verifyFirstAppComposition({ ...f, profile: 'sql' }), /actual session-sql-browser archive does not match/);
+});
 
 test('exact first-app preflight binds all core archives and packed runtime identity', async t => {
   const f = await fixture(t);

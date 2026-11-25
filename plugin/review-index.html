@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review checklist</title>
+<style>body{font:18px/1.6 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#20352e}li{margin:1rem 0}button{font:inherit;margin-left:.75rem}textarea{width:100%;min-height:5rem}details{margin-top:2rem}.muted{color:#52645b}</style></head>
+<body><main>
+<h1>Review checklist</h1>
+<p>Shared synthetic data for testing Tendriller. This page keeps its own local identity, keys and storage; ask the connected assistant to read or complete an item.</p>
+<p id="connection-status" role="status">Opening this device…</p>
+<ul id="items"></ul>
+<p id="view-error" role="alert" hidden></p>
+<details id="provisioning"><summary>Add another device explicitly</summary>
+<p class="muted">Review a recipient's public request here. Only that recipient can decrypt the transferred keys; host login alone never decrypts data.</p>
+<label for="public-key">This browser's signing public key</label><input id="public-key" readonly>
+<button data-provisioning="request">Create public key request</button>
+<label for="transfer-in">Incoming signed request or wrapped package</label><textarea id="transfer-in" data-provisioning="in" spellcheck="false"></textarea>
+<button data-provisioning="review">Review recipient fingerprint</button>
+<label><input data-provisioning="writer" type="checkbox" checked> Allow this recipient to write (reading is required for key transfer)</label>
+<button data-provisioning="grant" disabled>Grant reviewed rights and wrap keys</button>
+<button data-provisioning="import">Import my wrapped package</button>
+<label for="transfer-out">Public request / encrypted recipient package</label><textarea id="transfer-out" data-provisioning="out" readonly></textarea>
+<p data-provisioning="status" role="status">Keys stay in the owning Worker.</p></details>
+</main><script type="module" src="./page.mjs"></script></body></html>

@@ -2,25 +2,19 @@
 export function superviseParticipant({ owned, signal, watch, startAdapter, prepareAdapter, proposalId, onOnline, report = () => {},
   retryMs = 1000, maxRetryMs = 60000 }) {
   const stop = new AbortController(), lifetime = AbortSignal.any([owned.session.signal, stop.signal, signal].filter(Boolean));
-  let notice, setupFailure, dirty = false, processing, adapter, adapterAbort;
-  let expiryTimer, retryTimer, failures = 0, adapterTask, adapterKey, blockedKey;
+  let notice, setupFailure, adapter, adapterAbort;
+  let adapterTask, adapterKey, blockedKey;
   let optionalTimer, optionalFailures = 0, preparing, optionalStopped = false;
   const optionalStop = new AbortController(), optionalLifetime = AbortSignal.any([lifetime, optionalStop.signal]);
   const tasks = new Set();
   const track = task => { tasks.add(task); task.finally(() => tasks.delete(task)).catch(() => {}); return task; };
   const safeCode = error => /^[A-Za-z0-9_]{1,96}$/.test(error?.code ?? '') ? error.code : 'participant_component_unavailable';
-  function retry() {
-    if (lifetime.aborted || retryTimer) return;
-    const ms = Math.min(maxRetryMs, retryMs * 2 ** Math.min(failures++, 6));
-    report({ state: 'setup_retry', retryInMs: ms });
-    retryTimer = setTimeout(() => { retryTimer = undefined; reconcile(); }, ms);
-  }
   function stopAdapter() {
     const previous = adapter; adapter = undefined;
     adapterAbort?.abort(); adapterAbort = undefined;
     return previous ? Promise.resolve().then(() => previous.close()).catch(error => report({ state: 'adapter_cleanup_failed', code: safeCode(error) })) : Promise.resolve();
   }
-  const terminal = error => ['forbidden', 'unauthorized', 'agent_binding_revoked', 'pairing_account_revoked', 'access_revoked'].includes(error?.code);
+  const terminal = error => ['forbidden', 'unauthorized', 'agent_binding_revoked', 'access_revoked'].includes(error?.code);
   function stopOptional(reason) {
     if (optionalStopped) return;
     optionalStopped = true; optionalStop.abort(); clearTimeout(optionalTimer); optionalTimer = undefined;
@@ -123,45 +117,19 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
       if (approvedKey() !== key) updateAdapter(); else retryOptional();
     }).catch(() => {});
   }
-  async function drain() {
-    while (dirty && !lifetime.aborted) {
-      dirty = false; updateAdapter();
-      try {
-        const results = owned.processPairings ? await owned.processPairings({ signal: lifetime }) : [];
-        failures = 0; clearTimeout(expiryTimer); expiryTimer = undefined;
-        for (const result of results) report({ pairing: result });
-        if (results.some(result => result.state === 'committed') && await owned.session.orderingPause?.()) dirty = true;
-        if (results.some(result => result.state === 'committing')) retry();
-        // One local deadline for active human review, never idle server polling.
-        const deadlines = results.filter(result => ['pending', 'approved', 'committing'].includes(result.state))
-          .map(result => result.expiresAt).filter(at => Number.isSafeInteger(at) && at > Date.now());
-        if (deadlines.length) expiryTimer = setTimeout(reconcile, Math.min(...deadlines) - Date.now() + 1);
-      } catch (error) {
-        if (lifetime.aborted) return;
-        report({ state: 'pairing_unavailable', code: safeCode(error), participantRunning: true });
-        if (terminal(error)) stopOptional(safeCode(error));
-        // Missing owner claim is resolved by its notification; don't poll it.
-        if (!['pairing_account_required', 'pairing_account_revoked', 'forbidden', 'agent_binding_revoked'].includes(error.code) &&
-          (!String(error.code).startsWith('PAIRING_') || error.code === 'PAIRING_OUTCOME_UNCERTAIN')) retry();
-      }
-    }
-  }
   function reconcile(value) {
     if (lifetime.aborted) return;
     if (value) notice = value;
-    dirty = true;
-    if (!processing) {
-      processing = track(drain());
-      processing.finally(() => { processing = undefined; if (dirty && !lifetime.aborted) reconcile(); }).catch(() => {});
-    }
+    updateAdapter();
   }
-  const channel = watch({ signal: lifetime, onChange: reconcile, onStatus: status => {
+  let channel;
+  try { channel = watch({ signal: lifetime, onChange: reconcile, onStatus: status => {
     if (['access_revoked', 'application_not_found'].includes(status.state)) setupFailure = status;
     else if (status.state === 'connected') setupFailure = undefined;
     report({ setup: status, participantRunning: true });
     if (status.state === 'access_revoked') stopOptional('access_revoked');
-  } });
-  track(Promise.resolve(channel.closed).then(() => {
+  } }); } catch (error) { stopOptional(safeCode(error)); report({ state: 'optional_setup_unavailable', code: safeCode(error), participantRunning: true }); }
+  if (channel) track(Promise.resolve(channel.closed).then(() => {
     if (!lifetime.aborted) {
       stopOptional('setup_channel_closed');
       report({ state: 'setup_channel_closed', participantRunning: true, reason: setupFailure?.state,
@@ -173,8 +141,8 @@ export function superviseParticipant({ owned, signal, watch, startAdapter, prepa
   prepare();
   const done = (async () => {
     if (!lifetime.aborted) await new Promise(resolve => lifetime.addEventListener('abort', resolve, { once: true }));
-    clearTimeout(expiryTimer); clearTimeout(retryTimer); clearTimeout(optionalTimer);
-    await channel.close(); await stopAdapter();
+    clearTimeout(optionalTimer);
+    await channel?.close(); await stopAdapter();
     await Promise.allSettled([...tasks]);
   })();
   return Object.freeze({ done, reconcile, close() { stop.abort(); return done; } });

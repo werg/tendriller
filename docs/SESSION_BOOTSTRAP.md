@@ -1,284 +1,95 @@
 # Session bootstrap and ownership
 
-The runnable [first-app tutorial](BUILD_AN_APP.md) supplies the actual composition
-in [`tutorial/setup.mjs`](https://github.com/werg/tendriller/blob/master/docs/tutorial/setup.mjs),
-[`tutorial/session.mjs`](https://github.com/werg/tendriller/blob/master/docs/tutorial/session.mjs) and
-[`tutorial/worker.mjs`](https://github.com/werg/tendriller/blob/master/docs/tutorial/worker.mjs). This reference explains the
-boundaries when adapting those files. It is not a replacement for the executable
-path.
+Use [Build an app](BUILD_AN_APP.md) and the complete event/SQL [state-model starters](STATE_MODELS.md) from its verified first-app release kit. There is no `deployment.mjs` import. Authored consumers import public package entrypoints only.
 
 ## Keep the identities distinct
 
-| Value | Created or owned by | Used for |
-| --- | --- | --- |
-| Page handle, URL, agent token | Tendriller | Hosted page and account-authorized host operations |
-| `application.id` | Page creation or an explicitly supplied existing application | Stable scope across native/browser participants and publications |
-| Native/browser device signing identity | Chronolog's owned device store | Authenticated commands, peer channels, permitted transitions and code signatures |
-| Account binding | Hosted signed control configuration | Relates an enrolled device to an active admitted account |
-| Epoch encryption key | Initial creator, then authenticated reader-to-reader transfer | Reading the committed application history |
-| Application definition and execution manifest | Application author and exact execution package | Immutable declared domain/schema and compatible execution |
-| Selected generation | Signed control selection | Current coordinating peer and adopted complete history prefix |
-| Publication ID/version | Signed publication selection | Immutable authored code graph, independent of data recovery history |
+| Identity/authority | What it permits |
+| --- | --- |
+| Private host credential | Its explicit account/page management scopes; not data decryption |
+| Independent publisher key | Signed immutable UI/code under the prepared host publisher policy; no reader/writer/root key needed |
+| Browser/native signing identity | Authorship of exact durable proposals, with authenticated crypto membership |
+| `reader` / `writer` | Independent crypto/data-session eligibility; neither implies SQL object permissions |
+| `administrator` / `publisher` / `finalizer` | Separate explicit rights; writing grants none of these implicitly |
+| Application SQL grants | Ordinary authored namespace/object/row/column permission state, evaluated at chronological execution |
+| Profile owner lock | One physical signer/store on one device, not a global application-order authority |
+| View/agent binding | Bounded attachment and approved tool capability scope, independent from membership and caller labels |
 
-An account login is not a device grant. A host token is not a device signer. A
-publisher grant is independent of data access and control administration. A
-page release does not initialize or replace an application session.
+Descriptor: `{applicationId,rootPrincipal,authorityPublicKey,executionManifestDigest,finalityPolicy}`. Public cryptographic identifiers are lowercase hex. The execution manifest establishes deterministic engine/platform semantics, **not immutable application schema**. Membership records carry revision, predecessor digest, signed activation floor, independent grants, epoch and epoch-key commitment. This metadata chain never supplies SQL operation order or overwrites projected permission tables.
 
 ## Fresh creation, in order
 
-First create the hosted page and prepare its first signed release before claim.
-The private setup credential can configure authority and publish within the
-common publication capacity and the unclaimed page's 24-hour expiry. The owner later signs in to open the
-ready page; existing keys, controls and publications are adopted without reset.
-Open an explicit new device with
-`openNativeDevice({ path, create: true })`; retain its identity, a new epoch key
-and the intended setup inputs before sending mutations.
+1. Same-origin service/discovery/readiness and immutable kit verification.
+2. Retain original account-linked setup intent or private creation handle.
+3. `npm run init`: prepare `{executionManifestDigest,executionProfile,publisherKeys,requestedFinality?,tools?}`. Ordinary apps omit finality to choose `none`.
+4. `npm run deploy`: build and sign the complete UI before the first browser key is known. Publisher authorization is independent from the data descriptor/database schema.
+5. Give the person the ready page URL. Their own sign-in and device-key proof initialize the root and initial membership. The epoch key stays on the browser; only its commitment is signed and hosted.
+6. Additional devices prove their key and receive explicit grants plus recipient-bound wrapped keys. Account access alone never reconstructs unavailable old data keys.
 
-From the public session package, use `describeApplication(definition)` and
-`executionManifestArtifacts(await eventExecutionManifest())`. Configure the host
-with the resulting description/digest, history identity, schema administrator,
-epoch/key digest and initial grants. The event tutorial supplies `schema: null`.
-SQL instead uses `prepareSqlApplication` and the exact native/WASM capability;
-it is not an additional host backend.
+See `setup.mjs`, `publish.mjs`, `helpers/prepare-host.mjs`, and `helpers/browser-bootstrap.mjs` in the tutorial. Private intents/signing identities/epoch keys remain outside `page/`.
 
-`configureApplication` creates signed descriptor and control state but initially
-has **no selected generation**. Verify and persist the descriptor, then save and
-submit this initial transition through the public host SDK:
+## Local opening before network discovery
 
 ```js
-const request = await signTransitionRequest({
-  applicationId: descriptor.payload.applicationId,
-  profile: descriptor.payload.profile,
-  policy: descriptor.payload.policy,
-  transitionId: savedTransitionId,
-  expectedGeneration: null,
-  coordinator: device.identity.publicKey,
-  requester: device.identity.publicKey,
-  controlRevision: 0,
-  reason: 'create',
-  base: null,
-}, device.identity);
-// Persist this exact signed request before its first send; setup.mjs does so.
-await host.peers.selectGeneration(request);
-const authority = await host.peers.application();
-await verifyAuthorityBundle(authority, pinnedDescriptor);
-const session = await openNativeApplication({
-  device, definition, authority, epochKeys: new Map([[0, initialEpochKey]]),
-});
+import { createApplicationSession } from '@chronolog/peer-session';
+import { openBrowserDevice } from '@chronolog/peer-session/worker';
+import { createAuthorityProvider } from '@chronolog/authority';
+
+const device = await openBrowserDevice({ name: retainedProfile });
+const authority = await createAuthorityProvider({
+  store: device.store, applicationId,
+}); // verified cached metadata and keys; no host fetch
+const session = await createApplicationSession({ device, definition, authority });
 ```
 
-Those variables are all supplied in the runnable tutorial. The initial native
-query activates durable storage and saves the initial keyring. Normal opens use
-the existing device and keyring without `create: true`. A missing signer,
-inconsistent binding or missing retained store is an explicit failure.
+The starter explicitly creates only an empty first device profile. A retained binding with missing/damaged private identity fails closed. On cache absence, first enrollment fetches authenticated host metadata, durably stores its original bootstrap key before sending the epoch-bound signed proof, then pins the returned verified descriptor. On an established device, local reopening does not wait for host refresh, discovery, peers or a finalizer.
 
-## Attach control, then participation
-
-Create the host client and signed control attachment using the stable application
-ID, then keep the starter's platform owner helper. Native owners call
-`participateNativeApplication`; browser owner factories use the injected RTC
-opener with `participateApplication`. Both consume the same exported transport
-policy and automatic fallback; see [the canonical peer connection guide](PEER_CONNECTIONS.md).
-
-Direct RTC is the normal path, including the installed native capability and the
-page-side browser provider. No native-RTC installation detour or application-owned
-connection selector is required. Keep signing, state and peer authentication in
-the existing owner, and never substitute an always-failing RTC opener. The session
-owns retries and recovery. Verify actual direct application traffic and automatic
-fallback, rather than treating a connected WebSocket as proof of P2P.
-
-Read `session.status` for actual data/generation state and
-`session.participation.status` for discovery, connections and recovery progress.
-Observe their subscriptions. A browser with a fresh grant can authenticate
-before acquiring history keys; `awaiting-keys` persists until an authorized
-reader supplies them. A known coordinator need not currently be reachable.
-
-## Enroll a browser without distributing secrets
-
-The page's connection component (`connection.mjs`) starts this when a browser
-without a grant opens the page; there is no separate setup button. It retains one public request and creates or
-reopens that browser's own device under its exclusive profile lock. A short-lived
-Worker signs a bounded service challenge with that identity; the key, account,
-application, origins, rights, expected generation and expiry are fixed by the
-proof. `pairing-browser.mjs` retains only public intent, and
-`pairing-worker.mjs` keeps private key operations inside the device owner.
-
-The existing native owner processes the request through `pairing-native.mjs`.
-It retains its intent, calls the public durable `session.pauseOrdering(id)`, and
-prepares the usual `reason: 'control-change'` transition with the exact drained
-prefix, next control revision and proved account binding. All existing grants
-and key commitments remain intact. The complete signed request and full control
-update are saved and staged with `client.prepare`. Staging approves that exact
-member-only proposal automatically for the signed-in owner or an admitted guest;
-there is no approval screen. (Older kits that still open a `/pairings/...`
-review link are returned to their own page origin.) The normal serialized host selector rechecks
-current authority and account access when committing it. The page waits for the
-commit and connects; it also connects when it later finds a request the native
-owner committed while it was away.
-
-The native participant subscribes to authenticated setup notifications over a
-hibernating WebSocket. Later devices can pair without restarting it. Idle setup
-does not poll or send heartbeats. Each review request expires after ten minutes,
-with one local expiry deadline while that request is active. A lost commit reply
-or process close preserves both the exact request and durable ordering pause.
-On reopen, verify the original signed transition and complete reviewed payload
-before adopting it and resuming ordering. A mismatch or unavailable status stays
-paused; never substitute a new prefix or signer. `npm run pair` performs one
-bounded pass with the resident owner stopped; it does not wait for owner review
-or later independent receipt verification. Restart the same native participant
-to finish or reconcile a prepared/submitted proposal, and keep it running for
-the complete pairing flow. The deliberate manual `enroll`
-command still uses authenticated `info().owner_account_id` for a separately
-verified owner device; it is not the ordinary browser pairing flow.
-
-The published code never receives the agent token, native signer or plaintext
-epoch key. On connect, the browser uses its page's authenticated same-origin
-cookie for host access and its own device identity for the signed session.
-Chronolog's maintained peer key exchange verifies current reader grants and
-wraps committed keys for the authenticated recipient. Keep a current reader
-online for initial key acquisition and synchronization.
-
-The tutorial enrolls only another device of the **owner's account**. Guest
-enrollment additionally requires admitted guest account access and that guest's
-verified account ID; do not bind a guest device to the owner's ID to bypass that
-step. A new account or device is not authorized merely because it can load HTML.
-
-## Compose the browser facade
-
-The Worker calls `serveBrowserOwner` from
-`@tendriller/core/worker-owner`. The owner acquires an exclusive Web Lock
-**before** its `openSession` callback opens the retained device, verifies signed
-authority and opens `openBrowserApplication`. The callback returns its session
-and control participant. Browser identity creation is a separate explicit action.
-
-When configuration must be fetched, call `serveBrowserOwner({ load: async
-({ signal }) => { /* fetch and return the configuration */ } })` synchronously
-at module startup. This registers message and SharedWorker connection listeners
-before awaiting network work, preserving the first attachment or identity request.
-Do not await a top-level configuration fetch before installing the owner service.
-
-The page calls `openBrowserOwner` from
-`@tendriller/core/browser-owner`, supplying the worker URL, retained
-profile, immutable application/definition identity and its view/document context.
-Events applications use SharedWorker when available, with a fenced dedicated
-Worker fallback. SQL/WASM applications pass `requiresDedicatedWorker: true` to
-select the dedicated route required by their synchronous OPFS storage. See the
-matching [SQL composition](STATE_MODELS.md); forcing an incompatible shared mode
-fails before opening storage.
-All attached views share the signing journal. The tutorial uses the encrypted
-Worker-native relay so an owner's connectivity does not depend on a particular
-page's RTC helper. Applications may deliberately compose a different qualified
-transport without changing ownership. The page mounts the returned session:
+`createApplicationSession({device,definition,authority?,applicationId?,epochKeys?,createMaterializer?})` is the sole public factory. Do not invent a parallel `{descriptor,identity,store,runtime}` constructor. SQL supplies a lazy callback:
 
 ```js
-const backend = createApplicationBackend({ id: session.applicationId, session });
-tendril.application.install(backend);
-tendril.signals.install(session.signals);
+createMaterializer: async ({signal,rootPrincipal}) => {
+  const {createSqlMaterializationRuntime} = await import('@chronolog/peer-session/sql');
+  return createSqlMaterializationRuntime({engine,path:'/application.sqlite',rootPrincipal});
+}
 ```
 
-The runtime's `application.available` and `application.ready()` describe backend
-installation. They do not imply connected peers, decryption keys, a usable
-selected generation or retained coverage. The starter exposes these separately.
+Use the matching `sql-browser`/`sql-native` engine loader. Creating tables, changing schema and permission/platform operations happen later through ordinary signed programs. Never pass a static signed-schema descriptor.
 
-Detach closes only the attachment. `suspend()` and `resume()` bound streams across
-a suspended page lifetime; they do not revoke the signer or cancel durable work.
-The browser attachment automatically pauses its owner-silence observation when
-the document becomes hidden or frozen. Becoming visible requires a fresh,
-authenticated owner reply before observation resumes; elapsed frozen time alone
-does not replace the owner or reload the page. This automatic pause retains the
-RTC provider so background work can continue where the browser permits it.
-Explicit `suspend()` additionally releases that attachment's RTC provider; pair it
-with `resume()` for a retained page lifetime such as BFCache. Neither mechanism
-keeps a page running against browser or operating-system suspension policy.
-A crashed fallback owner releases its actual Web Lock; a waiting worker can then
-reopen the same profile. Stale facades close and must reattach before inspecting
-their original operation references. No timeout grants ownership or silently
-reissues commands.
+## Compose one browser owner
 
-Publication URLs remain immutable. Compatible authored documents can deliberately
-reuse one pinned `configuration.ownerWorkerUrl`. A new incompatible Worker cannot
-steal a profile from a running old owner: close its clients and restart deliberately,
-or use an explicitly enrolled separate profile. A UI publication does not migrate
-the immutable application definition or its journal.
+`serveBrowserOwner` in `worker.mjs` uses the real public `createApplicationOwner`. `openBrowserOwner` in `page.mjs` attaches through SharedWorker or a fenced elected dedicated Worker. SQL declares `requiresDedicatedWorker:true` when its VFS needs that route. Keep the original browser profile, root-lifetime lock, physical store and signed operation records. Do not replace them on a timeout or hide/show transition.
 
-Device metadata opens immediately; actual durable data use opens the selected
-browser record backend and its exclusive ownership lock. Do not infer that all
-engines or browsers have the same storage capabilities. SQL/WASM has its own
-qualified engine and VFS requirements. Preserve missing-storage and quota errors
-instead of resetting the application.
+```js
+const attachment = await openBrowserOwner({workerUrl,profileId,applicationId,context:{viewId}});
+const session = attachment.session;
+window.tendril.application.install(createApplicationBackend(session));
+```
 
-## Publish and update
+The runtime matches `backend.applicationId` to `selection.id`. It requires durable submission, coherent views/changes, independent operation inspection, exact retry and subscriptions—not ordering/recovery capabilities. Detach only a view on navigation; do not close the shared owner or erase pending operations. Preserve suspend/resume nonce proofs and finite local RPC deadlines.
 
-The CLI's `publish` action packs the full authored graph, then calls the
-session-owned control participant's `preparePublication({ operationId, entry,
-files })` followed by `publish(signed, assets)`. The first saves the exact signed
-intent before upload. Keep the original operation ID and graph for uncertain
-retries. New content, including a deliberate restoration of old code, requires a
-new signed publication against the current selected predecessor.
+## Optional background participation
 
-The runtime and host verify bytes, identity, publisher grant, current controls,
-immutable definition/engine bindings and the publication chain. Querying
-`control.publication()` verifies the selected chain. Historical code remains
-addressable at its immutable publication URL.
+`participateApplication(session,{peers,openDirectConnection})` runs after local opening and returns immediately. It uses existing direct RTC, isolated reliable/live lanes, encrypted relay fallback, account-bound introductions and bounded retry budgets. Metadata refresh is signed evidence verified into the cached authority provider. It never blocks Save. `participateNativeApplication` supplies optional Node RTC mechanics for an explicitly provisioned native device.
 
-An application definition is immutable after configuration. Editing its UI is
-ordinary code publication; changing the bound domain definition is not silently
-authorized by publishing another HTML file. Plan a new application or a separately
-implemented supported evolution path explicitly.
+Open root locks before opening signer storage. Native tools attach to the existing private IPC supervisor or deliberately use a separately enrolled profile; an unavailable supervisor never authorizes another signer. Report its actual process lifetime. Optional agent/tool-provider dispatch and idempotency are not application ordering.
+
+## Enrollment and control DTOs
+
+Use `@tendriller/core/authority` for transport and `@chronolog/authority` for canonical record encoding/signature verification. `{record:lowercaseHexCanonicalBytes}` preserves bigint timestamps and bytes without JSON narrowing.
+
+- `GET application`: `{selection,configuration,publicationAuthority,authority}`; authority is a canonical record or null before data initialization.
+- `POST application`: `HostAppConfig`, authorized by host management scope. Identical preparation retries are accepted; changed immutable setup is rejected.
+- `POST peers/enrollment {action:'challenge',publicKey}`: authenticated browser account and exact page origin.
+- `{action:'enroll',proof}`: a signed `EnrollmentRequest` containing application/key/challenge/**epoch and epochKeyDigest**. No plaintext keys are accepted.
+- `{action:'grant',requestId,expectedMembershipId,authorTimeAfterMs,grant}`: explicit owner browser review, proved recipient account binding, active account, exact independent boolean rights. The expected signed metadata head is enrollment concurrency control, never a data-order input. Exact request-ID retries retain the original grant.
+- `{action:'membership',bundle}`: independently signed admin extension, verified against the pinned descriptor and existing chain/account proofs.
+- `POST peers/participant`: signed portable authority/publication/finality requests, canonically encoded as one bounded record. No application programs are accepted.
+- `POST peers/publication`: independent signed publisher manifests and referenced immutable code assets. Code-revision concurrency is separate from data chronology.
+
+After an explicit grant, `session.mergeAuthority(bundle)` verifies and retains public evidence without SQL membership overlays. Recipient keys use `session.provisioning.createProvisioningRequest()`, `.exportProvisioning(request)`, and `.importProvisioning(package)`. Agreement secrets stay in the original owning store. Review full recipient fingerprints before exporting.
 
 ## Own shutdown and uncertain operations
 
-For a native session returned by the tutorial's `openSession()`, await the
-returned `owned.close()` before reopening its store. This closes the supervisor,
-its attachment listener and ownership fence as well as the session; closing only
-`owned.session` leaves supervisor resources behind. The inference launcher owns
-the same supervisor and follows the same shutdown path.
+`submit({program,operationId?,authorTimestampMs?})` acknowledges durable local storage, not network execution. Materialized success/rejection is revisable at a coherent snapshot. Retention and finality are independent. Preserve original identity, authored time and bytes after any uncertain reply; use `operations.get`, `inspect`, `operations.retry`, and subscriptions. No-finality final waits reject as unsupported. Excluded originals remain inspectable and are never silently rewritten.
 
-The standalone events, assistant, SQL and photo-inference entry points own their
-Node process. After the application and all owned components finish cleanup,
-they flush stdout/stderr and explicitly dispose that process: an Undici socket
-can remain in `CLOSING` after owned shutdown has returned. This is process
-disposal, not proof that every remote close handshake completed. Cleanup failure
-after a signal stays nonzero and reports unverified cleanup; an output flush
-failure or its bounded deadline also stays nonzero. The original device, inputs
-and signed operation references remain the recovery source. No disposal timer
-runs while the application or a cleanup promise is still active.
-
-Imported `runPeer`, `runAssistant`, `runInference` and `openSession` never exit an
-embedding process. Their caller owns its other listeners and its final lifetime.
-Tools `watch` and the preview HTTP server retain their explicit listener
-lifetimes; this standalone tutorial policy does not terminate them.
-
-Ordinary CLI commands use `--mode attach` against the running peer. Closing that
-attachment detaches it without stopping the owner or sibling clients. Reserve
-`--mode own` for deliberate standalone ownership while the peer is stopped; two
-owners must not open the same device store concurrently.
-
-An application that owns a bare session must await `session.close()` before
-reopening its store or terminating a gracefully closing browser Worker. Close
-its RTC helper as well. Abrupt browser termination is a separate durability case
-to test, not a substitute for normal cleanup.
-
-Canceling `operation.applied({ signal })` cancels the wait; it does not replace or
-erase the saved signed attempt. Inspect the original operation, retry it, or
-review a reapplication after explicit recovery. Keep page drafts and local
-operation references separate from Chronolog's one durable operation journal.
-
-Use the [first-app acceptance steps](BUILD_AN_APP.md#7-verify-completion-including-reopening)
-before claiming a working integration, then qualify deployment/network/engine
-boundaries relevant to the real task.
-
-### Network changes and local diagnostics
-
-Keep the supplied browser owner: its authenticated RTC provider forwards actual
-network/visible-resume events to the one participation controller. A usable relay
-stays available while a direct-only replacement authenticates. Do not add a
-transport retry interval or allocate another participant. Native hosts can forward
-OS network notifications with `participation.reconsiderConnections()`; discovery
-reconnection already supplies that event automatically. Events are coalesced and
-rate-limited locally, with no idle probes.
-
-Use `await participation.diagnostics()` (or `session.participation.diagnostics()`
-on a browser facade) to inspect authenticated routing and application framing
-bytes without contacting the host. See [peer connections](PEER_CONNECTIONS.md)
-for counter scope, cooldown and replacement behavior.
+A configured finality provider can close author-time inclusion, not sort operations. Browser/native/host placement needs actual authenticated signer authority and proof qualification. Unavailable providers do not block local authoring. Closing a frontier can exclude unseen offline work behind it. Keep this explicit in setup, UI and delivery.

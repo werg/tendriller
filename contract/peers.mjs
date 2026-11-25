@@ -2,10 +2,8 @@ import { createPeerDiscoveryWatcher, validatePeerDiscoveryWatchOptions, PeerDisc
 export * from './discovery-watch.mjs';
 import { validatePeerAdvertisement, validatePeerAdvertisementPresence, validatePeerDirectory, validatePeerId } from './discovery.mjs';
 export * from './discovery.mjs';
-import { createPeerControlsClient } from './peer-controls.mjs';
-export { createPeerControlsClient } from './peer-controls.mjs';
-import { createPeerParticipantClient } from './peer-participant.mjs';
-export * from './peer-participant.mjs';
+import { createAuthorityClient } from './authority.mjs';
+export * from './authority.mjs';
 import { createPeerInvitationListener, validatePeerInvitation, PEER_INVITATION_PROTOCOL } from './invitations.mjs';
 export * from './invitations.mjs';
 import { createPeerRelay, PEER_RELAY_LIMITS, PEER_RELAY_PROTOCOL } from './relay.mjs';
@@ -133,9 +131,11 @@ export function createPeerRendezvous(socket, { signal, timeoutMs = PEER_RENDEZVO
 }
 
 /** Shared browser/agent host client. Construction performs no network work. */
-export function createPeersClient({ base, request, applicationId, initialBootstrap, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
+export function createPeersClient({ base, request: dispatch, applicationId, initialBootstrap, protocols = [PEER_RENDEZVOUS_PROTOCOL], socket = (url, protocols) => new WebSocket(url, protocols) }) {
   const prefix = base.replace(/\/+$/, '');
-  const participant = createPeerParticipantClient({ applicationId, request });
+  const request = async (path, options) => { options?.signal?.throwIfAborted(); const value = await (options === undefined ? dispatch(path) : dispatch(path, options)); options?.signal?.throwIfAborted(); return value; };
+  const authority = createAuthorityClient(request, { applicationId });
+  const discovery = (action, payload, options) => request('peers/discovery', { method: 'POST', body: { action, ...payload }, signal: options?.signal });
   const socketUrl = (path, code) => {
     const url = new URL(prefix + '/' + path);
     if (!['https:', 'http:'].includes(url.protocol) || url.search) fail(code, 'Expected an HTTP service base without query parameters');
@@ -145,19 +145,17 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
     return url;
   };
   return Object.freeze({
-    ...createPeerControlsClient(participant),
-    exchange: participant.exchange,
+    ...authority,
     initialBootstrap: initialBootstrap === undefined ? null : validatePeerBootstrap(initialBootstrap),
     async bootstrap() { return validatePeerBootstrap(await request('peers/bootstrap')); },
     async setBootstrap(value) { return validatePeerBootstrap(await request('peers/bootstrap', { method: 'PUT', body: validatePeerBootstrap(value) })); },
-    async discover(options = {}) { return validatePeerDirectory(await participant.request('discovery', 'read', {}, options)); },
+    async discover(options = {}) { return validatePeerDirectory(await discovery('read', {}, options)); },
     async advertise(value, options = {}) {
-      return validatePeerAdvertisementPresence(await participant.request('discovery', 'advertise',
-        { advertisement: validatePeerAdvertisement(value) }, options));
+      return validatePeerAdvertisementPresence(await discovery('advertise', { advertisement: validatePeerAdvertisement(value) }, options));
     },
     async withdraw(peerId, options = {}) {
       peerId = validatePeerId(peerId);
-      const result = await participant.request('discovery', 'withdraw', { peerId }, options);
+      const result = await discovery('withdraw', { peerId }, options);
       if (!result || result.withdrawn !== peerId) fail('invalid_response', 'Invalid withdrawal response');
     },
     watchDiscovery(peerId, options = {}) {
@@ -185,7 +183,7 @@ export function createPeersClient({ base, request, applicationId, initialBootstr
     },
     async invite(peerId, input, options = {}) {
       peerId = validatePeerId(peerId); const invitation = validatePeerInvitation(input);
-      const result = await participant.request('ephemeral', 'invite', { peerId, ...invitation }, options);
+      const result = await request('peers/invite', { method: 'POST', body: { peerId, ...invitation }, signal: options.signal });
       if (!result || result.invited !== peerId || result.channel !== invitation.channel) fail('invalid_response', 'Invalid invitation response');
     },
     rendezvous(channel, peerId, options = {}) {

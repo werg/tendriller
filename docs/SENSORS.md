@@ -18,7 +18,7 @@ Keep four responsibilities separate on every sensor path:
 | --- | --- | --- |
 | Live telemetry, location previews, tilt/motion readings, derived detections | `session.signals` | Ephemeral signed JSON, max 16 KiB per frame. `mode: 'latest'` coalesces newly received values within an active subscription; it does not replay missed sends. Rate-limit and coalesce at the producer before `send()`. See [live signals](APPLICATION_SIGNALS.md#page-observations-and-sensor-readings). |
 | Bounded photo, screen frame, audio clip, or other binary evidence | `session.content` (`stage` → `write` → `commit`) | Encrypted 64 KiB peer-to-peer chunks up to 128 MiB; pass the small immutable `ContentReference` + SHA-256 over a signal or command. |
-| Reviewed observation, accepted measurement, inspection record | `session.command` | Durable signed operation with `operationId` and `basedOn` revision guard. |
+| Reviewed observation, accepted measurement, inspection record | `session.command` | Durable signed operation with a stable `operationId`. Check reviewed domain versions inside the definition. The captured revision is not an order input. |
 | Continuous real-time RTP audio/video stream | **Not built into Chronolog** | `@chronolog/transport-webrtc` carries two SCTP data channels (reliable ordered history/control + unordered disposable JSON signals), not RTP media tracks. Do not stream raw video frames over `session.signals`; use bounded snapshots, clips, transcripts, or telemetry instead. |
 
 Document units, capture time (`observedAtMs`), and accuracy/quality in your

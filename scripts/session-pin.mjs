@@ -1,9 +1,25 @@
 // This runs before npm/pnpm installation in CI: Node built-ins only.
 import assert from 'node:assert/strict';
-import {readFileSync,appendFileSync} from 'node:fs';
+import {readFileSync,appendFileSync,realpathSync} from 'node:fs';
 import {resolve,relative,isAbsolute} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {gunzipSync} from 'node:zlib';
+import {createHash} from 'node:crypto';
+
+// Explicit supplemental pin, never an inferred sibling archive. This reader is
+// built-ins-only so CI can verify its bytes before installing dependencies.
+export function readBrowserSqlPin(root=resolve(import.meta.dirname,'..')) {
+ const config=JSON.parse(readFileSync(resolve(root,'scripts/sql-browser-session.json'),'utf8'));
+ assert(typeof config.archive==='string'&&/^[A-Za-z0-9.][A-Za-z0-9._/-]*\.tgz$/.test(config.archive),'SQL_BROWSER_ARCHIVE_PIN_REQUIRED');
+ assert.match(config.sha256??'',/^[a-f0-9]{64}$/,'SQL_BROWSER_ARCHIVE_HASH_REQUIRED');
+ const archive=resolve(root,config.archive),within=relative(root,archive);
+ assert(within&&!within.startsWith('..')&&!isAbsolute(within),'SQL_BROWSER_ARCHIVE_MUST_BE_IN_CHECKOUT');
+ const actualWithin=relative(realpathSync(root),realpathSync(archive));
+ assert(actualWithin&&!actualWithin.startsWith('..')&&!isAbsolute(actualWithin),'SQL_BROWSER_ARCHIVE_MUST_BE_IN_CHECKOUT');
+ const bytes=readFileSync(archive);
+ assert.equal(createHash('sha256').update(bytes).digest('hex'),config.sha256,'SQL_BROWSER_ARCHIVE_HASH_MISMATCH');
+ return Object.freeze({archive,sha256:config.sha256});
+}
 
 function archiveFiles(bytes){
  const tar=gunzipSync(bytes,{maxOutputLength:32*1024*1024}),files=new Map();
@@ -26,10 +42,10 @@ export function validateSessionProvenance(proof){
  assert.match(proof.source,/^[a-f0-9]{40}$/,'EXACT_SESSION_SOURCE_REQUIRED');
  assert.match(proof.sourceTree,/^[a-f0-9]{40}$/,'EXACT_SESSION_TREE_REQUIRED');
  assert.equal(proof.dirty,false,'CLEAN_SESSION_SOURCE_REQUIRED');
- assert.equal(proof.profile,'peer-generation-v1','STANDARD_SESSION_PROFILE_REQUIRED');
+ assert.equal(proof.profile,'chronolog-crdt-v1','STANDARD_SESSION_PROFILE_REQUIRED');
  assert.equal(proof.nativeRtc,true,'NATIVE_RTC_SESSION_REQUIRED');
  assert(Array.isArray(proof.sqlEngines)&&proof.sqlEngines.length===0,'SQL_FREE_SESSION_PIN_REQUIRED');
- return Object.freeze({source:proof.source,sql_archive:`chronolog-peer-session-${proof.source.slice(0,8)}-sql.tgz`});
+ return Object.freeze({source:proof.source});
 }
 export function readSessionPin(root=resolve(import.meta.dirname,'..')){
  const pkg=JSON.parse(readFileSync(resolve(root,'package.json'),'utf8')),pin=pkg.devDependencies?.['@chronolog/peer-session'];
@@ -45,7 +61,10 @@ export function readSessionPin(root=resolve(import.meta.dirname,'..')){
  return result;
 }
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url){
- const pin=readSessionPin(),output=`source=${pin.source}\nsql_archive=${pin.sql_archive}\n`;
+ const args=process.argv.slice(2);
+ assert(args.length===0||(args.length===1&&args[0]==='--sql-browser'),'Use session-pin.mjs [--sql-browser]');
+ const pin=args.length ? readBrowserSqlPin() : readSessionPin();
+ const output=args.length ? `archive=${pin.archive}\nsha256=${pin.sha256}\n` : `source=${pin.source}\n`;
  if(process.env.GITHUB_OUTPUT)appendFileSync(process.env.GITHUB_OUTPUT,output);
  else process.stdout.write(output);
 }

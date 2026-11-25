@@ -4,11 +4,11 @@ Tendriller lets an agent create a private page for you, update it live, and rece
 
 Tendriller hosts authenticated web applications whose durable state, execution, replication, and peer communication run through one owned **Chronolog** session (`@chronolog/peer-session`).
 
-The host stays application-neutral: it provides account authentication, OAuth 2.1, a single account-linked `/mcp` gateway, signed membership and generation control, immutable signed UI hosting, and bounded peer introductions/relay. Ordinary application commands, queries, database history, content replication, and live signals flow directly through Chronolog between enrolled peers.
+The host stays application-neutral: it provides account authentication, OAuth 2.1, a single account-linked `/mcp` gateway, signed authority metadata, optional finality proofs, immutable signed UI hosting, and bounded peer introductions/relay. Ordinary application operations, queries, content replication, and live signals flow directly through Chronolog between enrolled peers. Each peer stores its own signed operations locally and replays the union in canonical author-time order, and no host or peer orders them.
 
 The name combines an agent's tendrils reaching new interfaces and sensors with a drill opening a path for them.
 
-**Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **create → define state → configure authority and initial generation → publish → owner sign-in → connect devices → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). Deliver the [running connected application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
+**Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **create → choose finality/availability policy → publish signed UI → owner sign-in → initialize the browser locally → author and replicate → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). Deliver the [running connected application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
 
 Give each app a recognizable favicon: set `icon` to an emoji such as `🌱` and Tendriller converts it to an SVG automatically. HTTPS image URLs work too. See [favicons and page branding](docs/BROWSER_API.md#favicons-and-page-branding) for the agent API and CLI examples.
 
@@ -35,15 +35,16 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Cloudflare assistant](docs/CLOUDFLARE_ASSISTANT.md) — hosting and enrolling apps on `/mcp`
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — failing stages, safe retries, and next actions
 - [Upgrade from rc.16](docs/MIGRATION_RC16_RC17.md) — breaking host, SDK, and starter changes with before/after examples
-- [Test a release locally](docs/LOCAL_HOST.md) — verified local host, test owner, publication, and pairing
+- [Test a release locally](docs/LOCAL_HOST.md) — verified local host, test owner, publication, and enrollment
 
 ### Reference and operations
 - [Agent guide](agent.md) — concise agent workflow and contract reference
 - [Architecture](docs/ARCHITECTURE.md) — Chronolog central-pipe design, limited transports, and package boundaries
-- [Application contract](docs/APPLICATION_BACKENDS.md) — commands, applied operations, coherent reads, and recovery
+- [Application contract](docs/APPLICATION_BACKENDS.md) — commands, stored and materialized operations, coherent reads, and optional finality
 - [Browser API](docs/BROWSER_API.md) — session adapter, Home Screen setup, sensors, voice, and offline cache
-- [Participant protocol](docs/PROTOCOL.md) — filtered control transport, authorization, and signed publications
-- [Membership](docs/MEMBERSHIP.md) — account access, device grants, and control changes
+- [Participant protocol](docs/PROTOCOL.md) — filtered authority transport, authorization, and signed publications
+- [Membership](docs/MEMBERSHIP.md) — account access, device grants, and key provisioning
+- [Authority records and publications](docs/AUTHORITY_AND_PUBLICATIONS.md) — host authority operations, signed code chain, and finality evidence
 - [Peer connections](docs/PEER_CONNECTIONS.md) — discovery, invitations, direct WebRTC, and relay fallback
 - [CLI and preview](docs/tools/CLI.md) — public session CLI and authored-file preview
 - [Development](docs/DEVELOPMENT.md) — building, testing, and artifact provenance
@@ -71,7 +72,7 @@ npm run test:browser
 | `contract/` | Host SDK, filtered participant transport, application/signal contracts, OAuth/assistant clients, browser declarations |
 | `session/` | Browser owner (SharedWorker / WebLock Worker + page RTC broker), Node supervisor + SQLite effect journal, host participation, diagnostics |
 | `collaboration/` | Optional multi-participant task-coordination schema and client (`@tendriller/core/collaboration`) |
-| `server/` | Application-neutral Cloudflare Worker host: accounts, OAuth 2.1, `/mcp` gateway, inbox UI, filtered control participant, signed code storage, introductions/relay |
+| `server/` | Application-neutral Cloudflare Worker host: accounts, OAuth 2.1, `/mcp` gateway, inbox UI, filtered authority participant, signed code storage, introductions/relay |
 | `runtime/` | Zero-Chronolog browser composition, immutable offline code cache, sensor tracking, optional voice, and kernel/voice declarations |
 | `tools/` | Standalone CLI (`tendril`, `tendril-preview`), authored-file packing, and explicit preview |
 | `plugin/` | OpenAI ChatGPT plugin manifest, build script, setup skill, and review guide |

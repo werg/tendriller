@@ -8,49 +8,44 @@ Every application uses the same owned Chronolog session and one Tendriller bindi
 
 ```js
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
-const application = createApplicationBackend({ id: session.applicationId, session });
+const application = createApplicationBackend(session);
 tendril.application.install(application);
 const installed = await tendril.application.ready();
 ```
 
-The ID must equal the session's pinned application ID. Installation is single-assignment. `available` and `ready()` describe whether the adapter is installed, not whether peers are reachable or history is synchronized. `session.deviceId` owns the signing identity.
+The ID must equal the session's pinned application ID. Installation is single-assignment. `available` and `ready()` describe whether the adapter is installed, not whether peers are reachable or operations are synchronized. `session.identity.publicKey` is the signing identity.
 
-## Protocol first, durable data on demand
+## Owned local storage and materialization
 
-Install the normal Chronolog session when the page starts. Its authenticated peer
-connections, live signals, membership/control updates and signed code publications
-work while `status.database` is `idle`. Reading status or capabilities, installing
-the backend, and awaiting `application.ready()` do not open an application database.
+Passive package imports do not open a database. Explicitly opening a device and
+calling `createApplicationSession` opens its owned local storage and cached
+authority. Materialization warms independently of the first command or query;
+received authenticated operations can also trigger replay. Do not rely on the
+database remaining `idle` until the page asks for data.
 
-Chronolog initializes its one durable data component on the first command, query,
-history read, durable content operation or other explicit data use. Concurrent
-first operations share that initialization. A backend-agnostic exclusive Web Lock, the locally pinned record store,
-replica, journal and materializer belong to that component. For a fresh browser
-device Chronolog prefers OPFS when createWritable actually works, otherwise
-uses an independently probed IndexedDB bytes store. An existing device's
-backend never switches automatically after an error or browser upgrade.
-The `/sql` entry accepts `createEngine({signal})`; import and create the SQL/WASM
-engine inside that factory. A custom materializer uses `createMaterializer` with
-the same on-demand lifecycle. The existing participant,
-signing identity and peer connections continue through activation.
+Install the owning Worker's session when the page starts. Installing its backend
+and awaiting `application.ready()` indicate adapter installation, not successful
+materialization, peer connectivity or finality. Local signing and storage
+prerequisites determine whether Save is available. A missing peer, failed view
+query or unavailable finalizer must not disable independent local authoring.
 
-`status.database` reports `idle`, `opening`, `ready`, `failed` or `closed`; it is
-separate from protocol connectivity. A first-use storage failure leaves the protocol
-participant available and remains visible instead of silently retrying setup.
-Connecting to a peer, receiving live signals or observing a database update hint
-does not activate a cold follower. An authorized data request may activate the
-selected coordinator that must serve it.
+The device owns its signing identity, exclusive storage lock, pinned record
+backend and signed journal. Existing storage resumes with the same identity and
+backend; a failure must not silently switch storage or create an empty replacement
+history. Explicit new-device capability checks choose a supported backend before
+initialization. There is no migration or in-memory durability fallback.
 
-The browser stores only the device identity, immutable record-backend pin and
-verified control/publication metadata in a small IndexedDB store before durable
-data is used. It does not acquire OPFS or a database ownership lock for those
-protocol responsibilities. The separate record database is OPFS or
-`chronolog-data:<name>` IndexedDB, selected only on the first data use.
-Existing OPFS stores (including possible pre-upgrade interrupted writes) are
-retained as OPFS or fail explicitly; losing one storage surface cannot generate
-an empty history with the old identity. This metadata is necessary for stable
-identity and monotonic signed control; it is not a temporary journal to migrate
-later. There is no unapproved record migration or in-memory durability fallback.
+SQL engine selection is explicit: provide `createMaterializer` when opening the
+session and import/create the engine within that factory. The `/sql` factory is
+`createSqlMaterializationRuntime({ engine, path, rootPrincipal })`. Platform trust
+initialization does not freeze application tables; ordinary authorized signed
+transactions create and change schema.
+
+`status.database` reports `idle`, `opening`, `ready`, `failed` or `closed`, separately
+from protocol connectivity. Inspect `materializationError` for an operational
+failure and keep retained original operations and drafts visible. Missing keys
+require explicit provisioning, never replacement signing identities or keys.
+A device never needs a coordinator to author or read its own operations.
 
 The owning Worker exposes `probeBrowserCapabilities()` from the Chronolog
 `/worker` entry for an **explicit** scratch-only eligibility check. It separates
@@ -68,42 +63,35 @@ than silently run as events-only. Safari 17/iPadOS 17 events-only eligibility
 does **not** establish SQL support or physical-device qualification. See
 [browser qualification](E2E_TESTING.md#record-storage-and-browser-eligibility).
 
-Native agents use the session directly. Browser code owns its session in a Worker and uses the public Worker facade. Both expose the same operations and recovery model. The Tendriller adapter changes API composition, not application semantics.
+Native agents use the session directly. Browser code owns its session in a Worker and uses the public Worker facade. Both expose the same operation, query and status model. The Tendriller adapter changes API composition, not application semantics.
 
 ## Mandatory behavior
 
 | Surface | Meaning |
 | --- | --- |
-| `submit({name,input},{operationId,basedOn?})` | Submit a declared command with caller-owned retry identity |
-| `operations.get(operationId)` | Inspect the retained local attempt and current state |
-| `operations.subscribe(...)` | Observe meaningful operation-state changes |
-| `readView()` | Capture one coherent applied revision for query and event reads |
-| `changes(...)` | Coalesced invalidations, including explicit recovery resets |
-| `status`, `onStatus(...)` | Session phase, selected generation, coordinator and connected peers |
-| `onRecovery(...)`, `inspectRecovery()` | Observe and inspect retained recovery evidence |
-| `events.read/subscribe` | Read emitted facts from captured application history |
+| `submit({program,operationId?,authorTimestampMs?})` | Sign and durably store one authored operation; success means stored locally, not executed or delivered |
+| `operations.get(operationId)`, `.retry(operationId)` | Inspect or exactly retry the retained signed intent |
+| `operations.subscribe({operationId})` | Observe stored, materialized, retained and finalized state changes |
+| `readView()` | Capture one coherent materialized revision for query and event reads |
+| `changes()` | Coalesced `materialized`, `finalized` and `dependency` invalidations with revised proposal IDs |
+| `status`, `onStatus(...)` | Session phase, database state, pending dependencies, `canAuthor` and connected peers |
+| `events.read(...)`, `events.publish(topic, payload)` | Read emitted facts from a captured view; publish through a declared event path |
 
 The adapter derives SQL query availability from the session's materializer capabilities. `eventCommand` names an ordinary declared command accepting `{topic,payload}`; it enables `events.publish`. An unspecified event command does not create a hidden generic write path.
 
 ## Outcomes and reads
 
-A saved operation retains its signed attempt locally. An applied operation records generation, author, sequence, accepted/rejected outcome and rejection code. Rejected attempts still have an ordered application outcome. A separate shared wait on the session reports peer retention coverage.
+A `stored` operation retains its signed intent locally, with its operation ID, proposal ID and author timestamp. A `materialized` operation records an accepted or rejected outcome, rejection code and failing statement index at one revision. Rejected operations still keep their signed intent. A missing body, key or authority predecessor is a pending dependency, not a rejection. `retained()` reports signed peer availability evidence, and `finalized()` requires a configured finality policy (it rejects as unsupported under `none`). The facts are independent.
 
-A read view captures `view:'applied'`, revision and generation. Read query results and events from that view, then release it. Coalesced change notifications tell a consumer to capture another view; they are not a replay log. An event cursor is consumer delivery progress and must be committed atomically with the consumer's own work.
+A read view captures a `local` (or, with finality, `final`) view and a revision `{digest, view, executionManifestDigest, policyDigest}`. Read query results and events from that view, then release it. Query results arrive as `{applicationId, revision, value}`. Coalesced change notifications tell a consumer to capture another view; they are not a replay log. An event cursor is consumer delivery progress bound to its revision and must be committed atomically with the consumer's own work.
 
-Recovery can abandon a suffix previously reported applied. An affected operation becomes `abandoned` or `needsReapply` and retains its previous evidence. The new selected generation and unknown-loss flag must remain visible. Reapplication creates a new signed attempt with current guards; it never silently admits old-branch intent.
+A late operation with an earlier author time can revise outcomes that were previously reported, and a configured closed-time frontier can exclude a first-seen older operation (`inspect().excluded`). The operation keeps its original signed intent and evidence. Expose the revision change and rederive from a coherent snapshot. There is no reapplication API. If intent is still wanted, the person reviews and submits a new operation, and the old one is never silently retimestamped.
 
-## Host control connection
+## Host authority connection
 
-```js
-const control = session.connectControlParticipant({
-  exchange: (message, options) => tendril.host.peers.exchange(message, options),
-});
-```
-
-This is the session's control participant over an authenticated HTTP transport. It verifies authority, public definition and signed publication ancestry. Ordinary application execution and peer replication continue independently while control is unavailable, as long as the selected coordinator remains reachable. Selecting a new generation requires control availability and explicit recovery rules.
+The host exposes signed authority metadata and publications through `tendril.host.peers` (see [Authority records and signed publications](AUTHORITY_AND_PUBLICATIONS.md)). A session verifies and retains that evidence with `session.mergeAuthority(bundle)`, and code release uses the independent publisher flow. Local authoring, materialization and peer replication continue while the host is unavailable. Host availability affects only fetching newer authority evidence, enrollment and publication.
 
 
 ## Owned participation
 
-Call `session.participate({control,discovery,transport,...})` once to give the session its discovery and raw connection ports. `createPeerIntroductions` from `@tendriller/core/peers` supplies those two ports for this host. The controller owns connection attempts, reconnect grace, authenticated candidate evaluation, freshness budgets and recovery selection; applications do not implement a second policy loop. Observe its status and call `approveRecovery` only for the current displayed proposal when approval is required. See [peer participation](PEER_CONNECTIONS.md).
+Call `participateApplication(session, {peers, openDirectConnection})` from `@tendriller/core/participation` once after local opening. It returns immediately with `status`, `onStatus`, `reconsiderConnections()`, `resume()` and `close()`. It owns connection attempts, direct/relay selection, reconnect and bounded retry budgets over the host's introductions. Applications do not implement a second policy loop, and there is no coordinator or recovery selection. It never blocks Save. See [peer participation](PEER_CONNECTIONS.md).

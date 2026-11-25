@@ -304,17 +304,15 @@ describe('onboarding after page creation', () => {
     expect(JSON.stringify(navigation)).not.toContain(h.token);
   });
 
-  it('points unconfigured authority and definition reads at the actual configuration step', async () => {
+  it('points unprepared publication reads and enrollment at the actual preparation step', async () => {
     const h = await create();
-    for (const operation of ['control/read', 'publication/definition', 'publication/read']) {
-      const response = await peerApi(h, operation);
-      expect(response.status, operation).toBe(409);
-      const result = await response.json<{ error: { code: string; message: string } }>();
-      expect(result.error.code).toBe('peer_application_unconfigured');
-      expect(result.error.message).toContain('host.peers.configureApplication');
-      expect(result.error.message).toContain(guidePath);
-    }
-    expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configured: false });
+    const response = await peerApi(h, 'publication/read');
+    expect(response.status).toBe(409);
+    const result = await response.json<{ error: { code: string; message: string } }>();
+    expect(result.error.code).toBe('application_unprepared');
+    expect(result.error.message).toContain('host.peers.prepare');
+    expect(result.error.message).toContain(guidePath);
+    expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configuration: null, publicationAuthority: null, authority: null });
   });
 
   it('does not expose a legacy per-page MCP route on the tendril API', async () => {

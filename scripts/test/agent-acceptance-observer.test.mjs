@@ -1,311 +1,303 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import * as p from '@chronolog/peer-session';
-import { openNativeDevice, openNativeApplication } from '@chronolog/peer-session/native';
-import { definition } from '../../docs/tutorial/domain.mjs';
-import { sessionMeasurement, verifySignedOperation, nativeMeasurement, probe } from '../agent-acceptance/observer-native.mjs';
-import { StarterObserver, verifyBrowserPublication } from '../agent-acceptance/observer.mjs';
+import { authorityRecord, authorityRecordBytes } from '../../contract/authority.mjs';
+import { sessionMeasurement, verifySignedOperation, verifiedAuthority, nativeMeasurement, probe } from '../agent-acceptance/observer-native.mjs';
+import { StarterObserver, verifyBrowserPublication, verifyPublicationLineage, browserLocalMeasurement } from '../agent-acceptance/observer.mjs';
 import { loadObserverConfig, publicationAddress } from '../agent-acceptance/observer-data.mjs';
 import { Evidence } from '../agent-acceptance/evidence.mjs';
 
-async function fixture(t) {
-  const directory = mkdtempSync(join(tmpdir(), 'starter-observer-')), runDirectory = join(directory, 'run'), project = join(runDirectory, 'project');
+// Explicit current-source authority mapping is permitted for this focused unit
+// test only. It is NOT installed-public-package, native SQL or browser qualification.
+const p = await import(process.env.AGENT_ACCEPTANCE_AUTHORITY_SOURCE ?? '@chronolog/peer-session');
+const revision = { digest: 'ca'.repeat(32), view: 'local', executionManifestDigest: 'ed'.repeat(32), policyDigest: 'fd'.repeat(32) };
+const clone = value => structuredClone(value);
+async function fixture(t, { native = true } = {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'authored-observer-')), runDirectory = join(directory, 'run'), project = join(runDirectory, 'project');
   mkdirSync(project, { recursive: true }); t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const device = await openNativeDevice({ path: join(project, 'device.sqlite'), create: true });
-  const hostSigner = await p.createPeerIdentity(), browserSigner = await p.createPeerIdentity(), key = crypto.getRandomValues(new Uint8Array(32));
-  const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest());
-  const descriptor = await p.signApplicationDescriptor({ applicationId: 'ac'.repeat(32), historyId: 'observer-fixture', profile: 'peer-generation-v1', policy: 'eligible-members-v1',
-    controlPublicKey: hostSigner.publicKey, schemaAdministrator: device.identity.publicKey, definitionDigest: await p.applicationDefinitionDigest(definition),
-    executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), schemaDigest: null }, hostSigner);
-  const control = await p.signControlRevision({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile, policy: descriptor.payload.policy,
-    revision: 0, previous: null, epoch: 0, keyDigest: await p.bytesDigest(key), recoveryFloor: null,
-    grants: [p.participantGrant(device.identity.publicKey, { administrator: true, publisher: true }), p.participantGrant(browserSigner.publicKey)] }, hostSigner);
-  const registry = await p.createGenerationRegistry({ store: new p.MemoryBytesStore(), descriptor, controls: [control], signer: hostSigner });
-  await registry.select(await p.signTransitionRequest({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile, policy: descriptor.payload.policy,
-    transitionId: 'initial', expectedGeneration: null, coordinator: device.identity.publicKey, requester: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null }, device.identity));
-  const authority = await registry.read(), session = await openNativeApplication({ device, definition, authority, epochKeys: new Map([[0, key]]) });
-  t.after(() => session.close());
-  await session.query('notes', null);
-  const operation = await session.command('addNote', { text: 'Observer marker' }, { operationId: 'stable-observer-op' });
-  await operation.applied();
-  const publication = await p.signPublicationManifest({ applicationId: descriptor.payload.applicationId, historyId: descriptor.payload.historyId,
-    profile: descriptor.payload.profile, controlRevision: 0, author: device.identity.publicKey, operationId: 'stable-publish-op', revision: 0, previous: null,
-    definitionDigest: descriptor.payload.definitionDigest, executionManifestDigest: descriptor.payload.executionManifestDigest, entry: 'index.html',
-    files: [{ path: 'index.html', hash: await p.bytesDigest(new TextEncoder().encode('<p>Fixture</p>')), size: 14, type: 'text/html' }] }, device.identity);
+  const root = await p.createSigningIdentity(), browserSigner = await p.createSigningIdentity(), publisher = await p.createSigningIdentity();
+  const applicationId = 'ac'.repeat(32), proposalId = 'ab'.repeat(32), operationId = 'original-local-operation';
+  const descriptor = await p.signAppDescriptor({ applicationId, authorityPublicKey: root.publicKey, rootPrincipal: root.publicKey,
+    executionManifestDigest: revision.executionManifestDigest, finalityPolicy: { kind: 'none' } }, root);
+  const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0, epochKeyDigest: 'ec'.repeat(32),
+    members: [root, browserSigner].map(identity => ({ publicKey: identity.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false })) }, root);
+  const bundle = { descriptor, memberships: [membership] }, membershipId = await p.recordDigest(membership);
+  const envelope = await p.signRecord('operation-envelope', { applicationId, proposalId, author: root.publicKey, authorTimestampMs: 123n,
+    membershipId, executionManifestDigest: revision.executionManifestDigest,
+    encrypted: { epoch: 0n, nonce: Uint8Array.of(1, 2), ciphertext: Uint8Array.of(3, 4) } }, root);
+  // Deliberately no fabricated decrypted core: this is a genuine signed outer
+  // envelope and a strict fake public session for observer contract tests only.
+  const state = { applicationId, proposalId, operationId, author: root.publicKey, authorTimestampMs: '123', stored: true, pending: null,
+    materialized: { proposalId, revision, outcome: 'accepted', rejectionCode: null, failingStatementIndex: null }, retained: [], finalized: false, excluded: false };
+  const rows = [{ operationId, author: root.publicKey, text: 'Observer marker' }];
+  const event = { id: proposalId + ':0', proposalId, operationId, author: root.publicKey, authorTimestampMs: '123', topic: 'note', payload: { text: 'Observer marker' } };
+  const stats = { releases: 0, inspections: 0 };
+  const handle = { id: proposalId, operationId, inspect: async () => { stats.inspections++; return clone(state); }, materialized: async options => {
+    if (options?.signal?.aborted) throw options.signal.reason; return clone(state.materialized);
+  } };
+  const session = { applicationId, identity: { publicKey: root.publicKey }, readAuthority: async () => bundle,
+    query: async () => ({ applicationId, revision, value: clone(rows) }), status: { connectedPeers: 1, canAuthor: true },
+    operations: { get: async id => [proposalId, operationId].includes(id) ? handle : null, retry: async id => { assert.equal(id, proposalId); return handle; } },
+    exportFacts: () => ({ authority: bundle, envelopes: [envelope], retentions: [], finality: [] }), command: async (_command, _input, options) => {
+      assert.deepEqual(options, { operationId }); return handle;
+    }, readView: async () => ({ applicationId, revision, readEvents: async () => ({ revision, events: [event], hasMore: false }), release: () => { stats.releases++; } }) };
+  const publicationAuthority = { applicationId, executionManifestDigest: revision.executionManifestDigest, grantId: 'ba'.repeat(32), publisherKeys: [publisher.publicKey] };
+  const publication = await p.signPublicationManifest({ applicationId, membershipId: publicationAuthority.grantId, author: publisher.publicKey,
+    executionManifestDigest: revision.executionManifestDigest, operationId: 'original-publication', revision: 0, previous: null, entry: 'index.html',
+    files: [{ path: 'index.html', hash: 'ff'.repeat(32), size: 3, type: 'text/html' }] }, publisher);
   const receipt = { publication, version: 1 };
-  const handle = { id: 'a'.repeat(12), api: 'https://staging.example/api/t/' + 'a'.repeat(12), token: 'PRIVATE_HANDLE',
-    application: { id: session.applicationId }, page_url: 'https://' + 'a'.repeat(12) + '.staging.example/s/' + 'a'.repeat(26) + '/' };
-  for (const [name, value] of Object.entries({ 'descriptor.json': descriptor, 'handle.json': handle, 'device.json': { deviceId: session.deviceId }, 'authority.json': authority }))
-    writeFileSync(join(project, name), JSON.stringify(value), { mode: 0o600 });
+  const hostHandle = { id: 'a'.repeat(12), api: 'https://staging.example/api/t/' + 'a'.repeat(12), token: 'PRIVATE_HANDLE',
+    application: { id: applicationId }, page_url: 'https://' + 'a'.repeat(12) + '.staging.example/s/' + 'a'.repeat(26) + '/' };
+  const saveRecord = (name, value) => writeFileSync(join(project, name), JSON.stringify(value), { mode: 0o600 });
+  saveRecord('descriptor.json', descriptor); saveRecord('handle.json', hostHandle); saveRecord('publication.json', publication); saveRecord('assets.json', []);
   writeFileSync(join(project, 'session.mjs'), 'export const fixture = true;');
-  const config = { protocol: 'tendriller-starter-observer-v1', origin: 'https://staging.example', applicationId: session.applicationId, historyId: session.historyId, ownerAccountId: 'fixture-owner',
-    native: { project, module: 'session.mjs', handle: { file: 'handle.json' }, descriptor: { file: 'descriptor.json' }, deviceId: { file: 'device.json', pointer: '/deviceId' }, deviceStore: 'device.sqlite' },
-    query: { name: 'notes', rows: '/value', marker: '/text', author: '/author', operationId: '/operationId' },
-    browser: { device: { selector: '#device', read: 'value' }, rows: '#rows li' },
-    publication: { operationId: 'stable-publish-op' }, commands: { 'browser-to-agent': { name: 'addNote' },
-      'agent-to-browser': { name: 'addNote', input: { text: 'Observer marker' }, marker: 'Observer marker', operationId: 'stable-observer-op' } } };
+  const config = { protocol: 'tendriller-starter-observer-v2', origin: 'https://staging.example', project, applicationId, descriptor: { file: 'descriptor.json' }, handle: { file: 'handle.json' },
+    ...(native ? { native: { module: 'session.mjs', deviceId: root.publicKey, deviceStore: 'device.sqlite' } } : {}), ownerAccountId: 'fixture-owner',
+    query: { name: 'notes', sql: 'SELECT operationId, author, text FROM notes', rows: '/value', marker: '/text', author: '/author', operationId: '/operationId' },
+    browser: { device: { selector: '#device', read: 'value' }, rows: '#rows li' }, publication: { operationId: 'original-publication', intent: { file: 'publication.json' }, assets: { file: 'assets.json' } },
+    commands: { 'browser-to-agent': { name: 'addNote' }, 'agent-to-browser': { name: 'addNote', input: { text: 'Observer marker' }, marker: 'Observer marker', operationId },
+      'lost-command-response': { name: 'addNote', input: { text: 'Observer marker' }, marker: 'Observer marker', operationId } } };
   const configPath = join(directory, 'observer.json'), request = { project, origin: config.origin };
-  const save = () => writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 }); save();
+  const save = () => writeFileSync(configPath, JSON.stringify(config)); save();
   const loaded = loadObserverConfig(configPath, request);
-  const snapshot = await sessionMeasurement(session, loaded, p, { operationId: 'stable-observer-op', author: session.deviceId, command: 'addNote' });
-  const page = { url: () => handle.page_url, evaluate: async () => ({ page: handle.id, publication: '1', version: 1, documentPath: 'index.html' }),
-    locator: selector => ({ count: async () => 1, inputValue: async () => browserSigner.publicKey, innerText: async () => 'Connected',
-      allInnerTexts: async () => ['Observer marker · operation stable-observer-op'] }) };
-  const lifecycle = { owner: null };
-  const packages = async () => ({ session: p, core: { createClient: () => ({ peers: { application: async () => authority, publication: async () => structuredClone(receipt) },
-    info: async () => ({ id: handle.id, application: handle.application, page_url: handle.page_url, owner_account_id: lifecycle.owner }) }) } });
-  return { directory, runDirectory, project, config, configPath, request, loaded, session, snapshot, browserSigner, publication, receipt, authority, handle, page, packages, save, lifecycle, signer: device.identity };
+  let browserLocal, browserOffline = false;
+  const page = { url: () => hostHandle.page_url, evaluate: async (_fn, args) => args?.applicationId ? clone(browserLocal) : String(_fn).includes('navigator.onLine') ? browserOffline :
+    { page: hostHandle.id, publication: '1', version: 1, documentPath: 'index.html' },
+    locator: () => ({ count: async () => 1, inputValue: async () => browserSigner.publicKey,
+      allInnerTexts: async () => ['Observer marker · operation ' + operationId] }) };
+  const lifecycle = { owner: null, authority: authorityRecord(p.encodeRecord(bundle)) };
+  const packages = async () => ({ session: p, core: { authorityRecordBytes, createClient: () => ({
+    peers: { application: async () => ({ selection: { id: applicationId }, publicationAuthority, authority: lifecycle.authority }), publication: async () => clone(receipt),
+      publish: async (intent, _assets) => { assert.deepEqual(intent, publication); return clone(receipt); } },
+    info: async () => ({ id: hostHandle.id, application: hostHandle.application, page_url: hostHandle.page_url, owner_account_id: lifecycle.owner }) }) } });
+  const owner = { page, actions: [] };
+  const observer = new StarterObserver({ ...request, runDirectory, configPath, owner, native: async (_config, options) => sessionMeasurement(session, loaded, p, options), packages });
+  const browserState = clone(state); browserState.author = browserSigner.publicKey;
+  browserLocal = { applicationId, deviceId: browserSigner.publicKey, revision, rows: [{ ...rows[0], author: browserSigner.publicKey }],
+    events: [{ ...event, author: browserSigner.publicKey }], operation: { state: browserState } };
+  return { directory, project, runDirectory, config, configPath, loaded, request, save, saveRecord, session, state, handle, envelope, bundle, root, browserSigner, publisher,
+    publicationAuthority, receipt, lifecycle, owner, observer, page, stats, browserLocal, setOffline: value => { browserOffline = value; } };
 }
 
-test('real Chronolog native query and signed operation proof reject tampering, wrong author, definition and application', async t => {
-  const f = await fixture(t), authority = await p.verifyAuthorityBundle(f.authority, f.loaded.descriptor);
-  assert.equal(f.snapshot.operation.state.outcome, 'accepted'); assert.equal(f.snapshot.operation.signatureVerified, true);
-  await verifySignedOperation(f.snapshot.operation.attempt, authority, p);
-  for (const change of [a => { a.signature = '00'.repeat(64); }, a => { a.payload.header.author = f.browserSigner.publicKey; }, a => { a.id = '00'.repeat(32); }]) {
-    const attempt = structuredClone(f.snapshot.operation.attempt); change(attempt);
-    await assert.rejects(verifySignedOperation(attempt, authority, p));
+test('current public authority returns void; outer signature, historical writer and scope are independently verified', async t => {
+  const f = await fixture(t), authority = await verifiedAuthority(f.bundle, f.loaded.descriptor, p);
+  assert.equal(await p.verifyAuthorityBundle(f.bundle), undefined);
+  await verifySignedOperation(f.envelope, authority, p);
+  for (const mutate of [a => { a.signature = '00'.repeat(64); }, a => { a.payload.proposalId = '00'.repeat(32); },
+    a => { a.payload.authorTimestampMs = 124n; }, a => { a.payload.executionManifestDigest = '00'.repeat(32); }, a => { a.payload.applicationId = '00'.repeat(32); }]) {
+    const changed = clone(f.envelope); mutate(changed); await assert.rejects(verifySignedOperation(changed, authority, p));
   }
-  await assert.rejects(sessionMeasurement(f.session, f.loaded, p, { operationId: 'stable-observer-op', author: f.session.deviceId, command: 'invented-command' }), /attempt-command/);
-  await assert.rejects(sessionMeasurement(f.session, { ...f.loaded, applicationId: 'bb'.repeat(32) }, p), /session-application/);
+  const noWriter = await p.signMembership({ ...f.bundle.memberships[0].payload, members: f.bundle.memberships[0].payload.members.map(member => ({ ...member, writer: false })) }, f.root);
+  const noWriterBundle = { descriptor: f.bundle.descriptor, memberships: [noWriter] };
+  const noWriterAuthority = await verifiedAuthority(noWriterBundle, f.loaded.descriptor, p);
+  const revoked = await p.signRecord('operation-envelope', { ...f.envelope.payload, membershipId: await p.recordDigest(noWriter) }, f.root);
+  await assert.rejects(verifySignedOperation(revoked, noWriterAuthority, p), /historical-writer/);
 });
 
-test('maintained observer proves native-to-browser from measured rows and signed ID, never from a status flag', async t => {
+test('measurement uses get/inspect, coherent top-level applicationId and independent operation facts', async t => {
+  const f = await fixture(t), measured = await sessionMeasurement(f.session, f.loaded, p, { operationId: f.state.operationId, author: f.root.publicKey });
+  assert.equal(measured.operation.state.proposalId, f.state.proposalId); assert.equal(measured.operation.signatureVerified, true);
+  assert.equal(measured.operation.state.stored, true); assert.equal(measured.operation.state.finalized, false); assert.deepEqual(measured.operation.state.retained, []);
+  assert.match(measured.operation.proofScope, /not independent decrypted-core/); assert.equal('attempt' in measured.operation, false);
+  assert.equal(p.decodeRecord(Buffer.from(measured.operation.envelope.record, 'hex')).payload.proposalId, f.state.proposalId);
+  assert.equal(JSON.stringify(measured).includes('privateKey'), false);
+  f.session.query = async () => ({ applicationId: '00'.repeat(32), revision, value: [] });
+  await assert.rejects(sessionMeasurement(f.session, f.loaded, p), /query-application/);
+});
+
+test('read-only facade without exportFacts precisely blocks crypto evidence, not ordinary coherent reads', async t => {
+  const f = await fixture(t); delete f.session.exportFacts;
+  const read = await sessionMeasurement(f.session, f.loaded, p); assert.equal(read.rows.length, 1);
+  await assert.rejects(sessionMeasurement(f.session, f.loaded, p, { operationId: f.state.operationId, author: f.root.publicKey }), /signed-operation-evidence-unsupported/);
+  assert.equal(f.stats.inspections, 1);
+});
+
+test('coherent event evidence binds stable proposal, author and operation, releases pinned view on error', async t => {
+  const f = await fixture(t); f.loaded.query.operationId = null;
+  const measured = await sessionMeasurement(f.session, f.loaded, p, { operationId: f.state.proposalId, author: f.root.publicKey });
+  assert.equal(measured.events[0].proposalId, f.state.proposalId); assert.equal(f.stats.releases, 1);
+  f.session.readView = async () => ({ applicationId: f.state.applicationId, revision: { ...revision, digest: 'changed' }, release: () => { f.stats.releases++; } });
+  await assert.rejects(sessionMeasurement(f.session, f.loaded, p, { operationId: f.state.operationId, author: f.root.publicKey }), /coherent-query-event-view/);
+  assert.equal(f.stats.releases, 2);
+});
+
+test('round trip requires real measured signed envelope and coherent domain row, not applied/status labels', async t => {
   const f = await fixture(t), evidence = new Evidence(f.runDirectory, {});
-  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page },
-    native: async () => f.snapshot, packages: f.packages });
-  const passed = await observer.observe({ check: 'agent-to-browser' });
-  assert.equal(passed.status, 'passed'); evidence.observation(passed, 'maintained-starter-observer');
-  assert.equal(passed.evidence.operationId, 'stable-observer-op');
-  f.page.locator = () => ({ count: async () => 1, inputValue: async () => f.browserSigner.publicKey, allInnerTexts: async () => ['Observer marker · operation unrelated-op'] });
-  const wrongRow = await observer.observe({ check: 'agent-to-browser' }); assert.equal(wrongRow.status, 'failed');
-  assert(wrongRow.evidence.mismatches.includes('browser-operation-row'));
-  evidence.finish(); assert.equal(evidence.data.outcome, 'blocked');
-  assert(!readFileSync(join(f.runDirectory, 'report.json'), 'utf8').includes('PRIVATE_HANDLE'));
+  const passed = await f.observer.observe({ check: 'agent-to-browser' });
+  assert.equal(passed.status, 'passed', JSON.stringify(passed)); evidence.observation(passed, 'unit-observer');
+  assert.equal(passed.evidence.proposalId, f.state.proposalId); assert.equal('commandOutcome' in passed.evidence, false);
+  f.page.locator = () => ({ count: async () => 1, inputValue: async () => f.browserSigner.publicKey, allInnerTexts: async () => ['Observer marker unrelated'] });
+  const wrong = await f.observer.observe({ check: 'agent-to-browser' }); assert.equal(wrong.status, 'failed'); assert.deepEqual(wrong.evidence.mismatches, ['browser-operation-row']);
+  evidence.finish(); assert.equal(evidence.data.outcome, 'blocked'); assert(!readFileSync(join(f.runDirectory, 'report.json'), 'utf8').includes('PRIVATE_HANDLE'));
 });
 
-test('colon-derived row identity binds the actual signed event, native projection and browser row', async t => {
+test('lost response checkpoint preserves proposal, timestamp and exact signed-envelope witness on retry', async t => {
+  const f = await fixture(t), measured = await sessionMeasurement(f.session, f.loaded, p, { operationId: f.state.operationId, author: f.root.publicKey });
+  const actions = [];
+  f.observer.native = async (_config, options) => { actions.push(options); return { ...clone(measured), waiterInterrupted: options.action === 'submit-lost' }; };
+  assert.equal((await f.observer.observe({ check: 'lost-command-response', options: { action: 'retry' } })).status, 'blocked');
+  assert.equal((await f.observer.observe({ check: 'lost-command-response', options: { action: 'submit-lost' } })).status, 'blocked');
+  const passed = await f.observer.observe({ check: 'lost-command-response', options: { action: 'retry' } });
+  assert.equal(passed.status, 'passed', JSON.stringify(passed));
+  assert.equal(passed.evidence.proposalId, passed.evidence.retryProposalId); assert.equal(passed.evidence.proofHash, passed.evidence.retryProofHash);
+  assert.equal(actions.at(-1).expectedProposalId, f.state.proposalId);
+  new Evidence(f.directory, {}).observation(passed, 'unit-observer');
+  f.observer.native = async () => ({ ...clone(measured), operation: { ...clone(measured.operation), proofHash: '00'.repeat(32) } });
+  assert.equal((await f.observer.observe({ check: 'lost-command-response', options: { action: 'retry' } })).status, 'failed');
+});
+
+test('publication authority is independent and preclaim needs no data root/native/descriptor', async t => {
+  const f = await fixture(t, { native: false }); delete f.config.descriptor; f.save(); f.lifecycle.authority = null;
+  const result = await f.observer.observe({ check: 'preclaim-publication' });
+  assert.equal(result.status, 'passed', JSON.stringify(result)); assert.equal(result.evidence.signatureVerified, true);
+  assert.equal((await f.observer.observe({ check: 'authority' })).status, 'blocked');
+  f.lifecycle.owner = 'foreign-owner';
+  assert.equal((await f.observer.observe({ check: 'publication', options: { phase: 'claim-boundary' } })).status, 'failed');
+  f.lifecycle.owner = 'fixture-owner';
+  assert.equal((await f.observer.observe({ check: 'publication', options: { phase: 'claim-boundary' } })).status, 'passed');
+  assert.equal((await f.observer.observe({ check: 'agent-to-browser' })).evidence.missing[0], 'optional-native-observer-not-configured');
+});
+
+test('saved signed publication retry returns the same receipt, not an operation application count', async t => {
+  const f = await fixture(t, { native: false });
+  assert.equal((await f.observer.observe({ check: 'lost-publication-response' })).status, 'blocked');
+  assert.equal((await f.observer.observe({ check: 'lost-publication-response', options: { action: 'drop' } })).status, 'blocked');
+  const passed = await f.observer.observe({ check: 'lost-publication-response' });
+  assert.equal(passed.status, 'passed', JSON.stringify(passed)); assert.equal(passed.evidence.receiptCount, 1);
+  assert.equal(passed.evidence.publicationHash, passed.evidence.retryPublicationHash);
+  new Evidence(f.directory, {}).observation(passed, 'unit-observer');
+  f.receipt.version = 2; assert.equal((await f.observer.observe({ check: 'lost-publication-response' })).status, 'failed');
+});
+
+test('later publication verifies actual signed CAS parents; missing parents and cycles cannot pass', async t => {
   const f = await fixture(t);
-  Object.assign(f.config.query, { operationId: null, eventTopic: 'note', eventIdEncoding: 'author-operation-colon', rowId: '/id' });
-  f.config.browser.rowIdentityAttribute = 'data-item-id'; f.save();
+  const next = { version: 2, publication: await p.signPublicationManifest({ ...f.receipt.publication.payload, operationId: 'second-publication', revision: 1, previous: f.receipt.publication.id }, f.publisher) };
+  const lineage = await verifyPublicationLineage(next, f.receipt, [f.receipt], p, f.publicationAuthority);
+  assert.equal(lineage.length, 2);
+  const third = { version: 3, publication: await p.signPublicationManifest({ ...next.publication.payload, operationId: 'third-publication', revision: 2, previous: next.publication.id }, f.publisher) };
+  await assert.rejects(verifyPublicationLineage(third, f.receipt, [], p, f.publicationAuthority), /parent-receipt-unobserved/);
+  const invalid = clone(next); invalid.publication.signature = '00'.repeat(64);
+  await assert.rejects(verifyPublicationLineage(invalid, f.receipt, [f.receipt], p, f.publicationAuthority));
+});
+
+test('native-optional browser reload checks same local identity/proposal and actual reload action', async t => {
+  const f = await fixture(t, { native: false }), options = { operationId: f.state.operationId, author: f.browserSigner.publicKey, marker: 'Observer marker' };
+  const measured = await browserLocalMeasurement(f.owner, f.loaded, options); assert.equal(measured.local.operation.state.stored, true);
+  assert.equal((await f.observer.observe({ check: 'browser-reload', options: { ...options, phase: 'before' } })).status, 'blocked');
+  assert.equal((await f.observer.observe({ check: 'browser-reload', options })).evidence.missing[0], 'browser-reload-not-observed');
+  f.owner.actions.push({ action: 'reload' });
+  const passed = await f.observer.observe({ check: 'browser-reload', options });
+  assert.equal(passed.status, 'passed', JSON.stringify(passed)); assert.equal(passed.evidence.nativeRequired, false);
+  new Evidence(f.directory, {}).observation(passed, 'unit-observer');
+});
+
+test('offline browser authoring needs a new stored/materialized proposal and does not claim convergence/finality', async t => {
+  const f = await fixture(t, { native: false }), options = { operationId: f.state.operationId, author: f.browserSigner.publicKey, marker: 'Observer marker' };
+  f.browserLocal.events = [];
+  assert.equal((await f.observer.observe({ check: 'unavailable-peer', options: { phase: 'before' } })).status, 'blocked');
+  f.browserLocal.events = [{ proposalId: f.state.proposalId }]; f.setOffline(true);
+  assert.equal((await f.observer.observe({ check: 'unavailable-peer', options: { ...options, phase: 'offline' } })).status, 'blocked');
+  const passed = await f.observer.observe({ check: 'unavailable-peer', options });
+  assert.equal(passed.status, 'passed', JSON.stringify(passed)); assert.match(passed.evidence.convergence, /Not established/);
+  assert.equal(passed.evidence.browserNetworkOffline, true); assert.equal(passed.evidence.localDurable, true);
+  new Evidence(f.directory, {}).observation(passed, 'unit-observer');
+});
+
+test('private config pins run/project/origin and rejects old-profile config, signer substitution and module escapes', async t => {
+  const f = await fixture(t);
+  assert.throws(() => loadObserverConfig(f.configPath, { ...f.request, origin: 'https://other.example' }), /observer-origin/);
+  f.config.protocol = 'tendriller-starter-observer-v1'; f.save(); assert.throws(() => loadObserverConfig(f.configPath, f.request), /observer-config-version/);
+  f.config.protocol = 'tendriller-starter-observer-v2'; f.config.native.module = 'escape.mjs';
+  writeFileSync(join(f.directory, 'foreign.mjs'), ''); symlinkSync(join(f.directory, 'foreign.mjs'), join(f.project, 'escape.mjs')); f.save();
+  assert.throws(() => loadObserverConfig(f.configPath, f.request), /native-module-outside-project/);
+  await assert.rejects(nativeMeasurement({}), /optional-native-observer-not-configured/);
+});
+
+test('publication selection binds immutable URL ordinal, runtime identity and signed HTML path', async t => {
+  const f = await fixture(t), pageUrl = f.loaded.handle.page_url;
+  assert.deepEqual(publicationAddress(pageUrl, pageUrl), { version: null, documentPath: null });
+  assert.deepEqual(publicationAddress(pageUrl + '_publications/2/nested/index.html', pageUrl), { version: 2, documentPath: 'nested/index.html' });
+  for (const url of [pageUrl + '?other=1', pageUrl + '_publications/0/index.html', pageUrl + '_publications/2/%2e%2e/index.html', 'https://foreign.example/']) assert.throws(() => publicationAddress(url, pageUrl));
+  verifyBrowserPublication({ runtime: { version: 1, publication: '1', documentPath: 'index.html' } }, f.receipt);
+  assert.throws(() => verifyBrowserPublication({ runtime: { version: 2, publication: '2', documentPath: 'index.html' } }, f.receipt), /selected-version/);
+  assert.throws(() => verifyBrowserPublication({ runtime: { version: 1, publication: '1', documentPath: 'unsigned.html' } }, f.receipt), /unsigned-document/);
+});
+
+test('probe only attaches/detaches; current retry uses the original proposal handle and never resubmits', async t => {
+  const f = await fixture(t); let detached = 0, submitted = 0;
+  const command = f.session.command;
+  f.session.command = (...args) => { submitted++; return command(...args); };
+  const dependencies = { packages: async () => ({ session: p }), loadModule: async () => ({ attachSession: async () => ({ session: f.session, detach: async () => { detached++; } }),
+    openSession: () => { throw Error('must never open another signer'); } }) };
+  const options = { operationId: f.state.operationId, command: 'addNote', input: { text: 'Observer marker' } };
+  const lost = await probe(f.loaded, { ...options, action: 'submit-lost' }, dependencies);
+  assert.equal(lost.waiterInterrupted, true); assert.equal(submitted, 1); assert.equal(detached, 1);
+  const retried = await probe(f.loaded, { ...options, action: 'retry', author: f.root.publicKey,
+    expectedProposalId: f.state.proposalId, expectedProofHash: lost.operation.proofHash }, dependencies);
+  assert.equal(retried.operation.state.proposalId, lost.operation.state.proposalId);
+  assert.equal(retried.operation.state.authorTimestampMs, lost.operation.state.authorTimestampMs);
+  assert.equal(retried.operation.proofHash, lost.operation.proofHash); assert.equal(submitted, 1); assert.equal(detached, 2);
+  delete f.session.exportFacts;
+  await assert.rejects(probe(f.loaded, { ...options, action: 'submit' }, dependencies), /signed-operation-evidence-unsupported/);
+  assert.equal(submitted, 1); assert.equal(detached, 3);
+});
+
+test('multiple signed outer envelopes preserve one stable proposal and retry selects the original witness', async t => {
+  const f = await fixture(t);
+  const before = await sessionMeasurement(f.session, f.loaded, p, { operationId: f.state.operationId, author: f.root.publicKey });
+  const other = await p.signRecord('operation-envelope', { ...f.envelope.payload, encrypted: { ...f.envelope.payload.encrypted, nonce: Uint8Array.of(9) } }, f.root);
+  f.session.exportFacts = () => ({ envelopes: [other, f.envelope], retentions: [], finality: [] });
+  const measured = await sessionMeasurement(f.session, f.loaded, p, { operationId: f.state.operationId, author: f.root.publicKey, expectedProofHash: before.operation.proofHash });
+  assert.equal(measured.operation.proofHash, before.operation.proofHash);
+  assert.equal(measured.operation.state.proposalId, before.operation.state.proposalId);
+});
+
+test('peer retention verifies its signature and actual author/envelope subject, independently of materialization/finality', async t => {
+  const f = await fixture(t), options = { operationId: f.state.operationId, author: f.root.publicKey };
+  const payload = { applicationId: f.state.applicationId, proposalId: f.state.proposalId, author: f.root.publicKey,
+    envelopeDigest: await p.recordDigest(f.envelope), peer: f.browserSigner.publicKey, storageId: 'independent-peer-store' };
+  f.state.retained = [await p.signRecord('retention', payload, f.browserSigner)];
+  const measured = await sessionMeasurement(f.session, f.loaded, p, options);
+  assert.equal(measured.operation.state.retained.length, 1); assert.equal(measured.operation.state.finalized, false);
+  f.state.retained = [await p.signRecord('retention', { ...payload, envelopeDigest: '00'.repeat(32) }, f.browserSigner)];
+  await assert.rejects(sessionMeasurement(f.session, f.loaded, p, options), /retention-signed-envelope-subject/);
+  f.state.retained = [await p.signRecord('retention', { ...payload, author: f.browserSigner.publicKey }, f.browserSigner)];
+  await assert.rejects(sessionMeasurement(f.session, f.loaded, p, options), /retention-author/);
+  f.state.retained = [await p.signRecord('retention', payload, f.browserSigner)]; f.state.retained[0].signature = '00'.repeat(64);
+  await assert.rejects(sessionMeasurement(f.session, f.loaded, p, options), /AUTHORITY_SIGNATURE_INVALID/);
+});
+
+test('browser callback actually consumes the installed backend and releases one coherent read view', async t => {
+  const f = await fixture(t, { native: false }), options = { operationId: f.state.operationId, author: f.browserSigner.publicKey, marker: 'Observer marker' };
+  const evaluate = f.page.evaluate; let releases = 0;
+  const backend = { applicationId: f.state.applicationId, identity: { publicKey: f.browserSigner.publicKey },
+    operations: { get: async id => { assert.equal(id, f.state.operationId); return { inspect: async () => clone(f.browserLocal.operation.state) }; } },
+    readView: async () => ({ applicationId: f.state.applicationId, revision,
+      query: async (sql, parameters) => { assert.equal(sql, f.loaded.query.sql); assert.deepEqual(parameters, []);
+        return { columns: [{ name: 'operationId' }, { name: 'author' }, { name: 'text' }], rows: [[f.state.operationId, f.browserSigner.publicKey, 'Observer marker']] }; },
+      readEvents: async () => ({ revision, events: f.browserLocal.events, hasMore: false }), release: async () => { releases++; } }) };
+  f.page.evaluate = async (fn, args) => {
+    if (!args?.applicationId) return evaluate(fn, args);
+    const previous = globalThis.window;
+    globalThis.window = { tendril: { application: { available: true, backend } } };
+    try { return await fn(args); } finally { if (previous === undefined) delete globalThis.window; else globalThis.window = previous; }
+  };
+  const measured = await browserLocalMeasurement(f.owner, f.loaded, options);
+  assert.equal(measured.local.rows[0].text, 'Observer marker'); assert.equal(releases, 1);
+  backend.applicationId = '00'.repeat(32);
+  await assert.rejects(browserLocalMeasurement(f.owner, f.loaded, options), /browser-backend-application/);
+});
+
+test('canonical descriptor transport retains signed bigint policy scopes without JSON reinterpretation', async t => {
+  const f = await fixture(t);
+  const descriptor = await p.signAppDescriptor({ ...f.bundle.descriptor.payload,
+    finalityPolicy: { kind: 'signed-frontier', signer: f.root.publicKey, scopes: [{ id: 'cc'.repeat(32), authorTimeAfterMs: -1n }] } }, f.root);
+  const bundle = { ...f.bundle, descriptor };
+  const pinned = authorityRecord(p.encodeRecord(descriptor));
+  f.saveRecord('descriptor.json', pinned);
   const config = loadObserverConfig(f.configPath, f.request);
-  const measured = await sessionMeasurement(f.session, config, p, { operationId: 'stable-observer-op', author: f.session.deviceId, command: 'addNote' });
-  const rowId = `${f.session.deviceId}:stable-observer-op`;
-  measured.rows = measured.rows.map(row => ({ ...row, id: `${row.author}:${row.operationId}` }));
-  let browserId = rowId;
-  f.page.locator = () => ({ count: async () => 1, inputValue: async () => f.browserSigner.publicKey,
-    allInnerTexts: async () => ['Observer marker'], evaluateAll: async () => [browserId] });
-  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath,
-    owner: { page: f.page }, native: async () => measured, packages: f.packages });
-  assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'passed');
-  browserId = `${f.browserSigner.publicKey}:stable-observer-op`;
-  assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'failed');
-  browserId = rowId; measured.events[0].author = f.browserSigner.publicKey;
-  const substituted = await observer.observe({ check: 'agent-to-browser' });
-  assert.equal(substituted.status, 'failed'); assert(substituted.evidence.mismatches.includes('event-author'));
-});
-
-test('MCP adapter inspection retains signed proof across terminal namespace isolation and rejects substitutions', async t => {
-  const f = await fixture(t), file = join(f.directory, 'mcp-inspection.json');
-  const event = { type: 'mcpToolCall', server: 'tendriller', tool: 'inspect_application_operation',
-    arguments: { applicationId: f.session.applicationId, operationId: 'client-alias' }, result: { content: [{ type: 'text', text: '' }] } };
-  const body = { operationId: 'client-alias', operationReference: { applicationId: f.session.applicationId, historyId: f.session.historyId,
-    deviceId: f.session.deviceId, operationId: 'stable-observer-op', attemptId: f.snapshot.operation.attempt.id },
-  operation: { state: f.snapshot.operation.state, attempt: f.snapshot.operation.attempt } };
-  const save = () => { event.result.content[0].text = JSON.stringify(body); writeFileSync(file, JSON.stringify(event)); };
-  save(); const config = { ...f.loaded, native: { ...f.loaded.native, mcpOperations: { 'stable-observer-op': { file } } } };
-  const attached = new Proxy(f.session, { get(target, key) {
-    if (key === 'operations') return { inspect: async () => null };
-    const value = Reflect.get(target, key, target); return typeof value === 'function' ? value.bind(target) : value;
-  } });
-  const options = { operationId: 'stable-observer-op', author: f.session.deviceId, command: 'addNote' };
-  const proof = await sessionMeasurement(attached, config, p, options);
-  assert.equal(proof.operation.signatureVerified, true); assert.equal(proof.operation.inspectionSource, 'recorded-selected-origin-mcp-inspection');
-  assert.match(proof.operation.inspectionEventSha256, /^[a-f0-9]{64}$/);
-  body.operation.attempt.signature = '00'.repeat(64); save();
-  await assert.rejects(sessionMeasurement(attached, config, p, options), /attempt-signature/);
-  body.operation.attempt = structuredClone(f.snapshot.operation.attempt); event.server = 'another-host'; save();
-  await assert.rejects(sessionMeasurement(attached, config, p, options), /inspection-mcp-server/);
-  event.server = 'tendriller'; body.operationReference.operationId = 'other-operation'; save();
-  await assert.rejects(sessionMeasurement(attached, config, p, options), /inspection-reference-operationId/);
-});
-
-test('missing measurements block; duplicate application, replaced signer and changed configured identity fail', async t => {
-  const f = await fixture(t);
-  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, native: async () => f.snapshot, packages: f.packages });
-  const missing = await observer.observe({ check: 'native-reopen' }); assert.equal(missing.status, 'blocked'); assert(missing.evidence.missing.includes('retention-operation-id'));
-  const duplicate = structuredClone(f.snapshot); duplicate.rows.push(duplicate.rows[0]); observer.native = async () => duplicate;
-  assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'failed');
-  observer.native = async () => f.snapshot;
-  const bound = await observer.observe({ check: 'agent-to-browser' }); assert.equal(bound.status, 'passed');
-  f.config.historyId = 'replacement-history'; f.save();
-  const replacement = await observer.observe({ check: 'agent-to-browser' }); assert.equal(replacement.status, 'failed');
-});
-
-test('preclaim uses actual signed publication verification and blocks claim/head substitutions', async t => {
-  const f = await fixture(t), observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, packages: f.packages });
-  const preclaim = await observer.observe({ check: 'preclaim-publication' }); assert.equal(preclaim.status, 'passed');
-  f.lifecycle.owner = 'fixture-owner';
-  const current = await observer.observe({ check: 'publication', options: { phase: 'claim-boundary' } }); assert.equal(current.status, 'passed');
-  f.receipt.publication.signature = '00'.repeat(64);
-  assert.notEqual((await observer.observe({ check: 'publication' })).status, 'passed');
-});
-
-test('native probe is a bounded real subprocess using existing app module and installed public package', async t => {
-  const f = await fixture(t);
-  await f.session.close();
-  mkdirSync(join(f.project, 'node_modules/@chronolog'), { recursive: true });
-  symlinkSync(resolve(import.meta.dirname, '../../node_modules/@chronolog/peer-session'), join(f.project, 'node_modules/@chronolog/peer-session'));
-  mkdirSync(join(f.project, 'node_modules/@tendriller/core'), { recursive: true });
-  writeFileSync(join(f.project, 'node_modules/@tendriller/core/package.json'), JSON.stringify({ type: 'module', exports: './index.mjs' }));
-  writeFileSync(join(f.project, 'node_modules/@tendriller/core/index.mjs'), 'export const hostFixtureUnusedByNativeProbe = true;');
-  writeFileSync(join(f.project, 'session.mjs'), `import {readFileSync} from 'node:fs';
-import {openNativeDevice,openNativeApplication} from '@chronolog/peer-session/native';
-import {definition} from ${JSON.stringify(new URL('../../docs/tutorial/domain.mjs', import.meta.url).href)};
-export async function attachSession(){const device=await openNativeDevice({path:new URL('./device.sqlite',import.meta.url).pathname});
- const session=await openNativeApplication({device,definition,authority:JSON.parse(readFileSync(new URL('./authority.json',import.meta.url)))});
- return {session,detach:()=>session.close()};}`);
-  const options = { operationId: 'stable-observer-op', author: f.loaded.native.deviceId, command: 'addNote' };
-  await probe(f.loaded, options);
-  const measured = await nativeMeasurement(f.loaded, options);
-  assert.equal(measured.operation.signatureVerified, true); assert.equal(measured.rows[0].text, 'Observer marker');
-  assert.equal(measured.deviceId, f.loaded.native.deviceId);
-});
-
-test('lost command wait keeps exact measured signed attempt, rejects replacement and requires the original checkpoint', async t => {
-  const f = await fixture(t);
-  f.config.commands['lost-command-response'] = f.config.commands['agent-to-browser']; f.save();
-  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page },
-    native: async (_config, options) => ({ ...f.snapshot, waiterInterrupted: options.action === 'submit-lost' }), packages: f.packages });
-  assert.equal((await observer.observe({ check: 'lost-command-response', options: { action: 'retry' } })).status, 'blocked');
-  const lost = await observer.observe({ check: 'lost-command-response', options: { action: 'submit-lost' } });
-  assert.equal(lost.status, 'blocked'); assert(lost.evidence.missing.includes('saved-wait-interrupted-retry-same-operation'));
-  const retried = await observer.observe({ check: 'lost-command-response', options: { action: 'retry' } });
-  assert.equal(retried.status, 'passed'); assert.equal(retried.evidence.attemptHash, retried.evidence.retryAttemptHash);
-  const evidence = new Evidence(f.runDirectory, {}); evidence.observation(retried, 'maintained-starter-observer');
-  observer.native = async () => ({ ...f.snapshot, operation: { ...f.snapshot.operation, attemptHash: '00'.repeat(32) } });
-  assert.equal((await observer.observe({ check: 'lost-command-response', options: { action: 'retry' } })).status, 'failed');
-  f.config.commands['lost-command-response'].input = { text: 'Changed input' }; f.save();
-  assert.equal((await observer.observe({ check: 'lost-command-response', options: { action: 'retry' } })).status, 'failed');
-});
-
-test('lost publication acknowledgement retries only saved signed bytes and the original versioned receipt', async t => {
-  const f = await fixture(t); writeFileSync(join(f.project, 'publication.json'), JSON.stringify({ publication: f.publication, assets: [] }));
-  f.config.publication.intent = { file: 'publication.json', pointer: '/publication' };
-  f.config.publication.assets = { file: 'publication.json', pointer: '/assets' }; f.save();
-  const packages = async () => { const result = await f.packages(); const createClient = result.core.createClient;
-    result.core.createClient = () => { const host = createClient(); host.peers.publish = async () => f.receipt; return host; }; return result; };
-  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, packages });
-  assert.equal((await observer.observe({ check: 'lost-publication-response', options: { action: 'drop' } })).status, 'blocked');
-  const retried = await observer.observe({ check: 'lost-publication-response', options: { action: 'retry' } });
-  assert.equal(retried.status, 'passed'); assert.equal(retried.evidence.receiptId, retried.evidence.retryReceiptId);
-  new Evidence(f.runDirectory, {}).observation(retried, 'maintained-starter-observer');
-  f.receipt.version = 2;
-  assert.equal((await observer.observe({ check: 'lost-publication-response', options: { action: 'retry' } })).status, 'failed');
-});
-
-test('private configuration cannot switch to a foreign service, native project, or signer', async t => {
-  const f = await fixture(t);
-  f.config.origin = 'https://foreign.example'; f.save(); assert.throws(() => loadObserverConfig(f.configPath, f.request), /observer-origin/);
-  f.config.origin = f.request.origin; f.config.native.project = f.directory; f.save();
-  assert.throws(() => loadObserverConfig(f.configPath, f.request), /inside-model-project|outside-this-run/);
-  f.config.native.project = f.project; f.config.native.deviceId = f.browserSigner.publicKey; f.save();
-  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, native: async () => f.snapshot, owner: { page: f.page } });
-  assert.equal((await observer.observe({ check: 'agent-to-browser' })).status, 'failed');
-});
-
-test('staging preview page origins require the authenticated host to confirm the exact URL', async t => {
-  const f = await fixture(t);
-  f.handle.page_url = `https://${f.handle.id}--p-9a9a9a9a9a9a.tendriller.dev/s/${'a'.repeat(26)}/`;
-  writeFileSync(join(f.project, 'handle.json'), JSON.stringify(f.handle));
-  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, packages: f.packages });
-  assert.equal((await observer.observe({ check: 'preclaim-publication' })).status, 'passed');
-  const packages = await f.packages(), createClient = packages.core.createClient;
-  packages.core.createClient = () => { const host = createClient(); const info = host.info;
-    host.info = async () => ({ ...await info(), page_url: 'https://wrong.example/' }); return host; };
-  observer.packages = async () => packages;
-  const mismatch = await observer.observe({ check: 'publication' });
-  assert.equal(mismatch.status, 'failed'); assert(mismatch.evidence.mismatches.includes('host-authoritative-page-url'));
-});
-
-test('only the exact page and documented immutable publication URLs can be measured', () => {
-  const base = 'https://aaaaaaaaaaaa--p-stage.example/s/' + 'a'.repeat(26) + '/';
-  assert.deepEqual(publicationAddress(base, base), { version: null, documentPath: null });
-  assert.deepEqual(publicationAddress(base + '_publications/2/index.html', base), { version: 2, documentPath: 'index.html' });
-  for (const value of [base.replace('aaaaaaaaaaaa--p-stage', 'bbbbbbbbbbbb--p-stage') + '_publications/2/index.html',
-    base.replace('/s/' + 'a'.repeat(26), '/s/' + 'b'.repeat(26)), base + '_tendril/manage', base + 'arbitrary.html',
-    base + '_publications/0/index.html', base + '_publications/9007199254740993/index.html',
-    base + '_publications/2/%5csecret', base + '_publications/2/index.html?token=bad', base + '_publications/2/index.html#bad'])
-    assert.throws(() => publicationAddress(value, base));
-});
-
-test('pinned browser publication ordinal is bound to a verified receipt and signed HTML graph', async t => {
-  const f = await fixture(t);
-  f.page.url = () => f.handle.page_url + '_publications/1/index.html';
-  const observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath,
-    owner: { page: f.page }, native: async () => f.snapshot, packages: f.packages });
-  const result = await observer.observe({ check: 'agent-to-browser' }); assert.equal(result.status, 'passed');
-  const valid = { runtime: { version: 1, publication: '1', documentPath: 'index.html' } };
-  verifyBrowserPublication(valid, f.receipt);
-  assert.throws(() => verifyBrowserPublication({ runtime: { ...valid.runtime, version: 2 } }, f.receipt), /selected-version/);
-  assert.throws(() => verifyBrowserPublication({ runtime: { ...valid.runtime, publication: f.publication.id } }, f.receipt), /publication-version-id/);
-  assert.throws(() => verifyBrowserPublication({ runtime: { ...valid.runtime, documentPath: 'not-signed.html' } }, f.receipt), /unsigned-document/);
-  f.page.evaluate = async () => ({ page: f.handle.id, version: 2, publication: '2', documentPath: 'index.html' });
-  const wrong = await observer.observe({ check: 'agent-to-browser' });
-  assert.equal(wrong.status, 'failed'); assert(wrong.evidence.mismatches.includes('browser-url-runtime-version'));
-});
-
-test('claim continuity and later signed CAS updates are separate measurements', async t => {
-  const f = await fixture(t), observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, packages: f.packages });
-  await observer.observe({ check: 'preclaim-publication' });
-  const missingBoundary = await observer.observe({ check: 'publication' });
-  assert.equal(missingBoundary.status, 'blocked'); assert(missingBoundary.evidence.missing.includes('claim-boundary-checkpoint-not-observed'));
-  f.lifecycle.owner = 'fixture-owner';
-  const boundary = await observer.observe({ check: 'publication', options: { phase: 'claim-boundary' } });
-  assert.equal(boundary.status, 'passed'); assert.equal(boundary.evidence.claimBoundary.before.publication.id, f.publication.id);
-  const second = await p.signPublicationManifest({ ...f.publication.payload, operationId: 'release-2', revision: 1, previous: f.publication.id }, f.signer);
-  f.receipt.publication = second; f.receipt.version = 2; f.config.publication.operationId = 'release-2'; f.save();
-  const stale = await observer.observe({ check: 'publication' });
-  assert.equal(stale.status, 'failed'); assert(stale.evidence.mismatches.includes('browser-selected-version'));
-  f.page.url = () => f.handle.page_url + '_publications/2/index.html';
-  f.page.evaluate = async () => ({ page: f.handle.id, version: 2, publication: '2', documentPath: 'index.html' });
-  const current = await observer.observe({ check: 'publication' });
-  assert.equal(current.status, 'passed'); assert.equal(current.evidence.publicationId, second.id);
-  assert.deepEqual(current.evidence.signedCasLineage.map(value => value.publicationId), [second.id, f.publication.id]);
-  assert.equal(current.evidence.claimBoundary.after.publication.id, f.publication.id);
-  assert.equal(current.evidence.claimBoundary.retainedSameSignedReceipt, true);
-});
-
-test('a later receipt cannot invent the missing claim boundary or skip unobserved signed parents', async t => {
-  const f = await fixture(t), observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, packages: f.packages });
-  await observer.observe({ check: 'preclaim-publication' }); f.lifecycle.owner = 'fixture-owner';
-  await observer.observe({ check: 'publication', options: { phase: 'claim-boundary' } });
-  const second = await p.signPublicationManifest({ ...f.publication.payload, operationId: 'release-2', revision: 1, previous: f.publication.id }, f.signer);
-  const third = await p.signPublicationManifest({ ...second.payload, operationId: 'release-3', revision: 2, previous: second.id }, f.signer);
-  f.receipt.publication = third; f.receipt.version = 3; f.config.publication.operationId = 'release-3'; f.save();
-  f.page.url = () => f.handle.page_url + '_publications/3/index.html';
-  f.page.evaluate = async () => ({ page: f.handle.id, version: 3, publication: '3', documentPath: 'index.html' });
-  const absent = await observer.observe({ check: 'publication' });
-  assert.equal(absent.status, 'blocked'); assert(absent.evidence.missing.includes('publication-parent-receipt-unobserved'));
-  writeFileSync(join(f.project, 'second-receipt.json'), JSON.stringify({ publication: second, version: 2 }));
-  f.config.publication.ancestors = [{ file: 'second-receipt.json' }]; f.save();
-  assert.equal((await observer.observe({ check: 'publication' })).status, 'passed');
-  writeFileSync(join(f.project, 'second-receipt.json'), JSON.stringify({ publication: { ...second, signature: '00'.repeat(64) }, version: 2 }));
-  assert.equal((await observer.observe({ check: 'publication' })).status, 'failed');
-  f.lifecycle.owner = 'changed-owner'; assert.equal((await observer.observe({ check: 'publication' })).status, 'failed');
-});
-
-test('a changed release before the first post-claim checkpoint cannot be relabeled unchanged', async t => {
-  const f = await fixture(t), observer = new StarterObserver({ ...f.request, runDirectory: f.runDirectory, configPath: f.configPath, owner: { page: f.page }, packages: f.packages });
-  await observer.observe({ check: 'preclaim-publication' }); f.lifecycle.owner = 'fixture-owner';
-  const second = await p.signPublicationManifest({ ...f.publication.payload, operationId: 'release-2', revision: 1, previous: f.publication.id }, f.signer);
-  f.receipt.publication = second; f.receipt.version = 2; f.config.publication.operationId = 'release-2'; f.save();
-  f.page.url = () => f.handle.page_url + '_publications/2/index.html';
-  f.page.evaluate = async () => ({ page: f.handle.id, version: 2, publication: '2', documentPath: 'index.html' });
-  const result = await observer.observe({ check: 'publication', options: { phase: 'claim-boundary' } });
-  assert.equal(result.status, 'failed'); assert(result.evidence.mismatches.includes('claim-boundary-publication-changed'));
-  assert.equal(observer.state.checkpoints['preclaim-publication'].receipt.publication.id, f.publication.id);
-  assert.equal(observer.state.checkpoints['claim-boundary'], undefined);
+  const authority = await verifiedAuthority(bundle, config.descriptor, p);
+  assert.equal(authority.descriptor.finalityPolicy.scopes[0].authorTimeAfterMs, -1n);
 });

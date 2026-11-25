@@ -7,7 +7,8 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { describeReadiness, describeService, requireCreationReady, requireService, requireServiceOrigin } from '../../contract/client.mjs';
 import { CORE_RELEASE, CONTRACT_VERSION } from '../../contract/index.mjs';
-import { sourceIdentity } from '../release-composition.mjs';
+import { sourceIdentity, verifyFirstAppProfiles } from '../release-composition.mjs';
+import { readBrowserSqlPin } from '../session-pin.mjs';
 import { readReviewAccess } from './access.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -69,7 +70,10 @@ export function reviewComposition(root, { source = sourceIdentity(root) } = {}) 
     assert(recorded && recorded.role === item.role && recorded.sha256 === item.sha256 && recorded.size === item.size, 'Component differs from release manifest');
     components.set(item.role, item);
   }
-  for (const role of ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter']) assert(components.has(role), 'Missing composition role: ' + role);
+  for (const role of ['sdk', 'runtime', 'engine', 'tools', 'authority', 'session', 'session-sql-browser', 'starter']) assert(components.has(role), 'Missing composition role: ' + role);
+  verifyFirstAppProfiles(composition, manifest);
+  const sqlPin = readBrowserSqlPin(root);
+  assert.equal(sqlPin.sha256, components.get('session-sql-browser').sha256, 'Composition uses a different browser SQL session than the explicit source pin');
   const sdk = components.get('sdk'), session = components.get('session'), sessionSource = composition.chronolog?.session;
   assert.equal(sessionSource?.repository, 'werg/chronolog-db');
   assert.equal(sessionSource?.dirty, false);
@@ -79,12 +83,19 @@ export function reviewComposition(root, { source = sourceIdentity(root) } = {}) 
   const pinnedPath = resolve(root, pin.slice(5)), scoped = relative(root, pinnedPath);
   assert(scoped && !isAbsolute(scoped) && scoped !== '..' && !scoped.startsWith('..' + sep), 'Session pin escapes the source checkout');
   assert.equal(hash(readFileSync(pinnedPath)), session.sha256, 'Composition uses a different session than the source pin');
+  // The review helpers import @chronolog/authority directly, so the exact authority archive of this same composition is pinned and installed with the session.
+  const authority = components.get('authority'), authorityPin = pkg.devDependencies?.['@chronolog/authority'];
+  assert(typeof authorityPin === 'string' && authorityPin.startsWith('file:'), 'Use the pinned public authority archive');
+  const authorityPath = resolve(root, authorityPin.slice(5)), authorityScoped = relative(root, authorityPath);
+  assert(authorityScoped && !isAbsolute(authorityScoped) && authorityScoped !== '..' && !authorityScoped.startsWith('..' + sep), 'Authority pin escapes the source checkout');
+  assert.equal(hash(readFileSync(authorityPath)), authority.sha256, 'Composition uses a different authority than the source pin');
   return {
     build: { coreRelease: manifest.version, runtimeId: manifest.runtime, sourceCommit: source.source, compositionId: id },
     sourceTree: source.sourceTree,
     sdk: { file: sdk.file, sha256: sdk.sha256 },
     session: { file: session.file, sha256: session.sha256, sourceCommit: sessionSource.source, sourceTree: sessionSource.sourceTree },
-    packagePaths: { sdk: resolve(root, 'dist', sdk.file), session: resolve(root, 'dist', session.file) },
+    authority: { file: authority.file, sha256: authority.sha256 },
+    packagePaths: { sdk: resolve(root, 'dist', sdk.file), authority: resolve(root, 'dist', authority.file), session: resolve(root, 'dist', session.file) },
   };
 }
 
@@ -113,7 +124,7 @@ export function preflightReviewDeployment(origin, composition, options) {
 export function reviewProvenance(composition, readiness) {
   return { sourceRevision: composition.build.sourceCommit, sourceTree: composition.sourceTree,
     sdkVersion: composition.build.coreRelease, compositionId: composition.build.compositionId,
-    runtimeId: composition.build.runtimeId, sdkArtifact: composition.sdk, sessionArtifact: composition.session,
+    runtimeId: composition.build.runtimeId, sdkArtifact: composition.sdk, authorityArtifact: composition.authority, sessionArtifact: composition.session,
     deployment: { serviceOrigin: readiness.serviceOrigin, build: readiness.build, mode: readiness.mode, checkedAt: readiness.checkedAt } };
 }
 

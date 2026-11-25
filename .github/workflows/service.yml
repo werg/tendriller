@@ -189,6 +189,7 @@ jobs:
             dist/tendriller-*.tgz
             dist/tendriller-chatgpt-plugin.zip
             dist/chronolog-peer-session-*.tgz
+            dist/chronolog-authority-*.tgz
             dist/manifest.json
             dist/composition.json
             dist/provenance.json

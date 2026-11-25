@@ -1,7 +1,7 @@
 import { isDiscoverySocket, closeDiscoverySocket } from './discovery';
 import { isSetupWatch, notifySetupChanged } from './setup-watch';
 import { setupPage, nextSetupDeadline, expireSetupReservation } from './setup-page';
-import { adoptPreparedPeerApplication, withPeerOwnerClaim } from './peer-generations';
+import { adoptPreparedApplication, withAuthorityMutation } from './authority';
 import { adoptPreparedAssistant } from './assistant-admission';
 import { isPublicationWatch, notifyPublicationWatchers } from "./publication-watch";
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
@@ -22,7 +22,6 @@ import { closeAssistantAdapter, handleAssistantFrame, isAssistantAdapter, upgrad
 import { nextAssistantDelivery, runAssistantDelivery } from './assistant-events';
 import { requireWritesOpen } from './service-state';
 import { requireHostApproval, requireHostApprovalPolicy, type HostApproval } from './host-adoption';
-import { reviewDevicePairing } from './device-pairing';
 import { addActivity, pruneActivity } from './activity';
 import { handleAgent } from './agent';
 import { Db } from './db';
@@ -185,7 +184,6 @@ export class Tendril extends DurableObject<Env> {
       }
       if (kind === 'assistant' && req.method === 'POST') return await assistantRequest(this, req);
       if (kind === 'assistant-review') return await reviewAssistant(this, req);
-      if (kind === 'pairing-review') return await reviewDevicePairing(this, req);
       if (kind === 'assistant-adapter') return await upgradeAssistantAdapter(this, req);
       if (kind === 'assistant-activity') return await upgradeAssistantActivity(this, req);
       if (kind === "account" && req.headers.get("x-account-id") && req.headers.get("x-account-id") === this.db.get<string | null>("owner_account", null)) {
@@ -557,7 +555,7 @@ export class Tendril extends DurableObject<Env> {
   }
 
   private claimOwner(accountId: string, identities: unknown[]): Promise<Response> {
-    return withPeerOwnerClaim(this, () => this.claimOwnerSerialized(accountId, identities));
+    return withAuthorityMutation(this, () => this.claimOwnerSerialized(accountId, identities));
   }
 
   private async claimOwnerSerialized(accountId: string, identities: unknown[]): Promise<Response> {
@@ -588,7 +586,7 @@ export class Tendril extends DurableObject<Env> {
         throw new HttpError(409, "claimed", "This tendril was claimed already");
       }
       this.transaction(() => {
-        adoptPreparedPeerApplication(this, accountId);
+        adoptPreparedApplication(this, accountId);
         this.db.set("owner_account", accountId);
         this.db.set("claimed_at", this.now());
         if (this.db.get('peer_generation_configuration', null)) this.db.set('lifetime', 'resident');

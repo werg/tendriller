@@ -8,11 +8,10 @@ export async function buildPage({ root = new URL('./', import.meta.url), engine 
   // A failed build must never leave a previous publication ready to upload.
   await rm(output, { recursive: true, force: true });
   try {
-    const handle = await readPrivate('handle.json'), descriptor = await readPrivate('descriptor.json');
+    const handle = await readPrivate('handle.json'), configuration = await readPrivate('host-configuration.json');
     const initialized = await readPrivate('initialized.json');
-    if (!handle.application?.id || initialized.applicationId !== handle.application.id ||
-        descriptor.payload?.applicationId !== handle.application.id || !initialized.deviceId)
-      throw Error('SQL setup records do not identify the same initialized application. Resume npm run init in the original project.');
+    if (!handle.application?.id || initialized.applicationId !== handle.application.id || !initialized.publisherKey || !configuration.executionManifestDigest)
+      throw Error('SQL publication setup records do not identify the same application. Resume npm run init in the original project.');
     const pageUrl = new URL(handle.page_url);
     if (!['https:', 'http:'].includes(pageUrl.protocol) || pageUrl.username || pageUrl.password || pageUrl.search || pageUrl.hash)
       throw Error('Invalid public page URL in the retained handle.');
@@ -27,7 +26,7 @@ export async function buildPage({ root = new URL('./', import.meta.url), engine 
     await mkdir(new URL('engine/', output), { recursive: true });
     for (const [name, bytes] of files) await writeFile(new URL(`engine/${name}`, output), bytes);
     await writeFile(new URL('configuration.json', output), JSON.stringify({ applicationId: handle.application.id,
-      page_url: handle.page_url, descriptor }, null, 2) + '\n');
+      page_url: handle.page_url, executionManifestDigest: configuration.executionManifestDigest }, null, 2) + '\n');
     await copyFile(new URL('index.html', root), new URL('index.html', output));
     await bundle({ absWorkingDir: fileURLToPath(root), entryPoints: { page: 'page.mjs', worker: 'worker.mjs' },
       outdir: fileURLToPath(output), bundle: true, splitting: true, format: 'esm', platform: 'browser',

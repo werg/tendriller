@@ -7,7 +7,18 @@ export const REVIEW_FIXTURE_FILES = [
   ['review-app.mjs', 'plugin/review-app.mjs'],
   ['review-domain.mjs', 'plugin/review-domain.mjs'],
   ['review-assistant.mjs', 'plugin/review-assistant.mjs'],
+  ['review-local.mjs', 'plugin/review-local.mjs'],
+  ['review-page.mjs', 'plugin/review-page.mjs'],
+  ['review-worker.mjs', 'plugin/review-worker.mjs'],
+  ['review-index.html', 'plugin/review-index.html'],
+  // Canonical starter helpers, copied byte-for-byte; never maintain a second lifecycle, bootstrap or provisioning stack.
   ['support/participant-lifecycle.mjs', 'docs/tutorial/helpers/participant-lifecycle.mjs'],
+  ['support/native-session.mjs', 'docs/tutorial/helpers/native-session.mjs'],
+  ['support/cli-lifetime.mjs', 'docs/tutorial/helpers/cli-lifetime.mjs'],
+  ['support/prepare-host.mjs', 'docs/tutorial/helpers/prepare-host.mjs'],
+  ['support/browser-bootstrap.mjs', 'docs/tutorial/helpers/browser-bootstrap.mjs'],
+  ['support/browser-profile.mjs', 'docs/tutorial/helpers/browser-profile.mjs'],
+  ['support/provisioning-view.mjs', 'docs/tutorial/helpers/provisioning-view.mjs'],
 ];
 export function installReviewFixtureSources(root, project) {
   for (const [file, source] of REVIEW_FIXTURE_FILES) {

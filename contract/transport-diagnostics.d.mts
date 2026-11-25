@@ -15,7 +15,7 @@ export interface TransportDiagnosticConnection {
 export interface TransportDiagnosticReport {
   readonly protocol: 'tendriller.transport-diagnostics.v1';
   readonly state: 'available' | 'unavailable' | 'closed';
-  readonly phase: 'unknown' | 'connecting' | 'connected' | 'following' | 'coordinating' | 'recovering' | 'approval-required' | 'unavailable' | 'closed';
+  readonly phase: 'unknown' | 'connecting' | 'connected' | 'disconnected' | 'unavailable' | 'closed';
   readonly connectionRevision: number | null;
   readonly authenticatedPeers: number | null;
   readonly sampled: boolean;

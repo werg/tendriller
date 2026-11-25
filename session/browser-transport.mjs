@@ -2,6 +2,8 @@ import { acquireRootLifetime, createDocumentLifetimeObserver } from './root-life
 import { rtcEndpoint, checkRtcMessage, BROWSER_RTC_PROTOCOL } from './browser-rtc.mjs';
 import { createOwnerLiveness } from './browser-liveness.mjs';
 export const BROWSER_OWNER_PROTOCOL = 'tendriller/browser-owner/v3';
+const APPLICATION_OWNER_PROTOCOL = 'chronolog/authored-session/owner/v1';
+const isEnded = frame => frame?.protocol === APPLICATION_OWNER_PROTOCOL && frame.kind === 'notice' && frame.topic === 'closed';
 export const ownerChannelName = profileId => `tendriller:owner:v3:${profileId}`;
 export const ownerWorkerName = profileId => `tendriller:${profileId}:v3`;
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true });
@@ -32,7 +34,7 @@ export function checkOwnerFrame(value) {
   }
   visit(value, 0);
 }
-export function ended(code = 'OWNER_UNREACHABLE') { return { ended: { name: 'Error', message: code, code } }; }
+export function ended(code = 'OWNER_UNREACHABLE', attachment = '') { return { protocol: APPLICATION_OWNER_PROTOCOL, attachment, kind: 'notice', topic: 'closed', value: code }; }
 export function isOwnerAnnouncement(value, profileId) {
   return value?.protocol === BROWSER_OWNER_PROTOCOL && value.type === 'ready' && value.profileId === profileId &&
     validId(value.ownerInstanceId) && publicKeyValid(value.publicKey);
@@ -158,13 +160,13 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
   const routesChanged = () => { try { onRoutesChanged?.(routes.size); } catch { /* Observers do not control private routes. */ } };
   function retire(route) {
     const record = routes.get(route); if (!record) return;
-    record.lifetime?.close(); record.closed = true; clearTimeout(record.timer); clearTimeout(record.idleTimer); record.rtc?.dispatchEvent(new Event('close')); record.detach?.(); record.port?.close(); routes.delete(route); routesChanged();
+    record.lifetime?.close(); record.closed = true; clearTimeout(record.timer); clearTimeout(record.idleTimer); record.rtc?.dispatchEvent(new Event('close')); record.detach?.(); record.port?.close?.(); routes.delete(route); routesChanged();
   }
   function observeLiveness(record, route) {
     clearTimeout(record.idleTimer);
     if (record.closed || record.suspended) return;
     if (!record.suspended && performance.now() - record.lastReceived >= idleTimeoutMs) {
-      void record.send({ kind: 'frame', frame: ended('OWNER_UNREACHABLE') }).finally(() => retire(route)).catch(() => undefined); return;
+      void record.send({ kind: 'frame', frame: ended('OWNER_UNREACHABLE', record.attachment) }).finally(() => retire(route)).catch(() => undefined); return;
     }
     record.idleTimer = setTimeout(() => observeLiveness(record, route), Math.max(50, idleTimeoutMs / 3)); record.idleTimer.unref?.();
   }
@@ -210,27 +212,25 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
   async function deliver(record, route, value) {
     record.lastReceived = performance.now();
     if (!record.port) {
-      if (value?.kind !== 'attach' || typeof value.facadeProtocol !== 'string' || !(value.releaseToken instanceof Uint8Array) || value.releaseToken.length !== 32) { retire(route); return; }
-      record.releaseToken = value.releaseToken.slice();
-      checkOwnerFrame(value.handshake);
+      if (value?.kind !== 'attach' || value.hello?.protocol !== APPLICATION_OWNER_PROTOCOL || value.hello.kind !== 'request' || value.hello.method !== 'hello' || typeof value.hello.attachment !== 'string' || !(value.releaseToken instanceof Uint8Array) || value.releaseToken.length !== 32) { retire(route); return; }
+      record.releaseToken = value.releaseToken.slice(); record.attachment = value.hello.attachment;
+      checkOwnerFrame(value.hello);
       const witness = await lifetimes.prove(route);
       if (closed || record.closed || routes.get(route) !== record) return;
       record.lifetime = lifetimes.register(route, witness, () => retire(route));
-      const ports = new MessageChannel(), endpoint = new EventTarget(); endpoint.postMessage = () => {};
+      const endpoint = Object.assign(new EventTarget(), { postMessage(frame) {
+        const sending = record.send({ kind: 'frame', frame }); sending.catch(() => retire(route));
+        if (isEnded(frame)) void sending.finally(() => retire(route)).catch(() => undefined);
+      } });
       record.rtc = rtcEndpoint(message => { const sent = record.send({kind:'rtc',message}); void sent.catch(() => record.rtc.dispatchEvent(new Event('close'))); return sent; });
       onRtcEndpoint?.(record.rtc);
       if(value.rtcRegistration?.protocol===BROWSER_RTC_PROTOCOL&&value.rtcRegistration.type==='register')record.rtc.dispatchEvent(new MessageEvent('message',{data:value.rtcRegistration}));
-      record.detach = owner.attach(endpoint); record.port = ports.port2; clearTimeout(record.timer); observeLiveness(record, route);
-      record.port.addEventListener('message', ({ data: frame }) => {
-        let sending;
-        try { sending = record.send({ kind: 'frame', frame }); } catch { retire(route); return; }
-        sending.catch(() => retire(route)); if (frame?.ended) void sending.finally(() => retire(route)).catch(() => undefined);
-      }); record.port.start();
-      endpoint.dispatchEvent(new MessageEvent('message', { data: { protocol: value.facadeProtocol, handshake: value.handshake, port: ports.port1 } }));
+      record.detach = owner.attach(endpoint); record.port = endpoint; clearTimeout(record.timer); observeLiveness(record, route);
+      endpoint.dispatchEvent(new MessageEvent('message', { data: value.hello }));
     } else if (value?.kind === 'frame') {
-      if (value.frame?.method === 'endpoint.suspend') { record.suspended = true; record.lifetime.setParked(true); clearTimeout(record.idleTimer); }
-      if (value.frame?.method === 'endpoint.resume') { record.suspended = false; record.lifetime.setParked(false); observeLiveness(record, route); }
-      record.port.postMessage(value.frame);
+      if (value.frame?.method === 'attachment.suspend') { record.suspended = true; record.lifetime.setParked(true); clearTimeout(record.idleTimer); }
+      if (value.frame?.method === 'attachment.resume') { record.suspended = false; record.lifetime.setParked(false); observeLiveness(record, route); }
+      record.port.dispatchEvent(new MessageEvent('message', { data: value.frame }));
     }
     else if (value?.kind === 'rtc') record.rtc.dispatchEvent(new MessageEvent('message',{data:value.message}));
     else if (value?.kind === 'ping') {
@@ -262,7 +262,7 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
     if (ownLifetimes) lifetimes.close();
     channel.removeEventListener('message', receive);
     await Promise.allSettled([...routes].map(async ([route, record]) => {
-      try { if (record.port) await record.send({ kind: 'frame', frame: ended('ENDPOINT_STALE') }); } finally { retire(route); }
+      try { if (record.port) await record.send({ kind: 'frame', frame: ended('ENDPOINT_STALE', record.attachment) }); } finally { retire(route); }
     }));
   } });
 }
@@ -271,7 +271,7 @@ export async function createBroadcastOwner(channel, owner, { profileId, timeoutM
 export function createBroadcastEndpoint(channel, announcement, { profileId, onReplaced, livenessTimeoutMs = 15000, requestTimeoutMs = 30000 } = {}) {
   if (!isOwnerAnnouncement(announcement, profileId) || !Number.isFinite(livenessTimeoutMs) || livenessTimeoutMs < 100 || livenessTimeoutMs > 120000) throw Error('OWNER_HANDSHAKE_INVALID');
   const { ownerInstanceId } = announcement, ownerKey = announcement.publicKey.slice();
-  const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs });
+  const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs }), events = new EventTarget();
   let record, closed = false, paused = false, pauseEpoch = 0, heartbeat, handshakeTimer, resumeProbe, rtcRegistration;
   const rtc = rtcEndpoint(message => {
     if(closed)throw Error('ENDPOINT_STALE');
@@ -290,7 +290,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   };
   const replaced = code => {
     if (closed) return; closed = true; void releaseLifetime().catch(() => {}); rtc.dispatchEvent(new Event('close')); finishResume(Error(code)); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
-    if (record) { record.port.postMessage(ended(code)); record.closed = true; record.port.close(); }
+    if (record) { events.dispatchEvent(new MessageEvent('message', { data: ended(code, record.hello.attachment) })); record.closed = true; }
     try { onReplaced?.({ previous: ownerInstanceId, reason: code }); } catch { /* Product callbacks cannot keep an invalid route alive. */ }
   };
   function pulse() {
@@ -314,7 +314,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
       record.key = await derive(record.shared, challenge, [...record.context, 'session']);
       clearTimeout(handshakeTimer);
       queues(record, channel, ownerInstanceId, record.route, 'owner');
-      await record.send({ kind: 'attach', facadeProtocol: record.facadeProtocol, handshake: record.handshake, releaseToken: record.releaseToken,...(rtcRegistration?{rtcRegistration}: {}) });
+      await record.send({ kind: 'attach', hello: record.hello, releaseToken: record.releaseToken,...(rtcRegistration?{rtcRegistration}: {}) });
       liveness.authenticated(); pulse();
     } catch { replaced('OWNER_HANDSHAKE_INVALID'); }
     finally { if (record) record.welcoming = false; }
@@ -327,11 +327,11 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
     record.receive(data, value => {
       if(value?.kind !== 'rtc'){liveness.authenticated();if(value?.kind==='pong'&&value.probe===resumeProbe?.id)finishResume();}
       if (value?.kind === 'frame') {
-        record.port.postMessage(value.frame);
-        if (value.frame?.ended) {
-          record.closed = true; closed = true; void releaseLifetime().catch(() => {}); rtc.dispatchEvent(new Event('close')); finishResume(Error(value.frame.ended.code ?? 'ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive); record.port.close();
-          if (['ENDPOINT_STALE', 'OWNER_UNREACHABLE'].includes(value.frame.ended.code)) {
-            try { onReplaced?.({ previous: ownerInstanceId, reason: value.frame.ended.code }); } catch { /* A product callback cannot reopen the route. */ }
+        events.dispatchEvent(new MessageEvent('message', { data: value.frame }));
+        if (isEnded(value.frame)) {
+          record.closed = true; closed = true; void releaseLifetime().catch(() => {}); rtc.dispatchEvent(new Event('close')); finishResume(Error(value.frame.value ?? 'ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
+          if (['ENDPOINT_STALE', 'OWNER_UNREACHABLE'].includes(value.frame.value)) {
+            try { onReplaced?.({ previous: ownerInstanceId, reason: value.frame.value }); } catch { /* A product callback cannot reopen the route. */ }
           }
         }
       } else if (value?.kind === 'rtc') rtc.dispatchEvent(new MessageEvent('message',{data:value.message}));
@@ -340,13 +340,14 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   };
   channel.addEventListener('message', receive);
   return { rtc, postMessage(frame) {
-    if (closed || record || !frame?.port || typeof frame.port.postMessage !== 'function') throw Error('OWNER_HANDSHAKE_INVALID');
-    checkOwnerFrame(frame.handshake);
-    record = { route: crypto.randomUUID(), port: frame.port, facadeProtocol: frame.protocol, handshake: frame.handshake, releaseToken: crypto.getRandomValues(new Uint8Array(32)), closed: false };
-    record.port.addEventListener('message', ({ data }) => {
-      try { if (!record.key) throw Error('OWNER_HANDSHAKE_INVALID'); void record.send({ kind: 'frame', frame: data }).catch(() => replaced('OWNER_UNREACHABLE')); }
-      catch { replaced('OWNER_MESSAGE_LIMIT'); }
-    }); record.port.start();
+    if (closed || frame?.protocol !== APPLICATION_OWNER_PROTOCOL || !['request', 'cancel'].includes(frame.kind)) throw Error('OWNER_HANDSHAKE_INVALID');
+    checkOwnerFrame(frame);
+    if (record) {
+      if (!record.key || frame.attachment !== record.hello.attachment) throw Error('OWNER_HANDSHAKE_INVALID');
+      void record.send({ kind: 'frame', frame }).catch(() => replaced('OWNER_UNREACHABLE')); return;
+    }
+    if (frame.kind !== 'request' || frame.method !== 'hello' || typeof frame.attachment !== 'string') throw Error('OWNER_HANDSHAKE_INVALID');
+    record = { route: crypto.randomUUID(), hello: frame, releaseToken: crypto.getRandomValues(new Uint8Array(32)), closed: false };
     record.opening = (async () => {
       record.lifetime = await acquireRootLifetime(profileId, record.route, { signal: acquisition.signal });
       acquisition.signal.throwIfAborted();
@@ -359,7 +360,7 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
         handshakeTimer = setTimeout(offer, 500); handshakeTimer.unref?.();
       }; offer();
     })(); record.opening.catch(() => replaced('OWNER_HANDSHAKE_INVALID'));
-  }, addEventListener() {}, removeEventListener() {},
+  }, addEventListener: (...args) => events.addEventListener(...args), removeEventListener: (...args) => events.removeEventListener(...args),
   bindRequestSource: session => liveness.bind(session),
   suspend() {
     paused = true; pauseEpoch++; clearTimeout(heartbeat);
@@ -393,8 +394,10 @@ export function createBroadcastEndpoint(channel, announcement, { profileId, onRe
   },
   async close() {
     if (closed) return;
-    this.relinquish(); closed = true; rtc.dispatchEvent(new Event('close')); finishResume(Error('ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
-    if (record) { record.closed = true; record.port.close(); }
+    this.relinquish(); closed = true;
+    if (record) events.dispatchEvent(new MessageEvent('message', { data: ended('ENDPOINT_STALE', record.hello.attachment) }));
+    rtc.dispatchEvent(new Event('close')); finishResume(Error('ENDPOINT_STALE')); liveness.clear(); clearTimeout(heartbeat); clearTimeout(handshakeTimer); channel.removeEventListener('message', receive);
+    if (record) record.closed = true;
     await releaseLifetime();
   } };
 }

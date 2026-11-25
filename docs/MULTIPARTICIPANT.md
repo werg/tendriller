@@ -11,7 +11,7 @@ the host and browser kernel do not import it. Its immutable SQL definition recor
 addressed interactions, frozen contribution slots, exclusive claims, results,
 cancellation, and aggregation. Schema triggers enforce the same guards for raw
 signed programs as for helper-generated commands. Verified execution identifies
-the actual signer and generation. Display names and caller context confer no rights.
+the actual signer and stable proposal ID. Display names and caller context confer no rights.
 
 Live attachment identity is bound by the owner. In durable application history,
 endpoint, publication and run labels are **signer assertions**: an authorized
@@ -21,44 +21,48 @@ its device ID with the verified execution author. They never promote a stored
 `owner-bound` label into independently verified historical evidence.
 
 Every request, current claim, result, message, cancellation and aggregate also
-exposes an `operation` reference containing application ID, verified history ID, actual author,
-operation ID, signed attempt ID and original generation. The schema captures
-the engine's transaction identity; queries join the reserved signed execution
-evidence. A writer cannot supply another attempt or overwrite that reference
-with fields in JSON.
+exposes an `operation` reference containing application ID, actual author,
+operation ID and stable proposal ID. The schema captures the engine's
+transaction identity; queries join the reserved signed execution evidence. A
+writer cannot supply another proposal or overwrite that reference with fields in
+JSON.
 
 | Identity | Meaning |
 | --- | --- |
-| Application / page | Shared history / hosted publication handle |
+| Application / page | Shared operation set / hosted publication handle |
 | Principal / device profile | Approved human or agent / retained local signing configuration |
 | Device | Actual cryptographic signer |
 | Owner instance | Current process owning that profile |
 | Endpoint / incarnation | Attached client / one live attachment lifetime |
 | View / draft | Local editing scope, independent of signing authority |
 | Agent binding / run | Independently approved gateway caller / execution attempt |
-| Interaction / slot / claim epoch | Durable request / frozen contribution / current execution fence |
-| Operation / attempt | Signer-scoped semantic command / original signed bytes |
-| Consumer / cursor | Independent observation progress and its generation/filter scope |
+| Interaction / slot / claim epoch | Durable request / frozen contribution / current provisional execution fence |
+| Operation / proposal | Signer-scoped semantic command / immutable signed proposal ID |
+| Consumer / cursor | Independent observation progress and its revision/filter scope |
 
 ## Responsibilities and guarantees
 
 Observation may fan out. Execution requires an addressed request or an accepted
-claim. One selected-history slot has at most one accepted claim; this cannot stop
-CPU work or recall an external effect already dispatched by a disconnected worker.
-Every generation change invalidates active old-generation fences, including claims
-in an adopted prefix. Rebinding requires an explicit guarded operation.
+claim. In the current replay a slot has at most one winning claim, but that is a
+provisional outcome. An earlier operation that arrives later can change the
+winning claim or reject a result that looked accepted, and the view is rederived
+from a coherent snapshot. Neither stops CPU work or recalls an external effect
+already dispatched by a disconnected worker. A result names its complete original
+claim fence (claim epoch, claim proposal ID, run and endpoint incarnation).
+Handoff and rebinding require explicit guarded operations.
 
 Closing a view cancels that view's waits, streams, and captured reads. Saved work
 remains in the owner's journal. Cancelling a wait, requesting task cancellation,
 and accepting cancellation are separate operations. Exact retry preserves signer,
-operation, payload, and attempt; reapplication creates explicit new lineage.
+operation, payload, proposal ID and author timestamp. A deliberate new request
+after a configured closed-time exclusion has a new operation identity.
 
 Results retain their original author, run, claim, and content. Late results remain
 inspectable with a superseded, cancelled, or review disposition. Fan-in counts the
 frozen slots, never tabs, sockets, or observed presence. All-slots, first-accepted,
 and manual synthesis are explicit policies. Partial results are visible as partial.
 
-External effects require a durable conditional journal outside recoverable history,
+External effects require a durable conditional journal outside the revisable operation set,
 a stable provider idempotency key, fresh authorization, and reconciliation. A lost
 receipt is outcome-unknown. No component promises exactly-once external effects.
 
@@ -123,18 +127,22 @@ frozen, and automatic release after document destruction. This browser-managed
 lifetime mechanism prioritizes accurate discarded-root reclamation and healthy
 hidden/frozen retention over back-navigation caching. It uses no Service Worker.
 
-Create a new SQL application with `createCollaborationDefinition` as its immutable
-definition. Use the exact native/WASM engine manifest and normal signed authority
-bootstrap described in [State models](STATE_MODELS.md). The definition's explicit
-administrator signer list is immutable policy; a participant label or presence
-message never supplies administration rights.
+Create a new SQL application with `createCollaborationDefinition`. It returns the
+definition and an `initializationProgram` that the root principal submits as an
+ordinary authored transaction with a retained operation ID. It creates the journal
+and grants the named `members` table INSERT permission. Crypto enrollment alone
+grants no SQL permission. Use the exact native/WASM engine manifest and normal
+signed authority bootstrap described in [State models](STATE_MODELS.md). The
+definition's explicit administrator signer list is application policy. A
+participant label or presence message never supplies administration rights.
 
 ```js
 import { createCollaborationDefinition, createCollaborationClient,
   createViewStore } from '@tendriller/core/collaboration';
 
-const definition = createCollaborationDefinition({ administrators: [ownerSigner] });
-// Configure the application with this definition and its signed SQL schema.
+const { definition, initializationProgram } = createCollaborationDefinition({
+  administrators: [ownerSigner], members: [ownerSigner, feasibilitySigner, riskSigner] });
+// Submit initializationProgram once as an ordinary root-authored operation.
 // session below is the actual enrolled native session or owner attachment.
 const store = createViewStore({ storage: localStorage,
   applicationId: session.applicationId, profileId, viewId });
@@ -149,22 +157,25 @@ const request = await work.request({
     { slotId: 'risks', eligibleSigners: [riskSigner] },
   ],
 }, { operationId: 'request-proposal-42' });
-const applied = await request.applied();
-if (applied.outcome !== 'accepted') throw Error('Inspect the rejected request');
+const outcome = await request.materialized();
+if (outcome.outcome !== 'accepted') throw Error('Inspect the rejected request');
+// The result is the current provisional outcome; request.stored was already true.
 ```
 
 Each eligible worker uses its own client to `claim` its slot with an expected
 epoch. It reads the accepted claim before executing work, and submits `result`
-with that exact generation, epoch, run and endpoint incarnation. A successful
-command receipt alone is not proof that a result was accepted: inspect its
-domain `disposition`. After review, `finalize` supplies the exact parent version
-and selected result IDs. Membership changes cannot silently alter the frozen
-denominator. Handoff, cancellation acknowledgement and generation rebind each
-have explicit commands and fences.
+with that exact claim epoch, claim proposal ID, run and endpoint incarnation. A
+successful command receipt alone is not proof that a result was accepted:
+inspect its domain `disposition`, which can change when earlier operations
+arrive. After review, `finalize` supplies the exact parent version and selected
+result IDs. It is aggregation, not cryptographic finality. Membership changes
+cannot silently alter the frozen denominator. Handoff and cancellation
+acknowledgement have explicit commands and fences.
 
 Use `inspect(interactionId)` after a lost response, `waitForOutcome` for a
 cancellable observation, and the returned full `operation` for exact journal
-inspection. Cancelling the waiter does not call task cancellation. A completed
+inspection (`stored`, `materialized()`, `retained()` and `finalized()` are
+independent; `finalized()` fails as unsupported without a finality policy). Cancelling the waiter does not call task cancellation. A completed
 provider receipt is retained by `createSqliteEffectJournal` outside application
 history; `createEffectDispatcher` admits one original effect identity and requires
 reconciliation for uncertain dispatch. The provider integration supplies fresh
@@ -178,7 +189,7 @@ conversation. Task cards include current claims and complete accepted-result
 summaries, so the visible result page never changes the contribution denominator.
 The legacy `snapshot()` is a bounded preview with explicit continuation metadata.
 
-A continuation belongs to its complete captured revision, history and query
+A continuation belongs to its complete captured revision and query
 filters. If participants continue writing while someone browses several pages,
 use `const reader = await client.capture()` and issue those reads through the one
 reader. Close it when the view leaves or refreshes. Changing scope requires an
@@ -205,7 +216,7 @@ revocation disables requests. They do not activate cameras, speech or navigation
 Ordinary UI refresh uses coherent queries and `session.changes`. Pure derived
 state uses Chronolog projections, whose reducers may replay and must have no
 external effects. A durable background handler owns a separate consumer ID and
-checkpoint; filter/generation/retention changes require an explicit reset. The
+checkpoint; filter, revision or retention changes require an explicit reset. The
 gateway's scoped subscriptions and outbox implement this delivery boundary.
 Observation never acquires a task claim.
 
@@ -254,10 +265,10 @@ independent approved callers, explicit provider selection and scoped operation
 references. It does not introduce a second application execution service or
 merge the older divergent application stacks.
 
-Facade ABI, immutable application definition, publication, selected generation,
-and gateway/export schema are independent versions. Incompatible owners reject
-attachments with an upgrade action. Applications adopting the SQL collaboration
-schema are created with that definition; publishing a UI does not migrate old data.
+Facade ABI, application definition version, publication and gateway/export schema
+are independent versions. Incompatible owners reject attachments with an upgrade
+action. Applications adopting the SQL collaboration schema create it through
+ordinary authorized transactions; publishing a UI neither runs DDL nor migrates data.
 
 The implementation branch records source and executable qualification separately.
 Local protocol/browser tests cannot establish real mobile suspension, an Internet

@@ -92,10 +92,15 @@ test('evidence is private, public summaries exclude raw content, advice marks as
 test('observation contracts reject fabricated retry, reopen, shared-read, preclaim and cleanup shortcuts', t => {
   const directory = mkdtempSync(join(tmpdir(), 'acceptance-contract-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
   const evidence = new Evidence(directory, {});
-  const observation = (check, detail = {}) => ({ protocol: 'tendriller-agent-observation-v1', check, observedAt: new Date().toISOString(), status: 'passed', evidence: detail });
+  const observation = (check, detail = {}) => ({ protocol: 'tendriller-agent-observation-v2', check, observedAt: new Date().toISOString(), status: 'passed', evidence: detail });
   for (const name of ['preclaim-publication', 'native-reopen', 'lost-command-response', 'lost-publication-response', 'connected', 'browser-to-agent', 'agent-to-browser', 'cleanup'])
     assert.throws(() => evidence.observation(observation(name), 'test'));
-  const retry = { operationId: 'op', retryOperationId: 'changed', attemptHash: 'a'.repeat(64), retryAttemptHash: 'a'.repeat(64), responseLost: true, appliedCount: 1 };
+  const revision = { digest: 'd'.repeat(64), view: 'local' };
+  const retry = { operationId: 'op', retryOperationId: 'changed', proposalId: 'b'.repeat(64), retryProposalId: 'b'.repeat(64),
+    proofHash: 'a'.repeat(64), retryProofHash: 'a'.repeat(64), proofScope: 'signed-encrypted-envelope', responseLost: true, materializedCount: 1,
+    facts: { stored: true, materialized: { proposalId: 'b'.repeat(64), revision, outcome: 'accepted' }, retained: [], finalized: false, excluded: false },
+    query: { applicationId: 'c'.repeat(64), revision, value: [{}] }, marker: 'marker', browserObserved: true, nativeObserved: true,
+    native: { operation: { signatureVerified: true } } };
   assert.throws(() => evidence.observation(observation('lost-command-response', retry), 'test'));
   retry.retryOperationId = 'op'; evidence.observation(observation('lost-command-response', retry), 'test');
   assert.equal(evidence.data.checks['lost-command-response'].status, 'passed');

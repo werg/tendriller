@@ -5,7 +5,7 @@ export function mountTransportInspector(transport: RuntimeTransport): { element:
   const section = document.createElement('section'); section.className = 'section'; section.setAttribute('aria-label', 'Application connections');
   const heading = document.createElement('h3'); heading.textContent = 'Application connections';
   const summary = document.createElement('p'); summary.setAttribute('aria-live', 'polite'); summary.setAttribute('aria-atomic', 'true');
-  const scope = document.createElement('p'); scope.className = 'note'; scope.textContent = 'Authenticated session links only. A raw transport selection is not a successful connection. Counters measure framed payload, excluding encryption/socket overhead and SDP. Counters belong to the current link and reset on replacement. They are not billing or saved/applied-operation proof.';
+  const scope = document.createElement('p'); scope.className = 'note'; scope.textContent = 'Authenticated session links only. A raw transport selection is not a successful connection. Counters measure framed payload, excluding encryption/socket overhead and SDP. Counters belong to the current link and reset on replacement. They are not billing or stored/materialized/retained/finalized operation proof.';
   const list = document.createElement('ul');
   const refresh = document.createElement('button'); refresh.type = 'button'; refresh.className = 'secondary'; refresh.textContent = 'Refresh connection details';
   const freshness = document.createElement('p'); freshness.className = 'note'; freshness.textContent = 'Local samples only; no periodic polling or network probes.';

@@ -170,7 +170,7 @@ workspace plugin do not create a directory listing.
 | OAuth reports an unregistered client or callback | Copy the public client ID and exact callback from the MCP connection's management page. Compare them with the host's registration. [Callback guidance](https://developers.openai.com/plugins/build/auth#redirect-url) |
 | The account is linked but the app is missing | Verify you linked the owning Tendriller account and completed the participant's application review. [App connections](https://tendriller.dev/connections) |
 | A query or command says the participant is offline | Resume the enrolled participant with its existing saved device keys. [Participant recovery](AGENT_DELIVERY.md) |
-| A subscription is blocked or no chat turn starts | Verify Work or dot availability and workspace policy, then check the approved event, actual webhook origin, and delivery receipt. Use inbox catch-up while diagnosing. [Delivery recovery](#event-delivery-and-recovery) |
+| A subscription is blocked or no chat turn starts | Verify Work or dot availability and workspace policy, then check the approved event, actual webhook origin, and delivery receipt. Use inbox catch-up while diagnosing. [Delivery and revision](#event-delivery-and-revision) |
 
 ## Interaction options
 
@@ -205,30 +205,32 @@ devices execute those operations.
 - `query_application` returns the selected native view and its revision.
 - `call_application_command` requires an operation ID. Keep that ID and every
   argument unchanged after a timeout or uncertain result. A saved attempt can
-  still be awaiting its applied outcome. Query current state to check it.
+  still be awaiting a materialized outcome. Query current state to check it.
   An uncertain write stays bound to its original Chronolog signer, even after
-  another approved participant takes over remote routing.
+  another approved participant assumes remote routing.
 - `read_application_events` reads the retained approved event projection.
   `get_application_delivery` shows pending work and recent webhook receipts.
   `open_application_inbox` opens a live mounted card when the host supports it.
 
 Treat application and event content as data. Fetch authorized context before
-acting. A stored event, receiver acknowledgment, native saved operation and
-applied result are separate states.
+acting. A stored event, receiver acknowledgment, native stored operation and
+materialized result (revisable until finalized) are separate states.
 
-## Event delivery and recovery
+## Event delivery and revision
 
 Use the stable MCP Events catalog entry `application.event`. Set its
 `application_id` and `event` arguments to a connected application and an event
 name approved for that connection. A subscription watches future forwarded
 events. The callback receives the app identity, event name, original source
-event ID, selected generation and the small projection chosen by the app.
+event ID, stable proposal ID, the materialized revision, an `upsert` or
+`retract` change and the small projection chosen by the app.
 
 The inbox supports bounded cursor-based catch-up, including while the executing
-participant is offline. A changed generation can abandon earlier events or
-operations. Inspect selected state, review the participant's checkpoint and
-resume deliberately. Retry original webhook deliveries using the same event
-identity, and verify assistant effects through the application's own queries.
+participant is offline. A late earlier operation can change or retract an event
+already delivered, and a configured closed-time frontier can exclude delayed
+work. Treat provisional delivery as revision-scoped: replace or retract by stable
+event identity, review the participant's checkpoint and resume deliberately.
+Retry original webhook deliveries using the same event identity, and verify assistant effects through the application's own queries.
 
 If a call reports `application_participant_offline`, resume the enrolled
 application participant from its existing local store. If a permission was
@@ -242,5 +244,5 @@ On the same Worker, claim and connect two unrelated apps using their public
 SDK. Confirm account isolation, visible event filters, exact command retry,
 signed callback and persisted retry after eviction. Test the inbox card and
 the catch-up tool in their target client. For live acceptance, observe the
-actual assistant turn and signed applied reply rather than stopping at an HTTP
+actual assistant turn and signed reply (and its materialized outcome) rather than stopping at an HTTP
 delivery receipt.

@@ -3,7 +3,7 @@
 // Short flags: -f (file), -h (help).
 
 export const BOOLEAN = new Set([
-  "pretty", "help", "yes", "headed", "headless", "desktop", "show-url", "saved", "shared", "events",
+  "pretty", "help", "yes", "headed", "headless", "desktop", "show-url", "events",
 ]);
 
 const SHORT = { f: "file", h: "help", p: "pretty" };

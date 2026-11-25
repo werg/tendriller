@@ -14,8 +14,8 @@ export async function prepareAssistant({ events = false, signal } = {}) {
   const { handle } = await project({ signal });
   const key = await readPrivate('assistant-key.json', true) ?? await savePrivate('assistant-key.json', createAssistantKey());
   const options = { api: handle.api, token: handle.token, key, label: 'Shared notes', signal,
-    queries: ['notes'], commands: ['addNote'],
-    events: events ? [{ name: 'note.added', description: 'A note was added. Only its original operation ID is exposed.' }] : [] };
+    queries: ['notes'], commands: ['putNote'],
+    events: events ? ['note.put', 'note.deleted'].map(name => ({ name, description: 'A note operation is currently materialized. Only its original operation ID is exposed; reset/retraction observations may revise this projection.' })) : [] };
   signal?.throwIfAborted();
   return { options, review: await proposeApplicationAssistant(options) };
 }
@@ -51,16 +51,16 @@ export async function runAssistant({ signal, events = false } = {}, {
       },
       startAdapter: callbacks => connect({ ...options, session: owned.session,
         tools: tools(owned.session, { queries: options.queries, commands: options.commands }), ...callbacks }),
-      onOnline: events ? (assistant, lifetime) => forward({ session: owned.session, topics: ['note'], signal: lifetime,
+      onOnline: events ? (assistant, lifetime) => forward({ session: owned.session, topics: ['note.put', 'note.deleted'], signal: lifetime,
         deliver: createAssistantEventDelivery({ assistant,
-          onSkipped: () => report({ state: 'event_skipped', name: 'note.added', reason: 'event_not_approved',
+          onSkipped: ({ name }) => report({ state: 'event_skipped', name, reason: 'event_not_approved',
             delivered: false, roundTripVerified: false, futureWakeVerified: false }),
         }),
         checkpoint: { load: async () => {
           try { return JSON.parse(await readFile(new URL('assistant-event-cursor.json', privateDirectory), 'utf8')); }
           catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
         }, save: checkpoint },
-        project: event => ({ name: 'note.added', payload: { operationId: event.operationId } }),
+        project: event => ({ name: event.topic, payload: { operationId: event.operationId } }),
       }) : undefined, report });
     await lifecycle.done;
   } finally {

@@ -2,6 +2,7 @@ import { rtcEndpoint, BROWSER_RTC_PROTOCOL } from './browser-rtc.mjs';
 import { createOwnerLiveness } from './browser-liveness.mjs';
 import { BROWSER_OWNER_PROTOCOL, checkOwnerFrame, ended } from './browser-transport.mjs';
 import { SessionError } from '@chronolog/peer-session/browser';
+const APPLICATION_OWNER_PROTOCOL = 'chronolog/authored-session/owner/v1';
 
 /** Capability-only private bootstrap sideband, independent of owner RPC opening. */
 export function createRootRtcEndpoint(root,{profileId,rootId}) {
@@ -18,7 +19,7 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
   if (!Number.isFinite(livenessTimeoutMs) || livenessTimeoutMs < 100 || livenessTimeoutMs > 120000) throw new SessionError('OWNER_CONFIGURATION_INVALID');
   const liveness = createOwnerLiveness({ livenessTimeoutMs, requestTimeoutMs });
   const rtc = providedRtc ?? createRootRtcEndpoint(root,{profileId,rootId});
-  const pending = new Map(); let local, remote, pulseTimer, paused = false, pauseEpoch = 0, disposed = false, closing;
+  const pending = new Map(), events = new EventTarget(); let attachment, pulseTimer, paused = false, pauseEpoch = 0, disposed = false, closing;
   const request = (action, timeoutMs = livenessTimeoutMs) => {
     if (disposed) return Promise.reject(new SessionError('ENDPOINT_STALE'));
     if (pending.size >= 4) return Promise.reject(new SessionError('OWNER_BUSY'));
@@ -32,12 +33,18 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
   };
   const fail = code => {
     if (disposed || closing) return;
-    try { local?.postMessage(ended(code)); } catch { /* The page may already have detached. */ }
+    try { events.dispatchEvent(new MessageEvent('message', { data: ended(code, attachment) })); } catch { /* The page may already have detached. */ }
     try { onReplaced?.({ previous: ownerInstanceId, reason: code }); } catch { /* Observation is not ownership. */ }
     void close();
   };
   const receive = ({ data }) => {
     if (disposed) return;
+    if (data?.protocol === APPLICATION_OWNER_PROTOCOL) {
+      if (data.attachment !== attachment || !['response', 'notice'].includes(data.kind)) return;
+      try { checkOwnerFrame(data); liveness.authenticated(); events.dispatchEvent(new MessageEvent('message', { data })); }
+      catch { fail('OWNER_MESSAGE_LIMIT'); }
+      return;
+    }
     if (data?.protocol !== BROWSER_OWNER_PROTOCOL) return;
     if (data.type === 'failure' && data.code === 'OWNER_UNREACHABLE') { fail('OWNER_UNREACHABLE'); return; }
     if (data.rootId !== rootId || data.ownerInstanceId !== ownerInstanceId) return;
@@ -71,28 +78,23 @@ export function createSharedRootEndpoint(root, { profileId, rootId, ownerInstanc
     closing = (async () => {
       try { await request('detach', Math.min(1000, livenessTimeoutMs)); } catch { /* A dead worker cannot retain the local facade. */ }
       finally {
-        disposed = true; rtc.dispose(); root.removeEventListener('message', receive);
+        disposed = true; rtc.dispose(); root.removeEventListener('message', receive); root.removeEventListener('close', physicalClosed); root.removeEventListener('messageerror', physicalClosed);
         for (const waiter of pending.values()) { clearTimeout(waiter.timer); waiter.reject(new SessionError('ENDPOINT_STALE')); }
-        pending.clear(); local?.close(); remote?.close(); root.close?.();
+        pending.clear(); root.close?.();
       }
-    })(); return closing;
+    })();
+    if (attachment !== undefined) events.dispatchEvent(new MessageEvent('message', { data: ended('ENDPOINT_STALE', attachment) }));
+    return closing;
   }
-  root.addEventListener('message', receive); void pulse();
+  const physicalClosed = () => fail('OWNER_UNREACHABLE');
+  root.addEventListener('message', receive); root.addEventListener('close', physicalClosed); root.addEventListener('messageerror', physicalClosed); void pulse();
   return { rtc, postMessage(frame) {
-    if (disposed || closing || local || !frame?.port || typeof frame.port.postMessage !== 'function') throw new SessionError('OWNER_HANDSHAKE_INVALID');
-    checkOwnerFrame(frame.handshake);
-    const wire = new MessageChannel(); local = frame.port; remote = wire.port1;
-    local.addEventListener('message', ({ data }) => {
-      if (disposed || closing) return;
-      try { checkOwnerFrame(data); remote.postMessage(data); } catch { fail('OWNER_MESSAGE_LIMIT'); }
-    }); local.start();
-    remote.addEventListener('message', ({ data }) => {
-      if (disposed) return;
-      try { checkOwnerFrame(data); liveness.authenticated(); local.postMessage(data); if (data?.ended) void close(); }
-      catch { fail('OWNER_MESSAGE_LIMIT'); }
-    }); remote.start();
-    root.postMessage({ ...frame, port: wire.port2 }, [wire.port2]);
-  }, addEventListener() {}, removeEventListener() {},
+    if (disposed || closing || frame?.protocol !== APPLICATION_OWNER_PROTOCOL || !['request', 'cancel'].includes(frame.kind) || typeof frame.attachment !== 'string') throw new SessionError('OWNER_HANDSHAKE_INVALID');
+    checkOwnerFrame(frame);
+    if (attachment === undefined) { if (frame.kind !== 'request' || frame.method !== 'hello') throw new SessionError('OWNER_HANDSHAKE_INVALID'); attachment = frame.attachment; }
+    if (frame.attachment !== attachment) throw new SessionError('ENDPOINT_STALE');
+    root.postMessage(frame);
+  }, addEventListener: (...args) => events.addEventListener(...args), removeEventListener: (...args) => events.removeEventListener(...args),
   bindRequestSource: session => liveness.bind(session),
   park({frozen=false}={}) {
     if (disposed || closing) throw new SessionError('ENDPOINT_STALE');

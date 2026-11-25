@@ -1,5 +1,12 @@
 # Migrate rc.16 applications to the current rc.17 composition
 
+> **Historical migration guide.** It describes the rc.16 to rc.17 composition,
+> which predates the authored operation-set architecture. Its generation selection,
+> pairing, recovery and applied-outcome steps do not apply to the current session.
+> The operation-set refactor is a separate clean protocol with no migration path,
+> compatibility reader or legacy export. Create a new application with
+> [Build an app](BUILD_AN_APP.md) instead of following this guide for current work.
+
 Use this guide when updating an existing `0.3.0-rc.16` application to a host
 running a later `0.3.0-rc.17` **source release**. It covers the host, public SDK,
 Chronolog package and copied first-app helpers together. The

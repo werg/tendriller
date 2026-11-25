@@ -8,6 +8,16 @@ It also tests whether the agent treats provisioning and a connected process as
 part of the requested deliverable, and whether discovered capabilities become
 actual implementation choices instead of unused reading material.
 
+> **Scripted observer evidence boundary.** The maintained observer uses authored
+> CRDT facts and v2 config/observation/report schemas; there is no old-profile
+> reader. The current public read-only owner facade exposes operation handles and
+> inspections, but not raw signed envelopes. Independent operation cryptographic
+> checks therefore report `signed-operation-evidence-unsupported` unless an
+> authorized existing attachment genuinely exposes public `exportFacts()`.
+> This is not a browser Save/read failure. Browser-local durability and signed
+> publication checks do not require a native process. Full session-connected
+> acceptance still requires actual independent peer/convergence evidence.
+
 **This document is a test plan, not a passing test result.** Repository checks,
 link checks and existing application qualification do not establish that a fresh
 agent completed this journey. Record each real attempt and its limitations.
@@ -50,12 +60,12 @@ useful evidence but is not an unassisted completion.
 | Stage | Evidence required |
 | --- | --- |
 | Discover | Starting from the domain, the agent finds a task-oriented build route and the compatible public artifacts through published links. Record the URLs followed and any broken or inaccessible resource. |
-| Prepare before claim | The agent saves a private handle, initializes and publishes the signed UI before requesting sign-in, starts the participant, and gives the owner the ready page and permission-review URLs. Claim retains the same publication and keys; no claimed reply or agent redeployment is required. |
+| Prepare before claim | The agent saves a private handle, prepares the host and publishes the signed UI before requesting sign-in, and gives the owner the ready page and permission-review URLs. Claim retains the same publication; no claimed reply or agent redeployment is required. An optional native participant is started only when the application needs one. |
 | Reuse | The agent uses the task/capability map and imports or adapts current session/helpers where appropriate. Record exact files used and whether historical contrib links were mistaken for current APIs. |
 | Define retained work | The authored application has a real checklist definition, declared commands and a coherent query/read path. Identify where an agent edits the model and UI for a different user request. |
-| Configure authority | The actual public definition and execution commitments are configured; device grants and account bindings are explicit. The first generation is selected using a retained signed creation transition before opening the session. No invented digest, fixture-only authority or copied private signer stands in for enrollment. |
-| Open and connect | Native and browser participants use the same application ID with their own authorized signing identities and persistent stores. The browser runs the session in its Worker. One participation controller owns connection/recovery behavior. Record actual session/participation status and selected transport. |
-| Publish | The complete authored file graph is published through an authorized Chronolog control participant. Retain the publication operation ID and returned receipt; verify the selected publication through the session. |
+| Configure authority | The actual execution commitments and finality policy (default `none`) are prepared; publisher keys, device grants and account bindings are explicit. The owner's sign-in and the browser's device-key proof initialize the root and keys locally, and no generation selection or ordering approval exists. Additional devices use explicit authenticated key provisioning. No invented digest, fixture-only authority or copied private signer stands in for enrollment. |
+| Open and connect | Native and browser participants use the same application ID with their own authorized signing identities and persistent stores. The browser runs the session in its Worker. One participation controller owns connection and reconnect behavior. Record actual session/participation status and selected transport. |
+| Publish | The complete authored file graph is signed by an authorized publisher key and published through the host's publication route. Retain the signed intent, publication operation ID and returned receipt; verify the selected head. |
 | Browser to agent | Add an item through the published page's UI. Observe the command outcome and the same item through a coherent native session query. A DOM change or local draft alone does not pass. |
 | Agent to browser | Submit a native checklist command and observe the browser update through its normal session path. Do not inject state or a fabricated receipt into the page. |
 | Resume | Reload the browser and reopen the existing native device store. Confirm stable device identities and retained checklist content. Separate local reopen evidence from independent peer-retention evidence. |
@@ -89,10 +99,11 @@ application. Record exactly which environment and artifact tuple was exercised.
    action, preserve the native route and avoid claiming completion. This is a
    successful diagnosis, not a completed application build.
 
-Recovery that may abandon a history suffix needs an exact reviewed proposal.
-If that scenario is included, record the adopted/abandoned evidence, visible loss
-notice and deliberate reapplication under a fresh operation ID. Do not perform
-lossy recovery merely to obtain a green onboarding score.
+A late earlier operation or a configured closed-time frontier can revise or
+exclude an operation. If that scenario is included, record the revised outcome,
+the visible exclusion notice, the retained original intent and any deliberate
+new operation under a fresh ID. Never retimestamp or silently resubmit the
+original to obtain a green onboarding score.
 
 ## Critical failure modes
 
@@ -106,7 +117,7 @@ lossy recovery merely to obtain a green onboarding score.
 | Agent tokens, native private keys or another device's signer are embedded in authored browser assets. | The published graph does not preserve the required credential boundaries. A browser must use its own enrolled identity. |
 | A failed reopen silently creates an empty device, swaps storage backends or resets authority. | The apparent recovery loses identity/history instead of resuming it. |
 | Changed input/files are submitted under an already-used operation identity. | This violates exact retry and conceals uncertainty. |
-| `saved`, `applied`, `shared`, adapter readiness or offline code saving are presented as equivalent guarantees. | The user cannot assess persistence, connectivity, replication or recovery correctly. |
+| `stored`, `materialized`, `retained`, `finalized`, adapter readiness or offline code saving are presented as equivalent guarantees. | The user cannot assess persistence, connectivity, replication or finality correctly. |
 | A full-featured request produces only a JSON/field editor, or the agent skips the separate browser UX pass. | Working plumbing does not establish that the person can complete the intended tasks; record missing flows and evidence. |
 | The result promises ongoing agent responses after its only consuming process exits. | The demonstrated runtime does not support the promised interaction. |
 | Production, mobile or Internet reliability is claimed from only local mocks or a desktop preview. | The evidence does not cover the reported environment. |
@@ -379,23 +390,22 @@ shared-notes app derived from the published starter. The maintained observer is
 `scripts/agent-acceptance/observer.mjs`; there is no executable for the operator
 to author. The config can be absent at launch and completed **after** the innocent
 agent produces its project. It is read only by the evaluator, never sent to the
-model. Keep it outside the agent project. A nested native project within the
+model. Keep it outside the agent project. A nested application project within the
 run's empty `project/` is supported. Do not infer paths or identities from this
 example: copy them from the app actually produced in that run.
 
 ```json
 {
-  "protocol": "tendriller-starter-observer-v1",
+  "protocol": "tendriller-starter-observer-v2",
   "origin": "https://staging.tendriller.dev",
   "applicationId": "ACTUAL_64_HEX_APPLICATION_ID",
-  "historyId": "ACTUAL_SIGNED_HISTORY_ID",
+  "project": "/private/acceptance/new-domain-run/project/actual-app",
+  "handle": { "file": ".tendriller/handle.json" },
+  "descriptor": { "file": "ACTUAL_PINNED_SIGNED_DESCRIPTOR.json" },
   "native": {
-    "project": "/private/acceptance/new-domain-run/project/actual-app",
     "module": "session.mjs",
     "export": "attachSession",
     "profile": "main",
-    "handle": { "file": ".tendriller/handle.json" },
-    "descriptor": { "file": ".tendriller/descriptor.json" },
     "deviceId": { "file": ".tendriller/initialized.json", "pointer": "/deviceId" },
     "deviceStore": ".tendriller/device.sqlite",
     "process": {
@@ -407,13 +417,13 @@ example: copy them from the app actually produced in that run.
   },
   "query": {
     "name": "notes", "input": null, "rows": "/value",
+    "sql": "SELECT operationId, author, text FROM notes", "parameters": [],
     "marker": "/text", "operationId": "/operationId", "author": "/author"
   },
   "browser": {
     "device": { "selector": "#device-key", "read": "value" },
     "rows": "#notes li",
-    "status": { "selector": "#connection", "read": "text" },
-    "waitingText": "ACTUAL_VISIBLE_WAITING_TEXT"
+    "status": { "selector": "#connection", "read": "text" }
   },
   "commands": {
     "browser-to-agent": { "name": "addNote" },
@@ -431,7 +441,13 @@ example: copy them from the app actually produced in that run.
 ```
 
 All `pointer` and query field paths are JSON Pointers, relative to the referenced
-JSON object. File paths are relative to `native.project` unless absolute.
+JSON object. File paths are relative to top-level `project` unless absolute.
+`handle` is required; `descriptor` is required only for data authority/cryptographic
+checks. A descriptor may be the actual decoded signed descriptor or its public
+canonical `{record: "lowercase-hex"}` transport (needed for bigint finality scopes).
+Policy evidence retains its canonical record plus kind. Omit `native` entirely for browser-only observations. `query.sql` and
+`parameters` describe an actual existing domain read through the installed browser
+backend; they do not install code, create schema or open another store.
 `native.deviceId` can alternatively be the actual public key string; `process.pid`
 can be a JSON file reference. JSONL references accept `format: "jsonl"`, `line`
 (a zero-based index or `"last"`) and a pointer into that entry. The process check
@@ -439,17 +455,32 @@ reads Linux `/proc`, matching actual cwd, argv and birth token, rather than
 accepting a caller's "running" flag. It never sends signals or controls services.
 Update the PID after an explicit restart; the retained identity binding stays fixed.
 
-The observer validates the selected-origin handle, page/application/history and
-pinned signed descriptor, pins identities on its first observation, then attaches
-to the **existing** native session. It never falls back to `openSession`, creates
-a signer, resets authority or opens a replacement native store. Native probes run
-in bounded child processes with raw stdout/stderr discarded. The public codec and
-Ed25519 verify the v1 signed attempt ID, exact envelope, historical grant and command
-header; the existing native session supplies applied execution and coherent reads.
-No private signing or epoch keys are exported. Host publication/authority checks
-use the installed public SDK's actual verifiers. This envelope check does not
-independently decrypt/re-execute the operation body.
+The observer validates the selected-origin handle and page/application, pins
+identities on its first observation, and when requested attaches to the **existing**
+native session. It never falls back to `openSession`, creates a signer, resets
+authority or opens a replacement native store. Native probes run in bounded child
+processes with raw stdout/stderr discarded. They use `identity.publicKey`,
+`readAuthority()` (or an existing public authority provider's `bundle()`),
+`operations.get(id).inspect()` and handle `materialized()`/`operations.retry(id)`.
+`verifyAuthorityBundle` verifies records and returns void; the observer derives
+read-only membership indexes, not another owned authority store.
 
+When genuinely exposed and authorized, public `exportFacts()` supplies the signed
+encrypted operation envelope. Public `verifyRecord('operation-envelope', ...)` and
+`writerAuthorizedAt` verify its signature, application/execution scope and historical
+writer grant. `proposalId` is the primary stable core identity. `proofHash` hashes
+only the exact signed encrypted **outer envelope**; it does not independently verify
+the encrypted canonical core, command name or decrypted operation ID. Those remain
+explicit local execution observations, joined through proposal-bound events/rows.
+No private signing or epoch keys are exported. Retention signatures additionally
+bind their actual author and envelope digest; local storage, materialized outcome,
+peer retention and configured finality are separate. The observer does not claim
+independent finality-proof verification from an inspection boolean.
+
+Host metadata is the actual `{selection, publicationAuthority, authority, ...}`
+response; canonical authority bytes are decoded by the public codec. Preclaim and
+publication checks use the independent host publisher authority, which needs no
+data root, native writer grant or initialized browser.
 Browser measurements read the paired owner's actual page, public runtime identity,
 device field and rendered rows. They require the configured app's page URL and a
 distinct browser identity. `owner navigate` and `reopen` may use that one
@@ -489,36 +520,28 @@ metric; do not provide implementation advice to repair the baseline's score.
 Use the normal `observe --input /private/check.json` controller command. Supported
 check inputs and their sequence:
 
-For an MCP-authored operation in the same native signer's separate adapter
-namespace, the terminal attachment may correctly refuse inspection. Do not
-broaden that binding or open another owner. If the model actually called
-`inspect_application_operation`, `native.mcpOperations` may map its canonical
-operation ID to the retained completed event, for example a file reference to
-`observable.jsonl` with `format: "jsonl"` and the exact zero-based `line`.
-The observer accepts only that selected server/tool and matching client request,
-application/history/device/operation/attempt reference. The response must contain
-the **raw signed attempt**, whose signature and historical grant are verified
-independently. It still requires the exact authenticated applied event in a
-coherent native read and the matching browser row. A receipt, saved status or
-model completion message alone cannot substitute for those bytes. Native probe
-results record their implementation SHA-256, including when a separately forked
-probe was fixed after controller launch; retain the controller's original source
-identity and do not relabel the entire run as having used a newer harness.
+A model's MCP inspection receipt, status, provider label or completed message
+cannot substitute for raw signed proof. There is no historical MCP signed-attempt
+reader. If the read-only facade lacks `exportFacts`, retain the exact unsupported
+metric instead of broadening permissions or opening another owner. Native probe
+results record their implementation SHA-256; retain the controller's original
+source identity if a separately forked probe changes after launch.
 
 | Check | Input/options and observed proof |
 | --- | --- |
 | `preclaim-publication` | Observe before claim; independently verify the selected signed publication and unclaimed host response. |
-| `authority`, `publication` | Verify pinned authority, grants and selected generation. Immediately after claim, call `publication` with `options.phase: "claim-boundary"` before allowing a further republish: the exact signed receipt must be unchanged and the authenticated owner must match. Later `publication` calls verify the actually selected release/browser version and the signed CAS parent lineage back to that retained boundary. A legitimate v2 after claim does not invalidate the v1 claim proof. Missing boundary/parent receipts block instead of inventing continuity; `publication.ancestors` may reference actually retained intermediate receipt JSON files, whose signatures/scope/revision chain are reverified. |
+| `authority`, `publication` | Verify pinned authority and grants. Immediately after claim, call `publication` with `options.phase: "claim-boundary"` before allowing a further republish: the exact signed receipt must be unchanged and the authenticated owner must match. Later `publication` calls verify the actually selected release/browser version and the signed CAS parent lineage back to that retained boundary. A legitimate v2 after claim does not invalidate the v1 claim proof. Missing boundary/parent receipts block instead of inventing continuity; `publication.ancestors` may reference actually retained intermediate receipt JSON files, whose signatures/scope/revision chain are reverified. |
 | `browser-to-agent` | Owner adds a unique marker through the ordinary UI. Supply `options.operationId` and `options.marker` from the visible result. Signed author must equal the measured browser device. |
-| `agent-to-browser` | `options.action: "submit"` submits the configured command once using a coherent revision and stable local operation ID. Observe again without an action when the browser renders it. Native attachment aliases and the canonical signed ID are both retained. |
-| `browser-reload`, `native-reopen` | Supply `options` with `phase: "before"`, `operationId`, `author`, `command`, `marker`. Perform actual owner reload/reopen or explicit same-store native restart, then observe with `phase: "after"` and the same fields. Native restart requires a new process birth token and the same measured store inode/device/signing identity and signed attempt. No process is restarted by the observer. |
-| `lost-command-response` | `options.action: "submit-lost"` submits the configured operation, then deliberately interrupts its applied waiter. This remains blocked until `action: "retry"` inspects/retries the same saved signed attempt and sees one applied result in native and browser rows. If a response won the interruption race, it reports that the loss was not established. |
+| `agent-to-browser` | `options.action: "submit"` submits the configured command once using a stable local operation ID. Observe again when the browser renders it. The original client operation ID, stable proposal ID and exact signed outer-envelope witness are retained. Raw proof capability is checked before this observer deliberately submits. |
+| `browser-reload` | Supply `phase: "before"`, `operationId` (or stable proposal ID), `author`, `marker`. Perform actual owner reload/reopen, then observe with `phase: "after"`. The existing installed browser backend must expose the same locally stored proposal/timestamp, materialized outcome and coherent domain row. No native process or raw cryptographic export is required; this is local evidence, not independent signature/finality proof. |
+| `native-reopen` | Supply the same operation fields and `command`, measure before and after an explicit same-store restart. Requires a new process birth token, identical store inode/device/signing identity and original signed-envelope witness. No process is restarted by the observer. |
+| `lost-command-response` | `options.action: "submit-lost"` submits the configured operation, then deliberately interrupts its materialization waiter. This remains blocked until `action: "retry"` inspects/retries the same stable proposal and exact saved signed outer envelope and sees one materialized result in native and browser rows. If a response won the interruption race, it reports that the loss was not established. |
 | `lost-publication-response` | Configure `publication.intent` (a file reference selecting the existing signed publication) and `publication.assets` (its saved public SDK asset array). `options.action: "drop"` retains the exact intent before calling publish, discards the real acknowledgement, and retains only its witness digest. `action: "retry"` must recover the identical versioned receipt and selected signed head. This is evaluator-side acknowledgement loss, not a network partition or browser retry qualification. No publication is newly signed by this observer. |
-| `connected` | Requires measured native peer status containing the browser's device, exact process details, explicit browser grant and a file reference `native.transport` containing the maintained relay probe’s complete current observation. Protocol, live PID/birth, page and both device identities, freshness, paired lanes and binary traffic are verified. A string label or configured desired transport is not evidence. WebRTC requires separately attributed external-host evidence. Many attachment facades do not expose participation status; report this check blocked rather than infer it. |
-| `unavailable-peer` | `options.phase: "before"` measures the native process and browser. Stop only this disposable participant externally. `phase: "offline"` verifies its exit and actual visible waiting text. Resume the same device and observe with normal browser-to-agent marker/operation options. |
+| `connected` | Requires measured native connected-peer count plus a current transport record binding the browser's device, exact process details, explicit browser grant and a file reference `native.transport` containing the maintained relay probe’s complete current observation. Protocol, live PID/birth, page and both device identities, freshness, paired lanes and binary traffic are verified. A string label or configured desired transport is not evidence. WebRTC requires separately attributed external-host evidence. Many attachment facades do not expose participation status; report this check blocked rather than infer it. |
+| `unavailable-peer` | `phase: "before"` captures browser-local events and optionally the disposable native process. Externally disconnect the browser network or stop only that disposable peer, then author a **new** browser operation through ordinary UI. `phase: "offline"` with `operationId`, `author`, `marker` requires an actual observed outage, stored/materialized operation and new proposal-bound event. A later observation requires the unchanged proposal/timestamp and row. It does not require or invent an agent-waiting UI or equate an absent optional agent with network disconnection. This check establishes local availability, not convergence; independent participant round trips remain separate. |
 | `discovery` | Domain mode measures successful model terminal reads of same-origin service, discovery, readiness and build guide URLs. MCP mode measures an actual `tendril_guide` (`build`) result from the sole selected server, requiring trusted returned origin, exact deployment/build, open readiness and the same-origin build-guide URL/body; `get_profile` is optional. Both must precede any observed install. Arbitrary tools, opaque responses, wrong origin/build or late discovery cannot pass. |
 | `missing-setup` | Configure `missingSetup.report` to a separate actual harness run report and `expectedCode` to its prerequisite code. It must name this origin, a different attempt, blocked status and a concrete next action. |
-| `cleanup` | After the agent/operator cleans up only the disposable app and stops its participant, verify actual host `not_found` plus the disappearance of the previously measured process birth token. Requires the preclaim and native process checkpoints. The observer does no deletion or service control. |
+| `cleanup` | After the agent/operator cleans up only the disposable app and stops its participant, verify actual host `not_found` plus the disappearance of the previously measured process birth token. Requires the preclaim checkpoint, plus the native process checkpoint only when native observation was configured. The observer does no deletion or service control. |
 
 For example, after the owner adds a note:
 
@@ -618,7 +641,7 @@ The executable receives:
 }
 ```
 
-Its response has protocol `tendriller-agent-observation-v1`, the same `check`,
+Its response has protocol `tendriller-agent-observation-v2`, the same `check`,
 `observedAt` as an ISO timestamp, `status` (`passed`, `failed`, `blocked`, or
 `not-tested`), and an `evidence` object. Evidence stays private; the shareable report
 contains only check status, source, timestamp and SHA-256 reference. Retain these
@@ -628,13 +651,14 @@ measurements (public identities and private paths must stay in the private evide
 | --- | --- |
 | `discovery` | Ordered discovered URLs, failed reads, reused files/imports, install/create timing and exact downloaded package hashes. |
 | `preclaim-publication` | `unclaimed: true`, `signatureVerified: true`, `publicationId`, `operationId`, receipt, observation before claim, same signed head after claim. |
-| `authority` | Actual public definition, creation transition, reviewed device fingerprint/rights/prefix and their verified selection. |
+| `authority` | Pinned signed descriptor and verified membership chain, explicit authenticated account/origin/device provisioning and actual finality policy (default `none`). |
 | `connected` | `applicationId`, distinct `nativeDeviceId`/`browserDeviceId`, `transport`, and `nativeProcess` containing `pid`, `startedAt`, exact `resume` command and `storage` location. Include connection/session observations. |
-| `browser-to-agent`, `agent-to-browser` | `operationId`, `commandOutcome: "applied"`, coherent `query`, unique `marker`, `browserObserved: true`, `nativeObserved: true`; actual UI/command and read results. |
+| `browser-to-agent`, `agent-to-browser` | `operationId`, stable `proposalId`, independent `facts: {stored, materialized, retained, finalized, excluded}`, coherent `query: {applicationId, revision, value}`, unique `marker`, `browserObserved: true`, `nativeObserved: true` and actual verified signed-envelope witness. Materialized outcomes may revise; neither retained nor finalized must be true merely to author/read. |
 | `browser-reload` | Browser device identity before/after reload and persisted marker/read observations. |
-| `native-reopen` | `beforeDeviceId`, identical `afterDeviceId`, `retained: true`; stopped/restarted PID, exact store/resume command, actual reopened query. |
-| `lost-command-response`, `lost-publication-response` | `responseLost: true`, equal nonempty `operationId`/`retryOperationId`, equal SHA-256 `attemptHash`/`retryAttemptHash`, `appliedCount: 1`; retained signed attempt and original receipt after retry. Publication also requires equal `receiptId`/`retryReceiptId`. |
-| `unavailable-peer` | Disposable peer stop, visible honest UI state, same-device reconnection and retained work. |
+| `native-reopen` | `beforeDeviceId`, identical `afterDeviceId`, `localDurable: true`; stopped/restarted PID, exact store/resume command, actual reopened query. |
+| `lost-command-response` | `responseLost: true`, equal original/retry `operationId`, `proposalId` and outer-envelope `proofHash`, `proofScope: "signed-encrypted-envelope"`, `materializedCount: 1`, plus coherent round-trip facts. Retrying preserves the original author timestamp and does not resubmit. |
+| `lost-publication-response` | Original/retry `operationId`, equal `publicationHash`/`retryPublicationHash`, `receiptCount: 1`, equal `receiptId`/`retryReceiptId`; the exact signed publication and original versioned receipt. Publication counters do not order application operations. |
+| `unavailable-peer` | Actual browser-network outage or optional-native exit, a new browser-local stored/materialized proposal and unchanged intent after outage. Separate peer observations establish convergence. |
 | `missing-setup` | Separate fresh attempt identifier, omitted prerequisite, actual diagnosis and next action; do not break the baseline's authority. |
 | `publication` | Verified signed selected head, complete authored graph and receipt bound to the observed live page. |
 | `cleanup` | `ownedApplicationsReconciled: true`, `nativeProcessesStopped: true`, `persistentReviewerServicesUntouched: true`, deletion receipts for this run only, or confirmed no creation. |
@@ -642,7 +666,7 @@ measurements (public identities and private paths must stay in the private evide
 The schema rejects missing round-trip, connection, preclaim, reopen and retry
 measurements. Other measurements still need evaluator review: a schema cannot
 prove an external observer's honesty. The report never converts model messages
-into passed checks. Every check must pass for `complete`; missing evidence remains
+into passed checks. Reports use `tendriller-agent-acceptance-v2`. `browserLocalAcceptance` separately summarizes local browser/publication checks without a native prerequisite and explicitly excludes peer convergence/independent operation cryptography. Every check must still pass for full session-connected `complete`; missing evidence remains
 `blocked`, a failing observation produces `failed`, and advice produces `assisted`.
 Perform preclaim observation **before** claim, and cleanup observation **before**
 `stop`. Stop terminates the owned app-server process group, closes Chromium and

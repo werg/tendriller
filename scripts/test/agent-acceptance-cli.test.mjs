@@ -1,12 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, openSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { control, observeInController, prerequisiteFailure } from '../agent-acceptance/cli.mjs';
 import { externalReport, innocentPrompt, Evidence } from '../agent-acceptance/evidence.mjs';
+
+// Linux sockaddr_un limits paths to 107 bytes. Keep the socket in the same
+// private scratch directory using its open-directory alias, not a global /tmp path.
+function privateSocket(directory, t) {
+  if (process.platform !== 'linux') return join(directory, 'control.sock');
+  const fd = openSync(directory, 'r');
+  t.after(() => closeSync(fd));
+  return `/proc/self/fd/${fd}/control.sock`;
+}
 
 test('omitted owner-access record names the exact missing prerequisite without publishing a private path', () => {
   const failure = prerequisiteFailure({ code: 'ENOENT', path: '/private/owner.json' }, { access: '/private/owner.json' }, 'preflight-or-owner');
@@ -45,7 +54,7 @@ createInterface({input:process.stdin}).on('line',line=>{
 
 test('filesystem-private controller uses the actual request protocol', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'acceptance-control-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const socket = join(directory, 'control.sock'), requests = [];
+  const socket = privateSocket(directory, t), requests = [];
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     requests.push(JSON.parse(body)); res.end(JSON.stringify({ busy: false }));
@@ -69,13 +78,13 @@ test('external ChatGPT observations remain separate attestation with omissions b
 
 test('observe IPC and subsequent model updates share the controller Evidence without filesystem merging', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'acceptance-writer-')); t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const evidence = new Evidence(directory, {}), socket = join(directory, 'control.sock');
+  const evidence = new Evidence(directory, {}), socket = privateSocket(directory, t);
   const server = createServer(async (req, res) => {
     let body = ''; for await (const chunk of req) body += chunk;
     const input = JSON.parse(body);
     if (input.action === 'observe') {
       res.end(JSON.stringify(await observeInController({ evidence, input: input.input, source: 'test-observer', observe: async request => ({
-        protocol: 'tendriller-agent-observation-v1', check: request.check, observedAt: new Date().toISOString(), status: 'passed', evidence: { urls: ['measured-fixture'] },
+        protocol: 'tendriller-agent-observation-v2', check: request.check, observedAt: new Date().toISOString(), status: 'passed', evidence: { urls: ['measured-fixture'] },
       }) })));
     } else if (input.action === 'model-update') {
       evidence.data.lastTurn = { status: 'completed' }; evidence.save(); res.end('{}');

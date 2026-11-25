@@ -4,20 +4,21 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { importReviewPackages } from './packages.mjs';
-import { chromium } from '@playwright/test';
 import { nativeHost } from './codex-host.mjs';
 import { reviewError } from './diagnostics.mjs';
 import { readWithAdmissionRetry } from './read.mjs';
-import { readReviewAccess, authorizeReview } from './access.mjs';
+import { readReviewAccess } from './access.mjs';
 import { preflightReviewDeployment, reviewProvenance } from './preflight.mjs';
 
-export async function recordReview({ project, accessPath, output, composition, video = true, frameMs = 1500 }) {
+/** The browser context is the already-initialized owner profile: its retained identity and keys read the checklist. */
+export async function recordReview({ project, accessPath, output, composition, video = true, frameMs = 1500, browser, context, page, token }) {
   project = resolve(project); output = resolve(output);
   const access = readReviewAccess(accessPath), handle = JSON.parse(readFileSync(resolve(project, '.private/handle.json')));
   assert.equal(new URL(handle.api).origin, access.origin);
   const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   // The SDK and verifier use the same installed public archives as the native fixture.
-  const { core: { createClient }, session: { verifyAuthorityBundle, verifyPublicationManifest } } = await importReviewPackages(project);
+  const { core: { createClient }, coreAuthority: { authorityRecordBytes }, session: { verifyAuthorityBundle, verifyPublicationManifest, decodeRecord } } = await importReviewPackages(project);
+  assert(browser && context && page && token, 'Provide the initialized browser owner profile and its linked-account token');
   const definition = JSON.parse(readFileSync(new URL('../../plugin/plugin.json', import.meta.url)));
   const cases = definition.extensions['com.openai'].review.test_cases;
   assert.equal(cases.positive.length, 6, 'Update the qualification when packaged cases change');
@@ -26,10 +27,10 @@ export async function recordReview({ project, accessPath, output, composition, v
   const report = { passed: false, client: 'Codex app-server MCP', codex: execFileSync('codex', ['--version'], { encoding: 'utf8' }).trim(),
     agentBehaviorEvaluated: false, chatgptWebVerified: false, usesModelTokens: false,
     ...reviewProvenance(composition, readiness), browserApplicationPeerQualified: false, firstAppKitQualified: false,
+    nativeParticipant: 'optional; explicitly provisioned by the browser owner; not required for browser reads or writes',
     denialScope: 'Unlisted application ID rejected; no live second-account fixture is provisioned by this runner',
     origin: access.origin, applicationId: handle.application.id, cases: [], checks: [] };
-  const browser = await chromium.launch();
-  let client, context, page;
+  let client;
   const recorded = [];
   const present = async (title, prompt, observation) => {
     await page.goto('about:blank');
@@ -40,10 +41,8 @@ export async function recordReview({ project, accessPath, output, composition, v
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs));
   };
   try {
-    context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, ...(video ? { recordVideo: { dir: resolve(output, 'video'), size: { width: 1440, height: 1000 } } } : {}) });
-    const authorized = await authorizeReview(context, access); page = authorized.page;
     if (video) recorded.push(page.video());
-    client = await nativeHost({ origin: access.origin, token: authorized.token, cwd: project });
+    client = await nativeHost({ origin: access.origin, token, cwd: project });
     const server = client.status.data.find(item => item.name === 'tendriller_review');
     assert(server && server.tools.tendril_guide && server.tools.call_application_command);
     report.checks.push('Static reviewer login, live OAuth consent, PKCE and native MCP discovery');
@@ -80,7 +79,7 @@ export async function recordReview({ project, accessPath, output, composition, v
     await positive(2, async () => { const value = await query(); assert.equal(value.find(item => item.id === 'check-labels').complete, false); return value; });
     const host = createClient(handle, { applicationId: app.applicationId });
     const originalPublication = (await readWithAdmissionRetry(() => host.peers.publication())).publication.id;
-    await page.goto(handle.page_url); await page.getByText('Incomplete · Check labels', { exact: true }).waitFor();
+    await page.goto(handle.page_url); await page.getByText('Incomplete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs));
     let operationId;
     const operationFile = resolve(project, '.private/record-operation.json');
@@ -118,16 +117,18 @@ export async function recordReview({ project, accessPath, output, composition, v
     const invalid = await call('call_application_command', { ...app, command: 'completeItem', input: {}, operationId: randomUUID() });
     assert(invalid.isError); report.checks.push('Additional server guard rejects malformed input before admission');
     assert.deepEqual(await query(), unchanged);
-    const deadline = Date.now() + 20000;
-    while ((await readWithAdmissionRetry(() => host.peers.publication())).publication.id === originalPublication) { assert(Date.now() < deadline); await new Promise(done => setTimeout(done, 200)); }
-    const authority = await verifyAuthorityBundle(await host.peers.application());
-    const publication = await readWithAdmissionRetry(() => host.peers.publication()); await verifyPublicationManifest(publication.publication, authority);
+    // The signed page is code, independent of data: it must remain the original verified publication.
+    const metadata = await readWithAdmissionRetry(() => host.peers.application());
+    await verifyAuthorityBundle(decodeRecord(authorityRecordBytes(metadata.authority)));
+    const publication = await readWithAdmissionRetry(() => host.peers.publication());
+    assert.equal(publication.publication.id, originalPublication, 'Data commands must not require or change signed code');
+    await verifyPublicationManifest(publication.publication, metadata.publicationAuthority);
     report.publication = publication.publication.id;
-    await page.goto(handle.page_url); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor();
-    await page.reload(); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor();
+    await page.goto(handle.page_url); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
+    await page.reload(); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     await page.screenshot({ path: resolve(output, 'verified-page.png'), fullPage: true });
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs * 2));
-    report.checks.push('Signed page publication, exact retry, no duplicate event, rejected writes leave state unchanged, persistence after reload');
+    report.checks.push('Signed page publication unchanged and verified, browser-owned replica converged with the native write, exact retry, no duplicate event, rejected writes leave state unchanged, persistence after reload');
     await present('All packaged cases passed', 'Live data and signed publication verified after reload.', { positive: 6, negative: 3, client: report.codex, publication: report.publication, chatgptWebVerified: false });
     const finalReadiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
     report.deploymentAtCompletion = reviewProvenance(composition, finalReadiness).deployment;
@@ -150,7 +151,6 @@ export async function recordReview({ project, accessPath, output, composition, v
       report.passed = false;
       report.recordingError = reviewError(error);
     } finally {
-      await browser.close();
       writeFileSync(resolve(output, 'report.json'), JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
     }
     if (finalizationError && !report.error) throw Error('Review evidence could not be finalized; see the sanitized report.');

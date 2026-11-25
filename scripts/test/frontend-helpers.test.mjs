@@ -11,134 +11,76 @@ const deferred = () => {
   const promise = new Promise((a, b) => { resolve = a; reject = b; });
   return { promise, resolve, reject };
 };
-const revision = (generation, sequence) => ({ applicationId: 'app', historyId: 'history', generation,
-  point: { generation, sequence, root: `${generation}-${sequence}` }, controlRevision: 1,
-  materializationRevision: `${generation}:${sequence}` });
-const read = (generation, sequence, value) => ({ revision: revision(generation, sequence), value });
+const revision = (digest, sequence = 0) => ({ digest: `${digest}-${sequence}`, view: 'local', executionManifestDigest: 'execution', policyDigest: 'policy' });
 function fixture() {
-  const lifetime = new AbortController(), statuses = new Set(), recoveries = new Set(), streams = new Set();
-  let currentStatus = { phase: 'ready', database: 'ready', generation: 'first' }, closedSessions = 0;
-  const session = {
-    signal: lifetime.signal, get status() { return currentStatus; },
-    query: async () => read('first', 1, ['initial']),
-    operations: { inspect: async () => null }, retry: async () => {}, reapply: async () => {},
-    onStatus(fn) { statuses.add(fn); fn(currentStatus); return () => statuses.delete(fn); },
-    onRecovery(fn) { recoveries.add(fn); return () => recoveries.delete(fn); },
+  const lifetime = new AbortController(), statuses = new Set(), changes = new Set(), streams = new Set();
+  let status = { canAuthor: true, phase: 'ready', database: 'ready', connectedPeers: 0 }, closedSessions = 0;
+  const session = { applicationId: 'app', signal: lifetime.signal, get status() { return status; },
+    readView: async () => ({ applicationId: 'app', revision: revision('initial'), query: () => ['initial'], release() {} }),
+    operations: { get: async () => null, retry: async () => { throw Error('OPERATION_UNKNOWN'); } },
+    onStatus(fn) { statuses.add(fn); fn(status); return () => statuses.delete(fn); },
+    onChange(fn) { changes.add(fn); return () => changes.delete(fn); },
     close() { closedSessions++; lifetime.abort(Error('Session closed')); },
-    changes({ signal }) {
-      return { [Symbol.asyncIterator]() {
-        let done = false, pending, queue = [];
-        const stream = { push(value) { if (done) return; if (pending) { pending({ value, done: false }); pending = undefined; } else queue.push(value); } };
-        streams.add(stream);
-        const stop = () => { done = true; streams.delete(stream); signal.removeEventListener('abort', stop);
-          pending?.({ done: true }); pending = undefined; queue = []; };
-        signal.addEventListener('abort', stop, { once: true });
-        if (signal.aborted) stop();
-        return { next() { return done ? Promise.resolve({ done: true }) : queue.length
-          ? Promise.resolve({ done: false, value: queue.shift() }) : new Promise(resolve => { pending = resolve; }); },
-        async return() { stop(); return { done: true }; } };
-      } };
-    },
+    changes({ signal }) { return { [Symbol.asyncIterator]() {
+      let done = false, pending; const queue = [];
+      const stream = { push(value) { if (done) return; if (pending) { pending({ value, done: false }); pending = undefined; } else queue.push(value); } }; streams.add(stream);
+      const stop = () => { done = true; streams.delete(stream); signal.removeEventListener('abort', stop); pending?.({ done: true }); pending = undefined; queue.length = 0; };
+      signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop();
+      return { next() { return done ? Promise.resolve({ done: true }) : queue.length ? Promise.resolve({ value: queue.shift(), done: false }) : new Promise(resolve => { pending = resolve; }); }, async return() { stop(); return { done: true }; } };
+    } }; },
   };
-  return { session,
-    change(value = { kind: 'applied', revision: revision('first', 2), recovery: null }) { for (const stream of streams) stream.push(value); },
-    status(value) { currentStatus = { ...currentStatus, ...value }; for (const fn of statuses) fn(currentStatus); },
-    recover(value) { for (const fn of recoveries) fn(value); },
-    get observers() { return statuses.size + recoveries.size + streams.size; },
-    get closedSessions() { return closedSessions; },
+  session.operations.subscribe = async function* ({ operationId, signal }) {
+    let dirty = true, wake;
+    const changed = () => { dirty = true; wake?.(); }, stopStatus = session.onStatus(changed), stopChange = session.onChange(changed);
+    signal.addEventListener('abort', changed);
+    try { while (!signal.aborted) { if (!dirty) await new Promise(resolve => { wake = resolve; }); if (signal.aborted) break; dirty = false; const op = await session.operations.get(operationId); if (op) yield await op.inspect(); } }
+    finally { stopStatus(); stopChange(); signal.removeEventListener('abort', changed); }
   };
+  return { session, change() { const change = { kind: 'materialized', revision: revision('revised'), revisedProposalIds: [] }; for (const listener of changes) listener(change); for (const stream of streams) stream.push(change); },
+    status(value) { status = { ...status, ...value }; for (const fn of statuses) fn(status); }, get observers() { return statuses.size + changes.size + streams.size; }, get closedSessions() { return closedSessions; } };
 }
-
-test('live views coalesce invalidations and never paint an older read across recovery or close', async () => {
-  const f = fixture(), reads = [], painted = [], recoveries = [];
-  f.session.query = () => { const next = deferred(); reads.push(next); return next.promise; };
-  const view = createLiveView(f.session, { query: 'notes', onRecovery: notice => recoveries.push(notice) });
-  view.subscribe(value => painted.push(value)); await tick();
-  assert.equal(reads.length, 1);
+test('live views coalesce late-operation invalidations and never paint an obsolete captured read', async () => {
+  const f = fixture(), reads = [], painted = [];
+  f.session.readView = () => { const next = deferred(); reads.push(next); return next.promise; };
+  const view = createLiveView(f.session, captured => captured.query()); view.subscribe(value => painted.push(value)); await tick();
   f.change(); f.change();
-  const notice = { generation: 'replacement', unknownLoss: true, abandoned: [] };
-  f.recover(notice); await tick(); reads[0].resolve(read('first', 200, ['excluded'])); await tick();
+  reads[0].resolve({ revision: revision('obsolete'), query: () => ['obsolete'], release() {} }); await tick();
   assert.equal(reads.length, 2); assert.deepEqual(painted, []);
-  reads[1].resolve(read('replacement', 1, ['retained'])); await tick();
-  assert.deepEqual(painted, [read('replacement', 1, ['retained'])]);
-  assert.equal(view.snapshot, painted[0]); assert.deepEqual(recoveries, [notice]);
-  const pending = view.refresh(); await tick();
-  const cancelled = assert.rejects(pending, /closed/);
-  view.close(); await cancelled; reads[2].resolve(read('replacement', 2, ['too late'])); await tick();
-  assert.equal(painted.length, 1); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+  reads[1].resolve({ revision: revision('revised'), query: () => ['rederived'], release() {} }); await tick();
+  assert.deepEqual(painted, [{ revision: revision('revised'), value: ['rederived'] }]);
+  view.close(); await tick(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
 });
-
-test('live view status/error are separate from coherent data, readiness can resume a failed first read', async () => {
-  const f = fixture(), errors = [], statuses = [], values = [];
-  f.status({ phase: 'awaiting-keys' });
-  f.session.query = async () => { if (f.session.status.phase !== 'ready') throw Error('Keys unavailable'); return read('first', 2, ['ready']); };
-  const view = createLiveView(f.session, { query: 'notes', onError: error => errors.push(error.message), onStatus: value => statuses.push(value) });
-  const unsubscribe = view.subscribe(value => values.push(value)); await tick();
-  assert.equal(view.snapshot, null); assert.match(view.error.message, /Keys unavailable/);
-  assert.equal(view.status.phase, 'awaiting-keys'); assert.equal(errors.length, 1);
-  f.status({ phase: 'ready' }); await tick();
-  assert.equal(view.error, null); assert.deepEqual(values, [read('first', 2, ['ready'])]);
-  const replay = []; view.subscribe(value => replay.push(value)); assert.deepEqual(replay, values);
-  unsubscribe(); f.change(); await tick(); assert.equal(values.length, 1);
-  assert.equal(statuses.at(-1).phase, 'ready'); view.close();
+test('schema/query failure retains the last successful domain snapshot and does not close the authoring session', async () => {
+  const f = fixture(), failures = []; let missing = false;
+  f.session.readView = async () => ({ revision: revision(missing ? 'schema-dropped' : 'schema-present'), query() { if (missing) throw Error('no such table'); return ['row']; }, release() {} });
+  const view = createLiveView(f.session, captured => captured.query(), { onError: error => failures.push(error.message) }); await tick(); const previous = view.snapshot;
+  missing = true; f.change(); await tick(); assert.equal(view.snapshot, previous); assert.match(view.error.message, /no such table/); assert.equal(f.session.status.canAuthor, true); assert.deepEqual(failures, ['no such table']); view.close();
 });
-
-test('a refresh requested by a snapshot listener waits for its own later read', async () => {
-  const f = fixture(), second = deferred(); let reads = 0, nextRead, first = true;
-  f.session.query = async () => ++reads === 1 ? read('first', 1, ['first']) : second.promise;
-  const view = createLiveView(f.session, { query: 'notes' });
-  view.subscribe(() => { if (first) { first = false; nextRead = view.refresh(); } }); await tick();
-  let resolved = false; nextRead.then(() => { resolved = true; }); await tick(); assert.equal(resolved, false);
-  second.resolve(read('first', 2, ['second'])); assert.deepEqual(await nextRead, read('first', 2, ['second'])); view.close();
+test('operation facts revise materialization without conflating authenticated retention or finality', async () => {
+  const f = fixture(), retries = [], retained = deferred();
+  let inspection = { applicationId: 'app', author: 'signer', proposalId: 'proposal', operationId: 'original', stored: true, pending: null, materialized: { outcome: 'accepted', revision: revision('first') }, retained: [], finalized: false, excluded: false };
+  const operation = { inspect: async () => inspection, retained: () => retained.promise, finalized: async () => { throw Error('FINALITY_UNSUPPORTED'); } };
+  f.session.operations.get = async () => operation; f.session.operations.retry = async id => { retries.push(id); return operation; };
+  const view = createOperationView(f.session, { operationId: 'original' }); await tick(); assert.equal(view.snapshot.inspection.stored, true);
+  inspection = { ...inspection, materialized: { outcome: 'rejected', revision: revision('earlier-arrived'), rejectionCode: 'guard_changed' } }; f.change(); await tick();
+  assert.equal(view.snapshot.inspection.materialized.outcome, 'rejected'); assert.equal(view.snapshot.inspection.finalized, false);
+  const waiting = view.waitFor('retained'); await tick(); assert.equal(view.snapshot.waitingFor, 'retained');
+  const evidence = [{ signer: 'peer' }]; inspection = { ...inspection, retained: evidence }; retained.resolve(evidence); assert.deepEqual(await waiting, evidence);
+  f.status({}); await tick(); assert.deepEqual(view.snapshot.inspection.retained, evidence, 'A retention-only notification must not wait for a new materialized snapshot');
+  assert.equal(view.snapshot.inspection.materialized.outcome, 'rejected'); await assert.rejects(view.waitFor('finalized'), /FINALITY_UNSUPPORTED/);
+  await view.retry(); assert.deepEqual(retries, ['original']); view.close(); await tick(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
 });
-
-test('operation state, retained coverage and recovery stay distinct; retry and reapply remain explicit', async () => {
-  const f = fixture(), changes = [], retries = [], reapplies = [], shared = deferred();
-  let state = { status: 'saved', operationId: 'original', attemptId: 'signed-attempt', generation: 'first' };
-  const attempt = { id: 'signed-attempt', payload: { ciphertext: 'immutable' } };
-  f.session.operations.inspect = async () => ({ state, attempt });
-  f.session.retry = async id => { retries.push(id); };
-  f.session.reapply = async (...args) => { reapplies.push(args); return { operationId: args[3].operationId }; };
-  const operation = { operationId: 'original', shared: () => shared.promise };
-  const view = createOperationView(f.session, { operationId: 'original', operation, onChange: value => changes.push(value) });
-  await tick(); assert.equal(view.snapshot.state.status, 'saved'); assert.deepEqual(retries, []);
-  await view.retry(); assert.deepEqual(retries, ['original']); assert.equal(view.snapshot.inspection.attempt, attempt);
-  state = { ...state, status: 'applied', author: 'signer', sequence: 1, outcome: 'rejected', rejectionCode: 'STALE_TASK' };
-  f.change(); await tick(); assert.equal(view.snapshot.state.outcome, 'rejected');
-  const coverageWait = view.waitForShared();
-  assert.equal(view.snapshot.state.status, 'applied'); assert.equal(view.snapshot.waitingForShared, true);
-  const receipts = [{ payload: { peer: 'other', generation: 'first' }, signature: 'receipt' }];
-  shared.resolve(receipts); await coverageWait;
-  assert.deepEqual(view.snapshot.coverage, receipts); assert.equal(view.snapshot.state.status, 'applied');
-  state = { status: 'abandoned', operationId: 'original', attemptId: 'signed-attempt', generation: 'first', selectedGeneration: 'replacement', previous: state };
-  f.recover({ generation: 'replacement', unknownLoss: true, abandoned: [state] }); await tick();
-  assert.equal(view.snapshot.state.status, 'abandoned'); assert.deepEqual(view.snapshot.coverage, receipts);
-  await assert.rejects(view.retry(), /Review the current/); assert.equal(retries.length, 1);
-  await assert.rejects(view.reapply({ name: 'addNote', input: 'reviewed', operationId: 'original', basedOn: revision('replacement', 1) }), /new operation ID/);
-  const result = await view.reapply({ name: 'addNote', input: { text: 'reviewed' }, operationId: 'reviewed-again', basedOn: revision('replacement', 1) });
-  assert.equal(result.operationId, 'reviewed-again');
-  assert.deepEqual(reapplies, [['original', 'addNote', { text: 'reviewed' }, { operationId: 'reviewed-again', basedOn: revision('replacement', 1) }]]);
-  assert.equal(changes.some(value => value.state?.status === 'shared'), false);
-  view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+test('pure authenticated retention/finality notifications update an operation view without a new materialized revision or manual refresh', async () => {
+  const f=fixture();let state={applicationId:'app',operationId:'facts-only',proposalId:'p',stored:true,materialized:{outcome:'accepted',revision:revision('same')},retained:[],finalized:false,excluded:false};
+  f.session.operations.get=async()=>({inspect:async()=>state});const painted=[];
+  const view=createOperationView(f.session,{operationId:'facts-only',onChange:value=>painted.push(value)});await tick();
+  state={...state,retained:[{signer:'actual-peer'}]};f.status({});await tick();assert.equal(view.snapshot.inspection.retained.length,1);
+  state={...state,finalized:true};f.status({});await tick();assert.equal(view.snapshot.inspection.finalized,true);assert.equal(view.snapshot.inspection.materialized.revision.digest,'same-0');
+  view.close();await tick();const count=painted.length;f.status({});await tick();assert.equal(painted.length,count);assert.equal(f.observers,0);
 });
-
-test('ID-only operation views cannot invent retention or an absent saved attempt', async () => {
-  const f = fixture(); let writes = 0; f.session.retry = async () => { writes++; };
-  const view = createOperationView(f.session, { operationId: 'uncertain' }); await tick();
-  assert.equal(view.snapshot.state, null); assert.equal(view.snapshot.coverage, null);
-  await assert.rejects(view.waitForShared(), /original operation handle/);
-  await assert.rejects(view.retry(), /No saved attempt/); assert.equal(writes, 0); view.close();
-});
-
-test('operation observations ignore stale inspection after recovery and after closing', async () => {
-  const f = fixture(), inspections = [], seen = [];
-  f.session.operations.inspect = () => { const value = deferred(); inspections.push(value); return value.promise; };
-  const view = createOperationView(f.session, { operationId: 'old', onChange: value => seen.push(value) });
-  await tick(); f.recover({ generation: 'new', unknownLoss: true });
-  inspections[0].resolve({ state: { status: 'applied' } }); await tick();
-  assert.equal(seen.some(value => value.state?.status === 'applied'), false);
-  view.close(); inspections[1].resolve({ state: { status: 'needsReapply' } }); await tick();
-  assert.equal(seen.some(value => value.state), false); assert.equal(f.observers, 0);
+test('an absent original operation cannot invent storage or retention', async () => {
+  const f = fixture(), view = createOperationView(f.session, { operationId: 'uncertain' }); await tick(); assert.equal(view.snapshot.inspection, null);
+  await assert.rejects(view.waitFor('retained'), /not locally visible/); await assert.rejects(view.retry(), /OPERATION_UNKNOWN/); view.close();
 });
 
 test('retaking cancels analysis, rejects its stale result and preserves immutable evidence/context', async () => {
@@ -173,15 +115,15 @@ test('analysis never supplies reviewed values or commits; explicit edits cancel 
 });
 
 test('commit sends the exact reviewed candidate and ID once, with actual result evidence', async () => {
-  const calls = [], receipt = { status: 'saved', operationId: 'reviewed-1' };
+  const calls = [], receipt = { stored: true, operationId: 'reviewed-1' };
   const controller = createReviewedInput({ analyze: async () => ({ suggestion: 'draft' }), commit: async request => { calls.push(request); return receipt; } });
   const candidate = await controller.capture({ blob: new Blob(['outgoing']), context: { revision: revision('first', 7) } });
   controller.edit({ caption: 'reviewed' });
   await assert.rejects(controller.commit({}), /stable caller-owned/); assert.equal(calls.length, 0);
-  const result = await controller.commit({ operationId: 'reviewed-1' }); receipt.status = 'mutated';
+  const result = await controller.commit({ operationId: 'reviewed-1' }); receipt.stored = false;
   assert.equal(calls.length, 1); assert.equal(calls[0].candidate, candidate);
   assert.deepEqual(calls[0].reviewed, { caption: 'reviewed' }); assert.equal(calls[0].operationId, 'reviewed-1');
-  assert.deepEqual(result, { status: 'saved', operationId: 'reviewed-1' }); assert.equal(controller.snapshot.phase, 'submitted');
+  assert.deepEqual(result, { stored: true, operationId: 'reviewed-1' }); assert.equal(controller.snapshot.phase, 'submitted');
   await assert.rejects(controller.commit({ operationId: 'fresh-id' }), /commit was dispatched/);
   await assert.rejects(controller.capture({ blob: new Blob(['new']), context: {} }), /commit was dispatched/);
   assert.throws(() => controller.cancel(), /commit was dispatched/); controller.close();
@@ -206,105 +148,27 @@ test('capture enforces its byte budget and JSON boundaries before analysis or co
   assert.equal(controller.snapshot.candidate, null); controller.close();
 });
 
-test('initial coherent readiness retains one owner through PEER_RECOVERING and retries only on readiness events', async () => {
-  const f = fixture(), recover = Error('PEER_RECOVERING'), errors = []; let reads = 0, resolved = false;
-  f.status({ phase: 'recovering' });
-  f.session.query = async () => { reads++; if (f.session.status.phase !== 'ready') throw recover; return read('first', 2, ['retained']); };
-  const view = createLiveView(f.session, { query: 'notes', onError: error => errors.push(error) });
-  const ready = view.ready({ timeoutMs: 1000 }).then(value => { resolved = true; return value; });
-  await tick(); await tick();
-  assert.equal(resolved, false); assert.equal(reads, 1); assert.equal(f.closedSessions, 0);
-  assert.equal(view.error, recover); assert.deepEqual(errors, [], 'expected startup recovery must not become a visible error');
-  // Database activation may still be idle when protocol recovery becomes ready.
-  f.status({ phase: 'ready', database: 'idle' });
-  assert.deepEqual(await ready, read('first', 2, ['retained']));
-  assert.equal(reads, 2); assert.equal(f.closedSessions, 0);
-  assert.deepEqual(await view.ready(), view.snapshot); assert.equal(reads, 2); assert.deepEqual(errors, []);
-  f.status({ phase: 'recovering' });
-  await assert.rejects(view.refresh(), error => error === recover);
-  assert.deepEqual(errors, [recover], 'manual refresh errors remain visible after initial readiness');
-  view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
-});
-
-for (const reason of ['cancel', 'timeout', 'fatal', 'view-close']) test(`initial readiness ${reason} rejects and removes its waiter without owning the session`, async t => {
-  const f = fixture(), controller = new AbortController(), active = new Set();
-  const add = controller.signal.addEventListener.bind(controller.signal), remove = controller.signal.removeEventListener.bind(controller.signal);
-  t.mock.method(controller.signal, 'addEventListener', (type, listener, options) => { if (type === 'abort') active.add(listener); return add(type, listener, options); });
-  t.mock.method(controller.signal, 'removeEventListener', (type, listener, options) => { if (type === 'abort') active.delete(listener); return remove(type, listener, options); });
-  let reads = 0; const failure = Error(reason === 'fatal' ? 'APPLICATION_QUERY_UNKNOWN' : 'PEER_RECOVERING');
-  f.session.query = async () => { reads++; throw failure; };
-  const view = createLiveView(f.session, { query: 'notes' });
-  const ready = view.ready({ signal: controller.signal, timeoutMs: reason === 'timeout' ? 20 : 1000 });
-  const expected = reason === 'cancel' ? Error('Caller cancelled') : reason === 'fatal' ? failure : null;
-  const rejected = assert.rejects(ready, error => reason === 'timeout' ? error.code === 'INITIAL_READ_TIMEOUT'
-    : reason === 'view-close' ? /closed/i.test(error.message) : error === expected);
-  assert.equal(active.size, 1);
-  if (reason === 'cancel') controller.abort(expected);
+for (const reason of ['cancel', 'timeout', 'view-close']) test(`bounded initial observation ${reason} does not own or close the signing session`, async () => {
+  const f = fixture(), stop = new AbortController();
+  f.session.readView = async () => new Promise(() => {});
+  const view = createLiveView(f.session, captured => captured.query());
+  const waiting = view.ready({ signal: stop.signal, timeoutMs: reason === 'timeout' ? 20 : 1000 });
+  const rejected = assert.rejects(waiting, error => reason === 'timeout' ? error.message === 'LIVE_VIEW_TIMEOUT' : reason === 'view-close' ? /closed/i.test(error.message) : error === stop.signal.reason);
+  if (reason === 'cancel') stop.abort(Error('caller cancelled'));
   if (reason === 'view-close') view.close();
-  await rejected; assert.equal(active.size, 0); assert.equal(f.closedSessions, 0);
-  await tick(); assert.ok(reads <= 1, 'the readiness deadline must not poll or retry the read');
-  view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
+  await rejected; view.close(); assert.equal(f.closedSessions, 0); assert.equal(f.observers, 0);
 });
-
-test('initial readiness ignores an invalidated recovery read and waits for the coherent replacement', async () => {
+test('a late invalidation cannot make an obsolete captured read satisfy initial observation', async () => {
   const f = fixture(), reads = [];
-  f.session.query = () => { const next = deferred(); reads.push(next); return next.promise; };
-  const view = createLiveView(f.session, { query: 'notes' });
-  let settled = false; const ready = view.ready({ timeoutMs: 1000 }).then(value => { settled = true; return value; });
-  await tick(); f.recover({ generation: 'replacement', unknownLoss: true, abandoned: [] });
-  reads[0].resolve(read('first', 9, ['excluded'])); await tick();
-  assert.equal(settled, false); assert.equal(reads.length, 2);
-  reads[1].resolve(read('replacement', 1, ['retained']));
-  assert.deepEqual(await ready, read('replacement', 1, ['retained'])); view.close(); assert.equal(f.observers, 0);
+  f.session.readView = () => { const next = deferred(); reads.push(next); return next.promise; };
+  const view = createLiveView(f.session, captured => captured.query());
+  const ready = view.ready({ timeoutMs: 1000 }); let settled = false; ready.then(() => { settled = true; });
+  await tick(); f.change(); reads[0].resolve({ revision: revision('obsolete'), query: () => ['old'], release() {} }); await tick();
+  assert.equal(settled, false); reads[1].resolve({ revision: revision('current'), query: () => ['current'], release() {} });
+  assert.deepEqual(await ready, { revision: revision('current'), value: ['current'] }); view.close();
 });
-
-test('initial recovery notifications cannot renew the fixed readiness deadline', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const f = fixture(); let reads = 0;
-  f.session.query = async () => { reads++; throw Error('PEER_RECOVERING'); };
-  const view = createLiveView(f.session, { query: 'notes' });
-  const ready = view.ready({ timeoutMs: 100 });
-  const rejected = assert.rejects(ready, { code: 'INITIAL_READ_TIMEOUT' });
-  await tick(); t.mock.timers.tick(90);
-  f.status({ phase: 'recovering' }); f.status({ phase: 'ready' }); await tick();
-  assert.equal(reads, 2);
-  t.mock.timers.tick(10); await rejected; view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
-});
-
-
-test('manual refresh during initial readiness and fatal initial errors still report visibly', async () => {
-  for (const fatal of [false, true]) {
-    const f = fixture(), errors = [], stop = new AbortController();
-    const failure = Error(fatal ? 'APPLICATION_QUERY_UNKNOWN' : 'PEER_RECOVERING');
-    f.session.query = async () => { throw failure; };
-    const view = createLiveView(f.session, { query: 'notes', onError: error => errors.push(error) });
-    const ready = view.ready({ signal: stop.signal });
-    const readyEnded = assert.rejects(ready, error => fatal ? error === failure : error === stop.signal.reason);
-    const refresh = assert.rejects(view.refresh(), error => error === failure);
-    await refresh; assert.deepEqual(errors, [failure]);
-    stop.abort(); await readyEnded; view.close();
-  }
-});
-
-for (const failure of [null, undefined, 0]) test(`initial and cached readiness reject the exact ${String(failure)} query failure`, async () => {
-  const f = fixture(); f.session.query = async () => { throw failure; };
-  const errors = [], view = createLiveView(f.session, { query: 'notes', onError: value => errors.push(value) });
-  await assert.rejects(view.ready({ timeoutMs: 100 }), value => Object.is(value, failure));
-  assert.equal(view.snapshot, null); assert.deepEqual(errors, [failure]);
-  await assert.rejects(view.ready({ timeoutMs: 20 }), value => Object.is(value, failure));
-  view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
-});
-
-for (const reason of [null, undefined, 0]) test(`readiness cancellation preserves abort(${String(reason)}) for caller and owned signals`, async () => {
-  for (const owned of [false, true]) {
-    const f = fixture(), stop = new AbortController();
-    f.session.query = () => new Promise(() => {});
-    const view = createLiveView(f.session, { query: 'notes', ...(owned ? { signal: stop.signal } : {}) });
-    const ready = view.ready({ timeoutMs: 100, ...(!owned ? { signal: stop.signal } : {}) });
-    const rejected = assert.rejects(ready, value => Object.is(value, stop.signal.reason));
-    stop.abort(reason); await rejected;
-    if (owned) await assert.rejects(view.ready(), value => Object.is(value, stop.signal.reason));
-    else await assert.rejects(view.ready({ signal: stop.signal }), value => Object.is(value, stop.signal.reason));
-    view.close(); assert.equal(f.observers, 0); assert.equal(f.closedSessions, 0);
-  }
+for (const failure of [Error('query unavailable'), null, undefined, 0]) test(`exact query failure ${String(failure)} stays a view error, not an authoring failure`, async () => {
+  const f = fixture(), errors = []; f.session.readView = async () => ({ revision: revision('schema-changed'), query() { throw failure; }, release() {} });
+  const view = createLiveView(f.session, captured => captured.query(), { onError: value => errors.push(value) });
+  await assert.rejects(view.ready({ timeoutMs: 100 }), error => Object.is(error, failure)); assert.equal(view.snapshot, null); assert.equal(f.session.status.canAuthor, true); assert.ok(errors.some(error => Object.is(error, failure))); view.close();
 });

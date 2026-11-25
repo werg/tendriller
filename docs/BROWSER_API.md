@@ -12,21 +12,21 @@ The default injected `tendril.js` entry assigns `window.tendril` and mounts a sm
 
 ```js
 const runtime = startRuntime(configuration, {
-  application: createApplicationBackend({ id: session.applicationId, session }),
+  application: createApplicationBackend(session),
   signals: session.signals,
 });
 ```
 
-The application and signal ports may instead be installed once after startup. Their readiness indicates installation only. The owned session supplies status, recovery and its signing `deviceId`.
+The application and signal ports may instead be installed once after startup. Their readiness indicates installation only. The owned session supplies status, operation inspection and its signing identity (`session.identity.publicKey`).
 
-Chronolog's protocol participant can be installed immediately without activating
-durable application data. Signals, peer authentication, membership and code updates
-remain available while `application.backend.status.database` is `idle`. The first
-actual data operation loads the database component and acquires an exclusive
-Web Lock, then opens its *pinned* OPFS or IndexedDB record backend inside the
-same owning Worker. The page-side `@chronolog/peer-session/browser` entry is only the
-Worker facade; the Worker imports its owner from `@chronolog/peer-session/worker`.
-See [the data lifecycle](APPLICATION_BACKENDS.md#protocol-first-durable-data-on-demand).
+The owning Worker explicitly opens its retained device and application session.
+This opens local storage and cached authority; materialization warms independently
+of the first page query and can replay authenticated peer operations. Passive
+imports and adapter installation do not establish database readiness. The
+page-side `@chronolog/peer-session/browser` entry is the Worker facade; the Worker
+imports its owner from `@chronolog/peer-session/worker`. Neither peer connectivity
+nor finalizer availability gates ordinary local Save after initialization.
+See [the data lifecycle](APPLICATION_BACKENDS.md#owned-local-storage-and-materialization).
 
 An owning Worker can explicitly call `probeBrowserCapabilities()` to check
 new-device events eligibility without opening a signer or data store. The
@@ -199,15 +199,15 @@ button.addEventListener('click', async () => {
 
 `prompt()` returns `accepted`, `dismissed` or `unavailable` and consumes a native event at most once. Calling it without a user gesture leaves the pending prompt available for a click. Acceptance is the user's choice, not confirmation that installation has completed. The headless kernel exposes the same API without instructions or suggestions; authored UI must supply its own manual help. Do not duplicate the default runtime's automatic suggestion.
 
-A Home Screen app may need sign-in or device connection again. On iOS/iPadOS, installation can copy cookies but does not copy localStorage or IndexedDB, and subsequent storage is separate. Preserve the owned session's explicit enrollment/recovery flow; installing an icon does not transfer its device signer or application data. See [WebKit's storage behavior](https://webkit.org/blog/14787/webkit-features-in-safari-17-2/).
+A Home Screen app may need sign-in or device connection again. On iOS/iPadOS, installation can copy cookies but does not copy localStorage or IndexedDB, and subsequent storage is separate. Preserve the owned session's explicit enrollment and key-provisioning flow; installing an icon does not transfer its device signer or application data. See [WebKit's storage behavior](https://webkit.org/blog/14787/webkit-features-in-safari-17-2/).
 
 ## Connection lifecycle
 
-Install `session.participate(...)` with the [host introduction adapter](PEER_CONNECTIONS.md). For browser RTC, `openWorkerWebRtcConnection` and the page's `serveWorkerWebRtcConnections` bridge keep the connection's authentication, replication and recovery inside the owned Worker. The runtime remains a view and utility binding; it starts no second controller. Show participation status and exact recovery proposals instead of implementing local polling or elections.
+Install `participateApplication(session, ...)` with the [host introduction adapter](PEER_CONNECTIONS.md). For browser RTC, `openWorkerWebRtcConnection` and the page's `serveWorkerWebRtcConnections` bridge keep the connection's authentication and replication inside the owned Worker. The runtime remains a view and utility binding; it starts no second controller. Show participation status instead of implementing local polling or elections. Connection loss never blocks local Save.
 
-## Applied views and operation state
+## Materialized views and operation state
 
-Use the [application contract](APPLICATION_BACKENDS.md) or the session directly. Capture coherent applied read views and release them. Keep saved, applied and shared progress distinct. Show recovery notices and abandoned operations explicitly; let the user decide whether to reapply with current arguments and guards.
+Use the [application contract](APPLICATION_BACKENDS.md) or the session directly. Capture coherent read views and release them. Keep stored, materialized, retained and finalized progress distinct, and show excluded operations explicitly. A late earlier operation can revise outcomes, so rederive from a fresh snapshot on `changes()`. Let the user decide whether to submit new work with current arguments and guards. Never retimestamp the original.
 
 ## Sensors and voice
 

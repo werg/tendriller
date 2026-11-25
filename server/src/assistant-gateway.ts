@@ -61,20 +61,17 @@ const tools = [
   tool('call_application_command', 'Execute a declared application command. Keep operationId and input unchanged on retry.',
     'applications:write', { ...app, command: schemaString, input: {}, operationId: schemaString, basedOn: { type: 'object' }, context },
     ['applicationId', 'command', 'input', 'operationId'], false),
-  tool('call_application_commands_batch', 'Execute an ordered batch of up to 16 idempotent declared commands to minimize write-approval round trips. Each command keeps its own stable operationId.',
+  tool('call_application_commands_batch', 'Execute a sequential submission batch of up to 16 idempotent declared commands to minimize write-approval round trips. Each command keeps its own stable operationId.',
     'applications:write', { ...app, commands: { type: 'array', maxItems: 16, items: { type: 'object', additionalProperties: false,
       properties: { command: schemaString, input: {}, operationId: schemaString, basedOn: { type: 'object' }, context },
       required: ['command', 'input', 'operationId'] } }, stopOnError: { type: 'boolean' } },
     ['applicationId', 'commands'], false),
-  tool('inspect_application_operation', 'Inspect the exact original signer, attempt and current outcome of an operation admitted through this agent binding.',
+  tool('inspect_application_operation', 'Inspect the exact original signer, stable proposal and current independent observations of an operation admitted through this agent binding.',
     'applications:read', { ...app, operationId: schemaString }, ['applicationId', 'operationId']),
   tool('wait_application_operation', 'Wait up to the bounded gateway deadline for the original operation. A timeout leaves its saved work intact and inspectable.',
-    'applications:read', { ...app, operationId: schemaString }, ['applicationId', 'operationId']),
-  tool('retry_application_operation', 'Retry the original signed attempt on its original provider. An abandoned operation needs explicit reapplication.',
+    'applications:read', { ...app, operationId: schemaString, fact: { enum: ['materialized', 'retained', 'finalized'] } }, ['applicationId', 'operationId']),
+  tool('retry_application_operation', 'Retransmit the original signed proposal on its original provider without changing its identity or authored time.',
     'applications:write', { ...app, operationId: schemaString }, ['applicationId', 'operationId'], false),
-  tool('reapply_application_operation', 'After reviewing recovery, create a new signed operation linked to the original. Supply a new operationId and current input explicitly.',
-    'applications:write', { ...app, originalOperationId: schemaString, operationId: schemaString, command: schemaString,
-      input: {}, basedOn: { type: 'object' }, context }, ['applicationId', 'originalOperationId', 'operationId', 'command', 'input'], false),
   { ...tool('open_application_inbox', 'Open a live inbox card in a compatible chat. The card shows activity and lets the user choose when to continue the conversation.',
     'applications:read', app, ['applicationId']), _meta: { ui: { resourceUri: INBOX_WIDGET } } },
   tool('get_application_delivery', 'Show pending, accepted, blocked and failed webhook deliveries for this client and application.',
@@ -151,7 +148,7 @@ async function submitCommandBatch(env: Env, pageId: string, req: Request, applic
       const { value } = await pageRequest(env, pageId, bounded,
         { principal, applicationId, method: 'call_application_command', params: item });
       results.push({ ok: true, operationId: item.operationId, command: item.command, result: value });
-      if (stopOnError && isPlainObject(value) && value.outcome !== 'applied') break;
+      if (stopOnError && isPlainObject(value) && (!isPlainObject(value.materialized) || value.materialized.outcome !== 'accepted')) break;
     } catch (error) {
       const expected = error instanceof HttpError;
       results.push({ ok: false, operationId: item.operationId, command: item.command,

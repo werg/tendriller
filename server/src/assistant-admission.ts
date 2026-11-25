@@ -3,7 +3,8 @@ import { escapeHtml } from './inject';
 import { browserIdentity, redirect } from './accounts/oauth-data';
 import { pagePolicy, currentPrincipal, freshPrincipal, type AgentPrincipal } from './access';
 import { selectedApplication } from './application';
-import { pendingPeerOwner, exchangePeerControl } from './peer-generations';
+import { applicationMetadata } from './authority';
+const pendingPeerOwner = (t: Tendril) => `pending-page:${t.tid}`;
 import type { Tendril } from './tendril';
 import { sha256Hex, safeEqual } from './ids';
 import { HttpError, json, readBody, readJson } from './http';
@@ -42,7 +43,9 @@ export async function proposeAssistant(t: Tendril, req: Request, agent: AgentPri
   if (!Array.isArray(input.adapterHashes) || !input.adapterHashes.length || input.adapterHashes.length > 3 ||
     new Set(input.adapterHashes).size !== input.adapterHashes.length) throw new HttpError(400, 'invalid_adapter_keys');
   const adapterHashes = input.adapterHashes.map(hash => string(hash, 64, /^[a-f0-9]{64}$/u));
-  const published = await exchangePeerControl(t, agent, 'definition') as { definition: { queries: Operation[]; commands: Operation[] } };
+  const metadata = await applicationMetadata(t);
+  const published = { definition: metadata.configuration?.tools as { queries: Operation[]; commands: Operation[] } | undefined };
+  if (!published.definition || !Array.isArray(published.definition.queries) || !Array.isArray(published.definition.commands)) throw new HttpError(409, 'tools_not_declared');
   const queries = names(input.queries, published.definition.queries), commands = names(input.commands, published.definition.commands);
   if (!Array.isArray(input.events) || input.events.length > 24) throw new HttpError(400, 'invalid_event_catalog');
   const events = input.events.map(value => {
@@ -135,7 +138,7 @@ export async function reviewAssistant(t: Tendril, req: Request) {
     const providerForms = current ? (await freshAdapters(t)).map(hash => {
       const device = t.db.one<{ device_id: string }>('SELECT device_id FROM assistant_devices WHERE adapter_hash=?', hash)?.device_id;
       const isSelected = hash === provider?.adapterHash;
-      return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">Provider <code>${escapeHtml(hash.slice(0, 12))}</code> <span class="badge${isSelected ? ' ok' : ''}">${isSelected ? 'Selected executor' : 'Read replica'}</span></div><p class="list-item-sub">${device ? 'Enrolled signer: <code>' + escapeHtml(device) + '</code>' : 'No enrolled process has connected yet.'}</p></div>${device && !isSelected ? `<form class="inline-form" method="post"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="provider" value="${hash}"><input type="hidden" name="epoch" value="${provider?.selectionEpoch ?? 0}"><button class="sm secondary" name="action" value="select-provider">Use for new commands</button></form>` : ''}</li>`;
+      return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">Provider <code>${escapeHtml(hash.slice(0, 12))}</code> <span class="badge${isSelected ? ' ok' : ''}">${isSelected ? 'Selected tool provider' : 'Alternative tool provider'}</span></div><p class="list-item-sub">${device ? 'Enrolled signer: <code>' + escapeHtml(device) + '</code>' : 'No enrolled process has connected yet.'}</p></div>${device && !isSelected ? `<form class="inline-form" method="post"><input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="provider" value="${hash}"><input type="hidden" name="epoch" value="${provider?.selectionEpoch ?? 0}"><button class="sm secondary" name="action" value="select-provider">Use for new commands</button></form>` : ''}</li>`;
     }).join('') : '';
     const statusBadge = current && selection
       ? '<span class="badge ok">Connected</span>'

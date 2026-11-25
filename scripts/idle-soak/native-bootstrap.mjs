@@ -28,8 +28,8 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
   const stop = new AbortController(), opening = AbortSignal.any([stop.signal, ...[signal].filter(Boolean)]);
   const owned = await openSession({ signal: opening });
   const lifetime = AbortSignal.any([opening, owned.session.signal].filter(Boolean));
-  let lifecycle, unsubscribe, assistantTask, changesTask, closing;
-  let participationReady = false, reconciled = false, activated = false, adapterReady = !assistant, sentReady = false;
+  let lifecycle, unsubscribeNetwork, unsubscribeStatus, assistantTask, changesTask, closing;
+  let participationReady = false, localReady = false, activated = false, adapterReady = !assistant, sentReady = false;
   let observing = true, lastOnline, lastBlocked, eventsForwardingBlocked = false, ownerClosed = false, observersSettled = false;
   const assistantStatus = online => {
     adapterReady = online;
@@ -39,24 +39,25 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
   };
   const closeOwned = () => closing ??= Promise.resolve().then(async () => { await owned.close(); ownerClosed = true; });
   const ready = () => {
-    if (sentReady || lifetime.aborted || !participationReady || !reconciled || !activated || !adapterReady || eventsForwardingBlocked) return;
+    if (sentReady || lifetime.aborted || !participationReady || !localReady || !activated || !adapterReady || eventsForwardingBlocked) return;
     sentReady = true;
     send({ idleSoakCoverage: 1, bootstrapScope: assistant ? 'native-with-mcp-adapter' : 'native-only-without-mcp-adapter', wakeups: true, modelTurns: false, eventsForwarding: assistant && events });
     send({ idleSoakReady: 1 });
   };
   try {
-    const processPairings = owned.processPairings?.bind(owned);
-    if (!processPairings || typeof owned.watchSetup !== 'function') throw Error('CURRENT_EVENT_DRIVEN_STARTER_REQUIRED');
-    const observed = { ...owned, close: closeOwned, processPairings: async (...args) => {
-      // Counts every actual pass, including setup notifications, active retries and expiry.
-      record('wakeups'); const result = await processPairings(...args); reconciled = true; ready(); return result;
-    } };
-    unsubscribe = owned.session.participation.onStatus(status => {
-      record('wakeups'); participationReady = ['coordinating', 'following'].includes(status.phase) && !status.error && !status.recovery; ready();
+    if (typeof owned.session.onStatus !== 'function' || typeof owned.participation?.onStatus !== 'function' || typeof owned.watchSetup !== 'function') throw Error('CURRENT_EVENT_DRIVEN_STARTER_REQUIRED');
+    const observed = { ...owned, close: closeOwned, ...(typeof owned.watchSetup === 'function' ? { watchSetup: options => owned.watchSetup({ ...options,
+      onChange(value) { record('wakeups'); return options.onChange(value); },
+    }) } : {}) };
+    unsubscribeStatus = owned.session.onStatus(status => {
+      record('wakeups'); localReady = status.canAuthor === true; ready();
+    });
+    unsubscribeNetwork = owned.participation.onStatus(status => {
+      record('wakeups'); participationReady = status.phase === 'connected' && !status.error; ready();
     });
     if (assistant) {
       assistantStatus(false);
-      if (typeof runAssistant !== 'function') throw Error('CANONICAL_ASSISTANT_REQUIRED');
+      if (typeof runAssistant !== 'function' || typeof observed.watchSetup !== 'function') throw Error('CANONICAL_ASSISTANT_AND_CONSENT_WATCH_REQUIRED');
       assistantTask = Promise.resolve().then(() => runAssistant({ signal: lifetime, events }, {
         // runAssistant must reuse this observed owner, never open a second signing store.
         open: async () => { lifetime.throwIfAborted(); return observed; },
@@ -71,7 +72,8 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
         },
       }));
       assistantTask.catch(() => {});
-    } else lifecycle = superviseParticipant({ owned: observed, signal: lifetime, watch: owned.watchSetup, report() {} });
+    }
+    if (!assistant) lifecycle = superviseParticipant({ owned: observed, signal: lifetime, watch: observed.watchSetup, report() {} });
     changesTask = (async () => { for await (const _change of owned.session.changes({ signal: lifetime })) record('wakeups'); })();
     changesTask.catch(() => {});
     await untilStopped(Promise.race([owned.session.query('notes', null), ...[assistantTask, changesTask].filter(Boolean).map(task => task.then(() => { throw Error('NATIVE_OBSERVER_EXITED_BEFORE_ACTIVATION'); }))]), lifetime);
@@ -81,7 +83,7 @@ export async function runNativeBootstrap({ assistant = false, events = false, si
   finally {
     observing = false; assistantStatus(false);
     stop.abort();
-    if (typeof unsubscribe === 'function') unsubscribe();
+    unsubscribeNetwork?.(); unsubscribeStatus?.();
     try {
       // Close the aborted owner before waiting for readers which can be
       // blocked on that owner's transport. The canonical hook shares this promise.
@@ -112,9 +114,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   for (const event of ['SIGTERM', 'SIGINT']) process.once(event, abort);
   try {
     const { openSession } = await import(pathToFileURL(resolve('session.mjs')).href);
-    const dependencies = options.assistant
-      ? { openSession, runAssistant: (await import(pathToFileURL(resolve('assistant.mjs')).href)).runAssistant }
-      : { openSession, superviseParticipant: (await import(pathToFileURL(resolve('helpers/participant-lifecycle.mjs')).href)).superviseParticipant };
+    const dependencies = { openSession, ...(options.assistant ? { runAssistant: (await import(pathToFileURL(resolve('assistant.mjs')).href)).runAssistant } : { superviseParticipant: (await import(pathToFileURL(resolve('helpers/participant-lifecycle.mjs')).href)).superviseParticipant }) };
     const receipt = await runNativeBootstrap({ ...options, record, send: value => process.send(value), signal: stop.signal }, dependencies);
     await disposeStoppedBootstrap(receipt, { send: value => new Promise((resolve, reject) => process.send(value, error => error ? reject(error) : resolve())),
       disconnect: () => { if (process.connected) process.disconnect(); }, exit: code => process.exit(code) });

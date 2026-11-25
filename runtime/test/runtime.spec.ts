@@ -47,11 +47,11 @@ test('application installation adds no transport to the healthy publication watc
   await page.clock.install();
   const fixture = mock.create(); await open(page, fixture);
   const result = await page.evaluate(async () => {
-    const application = { id: window.__TENDRIL__.application.id, capabilities: ['events'],
-      status: { phase: 'ready', database: 'ready', role: 'coordinator', generation: 'g', coordinator: 'device', connectedPeers: 0 },
-      onStatus() { return () => {}; }, onRecovery() { return () => {}; }, async inspectRecovery() { return []; },
+    const application = { applicationId: window.__TENDRIL__.application.id, capabilities: ['events'],
+      status: { canAuthor: true, phase: 'ready', database: 'ready', connectedPeers: 0, pendingOperations: 0, materializationError: null },
+      onStatus() { return () => {}; },
       async submit() {}, readView() {}, async *changes() {},
-      events: { publish() {}, read() {}, subscribe() {} }, operations: { get() {}, subscribe() {} } };
+      events: { publish() {}, read() {}, subscribe() {} }, operations: { get() {}, retry() {}, subscribe() {} } };
     window.tendril.application.install(application as any);
     const installed = await window.tendril.application.ready();
     let repeated = ''; try { window.tendril.application.install(application as any); } catch (error) { repeated = (error as any).code; }

@@ -16,6 +16,7 @@ import { packTarGz } from '../../contract/archive.mjs';
 import { prepareDevHostRelease } from '../dev-host-release.mjs';
 import { localNetworkSource, startDevHost } from '../dev-host.mjs';
 
+import { FIRST_APP_PROFILES } from '../release-composition.mjs';
 const run = promisify(execFile), require = createRequire(import.meta.url);
 const hash = value => createHash('sha256').update(value).digest('hex');
 const json = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
@@ -41,18 +42,19 @@ async function fixture(t) {
     const value = Buffer.from(content); bytes.set(file, value);
     return { role, file, url: base + file, sha256: hash(value), size: value.length };
   };
-  const components = ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter']
+  const components = ['sdk', 'runtime', 'engine', 'tools', 'authority', 'session', 'session-sql-browser', 'starter']
     .map(role => artifact(role, `${role}-${version}.tgz`));
   const body = { format: 'tendriller-release-composition-v1', version, contract: 3,
-    core: { repository: 'werg/tendriller', source, sourceTree: tree, dirty: false }, runtime,
+    core: { repository: 'werg/tendriller', source, sourceTree: tree, dirty: false }, runtime, profiles:FIRST_APP_PROFILES,
+    chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,{repository:'werg/chronolog-db',source:'d'.repeat(40),sourceTree:'e'.repeat(40),dirty:false}])),
     components: components.map(({ role, file, sha256, size }) => ({ role, file, sha256, size })) };
   const composition = { ...body, id: hash(JSON.stringify(body)) };
   const kit = packTarGz([{ path: 'package.json', bytes: json({ name: 'local-app', private: true }) },
     { path: 'README.md', bytes: 'Exact first-app fixture.' }]);
   const manifest = { format: 'tendriller-core-release', version, contract: 3, source_commit: source, source_tree: tree, runtime,
-    composition: { id: composition.id, file: 'composition.json' }, first_app: { file: `tendriller-first-app-${version}.tgz`, profile: 'events' },
+    composition: { id: composition.id, file: 'composition.json' }, first_app: { file: `tendriller-first-app-${version}.tgz`, profile: 'events',packages:FIRST_APP_PROFILES.events.packages,build_dependency:'esbuild@0.28.2' },first_apps:{sql:{file:`tendriller-first-app-sql-${version}.tgz`,profile:'sql',packages:FIRST_APP_PROFILES.sql.packages,build_dependency:'esbuild@0.28.2'}},
     artifacts: [...components, artifact('composition', 'composition.json', json(composition)),
-      artifact('first-app', `tendriller-first-app-${version}.tgz`, kit), artifact('core-provenance', 'provenance.json'),
+      artifact('first-app', `tendriller-first-app-${version}.tgz`, kit),artifact('first-app-sql',`tendriller-first-app-sql-${version}.tgz`,kit), artifact('core-provenance', 'provenance.json'),
       artifact('tools-provenance', 'tools-manifest.json'), artifact('plugin', 'plugin.zip')] };
   const files = new Map([
     ['dist/engine/worker.mjs', Buffer.from('export default { fetch() { return new Response("release"); } };')],
@@ -60,7 +62,7 @@ async function fixture(t) {
     ['dist/engine/migrations/0001_accounts.sql', Buffer.from('CREATE TABLE accounts(id TEXT PRIMARY KEY);')],
     ['server/public/llms.txt', Buffer.from('Exact public guide.')],
   ]);
-  const proof = { source, sourceTree: tree, dirty: false, storageSchemaRevision: 11,
+  const proof = { source, sourceTree: tree, dirty: false, storageSchemaRevision: 12,
     files: Object.fromEntries([...files].filter(([path]) => path.startsWith('dist/engine/'))
       .map(([path, content]) => [path.slice('dist/engine/'.length), hash(content)])) };
   const save = () => bytes.set('manifest.json', json(manifest));
@@ -139,7 +141,7 @@ test('engine provenance must retain the selected clean source, tree and supporte
   for (const [key, value] of [['source', 'e'.repeat(40)], ['sourceTree', 'e'.repeat(40)], ['dirty', true], ['storageSchemaRevision', 10]])
     await t.test(key, async t => {
       const f = await fixture(t); f.proof[key] = value; f.seal();
-      await assert.rejects(f.prepare(), /clean matching engine with storage schema 11/);
+      await assert.rejects(f.prepare(), /clean matching engine with storage schema 12/);
     });
 });
 

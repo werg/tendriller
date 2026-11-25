@@ -4,7 +4,7 @@ import { applyD1Migrations } from 'cloudflare:test';
 import { api, create, inDO, ownerHeaders, req } from './helpers';
 import { sha256Hex } from '../src/ids';
 import { PEER_RENDEZVOUS_PROTOCOL, PEER_INVITATION_PROTOCOL, PEER_RELAY_PROTOCOL } from '../../contract/peers.mjs';
-import { participantMessage, participantPayload } from './peer-exchange';
+import type { AuthorityRecord } from '../../contract/authority.mjs';
 import { testPeerSocket, type TestHostTraffic } from './fixture-peer-socket';
 
 export async function initializeTestService(migrations: Parameters<typeof applyD1Migrations>[1]): Promise<void> {
@@ -20,7 +20,6 @@ export async function createTestPage(options: { application?: { id: string }; li
     const response = await api(handle, 'PATCH', '', { lifetime });
     if (!response.ok) throw new Error(`Resident test page setup failed: ${response.status} ${await response.text()}`);
   }
-  const applicationId = (await inDO(handle.id, t => t.db.get<{ id: string }>('application', { id: '' }))).id;
   const traffic: TestHostTraffic = { httpRequests: 0, requestBodyBytes: 0, rendezvousUpgrades: 0, rendezvousSentBytes: 0, rendezvousReceivedBytes: 0,
     discoveryUpgrades: 0, discoverySentBytes: 0, discoveryReceivedBytes: 0, invitationUpgrades: 0, invitationSentBytes: 0, invitationReceivedBytes: 0, relayUpgrades: 0, relaySentBytes: 0, relayReceivedBytes: 0 };
   const request = (url: string, init: RequestInit) => {
@@ -37,8 +36,7 @@ export async function createTestPage(options: { application?: { id: string }; li
   const pageApi = (url: string, headers: Record<string, string>) => (method: string, path: string, body?: unknown) => request(
     `${url}_tendril/${path}`, { method, headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  const exchange = (send: (method: string, path: string, body?: unknown) => Promise<Response>) => async (operation: string, payload: unknown = {}) =>
-    participantPayload(await send('POST', 'peers/participant', participantMessage(applicationId, operation, payload)));
+  const exchange = (send: (method: string, path: string, body?: unknown) => Promise<Response>) => (record: AuthorityRecord) => send('POST', 'peers/participant', record);
   const agentApi = (method: string, path: string, body?: unknown) => {
     const raw = typeof body === 'string' || body instanceof ArrayBuffer || body instanceof Uint8Array;
     return request(`${handle.api}${path ? '/' + path : ''}`, {

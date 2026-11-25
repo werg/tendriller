@@ -1,6 +1,6 @@
 # Architecture
 
-Tendriller is built as one piece around **Chronolog (`chronolog-db`) as the central pipe**. Every application runs over one owned Chronolog session (`@chronolog/peer-session`) that supplies signing identity, durable storage, command execution, coherent queries, reactive views, live signals, content transfer, replication, and recovery across native agents and browser Workers.
+Tendriller is built as one piece around **Chronolog (`chronolog-db`) as the central pipe**. Every application runs over one owned Chronolog session (`@chronolog/peer-session`) that supplies signing identity, durable storage, command execution, coherent queries, reactive views, live signals, content transfer and replication of an authored, author-time-ordered operation set across native agents and browser Workers.
 
 Different participants connect to that same pipe through transports matched to their role and trust boundary — including explicitly limited transports for special cases.
 
@@ -8,32 +8,32 @@ Different participants connect to that same pipe through transports matched to t
 
 | Pipe / transport | Package | Role and boundary |
 | --- | --- | --- |
-| Full peer session | `@chronolog/peer-session` (`/native`, `/worker`, `/browser`) | Durable execution, local byte store, operation journal, queries, events, signals, chunked content, direct WebRTC and relayed ciphertext replication, and recovery. |
+| Full peer session | `@chronolog/peer-session` (`/native`, `/worker`, `/browser`) | Durable local execution, byte store, operation journal, queries, events, signals, chunked content, and direct WebRTC and relayed ciphertext replication. |
 | Reactive views & draft store | `@chronolog/peer-session` (`createLiveView`, `createViewStore`, `operationReference`) | Coherent UI refresh over session queries/changes plus per-view local drafts and retained operation references. |
-| Durable topic outbox | `@chronolog/peer-session` (`forwardSessionEvents`) | Cursor-based event pump with atomic checkpoints and automatic halt on generation recovery. |
-| Scoped tool pipe | `@chronolog/peer-session` (`createApplicationTools`, `createScopedApplicationTools`, `serveApplicationToolLines`) | Capability-scoped, generation-pinned limited tool surface for local agents and remote MCP assistants. |
+| Durable topic outbox | `@chronolog/peer-session` (`forwardSessionEvents`) | Cursor-based event pump with atomic checkpoints. A cursor is bound to its materialized revision, and a revision change requires an explicit reread. |
+| Scoped tool pipe | `@chronolog/peer-session` (`createApplicationTools`, `createScopedApplicationTools`, `serveApplicationToolLines`) | Capability-scoped, revision-aware limited tool surface for local agents and remote MCP assistants. |
 | Local owner attachment | `@chronolog/peer-session` (`createApplicationOwner`, `connectApplicationOwner`, `acquireApplicationOwnerLock`) | Multi-tab browser and multi-CLI native attachment to one retained signing profile without duplicating device keys. |
-| Filtered control & publication transport | `@chronolog/peer-generation/participant` (`ApplicationControlParticipant`) | Limited host transport permitting only signed generation control, membership revisions, immutable public definitions, and signed UI release chains. Rejects database history, commands, generic chunks, and live signals before dispatch. |
+| Filtered authority & publication transport | `@chronolog/authority` (`createAuthorityParticipant`) with `@tendriller/core/authority` | Limited host transport permitting only signed membership metadata, optional finality proofs, and signed UI release chains. Rejects database operations, commands, generic chunks, and live signals before dispatch. |
 
 ## Ownership and reasoned exceptions
 
 | Component | Owner | Why it is structured this way |
 | --- | --- | --- |
 | Application state, history, replication, signals | Chronolog session (peers) | Keeps all application logic, signing keys, and epoch keys on enrolled devices. No separate hosted app backend or JSON state executor. |
-| Application-neutral host (`server/`) | Tendriller Cloudflare Worker + Durable Objects | **Reasoned exception:** browsers need authenticated HTTPS page origins, OAuth 2.1, immutable signed asset hosting, bounded WebRTC introductions/relay, and a single account-linked `/mcp` gateway. The Worker runs zero `node:*` imports (pure Web Crypto), holds no epoch keys, executes no app code, and participates in Chronolog solely through the filtered control/publication transport and hibernating assistant sockets. |
+| Application-neutral host (`server/`) | Tendriller Cloudflare Worker + Durable Objects | **Reasoned exception:** browsers need authenticated HTTPS page origins, OAuth 2.1, immutable signed asset hosting, bounded WebRTC introductions/relay, and a single account-linked `/mcp` gateway. The Worker runs zero `node:*` imports (pure Web Crypto), holds no epoch keys, executes no app code, and participates in Chronolog solely through the filtered authority/publication transport and hibernating assistant sockets. |
 | Browser runtime & standalone tools (`runtime/`, `tools/`) | `@tendriller/runtime`, `@tendriller/tools` | **Reasoned exception:** intentionally zero `@chronolog/*` runtime dependency. Keeps page boot (`tendril.js`), Home Screen install, offline immutable asset caching, sensor tracking, optional voice, and standalone CLI/preview decoupled and tiny; apps install their Chronolog session adapter explicitly via `tendril.installApplicationBackend(...)`. |
 | Owner lifecycle & host glue (`session/`) | `@tendriller/core/{browser-owner,worker-owner,native-owner,participation,native-rtc,diagnostics,transport-diagnostics}` | Thin browser (SharedWorker / WebLock Worker + page WebRTC broker) and Node (Unix-IPC supervisor + SQLite effect journal) wrappers that bind Tendriller host introductions to `@chronolog/peer-session`. |
 | Multi-participant coordination (`collaboration/`) | `@tendriller/core/collaboration` | Optional domain schema and client for addressed tasks, exclusive claims, and fan-in over an ordinary Chronolog session. |
 
 ## Identities and isolation
 
-- **Page identity vs. application identity:** each hosted page has an isolated origin and host page ID plus one independent 32-byte lowercase hex `application.id`. Chronolog's pinned descriptor binds `application.id` to its history, definition/schema, and execution manifest.
+- **Page identity vs. application identity:** each hosted page has an isolated origin and host page ID plus one independent 32-byte lowercase hex `application.id`. Chronolog's pinned descriptor binds `application.id` to its root principal, authority key, execution manifest and finality policy. It does not freeze an application schema.
 - **Independent rights:** host login (account cookies / OAuth), device signing grants (Chronolog authority), and code publication rights are separate checks. A page login or bearer token never grants database rights.
-- **Host storage:** D1 holds accounts, OAuth grants, setup allocations, and assistant connection indexes (`server/migrations/0001_accounts.sql`); each page Durable Object (schema revision 11) holds signed controls, pairing ledgers, publication heads, and assistant delivery state; R2 holds immutable signed assets. There are no application command, event-history, or database tables on the host.
+- **Host storage:** D1 holds accounts, OAuth grants, setup allocations, and assistant connection indexes (`server/migrations/0001_accounts.sql`); each page Durable Object (schema revision 12) holds signed authority records, publication heads, and assistant delivery state; R2 holds immutable signed assets. There are no application operation, event-history, or database tables on the host.
 
 ## Code publications
 
-UI code is a signed Chronolog publication with predecessor, revision, and operation identity. The host verifies authority and the full file graph, writes verified immutable bytes to R2, and commits the version and signed head atomically. Exact retries are idempotent; stale heads conflict; application history recovery never rewinds the code release chain.
+UI code is a signed Chronolog publication with predecessor, revision, and operation identity. The host verifies authority and the full file graph, writes verified immutable bytes to R2, and commits the version and signed head atomically. Exact retries are idempotent; stale heads conflict; application operations never rewind the code release chain.
 
 ## Build boundaries
 

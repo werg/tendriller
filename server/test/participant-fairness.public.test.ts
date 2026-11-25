@@ -1,9 +1,11 @@
 import { expect, it } from 'vitest';
 import { api, apiJson, create, inDO, req, ownerHeaders, type Handle } from './helpers';
-import { peerApi, peerApiJson, peerOwnerApi, participantMessage } from './peer-exchange';
+import { peerApi, peerApiJson, peerOwnerApi } from './peer-exchange';
 import { PEER_DIRECTORY_LIMITS, PEER_INVITATION_LIMITS, PEER_INVITATION_PROTOCOL, PEER_RELAY_LIMITS, PEER_RELAY_PROTOCOL } from '../../contract/peers.mjs';
 import { authenticateAgentToken, type PagePrincipal } from '../src/access';
 import { handlePeerParticipant } from '../src/peer-participant';
+import { authorityRecord } from '../../contract/authority.mjs';
+import { encodeRecord } from '@chronolog/authority';
 
 async function agent(handle: Handle, name: string, scopes = ['host:read', 'participants:connect']): Promise<Handle> {
   const value = await apiJson(handle, 'POST', 'tokens', { name, scopes });
@@ -72,22 +74,22 @@ it('a saturated account retains no more than half the participant request slots'
   const handle = await create(), first = await agent(handle, 'first'), second = await agent(handle, 'second'), third = await agent(handle, 'third');
   await inDO(handle.id, async t => {
     const a = await authenticateAgentToken(t, first.token), b = await authenticateAgentToken(t, second.token), c = await authenticateAgentToken(t, third.token);
-    const message = participantMessage(handle.application.id, 'discovery/read'), complete: (() => void)[] = [];
+    const message = authorityRecord(encodeRecord({})), complete: (() => void)[] = [];
     const held = () => new Request('https://participant.invalid/', { method: 'POST', body: new ReadableStream<Uint8Array>({ start(controller) {
       complete.push(() => { controller.enqueue(new TextEncoder().encode(JSON.stringify(message))); controller.close(); });
     } }) });
     const pending = [handlePeerParticipant(t, held(), a), handlePeerParticipant(t, held(), b)];
     try {
       await expect(handlePeerParticipant(t, new Request('https://participant.invalid/', { method: 'POST', body: JSON.stringify(message) }), c))
-        .rejects.toMatchObject({ status: 429, code: 'peer_principal_busy' });
+        .rejects.toMatchObject({ status: 429, code: 'participant_busy' });
       const account = crypto.randomUUID(), sessionHash = crypto.randomUUID(), link = await t.createLink('guest', 'independent account', null);
       await t.env.ACCOUNTS.prepare('INSERT INTO accounts(id,created_at,email) VALUES(?,?,?)').bind(account, Date.now(), account + '@example.test').run();
       t.db.run('INSERT INTO guest_accounts(account_id,link_id,approved,created_at) VALUES(?,?,1,?)', account, link.id, t.now());
       t.db.run('INSERT INTO page_sessions(hash,account_id,role,expires_at) VALUES(?,?,?,?)', sessionHash, account, 'guest', t.now() + 86400_000);
       const guest: PagePrincipal = { kind: 'page', role: 'guest', name: account, accountId: account, linkId: link.id, sessionHash };
-      expect((await handlePeerParticipant(t, new Request('https://participant.invalid/', { method: 'POST', body: JSON.stringify(message) }), guest)).status).toBe(200);
-    } finally { for (const finish of complete) finish(); await Promise.all(pending); }
-    expect((await handlePeerParticipant(t, new Request('https://participant.invalid/', { method: 'POST', body: JSON.stringify(message) }), c)).status).toBe(200);
+      await expect(handlePeerParticipant(t, new Request('https://participant.invalid/', { method: 'POST', body: JSON.stringify(message) }), guest)).rejects.toMatchObject({ status: 400, code: 'participant_fields_invalid' });
+    } finally { for (const finish of complete) finish(); await Promise.allSettled(pending); }
+    await expect(handlePeerParticipant(t, new Request('https://participant.invalid/', { method: 'POST', body: JSON.stringify(message) }), c)).rejects.toMatchObject({ status: 400, code: 'participant_fields_invalid' });
   });
 });
 

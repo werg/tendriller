@@ -1,5 +1,6 @@
-import type { ApplicationDefinition, ApplicationSession, ApplicationEndpointBinding, PeerRevision,
-  OperationState, AppliedResult, SignedRetainedCoverage, SignedAttempt } from '@chronolog/peer-session';
+import type { ApplicationDefinition, ApplicationSession, MaterializedRevision,
+  OperationInspection, MaterializedOperation, RetentionEvidence, ChangeProgram, ViewStore, WaitOptions } from '@chronolog/peer-session';
+export type { ViewStore } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 import type { CollaborationTaskPageOptions, CollaborationResultPageOptions, CollaborationMessagePageOptions,
   CollaborationThreadPageOptions, CollaborationTaskPage, CollaborationResultPage, CollaborationMessagePage,
@@ -12,23 +13,23 @@ export declare class CollaborationError extends Error {
   constructor(code:string,message?:string,scope?:Record<string,unknown>);
 }
 export interface EndpointReference { readonly deviceId:string; readonly endpointId:string; readonly endpointIncarnation:string }
-export interface OperationReference { readonly applicationId:string; readonly historyId:string; readonly author:string; readonly operationId:string; readonly attemptId?:string; readonly generation?:string }
+export interface OperationReference { readonly applicationId:string;  readonly author:string; readonly operationId:string; readonly proposalId?:string }
 /** Read from immutable domain rows and the engine-owned authenticated transaction log. */
-export interface VerifiedOperationReference extends OperationReference { readonly attemptId:string; readonly generation:string }
+export interface VerifiedOperationReference extends OperationReference { readonly proposalId:string }
 export type Target = {readonly kind:'endpoint';readonly endpoint:EndpointReference}|{readonly kind:'signer';readonly deviceId:string}|{readonly kind:'participant';readonly principalId:string}|{readonly kind:'agent';readonly agentBindingId:string}|{readonly kind:'workerGroup';readonly groupId:string;readonly mode:'claimOne'}|{readonly kind:'thread';readonly threadId:string};
 export type ResponsePolicy = 'one'|'allSlots'|'firstAccepted'|'manual';
 export interface ContributionSlot {readonly slotId:string;readonly eligibleSigners:readonly string[];readonly label?:string;readonly agentBindingId?:string}
 export interface RequestInput {readonly interactionId?:string;readonly kind:string;readonly title:string;readonly input:unknown;readonly target:Target;readonly context?:unknown;readonly responsePolicy?:ResponsePolicy;readonly slots:readonly ContributionSlot[]}
-export interface SubmitOptions {readonly operationId?:string;readonly basedOn?:PeerRevision}
+export interface SubmitOptions {readonly operationId?:string;readonly authorTimestampMs?:bigint}
 export interface ClaimInput {readonly taskId:string;readonly slotId:string;readonly claimId?:string;readonly runId?:string;readonly endpointIncarnation?:string;readonly expectedEpoch?:number;readonly taskVersion?:number}
-export interface ClaimFence {readonly taskId:string;readonly slotId:string;readonly claimEpoch:number;readonly generation:string;readonly runId?:string;readonly endpointIncarnation?:string;readonly taskVersion?:number}
+export interface ClaimFence {readonly taskId:string;readonly slotId:string;readonly claimEpoch:number;readonly claimProposalId:string;readonly runId?:string;readonly endpointIncarnation?:string;readonly taskVersion?:number}
 export interface CollaborationIdentities {
   readonly operationId:string;readonly localOperationId:string;readonly interactionId?:string;readonly taskId?:string;readonly slotId?:string;
   readonly claimId?:string;readonly resultId?:string;readonly actionId?:string;readonly threadId?:string;readonly messageId?:string;
 }
 export interface CollaborationSubmission<Identity extends keyof CollaborationIdentities=never> {
   readonly command:string;readonly input:Readonly<Record<string,unknown>>;readonly source:Readonly<Record<string,unknown>>;
-  readonly basedOn?:PeerRevision;readonly identities:CollaborationIdentities&Readonly<Record<Identity,string>>;
+  readonly authorTimestampMs?:string;readonly identities:CollaborationIdentities&Readonly<Record<Identity,string>>;
 }
 /** Metadata is immutable even when the original transport error is extensible. */
 export interface CollaborationSubmissionFailure extends Error {
@@ -36,42 +37,45 @@ export interface CollaborationSubmissionFailure extends Error {
   readonly operationSubmission:CollaborationSubmission;
 }
 export interface CollaborationOperation<Identity extends keyof CollaborationIdentities=never> {
-  readonly operationId:string;readonly reference:OperationReference;
+  readonly operationId:string;readonly reference:VerifiedOperationReference;
   readonly identities:CollaborationIdentities&Readonly<Record<Identity,string>>;readonly submission:CollaborationSubmission<Identity>;
-  get():Promise<OperationState|null>;applied(options?:{signal?:AbortSignal}):Promise<AppliedResult>;
-  shared(options?:{signal?:AbortSignal}):Promise<readonly SignedRetainedCoverage[]>;
+  readonly stored:true;readonly proposalId:string;
+  inspect():OperationInspection|Promise<OperationInspection>;materialized(options?:WaitOptions):Promise<MaterializedOperation>;
+  retained(options?:WaitOptions):Promise<readonly RetentionEvidence[]>;
+  finalized(options?:WaitOptions):Promise<MaterializedOperation>;
 }
 export interface SignerAssertedSource extends Readonly<Record<string,unknown>> {
   readonly deviceId:string;readonly evidence:'signer-asserted';readonly contextEvidence:'caller-asserted';
 }
 export interface CollaborationCancellation {
-  readonly reason:string;readonly expectedVersion:number;readonly author:string;readonly generation:string;readonly operation:VerifiedOperationReference;
+  readonly reason:string;readonly expectedVersion:number;readonly author:string;readonly operation:VerifiedOperationReference;
 }
 export interface CollaborationAggregate {
   readonly resultIds:readonly string[];readonly expectedVersion:number;readonly content:unknown;readonly allowPartial:boolean;
-  readonly author:string;readonly generation:string;readonly disposition:'partial'|'complete';readonly operation:VerifiedOperationReference;
+  readonly author:string;readonly disposition:'partial'|'complete';readonly operation:VerifiedOperationReference;
 }
 export interface CollaborationTask {
-  readonly taskId:string;readonly creator:string;readonly generation:string;readonly operation:VerifiedOperationReference;
+  readonly taskId:string;readonly creator:string;readonly revision:MaterializedRevision;readonly finality:'pending'|'finalized';readonly operation:VerifiedOperationReference;
   readonly taskVersion:number;readonly version:number;readonly title:string;readonly kind:string;readonly responsePolicy:ResponsePolicy;
   readonly slots:readonly ContributionSlot[];readonly input:unknown;readonly target:unknown;readonly context:unknown;readonly source:SignerAssertedSource;
-  readonly status:'open'|'completed'|'cancelRequested'|'cancelled'|'needsReview';
+  readonly status:'open'|'completed'|'cancelRequested'|'cancelled';
   readonly cancellation:CollaborationCancellation|null;readonly aggregate:CollaborationAggregate|null;
 }
 export interface CollaborationClaim {
   readonly taskId:string;readonly slotId:string;readonly taskVersion:number;readonly claimEpoch:number;readonly claimant:string;
-  readonly runId:string|null;readonly endpointIncarnation:string|null;readonly generation:string;readonly operation:VerifiedOperationReference;
+  readonly claimProposalId:string;readonly revision:MaterializedRevision;readonly finality:'pending'|'finalized';
+  readonly runId:string|null;readonly endpointIncarnation:string|null;readonly operation:VerifiedOperationReference;
   readonly acknowledgement:VerifiedOperationReference|null;
-  readonly status:'active'|'offered'|'needsReview'|'completed'|'cancelRequested'|'cancelled';
+  readonly status:'active'|'offered'|'completed'|'cancelRequested'|'cancelled';
 }
 export interface CollaborationResult extends ClaimFence {
   readonly resultId:string;readonly author:string;readonly runId:string;readonly endpointIncarnation:string;
-  readonly outcome:'succeeded'|'failed';readonly content:unknown;readonly disposition:'accepted'|'superseded'|'cancelled'|'needsReview';
+  readonly outcome:'succeeded'|'failed';readonly content:unknown;readonly disposition:'accepted'|'superseded'|'cancelled';
   readonly operationRecord:string;readonly operation:VerifiedOperationReference;
 }
 export interface CollaborationMessage {
   readonly threadId:string;readonly messageId:string;readonly text:string;readonly inReplyTo?:string;
-  readonly source:SignerAssertedSource;readonly author:string;readonly generation:string;readonly operation:VerifiedOperationReference;
+  readonly source:SignerAssertedSource;readonly author:string;readonly operation:VerifiedOperationReference;
 }
 export interface CollaborationTaskSnapshot {
   readonly task:CollaborationTask|null;readonly claims:readonly CollaborationClaim[];readonly results:readonly CollaborationResult[];
@@ -82,21 +86,17 @@ export interface CollaborationSnapshot {
   readonly acceptedResults:readonly CollaborationAcceptedResult[];readonly messages:readonly CollaborationMessage[];
   readonly pages:Readonly<{tasks:CollaborationPage;results:CollaborationPage;messages:CollaborationPage}>;
 }
-export interface CollaborationQuery<Value> {readonly revision:PeerRevision;readonly value:Value}
+export interface CollaborationQuery<Value> {readonly revision:MaterializedRevision;readonly value:Value}
 export interface RetainedOperation {readonly reference:OperationReference;readonly viewId:string;readonly context:Readonly<Record<string,unknown>>}
-export interface ViewStore<Draft=unknown> {
-  readonly viewId:string;readonly historyId?:string;readDraft(draftId?:string):Draft|null;writeDraft(value:Draft,draftId?:string):void;removeDraft(draftId?:string):void;
-  retainOperation(reference:OperationReference,context?:Record<string,unknown>):RetainedOperation;inspectOperation(reference:OperationReference):RetainedOperation|null;
-  removeOperation(reference:OperationReference):void;pending(options?:{allViews?:boolean}):readonly RetainedOperation[];
-}
-export declare function createViewStore<Draft=unknown>(options:{storage:Pick<Storage,'getItem'|'setItem'|'removeItem'|'key'|'length'>;applicationId:string;historyId?:string;profileId:string;viewId:string}):ViewStore<Draft>;
-export declare function createCollaborationDefinition(options?:{id?:string;version?:string;administrators?:readonly string[];limits?:Partial<typeof COLLABORATION_LIMITS>}):ApplicationDefinition;
+export { createViewStore } from '@chronolog/peer-session';
+/** Submit initializationProgram as an ordinary root-authored transaction; members receive explicit table INSERT grants (not crypto enrollment). */
+export declare function createCollaborationDefinition(options?:{id?:string;version?:string;administrators?:readonly string[];members?:readonly string[];limits?:Partial<typeof COLLABORATION_LIMITS>}):{readonly definition:ApplicationDefinition;readonly initializationProgram:ChangeProgram};
+export interface ApplicationEndpointBinding { readonly endpointId:string;readonly endpointIncarnation:string;readonly ownerInstanceId?:string;readonly context?:Readonly<Record<string,unknown>> }
 export type CollaborationSession = ApplicationSession|WorkerApplicationSession;
 export interface CollaborationClient<Session extends CollaborationSession=CollaborationSession> {
   readonly session:Session;readonly endpoint:ApplicationEndpointBinding|undefined;readonly runId:string;readonly source:Readonly<Record<string,unknown>>;
   request(input:RequestInput,options?:SubmitOptions):Promise<CollaborationOperation<'interactionId'|'taskId'>>;
   claim(input:ClaimInput,options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'claimId'>>;
-  rebind(input:ClaimInput&{expectedEpoch:number},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'claimId'>>;
   handoff(input:{taskId:string;slotId:string;actionId?:string;expectedEpoch:number;assignee:string;reason:string},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'actionId'>>;
   result(input:ClaimFence&{resultId?:string;outcome?:'succeeded'|'failed';content:unknown},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'slotId'|'resultId'>>;
   cancel(input:{taskId:string;actionId?:string;expectedVersion:number;reason:string},options?:SubmitOptions):Promise<CollaborationOperation<'taskId'|'actionId'>>;
@@ -109,9 +109,9 @@ export interface CollaborationClient<Session extends CollaborationSession=Collab
   messages(options?:CollaborationMessagePageOptions):Promise<CollaborationQuery<CollaborationMessagePage>>;
   thread(options:CollaborationThreadPageOptions):Promise<CollaborationQuery<CollaborationMessagePage>>;
   capture(options?:{signal?:AbortSignal}):Promise<CapturedCollaborationReader>;
-  waitForOutcome(taskId:string,options?:{signal?:AbortSignal}):Promise<CollaborationTaskSnapshot&{readonly revision:PeerRevision}>;
-  inspectOperation(reference:OperationReference):Promise<{readonly state:OperationState;readonly attempt:SignedAttempt}|null>;
-  retry(reference:OperationReference):Promise<void>;detach():Promise<void>;
+  waitForOutcome(taskId:string,options?:{signal?:AbortSignal}):Promise<CollaborationTaskSnapshot&{readonly revision:MaterializedRevision}>;
+  inspectOperation(reference:OperationReference):Promise<OperationInspection|null>;
+  retry(reference:OperationReference):Promise<unknown>;detach():Promise<void>;
 }
 export declare function createCollaborationClient<Session extends CollaborationSession>(options:{session:Session;endpoint?:ApplicationEndpointBinding;runId?:string;store?:ViewStore}):CollaborationClient<Session>;
 export declare function canonicalJson(value:unknown,maxBytes?:number):string;
@@ -125,9 +125,9 @@ export interface RecipientEntry {
   readonly agentBindingId?:string;readonly endpoint?:EndpointReference;readonly capabilities?:readonly string[];
 }
 export declare function resolveRecipient<Entry extends RecipientEntry>(target:Target,entries:readonly Entry[],options?:{capability?:string}):Entry;
-export declare function operationReference(session:{applicationId?:string;id?:string;historyId:string;deviceId:string;scopeOperationId?:(localOperationId:string)=>string},operationId:string,state?:{operationId?:string;author?:string;attemptId?:string;generation?:string}|null):OperationReference;
+export declare function operationReference(session:{applicationId:string;identity:{publicKey:string};scopeOperationId?:(raw:string)=>string},operationId:string,inspection?:OperationInspection|null):OperationReference;
 export declare function prepareCollaborationCommand<Input>(endpoint:ApplicationEndpointBinding,name:string,input:Input,deviceId:string):Input;
-export interface ConsumerScope {readonly applicationId:string;readonly consumerId:string;readonly generation:string;readonly filterVersion:string}
+export interface ConsumerScope {readonly applicationId:string;readonly consumerId:string;readonly revisionDigest:string;readonly filterVersion:string}
 export interface ConsumerCursor extends ConsumerScope {readonly protocol:typeof COLLABORATION_PROTOCOL;readonly sequence:number}
 export declare function consumerCursor(scope:ConsumerScope,sequence:number):ConsumerCursor;
 export declare function validateConsumerCursor(cursor:unknown,scope:ConsumerScope,options?:{retainedFrom?:number}):ConsumerCursor;
@@ -158,6 +158,9 @@ export interface EffectJournal<Fence=unknown,Receipt=unknown> {
   transact<Value>(effectId:string,update:(previous:EffectRecord<Fence,Receipt>|undefined)=>{record:EffectRecord<Fence,Receipt>;value:Value}):Promise<Value>;
 }
 export declare function createEffectDispatcher<Fence=unknown,Input=unknown,Receipt=unknown>(options:{
+  session?:Pick<CollaborationSession,'applicationId'|'operations'>;
+  /** Explicit opt-in to external-effect risk; this never establishes global claim exclusivity or finality. */
+  allowProvisionalEffects?:boolean;
   journal:EffectJournal<Fence,Receipt>;dispatch:(input:{effectId:string;idempotencyKey:string;fence:Fence;input:Input})=>Receipt|Promise<Receipt>;
   authorize:(fence:Fence)=>void|Promise<void>;reconcile?:(id:string,record:EffectRecord<Fence,Receipt>)=>Receipt|null|undefined|Promise<Receipt|null|undefined>;
 }):{execute(input:{effectId:string;fence:Fence;input:Input}):Promise<EffectRecord<Fence,Receipt>>};

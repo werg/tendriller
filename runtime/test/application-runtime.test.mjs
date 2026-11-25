@@ -17,19 +17,19 @@ function storage() {
 }
 
 function backend() {
-  const operations = new Map();
-  const submit = async (program, { operationId }) => {
-    if (!operations.has(operationId)) operations.set(operationId, { operationId, proposalId: `proposal:${operationId}`,
-      status: 'applied', outcome: 'accepted', program: structuredClone(program) });
+  const operations = new Map(), applicationId = '12'.repeat(32), revision = { digest: 'one', view: 'local', executionManifestDigest: 'execution', policyDigest: 'none' };
+  const submit = async ({ program, operationId }) => {
+    if (!operations.has(operationId)) {
+      const inspection = { applicationId, author: 'author', proposalId: `proposal:${operationId}`, operationId, stored: true, pending: null, materialized: null, retained: [], finalized: false, excluded: false };
+      operations.set(operationId, { operationId, id: inspection.proposalId, stored: true, program: structuredClone(program), inspect: () => inspection });
+    }
     return operations.get(operationId);
   };
-  return { id: '12'.repeat(32), capabilities: ['events'], submit,
-    status: { phase: 'ready', database: 'ready', role: 'coordinator', generation: 'g', coordinator: 'a', connectedPeers: 0 },
-    onStatus() { return () => {}; }, onRecovery() { return () => {}; }, async inspectRecovery() { return []; },
-    async *changes() { yield { view: 'applied', revision: 'one', generation: 'g' }; },
-    readView: () => ({ view: 'applied', revision: 'one', generation: 'g', query: () => [...operations.keys()], readEvents: async () => ({}), release() {} }),
-    events: { publish: (topic, payload, options) => submit({ topic, payload }, options), read: async () => ({}), async *subscribe() {} },
-    operations: { get: id => operations.get(id), async *subscribe({ operationId }) { yield operations.get(operationId); } },
+  return { applicationId, submit, status: { canAuthor: true, phase: 'ready', database: 'ready', connectedPeers: 0, pendingOperations: 0, materializationError: null },
+    onStatus() { return () => {}; }, async *changes() { yield { kind: 'materialized', revision, revisedProposalIds: [] }; },
+    readView: () => ({ applicationId, revision, query: () => [...operations.keys()], readEvents: async () => ({ revision, events: [], cursor: 'one', hasMore: false }), release() {} }),
+    events: { publish: (topic, payload, options) => submit({ program: { version: 3, steps: [{ op: 'emit', topic, payload }] }, ...options }), read: async () => ({}), async *subscribe() {} },
+    operations: { get: id => operations.get(id), retry: async id => operations.get(id), async *subscribe({ operationId }) { yield operations.get(operationId)?.inspect(); } },
   };
 }
 
@@ -117,11 +117,11 @@ test('the application runtime operates with no host connection, host outbox, bac
   assert.equal(await env.api.application.ready(), installed); await flush();
   assert.equal('connected' in env.api, false, 'connection state belongs to the selected session');
   assert.equal(env.api.application.available, true, 'installation availability does not claim synchronized state');
-  const first = await installed.submit({ value: 'original' }, { operationId: 'edit' });
-  assert.equal(await installed.submit({ value: 'original' }, { operationId: 'edit' }), first);
+  const first = await installed.submit({ program: { value: 'original' }, operationId: 'edit' });
+  assert.equal(await installed.submit({ program: { value: 'original' }, operationId: 'edit' }), first);
   await installed.events.publish('messages', 'offline-host', { operationId: 'message' });
   assert.deepEqual(installed.readView().query(), ['edit', 'message']);
-  assert.equal(installed.operations.get('edit').status, 'applied');
+  assert.equal(installed.operations.get('edit').stored, true);
   env.api.ready();
   env.context.console.error('application-local diagnostic');
   for (const type of ['load', 'online', 'offline', 'pagehide']) env.window.dispatchEvent(new Event(type));

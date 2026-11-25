@@ -4,12 +4,13 @@ import type { Principal } from './access';
 import { HttpError, json, readJson } from './http';
 import type { Tendril } from './tendril';
 import { handlePeerParticipant } from './peer-participant';
-import { handleDiscoveryWatch } from './discovery';
-import { handleInvitations } from './peer-invitations';
+import { handleDiscoveryWatch, exchangeDiscovery } from './discovery';
+import { handleInvitations, sendPeerInvitation } from './peer-invitations';
 import { handleRelay } from './peer-relay';
-import { handleDevicePairing } from './device-pairing';
+import { handleEnrollment } from './authority';
+import { exchangePeerPublication } from './peer-publications';
 
-export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|pairing|discovery\/watch)$/;
+export const PEER_ROUTE = /^peers\/(?:bootstrap|rendezvous|invitations|participant|relay|enrollment|publication|invite|discovery|discovery\/watch)$/;
 /** Public connection configuration is read while serving the page, without a second discovery request. */
 export function peerBootstrap(t: Tendril) {
   return validatePeerBootstrap(t.db.get('peer_bootstrap', { version: 2, endpoints: [] }));
@@ -52,7 +53,22 @@ export function expirePeers(t: Tendril): void { peers(t); }
 export async function handlePeers(t: Tendril, req: Request, url: URL, path: string, principal: Principal): Promise<Response> {
   if (!authorized(t, principal) || !await freshPrincipal(t, principal)) throw new HttpError(403, 'forbidden', 'Rendezvous requires an authorized page or agent identity');
   if (path === 'peers/discovery/watch') return handleDiscoveryWatch(t, req, url, principal);
-  if (path === 'peers/pairing') return handleDevicePairing(t, req, url, principal);
+  if (path === 'peers/enrollment') return handleEnrollment(t, req, principal);
+  if (path === 'peers/publication') {
+    if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+    const input = await readJson(req, 12 * 1024 * 1024) as Record<string, unknown>;
+    if (!input || !['read', 'publish'].includes(String(input.action))) throw new HttpError(400, 'publication_action_invalid');
+    const { action, ...payload } = input;
+    return json(await exchangePeerPublication(t, principal, action as 'read' | 'publish', payload));
+  }
+  if (path === 'peers/discovery' || path === 'peers/invite') {
+    if (req.method !== 'POST') throw new HttpError(405, 'method_not_allowed');
+    const input = await readJson(req, 256 * 1024) as Record<string, unknown>;
+    if (path === 'peers/invite') return json(await sendPeerInvitation(t, principal, input));
+    const { action, ...payload } = input;
+    if (!['read', 'advertise', 'withdraw'].includes(String(action))) throw new HttpError(400, 'discovery_action_invalid');
+    return json(await exchangeDiscovery(t, principal, action as 'read' | 'advertise' | 'withdraw', payload));
+  }
   if (path === 'peers/participant') return handlePeerParticipant(t, req, principal);
   if (path === 'peers/invitations') return handleInvitations(t, req, url, principal);
   if (path === 'peers/relay') return handleRelay(t, req, url, principal);

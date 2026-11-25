@@ -9,13 +9,11 @@ export interface AssistantCallerContext {
 }
 export interface AssistantInboxCursor {
   version: 1; applicationId: string; agentBindingId: string; exportVersion: string;
-  generation: string | null; filter: string[]; sequence: number;
+  filter: string[]; sequence: number;
 }
 interface AssistantSession {
   readonly applicationId: string;
-  readonly historyId?: string;
-  readonly deviceId: string;
-  readonly status: { readonly generation: string };
+  readonly identity: { readonly publicKey: string };
   readonly signal: AbortSignal;
 }
 export interface AssistantParticipant {
@@ -23,19 +21,18 @@ export interface AssistantParticipant {
   readonly closed: Promise<void>;
   close(): Promise<void>;
   waitUntilOnline(options?: { signal?: AbortSignal }): Promise<void>;
-  publish(event: { sourceEventId: string; name: string; generation: string; payload: unknown;
+  publish(event: { sourceEventId: string; proposalId: string; revision: AssistantProjectionRevision; observation: AssistantObservation;
+    change?: 'upsert' | 'retract'; name: string; payload: unknown;
     context?: Omit<AssistantCallerContext['context'], 'evidence'> }): Promise<number>;
 }
 /** Portable host request; the supplied scoped controller validates native semantics. */
 export interface AssistantToolRequest {
-  readonly kind: 'query' | 'command' | 'reapply' | 'operation' | 'retry' | 'wait';
+  readonly kind: 'query' | 'command' | 'inspect' | 'retry' | 'wait';
   readonly name: string;
   readonly input?: unknown;
   readonly operationId?: string;
-  readonly basedOn?: unknown;
-  readonly originalOperationId?: string;
-  readonly originalAuthor?: string;
-  readonly generation?: string;
+  readonly basedOn?: AssistantProjectionRevision;
+  readonly fact?: 'materialized' | 'retained' | 'finalized';
 }
 export function createAssistantKey(): string;
 export function createApplicationAgentKey(bindingId?: string): string;
@@ -44,7 +41,8 @@ export function proposeApplicationAssistant(options: AssistantEndpoint & Assista
 }): Promise<{ applicationId: string; proposed: string; approved: boolean; reviewUrl: string }>;
 export function connectApplicationAssistant(options: AssistantEndpoint & {
   session: AssistantSession;
-  tools: { execute(call: AssistantToolRequest, options?: { signal?: AbortSignal; caller?: Readonly<AssistantCallerContext> }): Promise<unknown> };
+  tools: { operationId(rawOperationId: string, context: { caller: string }): Promise<string>;
+    execute(call: AssistantToolRequest, options: { signal?: AbortSignal; caller: string; callerContext?: Readonly<AssistantCallerContext> }): Promise<unknown> };
   onStatus?: (status: { state: string; reason?: string; retryInMs?: number }) => void;
   openSocket?: (url: string, protocols: string[]) => WebSocket;
   /** Initial sign-in/consent window, 1000–600000 ms; defaults to ten minutes. */
@@ -55,5 +53,11 @@ export function connectApplicationAssistant(options: AssistantEndpoint & {
 export function createAssistantEventDelivery(options: {
   assistant: AssistantParticipant;
   onSkipped?: (event: { name: string; sourceEventId: string }) => void;
-}): (projection: { name: string; payload: unknown }, event: { readonly id: string },
-  batch: { readonly revision: { readonly generation: string } }, signal: AbortSignal) => Promise<void>;
+}): (projection: { name: string; payload: unknown; observation: AssistantObservation; change?: 'upsert' | 'retract' }, event: { readonly id: string; readonly proposalId: string },
+  batch: { readonly revision: AssistantProjectionRevision }, signal: AbortSignal) => Promise<void>;
+
+export interface AssistantProjectionRevision { readonly digest: string; readonly view: 'local' | 'final'; readonly executionManifestDigest: string; readonly policyDigest: string }
+/** Exporter observations are not cryptographic finality/retention verification by the host. */
+export interface AssistantObservation { readonly stored: boolean; readonly materialized: null | { readonly outcome: 'accepted' | 'rejected'; readonly revision: AssistantProjectionRevision }; readonly retained: readonly unknown[]; readonly finalized: boolean; readonly excluded: boolean }
+export function assistantRevision(value: unknown): AssistantProjectionRevision;
+export function assistantObservation(value: unknown): AssistantObservation;

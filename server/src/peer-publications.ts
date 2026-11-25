@@ -1,13 +1,13 @@
 import {
-  authorizePublication, verifyPublicationManifest, verifyPublicationAsset, peerDigest,
-  encodePeerValue, PUBLICATION_LIMITS, type SignedPublication, type PublicationFile, type PeerAuthority,
-} from '@chronolog/peer-generation/control';
+  authorizePublication, verifyPublicationManifest, verifyPublicationAsset, recordDigest,
+  encodeRecord, PUBLICATION_LIMITS, type SignedPublication, type PublicationFile, type PublicationAuthority,
+} from '@chronolog/authority';
 import { assertFilePath } from '../../contract/index.mjs';
 import type { Principal } from './access';
 import type { Tendril } from './tendril';
 import { createVersion, storeContent, type VersionFile } from './files';
 import { HttpError } from './http';
-import { withPeerControlAuthority } from './peer-generations';
+import { withPublicationAuthority } from './authority';
 import { RESOURCE_LIMITS } from '../../contract/limits.mjs';
 
 const HEAD = 'peer_publication_head';
@@ -19,7 +19,7 @@ export interface PeerPublicationReceipt {
 function current(t: Tendril): PeerPublicationReceipt | null {
   return t.db.get<PeerPublicationReceipt | null>(HEAD, null);
 }
-async function verifyRetained(t: Tendril, receipt: PeerPublicationReceipt, authority: PeerAuthority): Promise<void> {
+async function verifyRetained(t: Tendril, receipt: PeerPublicationReceipt, authority: PublicationAuthority): Promise<void> {
   // Only retained records participate; caller-supplied manifests are always
   // verified. Weak references cannot retain history beyond Db's bounded cache.
   const cache = () => t.db.cached('peer-publication:verified', () => new WeakSet<PeerPublicationReceipt>());
@@ -44,7 +44,7 @@ function assetBytes(value: unknown): Uint8Array {
 
 /** Signed code releases are durable control publications, independent of the lossy SQL history. */
 export async function exchangePeerPublication(t: Tendril, principal: Principal, action: 'read' | 'publish', input: unknown): Promise<unknown> {
-  return withPeerControlAuthority(t, principal, async ({ authority, authorizeAuthor, checkAccess }) => {
+  return withPublicationAuthority(t, principal, async ({ authority, authorizeAuthor, checkAccess }) => {
     const previous = current(t);
     if (previous !== null) await verifyRetained(t, previous, authority);
     if (action === 'read') {
@@ -60,20 +60,20 @@ export async function exchangePeerPublication(t: Tendril, principal: Principal, 
     const publication = structuredClone(value.publication) as SignedPublication;
     await verifyPublicationManifest(publication, authority);
     authorizeAuthor(publication.payload.author);
-    const operation = `peer_publication_operation:${await peerDigest(publication.payload.operationId)}`;
+    const operation = `peer_publication_operation:${await recordDigest(publication.payload.operationId)}`;
     const retainedId = t.db.get<string | null>(operation, null);
     const retained = retainedId === null ? null : t.db.get<PeerPublicationReceipt | null>(`peer_publication_record:${retainedId}`, null);
     if (retainedId !== null && retained === null) throw new HttpError(503, 'peer_publication_state_missing');
     // Retrying retained authenticated evidence never becomes a new publication,
     // including after a later release or control transition.
     if (retained !== null) {
-      if (await peerDigest(retained.publication) !== await peerDigest(publication)) throw new HttpError(409, 'peer_publication_operation_reused');
+      if (await recordDigest(retained.publication) !== await recordDigest(publication)) throw new HttpError(409, 'peer_publication_operation_reused');
       await checkAccess(); authorizeAuthor(publication.payload.author); return structuredClone(retained);
     }
     await authorizePublication(publication, authority, previous?.publication ?? null);
     if (publication.payload.revision >= PUBLICATION_LIMITS.revisions) throw new HttpError(413, 'peer_publication_history_limit');
-    const historyBytes = t.db.get<number>('peer_publication_bytes', 0) + encodePeerValue(publication).byteLength;
-    if (historyBytes > PUBLICATION_LIMITS.historyBytes) throw new HttpError(413, 'peer_publication_history_limit');
+    const historyBytes = t.db.get<number>('peer_publication_bytes', 0) + encodeRecord(publication).byteLength;
+    if (historyBytes > 16 * 1024 * 1024) throw new HttpError(413, 'peer_publication_history_limit');
     try {
       assertFilePath(publication.payload.entry);
       for (const file of publication.payload.files) assertFilePath(file.path);

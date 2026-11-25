@@ -6,80 +6,84 @@ import { readFile } from 'node:fs/promises';
 const source = (await readFile(new URL('../../docs/tutorial/sql/demo.mjs', import.meta.url), 'utf8'))
   .replace(/^import[^\n]*\n/gm, '');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const execute = new AsyncFunction('assert', 'openSession', 'readPrivate', 'savePrivate', 'process', 'console', source);
+const execute = new AsyncFunction('openSession', 'console', source);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function latch() {
   let release;
   const promise = new Promise(resolve => { release = resolve; });
   return { promise, release };
 }
-function fixture({ commandFails = false, cleanupFails = false } = {}) {
-  const gates = [latch(), latch()], events = [], output = [], errors = [], process = {};
-  const records = new Map(); let active = false, opens = 0, transferred = false, finished = false;
-  const openSession = async () => {
-    if (active) throw Error('OWNER_BUSY');
-    active = true; const index = opens++;
-    events.push(`open:${index + 1}`);
+function fixture({ queryFails = false, cleanupFails = false } = {}) {
+  const gate = latch(), events = [], output = [], forbidden = [];
+  let opens = 0, finished = false, signal;
+  const openSession = async options => {
+    opens++; signal = options?.signal; events.push('open');
+    const trap = name => () => { forbidden.push(name); throw Error('The optional native read must not call ' + name); };
     const session = {
-      deviceId: 'retained-signer',
-      async command(name, input, options) {
-        if (commandFails) throw Error('PRIMARY_COMMAND_FAILURE');
-        return { applied: async () => {
-          const rejected = options.operationId === 'inventory-demo-rejected-v1';
-          if (name === 'transfer' && !rejected) transferred = true;
-          return rejected ? { outcome: 'rejected', rejectionCode: 'assert:insufficient_stock' } : { outcome: 'accepted' };
-        } };
+      applicationId: 'a'.repeat(64),
+      async query(name, input) {
+        events.push(`query:${name}`);
+        if (queryFails) throw Error('PRIMARY_QUERY_FAILURE');
+        assert.equal(input, null);
+        return { applicationId: 'a'.repeat(64), revision: { digest: 'retained-local-revision', view: 'local' },
+          value: { stock: [{ id: 'source', units: 10 }], catalog: [{ id: 'widget' }] } };
       },
-      async query() {
-        return { revision: { generation: 'retained-generation' }, value: {
-          stock: [{ id: 'source', units: transferred ? 7 : 10 }, { id: 'destination', units: transferred ? 3 : 0 }],
-          transfers: transferred ? [{ id: 'demo-transfer-3' }] : [],
-          activity: transferred ? [{ topic: 'inventory.transferred' }] : [],
-        } };
-      },
-      operations: { get: async id => ({ outcome: id === 'inventory-demo-rejected-v1' ? 'rejected' : 'accepted' }) },
-      async close() { events.push(`kernel-close:${index + 1}`); },
+      command: trap('command'), submit: trap('submit'), provisioning: new Proxy({}, { get: (_t, key) => trap('provisioning.' + String(key)) }),
     };
     let closing;
     return { session, close: () => closing ??= (async () => {
-      events.push(`root-close:${index + 1}:start`);
-      await session.close(); // Kernel close resolves while the lease remains held.
-      await gates[index].promise;
+      events.push('close:start');
+      await gate.promise; // The supervisor lease remains held until cleanup completes.
       if (cleanupFails) throw Error('ROOT_CLEANUP_FAILURE');
-      active = false; events.push(`root-close:${index + 1}:done`);
+      events.push('close:done');
     })() };
   };
-  const done = execute(assert, openSession, async name => records.get(name) ?? null,
-    async (name, value) => { records.set(name, value); return value; }, process,
-    { log: value => output.push(JSON.parse(value)), error: value => errors.push(value) }).finally(() => { finished = true; });
-  return { gates, events, output, errors, process, done, get opens() { return opens; }, get finished() { return finished; } };
+  const done = execute(openSession, { log: value => output.push(JSON.parse(value)) });
+  done.then(() => { finished = true; }, () => { finished = true; });
+  return { gate, events, output, forbidden, done, get opens() { return opens; }, get finished() { return finished; }, get signal() { return signal; } };
 }
 
-test('SQL demo waits for supervisor lease release before reopen and before reporting success', async t => {
-  const f = fixture(); t.after(() => f.gates.forEach(gate => gate.release()));
+test('SQL demo is one bounded optional native read of the provisioned application and waits for owner release', async t => {
+  const f = fixture(); t.after(() => f.gate.release());
   await tick();
-  assert.deepEqual(f.events, ['open:1', 'root-close:1:start', 'kernel-close:1']);
-  assert.equal(f.opens, 1); assert.equal(f.finished, false); assert.deepEqual(f.output, []);
-  f.gates[0].release(); await tick();
-  assert.deepEqual(f.events, ['open:1', 'root-close:1:start', 'kernel-close:1', 'root-close:1:done', 'open:2', 'root-close:2:start', 'kernel-close:2']);
-  assert.equal(f.finished, false); assert.deepEqual(f.output, []);
-  f.gates[1].release(); await f.done;
-  assert.equal(f.output[0].status, 'passed'); assert.equal(f.events.at(-1), 'root-close:2:done');
-  assert.deepEqual(f.errors, []); assert.equal(f.process.exitCode, undefined);
+  assert.deepEqual(f.events, ['open', 'query:inventory', 'close:start']);
+  assert.equal(f.opens, 1); assert.equal(f.signal instanceof AbortSignal, true, 'the read has its own deadline');
+  assert.equal(f.finished, false, 'the process does not finish until the supervisor lease is released');
+  f.gate.release(); await f.done;
+  assert.equal(f.events.at(-1), 'close:done');
+  assert.equal(f.output.length, 1);
+  assert.deepEqual({ ...f.output[0], note: undefined }, { applicationId: 'a'.repeat(64), revision: { digest: 'retained-local-revision', view: 'local' },
+    stock: [{ id: 'source', units: 10 }], catalog: [{ id: 'widget' }], provisional: true, note: undefined });
+  assert.match(f.output[0].note, /not global exclusivity or finality/);
+  assert.match(f.output[0].note, /No new schema, data root or device/);
+  assert.deepEqual(f.forbidden, [], 'the demo never authors, submits, changes schema or provisions keys');
 });
-test('SQL demo awaits final supervisor cleanup and preserves the primary command error if cleanup rejects', async t => {
-  const f = fixture({ commandFails: true, cleanupFails: true }); t.after(() => f.gates.forEach(gate => gate.release()));
+
+test('SQL demo never reports a read as complete work when its supervisor cleanup fails', async t => {
+  const f = fixture({ cleanupFails: true }); t.after(() => f.gate.release());
+  await tick(); f.gate.release();
+  await assert.rejects(f.done, /ROOT_CLEANUP_FAILURE/);
+  assert.equal(f.opens, 1, 'a failed cleanup is never followed by a reopen');
+  assert.deepEqual(f.forbidden, []);
+});
+
+test('SQL demo still awaits owner cleanup before surfacing a failed read', async t => {
+  const f = fixture({ queryFails: true }); t.after(() => f.gate.release());
   await tick();
-  assert.deepEqual(f.events, ['open:1', 'root-close:1:start', 'kernel-close:1']);
-  assert.equal(f.finished, false); assert.match(f.errors[0], /PRIMARY_COMMAND_FAILURE/);
-  f.gates[0].release(); await f.done;
-  assert.equal(f.opens, 1); assert.equal(f.process.exitCode, 1); assert.deepEqual(f.output, []);
-  assert.match(f.errors[0], /PRIMARY_COMMAND_FAILURE/);
-  assert.match(f.errors.at(-1), /SQL owner cleanup failed:.*ROOT_CLEANUP_FAILURE/);
+  assert.deepEqual(f.events, ['open', 'query:inventory', 'close:start']);
+  assert.equal(f.finished, false, 'the primary failure is not reported while the lease is still held');
+  f.gate.release();
+  await assert.rejects(f.done, /PRIMARY_QUERY_FAILURE/);
+  assert.deepEqual(f.output, []); assert.equal(f.events.at(-1), 'close:done');
 });
-test('SQL demo never reopens or reports passed when supervisor cleanup fails', async t => {
-  const f = fixture({ cleanupFails: true }); t.after(() => f.gates.forEach(gate => gate.release()));
-  await tick(); f.gates[0].release(); await f.done;
-  assert.equal(f.opens, 1); assert.equal(f.process.exitCode, 1); assert.deepEqual(f.output, []);
-  assert.match(f.errors[0], /ROOT_CLEANUP_FAILURE/);
+
+test('a failed read stays visible with its exact cause when owner cleanup also fails', async t => {
+  const f = fixture({ queryFails: true, cleanupFails: true }); t.after(() => f.gate.release());
+  await tick(); f.gate.release();
+  await assert.rejects(f.done, error => {
+    assert(error instanceof AggregateError); assert.equal(error.cause, error.errors[0]);
+    assert.equal(error.errors[0].message, 'PRIMARY_QUERY_FAILURE');
+    assert.equal(error.errors[1].message, 'ROOT_CLEANUP_FAILURE'); return true;
+  });
+  assert.equal(f.opens, 1); assert.deepEqual(f.output, []);
 });

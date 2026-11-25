@@ -1,70 +1,36 @@
-// Optional SQL owner. Publish its matching engine assets and configuration.
-import { verifyAuthorityBundle } from '@chronolog/peer-session';
+import { createApplicationSession } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
-import { openSqlApplication } from '@chronolog/peer-session/sql';
-import { createPeersClient } from '@tendriller/core/peers';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
 import { participateApplication } from '@tendriller/core/participation';
+import { browserProfileId } from '../helpers/browser-profile.mjs';
+import { bootstrapBrowser } from '../helpers/browser-bootstrap.mjs';
 import { definition } from './domain.mjs';
-
 serveBrowserOwner({ async load({ signal }) {
-const configuration = await fetch(new URL('./configuration.json', import.meta.url), { signal }).then(response => {
-  if (!response.ok) throw Error('Application configuration is unavailable.');
-  return response.json();
-});
-const profileId = `tendriller-inventory-${configuration.applicationId}`;
-return { profileId,
-  async createIdentity() {
-    const device = await openBrowserDevice({ name: profileId, create: true });
-    try { return device.identity.publicKey; } finally { await device.close(); }
-  },
-  async openSession({ signal, openDirectConnection }) {
-    if (new URL(configuration.page_url).origin !== self.location.origin)
-      throw Error('Open this owner at its authorized page origin; localhost does not inherit its account or device.');
-    const device = await openBrowserDevice({ name: profileId });
-    let session, pool;
-    const releasePool = async () => { const owned = pool; pool = undefined; await owned?.pauseVfs(); };
-    try {
-      const base = new URL('_tendril/', configuration.page_url);
-      const peers = createPeersClient({ base: base.href, applicationId: configuration.applicationId,
-        async request(path, { method = 'GET', body, signal: requestSignal } = {}) {
-          const response = await fetch(new URL(path, base), { method,
-            signal: AbortSignal.any([signal, AbortSignal.timeout(30_000), ...[requestSignal].filter(Boolean)]),
-            credentials: 'same-origin', cache: 'no-store',
-            ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
-          const value = await response.json();
-          if (!response.ok) throw Object.assign(Error(value.error?.message || `Host request failed (${response.status})`),
-            { code: value.error?.code, status: response.status });
-          return value;
-        },
-      });
-      const authority = await peers.application(), verified = await verifyAuthorityBundle(authority, configuration.descriptor);
-      if (!verified.grant(device.identity.publicKey)?.reader)
-        throw Error(`Enroll this browser's verified public key: npm run enroll -- ${device.identity.publicKey}`);
-      const advertised = await peers.definition();
-      signal.throwIfAborted();
-      session = await openSqlApplication({ device, definition, authority, schema: advertised.schema, databasePath: '/inventory.sqlite',
-        signals: { localEcho: true, delivery: 'neighbors', limits: { maxSubscriptions: 256, maxQueuedSignals: 1024, maxQueuedBytes: 8 * 1024 * 1024 } },
-        async createEngine({ signal }) {
-          // Protocol-only attachments never import the SQL loader or open OPFS.
-          const { createBrowserSqlEngine, loadBrowserEngine } = await import('@chronolog/peer-session/sql-browser');
-          const loaded = await loadBrowserEngine(new URL('./engine/', import.meta.url));
-          signal.throwIfAborted();
-          if (!loaded.module.installOpfsSAHPoolVfs) throw Error('SQL_OPFS_POOL_UNAVAILABLE');
-          pool = await loaded.module.installOpfsSAHPoolVfs({ name: `inventory-${configuration.applicationId}`,
-            directory: `inventory-${configuration.applicationId}`, initialCapacity: 12 });
-          signal.throwIfAborted();
-          return createBrowserSqlEngine({ ...loaded, vfs: pool.vfsName });
-        },
-      });
-      const control = session.connectControlParticipant({ exchange: (message, options) => peers.exchange(message, options) });
-      await participateApplication(session, { peers, control, openDirectConnection });
-      // The owner closes the session's database handles before this external VFS.
-      return { session, control, close: releasePool };
-    } catch (error) {
-      try { if (session) await session.close(); else await device.close(); } finally { await releasePool(); }
-      throw error;
-    }
-  },
-};
-}});
+  const response = await fetch(new URL('./configuration.json', import.meta.url), { signal });
+  if (!response.ok) throw Error('Application configuration is unavailable');
+  const configuration = await response.json(), profileId = browserProfileId(configuration.applicationId);
+  return { profileId,
+    async createIdentity() { const device = await openBrowserDevice({ name: profileId, create: true }); try { return device.identity.publicKey; } finally { await device.close(); } },
+    async openSession({ signal, openDirectConnection }) {
+      const device = await openBrowserDevice({ name: profileId, create: true }); let session, pool, participation;
+      const release = async () => { const owned = pool; pool = undefined; await owned?.pauseVfs(); };
+      try {
+        const { authority, peers } = await bootstrapBrowser({ configuration, device, signal });
+        session = await createApplicationSession({ device, definition, authority,
+          async createMaterializer({ signal, rootPrincipal }) {
+            // The optional SQL graph stays out of the page's eager imports.
+            const [{ createBrowserSqlEngine, loadBrowserEngine }, { createSqlMaterializationRuntime }] = await Promise.all([
+              import('@chronolog/peer-session/sql-browser'), import('@chronolog/peer-session/sql')]);
+            const loaded = await loadBrowserEngine(new URL('./engine/', import.meta.url)); signal.throwIfAborted();
+            if (!loaded.module.installOpfsSAHPoolVfs) throw Error('SQL_OPFS_POOL_UNAVAILABLE');
+            pool = await loaded.module.installOpfsSAHPoolVfs({ name: `inventory-${configuration.applicationId}`, directory: `inventory-${configuration.applicationId}`, initialCapacity: 12 });
+            signal.throwIfAborted();
+            return createSqlMaterializationRuntime({ engine: createBrowserSqlEngine({ ...loaded, vfs: pool.vfsName }), path: '/inventory.sqlite', rootPrincipal });
+          },
+        });
+        participation = participateApplication(session, { peers, openDirectConnection }); Object.defineProperty(session, 'participation', { value: participation });
+        return { session, async close() { await participation.close(); await release(); } };
+      } catch (error) { try { if (session) await session.close(); else await device.close(); } finally { await release(); } throw error; }
+    },
+  };
+} });

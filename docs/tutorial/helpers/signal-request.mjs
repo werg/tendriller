@@ -39,21 +39,17 @@ function sleep(ms, signal) {
 
 export function whenConnected(session, peer, { signal } = {}) {
   signal?.throwIfAborted();
-  if (session.participation.status.connectedPeers.includes(peer)) return Promise.resolve();
+  const source = session.participation ?? session;
+  // Exact identities are used when available. A count only permits an attempt;
+  // replies still authenticate the named peer and request identity below.
+  const routed = status => Array.isArray(status?.connectedPeers) ? status.connectedPeers.includes(peer) : Number(status?.connectedPeers) > 0;
+  if (routed(source.status)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     let off, settled = false;
-    const finish = error => {
-      if (settled) return; settled = true; off?.(); signal?.removeEventListener('abort', abort);
-      error ? reject(error) : resolve();
-    };
-    const abort = () => finish(signal.reason);
-    signal?.addEventListener('abort', abort, { once: true });
-    try {
-      off = session.participation.onStatus(status => { if (status.connectedPeers.includes(peer)) finish(); });
-      if (settled) off(); // onStatus may invoke the callback synchronously.
-      if (signal?.aborted) abort();
-      else if (session.participation.status.connectedPeers.includes(peer)) finish();
-    } catch (error) { finish(error); }
+    const finish = error => { if (settled) return; settled = true; off?.(); signal?.removeEventListener('abort', abort); error ? reject(error) : resolve(); };
+    const abort = () => finish(signal.reason); signal?.addEventListener('abort', abort, { once: true });
+    try { off = source.onStatus(status => { if (routed(status)) finish(); }); if (settled) off(); if (signal?.aborted) abort(); else if (routed(source.status)) finish(); }
+    catch (error) { finish(error); }
   });
 }
 
@@ -88,7 +84,7 @@ export function createSignalRequests(session, { peer, requestTopic = 'app/reques
     for await (const signal of session.signals.subscribe({ topics: [replyTopic], mode: 'all', signal: lifetime })) {
       if (signal.authorId !== peer) continue;
       const { id, g, r, i, n, z, error, code } = signal.payload ?? {};
-      if (r !== session.deviceId) continue;
+      if (r !== session.identity.publicKey) continue;
       const entry = waiting.get(id);
       if (!entry || entry.done) continue;
       try {

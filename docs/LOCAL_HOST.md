@@ -174,7 +174,7 @@ The release browser CI job runs
 same sealed graph. It verifies browser test-account login, packed-SDK page
 creation, owner claim, public assets and host/browser restart persistence. The
 separate exact-kit first-app tests qualify signed publication and real native /
-browser pairing and application state exchange.
+browser enrollment/key provisioning and application state exchange.
 
 This runner supports the schema-11 source-release format. Its emulator is pinned
 by the runner checkout's lockfile; it is a local compatibility test, not a claim

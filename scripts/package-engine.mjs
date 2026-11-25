@@ -16,22 +16,25 @@ const sha256 = path => createHash('sha256').update(readFileSync(path)).digest('h
 const workersTypes = JSON.parse(readFileSync(join(root, 'node_modules/@cloudflare/workers-types/package.json'), 'utf8')).version;
 const source = readFileSync(join(engine, 'worker.mjs'), 'utf8');
 if (!source.includes('Tendril')) throw Error('Build the participant host Worker first');
-const peerControl = join(root, 'node_modules/@chronolog/peer-generation');
-const peerProof = JSON.parse(readFileSync(join(peerControl, 'provenance.json'), 'utf8'));
-if (peerProof.dirty || peerProof.profile !== 'peer-generation-v1' || !/^[0-9a-f]{40}$/.test(peerProof.source) ||
-    !Array.isArray(peerProof.inputs) || peerProof.inputs.some(input => /(?:materializer|peer-session|transport-ssb|node-core\/src\/node\.ts|node:)/.test(input)))
-  throw Error('Peer generation controls must identify a clean portable source checkpoint');
-for (const name of ['control.mjs', 'control.d.ts', 'participant.mjs', 'participant.d.ts']) {
-  if (createHash('sha256').update(readFileSync(join(peerControl, name))).digest('hex') !== peerProof.sha256[name])
-    throw Error(`Peer generation control digest mismatch for ${name}`);
+const authorityRoot = join(root, 'node_modules/@chronolog/authority');
+const authorityProofBytes = readFileSync(join(authorityRoot, 'provenance.json'));
+const authorityProof = JSON.parse(authorityProofBytes.toString('utf8'));
+const allowDirty = process.argv.slice(2).includes('--allow-dirty');
+if ((authorityProof.dirty !== false && !(allowDirty && authorityProof.dirty === true)) || authorityProof.format !== 'chronolog-authority-package/v1' || authorityProof.profile !== 'chronolog-crdt-v1' ||
+    !/^[0-9a-f]{40}$/.test(authorityProof.source) || !Array.isArray(authorityProof.inputs) ||
+    Object.values(authorityProof.runtimeModules ?? {}).some(module => module.inputs.some(input => /(?:materializer|peer-session|node:)/.test(input))))
+  throw Error('Application authority must identify a clean portable CRDT source checkpoint');
+// A diagnostic dependency must taint the complete artifact graph, even if this
+// checkout itself is clean. Normal builds and release qualification stay strict.
+if (authorityProof.dirty) identity.dirty = true;
+for (const [name, expected] of Object.entries(authorityProof.sha256)) {
+  if (sha256(join(authorityRoot, name)) !== expected) throw Error(`Application authority digest mismatch for ${name}`);
 }
-if (createHash('sha256').update(readFileSync(join(root, 'contract/peer-authority.d.mts'))).digest('hex') !== peerProof.sha256['control.d.ts'])
-  throw Error('The public peer authority declarations must match the embedded control artifact');
-for (const [embedded, source] of [['participant.mjs', 'participant.mjs'], ['participant.d.mts', 'participant.d.ts']]) {
-  if (sha256(join(root, 'contract', embedded)) !== peerProof.sha256[source])
-    throw Error(`The SDK participant transport must match its portable artifact: ${embedded}`);
-}
-copyFileSync(join(peerControl, 'provenance.json'), join(engine, 'peer-generation-provenance.json'));
+const compiledAuthority = JSON.parse(readFileSync(join(engine, 'authority-inputs.json'), 'utf8'));
+if (compiledAuthority.provenanceSha256 !== createHash('sha256').update(authorityProofBytes).digest('hex') ||
+    JSON.stringify(compiledAuthority.files) !== JSON.stringify(authorityProof.sha256))
+  throw Error('The Worker must be built from the exact installed authority archive');
+copyFileSync(join(authorityRoot, 'provenance.json'), join(engine, 'authority-provenance.json'));
 writeFileSync(join(engine, 'index.d.mts'), readFileSync(join(root, 'contract/engine.d.mts'), 'utf8'));
 mkdirSync(join(engine, 'migrations'), { recursive: true });
 copyFileSync(join(root, 'server/migrations/0001_accounts.sql'), join(engine, 'migrations/0001_accounts.sql'));
@@ -48,13 +51,13 @@ writeFileSync(join(engine, 'package.json'), JSON.stringify({
   description: 'Tendriller page host and filtered Chronolog participant',
   exports: { '.': { types: './index.d.mts', import: './worker.mjs' }, './accounts-schema': './migrations/0001_accounts.sql',
     './testing': { types: './testing.d.mts', import: './testing.mjs' }, './testing-ratelimits': './testing-ratelimits.json', './provenance': './provenance.json',
-    './peer-generation-provenance': './peer-generation-provenance.json' },
-  files: ['worker.mjs', 'index.d.mts', 'migrations', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'provenance.json', 'peer-generation-provenance.json'], peerDependencies: { '@tendriller/core': CORE_RELEASE },
+    './authority-provenance': './authority-provenance.json' },
+  files: ['worker.mjs', 'index.d.mts', 'migrations', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'provenance.json', 'authority-provenance.json', 'authority-inputs.json'], peerDependencies: { '@tendriller/core': CORE_RELEASE },
   dependencies: { '@cloudflare/workers-types': workersTypes },
   tendriller: { contract: CONTRACT_VERSION },
 }, null, 2) + '\n');
 const files = ['worker.mjs', 'index.d.mts', 'testing.mjs', 'testing.d.mts', 'testing-ratelimits.json', 'migrations/0001_accounts.sql',
-  'package.json', 'peer-generation-provenance.json'];
+  'package.json', 'authority-provenance.json', 'authority-inputs.json'];
 writeFileSync(join(engine, 'provenance.json'), JSON.stringify({ ...identity, storageSchemaRevision,
   files: Object.fromEntries(files.map(name => [name, sha256(join(engine, name))])) }, null, 2) + '\n');
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', dist], { cwd: engine, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))[0];

@@ -4,7 +4,7 @@ import { ADAPTER_KEY, ASSISTANT_PROTOCOL, ASSISTANT_SOCKET_TAG, REQUEST_LIMIT, f
 import { pagePolicy } from './access';
 import { HttpError } from './http';
 import { safeEqual, sha256Hex } from './ids';
-import { withSelectedAssistantGeneration } from './peer-generations';
+import { withAssistantAuthority } from './authority';
 import { ingestAssistantEvent } from './assistant-events';
 import { providerBindingId } from './assistant-bindings';
 
@@ -30,7 +30,7 @@ export async function upgradeAssistantAdapter(t: Tendril, req: Request) {
   const adapterHash = await sha256Hex(credential), allowed = () => activeAdapters(t).some(hash => safeEqual(hash, adapterHash));
   if (!(await freshAdapters(t)).some(hash => safeEqual(hash, adapterHash))) throw new HttpError(401, 'adapter_not_approved');
   if (await pagePolicy(t) !== 'active') throw new HttpError(403, 'forbidden');
-  await withSelectedAssistantGeneration(t, async (_generation, canUseDevice) => {
+  await withAssistantAuthority(t, async canUseDevice => {
     if (!await canUseDevice(deviceId, false) && !await canUseDevice(deviceId, true) || !(await freshAdapters(t)).includes(adapterHash) || !allowed())
       throw new HttpError(403, 'adapter_device_not_enrolled');
     const previous = t.db.one<{ device_id: string }>('SELECT device_id FROM assistant_devices WHERE adapter_hash=?', adapterHash);
@@ -73,10 +73,10 @@ export async function handleAssistantFrame(t: Tendril, socket: WebSocket, frame:
     try {
       fields(body, ['type', 'id', 'value', 'error'], ['type', 'id']);
       if (Object.hasOwn(body, 'value') === Object.hasOwn(body, 'error')) throw invalid();
-      if (Object.hasOwn(body, 'error'))
-        pending.reject(new HttpError(409, 'application_operation_failed',
-          typeof body.error === 'string' ? body.error.slice(0, 200) : 'Application operation failed'));
-      else pending.resolve(body.value);
+      if (Object.hasOwn(body, 'error')) {
+        const providerCode = typeof body.error === 'string' && /^[A-Z][A-Z0-9_]{0,95}$/u.test(body.error) ? body.error : 'APPLICATION_ASSISTANT_OPERATION_FAILED';
+        pending.reject(new HttpError(409, 'application_operation_failed', providerCode, { providerCode }));
+      } else pending.resolve(body.value);
     } catch { pending.reject(invalid()); }
     return;
   }

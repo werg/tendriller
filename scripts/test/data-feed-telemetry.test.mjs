@@ -68,7 +68,8 @@ function createMockSignalPair() {
         };
       },
     };
-    return { deviceId, signal: controller.signal, close: () => controller.abort(), signals, participation };
+    // The public session identity is the signing public key; there is no separate device ID.
+    return { identity: { publicKey: deviceId }, signal: controller.signal, close: () => controller.abort(), signals, participation };
   };
 
   return {
@@ -84,7 +85,7 @@ test('filtered feeds ignore default pushes and late replies from an older query'
     if (query?.name === 'slow') await new Promise(resolve => { release = resolve; });
     return { name: query?.name ?? 'default' };
   } });
-  const feed = useDataFeed(browser, { peer: native.deviceId, feed: 'items', query: { name: 'filtered' } });
+  const feed = useDataFeed(browser, { peer: native.identity.publicKey, feed: 'items', query: { name: 'filtered' } });
   t.after(() => { feed.close(); server.close(); native.close(); browser.close(); });
   await waitUntil(() => feed.snapshot().data?.name === 'filtered');
   await server.push('items', { name: 'default' });
@@ -101,7 +102,7 @@ test('filtered feeds ignore default pushes and late replies from an older query'
 test('a restarted feed service can replace a higher revision from the previous generation', async t => {
   const { native, browser } = createMockSignalPair();
   let server = serveDataFeeds(native, { value: async () => 1 });
-  const feed = useDataFeed(browser, { peer: native.deviceId, feed: 'value' });
+  const feed = useDataFeed(browser, { peer: native.identity.publicKey, feed: 'value' });
   t.after(() => { feed.close(); server.close(); native.close(); browser.close(); });
   await waitUntil(() => feed.snapshot().data === 1);
   await server.push('value', 2);
@@ -111,7 +112,7 @@ test('a restarted feed service can replace a higher revision from the previous g
   await server.done;
   server = serveDataFeeds(native, { value: async () => 3 });
   browser.participation.setPeers([]);
-  browser.participation.setPeers([native.deviceId]);
+  browser.participation.setPeers([native.identity.publicKey]);
   await waitUntil(() => feed.snapshot().data === 3);
   assert.notEqual(feed.snapshot().generation, previousGeneration);
   assert.equal(feed.snapshot().revision, 1);
@@ -120,7 +121,7 @@ test('a restarted feed service can replace a higher revision from the previous g
 test('unchanged successful polls advance freshness without incrementing the data revision', async t => {
   const { native, browser } = createMockSignalPair();
   const server = serveDataFeeds(native, { value: { pollMs: 25, maxAgeMs: 0, fetch: async () => 7 } });
-  const feed = useDataFeed(browser, { peer: native.deviceId, feed: 'value' });
+  const feed = useDataFeed(browser, { peer: native.identity.publicKey, feed: 'value' });
   t.after(() => { feed.close(); server.close(); native.close(); browser.close(); });
   await waitUntil(() => feed.snapshot().data === 7);
   const initial = feed.snapshot();
@@ -141,7 +142,7 @@ test('offline runtime errors remain eligible for telemetry flush on reconnect', 
   buffered.push(error);
   for (const fn of listeners) fn(error);
   await Promise.resolve();
-  browser.participation.setPeers([native.deviceId]);
+  browser.participation.setPeers([native.identity.publicKey]);
   await waitUntil(() => collector.entries().some(item => item.payload?.entry?.id === error.id));
 });
 
@@ -165,7 +166,7 @@ const waitUntil = async (fn, timeoutMs = 1500) => {
   }
 };
 
-test('serveDataFeeds and useDataFeed deliver live pushes, deduplicate unchanged snapshots, and serve on-demand/large pulls', async () => {
+test('serveDataFeeds and useDataFeed deliver live pushes, deduplicate unchanged snapshots, and serve on-demand/large pulls', async t => {
   const { native, browser } = createMockSignalPair();
   let calls = 0;
   const largeBlob = 'x'.repeat(16_000); // > 10 KiB inline threshold -> pullRequired over chunked signal-request
@@ -178,7 +179,9 @@ test('serveDataFeeds and useDataFeed deliver live pushes, deduplicate unchanged 
   });
 
   const updates = [];
-  const cpuFeed = useDataFeed(browser, { peer: native.deviceId, feed: 'cpu', onUpdate: s => updates.push(s) });
+  const cpuFeed = useDataFeed(browser, { peer: native.identity.publicKey, feed: 'cpu', onUpdate: s => updates.push(s) });
+  const reportFeed = useDataFeed(browser, { peer: native.identity.publicKey, feed: 'report' });
+  t.after(() => { cpuFeed.close(); reportFeed.close(); server.close(); native.close(); browser.close(); });
   await waitUntil(() => cpuFeed.snapshot().data?.pct === 10);
 
   // Push event-driven update directly from native agent.
@@ -186,17 +189,10 @@ test('serveDataFeeds and useDataFeed deliver live pushes, deduplicate unchanged 
   await waitUntil(() => cpuFeed.snapshot().data?.pct === 42);
 
   // Large payload triggers automatic chunked pull via signal-request.
-  const reportFeed = useDataFeed(browser, { peer: native.deviceId, feed: 'report' });
   await waitUntil(() => reportFeed.snapshot().data?.payload === largeBlob);
-
-  cpuFeed.close();
-  reportFeed.close();
-  server.close();
-  native.close();
-  browser.close();
 });
 
-test('mountDevTelemetry streams buffered and live runtime errors to collectDevTelemetry without durable writes', async () => {
+test('mountDevTelemetry streams buffered and live runtime errors to collectDevTelemetry without durable writes', async t => {
   const { native, browser } = createMockSignalPair();
   const listeners = new Set();
   const buffered = [{ id: 'boot-1', at: 1000, kind: 'error', message: 'Boot failed' }];
@@ -210,6 +206,7 @@ test('mountDevTelemetry streams buffered and live runtime errors to collectDevTe
 
   const collector = collectDevTelemetry(native);
   const telemetry = mountDevTelemetry({ session: browser, runtime, captureConsoleError: false });
+  t.after(() => { telemetry.close(); collector.close(); native.close(); browser.close(); });
 
   await waitUntil(() => collector.entries().some(e => e.payload?.kind === 'error' && e.payload.entry?.id === 'boot-1'));
   await waitUntil(() => Boolean(collector.health()['browser-peer']));
@@ -219,38 +216,29 @@ test('mountDevTelemetry streams buffered and live runtime errors to collectDevTe
   buffered.push(liveErr);
   for (const fn of listeners) fn(liveErr);
   await waitUntil(() => collector.entries().some(e => e.payload?.entry?.id === 'live-2'));
-
-  telemetry.close();
-  collector.close();
-  native.close();
-  browser.close();
 });
 
-test('ephemeral agent presence and streaming previews work with zero durable journal records', async () => {
+test('ephemeral agent presence and streaming previews work with zero durable journal records', async t => {
   const { native, browser } = createMockSignalPair();
   const announcer = announceAgentPresence(native, { consumerId: 'agent-1', role: 'ops-agent', intervalMs: 60_000 });
 
   const states = [];
-  const watcher = watchAgentPresence(browser, { peer: native.deviceId, onChange: s => states.push(s.status) });
+  const watcher = watchAgentPresence(browser, { peer: native.identity.publicKey, onChange: s => states.push(s.status) });
+  const chunks = [];
+  const stream = watchAgentStream(browser, { peer: native.identity.publicKey, onChunk: c => chunks.push(c) });
+  t.after(async () => { stream.close(); watcher.close(); await announcer.close(); native.close(); browser.close(); });
   await waitUntil(() => watcher.snapshot().status === 'available');
 
   announcer.setState('busy');
   await waitUntil(() => watcher.snapshot().status === 'busy');
 
-  const chunks = [];
-  const stream = watchAgentStream(browser, { peer: native.deviceId, onChunk: c => chunks.push(c) });
-  await streamAgentReply(native, { requestAuthor: browser.deviceId, requestOperationId: 'op-1', text: 'Checking CPU…' });
+  await streamAgentReply(native, { requestAuthor: browser.identity.publicKey, requestOperationId: 'op-1', text: 'Checking CPU…' });
   await waitUntil(() => chunks.length === 1 && chunks[0].text === 'Checking CPU…');
 
   browser.participation.setPeers([]);
   assert.equal(watcher.snapshot().status, 'stale');
-  browser.participation.setPeers([native.deviceId]);
+  browser.participation.setPeers([native.identity.publicKey]);
 
   await announcer.close();
   await waitUntil(() => watcher.snapshot().status === 'stopped');
-
-  stream.close();
-  watcher.close();
-  native.close();
-  browser.close();
 });

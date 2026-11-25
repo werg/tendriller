@@ -26,10 +26,10 @@ export function privateDirectory(path) {
 export class Evidence {
   constructor(directory, metadata) {
     this.directory = directory;
-    this.data = { protocol: 'tendriller-agent-acceptance-v1', startedAt: now(), ...metadata, outcome: 'blocked',
+    this.data = { protocol: 'tendriller-agent-acceptance-v2', startedAt: now(), ...metadata, outcome: 'blocked',
       host: 'native-codex', chatgptWeb: { status: 'not-tested', reason: 'Native Codex is a separate host' },
       checks: Object.fromEntries(checks.map(name => [name, { status: 'not-tested' }])), interventions: [], observations: [],
-      limits: ['Public report contains references and hashes; private evidence needs separate review.', 'No supported wake of an existing ChatGPT conversation is established.'] };
+      limits: ['Public report contains references and hashes; private evidence needs separate review.', 'No supported wake of an existing ChatGPT conversation is established.', 'A blocked optional native cryptographic observer is not a browser Save or local-read failure. Stored, materialized, retained and finalized are independent facts.'] };
     this.save();
   }
   private(name, value) {
@@ -51,23 +51,33 @@ export class Evidence {
   }
   /** External adapters are trusted observers, not model messages. Raw evidence stays private. */
   observation(value, source) {
-    if (value.protocol !== 'tendriller-agent-observation-v1' || !checks.includes(value.check) ||
+    if (value.protocol !== 'tendriller-agent-observation-v2' || !checks.includes(value.check) ||
         !['passed', 'failed', 'blocked', 'not-tested'].includes(value.status) ||
         !value.evidence || typeof value.evidence !== 'object' || !Number.isFinite(Date.parse(value.observedAt))) throw Error('Invalid adapter observation');
     if (value.check === 'preclaim-publication' && value.status === 'passed' &&
       !(value.evidence.unclaimed === true && value.evidence.signatureVerified === true && value.evidence.publicationId && value.evidence.operationId)) throw Error('Preclaim needs verified signed publication, operation and unclaimed observation');
-    if (['lost-command-response', 'lost-publication-response'].includes(value.check) && value.status === 'passed' &&
-      !(value.evidence.operationId === value.evidence.retryOperationId && value.evidence.operationId &&
-        value.evidence.attemptHash === value.evidence.retryAttemptHash && /^[a-f0-9]{64}$/.test(value.evidence.attemptHash ?? '') &&
-        value.evidence.responseLost === true && value.evidence.appliedCount === 1)) throw Error('Lost-response checks require the same saved signed attempt and one application');
-    if (value.check === 'lost-publication-response' && value.status === 'passed' &&
-      !(value.evidence.receiptId && value.evidence.receiptId === value.evidence.retryReceiptId)) throw Error('Publication retry must return the original receipt');
-    if (value.check === 'native-reopen' && value.status === 'passed' &&
-      !(value.evidence.beforeDeviceId && value.evidence.beforeDeviceId === value.evidence.afterDeviceId && value.evidence.retained === true)) throw Error('Reopen must retain device and data');
     const e = value.evidence;
-    if (['browser-to-agent', 'agent-to-browser'].includes(value.check) && value.status === 'passed' &&
-      !(e.operationId && e.commandOutcome === 'applied' && e.query && e.marker && e.browserObserved === true && e.nativeObserved === true))
-      throw Error('Round trip needs applied command, coherent query and both participant observations');
+    if (value.check === 'lost-command-response' && value.status === 'passed' &&
+      !(e.operationId && e.operationId === e.retryOperationId && /^[a-f0-9]{64}$/.test(e.proposalId ?? '') && e.proposalId === e.retryProposalId &&
+        /^[a-f0-9]{64}$/.test(e.proofHash ?? '') && e.proofHash === e.retryProofHash && e.proofScope === 'signed-encrypted-envelope' &&
+        e.responseLost === true && e.materializedCount === 1)) throw Error('Lost command response needs the original proposal and exact saved signed envelope, not a new timestamp/submission');
+    if (value.check === 'lost-publication-response' && value.status === 'passed' &&
+      !(e.operationId && e.operationId === e.retryOperationId && /^[a-f0-9]{64}$/.test(e.publicationHash ?? '') &&
+        e.publicationHash === e.retryPublicationHash && e.responseLost === true && e.receiptCount === 1 &&
+        e.receiptId && e.receiptId === e.retryReceiptId)) throw Error('Publication retry must return the original signed intent and receipt');
+    if (['browser-reload', 'native-reopen'].includes(value.check) && value.status === 'passed' &&
+      !(e.beforeDeviceId && e.beforeDeviceId === e.afterDeviceId && e.localDurable === true)) throw Error('Reopen must retain the same device and locally stored data; local durability is not peer retention');
+    if (['browser-to-agent', 'agent-to-browser', 'lost-command-response'].includes(value.check) && value.status === 'passed' &&
+      !(e.operationId && /^[a-f0-9]{64}$/.test(e.proposalId ?? '') && e.facts?.stored === true && e.facts.excluded === false &&
+        e.facts.materialized?.outcome === 'accepted' && e.facts.materialized.proposalId === e.proposalId &&
+        Array.isArray(e.facts.retained) && typeof e.facts.finalized === 'boolean' &&
+        e.query?.applicationId && e.query.revision?.digest && Array.isArray(e.query.value) &&
+        JSON.stringify(e.query.revision) === JSON.stringify(e.facts.materialized.revision) &&
+        e.marker && e.browserObserved === true && e.nativeObserved === true && e.native?.operation?.signatureVerified === true))
+      throw Error('Round trip needs stored/materialized facts, coherent query, signed-envelope evidence and independent participant observations; retention and finality remain separate');
+    if (value.check === 'unavailable-peer' && value.status === 'passed' &&
+      !(e.localDurable === true && e.proposalId && e.materialized?.outcome === 'accepted' &&
+        (e.browserNetworkOffline === true || e.optionalNativeAbsent === true))) throw Error('Unavailable peer needs an actual outage and a new locally stored/materialized browser operation');
     if (value.check === 'connected' && value.status === 'passed' &&
       !(e.applicationId && e.nativeDeviceId && e.browserDeviceId && e.nativeDeviceId !== e.browserDeviceId &&
         e.transport && e.nativeProcess?.pid && e.nativeProcess?.startedAt && e.nativeProcess?.resume && e.nativeProcess?.storage))
@@ -83,6 +93,10 @@ export class Evidence {
     this.save();
   }
   finish() {
+    const browserChecks = ['discovery', 'preclaim-publication', 'authority', 'browser-reload', 'lost-publication-response', 'unavailable-peer', 'missing-setup', 'publication', 'cleanup'];
+    const browserValues = browserChecks.map(name => this.data.checks[name].status);
+    this.data.browserLocalAcceptance = { checks: browserChecks, outcome: this.data.assisted ? 'assisted' : browserValues.includes('failed') ? 'failed' : !this.data.deadlineReached && browserValues.every(status => status === 'passed') ? 'complete' : 'blocked',
+      scope: 'Local browser authoring/durability and signed publication only. Peer convergence and independent operation crypto evidence remain separate full acceptance requirements; no native process is required for browser Save.' };
     const values = Object.values(this.data.checks).map(c => c.status);
     this.data.outcome = this.data.assisted ? 'assisted' : values.includes('failed') ? 'failed' : !this.data.deadlineReached && values.every(s => s === 'passed') ? 'complete' : 'blocked';
     this.data.firstUnresolvedCheck = Object.entries(this.data.checks).find(([, check]) => check.status !== 'passed')?.[0] ?? null;

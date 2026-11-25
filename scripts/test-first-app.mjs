@@ -6,7 +6,7 @@ import { createHash, X509Certificate } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { connect as connectTls } from 'node:tls';
@@ -16,44 +16,54 @@ import { chromium, expect } from '@playwright/test';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import { unstable_getMiniflareWorkerOptions, unstable_splitSqlQuery } from 'wrangler';
 import { TUTORIAL_FILES } from './onboarding.mjs';
-import { nativeTestPeerSource, closeTestPeer, memoryAvailableGb, installSoakObserver, installStateSignalObservers } from './first-app-peer.mjs';
-import { readBrowserRtcEvidence, observeRtcTraffic, hasNonTurnTraffic } from './first-app-rtc-evidence.mjs';
+import { readBrowserRtcEvidence, hasNonTurnTraffic } from './first-app-rtc-evidence.mjs';
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { verifyFirstAppComposition } from './first-app-composition.mjs';
+import { FIRST_APP_PROFILES } from './release-composition.mjs';
 import { CONTRACT_VERSION } from '../contract/index.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
+const execute = promisify(execFile);
 const { values } = parseArgs({ options: {
-  'session-archive': { type: 'string' }, 'first-app-archive': { type: 'string' }, report: { type: 'string' }, keep: { type: 'boolean' },
-  'native-only': { type: 'boolean' }, 'sql-native-only': { type: 'boolean' }, transport: {type:'string', default:'direct'},
-  'network-lab-profile': { type: 'string' },
+  'session-archive': { type: 'string' }, 'authority-archive': { type: 'string' }, 'first-app-archive': { type: 'string' },
+  profile: { type: 'string' }, 'ux-second-pass': { type: 'boolean' }, 'browser-finalizer': { type: 'boolean' }, diagnostic: { type: 'boolean' },
+  report: { type: 'string' }, keep: { type: 'boolean' }, transport: { type: 'string', default: 'direct' },
 } });
-if (!values['session-archive'] && !values['first-app-archive'])
-  throw Error('Usage: node scripts/test-first-app.mjs --first-app-archive /absolute/tendriller-first-app-VERSION.tgz [--native-only] [--report FILE] [--keep]; or --session-archive FILE for an explicit source/SQL composition.');
-if (values['session-archive'] && values['first-app-archive']) throw Error('Use the companion inside the first-app archive; do not override its composition.');
-if (values['native-only'] && values['sql-native-only']) throw Error('Choose --native-only for events or --sql-native-only for SQL.');
-if (values['first-app-archive'] && values['sql-native-only']) throw Error('The first-app release archive has the SQL-free events profile.');
-if (!['direct','relay'].includes(values.transport)) throw Error('Choose --transport direct or relay for qualification.');
-if (values['network-lab-profile'] && (process.env.TENDRILLER_NETWORK_LAB !== '1' || values.transport !== 'direct' || !values['first-app-archive']))
-  throw Error('Network lab requires its isolated container, real RTC and an immutable first-app kit.');
-const sqlOnly = Boolean(values['sql-native-only']);
+if (!values['session-archive'] && !values['first-app-archive']) throw Error('Use --first-app-archive FILE or explicit --session-archive FILE --authority-archive FILE. Explicit source qualification may select --profile events|sql; exact kits select their own profile.');
+if (values['session-archive'] && values['first-app-archive']) throw Error('Do not override the session in an immutable first-app kit');
+if (values['session-archive'] && !values['authority-archive']) throw Error('An explicitly selected session also needs its matching public --authority-archive');
+if (!['direct','relay'].includes(values.transport)) throw Error('Choose --transport direct or relay');
+if (values['first-app-archive'] && values.profile) throw Error('An immutable kit selects first-app-profile.json; do not override its profile');
+const selectedKitProfile = values['first-app-archive'] ? JSON.parse((await execute('tar', ['-xOf', resolve(values['first-app-archive']), 'first-app-profile.json'], { maxBuffer: 16 * 1024 })).stdout) : null;
+const selectedProfile = selectedKitProfile?.profile ?? values.profile ?? 'events';
+const profileSpec = FIRST_APP_PROFILES[selectedProfile];
+assert.ok(profileSpec, 'Select the supported events or sql profile');
+if (selectedKitProfile) assert.deepEqual(selectedKitProfile, { profile: selectedProfile, ...profileSpec }, 'The kit profile must name the exact selected package roles');
+const sqlBrowser = selectedProfile === 'sql';
 let sessionArchive = values['session-archive'] ? resolve(values['session-archive']) : undefined;
-const reportPath = resolve(values.report ?? join(root, `.results/${sqlOnly ? 'first-app-sql' : 'first-app'}.json`));
+const reportPath = resolve(values.report ?? join(root, `.results/${sqlBrowser ? 'first-app-sql-browser' : 'first-app'}.json`));
 const directory = await mkdtemp(join(tmpdir(), 'tfa-'));
 const app = join(directory, 'application');
-const SERVICE = 'https://service.localhost:8790';
-const execute = promisify(execFile);
+const npmCache = process.env.FIRST_APP_NPM_CACHE ? resolve(process.env.FIRST_APP_NPM_CACHE) : join(directory, 'npm-cache');
+const portInput = process.env.FIRST_APP_PORT ?? '8790';
+if (!/^[0-9]{1,5}$/.test(portInput) || Number(portInput) < 1 || Number(portInput) > 65535) throw Error('FIRST_APP_PORT must be an integer from 1 through 65535');
+const PORT = Number(portInput), SERVICE = `https://service.localhost:${PORT}`;
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const jsonFile = async path => JSON.parse(await readFile(path, 'utf8'));
-const report = { status: 'running', qualification: sqlOnly ? 'isolated-local-sql-tutorial' : 'isolated-local-tutorial',
-  native_checks: 'running', browser_checks: 'not-run',
-  limits: ['Synthetic local owner session; no OAuth provider tested.',
-    sqlOnly ? 'Native SQL only; no browser SQL, publication, cross-device transport, Internet or mobile qualification.'
-      : 'Local Chromium and real native/browser RTC, with forced-failure relay qualification; no Internet NAT or physical mobile qualification.',
-    'Scripted tutorial execution; not an unassisted fresh-agent usability result.',
-    'An ordinary test-host WebSocket forwarding boundary isolates workerd issue #8185; the packed host is unchanged. Direct production TCP closure is not qualified.'], steps: [] };
-let host, peer, browser, labBrowser, page, stage = 'preflight';
+const report = { status: 'running', qualification: sqlBrowser ? 'isolated-browser-first-sql' : 'isolated-browser-first-events',
+  native_checks: 'not-required', browser_checks: 'not-run', qualified: false,
+  limits: ['Synthetic local owner sessions; no live OAuth provider tested.',
+    'Two separate Chromium profiles, real browser RTC/forced relay; no Internet NAT or physical mobile qualification.',
+    'Scripted desktop/320px tutorial; not an unaided fresh-agent usability result.',
+    'Optional agent/inference and native process features are not exercised by this browser-first journey.',
+    ...(values.diagnostic ? ['DIRTY DIAGNOSTIC ONLY: not release or finality qualification.'] : []),
+    'A test-only WebSocket forwarding boundary isolates workerd close-handshake behavior; packed host code is unchanged.'], steps: [] };
+if(values['ux-second-pass'])report.ux_second_pass={freshProfiles:true,viewports:[1280,320],checks:[],limits:[sqlBrowser?'SQL has no photo workflow; local file preview/consent/removal is exercised in the separate events UX run.':'Local file-picker preview/removal is tested; no physical camera/microphone or real inference provider.']};
+const uxPassed=text=>{report.ux_second_pass.checks.push(text);passed('SECOND UX: '+text);};
+let host, browser, page, stage = 'preflight';
+const browserProfiles=[], browserNetwork=[];
+const noteNetwork=value=>{if(browserNetwork.length===96)browserNetwork.shift();browserNetwork.push(value);};
 
 // Every request, including a followed redirect or literal IP, is restricted to
 // loopback hosts. TLS relaxation never enters the tutorial, packages or page.
@@ -77,24 +87,6 @@ function createLocalDispatcher() {
 const dispatcher = createLocalDispatcher();
 setGlobalDispatcher(dispatcher);
 
-let trackStorage = async () => {};
-// OPFS inventory for failure diagnosis: top-level entries plus file count/bytes of each chronolog directory.
-const opfsInventory = target => target.evaluate(async () => {
-  const out = {};
-  try {
-    for await (const [name, handle] of (await navigator.storage.getDirectory()).entries()) {
-      if (handle.kind !== 'directory') { out[name] = 'file'; continue; }
-      let files = 0, bytes = 0, empty = 0, directories = 0;
-      for await (const [, entry] of handle.entries()) {
-        if (entry.kind === 'directory') { directories++; continue; }
-        const size = (await entry.getFile()).size; files++; bytes += size; if (!size) empty++;
-      }
-      out[name] = { files, bytes, empty, directories };
-    }
-  } catch (error) { out.error = error.name; }
-  return out;
-}).catch(failure => ({ error: failure.message }));
-
 async function run(command, args, options = {}) {
   const result = await execute(command, args, { cwd: app, timeout: 120_000,
     maxBuffer: 16 * 1024 * 1024, ...options });
@@ -104,9 +96,6 @@ async function transportCounters() {
   const response = await fetch(SERVICE + '/__first_app_transport', {cache:'no-store'});
   if (!response.ok) throw Error('TRANSPORT_MEASUREMENT_UNAVAILABLE');
   return response.json();
-}
-async function browserRtcEvidence() {
-  return page.evaluate(readBrowserRtcEvidence);
 }
 function checkpoint(name) { stage = name; console.log(`First app: ${name}`); }
 function passed(name) { report.steps.push(name); }
@@ -118,13 +107,13 @@ async function files(directory) {
 async function packDependency(name) {
   const path = dirname(require.resolve(`${name}/package.json`));
   const result = JSON.parse(await run('npm', ['pack', '--ignore-scripts', '--offline', '--json',
-    '--cache', join(directory, 'npm-cache'), '--pack-destination', directory, path]));
+    '--cache', npmCache, '--pack-destination', directory, path]));
   return join(directory, result[0].filename);
 }
 
 async function localCertificatePin() {
   return new Promise((resolve, reject) => {
-    const socket = connectTls({ host: '127.0.0.1', port: 8790,
+    const socket = connectTls({ host: '127.0.0.1', port: PORT,
       servername: 'service.localhost', rejectUnauthorized: false });
     const finish = (error, value) => {
       clearTimeout(timer); socket.destroy(); error ? reject(error) : resolve(value);
@@ -144,15 +133,14 @@ async function localCertificatePin() {
 try {
   await mkdir(app);
   await mkdir(dirname(reportPath), { recursive: true });
-  // Manual network qualification keeps current harness code, while archive
-  // names/version belong to the selected immutable product graph.
-  const version = values['network-lab-profile']
-    ? await (await import('../test/e2e/network-qualification/anchor.mjs')).selectedProductVersion(root)
-    : (await jsonFile(join(root, 'package.json'))).version;
+  const version = (await jsonFile(join(root, 'package.json'))).version;
   const proof = await jsonFile(join(root, 'dist/provenance.json'));
   const toolsProof = await jsonFile(join(root, 'dist/tools-manifest.json'));
   const archives = Object.fromEntries(['sdk', 'tools', 'engine', 'runtime'].map(name =>
     [name, join(root, 'dist', `tendriller-${name}-${version}.tgz`)]));
+  if (values['authority-archive']) archives.authority = resolve(values['authority-archive']);
+  if (sessionArchive) archives[profileSpec.session] = sessionArchive;
+  if (!values.diagnostic) assert.equal(proof.dirty, false, 'A release qualification requires clean core artifacts');
   for (const artifact of [...proof.artifacts, ...toolsProof.artifacts]) {
     assert.equal(sha256(await readFile(join(root, 'dist', artifact.file))), artifact.sha256, `Archive changed: ${artifact.file}`);
   }
@@ -162,12 +150,26 @@ try {
   if (values['first-app-archive']) {
     const archive = resolve(values['first-app-archive']);
     const release = await jsonFile(join(root, 'dist/manifest.json'));
-    const record = release.artifacts.find(item => item.role === 'first-app' && item.file === release.first_app?.file);
-    assert.ok(record, 'The release manifest must bind the first-app archive.');
-    assert.equal(sha256(await readFile(archive)), record.sha256, 'The first-app archive must match the release manifest.');
+    const manifestKit = sqlBrowser ? release.first_apps?.sql : release.first_app;
+    const kitRole = sqlBrowser ? 'first-app-sql' : 'first-app';
+    const record = release.artifacts.find(item => item.role === kitRole && item.file === manifestKit?.file);
+    assert.ok(record, 'The release manifest must bind the selected first-app profile archive');
+    assert.equal(manifestKit.profile, selectedProfile); assert.deepEqual(manifestKit.packages, profileSpec.packages);
+    assert.equal(sha256(await readFile(archive)), record.sha256, 'The selected first-app archive must match the release manifest');
     const composition = JSON.parse(await run('tar', ['-xOf', archive, 'composition.json']));
-    await verifyFirstAppComposition({ release, composition, coreProof: proof, toolsProof, archives, version, contract: CONTRACT_VERSION });
-    kit = { archive, release, composition, record };
+    assert.deepEqual(composition.profiles?.[selectedProfile], profileSpec);
+    const selectedPackages = join(directory, 'selected-packages'); await mkdir(selectedPackages);
+    for (const role of profileSpec.packages) {
+      const matches = composition.components.filter(item => item.role === role); assert.equal(matches.length, 1, `Exactly one ${role} package`);
+      const item = matches[0]; assert.equal(item.file, basename(item.file)); assert.ok(Number.isSafeInteger(item.size) && item.size > 0 && item.size <= 32 * 1024 * 1024);
+      const extracted = await execute('tar', ['-xOf', archive, 'packages/' + item.file], { encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 });
+      assert.equal(extracted.stdout.length, item.size); assert.equal(sha256(extracted.stdout), item.sha256);
+      if (archives[role]) assert.equal(sha256(await readFile(archives[role])), item.sha256, `The selected kit ${role} must match the local qualification graph`);
+      const path = join(selectedPackages, item.file); await writeFile(path, extracted.stdout); archives[role] = path;
+      if (role === profileSpec.session) sessionArchive = path;
+    }
+    await verifyFirstAppComposition({ release, composition, coreProof: proof, toolsProof, archives, version, contract: CONTRACT_VERSION, profile: selectedProfile });
+    kit = { archive, release, composition, record, profile: selectedProfile };
     passed('complete exact-kit SDK/runtime/engine/tools identities before isolated host startup');
   }
   const engine = join(directory, 'engine'); await mkdir(engine);
@@ -184,7 +186,7 @@ try {
   checkpoint('start isolated packed host');
   let existing;
   try { existing = await fetch(`${SERVICE}/health`, { signal: AbortSignal.timeout(1_000) }); } catch {}
-  if (existing) { await existing.body?.cancel(); throw Error('Port 8790 already serves a host. Stop it before this isolated test.'); }
+  if (existing) { await existing.body?.cancel(); throw Error(`Port ${PORT} already serves a host. Choose an unused FIRST_APP_PORT for this isolated test; do not stop another session’s process.`); }
   // Use the public runtime API directly: address-printing in the dev CLI needs
   // network-interface inspection that restricted execution hosts may disallow.
   const { workerOptions: sourceOptions } = unstable_getMiniflareWorkerOptions(join(root, 'server/wrangler.jsonc'));
@@ -198,7 +200,7 @@ try {
   const oauthConfiguration = { resource: SERVICE + '/mcp', clients: [{ id: 'first-app-test', name: 'First app test',
     redirectUris: ['https://chatgpt.com/connector_platform_oauth_redirect'], scopes: ['tendrils:create', 'tendrils:list'] }] };
   host = new Miniflare({ ...convertV4MiniflareOptions({
-    host: '127.0.0.1', port: 8790, https: true, cf: false,
+    host: '127.0.0.1', port: PORT, https: true, cf: false,
     workers: [
       { name: 'first-app-network', modules: true, script: FIRST_APP_WEBSOCKET_PROXY_WORKER,
         compatibilityDate: workerOptions.compatibilityDate, serviceBindings: { PACKED_HOST: 'first-app-packed-host' } },
@@ -266,29 +268,32 @@ try {
       const original = await execute('tar', ['-xOf', sourceArchive, file], { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 });
       assert.equal(sha256(await readFile(join(app, file))), sha256(original.stdout), `First-app source changed: ${file}`);
     }
-    for (const item of composition.components.filter(item => ['sdk', 'tools', 'session'].includes(item.role))) {
+    for (const item of composition.components.filter(item => profileSpec.packages.includes(item.role))) {
       const path = join(app, 'packages', item.file);
       assert.equal(sha256(await readFile(path)), item.sha256, `First-app package changed: ${item.role}`);
-      if (item.role === 'session') sessionArchive = path;
+      if (item.role === profileSpec.session) { sessionArchive = path; archives[item.role] = path; }
       else {
-        assert.equal(sha256(await readFile(archives[item.role])), item.sha256);
+        if (archives[item.role]) assert.equal(sha256(await readFile(archives[item.role])), item.sha256);
         archives[item.role] = path;
       }
     }
     assert.ok(sessionArchive, 'The first-app archive must carry its pinned session package.');
     report.composition = { id: composition.id, first_app_sha256: record.sha256 };
   } else await run('tar', ['-xzf', sourceArchive, '-C', app]);
-  const buildDependencies = sqlOnly ? [] : [await packDependency('esbuild'),
+  const buildDependencies = [await packDependency('esbuild'),
     await packDependency(`@esbuild/${process.platform}-${process.arch}`)];
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
-    '--cache', join(directory, 'npm-cache'), archives.sdk, archives.tools, sessionArchive, ...buildDependencies]);
+    '--cache', npmCache, archives.sdk, archives.tools, archives.authority, sessionArchive, ...buildDependencies]);
   const sessionProof = await jsonFile(join(app, 'node_modules/@chronolog/peer-session/provenance.json'));
-  assert.equal(sessionProof.dirty, false, 'Use a clean, explicitly selected public Chronolog archive.');
+  if (!values.diagnostic) assert.equal(sessionProof.dirty, false, 'Use a clean, explicitly selected public Chronolog archive.');
+  const authorityProof = await jsonFile(join(app, 'node_modules/@chronolog/authority/provenance.json'));
+  if (!values.diagnostic) assert.equal(authorityProof.dirty, false, 'Use matching clean public authority artifacts');
+  assert.equal(authorityProof.source, sessionProof.source, 'Authority and session must share a source checkpoint');
+  assert.equal(authorityProof.sourceTree, sessionProof.sourceTree, 'Authority and session must share a source tree');
   report.chronolog = { source: sessionProof.source, dirty: sessionProof.dirty, sha256: sha256(await readFile(sessionArchive)) };
-  if (sqlOnly) {
-    assert.ok(sessionProof.sqlEngines?.includes('native'), '--sql-native-only requires a public Chronolog archive built with --sql-native.');
-    report.chronolog.native_engine = sessionProof.nativeEngine;
-  }
+  report.profile = selectedProfile;
+  if (sqlBrowser) { assert.deepEqual(sessionProof.sqlEngines, ['browser'], 'The SQL kit is a portable browser profile, not a native SQL install'); assert.ok(sessionProof.wasmEngine); report.chronolog.wasmEngine = sessionProof.wasmEngine; }
+
 
   const preload = join(directory, 'local-network.mjs');
   await writeFile(preload, `import { Agent, setGlobalDispatcher, WebSocket } from ${JSON.stringify(pathToFileURL(require.resolve('undici')).href)};
@@ -320,750 +325,336 @@ export async function closeLocalTransport() {
   await dispatcher.close();
 }
 `);
-  const project = sqlOnly ? join(app, 'sql') : app;
+  const project = sqlBrowser ? join(app, 'sql') : app;
   const node = async args => run(process.execPath, ['--import', preload, ...args], { cwd: project });
-  const cli = join(app, 'node_modules/@tendriller/tools/bin/tendril.mjs');
-  // These setup/reopen probes deliberately run without a resident owner.
-  const cliJson = async args => JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'own', ...args]));
-  passed('domain-served tutorial and independently installed public packages');
-  if (sqlOnly) {
-    checkpoint('load the exact native SQL engine');
-    const engine = JSON.parse(await node(['engine.mjs']));
-    assert.equal(engine.available, true); assert.match(engine.executionManifestDigest, /^[a-f0-9]{64}$/);
-    report.sql_engine = engine;
-    passed('explicit native SQL capability and execution manifest');
-  }
-
-  checkpoint('create, initialize and publish before owner claim');
-  if (sqlOnly) await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'First-app qualification']);
-  else {
-    const preparation = JSON.parse(await node(['account-setup.mjs', 'prepare', SERVICE, 'First-app qualification']));
+  passed('domain-served tutorial and independently installed public SDK/authority/session packages');
+  checkpoint('create, prepare and publish before any browser data key exists');
+  {
+    const preparation = JSON.parse(await node(['account-setup.mjs', 'prepare', SERVICE, sqlBrowser ? 'First-app SQL browser qualification' : 'First-app browser qualification']));
     const privateIntent = await jsonFile(join(project, '.tendriller/account-setup.json'));
     assert.equal(JSON.stringify(preparation).includes(privateIntent.credential), false);
     const mcp = async (name, args) => {
       const response = await fetch(SERVICE + '/mcp', { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
         headers: { Authorization: 'Bearer ' + oauthToken, 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
-      assert.equal(response.status, 200);
-      const reply = await response.json();
-      assert.ok(reply.result && reply.result.isError !== true, 'The actual linked-account setup tool must succeed.');
-      return reply.result.structuredContent;
+      assert.equal(response.status, 200); const reply = await response.json(); assert.ok(reply.result && !reply.result.isError); return reply.result.structuredContent;
     };
-    // Deliberately ignore the first ready reply: inspect restores the same page
-    // using only the previously retained operation and local credential.
-    const first = await mcp(preparation.prepare.tool, preparation.prepare.arguments);
+    const ready = await mcp(preparation.prepare.tool, preparation.prepare.arguments);
     const recovered = await mcp(preparation.inspect.tool, preparation.inspect.arguments);
-    assert.equal(recovered.pageId, first.pageId); assert.equal(recovered.state, 'ready');
+    assert.equal(recovered.pageId, ready.pageId); assert.equal(recovered.state, 'ready');
     assert.equal(JSON.stringify(recovered).includes(privateIntent.credential), false);
-    const receiptPath = join(project, '.tendriller/account-setup-result.json');
-    await writeFile(receiptPath, JSON.stringify(recovered), { mode: 0o600, flag: 'wx', flush: true });
-    await node(['account-setup.mjs', 'finish', receiptPath]);
+    const resultPath = join(project, '.tendriller/account-setup-result.json'); await writeFile(resultPath, JSON.stringify(recovered), { mode: 0o600, flag: 'wx', flush: true });
+    await node(['account-setup.mjs', 'finish', resultPath]); await node(['account-setup.mjs', 'finish', resultPath]);
     assert.equal((await jsonFile(join(project, '.tendriller/handle.json'))).token, privateIntent.credential);
-    await node(['account-setup.mjs', 'finish', receiptPath]);
-    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind('e2e-owner').first()).n, 1);
-    passed('account-linked MCP setup with private preflight intent and exact lost-reply recovery');
+    passed('account-linked setup with retained private intent and actual lost-reply inspection');
   }
   const handle = await jsonFile(join(project, '.tendriller/handle.json'));
-  const localPage = new URL(handle.page_url); localPage.port = '8790';
-  const beforeClaim = JSON.parse(await node(['setup.mjs', 'init']));
-  assert.equal(beforeClaim.initialized, true);
-  let preparedPublication;
-  if (!sqlOnly) {
-    await node(['build.mjs']);
-    const preparedSizes = await Promise.all((await files(join(app, 'page'))).map(async path => (await readFile(path)).byteLength));
-    report.preclaim_code = { totalBytes: preparedSizes.reduce((sum, n) => sum + n, 0), largestFileBytes: Math.max(...preparedSizes) };
-    preparedPublication = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
-    assert.ok(preparedPublication.publication.id);
-    assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
-      { publication: preparedPublication.publication, receipt: preparedPublication },
-      'A separate native process must reopen the original signed intent and retained receipt.');
-  }
-  passed('native application initialized and first signed UI published before claim');
-  const initialClaim = await fetch(localPage, { redirect: 'manual' });
-  assert.equal(initialClaim.status, 302); await initialClaim.body?.cancel();
-  const claim = await fetch(initialClaim.headers.get('Location'), { redirect: 'manual',
-    headers: { Cookie: `__Host-tendriller=${ownerToken}` } });
-  assert.equal(claim.status, 303, 'Synthetic owner must traverse the actual claim flow.'); await claim.body?.cancel();
-  const redeemUrl = new URL(claim.headers.get('Location')); redeemUrl.port = '8790';
-  const redeem = await fetch(redeemUrl, { redirect: 'manual' });
-  assert.equal(redeem.status, 303); await redeem.body?.cancel();
-  const initialized = JSON.parse(await node(['setup.mjs', 'init']));
-  assert.equal(initialized.initialized, true);
-  if (!sqlOnly) assert.deepEqual((await cliJson(['query', 'notes', 'null'])).value, []);
-  const device = await jsonFile(join(project, '.tendriller/initialized.json'));
-  await node(['setup.mjs', 'init']);
-  assert.deepEqual(await jsonFile(join(project, '.tendriller/initialized.json')), device, 'Initialization retry preserves identity.');
-  report.application_id = handle.application.id; report.native_device_id = device.deviceId;
-  passed('owner claim, exact initialization retry, selected genesis and native reopen');
-
-  if (sqlOnly) {
-    const empty = await cliJson(['query', 'inventory', 'null']);
-    assert.deepEqual(empty.value.stock, []); assert.deepEqual(empty.value.transfers, []);
-    checkpoint('exercise guarded SQL transactions and exact demo retry');
-    const demo = JSON.parse(await node(['demo.mjs']));
-    assert.equal(demo.status, 'passed'); assert.deepEqual(demo.stock, { source: 7, destination: 3 });
-    assert.equal(demo.accepted, 'inventory-demo-transfer-v1'); assert.equal(demo.rejected, 'inventory-demo-rejected-v1');
-    const saved = ['demo-transfer.json', 'demo-rejection.json', 'schema.json', 'descriptor.json', 'genesis-request.json'];
-    const fingerprints = await Promise.all(saved.map(name => readFile(join(project, '.tendriller', name)).then(sha256)));
-    const retry = JSON.parse(await node(['demo.mjs']));
-    assert.deepEqual(retry, demo, 'SQL demo retry must use the retained original operation results.');
-    for (let i = 0; i < saved.length; i++)
-      assert.equal(sha256(await readFile(join(project, '.tendriller', saved[i]))), fingerprints[i], `SQL retry changed ${saved[i]}.`);
-    const retained = await cliJson(['query', 'inventory', 'null']);
-    assert.deepEqual(Object.fromEntries(retained.value.stock.map(row => [row.id, row.units])), { destination: 3, source: 7 });
-    assert.equal(retained.value.transfers.length, 1, 'Exact retry must not create another transfer receipt.');
-    assert.equal(retained.value.activity.filter(event => event.topic === 'inventory.transferred').length, 1);
-    assert.equal((await cliJson(['operation', demo.accepted])).state.outcome, 'accepted');
-    const rejected = (await cliJson(['operation', demo.rejected])).state;
-    assert.equal(rejected.outcome, 'rejected'); assert.equal(rejected.rejectionCode, 'assert:insufficient_stock');
-    assert.deepEqual(await jsonFile(join(project, '.tendriller/initialized.json')), device);
-    report.sql_demo = demo;
-    report.sql_retained = { stock: demo.stock, receipts: retained.value.transfers.length,
-      transfer_events: retained.value.activity.filter(event => event.topic === 'inventory.transferred').length };
-    passed('guarded SQL transfer accepted; rejected transfer leaves balances, receipts and effective events unchanged');
-    passed('exact SQL demo retry and coherent queries/outcomes after separate-process reopen');
-    report.status = 'partial'; report.native_checks = 'passed';
-    report.limits.push('Browser and published UI behavior omitted by --sql-native-only.');
-    console.log('First-app native SQL setup and transaction checks passed; browser SQL qualification remains untested.');
-  } else {
-  assert.equal((await cliJson(['command', 'addNote', JSON.stringify({ text: 'Native setup and durable reopen' }),
-    '--operation', 'native-setup-1'])).outcome, 'accepted');
-  const retained = await cliJson(['query', 'notes', 'null']);
-  assert.equal(retained.value.length, 1); assert.equal(retained.value[0].operationId, 'native-setup-1');
-  passed('real native command and coherent query after process reopen');
-
-  checkpoint('build and sign the complete authored graph');
+  const requestHost = async (path, init = {}) => {
+    const response = await fetch(handle.api + '/' + path, { ...init, headers: { Authorization: 'Bearer ' + handle.token, ...init.headers } });
+    const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
+  };
+  await node(['setup.mjs', 'init', ...(values['browser-finalizer'] ? ['--browser-finalizer'] : [])]);
+  const beforeBrowser = await requestHost('application'); assert.equal(beforeBrowser.authority, null);
   await node(['build.mjs']);
-  const initial = await jsonFile(join(app, '.tendriller/initial-input.json'));
-  for (const path of await files(join(app, 'page'))) {
-    const bytes = await readFile(path);
-    assert.equal(bytes.includes(Buffer.from(handle.token)), false, 'Agent token leaked into authored output.');
-    assert.equal(bytes.includes(Buffer.from(initial.epochKey)), false, 'Bootstrap epoch key leaked into authored output.');
-    assert.doesNotMatch(path, /\.tendriller|device\.sqlite/);
+  const publication = JSON.parse(await node(['publish.mjs'])); assert.match(publication.publicationId, /^[a-f0-9]{64}$/);
+  assert.equal((await requestHost('application')).authority, null, 'Publishing must not invent a data root/native device');
+  assert.equal(JSON.parse(await node(['publish.mjs'])).publicationId, publication.publicationId, 'Exact signed publication retry');
+  for (const path of await files(join(project, 'page'))) assert.doesNotMatch(path, /\.tendriller|device\.sqlite|publisher\.json/);
+  report.publication_id = publication.publicationId; passed('independent signed code publication and exact retry before first data root');
+
+  checkpoint('launch real fresh browser profiles with no native data process');
+  const certificatePin = await localCertificatePin();
+  browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+    args: [`--host-resolver-rules=MAP *.localhost:443 127.0.0.1:${PORT}, MAP *.localhost 127.0.0.1`, `--ignore-certificate-errors-spki-list=${certificatePin}`] });
+  report.browser = browser.version(); report.browser_checks = 'running'; report.screenshots = {};
+  async function profile(viewport) {
+    const context = await browser.newContext({ viewport });
+    await context.addCookies([{ name: '__Host-tendriller', value: ownerToken, domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
+    await context.addInitScript(({ relay }) => {
+      const Native = globalThis.RTCPeerConnection; globalThis.__firstAppRtcPeers = [];
+      globalThis.RTCPeerConnection = class extends Native { constructor(...args) { if (relay) throw Error('QUALIFICATION_RTC_UNAVAILABLE'); super(...args); globalThis.__firstAppRtcPeers.push(this); } };
+    }, { relay: values.transport === 'relay' });
+    if (process.env.FIRST_APP_NO_SHARED_WORKER === '1') await context.addInitScript(() => { delete globalThis.SharedWorker; });
+    const label=browserProfiles.length?'second':'first';
+    context.on('response',response=>{const url=new URL(response.url());if(response.status()>=400&&url.pathname.includes('/peers/'))noteNetwork({profile:label,type:'http',route:url.pathname.split('/peers/').at(-1).split('/').slice(0,2).join('/'),status:response.status()});});
+    context.on('requestfailed',request=>{const url=new URL(request.url());if(url.pathname.includes('/peers/'))noteNetwork({profile:label,type:'failed',route:url.pathname.split('/peers/').at(-1).split('/').slice(0,2).join('/'),error:request.failure()?.errorText?.slice(0,160)});});
+    context.on('console',message=>{if(message.type()==='warning'||message.type()==='error')noteNetwork({profile:label,type:'console',message:message.text().slice(0,240)});});
+    const target = await context.newPage();
+    target.on('pageerror', error => { report.browser_errors ??= []; if (report.browser_errors.length < 12) report.browser_errors.push(error.message.slice(0, 300)); });
+    browserProfiles.push({label,page:target});
+    await target.goto(handle.page_url); return { context, page: target };
   }
-  const publication = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
-  const retry = await cliJson(['publish', join(app, 'page'), '--operation', 'first-app-publication-1']);
-  assert.deepEqual(retry, publication, 'Exact publication retry must recover its original receipt.');
-  assert.deepEqual(publication, preparedPublication, 'Owner claim and rebuild must preserve the pre-claim publication identity.');
-  assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
-    { publication: publication.publication, receipt: publication }, 'Exact retry and another process reopen preserve the acknowledged receipt.');
-  report.publication_id = publication.publication.id;
-  passed('retained publication receipt inspected after native process reopen and exact retry');
-  passed('public-only authored graph, signed publication and exact publication retry');
-  report.native_checks = 'passed';
-
-  if (values['native-only']) {
-    report.status = 'partial';
-    report.limits.push('Browser and cross-device behavior omitted by --native-only.');
-    console.log('First-app native/package/host checks passed; browser qualification remains untested.');
-  } else {
-    report.browser_checks = 'running';
-    checkpoint('launch browser');
-    // Context.ignoreHTTPSErrors does not cover subsequent SharedWorker fetches.
-    // Trust only this loopback fixture certificate across Chromium targets;
-    // never disable certificate verification globally or alter the public app.
-    const certificatePin = await localCertificatePin();
-    const browserOptions = { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-      args: ['--host-resolver-rules=MAP *.localhost:443 127.0.0.1:8790, MAP *.localhost 127.0.0.1',
-        `--ignore-certificate-errors-spki-list=${certificatePin}`] };
-    if (values['network-lab-profile']) {
-      const { launchNetworkBrowser } = await import('../test/e2e/network-qualification/browser-launch.mjs');
-      labBrowser = await launchNetworkBrowser(browserOptions); browser = labBrowser.browser;
-    } else browser = await chromium.launch(browserOptions);
-    report.browser = await browser.version();
-    const context = labBrowser?.context ?? await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-    report.connectionErrors = [];
-    await context.exposeBinding('__firstAppConnection',(_source,value)=>{if(report.connectionErrors.length<50&&/^(?:APPLICATION_|PEER_|DEVICE_|OWNER_|ENDPOINT_)[A-Z_]{1,90}$/.test(value))report.connectionErrors.push(value);});
-    report.rtcLifecycle = [];
-    report.rtcBridge = [];
-    await context.exposeBinding('__firstAppRtcBridge', (_source,value) => { if(report.rtcBridge.length<200) report.rtcBridge.push(value); });
-    await context.exposeBinding('__firstAppRtcLifecycle', (_source, value) => {
-      if (report.rtcLifecycle.length < 200 && value && ['created','state'].includes(value.type))
-        report.rtcLifecycle.push({ type:value.type, connection:value.connection, ice:value.ice, gathering:value.gathering });
+  const first = await profile({ width: 1280, height: 960 }); page = first.page;
+  const saveButton = target => target.locator(sqlBrowser ? '#initialize' : '#submit');
+  await expect(saveButton(page)).toBeEnabled({ timeout: 60_000 });
+  const firstKey = await page.locator('#public-key').inputValue(); assert.match(firstKey, /^[a-f0-9]{64}$/);
+  report.owner_route = process.env.FIRST_APP_NO_SHARED_WORKER === '1' || sqlBrowser ? 'elected' : 'shared-or-elected';
+  const screenshot = async (target, label) => { const file = `first-app-${sqlBrowser ? 'sql-' : ''}${label}.png`; await target.screenshot({ path: join(dirname(reportPath), file), fullPage: true }); report.screenshots[label] = file; };
+  await screenshot(page, 'desktop-before');
+  async function selectDomainWithoutNavigation(selector) {
+    const beforeHash = new URL(page.url()).hash;
+    const identity = await page.evaluate(() => {
+      window.__firstAppDomainDocument = crypto.randomUUID();
+      return { marker: window.__firstAppDomainDocument, timeOrigin: performance.timeOrigin };
     });
-    await context.addInitScript(({mode}) => {
-      const callers = () => String(new Error().stack).split('\n').slice(2,10).map(line=>/^\s*at ([A-Za-z0-9_.$<> ]+) \(/.exec(line)?.[1]).filter(Boolean);
-      addEventListener('DOMContentLoaded',()=>{let last;new MutationObserver(()=>{const value=document.querySelector('#connection-card code')?.textContent;if(value&&value!==last){last=value;const code=/\b(?:APPLICATION_|PEER_|DEVICE_|OWNER_|ENDPOINT_)[A-Z_]{1,90}\b/.exec(value.slice(0,400))?.[0];if(code)void window.__firstAppConnection(code).catch(()=>{});}}).observe(document.documentElement,{subtree:true,childList:true,characterData:true});},{once:true});
-      const abort = AbortController.prototype.abort;
-      AbortController.prototype.abort = function(reason){
-        if(reason?.message==='RTC_PROVIDER_LOST')void window.__firstAppRtcBridge({action:'provider-closed',callers:callers()}).catch(()=>{});
-        return abort.call(this,reason);
-      };
-      const observe = (data,direction) => {
-        const value = data?.protocol === 'tendriller/browser-rtc-provider/v1' ? data.payload : data;
-        if(value?.type!=='chronolog/peer-session/rtc-endpoint/v1'||!['open','ready','send','description','sent','close-signaling','signaling-closed','ended','close'].includes(value.action)) return;
-        const error = typeof value.error==='string'&&/^(?:WEBRTC_|APPLICATION_|RTC_)[A-Z_]{1,100}$/.test(value.error) ? value.error : undefined;
-        void window.__firstAppRtcBridge({direction,action:value.action,...(error?{error}:{})}).catch(()=>{});
-      };
-      const post = MessagePort.prototype.postMessage;
-      MessagePort.prototype.postMessage = function(value,...rest){ observe(value,'page');return post.call(this,value,...rest); };
-      if(globalThis.SharedWorker){const Original=globalThis.SharedWorker;globalThis.SharedWorker=class extends Original{constructor(...args){super(...args);this.port.addEventListener('message',event=>observe(event.data,'worker'));}};}
-      if(globalThis.Worker){const Original=globalThis.Worker;globalThis.Worker=class extends Original{constructor(...args){super(...args);this.addEventListener('message',event=>observe(event.data,'worker'));}postMessage(value,...rest){observe(value,'page');return super.postMessage(value,...rest);}};}
-      const Native = globalThis.RTCPeerConnection;
-      window.__firstAppRtcPeers = [];
-      globalThis.RTCPeerConnection = class extends Native {
-        constructor(...args) {
-          if (mode === 'relay') throw new Error('QUALIFICATION_RTC_UNAVAILABLE');
-          super(...args); window.__firstAppRtcPeers.push(this);
-          const report = type => { void window.__firstAppRtcLifecycle({type,connection:this.connectionState,ice:this.iceConnectionState,gathering:this.iceGatheringState}).catch(()=>{}); };
-          report('created');
-          for (const type of ['connectionstatechange','iceconnectionstatechange','icegatheringstatechange']) this.addEventListener(type,()=>report('state'));
-        }
-      };
-    }, {mode:values.transport});
-    report.expected_transport = values.transport;
-    // FIRST_APP_NO_SHARED_WORKER=1 runs the whole flow on the fallback owner, as on browsers without SharedWorker.
-    if (process.env.FIRST_APP_NO_SHARED_WORKER === '1') { await context.addInitScript(() => { delete globalThis.SharedWorker; }); report.owner_route = 'elected'; }
-    context.on('requestfailed', request => {
-      report.browser_network_failures ??= [];
-      if (report.browser_network_failures.length < 20) {
-        const url = new URL(request.url());
-        report.browser_network_failures.push({ endpoint: url.origin + url.pathname, error: request.failure()?.errorText });
-      }
-    });
-    page = await context.newPage();
-    // Chromium's own record of storage buckets being created, updated or deleted (eviction evidence).
-    report.storage_bucket_events = [];
-    const storageEvents = await context.newCDPSession(page);
-    for (const name of ['Storage.storageBucketCreatedOrUpdated', 'Storage.storageBucketDeleted'])
-      storageEvents.on(name, event => { if (report.storage_bucket_events.length < 200) report.storage_bucket_events.push({ at: new Date().toISOString(), event: name.slice(8), detail: JSON.stringify(event).slice(0, 300) }); });
-    trackStorage = origin => storageEvents.send('Storage.setStorageBucketTracking', { storageKey: new URL(origin).origin + '/', enable: true }).catch(error => { report.storage_tracking_error = error.message; });
-    page.on('pageerror', error => {
-      report.browser_errors ??= [];
-      if (report.browser_errors.length < 12) report.browser_errors.push(error.message);
-    });
-    // Bounded browser console tail for failure diagnosis (errors and warnings only).
-    page.on('console', message => {
-      if (!['error', 'warning'].includes(message.type())) return;
-      report.browser_console ??= [];
-      report.browser_console.push(`${message.type()}: ${message.text()}`.slice(0, 400));
-      if (report.browser_console.length > 40) report.browser_console.shift();
-    });
-    report.screenshots = {};
-    await page.goto(SERVICE); await page.screenshot({ path: join(dirname(reportPath), 'first-app-homepage-desktop.png'), fullPage: true });
-    report.screenshots.homepage_desktop = 'first-app-homepage-desktop.png';
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(dirname(reportPath), 'first-app-homepage-mobile.png'), fullPage: true });
-    report.screenshots.homepage_narrow_viewport = 'first-app-homepage-mobile.png';
-    await page.setViewportSize({ width: 1280, height: 960 });
-    await context.addCookies([{ name: '__Host-tendriller', value: ownerToken,
-      domain: 'service.localhost', path: '/', secure: true, httpOnly: true, sameSite: 'Lax' }]);
-    checkpoint('open the page: a new browser sets itself up without a button');
-    await page.setViewportSize({ width: 390, height: 844 });
-    await trackStorage(handle.page_url);
-    await page.goto(handle.page_url);
-    await expect(page.locator('#connection-card')).toBeVisible();
-    await expect(page.locator('#connection-card button:visible')).toHaveCount(0);
-    await expect(page.locator('#app-content')).toBeHidden();
-    await expect(page.locator('#device-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 30_000 });
-    const browserDevice = await page.locator('#device-key').inputValue();
-    const retainedPairing = () => page.evaluate(id => JSON.parse(localStorage.getItem(`tendriller-browser-${id}:pairing-v1`)), handle.application.id);
-    await expect.poll(async () => (await retainedPairing())?.pairingId, { timeout: 30_000 }).toMatch(/^[a-f0-9]{64}$/);
-    const firstRequest = await retainedPairing();
-    await expect(page.locator('#connection')).toContainText('Setting up this browser');
-    await page.screenshot({ path: join(dirname(reportPath), 'first-app-connect-mobile.png'), fullPage: true });
-    report.screenshots.connect_narrow_viewport = 'first-app-connect-mobile.png';
-    await page.reload();
-    await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
-    assert.deepEqual((await retainedPairing()).pairingId, firstRequest.pairingId, 'Reload must retain the original pairing request.');
-    report.browser_device_id = browserDevice;
-
-    // Drive the same real native bootstrap without a second store owner. This is
-    // the agent side of the test; it adds no protocol, backend or fixture state.
-    // Only the inference provider function is replaced, inside this private test
-    // process. Signals, encrypted content and reviewed commands remain real.
-    const evidencePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aL1sAAAAASUVORK5CYII=', 'base64');
-    await writeFile(join(app, 'test-peer.mjs'), nativeTestPeerSource({
-      evidenceBase64: evidencePng.toString('base64'), browserDeviceId: browserDevice, transportModule: pathToFileURL(preload).href,
-      networkQualification: Boolean(values['network-lab-profile']),
-    }));
-    async function startPeer() {
-      const child = spawn(process.execPath, ['--import', preload, join(app, 'test-peer.mjs')], { cwd: app, stdio: ['pipe', 'pipe', 'pipe'] });
-      const waiting = new Map(); let sequence = 0, readyResolve, readyReject, stderr = '';
-      const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
-      child.stderr.on('data', bytes => { stderr = (stderr + bytes.toString()).slice(-6_000); });
-      createInterface({ input: child.stdout }).on('line', line => {
-        const value = JSON.parse(line);
-        if (value.ready) { readyResolve(value); return; }
-        const held = waiting.get(value.id); if (!held) return;
-        waiting.delete(value.id); clearTimeout(held.timer);
-        if (value.error) held.reject(Error(value.error)); else held.resolve(value.result ?? value);
-      });
-      child.once('close', code => {
-        const error = Error(`Native peer exited (${code}): ${stderr}`); readyReject(error);
-        for (const held of waiting.values()) { clearTimeout(held.timer); held.reject(error); } waiting.clear();
-      });
-      const client = { child, async request(action, input = {}, timeoutMs = 40_000) {
-        if (child.exitCode !== null || child.signalCode !== null) throw Error(`Native peer is closed: ${stderr}`);
-        const id = ++sequence;
-        return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => { waiting.delete(id); reject(Error(`Native ${action} timed out: ${stderr}`)); }, timeoutMs);
-          waiting.set(id, { resolve, reject, timer }); child.stdin.write(JSON.stringify({ id, action, ...input }) + '\n');
-        });
-      } };
-      peer = client;
-      let timer;
-      const metadata = await Promise.race([ready, new Promise((_resolve, reject) => {
-        timer = setTimeout(() => reject(Error(`Native peer did not open: ${stderr}`)), 40_000);
-      })]).finally(() => clearTimeout(timer));
-      assert.equal(metadata.deviceId, device.deviceId);
-      client.metadata = metadata;
-      return client;
-    }
-    await startPeer();
-    checkpoint('retain the exact reviewed prefix across native restart');
-    await expect.poll(async () => (await peer.request('ordering-pause')).pause,
-      { timeout: 30_000, message: 'The native participant must durably pause ordering before owner review.' }).not.toBeNull();
-    const paused = (await peer.request('ordering-pause')).pause;
-    assert.match(paused.operationId, /^pairing:/);
-    assert.ok(paused.base);
-    await closeTestPeer(peer); peer = undefined;
-    await startPeer();
-    assert.deepEqual((await peer.request('ordering-pause')).pause, paused,
-      'Closing and reopening the native owner must preserve the exact review prefix.');
-    const prepared = await peer.request('pairing-process');
-    assert.equal(prepared.find(item => item.publicKey === browserDevice)?.state, 'committed',
-      'The authenticated browser must auto-approve and commit without a manual review redirect.');
-    await expect(page.locator('#app-content')).toBeVisible({ timeout: 60_000 });
-    await expect(page.locator('#connection-card')).toBeHidden();
-    assert.equal(new URL(page.url()).origin, new URL(handle.page_url).origin,
-      'The browser must stay on the app page without redirecting to /pairings/.');
-    await expect.poll(async () => (await peer.request('ordering-pause')).pause,
-      { timeout: 30_000, message: 'Only verified committed authority may release the retained pause.' }).toBeNull();
-    await page.screenshot({ path: join(dirname(reportPath), 'first-app-connected-after-approval-mobile.png'), fullPage: true });
-    report.screenshots.connected_after_approval_narrow_viewport = 'first-app-connected-after-approval-mobile.png';
-    await page.setViewportSize({ width: 1280, height: 960 });
-    report.pairing = { reviewed_prefix: paused.base, recovered_native_pause: true, committed: true, autoApproved: true };
-    passed('retained browser proof, one-go automatic enrollment without review redirect, durable native pause across restart and exact signed enrollment');
-    const attached = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'self']));
-    assert.equal(attached.deviceId, device.deviceId);
-    assert.equal(attached.endpoint.ownerInstanceId, peer.metadata.ownerInstanceId);
-    const attachedNotes = JSON.parse(await node([cli, '--session', join(project, 'session.mjs'), '--mode', 'attach', 'query', 'notes', 'null']));
-    assert.deepEqual(attachedNotes.value, (await peer.request('query')).value);
-    passed('separate CLI processes attach to the resident native owner without another signer/store');
-    checkpoint('exchange retained commands from the automatically connected browser');
-    report.opfs_snapshots = { connected: await opfsInventory(page) };
-    await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
-    const transportBefore = await transportCounters();
-    await page.locator('#note').fill('Created in the browser'); await page.locator('#submit').click();
-    await expect(page.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
-    await expect(page.locator('#operation-status')).toContainText('Applied: accepted', { timeout: 30_000 });
-    await expect(page.locator('#operation-status')).toContainText('peer retention receipt(s) observed', { timeout: 30_000 });
-    assert.deepEqual((await peer.request('query')).value.map(note => note.text),
-      ['Native setup and durable reopen', 'Created in the browser']);
-    const transportAfter = await transportCounters();
-    assert.equal(transportAfter.instance, transportBefore.instance, 'Network counter restart invalidates measurement');
-    report.transport = { expected:values.transport, before:transportBefore, after:transportAfter };
-    if (values.transport === 'direct') {
-      assert.equal(transportAfter.relayUpgrades, 0, 'The shipping default must establish RTC without a hosted relay');
-      assert.equal(transportAfter.relayBinaryBytes - transportBefore.relayBinaryBytes, 0, 'Direct application work used host relay bytes');
-      // Candidate-pair statistics may lag the just-applied command. Observe
-      // local Chromium stats only; never send another command to manufacture proof.
-      let observation;
-      try { observation = await observeRtcTraffic(browserRtcEvidence); }
-      catch (error) { report.transport.rtcObservation = error.rtcObservation; throw error; }
-      report.transport.rtcObservation = observation;
-      report.transport.rtc = observation.final;
-      const afterStatistics = await transportCounters();
-      report.transport.afterStatistics = afterStatistics;
-      assert.equal(afterStatistics.instance, transportBefore.instance, 'Network counter restart invalidates statistics observation');
-      assert.equal(afterStatistics.relayUpgrades, 0, 'RTC statistics observation must not conceal relay fallback');
-      assert.equal(afterStatistics.relayBinaryBytes - transportBefore.relayBinaryBytes, 0, 'RTC statistics observation used host relay bytes');
-      assert.ok(hasNonTurnTraffic(observation.final), 'Real RTC application traffic and known non-TURN candidate types are required');
-    } else {
-      report.transport.rtc = await browserRtcEvidence();
-      assert.ok(transportAfter.relayUpgrades > 0, 'A failed RTC capability must open the maintained fallback');
-      assert.ok(transportAfter.relayBinaryBytes > transportBefore.relayBinaryBytes, 'Fallback must carry the verified application command');
-    }
-    passed('browser command observed by the real native session, with independently measured ' + values.transport + ' transport');
-    passed('public UI adapters expose actual operation outcome and separate retained coverage');
-
-    report.opfs_snapshots.after_commands = await opfsInventory(page);
-    checkpoint('a second tab attaches to the same device owner without any prompt');
-    const second = await context.newPage();
-    second.on('pageerror', error => { report.browser_errors ??= []; if (report.browser_errors.length < 12) report.browser_errors.push(`second tab: ${error.message}`); });
-    await second.goto(handle.page_url);
-    await expect(second.locator('#app-content')).toBeVisible({ timeout: 60_000 });
-    await expect(second.locator('#device-key')).toHaveValue(browserDevice);
-    await expect(second.locator('#connection-card button:visible')).toHaveCount(0);
-    await second.locator('#note').fill('Created in a second tab'); await second.locator('#submit').click();
-    await expect(second.locator('#result')).toContainText('Applied: accepted', { timeout: 30_000 });
-    await expect(page.locator('#notes')).toContainText('Created in a second tab', { timeout: 30_000 });
-    await second.reload();
-    await expect(second.locator('#app-content')).toBeVisible({ timeout: 60_000 });
-    if (values.transport === 'direct') {
-      // Lose the page actually hosting RTC, while a sibling keeps the same
-      // application open. A fresh native request must work over a new direct
-      // connection, not merely display an old materialized read.
-      const beforeHandoff = await transportCounters();
-      await page.close(); page = second;
-      await expect(async () => {
-        const value = await page.evaluate(() => window.appRequests.request('rows', {count:1,width:1}, {timeoutMs:5000}));
-        assert.equal(value.rows[0].label, 'row "0"');
-      }).toPass({timeout:60_000,intervals:[100,1000]});
-      const afterHandoff = await transportCounters();
-      assert.equal(afterHandoff.instance, beforeHandoff.instance);
-      assert.equal(afterHandoff.relayBinaryBytes, beforeHandoff.relayBinaryBytes, 'Provider handoff must reconnect P2P when another provider exists');
-      const rtc = await browserRtcEvidence();
-      assert.ok(rtc.some(route=>route.local!=='relay'&&route.remote!=='relay'&&route.bytesSent>0&&route.bytesReceived>0));
-      report.providerHandoff = {nativeRead:true,relayByteDelta:0,rtc};
-      passed('closing the RTC-serving page reconnects through the remaining view without hosted payloads');
-    } else await second.close();
-    await expect(page.locator('#notes')).toContainText('Created in a second tab');
-    report.opfs_snapshots.after_second_tab = await opfsInventory(page);
-    passed('a second tab and its reload attach to the existing owner; no OWNER_BUSY or pairing UI');
-
-    checkpoint('multi-piece replies and a quiet connection over the selected transport');
-    const bulkBefore = await transportCounters();
-    const soakMs = Number(process.env.FIRST_APP_SOAK_MS ?? 60_000), frozenMs = Number(process.env.FIRST_APP_FROZEN_MS ?? 30_000);
-    // Browser application status transitions, kept in sessionStorage so they survive reloads.
-    const recordStatus = () => page.evaluate(async () => {
-      const app = await window.tendril.application.ready();
-      app.onStatus(status => {
-        const log = JSON.parse(sessionStorage.getItem('first-app-status-log') || '[]'), last = log.at(-1);
-        if (last && last.phase === status.phase && last.generation === status.generation && last.database === status.database) return;
-        log.push({ at: Date.now(), phase: status.phase, generation: status.generation, database: status.database });
-        sessionStorage.setItem('first-app-status-log', JSON.stringify(log.slice(-200)));
-      });
-    }).catch(() => {});
-    await recordStatus();
-    await page.evaluate(installSoakObserver);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    await peer.request('participation-log');
-    const burst = async (pieces, bytes = 15_000) => {
-      const before = await page.evaluate(() => window.soak.complete ?? 0);
-      const sent = await peer.request('signal-burst', { topic: 'soak', pieces, bytes }, 60_000);
-      if (sent.failures.length) report.failed_burst = { ...sent, at: new Date().toISOString() };
-      report.slowest_burst = !report.slowest_burst || sent.ms > report.slowest_burst.ms ? { ms: sent.ms, pieceMs: sent.pieceMs, eventLoopLagMaxMs: sent.eventLoopLagMaxMs } : report.slowest_burst;
-      if (sent.retries) (report.burst_retries ??= []).push({ at: new Date().toISOString(), retries: sent.retries, pieceMs: sent.pieceMs, eventLoopLagMaxMs: sent.eventLoopLagMaxMs });
-      assert.deepEqual(sent.failures, [], `Every piece of a ${pieces}-piece reply must be accepted (${JSON.stringify(sent.failures.slice(0, 3))}).`);
-      await expect.poll(() => page.evaluate(() => {
-        if (window.soak.error) throw Error(window.soak.error);
-        return window.soak.complete;
-      }), { timeout: 30_000 }).toBe(before + 1);
-      return sent.ms;
+    const sameDocument = async () => {
+      assert.deepEqual(await page.evaluate(() => ({ marker: window.__firstAppDomainDocument ?? null, timeOrigin: performance.timeOrigin })), identity,
+        'Domain selection and browser history must not reload or replace the document under the publication base URL');
+      assert.equal(await page.evaluate(() => Boolean(window.tendril.application.backend)), true, 'The installed local backend survives fragment navigation');
     };
-    report.multi_piece_reply = { pieces: 40, bytes: 40 * 15_000, ms: await burst(40) };
-    passed('a 600 KB reply in 40 signal pieces reaches the browser without SIGNAL_BACKPRESSURE');
-    const churn = entries => entries.filter(entry => !entry.peers.includes(browserDevice)).length;
-    const soakStarted = Date.now();
-    report.opfs_timeline = [];
-    let lastInventory = 0;
-    while (Date.now() - soakStarted < soakMs) {
-      if (Date.now() - lastInventory >= 60_000) {
-        lastInventory = Date.now();
-        // Host memory beside each sample: browser storage eviction depends on it.
-        const memAvailableGb = memoryAvailableGb();
-        report.opfs_timeline.push({ atS: Math.round((Date.now() - soakStarted) / 1000), memAvailableGb,
-          ...(process.env.FIRST_APP_OPFS_TIMELINE === '1' ? { opfs: await opfsInventory(page) } : {}) });
-      }
-      await burst(5); // like a dashboard answer every ten seconds
-      await new Promise(resolve => setTimeout(resolve, 10_000));
-    }
-    const soakLog = await peer.request('participation-log');
-    report.soak = { ms: Date.now() - soakStarted, statusChanges: soakLog.entries.length, browserAbsent: churn(soakLog.entries), current: soakLog.current };
-    assert.equal(churn(soakLog.entries), 0, `The idle browser connection must not churn: ${JSON.stringify(soakLog.entries.slice(0, 8))}`);
-    assert.ok(soakLog.current.peers.includes(browserDevice));
-    passed(`a ${Math.round(soakMs / 1000)} s soak with periodic multi-piece replies keeps one browser connection`);
-
-    checkpoint('a backgrounded phone tab resumes');
-    await page.setViewportSize({ width: 390, height: 844 });
-    if (values['network-lab-profile']) {
-      // With real visibility, raw CDP frozen/active can leave an already-selected
-      // tab hidden. Use the observed background/freeze/resume/foreground cycle.
-      const { createBrowserNetworkControls } = await import('../test/e2e/network-qualification/browser-controls.mjs');
-      const lifecycle = await createBrowserNetworkControls(page);
-      const signal = AbortSignal.timeout(frozenMs + 15_000);
-      try {
-        await lifecycle.setFrozen(true, { signal });
-        await new Promise(resolve => setTimeout(resolve, frozenMs));
-        await lifecycle.setFrozen(false, { signal });
-        report.baseline_lifecycle = await lifecycle.diagnostics();
-        assert.equal(report.baseline_lifecycle.navigations, 0, 'Freeze/resume replaced the application document');
-      } catch (error) {
-        report.baseline_lifecycle = await lifecycle.diagnostics();
-        throw error;
-      } finally { await lifecycle.cleanup(); }
-    } else {
-      const lifecycle = await context.newCDPSession(page);
-      await lifecycle.send('Page.setWebLifecycleState', { state: 'frozen' });
-      await new Promise(resolve => setTimeout(resolve, frozenMs));
-      await lifecycle.send('Page.setWebLifecycleState', { state: 'active' });
-      await lifecycle.detach();
-    }
-    const resumedAt = Date.now();
-    await burst(5);
-    const resumeLog = await peer.request('participation-log');
-    report.background_resume = { frozenMs, firstReplyAfterMs: Date.now() - resumedAt, browserAbsent: churn(resumeLog.entries), statusChanges: resumeLog.entries.length };
-    await expect(page.locator('#app-content')).toBeVisible();
-    await page.setViewportSize({ width: 1280, height: 960 });
-    const bulkAfter = await transportCounters();
-    assert.equal(bulkAfter.instance, bulkBefore.instance);
-    report.bulkTransport = { relayByteDelta:bulkAfter.relayBinaryBytes-bulkBefore.relayBinaryBytes, before:bulkBefore, after:bulkAfter };
-    if (values.transport === 'direct') assert.equal(report.bulkTransport.relayByteDelta,0,'Bulk replies, soak and background resume must retain direct delivery');
-    else assert.ok(report.bulkTransport.relayByteDelta>600_000,'Forced fallback must carry the measured bulk traffic');
-    passed('a frozen (backgrounded) tab receives live replies again after resuming, without reload or prompts');
-
-    checkpoint('a request sent right after connecting is answered, and periodic updates arrive in every subscription mode');
-    report.opfs_before_reload = await opfsInventory(page);
-    await page.reload();
-    await expect(page.locator('#app-content')).toBeVisible({ timeout: 60_000 });
-    const requested = Date.now();
-    const answer = await page.evaluate(() => window.appRequests.request('rows', { count: 300, width: 900 }).then(value => ({ rows: value.rows.length, last: value.rows.at(-1).label })));
-    assert.deepEqual(answer, { rows: 300, last: 'row "299"' });
-    report.first_request_after_connect = { ms: Date.now() - requested, bytes: 300 * 900 };
-    await page.evaluate(installStateSignalObservers);
-    await new Promise(resolve => setTimeout(resolve, 500));
-    await peer.request('signal-state', { count: 5, intervalMs: 500 });
-    await expect.poll(() => page.evaluate(() => window.stateModes.all), { timeout: 10_000 }).toBe(5);
-    report.periodic_updates = await page.evaluate(() => window.stateModes);
-    assert.deepEqual(await page.evaluate(() => window.stateModeErrors), []);
-    assert.ok(report.periodic_updates.latest >= 1, `A 'latest' subscription must observe periodic updates: ${JSON.stringify(report.periodic_updates)}`);
-    passed('the first request after connect is answered (300 rows, ~270 KB) and periodic updates reach all and latest subscribers');
-
-
-    checkpoint('cancel an applied waiter, reload and retry its original operation');
-    // The network lab deliberately disables focus emulation for real lifecycle
-    // tests. Interactive foreground actions must actually foreground this tab;
-    // a hidden page can have no animation frames for Playwright's stability check.
-    if (values['network-lab-profile']) await page.bringToFront();
-    if (values['network-lab-profile']) {
-      report.before_uncertain_click = await page.evaluate(() => new Promise(resolve => {
-        let finished = false;
-        const finish = raf => { if (finished) return; finished = true; clearTimeout(timer);
-          resolve({ raf, visibility: document.visibilityState, hasFocus: document.hasFocus(),
-            submitDisabled: document.querySelector('#submit')?.disabled,
-            width: innerWidth, height: innerHeight, screenWidth: screen.width, screenHeight: screen.height }); };
-        const timer = setTimeout(() => finish(false), 1000);
-        requestAnimationFrame(() => finish(true));
-      }));
-      assert.equal(report.before_uncertain_click.visibility, 'visible', 'Foreground lab tab remained hidden');
-      assert.equal(report.before_uncertain_click.raf, true, 'Foreground lab tab has no animation frames');
-    }
-    await page.evaluate(() => {
-      const timeout = AbortSignal.timeout.bind(AbortSignal);
-      AbortSignal.timeout = milliseconds => milliseconds === 15_000
-        ? AbortSignal.abort(Error('TEST_APPLIED_WAITER_CANCELLED')) : timeout(milliseconds);
+    if(values['ux-second-pass']){await page.locator(selector).first().focus();await page.keyboard.press('Enter');}else await page.locator(selector).first().click();
+    await expect.poll(() => new URL(page.url()).hash).not.toBe(beforeHash);
+    const selectedHash = new URL(page.url()).hash; await sameDocument();
+    await page.goBack(); await expect.poll(() => new URL(page.url()).hash).toBe(beforeHash); await sameDocument();
+    await page.goForward(); await expect.poll(() => new URL(page.url()).hash).toBe(selectedHash); await sameDocument();
+    passed('domain selection, Back and Forward preserve document identity, performance.timeOrigin and the installed backend');
+    return selectedHash;
+  }
+  let originalOperation;
+  if (sqlBrowser) {
+    await page.locator('#author-time').fill('1000'); await page.locator('#initialize').click();
+    await expect(page.locator('#stock tr')).toHaveCount(2, { timeout: 60_000 });
+    originalOperation = await page.locator('#op-id').inputValue();
+    await selectDomainWithoutNavigation('#stock a');
+    await page.locator('#from').fill('source'); await page.locator('#to').fill('destination'); await page.locator('#units').fill('2');
+    await page.locator('#review-balances').click();
+    await page.locator('#bin-id').fill('unsent-bin-draft');
+    await page.locator('#author-time').fill('0'); await page.locator('#initialize').click();
+    await page.locator('#op-id').fill(originalOperation); await page.locator('#inspect').click();
+    await expect(page.locator('#result')).toContainText('rejected', { timeout: 60_000 });
+    await expect(page.locator('#bin-id')).toHaveValue('unsent-bin-draft');
+    await page.locator('#author-time').fill('2000'); await page.locator('#add-labels').click();
+    await expect(page.locator('#label-editor')).toBeVisible({ timeout: 60_000 });
+    await expect(page.locator('#schema')).toContainText('label');
+    await page.locator('#author-time').fill('');
+    passed('ordinary late earlier DDL revises a previous SQL outcome, invalidates catalog/forms and preserves draft');
+  } else {
+    await page.locator('#note').fill('first durable note'); await page.locator('#submit').click();
+    await expect(page.locator('#notes')).toContainText('first durable note', { timeout: 30_000 });
+    originalOperation = await page.locator('#operation-id').inputValue();
+    await expect(page.locator('#operation-status')).toContainText('Stored locally: yes');
+    const selectedLink = await selectDomainWithoutNavigation('#notes a');
+    await page.locator('#note').fill('unsent draft survives earlier operation');
+    if(values['ux-second-pass']){await page.keyboard.press('Home');await page.keyboard.press('ArrowRight');}
+    const selectedCaret=values['ux-second-pass']?await page.locator('#note').evaluate(node=>[node.selectionStart,node.selectionEnd]):null;
+    await page.evaluate(async () => {
+      const operation = await window.tendril.application.backend.submit({ operationId: 'late-earlier-note', authorTimestampMs: 0n,
+        program: { version: 3, steps: [{ op: 'emit', topic: 'note.put', payload: { noteId: 'earlier-stable-id', text: 'late earlier note' } }] } });
+      await operation.materialized();
     });
-    await page.locator('#note').fill('Preserve this uncertain operation'); await page.locator('#submit').click();
-    await expect(page.locator('#result')).toContainText('TEST_APPLIED_WAITER_CANCELLED', { timeout: 30_000 });
-    const operation = await page.locator('#operation-id').inputValue();
-    // Cancelling this waiter does not cancel execution or journal observation.
-    // In particular, the elected owner may already report the applied result.
-    // Snapshot both controls atomically: an uncertain attempt must stay locked;
-    // an unlocked form is safe only with the exact operation's applied proof.
-    const cancellation = await page.evaluate(id => ({
-      operationId: document.querySelector('#operation-id').value,
-      blocked: document.querySelector('#submit').disabled,
-      applied: document.querySelector('#operation-status').textContent.includes(`${id}: Applied: accepted.`),
-    }), operation);
-    assert.equal(cancellation.operationId, operation);
-    assert.ok(cancellation.blocked || cancellation.applied,
-      'A cancelled waiter must retain the submission lock unless its exact operation is known applied.');
-    report.cancelled_waiter_before_reload = cancellation;
-    await page.reload();
-    await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
-    await expect(page.locator('#data-status')).toContainText('Data: ready; application: ready', { timeout: 60_000 });
-    await expect(page.locator('#operation-id')).toHaveValue(operation);
-    // Normal operation observation may already resolve the retained attempt on
-    // reconnect. Retry is offered only while that exact attempt is uncertain.
-    await expect.poll(async () => await page.locator('#retry').isEnabled() || await page.locator('#submit').isEnabled(),
-      { timeout: 30_000 }).toBe(true);
-    if (await page.locator('#retry').isEnabled()) await page.locator('#retry').click();
-    await expect(page.locator('#submit')).toBeEnabled({ timeout: 30_000 });
-    await expect(page.locator('#operation-status')).toContainText('Applied: accepted', { timeout: 30_000 });
-    const afterRetry = (await peer.request('query')).value;
-    assert.equal(afterRetry.filter(note => note.operationId === operation).length, 1);
-    assert.equal(afterRetry.length, 4);
-    report.retried_operation_id = operation;
-    passed('cancelled waiter, pending identity across reload and exact retry without duplication');
-
-    const applied = await peer.request('command', { text: 'Created by the native agent', operationId: 'native-note-1' });
-    assert.equal(applied.outcome, 'accepted');
-    await expect(page.locator('#notes')).toContainText('Created by the native agent', { timeout: 30_000 });
-    await expect(page.locator('#notes li')).toHaveCount(5);
-    passed('native command observed by the browser without state injection');
-
-    checkpoint('close and reopen both original devices');
-    await page.locator('#close').click();
-    await expect(page.locator('#connection')).toContainText('Connection closed');
-    await closeTestPeer(peer); peer = undefined;
-
-    checkpoint('continue the same application with owner-reviewed host access');
-    const retainedDescriptor = await readFile(join(project, '.tendriller/descriptor.json'));
-    const retainedInitialization = await readFile(join(project, '.tendriller/initialized.json'));
-    const management = await context.newPage();
-    await management.goto(new URL('_tendril/manage', handle.page_url).href);
-    await management.locator('label[for="tab-agent"]').click();
-    await expect(management.locator('#tab-agent')).toBeChecked();
-    const delegation = management.locator('form:has(input[name="action"][value="delegate-agent"])');
-    await delegation.locator('input[name="name"]').fill('native-continuation');
-    await delegation.getByText('Host permissions', { exact: true }).click();
-    for (const scope of ['host:read', 'participants:connect', 'control:write', 'publication:write', 'assistant:manage'])
-      await delegation.locator(`input[name="scopes"][value="${scope}"]`).check();
-    await delegation.getByRole('button', { name: 'Add agent', exact: true }).click();
-    const notice = await management.locator('.notice[role="status"]').textContent();
-    const code = notice?.match(new RegExp(`\\b${handle.id}-[0-9]{6}\\b`))?.[0];
-    assert.ok(code, 'The actual owner review must return a one-use code for the retained page.');
-    await writeFile(join(project, '.tendriller/delegation-code.txt'), code + '\n', { mode: 0o600, flag: 'wx', flush: true });
-    // Retain a private checkpoint but make the original handle unavailable to
-    // the tutorial. Recovery must use the public receipt and signed descriptor.
-    await rename(join(project, '.tendriller/handle.json'), join(project, '.tendriller/handle-before-reviewed-adoption.json'));
-    const adopted = JSON.parse(await node(['host-adoption.mjs', SERVICE, '.tendriller/delegation-code.txt']));
-    assert.equal(adopted.state, 'host_credential_saved');
-    assert.equal(adopted.pageId, handle.id); assert.equal(adopted.applicationId, handle.application.id);
-    const resumedAdoption = JSON.parse(await node(['host-adoption.mjs', SERVICE, '.tendriller/delegation-code.txt']));
-    assert.equal(resumedAdoption.attemptId, adopted.attemptId);
-    assert.equal(resumedAdoption.resumed, true, 'A retained response is reused without redeeming the code twice.');
-    await management.locator('form:has(input[name="agent"][value="setup"])').getByRole('button', { name: 'Disconnect', exact: true }).click();
-    await expect(management.locator('.notice[role="status"]')).toContainText('Disconnected setup.');
-    await management.close();
-    const rejectedSetup = await fetch(handle.api, { headers: { Authorization: 'Bearer ' + handle.token }, redirect: 'error' });
-    assert.equal(rejectedSetup.status, 401, 'The old setup credential must no longer authorize host access.');
-    await rejectedSetup.body?.cancel();
-    const resumedCreation = JSON.parse(await node(['setup.mjs', 'create', SERVICE, 'owner@example.test', 'Retain the existing application']));
-    assert.equal(resumedCreation.resumed, true); assert.equal(resumedCreation.page_url, handle.page_url);
-    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM account_setups WHERE account_id=?').bind('e2e-owner').first()).n, 1);
-    assert.equal((await accounts.prepare('SELECT COUNT(*) AS n FROM tendrils').first()).n, 1,
-      'Recovery and creation retry must not allocate a second page through either setup route.');
-    assert.deepEqual(await readFile(join(project, '.tendriller/descriptor.json')), retainedDescriptor);
-    assert.deepEqual(await readFile(join(project, '.tendriller/initialized.json')), retainedInitialization);
-    assert.deepEqual(await cliJson(['publication-operation', 'first-app-publication-1']),
-      { publication: preparedPublication.publication, receipt: preparedPublication });
-    report.host_continuation = { application_id: handle.application.id, native_device_id: device.deviceId,
-      original_setup_revoked: true, original_handle_unavailable: true, retained_response_reused: true };
-    passed('actual owner-scoped delegation, retained response recovery and same-app continuation after setup revocation and handle loss');
-
-    await startPeer(); assert.equal((await peer.request('query')).value.length, 5);
-    await page.reload();
-    await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
-    await expect(page.locator('#notes li')).toHaveCount(5, { timeout: 60_000 });
-    passed('same native/browser identities and retained notes after both reopen');
-
-    checkpoint('analyze immutable evidence through the authorized native peer');
-    // The reopened notes can be read from local storage before the new peer
-    // link exists. Ephemeral signals have no reconnect outbox: wait for the
-    // actual coordinator connection before this one deliberate request.
-    await expect(page.locator('#peer-status')).toContainText('Connection: following', { timeout: 60_000 });
-    const beforeMedia = (await peer.request('query')).value;
-    assert.equal((await peer.request('inference-status')).calls, 0);
-    await page.locator('#media-file').setInputFiles({ name: 'fixture-evidence.png', mimeType: 'image/png', buffer: evidencePng });
-    await page.locator('#media-share').check();
-    await page.locator('#media-analyze').click();
-    await expect(page.locator('#media-suggestion')).toContainText('Suggested fixture observation', { timeout: 60_000 });
-    assert.deepEqual((await peer.request('query')).value, beforeMedia, 'Analysis must not submit a domain note.');
-    const inferred = await peer.request('inference-status');
-    assert.equal(inferred.calls, 1); assert.equal(inferred.admitted, 1);
-    assert.equal(inferred.source.sha256, sha256(evidencePng));
-    passed('authenticated inference signals and encrypted immutable content without automatic domain submission');
-
-    checkpoint('commit the explicitly edited observation and reopen it');
-    await page.locator('#media-review').fill('Human-reviewed fixture observation');
-    // Responsive layout evidence from desktop Chromium, not physical-device
-    // qualification. The candidate, suggestion and explicit human edit are live.
-    await page.setViewportSize({ width: 1440, height: 1000 });
-    await page.screenshot({ path: join(dirname(reportPath), 'first-app-starter-desktop.png'), fullPage: true });
-    report.screenshots.starter_review_desktop = 'first-app-starter-desktop.png';
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(dirname(reportPath), 'first-app-starter-mobile.png'), fullPage: true });
-    report.screenshots.starter_review_narrow_viewport = 'first-app-starter-mobile.png';
-    await page.setViewportSize({ width: 1280, height: 960 });
-    // Programmatic/provider text can bypass the textarea's maxlength. Reject it
-    // before saving a pending reference or dispatching the reviewed command.
-    await page.locator('#media-review').evaluate(element => { element.value = 'x'.repeat(2001); });
-    await page.locator('#media-commit').click();
-    await expect(page.locator('#media-result')).toContainText('2,000');
-    assert.deepEqual((await peer.request('query')).value, beforeMedia, 'Oversized reviewed text must not submit a note.');
-    assert.equal((await peer.request('inference-status')).calls, 1);
-    await page.locator('#media-review').fill('Human-reviewed fixture observation');
-    await page.locator('#media-commit').click();
-    await expect(page.locator('#media-result')).toContainText('Applied: accepted', { timeout: 30_000 });
-    const reviewedNotes = (await peer.request('query')).value;
-    assert.equal(reviewedNotes.length, 6);
-    const evidenceNote = reviewedNotes.at(-1);
-    assert.equal(evidenceNote.text, 'Human-reviewed fixture observation');
-    assert.equal(evidenceNote.author, browserDevice);
-    assert.equal(evidenceNote.source.candidateId, inferred.source.candidateId);
-    assert.equal(evidenceNote.source.sha256, sha256(evidencePng));
-    assert.equal(evidenceNote.source.reference.id, inferred.source.contentId);
-    assert.equal(evidenceNote.source.reference.applicationId, handle.application.id);
-    assert.equal(evidenceNote.source.reference.bytes, evidencePng.length);
-    assert.equal(evidenceNote.source.reference.mediaType, 'image/png');
-    await expect(page.locator('#notes li')).toHaveCount(6);
-    await page.reload();
-    await expect(page.locator('#device-key')).toHaveValue(browserDevice, { timeout: 30_000 });
-    await expect(page.locator('#notes li')).toHaveCount(6, { timeout: 60_000 });
-    assert.deepEqual((await peer.request('query')).value.at(-1), evidenceNote);
-    assert.equal((await peer.request('inference-status')).calls, 1, 'Reload must not launch another provider request.');
-    report.media_inference = { provider: 'injected deterministic native test function', calls: inferred.calls,
-      candidate_id: evidenceNote.source.candidateId, sha256: evidenceNote.source.sha256,
-      content_id: evidenceNote.source.reference.id, operation_id: evidenceNote.operationId };
-    report.limits.push('Inference provider output is injected in the private native test process; no live provider, credential validity or billing tested.');
-    passed('human-edited evidence command retains exact source identity and survives browser reopen');
-    if (values['network-lab-profile']) {
-      checkpoint('qualify real packet faults and application recovery');
-      const { qualifyFirstAppNetwork } = await import('../test/e2e/network-qualification/first-app.mjs');
-      try {
-        const { NETWORK_PROFILES } = await import('../test/e2e/network-qualification/scenarios.mjs');
-        const profiles = values['network-lab-profile'] === 'suite' ? NETWORK_PROFILES : [values['network-lab-profile']];
-        report.network_qualification = { profiles: [], success: false };
-        for (const profile of profiles) report.network_qualification.profiles.push(await qualifyFirstAppNetwork({ page, context, peer, expect, transportCounters,
-          evidencePng, browserDevice, sha256, profile }));
-        report.network_qualification.success = true;
-        report.network_note_count = (await peer.request('query')).value.length;
-      } catch (error) {
-        if (error.networkReport) report.network_qualification?.profiles.push(error.networkReport);
-        throw error;
-      }
+    await expect(page.locator('#notes li')).toHaveCount(2);
+    await expect(page.locator('#notes a').first()).toHaveText('late earlier note');
+    await expect(page.locator('#note')).toHaveValue('unsent draft survives earlier operation');
+    assert.equal(new URL(page.url()).hash, selectedLink);
+    if(values['ux-second-pass']){await expect(page.locator('#note')).toBeFocused();assert.deepEqual(await page.locator('#note').evaluate(node=>[node.selectionStart,node.selectionEnd]),selectedCaret);uxPassed('desktop keyboard selection, Back/deep link and caret/focus survive earlier incoming work');}
+    passed('late earlier authored operation reorders the domain without replacing draft or deep link');
+  }
+  if(values['ux-second-pass']){
+    await screenshot(page,'ux-desktop-before');
+    if(sqlBrowser){
+      const id='long-bin-'+ 'b'.repeat(40),label='Long label '+ 'L'.repeat(100);
+      await page.locator('#bin-id').fill(id);await page.locator('#bin-units').fill('4');await page.locator('#bin-label').fill(label);
+      await page.locator('#bin-form button[value=add]').click();await expect(page.locator('#stock')).toContainText(id);await page.getByRole('button',{name:'Store label edit',exact:true}).click();await expect(page.locator('#stock')).toContainText(label);
+      await page.locator('#stock a').filter({hasText:id}).focus();await page.keyboard.press('Enter');await expect(page.locator('#bin-detail')).toContainText(id);
+      await page.locator('#bin-id').fill('unsent-bin-draft');
+    }else{
+      const max=await page.locator('#note').evaluate(node=>node.maxLength),text=('Long allowed note '+ 'Unbroken'.repeat(300)).slice(0,max>0?Math.min(max,2000):1800);
+      await page.locator('#new').click();await page.locator('#note').fill(text);await page.keyboard.press('Tab');await expect(page.locator('#submit')).toBeFocused();await page.keyboard.press('Shift+Tab');await expect(page.locator('#note')).toBeFocused();
+      await page.locator('#submit').click();await expect(page.locator('#notes')).toContainText('Long allowed note');
+      await page.locator('#notes a').filter({hasText:'Long allowed note'}).focus();await page.keyboard.press('Enter');await expect(page.locator('#detail-text')).toHaveText(text);
+      await page.locator('#note').fill('unsent draft survives earlier operation');
+      await page.locator('#operation-id').fill('ux-unavailable-original');await page.locator('#inspect').click();await expect(page.locator('#operation-status')).toContainText(/No.*(?:operation|proposal)|not.*found|unavailable/i);
+      await expect(page.locator('#note')).toHaveValue('unsent draft survives earlier operation');await expect(page.locator('#submit')).toBeEnabled();
     }
-    await closeTestPeer(peer); peer = undefined;
-    passed('native supervisor cleanup and natural child exit without forced termination');
-    report.status = 'passed'; report.browser_checks = 'passed'; report.note_count = reviewedNotes.length;
-    console.log('First-app native/browser integration passed. Synthetic local claim, selected transport and byte-measurement limits are recorded in the report.');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'Desktop long content must wrap without page overflow');
+    uxPassed(sqlBrowser?'desktop long SQL bin/label content and keyboard domain selection':'desktop long allowed note, keyboard activation and retained draft after an unavailable inspector action');
+    await screenshot(page,'ux-desktop-after');
   }
+  await screenshot(page, 'desktop-after');
+  checkpoint('save complete graph, disconnect and reload before offline CRUD');
+  await page.locator(sqlBrowser ? '#offline' : '#save-offline').click();
+  await expect(page.locator('#offline-status')).toContainText('Offline ready:', { timeout: 60_000 });
+  await first.context.setOffline(true); await page.reload();
+  await expect(saveButton(page)).toBeEnabled({ timeout: 60_000 });
+  await expect(page.locator('#public-key')).toHaveValue(firstKey);
+  if (sqlBrowser) {
+    await expect(page.locator('#stock tr')).toHaveCount(values['ux-second-pass']?3:2, { timeout: 60_000 });
+    await expect(page.locator('#bin-id')).toHaveValue('unsent-bin-draft');
+    await page.locator('#bin-id').fill('offline-bin'); await page.locator('#bin-units').fill('3');
+    await page.locator('#bin-form button[value=add]').click();
+    await expect(page.locator('#stock')).toContainText('offline-bin', { timeout: 60_000 });
+  } else {
+    await expect(page.locator('#note')).toHaveValue('unsent draft survives earlier operation');
+    await page.locator('#new').click(); await page.locator('#note').fill('offline durable note'); await page.locator('#submit').click();
+    await expect(page.locator('#notes')).toContainText('offline durable note', { timeout: 30_000 });
   }
+  await page.reload(); await expect(saveButton(page)).toBeEnabled({ timeout: 60_000 });
+  await expect(page.locator(sqlBrowser ? '#stock' : '#notes')).toContainText(sqlBrowser ? 'offline-bin' : 'offline durable note', { timeout: 60_000 });
+  passed('complete immutable graph acknowledgment, offline local CRUD and reload with the same signing identity');
+  await first.context.setOffline(false);
+
+  checkpoint('second profile proves key and receives explicit recipient-bound wrapped keys');
+  const second = await profile({ width: 320, height: 800 });
+  await expect(second.page.locator('#public-key')).toHaveValue(/^[a-f0-9]{64}$/, { timeout: 60_000 });
+  const secondKey = await second.page.locator('#public-key').inputValue(); assert.notEqual(secondKey, firstKey);
+  await expect(saveButton(second.page)).toBeDisabled();
+  await screenshot(second.page, 'phone-before-provisioning');
+  for (const target of [page, second.page]) if (!await target.locator('#provisioning').evaluate(node => node.open)) await target.locator('#provisioning > summary').click();
+  await second.page.locator('[data-provisioning=request]').click();
+  await expect(second.page.locator('[data-provisioning=out]')).toHaveValue(/"record"/, { timeout: 30_000 });
+  const recipientRequest = await second.page.locator('[data-provisioning=out]').inputValue();
+  await page.locator('[data-provisioning=in]').fill(recipientRequest); await page.locator('[data-provisioning=review]').click();
+  await expect(page.locator('[data-provisioning=status]')).toContainText(secondKey);
+  await page.locator('[data-provisioning=grant]').click();
+  await expect(page.locator('[data-provisioning=status]')).toContainText('Recipient-bound encrypted key package created', { timeout: 30_000 });
+  const encryptedPackage = await page.locator('[data-provisioning=out]').inputValue();
+  await second.page.locator('[data-provisioning=in]').fill(encryptedPackage); await second.page.locator('[data-provisioning=import]').click();
+  await expect(saveButton(second.page)).toBeEnabled({ timeout: 30_000 });
+  await expect(second.page.locator(sqlBrowser ? '#stock' : '#notes')).toContainText(sqlBrowser ? 'offline-bin' : 'offline durable note', { timeout: 60_000 });
+  let uxDeniedOperation;
+  if (sqlBrowser) {
+    if(values['ux-second-pass']){
+      await second.page.locator('#bin-id').fill('source');await second.page.locator('#bin-units').fill('11');await second.page.locator('#bin-expected').fill('10');await second.page.locator('#bin-form button[value=edit]').click();
+      await expect(second.page.locator('#result')).toContainText('rejected');await expect(second.page.locator('#bin-id')).toHaveValue('source');uxDeniedOperation=await second.page.locator('#op-id').inputValue();await expect(saveButton(second.page)).toBeEnabled();
+      uxPassed("phone crypto writer without SQL grants stores a visibly rejected update to a different author’s bin without losing its draft or disabling unrelated authoring");
+      await page.locator('#bin-id').fill('ux peer-arrival draft');await page.locator('#bin-id').focus();
+    }
+    const previousGrantSelection=await page.locator('#op-id').inputValue();
+    await page.locator('#sql-grantee').fill(secondKey); await page.locator('#sql-grant').click();
+    await expect(page.locator('#op-id')).not.toHaveValue(previousGrantSelection);
+    const grantOperation=await page.locator('#op-id').inputValue();
+    await expect(page.locator('#result')).toContainText(grantOperation,{timeout:30000});
+    await expect(page.locator('#result')).toContainText('accepted', { timeout: 30_000 });
+    if(values['ux-second-pass'])report.ux_second_pass.sql_grant=await page.evaluate(async id=>{const value=await(await window.tendril.application.backend.operations.get(id)).inspect();return{operationId:value.operationId,proposalId:value.proposalId,authorTimestampMs:value.authorTimestampMs,materialized:value.materialized?.outcome};},grantOperation);
+    if(values['ux-second-pass']){
+      const before=await second.page.evaluate(async id=>(await(await window.tendril.application.backend.operations.get(id)).inspect()),uxDeniedOperation);
+      await second.page.locator('#retry').click();await expect(second.page.locator('#result')).toContainText('rejected');
+      const after=await second.page.evaluate(async id=>(await(await window.tendril.application.backend.operations.get(id)).inspect()),uxDeniedOperation);assert.equal(after.proposalId,before.proposalId);assert.equal(after.authorTimestampMs,before.authorTimestampMs);report.ux_second_pass.sql_original_retry={original:{operationId:before.operationId,proposalId:before.proposalId,authorTimestampMs:before.authorTimestampMs,outcome:before.materialized?.outcome},retried:{operationId:after.operationId,proposalId:after.proposalId,authorTimestampMs:after.authorTimestampMs,outcome:after.materialized?.outcome}};await expect(second.page.locator('#bin-id')).toHaveValue('source');
+      uxPassed('retry retains the exact rejected proposal/time/ID and reviewed draft after a later SQL grant; no silent retimestamp');
+    }
+    await second.page.locator('#from').fill('source'); await second.page.locator('#to').fill('destination'); await second.page.locator('#units').fill('2');
+    await second.page.locator('#review-balances').click(); if(values['ux-second-pass'])await page.locator('#bin-id').focus(); await second.page.locator('#transfer button[type=submit],#transfer button:not([type])').click();
+    await expect(second.page.locator('#result')).toContainText('accepted', { timeout: 60_000 });
+    await expect(page.locator('#receipts')).toContainText('2 units', { timeout: 60_000 });
+    if(values['ux-second-pass']){await expect(page.locator('#bin-id')).toBeFocused();await expect(page.locator('#bin-id')).toHaveValue('ux peer-arrival draft');uxPassed('SQL peer transfer invalidates rows/receipts without replacing focused local draft');}
+    passed('separate ordinary SQL column/insert grants, browser-to-browser guarded transfer and materialized remote read');
+  } else {
+    if(values['ux-second-pass']){await page.locator('#note').fill('ux peer-arrival draft');await page.locator('#note').focus();}
+    await second.page.locator('#note').fill('second-profile note'); await second.page.locator('#submit').click();
+    await expect(page.locator('#notes')).toContainText('second-profile note', { timeout: 60_000 });
+    const note = second.page.locator('#notes a').filter({ hasText: 'second-profile note' }); await note.click(); await second.page.locator('#edit').click();
+    await second.page.locator('#note').fill('second-profile edited'); await second.page.locator('#submit').click();
+    await expect(page.locator('#notes')).toContainText('second-profile edited', { timeout: 60_000 });
+    await second.page.locator('#delete').click(); await expect(page.locator('#notes')).not.toContainText('second-profile edited', { timeout: 60_000 });
+    if(values['ux-second-pass']){await expect(page.locator('#note')).toBeFocused();await expect(page.locator('#note')).toHaveValue('ux peer-arrival draft');uxPassed('phone create/edit/delete converges while the desktop focused draft survives incoming work');}
+    passed('two independently provisioned browser authors converge across create/edit/delete without native process');
+  }
+  if(values['ux-second-pass']){
+    checkpoint('separate second UX pass: phone long content, selected facts and optional local media');
+    await screenshot(second.page,'ux-phone-before');
+    const phoneField=second.page.locator(sqlBrowser?'#units':'#note');await phoneField.focus();await second.page.keyboard.press('Tab');await expect(second.page.locator(sqlBrowser?'#expected-source':'#submit')).toBeFocused();await second.page.keyboard.press('Shift+Tab');await expect(phoneField).toBeFocused();
+    const phoneLong=second.page.locator(sqlBrowser?'#stock a':'#notes a').filter({hasText:sqlBrowser?'long-bin-':'Long allowed note'});
+    const phoneDocument=await second.page.evaluate(()=>performance.timeOrigin);await phoneLong.focus();await second.page.keyboard.press('Enter');assert.equal(await second.page.evaluate(()=>performance.timeOrigin),phoneDocument);await expect(second.page.locator(sqlBrowser?'#bin-detail':'#detail-text')).toContainText(sqlBrowser?'long-bin-':'Long allowed note');
+    uxPassed('320px keyboard Tab/Shift+Tab, Enter deep link and long domain detail remain in the same document');
+    if(!sqlBrowser){
+      const observer=page;
+      await observer.evaluate(()=>{window.__uxSignals=[];window.__uxSignalStop=new AbortController();window.__uxSignalTask=(async()=>{try{for await(const value of window.tendril.signals.subscribe({mode:'all',signal:window.__uxSignalStop.signal}))window.__uxSignals.push(value.topic);}catch(error){if(!window.__uxSignalStop.signal.aborted)throw error;}})();});
+      await expect.poll(async()=>{await second.page.evaluate(()=>window.tendril.signals.send('ux/media-boundary-probe',{ready:true}));return observer.evaluate(()=>window.__uxSignals.includes('ux/media-boundary-probe'));},{timeout:15000}).toBe(true);
+      const eventCount=async()=>second.page.evaluate(async()=>{const view=await window.tendril.application.backend.readView();try{return(await view.readEvents()).events.length;}finally{await view.release();}});
+      const before=await eventCount();await second.page.locator('#note').fill('UX media cancellation draft');
+      await second.page.getByText('Optional agent, media and finality',{exact:true}).click();
+      const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lXcAAAAASUVORK5CYII=','base64');
+      await second.page.locator('#photo').setInputFiles({name:'ux-local-a.png',mimeType:'image/png',buffer:png});await expect(second.page.locator('#photo-preview')).toBeVisible();await expect(second.page.locator('#analysis-consent')).not.toBeChecked();
+      assert.match(await second.page.locator('#photo-preview').getAttribute('src'),/^blob:/);await second.page.locator('#analysis-consent').check();
+      await second.page.locator('#photo').setInputFiles({name:'ux-local-b.png',mimeType:'image/png',buffer:png});await expect(second.page.locator('#analysis-consent')).not.toBeChecked();
+      await second.page.locator('#photo').setInputFiles([]);await expect(second.page.locator('#photo-preview')).toBeHidden();await expect(second.page.locator('#analysis-consent')).not.toBeChecked();
+      await expect(second.page.locator('#note')).toHaveValue('UX media cancellation draft');await expect(saveButton(second.page)).toBeEnabled();assert.equal(await eventCount(),before,'A local preview/consent/removal cannot silently create durable media operations');
+      await second.page.evaluate(()=>window.tendril.signals.send('ux/media-boundary-probe',{finished:true}));
+      await observer.evaluate(async()=>{window.__uxSignalStop.abort();await window.__uxSignalTask;});
+      assert.deepEqual(await observer.evaluate(()=>window.__uxSignals.filter(topic=>!topic.startsWith('ux/'))),[],'No photo or inference signal may be shared implicitly');
+      uxPassed('phone local image preview is blob-local; each replacement resets consent, removal/cancellation retains draft, no durable operation or peer media signal appears');
+    }
+    const operationId=await second.page.locator(sqlBrowser?'#op-id':'#operation-id').inputValue();
+    await expect.poll(()=>second.page.evaluate(async id=>(await(await window.tendril.application.backend.operations.get(id)).inspect()).retained.length,operationId),{timeout:30000}).toBeGreaterThan(0);
+    const actual=await second.page.evaluate(async id=>(await(await window.tendril.application.backend.operations.get(id)).inspect()),operationId),visible=await second.page.locator(sqlBrowser?'#result':'#operation-status').innerText();
+    report.ux_second_pass.selected_operation={operationId,actual:{authorTimestampMs:actual.authorTimestampMs,proposalId:actual.proposalId,stored:actual.stored,materialized:actual.materialized?.outcome,retained:actual.retained.length,finalized:actual.finalized,excluded:actual.excluded},visible};
+    if(sqlBrowser){report.ux_second_pass.sql_new_transfer={operationId:actual.operationId,proposalId:actual.proposalId,authorTimestampMs:actual.authorTimestampMs,outcome:actual.materialized?.outcome};assert(BigInt(actual.authorTimestampMs)>=BigInt(report.ux_second_pass.sql_grant.authorTimestampMs),'The genuinely new transfer is authored after the actual grant; the original retry keeps its earlier time');}
+    await screenshot(second.page,'ux-phone-facts-before');
+    for(const evidence of actual.retained.filter(row=>row.signer!==secondKey))await expect(second.page.locator(sqlBrowser?'#result':'#operation-status')).toContainText(evidence.signer,{timeout:3000});
+    await expect(second.page.locator(sqlBrowser?'#result':'#operation-status')).toContainText(actual.materialized.outcome);
+    assert.equal(await second.page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,'Phone long content must not horizontally overflow');
+    uxPassed('selected operation visible independent facts agree with its actual authenticated peer retention without pressing Inspect');
+    await screenshot(second.page,'ux-phone-after');
+  }
+  const actualCounters = await transportCounters(); report.transport = actualCounters;
+  if (values.transport === 'relay') assert.ok(actualCounters.relayBinaryBytes > 0, 'Forced fallback must carry actual opaque application frames');
+  else { const evidence = await page.evaluate(readBrowserRtcEvidence); report.rtc = evidence; assert.ok(hasNonTurnTraffic(evidence), 'Direct qualification needs actual RTC data evidence'); assert.equal(actualCounters.relayBinaryBytes, 0, 'Direct application data must bypass hosted relay'); }
+  await expect.poll(() => page.evaluate(async ({ id, peer }) => {
+    const operation = await window.tendril.application.backend.operations.get(id);
+    return operation ? (await operation.inspect()).retained.some(evidence => evidence.signer === peer) : false;
+  }, { id: originalOperation, peer: secondKey }), { timeout: 30_000 }).toBe(true);
+  const selectedOperation = await page.evaluate(async id => { const operation = await window.tendril.application.backend.operations.get(id); return operation ? operation.inspect() : null; }, originalOperation);
+  assert.ok(selectedOperation?.stored); report.operation_facts = { stored: selectedOperation.stored, materialized: selectedOperation.materialized?.outcome, retained: selectedOperation.retained.length, finalized: selectedOperation.finalized, excluded: selectedOperation.excluded };
+  if (!values['browser-finalizer']) {
+    assert.equal(selectedOperation.finalized, false);
+    const code = await page.evaluate(async id => { try { await (await window.tendril.application.backend.operations.get(id)).finalized({ timeoutMs: 100 }); return 'unexpected-success'; } catch (error) { return error.message; } }, originalOperation);
+    assert.match(code, /FINALITY_UNSUPPORTED/); passed('no-finality final wait explicitly unsupported, not fake success');
+  } else {
+    checkpoint('exercise the actual optional browser finalizer, with no native process');
+    const controls = page.locator('[data-finality=close]');
+    await controls.evaluate(node => { for (let parent = node.parentElement; parent; parent = parent.parentElement) if (parent.tagName === 'DETAILS') parent.open = true; });
+    const through = String(Date.now());
+    await page.locator('[data-finality=through]').fill(through); await page.locator('[data-finality=consent]').check(); await controls.click();
+    await expect(page.locator('[data-finality=status]')).toContainText('Verified local provider returned', { timeout: 30_000 });
+    await expect.poll(() => page.evaluate(async id => (await (await window.tendril.application.backend.operations.get(id)).inspect()).finalized, originalOperation), { timeout: 30_000 }).toBe(true);
+    const excluded = await page.evaluate(async timestamp => {
+      const operation = await window.tendril.application.backend.submit({ operationId: 'explicit-late-behind-frontier', authorTimestampMs: BigInt(timestamp),
+        program: { version: 3, steps: [{ op: 'emit', topic: 'late.excluded', payload: { explanation: 'keep this original signed intent' } }] } });
+      return { proposalId: operation.id, operationId: operation.operationId };
+    }, through);
+    await expect.poll(() => page.evaluate(async id => (await (await window.tendril.application.backend.operations.get(id)).inspect()).excluded, excluded.operationId), { timeout: 30_000 }).toBe(true);
+    const original = await page.evaluate(async id => (await (await window.tendril.application.backend.operations.get(id)).inspect()), excluded.operationId);
+    assert.equal(original.stored, true); assert.equal(original.authorTimestampMs, through); assert.equal(original.proposalId, excluded.proposalId);
+    const retried = await page.evaluate(async id => (await window.tendril.application.backend.operations.retry(id)).inspect(), excluded.operationId);
+    assert.equal(retried.proposalId, excluded.proposalId); assert.equal(retried.authorTimestampMs, through); assert.equal(retried.excluded, true);
+    const finalRevision = await page.evaluate(async () => { const view = await window.tendril.application.backend.readView({ view: 'final' }); try { return view.revision; } finally { await view.release(); } });
+    assert.equal(finalRevision.view, 'final');
+    await page.locator('#operation-id').fill(excluded.operationId);await page.locator('#inspect').click();await expect(page.locator('#operation-status')).toContainText('Excluded: yes');await expect(page.locator('#operation-status')).toContainText('not executed — excluded');await expect(page.locator('#operation-status')).toContainText(excluded.proposalId);
+    await expect(second.page.locator('#operation-status')).toContainText('Finalized: yes',{timeout:30000});
+    await screenshot(page,'desktop-finality-excluded');report.finality_transport=await transportCounters();
+    report.browser_finality = { provider: 'owner-browser', nativeProcess: false, closedThroughMs: through, finalizedOriginal: true, excludedOriginalRetained: true, excludedVisibleInInspector:true, secondBrowserFinalityVisible:true, excludedOperation:{operationId:excluded.operationId,proposalId:excluded.proposalId,authorTimestampMs:original.authorTimestampMs}, qualifiedComposition: !values.diagnostic };
+    passed('actual browser closure/proofs, final read and explicit late exclusion with unchanged original bytes/time/ID');
+  }
+  await screenshot(second.page, 'phone-after');
+  assert.equal(await second.page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, '320px must not horizontally scroll');
+  await second.page.reload(); await expect(saveButton(second.page)).toBeEnabled({ timeout: 60_000 }); await expect(second.page.locator('#public-key')).toHaveValue(secondKey);
+  passed('fresh desktop/320px profiles, long-lived identity and materialized state after second-device reload');
+  report.native_checks = 'not-required'; report.browser_checks = 'passed'; report.status = values.diagnostic ? 'diagnostic-passed' : 'passed'; report.qualified = !values.diagnostic;
+  console.log('Browser-first journey completed without a native data process. Exact evidence and explicit limits are in the report.');
 } catch (error) {
   report.status = 'failed'; report.failed_stage = stage; report.error = error.message;
-  if (report.native_checks === 'running') report.native_checks = 'failed';
   if (report.browser_checks === 'running') report.browser_checks = 'failed';
-  if (page && !page.isClosed()) {
-    report.browser_diagnostics = await page.evaluate(() => Object.fromEntries([
-      'connection', 'connection-card', 'pairing-status', 'data-status', 'peer-status', 'submission-status', 'result', 'media-status', 'media-result', 'media-suggestion', 'operation-status',
-    ].map(id => [id, document.getElementById(id)?.textContent ?? null]))).catch(failure => ({ error: failure.message }));
-    report.browser_actionability = await page.evaluate(() => ({ visibility: document.visibilityState,
-      hasFocus: document.hasFocus(), submitDisabled: document.querySelector('#submit')?.disabled,
-      formBusy: document.querySelector('#form')?.getAttribute('aria-busy') })).catch(() => null);
-    report.browser_lifecycle = await page.evaluate(() => ({
-      markerPresent: Array.isArray(window.__networkLabLifecycle),
-      observed: Array.isArray(window.__networkLabLifecycle) ? window.__networkLabLifecycle.map(event => event.type).slice(0, 8) : [],
-    })).catch(() => null);
-    // Which browser stores exist (names only): distinguishes a missing store from an emptied one.
-    report.opfs_at_failure = await opfsInventory(page);
-    report.browser_status_log = await page.evaluate(() => JSON.parse(sessionStorage.getItem('first-app-status-log') || '[]')).catch(() => null);
-    report.browser_storage = await page.evaluate(async () => {
-      const opfs = [];
-      try { for await (const [name, handle] of (await navigator.storage.getDirectory()).entries()) opfs.push(`${handle.kind}:${name}`); } catch (error) { opfs.push(`error:${error.name}`); }
-      let indexed = [];
-      try { indexed = (await indexedDB.databases()).map(db => `${db.name}@${db.version}`); } catch (error) { indexed = [`error:${error.name}`]; }
-      return { opfs: opfs.slice(0, 40), indexedDB: indexed.slice(0, 40) };
-    }).catch(failure => ({ error: failure.message }));
-    try {
-      await page.screenshot({ path: join(dirname(reportPath), 'first-app-failure.png'), fullPage: true, timeout: 10_000 });
-      report.screenshots ??= {}; report.screenshots.failure = 'first-app-failure.png';
-    } catch { /* Preserve the original test failure if the page has crashed. */ }
+  report.browser_network=browserNetwork;
+  report.host_transport=await transportCounters().catch(error=>({error:error.message}));
+  report.browser_profiles=[];
+  for(const profile of browserProfiles){
+    if(profile.page.isClosed())continue;
+    const details=await Promise.race([profile.page.evaluate(async()=>{
+      const text=Object.fromEntries(['connection-status','session-status','submission-status','result','operation-status','view-error','provision-status'].map(id=>[id,document.getElementById(id)?.textContent??null]));
+      let owner,transport,endpoints;try{const backend=window.tendril.application.backend;owner={applicationId:backend.applicationId,status:backend.status};const id=document.getElementById('op-id')?.value??document.getElementById('operation-id')?.value;if(id){const op=await backend.operations.get(id);if(op)owner.selectedOperation=await op.inspect();}}catch(error){owner={error:error.message};}
+      try{transport=await window.tendril.transport.refresh();}catch(error){transport={error:error.message};}
+      return{text,owner,transport};
+    }).catch(error=>({error:error.message})),new Promise(resolve=>setTimeout(()=>resolve({error:'DIAGNOSTICS_DEADLINE'}),6000))]);
+    report.browser_profiles.push({profile:profile.label,...details});
+    try{const file=`first-app-${profile.label}-failure.png`;await profile.page.screenshot({path:join(dirname(reportPath),file),fullPage:true,timeout:10000});report.screenshots??={};report.screenshots[profile.label+'-failure']=file;}catch{}
   }
-  if (peer) report.native_inference_diagnostics = await peer.request('inference-status', {}, 5_000).catch(failure => ({ error: failure.message }));
-  if (peer) report.native_session_diagnostics = await peer.request('diagnostics', {}, 5_000).catch(failure => ({ error: failure.message }));
-  if (error.stdout) process.stderr.write(error.stdout);
-  if (error.stderr) process.stderr.write(error.stderr);
-  throw error;
+  if (page && !page.isClosed()) {
+    report.browser_diagnostics = await page.evaluate(() => Object.fromEntries(['connection-status','session-status','submission-status','result','operation-status','view-error'].map(id => [id,document.getElementById(id)?.textContent ?? null]))).catch(() => null);
+    try { await page.screenshot({ path: join(dirname(reportPath), 'first-app-failure.png'), fullPage: true, timeout: 10_000 }); report.screenshots ??= {}; report.screenshots.failure = 'first-app-failure.png'; } catch {}
+  }
+  if (error.stdout) process.stderr.write(error.stdout); if (error.stderr) process.stderr.write(error.stderr); throw error;
 } finally {
-  if (peer) await closeTestPeer(peer).catch(error => {
-    report.native_cleanup = { status: 'failed', message: error.message };
-  });
-  await (labBrowser ? labBrowser.close() : browser?.close())?.catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
-  await mkdir(dirname(reportPath), { recursive: true });
-  await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
-  if (values.keep) console.log(`Private test directory retained: ${directory}`);
-  else await rm(directory, { recursive: true, force: true });
+  await browser?.close().catch(() => {}); await host?.dispose().catch(() => {}); await dispatcher.close().catch(() => {});
+  await mkdir(dirname(reportPath), { recursive: true }); await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
+  if (values.keep) console.log(`Private test directory retained: ${directory}`); else await rm(directory, { recursive: true, force: true });
 }

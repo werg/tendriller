@@ -22,7 +22,7 @@ export async function mountConnectedAgentChat({
 } = {}) {
   if (!runtime) throw Error('mountConnectedAgentChat requires window.tendril runtime');
   if (!session) throw Error('mountConnectedAgentChat requires a Chronolog session');
-  if (!peer) throw Error('mountConnectedAgentChat requires the native agent peer deviceId');
+  if (!peer) throw Error('mountConnectedAgentChat requires an explicitly authorized agent participant public key');
 
   const voiceModule = await loadVoice();
   const stop = new AbortController();
@@ -69,8 +69,9 @@ export async function mountConnectedAgentChat({
           text: body.slice(0, 8000),
         }, { operationId });
         const item = optimistic.get(operationId);
-        if (item) { item.status = 'delivered'; renderMerged(); }
-        await op.applied({ signal: AbortSignal.any([lifetime, AbortSignal.timeout(20_000)]) });
+        if (item) { item.status = 'stored'; renderMerged(); }
+        const materialized = await op.materialized({ signal: AbortSignal.any([lifetime, AbortSignal.timeout(20_000)]) });
+        if (materialized.outcome === 'rejected') throw Error(`Currently rejected (${materialized.rejectionCode ?? 'domain guard'}); original operation ${operationId} remains inspectable and its materialization is revisable.`);
         optimistic.delete(operationId);
         await refreshInbox();
       } catch (error) {

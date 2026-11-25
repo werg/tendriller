@@ -29,19 +29,31 @@ Before package acquisition, the workflow checks open readiness and deployed
 source/release/runtime identity using only public reads. Before renewing the
 account or creating a fixture, it checks the
 selected host's readiness and exact source/release/runtime/composition identity.
-The fixture installs the SDK and Chronolog session named by that composition,
-verifies their actual hashes against the current source pin, and reports those
-identities. A mismatched deployment, missing readiness or paused staging or production stops
+The fixture installs the SDK, Chronolog authority and Chronolog session archives
+named by that one composition, verifies their hashes against the current source
+pins and their installed provenance against the composition's clean checkpoint,
+and reports those identities. There is no registry lookup, guessed path or
+optional fallback for any of them. A mismatched deployment, missing readiness or paused staging or production stops
 the run; it does not select another origin or an older archive. The recording
-rechecks deployment identity at completion. This fixture does not qualify the
-first-app kit or a browser-owned application peer; those have separate gates.
-The command creates its own synthetic app, prepares signed UI before claim,
-starts the participant, signs in with the static form, claims that prepared
-publication, approves application access and completes real OAuth with PKCE.
-It then connects an actual Codex app-server MCP client and exercises the six
-positive and three negative packaged scenarios at the tool/protocol level.
-It verifies reads, a write, exact retry, retained events, rejected operations,
-signed publication and persistence after reload. Ambiguity is handled by the
+rechecks deployment identity at completion. This fixture adapts the starter's
+browser-owner and native-session helpers but does not replace the first-app kit
+or browser-peer gates, which are separate.
+The command signs in with the static form and completes real OAuth with PKCE,
+then creates its own synthetic app through account-linked setup (the linked
+account's `tendrils:create` grant names the owner; the runner supplies no owner
+identity). It prepares the independent publisher policy and publishes the complete
+signed browser page **before any browser key exists**, verifying that no data
+authority exists yet. The signed-in browser then initializes its own identity,
+root and data key locally with no native process running. Only then does the
+runner explicitly provision the optional native participant: the native device
+proves its own key for an account-bound challenge, the browser reviews its public
+request and wraps keys to exactly that recipient, and the native process imports
+the package. The runner starts the participant, approves application access and
+connects an actual Codex app-server MCP client, exercising the six positive and
+three negative packaged scenarios at the tool/protocol level. It verifies reads,
+a write, exact retry, retained events, rejected operations, that the signed
+publication is unchanged and verifies independently of data, convergence of the
+browser-owned replica with the native write, and persistence after reload. Ambiguity is handled by the
 deterministic test client without sending a write; this does not evaluate a
 model's clarification behavior.
 
@@ -108,37 +120,56 @@ share its state. The initial `checklist` query returns two incomplete items,
 `check-labels` and `check-links`; the only command is `completeItem` with an
 explicit item ID. There is no deletion or reset command.
 
-Extract the plugin ZIP's `review/` directory into a private directory. It contains
-`review-app.mjs`, `review-domain.mjs`, `review-assistant.mjs` and the canonical
-`support/participant-lifecycle.mjs` copied from the public starter. For a source
-checkout, `installReviewFixtureSources` in `scripts/review/fixture.mjs` prepares
-the same enumerated files; do not invent a separate lifecycle helper.
-Install the qualified public `@tendriller/core` and events-capable
-`@chronolog/peer-session` archives there. Then:
+Extract the plugin ZIP's `review/` directory into a private directory. It
+contains the review app (`review-app.mjs`, `review-domain.mjs`,
+`review-assistant.mjs`, `review-local.mjs`), the signed page sources
+(`review-page.mjs`, `review-worker.mjs`, `review-index.html`) and `support/`,
+the canonical public starter helpers copied byte-for-byte. For a source checkout,
+`installReviewFixtureSources` in `scripts/review/fixture.mjs` prepares the same
+enumerated files; do not invent a separate lifecycle, bootstrap or provisioning
+helper. Install the qualified public `@tendriller/core`,
+`@chronolog/authority` and events-capable `@chronolog/peer-session` archives
+there, all three from the same release composition and never from a registry
+(`npm install --ignore-scripts SDK.tgz AUTHORITY.tgz SESSION.tgz`), confirm
+`node_modules/@chronolog/*/provenance.json` names the composition's clean
+checkpoint, then install `esbuild` for the one-time page build
+(`node review-app.mjs build` imports it). Then:
 
-1. Run `node review-app.mjs create /private/path/test-access.json`.
-2. Run `node review-app.mjs init`, then `node review-app.mjs propose`, without
-   waiting for claim. Retain the page and permission-review URLs and private
-   `assistant-proposal.json`, which binds the returned proposal ID to the adapter
-   key hash. `run` never substitutes a foreign observed proposal. Existing private
-   installations need a verified retained proposal/key binding supplied by their
-   operator; do not re-propose or reset consent merely to update this code.
-3. Supervise `node review-app.mjs run` from that directory. It retains one native
-   signer and publishes signed UI independently of the optional MCP component.
+1. Create the page through the owner's account-linked setup:
+   `REVIEW_ACCESS_TOKEN=<linked-account OAuth token with tendrils:create> node review-app.mjs setup SERVICE_ORIGIN`.
+   The service derives the owner from that grant; never supply an owner identity.
+2. Run `node review-app.mjs init`, `node review-app.mjs build` and
+   `node review-app.mjs publish` to prepare the independent publisher policy and
+   publish the complete signed page **before** the owner browser key exists. Run
+   `node review-app.mjs propose`; retain the private `assistant-proposal.json`,
+   which binds the returned proposal ID to the adapter key hash. `run` never
+   substitutes a foreign observed proposal. Do not re-propose or reset consent
+   merely to update this code.
+3. The owner signs in with the static test-account form and opens the page. Its
+   browser initializes identity, keys and storage locally; the checklist works
+   with no native process.
+4. To enable the optional MCP participant, create its device with
+   `node review-app.mjs init-device`. In the page's **Add another device
+   explicitly** section prove that public key for the account-bound challenge,
+   sign the challenge with `node review-app.mjs sign-enrollment FILE`, record the
+   proof, then use `node review-app.mjs provisioning-request`, review that
+   request in the page, grant the reviewed rights and import the wrapped package
+   with `node review-app.mjs import-provisioning FILE`. The native process never
+   creates a root, membership or data key.
+5. Supervise `node review-app.mjs run`. It opens its cached provisioned store.
    Setup notifications resume the existing proposal; only exact owner approval
-   starts the adapter and its checkpointed event forwarding. Revocation/replacement
-   stops that component without closing the native application.
-4. Sign in with the static test-account form. Open the already-prepared page;
-   claim adopts its publication. Open the proposal URL and approve `checklist`,
-   `completeItem` and `item.completed`. Verify the native signer is enrolled.
-5. Verify listing, description and the initial read without sending a command.
+   starts the adapter and its checkpointed event forwarding. Revocation or
+   replacement stops that component without closing the native application.
+   Open the proposal URL and approve `checklist`, `completeItem` and
+   `item.completed`; verify the native signer is enrolled.
+6. Verify listing, description and the initial read without sending a command.
    Use the disposable qualification fixture for the mutation and denial tests.
 
-Do not delete this sample during qualification. Keep its native process and
-private device store available throughout review; MCP and page residency do not
-keep that participant running. Record the actual process supervisor, restart
-command and machine lifetime in private Review details. The page's **Open the
-latest snapshot** link opens the current signed snapshot after a command.
+Do not delete this sample during qualification. Keep its optional native process and
+private device store available throughout review so the assistant can answer;
+the signed page itself needs neither. MCP and page residency do not keep that
+participant running. Record the actual process supervisor, restart
+command and machine lifetime in private Review details. The page shows the shared state of both replicas once they synchronize.
 After reviewers complete Check labels, that state persists; create a fresh sample
 for a later clean review rather than inventing a reset API.
 

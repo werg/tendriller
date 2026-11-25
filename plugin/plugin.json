@@ -20,7 +20,7 @@
       "interface": {
         "displayName": "Tendriller",
         "shortDescription": "Work with your Tendriller apps",
-        "longDescription": "Find the setup guide for a new UI and sensor application, or read and update the Tendriller apps you choose to share. Building a new app uses a supported native agent runtime and the supplied starter. Connect your account and approve the queries, commands and events each app exposes. Its enrolled participant handles reads and writes. Catch up on retained events, or use subscriptions in supported chats when the callback provider is configured.",
+        "longDescription": "Find the setup guide for a new UI and sensor application, or read and update the Tendriller apps you choose to share. Build a new app from the supplied browser-first starter. Connect your account and approve the queries, commands and events each app exposes. The browser app reads and writes locally, including offline after initialization. An optional, explicitly provisioned participant serves the assistant's reads and writes. Catch up on retained events, or use subscriptions in supported chats when the callback provider is configured.",
         "developerName": "Gabriel Pickard",
         "category": "Productivity",
         "capabilities": [

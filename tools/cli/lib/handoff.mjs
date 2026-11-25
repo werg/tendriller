@@ -101,7 +101,8 @@ export async function loadCheckpointLibrary(projectDir) {
     return pathToFileURL(target).href;
   };
   const [kernel, native] = await Promise.all([import(entry('.')), import(entry('./native'))]);
-  if (typeof native.NativeBytesStore?.prototype.putAllIfEmpty !== 'function' ||
+  if (typeof native.NativeBytesStore?.open !== 'function' ||
+      typeof native.NativeBytesStore?.prototype.putAllIfEmpty !== 'function' ||
       typeof kernel.exportDeviceCheckpoint !== 'function' || typeof kernel.restoreDeviceCheckpoint !== 'function')
     throw fail('CHECKPOINT_LIBRARY_UNSUPPORTED', 'Install the matching qualified Chronolog package with durable checkpoint persistence and atomic restore.');
   return { kernel, native };
@@ -161,7 +162,7 @@ export async function exportNativeCheckpoint({ devicePath, outputPath, secret,
       retireSource: true,
       persist: ({ bytes }) => writeNewPrivate(destination, bytes),
     });
-    device.store.checkpointWal();
+    await device.store.checkpointWal();
     return { output: destination, size: checkpoint.bytes.byteLength,
       retiredSource: checkpoint.retiredSource, metadata: checkpoint.metadata };
   } finally { await device.close(); }
@@ -179,12 +180,12 @@ export async function restoreNativeCheckpoint({ inputPath, devicePath, secret, p
   const stagedDevice = join(staging, basename(destination));
   let store, verification, published = false;
   try {
-    store = new native.NativeBytesStore(stagedDevice);
+    store = await native.NativeBytesStore.open(stagedDevice);
     const restored = await kernel.restoreDeviceCheckpoint(store, new Uint8Array(readFileSync(input)), { secret: secretValue(kernel, secret) });
     if (restored.outbox.length) throw fail('CHECKPOINT_EXTERNAL_OUTBOX', 'Restore the application-owned outbox through its own verified host adapter.');
     if (restored.sqlDatabaseBytes !== null)
       throw fail('CHECKPOINT_APP_RESTORE_REQUIRED', 'This checkpoint includes external SQL bytes. Use its application-owned restore adapter; the CLI restores canonical device history and rebuilds derived materialization.');
-    store.checkpointWal(); store.close(); store = undefined;
+    await store.checkpointWal(); await store.close(); store = undefined;
     verification = await native.openNativeDevice({ path: stagedDevice });
     if (restored.metadata.deviceId !== null && verification.identity.publicKey !== restored.metadata.deviceId)
       throw fail('CHECKPOINT_IDENTITY_MISMATCH', 'Restored signing identity does not match the authenticated checkpoint metadata.');
@@ -196,7 +197,7 @@ export async function restoreNativeCheckpoint({ inputPath, devicePath, secret, p
       restoredEntries: restored.restoredEntries, metadata: restored.metadata };
   } finally {
     try { await verification?.close(); } finally {
-      store?.close();
+      await store?.close();
       if (!published) rmSync(staging, { recursive: true, force: true });
     }
   }

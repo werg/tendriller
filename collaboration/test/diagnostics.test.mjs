@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { diagnoseApplicationSession, diagnosticFinding } from '../../session/diagnostics.mjs';
 
-const session = status => ({ applicationId:'application',historyId:'history',deviceId:'signer',
-  status:{phase:'ready',database:'idle',role:'coordinator',generation:'selected',coordinator:'signer',connectedPeers:0,...status},
+const session = status => ({ applicationId:'a'.repeat(64),identity:{publicKey:'b'.repeat(64)},
+  status:{canAuthor:true,phase:'ready',database:'idle',connectedPeers:0,pendingOperations:0,materializationError:null,...status},
   describe:()=>({id:'definition',version:'1',commands:[{name:'submit',input:{privateExample:'never-report'}}],queries:[{name:'state'}]}),
   query(){throw Error('Diagnostics must not activate data');},
   get authority(){throw Error('Diagnostics must not open another authority reader');},
@@ -21,24 +21,24 @@ test('doctor stays protocol-only and redacts unknown endpoint, state and definit
   assert.doesNotMatch(JSON.stringify(report),/never-report|privateExample|credential|token/);
   assert.notEqual(report.endpoints[0],value.endpoint);
 });
-test('unavailable coordinator, keys and recovery produce distinct scoped next actions',async()=>{
-  for(const [phase,code]of[['waiting','COORDINATOR_UNAVAILABLE'],['awaiting-keys','KEYS_UNAVAILABLE'],['recovering','RECOVERY_REVIEW_REQUIRED'],['closed','OWNER_UNREACHABLE']]){
-    const report=await diagnoseApplicationSession(session({phase,database:'ready'}));
-    const finding=report.findings.find(item=>item.code===code);
-    assert.ok(finding);assert.equal(finding.scope.historyId,'history');assert.equal(finding.state.generation,'selected');
+test('missing keys, failed local materialization and owner loss have distinct actions without inventing a coordinator',async()=>{
+  for(const [state,code] of [[{phase:'awaiting-keys',canAuthor:false},'KEYS_UNAVAILABLE'],[{database:'failed'},'DATA_UNAVAILABLE'],[{phase:'closed',canAuthor:false},'OWNER_UNREACHABLE']]){
+    const report=await diagnoseApplicationSession(session(state)),finding=report.findings.find(item=>item.code===code);
+    assert.ok(finding);assert.equal(finding.scope.applicationId,'a'.repeat(64));assert.equal(finding.scope.publicKey,'b'.repeat(64));
     assert.equal(finding.retrySafe,false);assert.ok(finding.nextAction.length>40);
-    assert.equal(report.assessment,phase==='closed'?'unavailable':'attention-required');
+    assert.equal(report.assessment,state.phase==='closed'?'unavailable':'attention-required');
+    assert.equal(report.status.canAuthor,state.canAuthor??true,'a failed read does not revoke local authoring');
   }
-  const value=session({database:'failed'});value.participation={status:{phase:'approval-required',connectedPeers:[],error:'private payload'}};
+  const value=session({database:'ready'});value.diagnostics=async()=>[];
   const report=await diagnoseApplicationSession(value);
-  assert.ok(report.findings.some(item=>item.code==='RECOVERY_REVIEW_REQUIRED'));
-  assert.ok(report.findings.some(item=>item.code==='DATA_UNAVAILABLE'));
-  assert.doesNotMatch(JSON.stringify(report),/private payload/);
+  assert.equal(report.assessment,'ready');assert.equal(report.status.canAuthor,true);
+  assert.equal(report.participation.phase,'disconnected');assert.equal(report.transport.authenticatedPeers,0);
+  assert.doesNotMatch(JSON.stringify(report),/coordinator|generation|recovery/);
 });
 test('restricted endpoint diagnostics retain the original denial without erasing session observations',async()=>{
-  const value=session();value.endpoints=async()=>{throw Object.assign(Error('secret credential'),{code:'APPLICATION_ATTACHMENT_FORBIDDEN'});};
-  const report=await diagnoseApplicationSession(value),finding=report.findings.find(item=>item.code==='APPLICATION_ATTACHMENT_FORBIDDEN');
-  assert.equal(report.identity.deviceId,'signer');assert.equal(finding.severity,'warning');assert.equal(finding.retrySafe,false);
+  const value=session();value.endpoints=async()=>{throw Object.assign(Error('secret credential'),{code:'ENDPOINT_CAPABILITY_FORBIDDEN'});};
+  const report=await diagnoseApplicationSession(value),finding=report.findings.find(item=>item.code==='ENDPOINT_CAPABILITY_FORBIDDEN');
+  assert.equal(report.identity.publicKey,'b'.repeat(64));assert.equal(finding.severity,'warning');assert.equal(finding.retrySafe,false);
   assert.match(finding.nextAction,/approved attachment capabilities/);assert.doesNotMatch(JSON.stringify(report),/secret credential/);
 });
 test('diagnostic error mapping preserves exact codes without exposing arbitrary messages or unsafe retry claims',()=>{

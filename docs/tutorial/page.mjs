@@ -1,375 +1,149 @@
-import { browserProfileId } from './helpers/browser-profile.mjs';
-import { openBrowserOwner } from '@tendriller/core/browser-owner';
-import { createLiveView, createViewStore, operationReference } from '@chronolog/peer-session/browser';
-import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
-import { createSubmissionState } from './helpers/submission-state.mjs';
-import { createSignalRequests } from './helpers/signal-request.mjs';
 import { createOperationView } from './helpers/operation-view.mjs';
-import { mountReviewedMedia } from './media/panel.mjs';
-import { createBrowserPairing } from './pairing-browser.mjs';
-import { createOwnerConnection, reloadOnOwnerReplaced } from './connection.mjs';
-import { mountConnectionView } from './connect-view.mjs';
-import { mountDiagnosticsPanel, registerLifecycleFlush } from './helpers/diagnostics-panel.mjs';
-import { mountDevTelemetry } from './helpers/dev-telemetry.mjs';
-
+import { openBrowserOwner } from '@tendriller/core/browser-owner';
+import { createLiveView, createViewStore, createApplicationBackend } from '@chronolog/peer-session';
+import { decodeRecord } from '@chronolog/authority';
+import { authorityRecordBytes } from '@tendriller/core/authority';
+import { browserProfileId } from './helpers/browser-profile.mjs';
+import { createSubmissionState } from './helpers/submission-state.mjs';
+import { mountProvisioning } from './helpers/provisioning-view.mjs';
+import { mountFinality } from './helpers/finality-view.mjs';
+import { deriveNotes } from './domain.mjs';
 const $ = selector => document.querySelector(selector);
-const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => response.json());
-const profileId = browserProfileId(configuration.applicationId);
-const pairing = createBrowserPairing({ configuration, profileId,
-  workerUrl: new URL(configuration.pairingWorkerUrl || './pairing-worker.mjs', import.meta.url) });
-const viewKey = `${profileId}:view`;
-let viewId = sessionStorage.getItem(viewKey) || crypto.randomUUID();
-sessionStorage.setItem(viewKey, viewId);
-let viewStore = createViewStore({ storage: localStorage, applicationId: configuration.applicationId, profileId, viewId });
-const readLocal = name => viewStore.readDraft(name);
-const writeLocal = (name, value) => viewStore.writeDraft(value, name);
-function retainedPending() {
-  const references = viewStore.pending(), selected = readLocal('operation');
-  const retained = references.find(item => item.reference.operationId === selected) ?? references[0];
-  return retained ? { ...retained.context, id: retained.reference.operationId, reference: retained.reference } : null;
-}
-const diagnostics = mountDiagnosticsPanel($('#app-content') ?? document.body, { appName: 'Shared notes' });
-registerLifecycleFlush(() => { /* Persist local draft/pending operation state before tab suspension. */ });
-let attachment, session, liveView, operationView, observedOperation, media, telemetry;
-const submission = createSubmissionState(renderSubmission);
-function renderSubmission(state) {
-  $('#submit').disabled = !state.canSubmit;
-  $('#inspect').disabled = !state.canInspect;
-  $('#retry').disabled = !state.canRetry;
-  $('#reapply').disabled = !state.canReapply;
-  $('#refresh').disabled = !state.attached || state.working;
+const response = await fetch(new URL('./configuration.json', import.meta.url));
+if (!response.ok) throw Error('Public application configuration is unavailable');
+const configuration = await response.json(), profileId = browserProfileId(configuration.applicationId);
+let storage, viewId, persistence = true;
+try { storage = localStorage; viewId = sessionStorage.getItem(`${profileId}:view`) || crypto.randomUUID(); sessionStorage.setItem(`${profileId}:view`, viewId); }
+catch { const map = new Map(); storage = { get length() { return map.size; }, key: i => [...map.keys()][i] ?? null, getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) }; viewId = crypto.randomUUID(); persistence = false; }
+const local = createViewStore({ storage, applicationId: configuration.applicationId, profileId, viewId });
+const read = (key, fallback) => { try { return local.readDraft(key) ?? fallback; } catch { persistence = false; return fallback; } };
+const save = (key, value) => { try { local.writeDraft(value, key); } catch { persistence = false; $('#draft-help').textContent = 'This browser could not persist the draft. Keep this page open or copy unsent text before leaving.'; } };
+let editor = read('editor', { id: crypto.randomUUID(), isNew: true }), drafts = read('drafts', {}), intents = read('intents', {});
+let attachment, session, live, provisioning, notes = [], stale = false, hasSnapshot = false, inspectToken = 0;
+let operationView, observedOperationId;
+const nodes = new Map(), selectedId = () => { try { return new URLSearchParams(location.hash.slice(1)).get('note'); } catch { return null; } };
+$('#note').value = drafts[editor.id] ?? ''; $('#editor-heading').textContent = editor.isNew ? 'New note' : 'Edit note';
+$('#operation-id').value = read('selected-operation', '');
+if (!persistence) $('#draft-help').textContent = 'Private browser storage is unavailable. This draft lasts only while the page remains open.';
+const submission = createSubmissionState(state => {
+  $('#submit').disabled = !state.canSubmit; $('#delete').disabled = !state.canSubmit || !notes.some(note => note.id === selectedId());
+  $('#inspect').disabled = !state.canInspect; $('#retry').disabled = !state.canRetry;
   $('#submission-status').textContent = state.message;
-  $('#form').setAttribute('aria-busy', String(state.working));
-  media?.setBlocked(!state.canSubmit);
-}
-let pending = retainedPending();
-const report = error => { $('#result').textContent = error.message ?? String(error); };
-const operationStatus = document.createElement('p');
-operationStatus.id = 'operation-status'; operationStatus.setAttribute('role', 'status');
-$('#result').before(operationStatus);
-$('#note').value = readLocal('draft') ?? '';
-$('#operation-id').value = readLocal('operation') ?? '';
-if (pending) {
-  $('#operation-id').value = pending.id;
-  $('#result').textContent = `Unresolved operation ${pending.id}. Inspect or retry its original identity before submitting another note.`;
-}
-$('#note').addEventListener('input', () => writeLocal('draft', $('#note').value));
-$('#operation-id').addEventListener('input', () => {
-  writeLocal('operation', $('#operation-id').value);
-  submission.update({ selected: $('#operation-id').value, observed: null });
 });
-submission.update({ pending, selected: $('#operation-id').value });
-
-function savePending(value) {
-  // Each view owns its reference to the common signed journal. Removing this
-  // reference cannot erase another view's pending command or draft.
-  const previous = pending;
-  if (value) {
-    const reference = { applicationId: session.applicationId, historyId: session.historyId,
-      author: session.deviceId, operationId: value.id };
-    const { reference: ignored, ...context } = value;
-    viewStore.retainOperation(reference, context);
-    pending = { ...value, reference };
-  } else pending = null;
-  if (previous?.reference && previous.id !== value?.id) viewStore.removeOperation(previous.reference);
-  submission.update({ pending, selected: $('#operation-id').value, observed: null });
+submission.update({ selected: $('#operation-id').value, pending: intents[$('#operation-id').value] ?? null });
+const report = error => { $('#operation-status').textContent = error.message ?? String(error); };
+function retainEditor() { drafts[editor.id] = $('#note').value; save('drafts', drafts); save('editor', editor); }
+$('#note').addEventListener('input', retainEditor);
+function renderDetail() {
+  const id = selectedId(), note = notes.find(item => item.id === id);
+  $('#detail-text').textContent = note?.text ?? (!hasSnapshot ? 'The local snapshot is loading or unavailable. Your draft remains local; Save does not require this read.' : id ? `This note is absent from the ${stale ? 'last known (not current)' : 'current materialized'} snapshot. A late operation may change its outcome.` : 'Select a note to inspect it.');
+  $('#detail-meta').textContent = note ? `Author ${note.author}. Proposal ${note.proposalId}. Author time ${note.authorTimestampMs}. ${stale ? 'Last snapshot, not current.' : 'Current local projection; revisable.'}` : '';
+  $('#edit').disabled = !note;
+  $('#delete').disabled = !note || !submission.snapshot.canSubmit;
+  for (const [key, node] of nodes) node.link.setAttribute('aria-current', String(key === id));
 }
-function retainObservedReference(state) {
-  if (!state || pending?.id !== state.operationId) return;
-  const reference = operationReference(session, pending.id, state);
-  if (reference.author !== pending.reference.author || reference.historyId !== pending.reference.historyId)
-    throw Error('The observed operation does not belong to this retained signer and history.');
-  const { reference: ignored, ...context } = pending;
-  viewStore.retainOperation(reference, context);
-  pending = { ...pending, reference };
-}
-function beginSubmission() { return submission.begin(); }
-const commandOf = value => value.command ?? 'addNote';
-const inputOf = value => value.input ?? { text: value.text };
-function acceptedOrRejected(result) {
-  if (result?.status === 'applied' && pending?.id === result.operationId) {
-    const originalOperationId = pending.originOperationId ?? pending.reapplies ?? pending.id;
-    if (result.outcome === 'accepted' && commandOf(pending) === 'addNote' && $('#note').value.trim() === inputOf(pending).text) {
-      $('#note').value = ''; writeLocal('draft', '');
-    }
-    savePending(null);
-    media?.resolved(result, originalOperationId);
-  }
-}
-
 function renderNotes(snapshot) {
-  const list = $('#notes'); list.replaceChildren();
-  for (const note of snapshot.value) {
-    const item = document.createElement('li'), body = document.createElement('p'), by = document.createElement('small');
-    body.textContent = note.text;
-    by.textContent = `Author ${note.author.slice(0, 12)} · operation ${note.operationId}`;
-    if (note.source) by.textContent += ' · reviewed photo';
-    item.append(body, by); list.append(item);
+  const focus = document.activeElement, x = scrollX, y = scrollY;
+  notes = snapshot.value; hasSnapshot = true; stale = false; $('#view-error').hidden = true;
+  const wanted = new Set(notes.map(note => note.id));
+  for (const [id, node] of nodes) if (!wanted.has(id)) { node.item.remove(); nodes.delete(id); }
+  for (const note of notes) {
+    let node = nodes.get(note.id);
+    if (!node) { const item = document.createElement('li'), link = document.createElement('a'); item.append(link); node = { item, link }; nodes.set(note.id, node); }
+    const label = note.text.length > 180 ? note.text.slice(0, 180) + '…' : note.text;
+    if (node.link.textContent !== label) node.link.textContent = label;
+    const detailUrl = new URL(location.href); detailUrl.hash = 'note=' + encodeURIComponent(note.id); node.link.href = detailUrl.href;
+    $('#notes').append(node.item);
   }
-  $('#count').textContent = `${snapshot.value.length} retained note${snapshot.value.length === 1 ? '' : 's'} in this selected history`;
+  $('#count').textContent = `${notes.length} ${notes.length === 1 ? 'note' : 'notes'} · local snapshot ${snapshot.revision.digest.slice(0, 12)} · revisable`;
+  $('#empty').hidden = notes.length !== 0; renderDetail();
+  if (focus?.isConnected && document.activeElement !== focus) focus.focus({ preventScroll: true });
+  scrollTo(x, y);
 }
-function refresh() { return liveView.refresh(); }
-function observeOperation(id, operation) {
-  if (observedOperation === id && !operation) return operationView;
-  operationView?.close(); observedOperation = id;
-  operationView = createOperationView(session, { operationId: id, operation,
-    onChange({ state, coverage, waitingForShared }) {
-      retainObservedReference(state);
-      if (id === submission.snapshot.selected) submission.update({ observed: state });
-      acceptedOrRejected(state);
-      const label = !state ? 'No saved attempt visible; preserve the original input and ID.'
-        : state.status === 'saved' ? 'Saved on this device; waiting for applied execution.'
-        : state.status === 'applied' ? `Applied: ${state.outcome}${state.rejectionCode ? ` (${state.rejectionCode})` : ''}.`
-        : `${state.status}: inspect current notes before explicitly reapplying the original input.`;
-      const retention = coverage ? `${coverage.length} peer retention receipt(s) observed for this attempt; recovery can still exclude it.`
-        : waitingForShared ? 'Waiting for separate peer retention evidence.' : 'Peer retention has not been observed here.';
-      operationStatus.textContent = `${id}: ${label} ${retention}`;
-    },
-    // Observation failures do not erase the uncertain command explanation.
-    onError(error) { operationStatus.textContent = `${id}: observation unavailable (${error.message}). Inspect the original operation.`; },
-  });
-  if (operation) void operationView.waitForShared().catch(() => {});
+window.addEventListener('hashchange', renderDetail);
+$('#new').addEventListener('click', () => { retainEditor(); editor = { id: crypto.randomUUID(), isNew: true }; save('editor', editor); $('#note').value = ''; $('#editor-heading').textContent = 'New note'; $('#note').focus(); });
+$('#edit').addEventListener('click', () => { const note = notes.find(item => item.id === selectedId()); if (!note) return; retainEditor(); editor = { id: note.id, isNew: false }; save('editor', editor); $('#note').value = Object.hasOwn(drafts, note.id) ? drafts[note.id] : note.text; $('#editor-heading').textContent = 'Edit note'; retainEditor(); $('#note').focus(); });
+function showFacts(inspection) {
+  submission.update({ observed: inspection });
+  const materialized = inspection.materialized, peerRetention = inspection.retained.filter(item => item.signer !== session.identity.publicKey);
+  $('#operation-status').textContent = [
+    `Operation: ${inspection.operationId || $('#operation-id').value}`,
+    `Proposal: ${inspection.proposalId}`,
+    `Stored locally: ${inspection.stored ? 'yes' : 'no'}`,
+    `Materialized locally: ${materialized ? materialized.outcome + (materialized.rejectionCode ? ` (${materialized.rejectionCode})` : '') + ' — revisable at ' + materialized.revision.digest : inspection.excluded ? 'not executed — excluded by verified author-time evidence' : 'pending'}`,
+    `Retained by peers: ${peerRetention.length ? peerRetention.map(item => item.signer).join(', ') : 'no authenticated evidence'}`,
+    `Finalized: ${inspection.finalized ? 'yes' : 'no'}`,
+    `Excluded: ${inspection.excluded ? 'yes — original signed intent remains inspectable' : 'no'}`,
+    ...(inspection.pending ? [`Waiting for: ${inspection.pending}`] : []),
+    ...(intents[inspection.operationId]?.input?.text ? [`Original reviewed text: ${intents[inspection.operationId].input.text}`] : []),
+  ].join('\n');
+}
+function stopOperationObservation() { operationView?.close(); operationView = undefined; observedOperationId = undefined; }
+function observeSelectedOperation() {
+  const id = $('#operation-id').value;
+  if (operationView && observedOperationId === id) return operationView;
+  stopOperationObservation(); if (!session || !id) return;
+  observedOperationId = id;
+  operationView = createOperationView(session, { operationId: id,
+    onChange({ inspection }) {
+      if (id !== $('#operation-id').value) return;
+      if (inspection) showFacts(inspection);
+      else { submission.update({ observed: null }); $('#operation-status').textContent = 'No local signed proposal was found for this ID. Retry only its exact retained intent after an uncertain reply.'; }
+    }, onError(error) { if (id === $('#operation-id').value) report(error); } });
   return operationView;
 }
-
-// Attach to this browser's device owner and mount the app. Errors keep their code;
-// createOwnerConnection decides whether to set the browser up, wait or retry.
-async function connectSession({ signal } = {}) {
-  let installed = false;
+async function inspect() { await observeSelectedOperation()?.refresh(); }
+$('#operation-id').addEventListener('input', () => { const id = $('#operation-id').value; ++inspectToken; save('selected-operation', id); submission.update({ selected: id, pending: intents[id] ?? null, observed: null }); observeSelectedOperation(); });
+$('#inspect').addEventListener('click', () => { void inspect().catch(report); });
+async function submitIntent(intent, retry = false) {
+  const done = submission.begin(retry ? 'retry' : 'submit');
+  intents[intent.operationId] = intent; save('intents', intents); save('selected-operation', intent.operationId);
+  $('#operation-id').value = intent.operationId; submission.update({ selected: intent.operationId, pending: intent, observed: null });
   try {
-    const identity = window.tendril?.identity;
-    attachment = await openBrowserOwner({ workerUrl: new URL(configuration.ownerWorkerUrl || './worker.mjs', import.meta.url),
-      profileId, applicationId: configuration.applicationId, definitionId: 'shared-notes', definitionVersion: '2',
-      signal, timeoutMs: 30_000, context: { viewId, ...(identity?.documentPath ? { documentPath: identity.documentPath } : {}),
-        ...(identity?.publication ? { publicationId: identity.publication } : {}) },
-      // Another tab or a page update took over this tab's route: reconnect.
-      onOwnerReplaced: (() => {
-        const reconnect = reloadOnOwnerReplaced({ onSkipped() { $('#result').textContent = 'The connection moved to another tab. Reload to continue here.'; } });
-        return () => { submission.update({ attached: false, coherent: false }); reconnect(); };
-      })(),
-    });
-    signal?.throwIfAborted();
-    session = attachment.session; $('#device-key').value = session.deviceId;
-    if (pending?.reference && (pending.reference.author !== session.deviceId || pending.reference.historyId !== session.historyId))
-      throw Error('The retained operation belongs to a different signer or history. Reopen its original owner to inspect it.');
-    if (session.endpoint.context.viewId !== viewId) {
-      const offeredDraft = $('#note').value;
-      viewId = session.endpoint.context.viewId; sessionStorage.setItem(viewKey, viewId);
-      viewStore = createViewStore({ storage: localStorage, applicationId: configuration.applicationId, profileId, viewId });
-      pending = retainedPending(); $('#note').value = readLocal('draft') ?? ''; $('#operation-id').value = readLocal('operation') ?? '';
-      submission.update({ pending, selected: $('#operation-id').value, observed: null });
-      if (offeredDraft) {
-        const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy the other view’s draft';
-        copy.addEventListener('click', () => { $('#note').value = offeredDraft; writeLocal('draft', offeredDraft); copy.remove(); });
-        $('#result').before(copy);
-      }
+    const retained = retry ? await session.operations.get(intent.operationId) : null;
+    const operation = retained ? await session.operations.retry(intent.operationId) : await session.command(intent.command, intent.input, { operationId: intent.operationId });
+    // Only the durable local acknowledgment can clear the exact draft that was sent.
+    if (intent.command === 'putNote' && editor.id === intent.input.noteId && $('#note').value === intent.input.text) {
+      $('#note').value = ''; drafts[editor.id] = ''; save('drafts', drafts);
     }
-    if (!window.tendril) throw Error('Open the published Tendriller page to install its runtime binding.');
-    liveView = createLiveView(session, { query: 'notes', input: null,
-      onStatus(status) { submission.application(status); $('#data-status').textContent = `Data: ${status.database}; application: ${status.phase}`; diagnostics.update({ coordinatorStatus: status }); },
-      onRecovery(notice) {
-        submission.update({ coherent: false });
-        $('#recovery').hidden = false;
-        $('#recovery').textContent = `Selected history changed. ${notice.abandoned.length} known operations were excluded; unknown loss: ${notice.unknownLoss}. Inspect the original operation before deciding whether to submit new work.`;
-      }, onError(error) { submission.update({ coherent: false }); report(error); },
-    });
-    liveView.subscribe(snapshot => { renderNotes(snapshot); submission.read(snapshot); });
-    media = mountReviewedMedia({ container: $('#media-panel'), session, runtime: window.tendril,
-      nativeDeviceId: configuration.nativeDeviceId,
-      getContext: () => liveView.snapshot ? { revision: liveView.snapshot.revision, collection: 'shared-notes' } : null,
-      prepareCommit: prepareEvidence, commit: submitEvidence, blocked: !submission.snapshot.canSubmit,
-      onVoiceDraft(text) {
-        $('#note').value = [$('#note').value, text].filter(Boolean).join('\n');
-        writeLocal('draft', $('#note').value);
-      },
-    });
-    session.participation.onStatus(status => {
-      const wasConnected = submission.snapshot.connected;
-      submission.participation(status);
-      if (!wasConnected && submission.snapshot.connected) void refresh().catch(report);
-      $('#peer-status').textContent = `Connection: ${status.phase}${status.error ? ` (${status.error})` : ''}.`;
-    });
-    if ($('#operation-id').value) observeOperation($('#operation-id').value);
-    submission.update({ attached: true }); $('#close').disabled = false;
-    // On-demand answers from the native participant (not retained in the journal).
-    window.appRequests = createSignalRequests(session, { peer: configuration.nativeDeviceId });
-    // The draft editor is usable now; the submission state gates every action until reads succeed.
-    $('#app-content').hidden = false;
-    // The query activates data. Status observation handles later key delivery.
-    await liveView.ready({ signal, timeoutMs: 30_000 });
-    signal?.throwIfAborted();
-    // The runtime binding installs once per page, so only after the app is usable.
-    window.tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
-    window.tendril.signals.install(session.signals);
-    window.tendril.transport.install(session.participation);
-    telemetry = mountDevTelemetry({ session, runtime: window.tendril });
-    installed = true;
-  } catch (error) {
-    if (!installed) {
-      liveView?.close(); operationView?.close(); media?.close(); telemetry?.close(); telemetry = undefined; window.appRequests?.close();
-      operationView = undefined; observedOperation = undefined;
-      try { await attachment?.detach(); } catch { /* Preserve the setup failure. */ }
-      session = attachment = liveView = undefined;
-      submission.update({ attached: false, coherent: false }); $('#close').disabled = true; $('#app-content').hidden = true;
-    }
-    throw error;
-  }
+    showFacts(await operation.inspect()); observeSelectedOperation();
+  } catch (error) { $('#operation-status').textContent = submission.failure(error, intent); }
+  finally { done(); }
 }
-
-$('#form').addEventListener('submit', async event => {
-  event.preventDefault();
-  let release, original;
-  try {
-    release = beginSubmission();
-    const text = $('#note').value.trim();
-    if (!text) throw Error('Write a note first.');
-    if (text.length > 2000) throw Error('Edit the note to 2,000 characters or fewer before saving. Nothing was submitted.');
-    const before = await refresh();
-    if (!submission.snapshot.available) throw Error('Connection changed while reading notes.');
-    const operationId = crypto.randomUUID();
-    // Save the reference before submitting. This is a UI reference, not a
-    // second delivery queue; Chronolog owns and retries the signed attempt.
-    $('#operation-id').value = operationId; writeLocal('operation', operationId);
-    savePending({ id: operationId, command: 'addNote', input: { text }, basedOn: before.revision });
-    original = pending;
-    const operation = await session.command('addNote', { text }, { operationId, basedOn: before.revision });
-    observeOperation(operationId, operation);
-    $('#result').textContent = `Saved locally as ${operationId}. Waiting for applied execution…`;
-    const result = await operation.applied({ signal: AbortSignal.timeout(15_000) });
-    if (result.outcome === 'accepted') diagnostics.update({ lastAppliedOperationId: operationId });
-    $('#result').textContent = `Applied: ${result.outcome}. Operation ${operationId}. Retained coverage is separate; explicit recovery can exclude applied work.`;
-    acceptedOrRejected(result);
-    await refresh();
-  } catch (error) { report(Error(original && pending?.id !== original.id
-    ? `${error.message} Operation ${original.id} already resolved; inspect its applied outcome. Your current draft is retained.`
-    : submission.failure(error, original ?? pending))); }
-  finally { release?.(); }
+$('#form').addEventListener('submit', event => { event.preventDefault(); const text = $('#note').value.trim(); if (!text) return; retainEditor(); void submitIntent({ operationId: crypto.randomUUID(), command: 'putNote', input: { noteId: editor.id, text } }).catch(report); });
+$('#delete').addEventListener('click', () => { const noteId = selectedId(); if (noteId) void submitIntent({ operationId: crypto.randomUUID(), command: 'deleteNote', input: { noteId } }).catch(report); });
+$('#retry').addEventListener('click', () => { const id = $('#operation-id').value, intent = intents[id]; if (intent) void submitIntent(intent, true).catch(report); else void session.operations.retry(id).then(async operation => showFacts(await operation.inspect())).catch(report); });
+$('#save-offline').addEventListener('click', async () => {
+  try { $('#save-offline').disabled = true; const saved = await window.tendril.publication.saveOffline(); $('#offline-status').textContent = `Offline ready: complete immutable publication ${saved.id}. Local keys/data stay separate on this device.`; }
+  catch (error) { $('#offline-status').textContent = `Not offline ready: ${error.message}`; }
+  finally { $('#save-offline').disabled = false; }
 });
-
-async function prepareEvidence({ candidate, reviewed, operationId, signal }) {
-  signal.throwIfAborted();
-  const text = reviewed.text?.trim(), capturedRevision = JSON.stringify(candidate.context.revision);
-  if (!text || text.length > 2000) throw Error('A reviewed observation must contain 1–2,000 characters. Nothing was submitted.');
-  if (!capturedRevision || capturedRevision.length > 16384) throw Error('The captured revision exceeds this example’s input limit. Nothing was submitted.');
-  const release = beginSubmission();
+let photoUrl;
+$('#photo').addEventListener('change', () => { if (photoUrl) URL.revokeObjectURL(photoUrl); const file = $('#photo').files[0]; $('#photo-preview').hidden = !file; if (file) { photoUrl = URL.createObjectURL(file); $('#photo-preview').src = photoUrl; } $('#analysis-consent').checked = false; });
+function viewError(error) { stale = true; $('#view-error').hidden = false; $('#view-error').textContent = `View not current: ${error.message}. The last snapshot and your draft are retained. Local Save remains independent of this read.`; $('#count').textContent = hasSnapshot ? `${notes.length} notes in last snapshot — not current` : 'Local snapshot unavailable — not an empty-data result.'; renderDetail(); }
+async function connect() {
+  $('#reconnect').hidden = true;
   try {
-    let source = reviewed.source;
-    if (!source) {
-      // Manual review works without a provider. Staging begins only after the
-      // person chooses Save, and remains separate from the semantic command.
-      const bytes = new Uint8Array(await candidate.blob.arrayBuffer());
-      signal.throwIfAborted();
-      const upload = await session.content.stage({ bytes: bytes.length, mediaType: candidate.type });
-      for (let offset = 0; offset < bytes.length; offset += 65_536) {
-        signal.throwIfAborted(); await upload.write(offset / 65_536, bytes.slice(offset, offset + 65_536));
-      }
-      signal.throwIfAborted();
-      source = { candidateId: candidate.id, sha256: candidate.sha256, reference: await upload.commit() };
-    }
-    signal.throwIfAborted();
-    if (pending) throw Error('Another operation became pending; inspect it before submitting evidence.');
-    if (source.candidateId !== candidate.id || source.sha256 !== candidate.sha256 ||
-        source.reference.applicationId !== session.applicationId || source.reference.historyId !== session.historyId)
-      throw Error('The reviewed source no longer matches this application, history and candidate.');
-    if (!submission.snapshot.available) throw Error('Connection changed during evidence preparation. Nothing was submitted.');
-    const input = { text, source, capturedRevision };
-    $('#operation-id').value = operationId; writeLocal('operation', operationId);
-    savePending({ id: operationId, command: 'addEvidence', input, basedOn: candidate.context.revision });
-  } finally { release(); }
+    attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, context: { viewId }, timeoutMs: 30_000 });
+    session = attachment.session; $('#public-key').value = session.identity.publicKey;
+    submission.update({ attached: true });
+    session.onStatus(status => { submission.application(status); $('#connection-status').textContent = `${status.canAuthor ? 'Local signing and storage ready' : 'Key provisioning required'} · ${status.connectedPeers} connected peers · database ${status.database}. Peer availability never gates Save.`; });
+
+    window.tendril.application.install(createApplicationBackend(session));
+  window.tendril.signals.install(session.signals);
+  window.tendril.transport.install(session);
+    provisioning = mountProvisioning({ root: $('#provisioning'), session, peers: window.tendril.host.peers, local });
+    mountFinality({ root: $('#finality-status').parentElement, session });
+    live = createLiveView(session, deriveNotes, { onError: viewError });
+    live.subscribe(renderNotes);
+    // Metadata/finality labels refresh in background, never before local open.
+    void window.tendril.host.peers.application().then(metadata => { if (metadata.authority) $('#finality-status').textContent = `Configured finality: ${decodeRecord(authorityRecordBytes(metadata.authority)).descriptor.payload.finalityPolicy.kind}. No-finality remains fully local-first. A configured but unavailable finalizer never blocks Save.`; }).catch(() => { $('#finality-status').textContent = 'Remote policy refresh unavailable. Retained local authoring remains independent.'; });
+    try { await live.ready({ timeoutMs: 30_000 }); } catch (error) { viewError(error); }
+    window.tendril.ready();
+    if ($('#operation-id').value) void inspect().catch(report);
+  } catch (error) { $('#connection-status').textContent = `Local session could not open: ${error.message}. Retain this browser profile and original work.`; $('#reconnect').hidden = false; }
 }
-
-async function submitEvidence({ candidate, reviewed, operationId, signal }) {
-  signal.throwIfAborted();
-  if (pending?.id !== operationId || pending.command !== 'addEvidence' ||
-      pending.input.source.candidateId !== candidate.id || pending.input.source.sha256 !== candidate.sha256 ||
-      pending.input.text !== reviewed.text.trim()) throw Error('The prepared evidence intent does not match this review. Inspect the original operation.');
-  const input = pending.input;
-  const operation = await session.command('addEvidence', input, { operationId, basedOn: candidate.context.revision });
-  observeOperation(operationId, operation);
-  const result = await operation.applied({ signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
-  $('#result').textContent = `Applied: ${result.outcome}. Reviewed evidence operation ${operationId}.`;
-  acceptedOrRejected(result); await refresh();
-  return JSON.parse(JSON.stringify(result));
-}
-
-$('#inspect').addEventListener('click', async () => {
-  try {
-    if (!submission.snapshot.canInspect) throw Error('Connect and select an operation to inspect.');
-    const { inspection } = await observeOperation($('#operation-id').value).refresh();
-    $('#result').textContent = JSON.stringify({
-      ...(pending?.id === $('#operation-id').value ? { command: commandOf(pending), reviewedInput: inputOf(pending) } : {}),
-      inspection,
-    }, null, 2);
-    acceptedOrRejected(inspection?.state);
-    submission.update({ observed: inspection?.state });
-  }
-  catch (error) { report(error); }
-});
-$('#retry').addEventListener('click', async () => {
-  let release;
-  try {
-    release = submission.begin('retry');
-    const id = pending.id;
-    const original = await session.operations.get(id);
-    retainObservedReference(original);
-    if (!original && pending?.id === id) {
-      const options = { operationId: id, basedOn: pending.basedOn };
-      // A first RPC can fail before its saved acknowledgment. Explicit retry
-      // preserves the original input, revision and identity in that case too.
-      if (pending.reapplies) await session.reapply(pending.reapplies, commandOf(pending), inputOf(pending), options);
-      else await session.command(commandOf(pending), inputOf(pending), options);
-    } else await session.retry(id);
-    observeOperation(id);
-    const result = await session.operations.wait(id, { signal: AbortSignal.timeout(15_000) });
-    $('#result').textContent = JSON.stringify(result, null, 2); acceptedOrRejected(result);
-    await refresh();
-  } catch (error) { report(error); }
-  finally { release?.(); }
-});
-$('#reapply').addEventListener('click', async () => {
-  let release;
-  try {
-    release = submission.begin('reapply');
-    const previous = pending;
-    const before = await refresh();
-    const inspected = await session.operations.get(previous.id);
-    if (!['abandoned', 'needsReapply'].includes(inspected?.status)) throw Error('The original operation is no longer eligible for reviewed reapplication.');
-    if (!submission.snapshot.available) throw Error('Connection changed while reviewing reapplication.');
-    const id = crypto.randomUUID();
-    savePending({ id, command: commandOf(previous), input: inputOf(previous), basedOn: before.revision,
-      reapplies: previous.id, originOperationId: previous.originOperationId ?? previous.reapplies ?? previous.id });
-    $('#operation-id').value = id; submission.update({ selected: id }); writeLocal('operation', id);
-    const operation = await session.reapply(previous.id, commandOf(previous), inputOf(previous), { operationId: id, basedOn: before.revision });
-    observeOperation(id, operation);
-    const result = await operation.applied({ signal: AbortSignal.timeout(15_000) });
-    $('#result').textContent = JSON.stringify(result, null, 2); acceptedOrRejected(result); await refresh();
-  } catch (error) { report(error); }
-  finally { release?.(); }
-});
-$('#refresh').addEventListener('click', () => { void refresh().catch(report); });
-
-async function close() {
-  connection.close();
-  window.appRequests?.close();
-  submission.update({ attached: false, connected: false, coherent: false });
-  liveView?.close(); operationView?.close(); media?.close(); telemetry?.close(); telemetry = undefined;
-  try { await attachment?.detach(); }
-  finally { $('#close').disabled = true;
-    $('#app-content').hidden = true; view.render({ phase: 'failed', title: 'Connection closed', detail: 'Reload to reconnect this browser.',
-      action: { label: 'Reconnect', run: () => location.reload() } }); }
-}
-$('#close').addEventListener('click', () => { void close().catch(report); });
-window.addEventListener('pagehide', event => {
-  if (event.persisted) { submission.update({ connected: false, coherent: false }); void attachment?.suspend().catch(report); }
-  else void close().catch(() => {});
-});
-window.addEventListener('pageshow', event => {
-  if (event.persisted && attachment) void attachment.resume().then(() => refresh()).catch(report);
-});
-const view = mountConnectionView($('#connection-slot'));
-const connection = createOwnerConnection({ configuration, pairing, connect: connectSession, appName: 'Shared notes',
-  onState(state) {
-    view.render(state);
-    const key = pairing.read()?.publicKey; if (key && !$('#device-key').value) $('#device-key').value = key;
-  } });
-void connection.start();
+$('#reconnect').addEventListener('click', () => { if (session) location.reload(); else void connect(); });
+window.addEventListener('pagehide', event => { stopOperationObservation(); retainEditor(); if (event.persisted) void attachment?.suspend().catch(report); else { live?.close(); provisioning?.close(); void attachment?.detach().catch(() => {}); } });
+window.addEventListener('pageshow', event => { if (event.persisted) void attachment?.resume().then(() => { observeSelectedOperation(); return live?.refresh(); }).catch(report); });
+void connect();

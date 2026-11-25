@@ -1,10 +1,10 @@
 # Bounded collaboration reads
 
-The immutable journal is the source of admitted task and conversation facts. Reads
+The journal contains the current materialized task and conversation records. Reads
 project current task state and page historical evidence separately, so a long
 conversation or repeated claim handoffs cannot make task inspection unusable.
-The existing admission triggers, signed-attempt references and command version
-checks apply unchanged.
+The admission triggers, authenticated proposal references and command version
+checks are re-evaluated during authored-time replay. Late earlier operations can revise outcomes and remove rows.
 
 ## Public queries
 
@@ -31,8 +31,8 @@ Accepted-result summaries contain every accepted slot's full result identity,
 claim fence, disposition, outcome and verified operation reference, without its
 content. This allows a current card or reviewer to recognize completed work even
 when the initial historical evidence page does not contain that result. Read full
-content and all late, superseded, cancelled or review-required evidence through
-`collab.results`; no result is deleted or reclassified by pagination.
+content and all late, superseded, cancelled or revised evidence through
+`collab.results`; pagination itself does not change results; replay can revise whether a result is currently materialized.
 
 Task inspection selects the request, terminal control facts, latest claim/handoff
 per slot, that claim's acknowledgement, and accepted-result references. Old claims
@@ -51,14 +51,14 @@ Every page includes:
   total: 0,        // All matching records in this captured view.
   returned: 0,
   limit: 16,
-  revision: {}     // The complete captured PeerRevision.
+  revision: {}     // The complete captured MaterializedRevision.
 }
 ```
 
-Pages use ascending immutable journal sequence and keyset continuation. A cursor
-binds the query, filters, application, history, generation and complete captured
-revision. Changing any of those produces `CURSOR_RESET_REQUIRED`; it does not
-silently skip to a different history. The requested limit can change between
+Pages use ascending journal sequence within one immutable captured view and keyset continuation. A cursor
+binds the query, filters and complete captured
+revision (operation-set digest, local/final view kind, execution manifest and policy). Changing any of those produces `CURSOR_RESET_REQUIRED`; it does not
+silently skip to a different projection. The requested limit can change between
 pages. Cursors are read positions, not execution capabilities or provenance proofs.
 
 A normal `session.query()` captures a fresh view for each call. Use the maintained
@@ -70,7 +70,7 @@ const reader = await client.capture();
 try {
   let cursor;
   do {
-    const options = { state: 'open', eligibleSigner: session.deviceId, limit: 8 };
+    const options = { state: 'open', eligibleSigner: session.identity.publicKey, limit: 8 };
     if (cursor) options.cursor = cursor;
     const { value } = await reader.tasks(options);
     renderTaskPage(value.tasks, value.claims, value.acceptedResults);
@@ -83,8 +83,7 @@ try {
 
 The reader owns one public captured view. It supports native and attached Worker
 sessions without consumer SQL or copied definition internals. Close it when the
-view is no longer displayed or before refreshing to a new revision. Recovery or
-loss of that attachment can invalidate it; capture a new reader and explicitly
+view is no longer displayed or before refreshing to a new revision. Loss of that attachment can invalidate it; capture a new reader and explicitly
 restart the displayed query. Do not retain one captured reader per historical page.
 
 `reader.inspect(taskId)` exposes the initial result page. Continue it on that same
@@ -111,7 +110,7 @@ within the owner's 65,536-node / 1 MiB frame. Dense legal arrays therefore short
 a page without losing its next item or making a named query fail at transport.
 Individual task inspection uses the same task budget plus one evidence page.
 
-The legacy snapshot is an explicitly incomplete preview when any subsection has
+The snapshot is an explicitly incomplete preview when any subsection has
 `hasMore: true`. Its three continuations lead to `tasks`, `results` and `messages`
 respectively. A growing journal no longer fails at an arbitrary 10,000-row total.
 Applications should use the task and thread queries for their displayed scopes.
@@ -139,5 +138,5 @@ and actual tree-parent relationships, so punctuation within a legitimate key doe
 not create false nesting. Every encoded document has its own unique validation
 identity, including when the surrounding invalid envelope repeats a field.
 Failures report `collab_json_fields`, `collab_json_structure` or `collab_envelope`
-through the deterministic assertion outcome. The malformed attempt cannot add a
+through the deterministic assertion outcome. The malformed proposal cannot add a
 row, change a current claim or poison another participant's next read.

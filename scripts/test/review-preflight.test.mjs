@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { CORE_RELEASE } from '../../contract/index.mjs';
 import { preflightReviewDeployment, preflightReviewSource, reviewComposition, reviewProvenance, reviewSource } from '../review/preflight.mjs';
 
+import { FIRST_APP_PROFILES } from '../release-composition.mjs';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'review-composition-'));
@@ -18,19 +19,21 @@ function fixture(t) {
     return { role, file, size: bytes.length, sha256: hash(bytes) };
   };
   // These synthetic bytes test identity matching; package execution is qualified separately.
-  const components = ['sdk', 'runtime', 'engine', 'tools', 'session', 'starter'].map(role => artifact(role, role + '.tgz', 'current-' + role));
+  const components = ['sdk', 'runtime', 'engine', 'tools', 'authority', 'session', 'session-sql-browser', 'starter'].map(role => artifact(role, role + '.tgz', 'current-' + role));
   const body = { format: 'tendriller-release-composition-v1', version: '0.3.0-test', contract: 3, core: source,
-    runtime: 'e'.repeat(64), chronolog: { session: { repository: 'werg/chronolog-db', source: 'c'.repeat(40), sourceTree: 'd'.repeat(40), dirty: false } }, components };
+    runtime: 'e'.repeat(64), profiles:FIRST_APP_PROFILES, chronolog:Object.fromEntries(['authority','session','session-sql-browser'].map(role=>[role,{repository:'werg/chronolog-db',source:'c'.repeat(40),sourceTree:'d'.repeat(40),dirty:false}])), components };
   const composition = { ...body, id: hash(JSON.stringify(body)) };
-  const extras = [artifact('composition', 'composition.json', JSON.stringify(composition)), artifact('first-app', 'first-app.tgz', 'complete-kit')];
+  const extras = [artifact('composition', 'composition.json', JSON.stringify(composition)), artifact('first-app', 'tendriller-first-app-0.3.0-test.tgz', 'complete-kit'), artifact('first-app-sql','tendriller-first-app-sql-0.3.0-test.tgz','sql-kit')];
   const manifest = { format: 'tendriller-core-release', version: body.version, contract: 3, source_commit: source.source,
     source_tree: source.sourceTree, runtime: body.runtime, composition: { file: 'composition.json', id: composition.id },
-    first_app: { file: 'first-app.tgz' }, artifacts: [...components, ...extras] };
+    first_app:{file:'tendriller-first-app-0.3.0-test.tgz',profile:'events',packages:FIRST_APP_PROFILES.events.packages,build_dependency:'esbuild@0.28.2'}, first_apps:{sql:{file:'tendriller-first-app-sql-0.3.0-test.tgz',profile:'sql',packages:FIRST_APP_PROFILES.sql.packages,build_dependency:'esbuild@0.28.2'}}, artifacts: [...components, ...extras] };
   writeFileSync(join(root, 'dist/manifest.json'), JSON.stringify(manifest));
   writeFileSync(join(root, 'test/artifacts/current.tgz'), 'current-session');
   writeFileSync(join(root, 'test/artifacts/old.tgz'), 'old-session');
+  writeFileSync(join(root, 'test/artifacts/authority.tgz'), 'current-authority');
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: body.version,
-    devDependencies: { '@chronolog/peer-session': 'file:test/artifacts/current.tgz' } }));
+    devDependencies: { '@chronolog/peer-session': 'file:test/artifacts/current.tgz', '@chronolog/authority': 'file:test/artifacts/authority.tgz' } }));
+  mkdirSync(join(root,'scripts'));writeFileSync(join(root,'scripts/sql-browser-session.json'),JSON.stringify({archive:'dist/session-sql-browser.tgz',sha256:hash('current-session-sql-browser')}));
   return { root, source, qualified: reviewComposition(root, { source }) };
 }
 function readiness(origin, composition, mode = 'open') {
@@ -62,8 +65,11 @@ test('review composition selects exact current SDK/session bytes and publishes o
   const { root, qualified } = fixture(t);
   assert.equal(qualified.packagePaths.session, join(root, 'dist/session.tgz'));
   assert.equal(qualified.session.sha256, hash('current-session'));
+  assert.equal(qualified.packagePaths.authority, join(root, 'dist/authority.tgz'));
+  assert.equal(qualified.authority.sha256, hash('current-authority'));
   const proof = reviewProvenance(qualified, readiness('https://selected.example', qualified));
   assert.equal(proof.sessionArtifact.sourceCommit, 'c'.repeat(40));
+  assert.equal(proof.authorityArtifact.sha256, hash('current-authority'));
   assert.equal(proof.compositionId, qualified.build.compositionId);
   assert(!JSON.stringify(proof).includes(root), 'Public evidence must omit private filesystem paths');
 });
@@ -152,4 +158,19 @@ test('early readiness checks need no packages or private access and remain disti
   })(), /identity mismatch/);
   assert.equal(installs, 0);
   assert.throws(() => reviewSource(root, { source: { ...source, dirty: true } }), /clean source/);
+});
+
+test('an authority archive that differs from the source pin, or an unpinned authority, fails before networking', t => {
+  const { root, source } = fixture(t);
+  const pin = join(root, 'test/artifacts/authority.tgz');
+  writeFileSync(pin, 'old-authority');
+  assert.throws(() => reviewComposition(root, { source }), /different authority than the source pin/);
+  writeFileSync(pin, 'current-authority');
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json')));
+  delete pkg.devDependencies['@chronolog/authority'];
+  writeFileSync(join(root, 'package.json'), JSON.stringify(pkg));
+  assert.throws(() => reviewComposition(root, { source }), /pinned public authority archive/);
+  pkg.devDependencies['@chronolog/authority'] = 'file:../outside/authority.tgz';
+  writeFileSync(join(root, 'package.json'), JSON.stringify(pkg));
+  assert.throws(() => reviewComposition(root, { source }), /escapes the source checkout/);
 });

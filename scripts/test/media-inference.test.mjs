@@ -27,7 +27,7 @@ function network() {
     const captured = structuredClone(envelope); sent.push(captured);
     for (const listener of listeners) if (listener.topics.includes(captured.topic)) { listener.queue.push(captured); listener.wake?.(); }
   };
-  const endpoint = deviceId => ({ applicationId, historyId: 'fixture-history', deviceId,
+  const endpoint = deviceId => ({ applicationId, identity: { publicKey: deviceId },
     command(...args) { commands.push(args); throw Error('Inference must never submit an application command.'); },
     signals: {
       async send(topic, payload, options = {}) {
@@ -55,7 +55,7 @@ function network() {
           const value = new Uint8Array(bytes); let offset = 0;
           for (const chunk of chunks) { value.set(chunk, offset); offset += chunk.length; }
           assert.equal(offset, bytes); content.set(id, value);
-          return { profile: 'peer-content-v1', applicationId, historyId: 'fixture-history', id, epoch: 0, bytes, mediaType };
+          return { profile: 'authored-content-v1', applicationId, id, epoch: 0, bytes, mediaType };
         } };
       },
       async *read(reference, { signal }) {
@@ -238,33 +238,30 @@ test('audio inference rejects oversized or unsupported media before transport an
 
 
 test('recorder MIME parameters cross actual public-session content and signal APIs without changing evidence bytes', { timeout: 20_000 }, async t => {
-  const peer = await import('@chronolog/peer-session'), cleanup = [];
+  const peer = await import('@chronolog/peer-session'), authority = await import('@chronolog/authority'), cleanup = [];
+  const { createTestConnection } = await import('../observation-fixture/connection.mjs');
   t.after(async () => { for (const close of cleanup.reverse()) await close(); });
+  const store = () => { const values = new Map(); return { async get(key) { return values.get(key)?.slice() ?? null; }, async put(key, value) { values.set(key, value.slice()); } }; };
   const definition = peer.defineApplication({ id: 'audio-inference-content-check', version: '1', commands: {}, queries: {} });
-  const [pageDevice, workerDevice] = await Promise.all([0, 1].map(() => peer.openApplicationDevice({ store: new peer.MemoryBytesStore(), create: true })));
-  cleanup.push(() => pageDevice.close(), () => workerDevice.close());
-  const host = await peer.createPeerIdentity(), key = crypto.getRandomValues(new Uint8Array(32));
+  const [pageDevice, workerDevice] = await Promise.all([0, 1].map(() => peer.openApplicationDevice({ store: store(), create: true })));
+  const host = await authority.createSigningIdentity(), key = crypto.getRandomValues(new Uint8Array(32)), app = 'd7'.repeat(32);
   const manifest = await peer.executionManifestArtifacts(await peer.eventExecutionManifest());
-  const descriptor = await peer.signApplicationDescriptor({ applicationId: 'd7'.repeat(32), historyId: 'audio-inference-content',
-    profile: 'peer-generation-v1', policy: 'eligible-members-v1', controlPublicKey: host.publicKey, schemaAdministrator: workerDevice.identity.publicKey,
-    executionManifestDigest: peer.bytesToHex(manifest.executionManifestDigest), definitionDigest: await peer.applicationDefinitionDigest(definition), schemaDigest: null }, host);
-  const control = await peer.signControlRevision({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
-    policy: descriptor.payload.policy, revision: 0, previous: null, epoch: 0, keyDigest: await peer.bytesDigest(key), recoveryFloor: null,
-    grants: [peer.participantGrant(workerDevice.identity.publicKey, { administrator: true }), peer.participantGrant(pageDevice.identity.publicKey)] }, host);
-  const registry = await peer.createGenerationRegistry({ store: new peer.MemoryBytesStore(), descriptor, controls: [control], signer: host });
-  await registry.select(await peer.signTransitionRequest({ applicationId: descriptor.payload.applicationId, profile: descriptor.payload.profile,
-    policy: descriptor.payload.policy, transitionId: 'initial', expectedGeneration: null, requester: workerDevice.identity.publicKey,
-    coordinator: workerDevice.identity.publicKey, controlRevision: 0, reason: 'create', base: null }, workerDevice.identity));
-  const authority = await registry.read();
-  const [pageSession, workerSession] = await Promise.all([pageDevice, workerDevice].map(device => peer.openPeerApplication({ device, definition, authority, epochKeys: new Map([[0, key]]) })));
+  const descriptor = await authority.signAppDescriptor({ applicationId: app, rootPrincipal: workerDevice.identity.publicKey, authorityPublicKey: host.publicKey,
+    executionManifestDigest: peer.bytesToHex(manifest.executionManifestDigest), finalityPolicy: { kind: 'none' } }, host);
+  const membership = await authority.signMembership({ applicationId: app, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0, epochKeyDigest: await authority.epochKeyCommitment(app, 0, key),
+    members: [workerDevice, pageDevice].map(device => ({ publicKey: device.identity.publicKey, reader: true, writer: true, administrator: device === workerDevice, publisher: false, finalizer: false })) }, host);
+  const bundle = { descriptor, memberships: [membership] };
+  const [pageSession, workerSession] = await Promise.all([pageDevice, workerDevice].map(device => peer.createApplicationSession({ device, definition, authority: bundle, epochKeys: new Map([[0, key]]) })));
   cleanup.push(() => pageSession.close(), () => workerSession.close());
-  const link = await peer.connectApplications(pageSession, workerSession); cleanup.push(() => link.close());
+  let left, right; left = createTestConnection((lane, bytes) => right.accept(lane, bytes)); right = createTestConnection((lane, bytes) => left.accept(lane, bytes));
+  const links = await Promise.all([pageSession.connectPeer({ connection: left.connection, peerIdentity: workerSession.identity.publicKey }), workerSession.connectPeer({ connection: right.connection, peerIdentity: pageSession.identity.publicKey })]);
+  cleanup.push(async () => { await Promise.all(links.map(link => link.close())); });
   const received = [];
-  const service = servePeerInference({ session: workerSession, allowedDevices: [pageSession.deviceId], infer: async value => {
+  const service = servePeerInference({ session: workerSession, allowedDevices: [pageSession.identity.publicKey], infer: async value => {
     received.push(value); return { text: 'Review this transcript.' };
   } });
   cleanup.push(() => service.close());
-  const client = createPeerInferenceClient({ session: pageSession, workerDeviceId: workerSession.deviceId, prompt: 'Suggest a transcript.', timeoutMs: 5000 });
+  const client = createPeerInferenceClient({ session: pageSession, workerDeviceId: workerSession.identity.publicKey, prompt: 'Suggest a transcript.', timeoutMs: 5000 });
   cleanup.push(async () => client.close());
   const bytes = new Uint8Array(65_537).map((_, index) => index % 251), blob = new Blob([bytes], { type: 'audio/webm;codecs=opus' });
   const evidence = { id: crypto.randomUUID(), blob, sha256: await sha256(bytes), context: { durationMs: 1200 } };

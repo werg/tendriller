@@ -253,11 +253,8 @@ const input = {
   source: reviewed.source,
   capturedRevision: JSON.stringify(candidate.context.revision),
 };
-const operation = await session.command('addEvidence', input, {
-  operationId,
-  basedOn: candidate.context.revision,
-});
-const result = await operation.applied({ signal });
+const operation = await session.command('addEvidence', input, { operationId });
+const result = await operation.materialized({ signal });
 ```
 
 `source` is exactly `{ candidateId, sha256, reference }`, text is bounded to
@@ -265,7 +262,7 @@ const result = await operation.applied({ signal });
 characters. The command emits a note containing the reviewed description,
 source and captured revision. Its authenticated author and operation identity
 come from the session. The page then uses its normal operation inspection,
-exact retry and recovery UI.
+exact retry and inspection UI.
 
 For **manual review**, write the description without Analyze. After explicit
 Save, `prepareEvidence` stages the same immutable candidate through session
@@ -276,14 +273,14 @@ service or treats an upload receipt as command acceptance.
 
 A failed or cancelled response wait cannot establish whether a command was
 saved. Once commit has been dispatched, the review controller preserves the
-operation identity and refuses to silently discard, retry or reapply it. Use
+operation identity and refuses to silently discard, retry or resubmit it. Use
 **Inspect operation** and **Retry same operation** above the photo panel. The
 page reads `session.operations` and preserves the original pending input and
-identity, including after a reload. A recovery that abandons an attempt requires
-deliberate reapplication under a new identity;
-the existing **Reapply after reviewing current notes** control supplies that
-explicit action when the original operation is eligible. Do not silently
-reconstruct the command from the current form.
+identity, including after a reload. A configured closed-time frontier can exclude
+a first-seen older attempt, and a late earlier operation can revise its outcome.
+If the person still wants the work, a new reviewed operation under a new identity
+is explicit new intent. Never retimestamp the original or silently reconstruct
+the command from the current form.
 
 ## Camera, sensor tracking and voice are distinct pieces
 
@@ -400,12 +397,13 @@ Keep these observations distinct:
 | Local candidate | Exact bytes and copied context are available in this page's review controller |
 | Committed content reference | The session identified those immutable evidence bytes; copying/retention elsewhere is a separate observation |
 | Inference suggestion | The selected peer returned a result for the matching source; a person has not necessarily approved it |
-| Saved command | The session retained the command's signed intent under its operation ID |
-| Applied accepted command | The declared command was accepted in the selected application history |
-| Shared/retained coverage | Another peer reported the specific retained coverage; this is not irreversible finality |
+| Stored command | The session retained the command's signed intent under its operation ID |
+| Materialized accepted command | The declared command was accepted in the current replay at that revision; an earlier operation can still revise it |
+| Retained coverage | Another peer reported the specific retained coverage; this is not finality |
+| Finalized | Present only when a finality policy is configured and its proof verifies |
 
-Neither analysis nor an applied command is a general external-action transaction.
-The example is **credential-protected inference**, not a protected recovery floor
+Neither analysis nor a materialized command is a general external-action transaction.
+The example is **credential-protected inference**, not a protected frontier
 or an automatic external-effect dispatcher.
 
 Verify the complete hosted flow with a real enrolled browser: select a file,

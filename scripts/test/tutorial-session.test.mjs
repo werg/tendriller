@@ -5,64 +5,43 @@ import { tmpdir } from 'node:os';
 import { registerHooks } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { provisionNativeMember } from './support/tutorial-cli-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
-test('native tutorial routes explicitly granted owner recovery through its owned control participant', { timeout: 15_000 }, async () => {
+test('native tutorial owner opens its cached provisioned store and serves attachments only within their reviewed policy', { timeout: 20_000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 't'));
-  let owned, ordinary, administrator;
+  let owned, ordinary;
   try {
-    for (const name of ['session.mjs', 'domain.mjs', 'pairing-native.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
+    for (const name of ['session.mjs', 'domain.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
     await mkdir(join(directory, 'helpers'));
-    await copyFile(join(root, 'docs/tutorial/helpers/participant-lifecycle.mjs'), join(directory, 'helpers/participant-lifecycle.mjs'));
-    await copyFile(join(root, 'docs/tutorial/helpers/cli-lifetime.mjs'), join(directory, 'helpers/cli-lifetime.mjs'));
+    for (const name of ['native-session.mjs', 'cli-lifetime.mjs']) await copyFile(join(root, 'docs/tutorial/helpers', name), join(directory, 'helpers', name));
     await mkdir(join(directory, 'p'), { mode: 0o700 });
-    for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session']]) {
+    for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session'], ['@chronolog', 'authority', 'node_modules/@chronolog/authority']]) {
       await mkdir(join(directory, 'node_modules', scope), { recursive: true });
       await symlink(resolve(root, source), join(directory, 'node_modules', scope, name));
     }
-    // Local configuration/delivery is supplied by the fixture. The copied
-    // bootstrap, native storage, owner and attachment are real public package
-    // consumers. The owner port is exercised without SQL or external networking.
+    // The native device is an explicitly provisioned member of a browser-owned application: it never creates
+    // a root, membership or data key. The copied bootstrap, native storage and owner are real public consumers.
+    const peer = await import('@chronolog/peer-session'), authority = await import('@chronolog/authority');
+    const { openNativeDevice } = await import('@chronolog/peer-session/native');
+    const { definition } = await import(pathToFileURL(join(directory, 'domain.mjs')).href);
+    const device = await openNativeDevice({ path: join(directory, 'p/device.sqlite'), create: true });
+    const seeded = await provisionNativeMember({ peer, authority, device, definition });
+    const publicKey = device.identity.publicKey;
+    await seeded.session.close();
     await writeFile(join(directory, 'local.mjs'), `
-import { fileURLToPath } from 'node:url';
-import * as p from '@chronolog/peer-session';
-import { openNativeDevice, openNativeApplication } from '@chronolog/peer-session/native';
-import { definition } from './domain.mjs';
 export const privateDirectory = new URL('./p/', import.meta.url);
-export const devicePath = fileURLToPath(new URL('device.sqlite', privateDirectory));
-const device = await openNativeDevice({ path: devicePath, create: true });
-const signer = await p.createPeerIdentity(), key = crypto.getRandomValues(new Uint8Array(32));
-const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest());
-const descriptor = await p.signApplicationDescriptor({ applicationId: '74'.repeat(32), historyId: 'tutorial-control-test',
-  profile: 'peer-generation-v1', policy: 'eligible-members-v1', controlPublicKey: signer.publicKey,
-  schemaAdministrator: device.identity.publicKey, definitionDigest: await p.applicationDefinitionDigest(definition),
-  executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), schemaDigest: null }, signer);
-const control = await p.signControlRevision({ applicationId: descriptor.payload.applicationId,
-  profile: descriptor.payload.profile, policy: descriptor.payload.policy, revision: 0, previous: null,
-  epoch: 0, keyDigest: await p.bytesDigest(key), recoveryFloor: null,
-  grants: [p.participantGrant(device.identity.publicKey, { administrator: true, publisher: true })] }, signer);
-export const registry = await p.createGenerationRegistry({ store: new p.MemoryBytesStore(), descriptor, controls: [control], signer });
-await registry.select(await p.signTransitionRequest({ applicationId: descriptor.payload.applicationId,
-  profile: descriptor.payload.profile, policy: descriptor.payload.policy, transitionId: 'initial', expectedGeneration: null,
-  coordinator: device.identity.publicKey, requester: device.identity.publicKey, controlRevision: 0, reason: 'create', base: null }, device.identity));
-const initial = await openNativeApplication({ device, definition, authority: await registry.read(), epochKeys: new Map([[0, key]]) });
-try { await initial.query('notes', null); } finally { await initial.close(); }
-const records = new Map([['descriptor.json', descriptor], ['handle.json', { application: { id: descriptor.payload.applicationId },
-  api: 'https://tendriller.test/api/tendrils/aaaaaaaaaaaa', page_url: 'https://aaaaaaaaaaaa.pages.test/s/test/', token: 'synthetic-test-token' }]]);
-export const readPrivate = async name => structuredClone(records.get(name) ?? null);
+const records = new Map([['handle.json', { application: { id: ${JSON.stringify(seeded.applicationId)} },
+  api: 'https://tendriller.test/api/t/aaaaaaaaaaaa', page_url: 'https://aaaaaaaaaaaa.pages.test/s/test/', token: 'synthetic-test-token' }]]);
+export const readPrivate = async (name, optional) => { if (records.has(name)) return structuredClone(records.get(name)); if (optional) return null; throw Object.assign(Error('missing ' + name), { code: 'ENOENT' }); };
 export const readHostHandle = async () => readPrivate('handle.json');
 export const savePrivate = async (name, value) => { records.set(name, structuredClone(value)); return value; };
 const unused = () => { throw Error('The isolated fixture has no remote peers'); };
-export const authorityOptions = [];
+export const hostReads = [];
 const peers = {
-  async application(options) { authorityOptions.push(options); options?.signal?.throwIfAborted(); return registry.read(); },
-  async exchange(request) {
-    if (request.facet !== 'control') throw Error('Unexpected fixture request');
-    const value = request.action === 'read' ? await registry.read()
-      : request.action === 'select' ? await registry.select(request.payload.request) : unused();
-    return p.createParticipantResponse(request, value);
-  },
+  async application(options) { hostReads.push('application'); options?.signal?.throwIfAborted(); return { selection: { id: ${JSON.stringify(seeded.applicationId)} }, authority: null, publicationAuthority: null }; },
+  publication: async () => null,
   discover: async () => ({ peers: [] }), advertise: async () => {}, withdraw: async () => {},
   invite: unused, rendezvous: unused, relay: unused,
   watchDiscovery(_identity, { signal }) {
@@ -81,7 +60,8 @@ const peers = {
 export const project = async () => ({ handle: await readPrivate('handle.json'), host: { peers } });
 `);
     const fixture = await import(pathToFileURL(join(directory, 'local.mjs')).href);
-    const bootstrapUrl = pathToFileURL(join(directory, 'session.mjs')).href;
+    const bootstrapUrl = pathToFileURL(join(directory, 'helpers/native-session.mjs')).href;
+    const entryUrl = pathToFileURL(join(directory, 'session.mjs')).href;
     const supervisorUrl = pathToFileURL(join(directory, 'supervisor.mjs')).href;
     await writeFile(join(directory, 'supervisor.mjs'), `
 export { attachNativeSession, createNativeAttachmentKey } from ${JSON.stringify(pathToFileURL(join(root, 'dist/sdk/session/native.mjs')).href)};
@@ -90,25 +70,22 @@ export async function createNativeSessionSupervisor({ openOwner, ...options }) {
   return { owner, ownerInstanceId: owner.ownerInstanceId, close: () => owner.close() };
 }
 `);
-    // Replace only the native socket/fence transport at this bootstrap's import
-    // boundary. Its openOwner callback still constructs the real public owner;
-    // existing supervisor tests cover authenticated Unix bindings and ownership.
+    // Replace only the native socket/fence transport at the bootstrap's import boundary. Its openOwner callback
+    // still constructs the real public owner; other tests cover authenticated Unix bindings and ownership.
     const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
-      if (context.parentURL === bootstrapUrl && specifier === '@tendriller/core/native-owner') {
-        return { url: supervisorUrl, shortCircuit: true };
-      }
+      if (context.parentURL === bootstrapUrl && specifier === '@tendriller/core/native-owner') return { url: supervisorUrl, shortCircuit: true };
       return nextResolve(specifier, context);
     } });
     let bootstrap;
-    try { bootstrap = await import(bootstrapUrl); } finally { hooks.deregister(); }
-    const { definition } = await import(pathToFileURL(join(directory, 'domain.mjs')).href);
+    try { bootstrap = await import(entryUrl); } finally { hooks.deregister(); }
     const { connectApplicationOwner } = await import('@chronolog/peer-session/browser');
     owned = await bootstrap.openSession();
-    const stoppedPairing = new AbortController(), stoppedReason = Error('pairing window closed');
-    stoppedPairing.abort(stoppedReason);
-    await assert.rejects(owned.pairing.authority({ signal: stoppedPairing.signal }), error => error === stoppedReason);
-    assert.equal(fixture.authorityOptions.at(-1).signal, stoppedPairing.signal,
-      'the owned pairing callback retains its independent per-pass cancellation');
+    assert.equal(owned.session.identity.publicKey, publicKey);
+    assert.equal(owned.session.status.canAuthor, true, 'cached authority and its granted key are enough to author locally');
+    assert.equal(typeof owned.participation?.onStatus, 'function', 'participation is its own top-level controller');
+    assert.equal(typeof owned.watchSetup, 'function');
+    assert.equal(Object.hasOwn(owned.session, 'participation'), false, 'no participation alias is attached to the application session');
+    assert.deepEqual(fixture.hostReads.filter(read => read !== 'application'), []);
     const attach = async policy => {
       const endpoint = Object.assign(new EventTarget(), { postMessage(value) {
         endpoint.dispatchEvent(new MessageEvent('message', { data: value }));
@@ -120,23 +97,18 @@ export async function createNativeSessionSupervisor({ openOwner, ...options }) {
         return { session, async detach() { try { await session.detach(); } finally { detach(); } } };
       } catch (error) { detach(); throw error; }
     };
-    let controlReads = 0;
-    const application = owned.control.application.bind(owned.control);
-    owned.control.application = (...args) => { controlReads++; return application(...args); };
-
-    ordinary = await attach();
-    await assert.rejects(ordinary.session.recovery.takeover({ transitionId: 'ordinary-denied' }), /APPLICATION_ATTACHMENT_FORBIDDEN/);
-    assert.equal(controlReads, 0, 'an ordinary attachment never reaches privileged host control');
-
-    administrator = await attach({ capabilities: ['ownerAdmin', 'diagnostics'] });
-    assert.equal(await administrator.session.recovery.takeover({ transitionId: 'reviewed-recovery', signal: AbortSignal.timeout(5_000) }), null);
-    assert.equal(controlReads, 1, 'the granted recovery uses the existing verified control participant');
-    assert.equal((await fixture.registry.read()).generations.length, 1, 'the ready coordinator does not create a replacement generation');
-    await administrator.detach(); administrator = undefined;
-    assert.equal(owned.session.signal.aborted, false, 'detaching the administrator preserves the shared owner');
-    assert.deepEqual((await ordinary.session.query('notes', null)).value, []);
+    ordinary = await attach({ capabilities: ['queries', 'commands', 'operations'], queries: ['notes'], commands: ['putNote'] });
+    const operation = await ordinary.session.command('putNote', { noteId: 'n1', text: 'local' }, { operationId: 'session-test-op' });
+    assert.equal((await operation.materialized({ signal: AbortSignal.timeout(10_000) })).outcome, 'accepted');
+    assert.deepEqual((await ordinary.session.query('notes', null)).value.map(note => note.text), ['local']);
+    // A declared command outside the attachment's reviewed policy never reaches the owned signer.
+    await assert.rejects(ordinary.session.command('deleteNote', { noteId: 'n1' }, { operationId: 'session-denied-op' }), /FORBIDDEN/);
+    assert.deepEqual((await owned.session.query('notes', null)).value.map(note => note.text), ['local']);
+    await ordinary.detach(); ordinary = undefined;
+    assert.equal(owned.session.signal.aborted, false, 'detaching an attachment preserves the shared owner');
+    assert.equal((await owned.session.query('notes', null)).value.length, 1);
   } finally {
-    await Promise.allSettled([administrator?.detach(), ordinary?.detach()]);
+    await Promise.allSettled([ordinary?.detach()]);
     try { await owned?.close(); } finally { await rm(directory, { recursive: true, force: true }); }
   }
 });

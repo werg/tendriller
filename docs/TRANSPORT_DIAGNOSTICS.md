@@ -17,8 +17,8 @@ must not appear as an authenticated connection.
 After installing the application backend, register that same participant once:
 
 ```js
-tendril.application.install(createApplicationBackend({ id: session.applicationId, session }));
-tendril.transport.install(session.participation);
+tendril.application.install(createApplicationBackend(session));
+tendril.transport.install(session);
 ```
 
 This creates no signer, session or transport. Registering the same source again
@@ -42,17 +42,9 @@ current connection set has not been sampled successfully.
 
 ## Counter scope
 
-Counters belong to each **current authenticated link** and reset when that link
-is replaced. They are not lifetime application totals. `sentBytes` and
-`receivedBytes` total the reliable and live lanes; the report also exposes
-`sentReliableBytes`, `receivedReliableBytes`, `sentLiveBytes` and
-`receivedLiveBytes`, plus `sentRequests` and `receivedRequests`.
+Counters belong to each **current authenticated physical link** and reset on replacement. They are not lifetime application totals. The common native/Worker `session.diagnostics()` getter reports `sentReliableBytes` and `receivedReliableBytes`: actual reliable CBOR protocol framing before secure-channel and RTC encapsulation. It does not measure live signals, encryption, socket overhead, SDP or NIC traffic. Unmeasured totals/live/request counters remain `null`, never zero.
 
-Reliable counters include the kernel's reliable framing. Live counters count
-accepted frames. They exclude encryption/socket overhead and SDP. They are not
-Cloudflare billing, Internet interface totals, or proof that a command was saved,
-applied, retained by a peer or preserved across recovery. An old sample does not
-establish continuous connectivity.
+An adapter may additionally supply genuinely measured lane/total/request counters; missing values stay unknown. `kind: "unknown"` means the getter does not know the route, not that a direct link failed. Multiple physical links to one verified signing key remain separate connections; the participant count is distinct authenticated keys. No counter proves an operation was stored, materialized, retained by a peer or finalized. A cached sample does not establish continuous connectivity or provider billing.
 
 ## Native and SDK consumers
 
@@ -74,8 +66,8 @@ For another native or browser consumer, use the same public SDK helper:
 import { createTransportDiagnostics, readTransportDiagnostics }
   from '@tendriller/core/transport-diagnostics';
 
-const report = await readTransportDiagnostics(session.participation, { signal });
-const inspector = createTransportDiagnostics(session.participation, { signal });
+const report = await readTransportDiagnostics(session, { signal });
+const inspector = createTransportDiagnostics(session, { signal });
 const off = inspector.onChange(renderConnectionSummary);
 await inspector.refresh();
 off();

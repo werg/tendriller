@@ -1,52 +1,59 @@
-// Test-only witness around the real participant supervisor's existing callbacks.
-// No requests, retry timers or polling are created by this observer.
-export function observeSetupReadiness(owned) {
-  let state = 'opening', revision = 0, notices = 0, noticeRevision = -1, reconciled = 0, pending = 0;
-  const listeners = new Set();
-  const snapshot = () => ({ state, revision, notices, reconciled, pending,
-    ready: state === 'connected' && noticeRevision === revision && reconciled >= notices && pending === 0 });
-  const changed = () => { for (const listener of listeners) listener(); };
+// Test-only witness for the optional native participant's LOCAL prerequisites.
+//
+// Ready means this retained device can author and read from its own stored state:
+// the session is open, its signing identity holds a writer grant with the current
+// epoch key (`canAuthor`), and local materialization has not failed. Peer
+// connectivity, host reachability, retention evidence and finality are never
+// prerequisites: an offline or unfinalized participant is still ready, and a
+// missing finalizer can only delay finality evidence, never local authoring.
+//
+// The observer reads `session.status` and `session.onStatus`, the public
+// application-session surface. It creates no requests, timers (other than an
+// explicit wait deadline) or polling.
+export function describeLocalReadiness(status) {
+  const closed = status?.phase === 'closed' || status?.database === 'closed';
+  const failed = status?.database === 'failed' || (status?.materializationError ?? null) !== null;
+  return {
+    phase: status?.phase ?? 'unknown', database: status?.database ?? 'unknown',
+    canAuthor: status?.canAuthor === true, materializationError: status?.materializationError ?? null,
+    // Informational only. Unseen remote bodies/keys do not block local authoring.
+    awaitingKeys: status?.phase === 'awaiting-keys', pendingOperations: status?.pendingOperations ?? 0,
+    ready: !closed && !failed && status?.canAuthor === true,
+  };
+}
+
+export function observeLocalReadiness(session) {
+  const snapshot = () => describeLocalReadiness(session.status);
   return {
     snapshot,
-    watch(callbacks) {
-      return owned.watchSetup({ ...callbacks,
-        onStatus(value) {
-          state = value.state;
-          if (state === 'connected') { revision++; noticeRevision = -1; }
-          callbacks.onStatus?.(value); changed();
-        },
-        onChange(value) {
-          notices++; noticeRevision = revision;
-          callbacks.onChange(value); changed();
-        },
-      });
-    },
-    async processPairings(options) {
-      const through = notices;
-      pending++; changed();
-      try {
-        const result = await owned.processPairings?.(options) ?? [];
-        reconciled = Math.max(reconciled, through);
-        return result;
-      } finally { pending--; changed(); }
-    },
+    /** Resolves when local prerequisites hold; fails closed on closure, materialization failure, abort or deadline. */
     wait({ signal, timeoutMs = 55000 } = {}) {
       signal?.throwIfAborted();
       return new Promise((resolve, reject) => {
-        let timer;
+        let timer, off, settled = false;
         const finish = (error, value) => {
-          clearTimeout(timer); listeners.delete(check); signal?.removeEventListener('abort', abort);
+          if (settled) return;
+          settled = true; clearTimeout(timer); off?.(); signal?.removeEventListener('abort', abort);
           error ? reject(error) : resolve(value);
         };
         const abort = () => finish(signal.reason);
         const check = () => {
+          if (settled) return;
           const value = snapshot();
           if (signal?.aborted) return abort();
-          if (['closed', 'access_revoked'].includes(value.state)) return finish(Error('SETUP_CONTROL_CLOSED'));
+          if (value.phase === 'closed' || value.database === 'closed') return finish(Object.assign(Error('SESSION_CLOSED'), { code: 'SESSION_CLOSED' }));
+          if (value.database === 'failed' || value.materializationError !== null)
+            return finish(Object.assign(Error('LOCAL_MATERIALIZATION_FAILED'), { code: 'LOCAL_MATERIALIZATION_FAILED', cause: value.materializationError }));
           if (value.ready) finish(null, value);
         };
-        timer = setTimeout(() => finish(Error('SETUP_CONTROL_READY_TIMEOUT')), timeoutMs);
-        listeners.add(check); signal?.addEventListener('abort', abort, { once: true }); check();
+        timer = setTimeout(() => finish(Object.assign(Error('LOCAL_READY_TIMEOUT'), { code: 'LOCAL_READY_TIMEOUT' })), timeoutMs);
+        signal?.addEventListener('abort', abort, { once: true });
+        try {
+          // onStatus may invoke the callback synchronously, before `off` exists.
+          const unsubscribe = session.onStatus(check);
+          if (settled) unsubscribe?.(); else off = unsubscribe;
+          check();
+        } catch (error) { finish(error); }
       });
     },
   };

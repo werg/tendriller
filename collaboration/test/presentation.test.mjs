@@ -26,5 +26,5 @@ test('fresh presence cannot restore revoked or missing application authority',()
 test('delivery and uncertain effects are described without claiming an accepted answer',()=>{
   assert.match(receiptModel({status:'delivered'}).detail,/does not establish a model turn/);
   assert.match(receiptModel({status:'outcomeUnknown'}).detail,/original operation/);
-  assert.equal(receiptModel({status:'applied',outcome:'rejected'}).label,'Rejected in selected history');
+  assert.equal(receiptModel({status:'materialized',outcome:'rejected'}).label,'Rejected at this projection revision');
 });

@@ -2,17 +2,31 @@ import { canonicalJson, CollaborationError, identifier } from './protocol.mjs';
 export { createViewStore } from '@chronolog/peer-session';
 
 /** A provider effect journal belongs to durable local storage, outside recoverable app history. */
-export function createEffectDispatcher({ journal, dispatch, reconcile, authorize }) {
+export function createEffectDispatcher({ journal, dispatch, reconcile, authorize, session, allowProvisionalEffects = false }) {
   if (![journal?.transact, dispatch, authorize].every(value => typeof value === 'function')) throw new CollaborationError('EFFECT_JOURNAL_REQUIRED');
+  if (typeof allowProvisionalEffects !== 'boolean') throw new CollaborationError('INVALID_EFFECT_POLICY');
+  if (!allowProvisionalEffects && typeof session?.operations?.get !== 'function') throw new CollaborationError('EFFECT_FINALITY_SESSION_REQUIRED');
   return Object.freeze({
     async execute({ effectId, fence, input }) {
       identifier(effectId, 'effect'); const payload = canonicalJson(input);
       await authorize(fence);
+      // authorize() is an application permission check, not a finality oracle.
+      // Default irreversible dispatch requires the kernel's independently verified fact.
+      let inspection = null;
+      if (!allowProvisionalEffects) {
+        const proposalId = fence?.claimProposalId;
+        if (typeof proposalId !== 'string' || !/^[a-f0-9]{64}$/u.test(proposalId)) throw new CollaborationError('INVALID_EFFECT_FENCE');
+        const operation = await session.operations.get(proposalId);
+        inspection = operation ? await operation.inspect() : null;
+        if (inspection && (inspection.proposalId !== proposalId || inspection.applicationId !== session.applicationId)) throw new CollaborationError('OPERATION_REFERENCE_CONFLICT');
+      }
       const admitted = await journal.transact(effectId, previous => {
         if (previous) {
           if (previous.payload !== payload || canonicalJson(previous.fence) !== canonicalJson(fence)) throw new CollaborationError('EFFECT_ID_CONFLICT');
           return { record: previous, value: { existing: true, record: previous } };
         }
+        if (!allowProvisionalEffects && (!inspection?.finalized || inspection.excluded || inspection.materialized?.outcome !== 'accepted'))
+          throw new CollaborationError('EFFECT_FINALITY_PENDING', 'Current provisional claims do not authorize irreversible effects', { proposalId: fence.claimProposalId, observation: inspection });
         const record = { effectId, idempotencyKey: journal.idempotencyKey?.(effectId) ?? effectId, payload, fence, status: 'dispatching' };
         return { record, value: { existing: false, record } };
       });

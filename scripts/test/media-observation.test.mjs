@@ -11,8 +11,8 @@ async function until(predicate) { const end = Date.now() + 1500; while (!predica
 function network() {
   const listeners = new Set(), sent = [], statusListeners = new Set(); let online = true, sequence = 0;
   const deliver = value => { sent.push(structuredClone(value)); for (const listener of listeners) if (listener.topics.includes(value.topic)) { listener.queue.push(structuredClone(value)); listener.wake?.(); } };
-  const endpoint = deviceId => ({ deviceId, applicationId: app, signal: new AbortController().signal,
-    get status() { return { connectedPeers: online ? 1 : 0 }; }, onStatus(fn) { statusListeners.add(fn); return () => statusListeners.delete(fn); },
+  const endpoint = deviceId => ({ identity: { publicKey: deviceId }, applicationId: app, signal: new AbortController().signal,
+    get status() { return { connectedPeers: online ? 1 : 0, canAuthor: true }; }, onChange: () => () => {}, onStatus(fn) { statusListeners.add(fn); return () => statusListeners.delete(fn); },
     signals: {
       async send(topic, payload, { signal, stream } = {}) { signal?.throwIfAborted(); deliver({ scope: app, authorId: deviceId, sessionId: 'stream-transport', sequence: ++sequence, topic, payload, stream, issuedAtMs: Date.now() }); },
       subscribe({ topics, signal }) { return { async *[Symbol.asyncIterator]() {
@@ -149,10 +149,38 @@ test('one slow send retains only the newest source fix and no backlog survives S
 });
 
 
-for (const appliedBeforeLoss of [false, true]) test(`review journal survives view reopen and ${appliedBeforeLoss ? 'inspection resolves an applied operation' : 'retry preserves exact input and identity'}`, async t => {
-  const net = network(), track = runtime(), document = Object.assign(new EventTarget(), { visibilityState: 'visible' }), window = new EventTarget();
-  track.capabilities = async () => ({ capabilities: { location: { available: false, permission: 'unknown' } } });
-  const entries = new Map(), storage = { getItem: key => entries.get(key) ?? null, setItem: (key, value) => entries.set(key, value), removeItem: key => entries.delete(key) };
+const proposalId = 'f'.repeat(64);
+const facts = (operationId, materialized = { proposalId, outcome: 'accepted', rejectionCode: null, failingStatementIndex: null }) => ({
+  applicationId: app, author: browser, authorTimestampMs: '1', proposalId, operationId, stored: true, pending: null,
+  materialized, retained: [], finalized: false, excluded: false,
+});
+/** Fact-only notifications: one subscriber per bound operation, released by abort or iterator.return(). */
+function factHub() {
+  const subscribers = new Set();
+  return {
+    subscribe({ operationId, signal }) {
+      return { [Symbol.asyncIterator]() {
+        const entry = { operationId, queue: [], wake: null, closed: false };
+        subscribers.add(entry);
+        const finish = () => { entry.closed = true; subscribers.delete(entry); entry.wake?.(); };
+        signal?.addEventListener('abort', finish, { once: true });
+        return {
+          async next() {
+            for (;;) {
+              if (entry.queue.length) return { value: entry.queue.shift(), done: false };
+              if (entry.closed) return { value: undefined, done: true };
+              await new Promise(resolve => { entry.wake = resolve; });
+            }
+          },
+          async return() { finish(); return { value: undefined, done: true }; },
+        };
+      } };
+    },
+    publish(operationId, inspection) { for (const entry of subscribers) if (entry.operationId === operationId) { entry.queue.push(structuredClone(inspection)); entry.wake?.(); } },
+    get active() { return subscribers.size; },
+  };
+}
+function fakeDom() {
   const elements = new Map(), $ = selector => {
     if (!elements.has(selector)) {
       const listeners = new Set(); elements.set(selector, { value: '', textContent: '', disabled: false, readOnly: false,
@@ -162,14 +190,23 @@ for (const appliedBeforeLoss of [false, true]) test(`review journal survives vie
     }
     return elements.get(selector);
   };
-  const session = net.endpoint(browser), commands = []; let inspections = 0;
+  return $;
+}
+
+for (const signedBeforeLoss of [false, true]) test(`review journal survives view reopen and ${signedBeforeLoss ? 'inspection finds the already stored operation' : 'retry preserves exact input and identity'}`, async t => {
+  const net = network(), track = runtime(), document = Object.assign(new EventTarget(), { visibilityState: 'visible' }), window = new EventTarget();
+  track.capabilities = async () => ({ capabilities: { location: { available: false, permission: 'unknown' } } });
+  const entries = new Map(), storage = { getItem: key => entries.get(key) ?? null, setItem: (key, value) => entries.set(key, value), removeItem: key => entries.delete(key) };
+  const $ = fakeDom(), key = `observation-pending:${app}:${browser}`;
+  const session = net.endpoint(browser), commands = [], retries = []; let inspections = 0, signed = false;
+  const handle = operationId => ({ id: operationId, operationId, stored: true, inspect: async () => { inspections++; return facts(operationId); } });
   session.command = async (name, input, options) => {
     commands.push({ name, input: structuredClone(input), options: structuredClone(options) });
     assert.deepEqual(Object.keys(options), ['operationId'], 'Durable command options contain no uncloneable AbortSignal.');
-    if (commands.length === 1) throw Error('The command response was lost.');
-    return { applied: async () => ({ status: 'applied', outcome: 'accepted' }) };
+    if (commands.length === 1) { signed = signedBeforeLoss; throw Error('The command response was lost.'); }
+    signed = true; return handle(options.operationId);
   };
-  session.operations = { inspect: async () => { inspections++; return appliedBeforeLoss ? { state: { status: 'applied', outcome: 'accepted' } } : null; } };
+  session.operations = { get: async operationId => signed ? handle(operationId) : null, retry: async operationId => { retries.push(operationId); return handle(operationId); }, subscribe: factHub().subscribe };
   const receiver = serveObservations({ session: net.endpoint(native), allowedDevices: [browser] });
   let controls; t.after(async () => { await controls?.close(); await receiver.close(); });
   const mount = () => mountObservations({ container: { querySelector: $ }, session, runtime: track, nativeDeviceId: native, storage, document, window, coalesceMs: 100 });
@@ -182,11 +219,15 @@ for (const appliedBeforeLoss of [false, true]) test(`review journal survives vie
   assert.equal(commands.length, 1, 'Reopening only renders the pending operation; it cannot replay it.');
   assert.equal($('#observation-review').readOnly, true);
   $('#observation-review').value = 'Late edit must not change the pending input';
-  $(appliedBeforeLoss ? '#observation-inspect' : '#observation-retry').click();
-  await until(() => entries.size === 0); assert.equal(inspections, 1);
-  if (appliedBeforeLoss) assert.equal(commands.length, 1);
-  else { assert.equal(commands.length, 2); assert.deepEqual(commands[1], original); }
-  assert.match($('#observation-result').textContent, /Applied: accepted/);
+  $(signedBeforeLoss ? '#observation-inspect' : '#observation-retry').click();
+  await until(() => JSON.parse(entries.get(key)).stored === true); assert.equal(inspections, 1);
+  assert.equal(commands.length, signedBeforeLoss ? 1 : 2, 'A stored original is never re-submitted; an unstored one repeats only its exact retained command.');
+  if (!signedBeforeLoss) assert.deepEqual(commands[1], original);
+  assert.deepEqual(retries, [], 'An original that was never signed has nothing to retry through operations.retry.');
+  const retained = JSON.parse(entries.get(key));
+  assert.equal(retained.operationId, original.options.operationId); assert.deepEqual(retained.input, original.input); assert.equal(retained.proposalId, proposalId);
+  assert.match($('#observation-result').textContent, /Stored locally: true\. Materialized: accepted \(revisable\)\. Retained by peers: 0\. Finalized: false\. Excluded: false\./);
+  assert.equal($('#observation-review').readOnly, false, 'Local durable acknowledgment releases the editor; the original stays inspectable.');
 });
 
 test('stale rejection for an unaccepted sample never populates reviewedSample', async t => {
@@ -218,28 +259,17 @@ test('expired observation requests cannot start a new stream before the periodic
   assert.notEqual(receiver.snapshot()[browser].phase, 'fresh');
 });
 
-test('corrupt localStorage drafts are ignored and Retry settles an already-applied operation without calling session.retry', async t => {
+test('corrupt localStorage drafts are ignored and Retry of a signed original uses operations.retry with its exact identity', async t => {
   const net = network(), track = runtime(), document = Object.assign(new EventTarget(), { visibilityState: 'visible' }), window = new EventTarget();
   track.capabilities = async () => ({ capabilities: { location: { available: false, permission: 'unknown' } } });
   const key = `observation-pending:${app}:${browser}`;
   const entries = new Map([[key, '{"operationId":123}']]);
   const storage = { getItem: k => entries.get(k) ?? null, setItem: (k, v) => entries.set(k, v), removeItem: k => entries.delete(k) };
-  const elements = new Map(), $ = selector => {
-    if (!elements.has(selector)) {
-      const listeners = new Set();
-      elements.set(selector, {
-        value: '', textContent: '', disabled: false, readOnly: false,
-        addEventListener(type, cb) { if (type === 'click') listeners.add(cb); },
-        removeEventListener(type, cb) { listeners.delete(cb); },
-        click() { for (const cb of [...listeners]) cb({ isTrusted: true }); },
-      });
-    }
-    return elements.get(selector);
-  };
-  let retryCalls = 0;
+  const $ = fakeDom(), commands = [], retries = [];
   const session = net.endpoint(browser);
-  session.retry = async () => { retryCalls++; };
-  session.operations = { inspect: async () => ({ state: { status: 'applied', outcome: 'rejected', rejectionCode: 'INVALID_REVIEWED_OBSERVATION' } }) };
+  session.command = async (...args) => { commands.push(args); throw Error('A signed original must not be re-submitted.'); };
+  const handle = { id: 'op-1', operationId: 'op-1', stored: true, inspect: async () => facts('op-1', { proposalId, outcome: 'rejected', rejectionCode: 'INVALID_REVIEWED_OBSERVATION', failingStatementIndex: 0 }) };
+  session.operations = { get: async () => handle, retry: async id => { retries.push(id); return handle; }, subscribe: factHub().subscribe };
   let controls = mountObservations({ container: { querySelector: $ }, session, runtime: track, nativeDeviceId: native, storage, document, window, coalesceMs: 100 });
   t.after(() => controls.close());
   assert.equal($('#observation-review').readOnly, false, 'malformed storage must not lock the review editor');
@@ -248,7 +278,43 @@ test('corrupt localStorage drafts are ignored and Retry settles an already-appli
   controls = mountObservations({ container: { querySelector: $ }, session, runtime: track, nativeDeviceId: native, storage, document, window, coalesceMs: 100 });
   assert.equal($('#observation-review').value, 'Saved text');
   $('#observation-retry').click();
-  await until(() => entries.size === 0);
-  assert.equal(retryCalls, 0, 'Retry must not call session.retry when inspection shows the operation already applied');
-  assert.match($('#observation-result').textContent, /INVALID_REVIEWED_OBSERVATION/);
+  await until(() => JSON.parse(entries.get(key)).stored === true);
+  assert.deepEqual(retries, ['op-1']); assert.equal(commands.length, 0);
+  assert.equal(JSON.parse(entries.get(key)).proposalId, proposalId, 'The rejected original stays retained and inspectable.');
+  assert.match($('#observation-result').textContent, /Stored locally: true\. Materialized: rejected \(INVALID_REVIEWED_OBSERVATION\) \(revisable\)\./);
+});
+
+test('peer retention and finality update the pending operation without a materialization change and release the subscription on close', async t => {
+  const net = network(), track = runtime(), document = Object.assign(new EventTarget(), { visibilityState: 'visible' }), window = new EventTarget();
+  track.capabilities = async () => ({ capabilities: { location: { available: false, permission: 'unknown' } } });
+  const key = `observation-pending:${app}:${browser}`, operationId = 'op-facts';
+  const entries = new Map([[key, JSON.stringify({ operationId, input: { text: 'Saved text', streamId: 'stream-1', sequence: 1, requestId: null, fix: fix() } })]]);
+  const storage = { getItem: k => entries.get(k) ?? null, setItem: (k, v) => entries.set(k, v), removeItem: k => entries.delete(k) };
+  const $ = fakeDom(), hub = factHub(), session = net.endpoint(browser), commands = []; let inspections = 0;
+  let changeListener = null; session.onChange = fn => { changeListener = fn; return () => {}; }; // Never fired below: no materialization revision change occurs.
+  session.command = async (...args) => { commands.push(args); throw Error('A stored original must not be re-submitted.'); };
+  const handle = { id: operationId, operationId, stored: true, inspect: async () => { inspections++; return facts(operationId); } };
+  session.operations = { get: async () => handle, retry: async () => handle, subscribe: hub.subscribe };
+  const controls = mountObservations({ container: { querySelector: $ }, session, runtime: track, nativeDeviceId: native, storage, document, window, coalesceMs: 100 });
+  let closed = false; t.after(async () => { if (!closed) await controls.close(); });
+  assert.equal(hub.active, 1, 'The retained pending operation is observed for fact-only changes.');
+  $('#observation-inspect').click();
+  await until(() => /Retained by peers: 0\. Finalized: false/.test($('#observation-result').textContent));
+  assert.equal(inspections, 1);
+  // Signed<RetentionStatement>: the authenticated retaining peer is payload.peer (== signer). Own retention is not peer evidence.
+  const row = peer => ({ payload: { applicationId: app, proposalId, author: browser, envelopeDigest: 'e'.repeat(64), peer, storageId: `storage-${peer.slice(0, 1)}` }, signer: peer, signature: 's'.repeat(128) });
+  hub.publish(operationId, { ...facts(operationId), retained: [row(browser), row(native)], finalized: true });
+  await until(() => /Retained by peers: 1\. Finalized: true\./.test($('#observation-result').textContent));
+  assert.equal(inspections, 1, 'The update came from the authenticated notification, not another explicit read.');
+  assert.ok(changeListener, 'The materialization listener is registered but was never fired.');
+  assert.equal(commands.length, 0); assert.equal(JSON.parse(entries.get(key)).operationId, operationId);
+  assert.match($('#observation-result').textContent, /Materialized: accepted \(revisable\)/);
+  // Another operation's or application's facts are never shown.
+  hub.publish('other-operation', { ...facts('other-operation'), finalized: false, retained: [] });
+  hub.publish(operationId, { ...facts(operationId), applicationId: 'f'.repeat(64), finalized: false, retained: [] });
+  await sleep(15); assert.match($('#observation-result').textContent, /Retained by peers: 1\. Finalized: true\./);
+  closed = true; await controls.close();
+  assert.equal(hub.active, 0, 'Close releases the fact subscription.');
+  hub.publish(operationId, { ...facts(operationId), retained: [], finalized: false });
+  await sleep(15); assert.match($('#observation-result').textContent, /Finalized: true/, 'No update is applied after close.');
 });

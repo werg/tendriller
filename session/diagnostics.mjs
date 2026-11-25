@@ -10,11 +10,9 @@ const actions = {
   DEVICE_NOT_ENROLLED: 'Ask an authorized administrator to verify and enroll this exact public signing identity.',
   DELEGATION_REVOKED: 'Obtain a new explicitly approved binding; do not reuse or replace the revoked credential automatically.',
   CAPABILITY_UNAVAILABLE: 'Inspect the approved attachment capabilities and request only the missing authority needed for this action.',
-  CONTRACT_INCOMPATIBLE: 'Install a matching public package and immutable definition, then reattach the retained profile.',
+  CONTRACT_INCOMPATIBLE: 'Install the matching public execution/UI composition, then reattach the retained profile.',
   APPLICATION_WORKER_METADATA_INVALID: 'Check for a mixed package/owner composition. Preserve the existing device identity, storage and original signed operation references. Close old app tabs, update native participants and the signed UI to the same qualified public package composition, then reopen the retained profile. Do not reset or clear app data.',
-  COORDINATOR_UNAVAILABLE: 'Reconnect the selected coordinator; inspect recovery evidence before approving a new history selection.',
-  KEYS_UNAVAILABLE: 'Connect an authorized key donor for the selected history; do not create replacement keys or a new signer.',
-  RECOVERY_REVIEW_REQUIRED: 'Inspect the selected generation and excluded operations before an explicit rebind or reapplication.',
+  KEYS_UNAVAILABLE: 'Use explicit recipient-bound key provisioning from an authorized device; do not generate replacement data keys.',
   DATA_UNAVAILABLE: 'Inspect the original storage failure and retained profile; do not clear or replace its data automatically.',
   DATA_IDLE: 'The data engine is intentionally unopened; a deliberate query or command activates it.',
   DATA_OPENING: 'Wait for this owner’s current data activation to finish; do not open another store.',
@@ -23,8 +21,8 @@ const actions = {
   RECIPIENT_AMBIGUOUS: 'Select one named recipient or create explicit contribution slots.',
   CLAIM_CONFLICT: 'Inspect the current accepted claim before choosing another task or observing its result.',
   CLAIM_SUPERSEDED: 'Inspect the current claim fence and retain late evidence without repeating an external effect.',
-  RESULT_CONTEXT_STALE: 'Review the current task and generation before explicitly rebinding or submitting a new result.',
-  CURSOR_RESET_REQUIRED: 'Review generation, filter and retention changes before explicitly resetting this consumer.',
+  RESULT_CONTEXT_STALE: 'Review the current materialized task revision before submitting a new result; provisional claims are revisable.',
+  CURSOR_RESET_REQUIRED: 'Review snapshot, filter and retention changes before explicitly resetting this consumer.',
   OPERATION_UNCERTAIN: 'Inspect or exactly retry the original signer-scoped operation; do not generate a replacement operation ID.',
   PROVIDER_OFFLINE: 'Reconnect the explicitly selected provider; do not silently choose another signing identity.',
   DELIVERY_EXHAUSTED: 'Inspect the retained delivery receipt and approve any new delivery attempt explicitly.',
@@ -32,18 +30,18 @@ const actions = {
   DIAGNOSTIC_UNAVAILABLE: 'Inspect the original error locally and reconnect the retained owner; no retry safety has been established.',
 };
 const aliases = {
-  APPLICATION_SESSION_CLOSED: 'OWNER_UNREACHABLE', APPLICATION_WORKER_CLOSED: 'OWNER_UNREACHABLE',
-  APPLICATION_ATTACHMENT_FORBIDDEN: 'CAPABILITY_UNAVAILABLE', APPLICATION_ATTACHMENT_COMMAND_FORBIDDEN: 'CAPABILITY_UNAVAILABLE',
-  APPLICATION_ATTACHMENT_QUERY_FORBIDDEN: 'CAPABILITY_UNAVAILABLE', APPLICATION_ATTACHMENT_CAPABILITY_REQUIRED: 'CAPABILITY_UNAVAILABLE',
+  SESSION_CLOSED: 'OWNER_UNREACHABLE', ENDPOINT_CLOSED: 'OWNER_UNREACHABLE',
+  ENDPOINT_CAPABILITY_FORBIDDEN: 'CAPABILITY_UNAVAILABLE', ENDPOINT_COMMAND_FORBIDDEN: 'CAPABILITY_UNAVAILABLE',
+  ENDPOINT_QUERY_FORBIDDEN: 'CAPABILITY_UNAVAILABLE', APPLICATION_ATTACHMENT_CAPABILITY_REQUIRED: 'CAPABILITY_UNAVAILABLE',
   SUPERVISOR_BINDING_REVOKED: 'DELEGATION_REVOKED', SUPERVISOR_BINDING_UNKNOWN: 'DELEGATION_REVOKED',
 };
-const scopeKeys = ['applicationId','historyId','deviceId','ownerInstanceId','endpointId','endpointIncarnation',
-  'principalId','agentBindingId','deviceProfileId','viewId','runId','publicationId','generation','coordinator',
-  'interactionId','taskId','slotId','operationId','attemptId','author','consumerId','effectId','filterVersion','transportAttemptId'];
+const scopeKeys = ['applicationId','publicKey','ownerInstanceId','endpointId','endpointIncarnation',
+  'principalId','agentBindingId','deviceProfileId','viewId','runId','publicationId','projectionRevision',
+  'interactionId','taskId','slotId','operationId','proposalId','author','consumerId','effectId','filterVersion','transportAttemptId'];
 const text = value => typeof value === 'string' && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value) ? value : undefined;
 const pick = (value, keys) => Object.fromEntries(keys.flatMap(key => text(value?.[key]) === undefined ? [] : [[key,value[key]]]));
 const capabilitiesOf = value => Array.isArray(value) ? [...new Set(value.filter(item => typeof item === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(item)))].slice(0,32) : null;
-const stateOf = value => ({ ...pick(value,['phase','database','role','generation','coordinator']),
+const stateOf = value => ({ ...pick(value,['phase','database']), ...(typeof value?.canAuthor === 'boolean' ? {canAuthor:value.canAuthor} : {}),
   ...(Number.isSafeInteger(value?.connectedPeers) && value.connectedPeers >= 0 ? {connectedPeers:value.connectedPeers} : {}) });
 const endpointOf = value => value ? { ...pick(value,['ownerInstanceId','endpointId','endpointIncarnation','state','evidence','contextEvidence']),
   identity:pick(value.identity,['principalId','agentBindingId','deviceProfileId']),
@@ -63,22 +61,18 @@ export function diagnosticFinding(error, { scope = {}, state = {}, severity = 'e
 /** Reading status/description/endpoints is protocol-only and makes no host call. */
 export async function diagnoseApplicationSession(session, { mode = 'own', signal } = {}) {
   signal?.throwIfAborted();
-  const endpoint=endpointOf(session.endpoint),scope=pick({applicationId:session.applicationId,historyId:session.historyId,
-    deviceId:session.deviceId,...endpoint,...endpoint?.identity,...endpoint?.context},scopeKeys);
+  const endpoint=endpointOf(session.endpoint),scope=pick({applicationId:session.applicationId,publicKey:session.identity?.publicKey,...endpoint,...endpoint?.identity,...endpoint?.context},scopeKeys);
   const findings=[];let status={},definition=null,participation=null,endpoints,participant;
   const add=(code,severity='error')=>findings.push(diagnosticFinding(code,{scope:{...scope,...status},state:status,severity}));
   try{status=stateOf(session.status);}catch(error){add(error);}
   try{const value=session.describe();const names=entries=>Array.isArray(entries)?entries.map(entry=>text(entry?.name)).filter(Boolean).slice(0,256):[];
     definition={...pick(value,['id','version']),commands:names(value.commands),queries:names(value.queries)};
   }catch(error){add(error);}
-  try{participant=session.participation;const value=participant?.status;if(value)participation={...pick(value,['phase']),
-    connectedPeers:Array.isArray(value.connectedPeers)?value.connectedPeers.map(text).filter(Boolean).slice(0,32):[],
-    reviewRequired:value.phase==='approval-required',hasError:!!value.error};
+  try{participant=session;if(typeof session.diagnostics==='function')participation={phase:status.phase==='closed'?'closed':status.connectedPeers>0?'connected':'disconnected',
+    connectedPeers:Number.isSafeInteger(status.connectedPeers)?status.connectedPeers:null};
   }catch(error){add(error);}
   if(status.phase==='closed')add('OWNER_UNREACHABLE');
   else if(status.phase==='awaiting-keys')add('KEYS_UNAVAILABLE');
-  else if(status.phase==='recovering'||participation?.reviewRequired)add('RECOVERY_REVIEW_REQUIRED');
-  else if(status.phase==='waiting')add('COORDINATOR_UNAVAILABLE');
   if(status.database==='failed')add('DATA_UNAVAILABLE');
   else if(status.database==='idle')add('DATA_IDLE','info');
   else if(status.database==='opening')add('DATA_OPENING','info');
@@ -90,6 +84,6 @@ export async function diagnoseApplicationSession(session, { mode = 'own', signal
   const transport = await readTransportDiagnostics(participant, { signal });
   signal?.throwIfAborted();
   return {protocol:DIAGNOSTIC_PROTOCOL,assessment:status.phase==='closed'?'unavailable':findings.some(item=>item.severity==='error')?'attention-required':'ready',
-    identity:{mode,applicationId:scope.applicationId??null,historyId:scope.historyId??null,deviceId:scope.deviceId??null,endpoint},
+    identity:{mode,applicationId:scope.applicationId??null,publicKey:scope.publicKey??null,endpoint},
     scope,status,definition,participation,transport,capabilities:endpoint?.capabilities??null,...(endpoints?{endpoints}:{}),findings};
 }

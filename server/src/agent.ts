@@ -3,7 +3,7 @@ import { upgradeSetupWatch } from './setup-watch';
 import { proposeAssistant } from './assistant-admission';
 import { changeLifetime } from './lifetime';
 import { PEER_ROUTE, handlePeers } from './peers';
-import { withUnconfiguredPeerApplication } from './peer-generations';
+import { withUnconfiguredApplication } from './authority';
 import { handleApplication, selectedApplication } from './application';
 import type { Tendril } from './tendril';
 import { validName, validOptionalEmail } from './tendril';
@@ -165,7 +165,7 @@ route("DELETE", /^$/, async (t) => {
   return new Response(null, { status: 204 });
 });
 
-route("POST", /^release$/, t => withUnconfiguredPeerApplication(t, async () => {
+route("POST", /^release$/, t => withUnconfiguredApplication(t, async () => {
   const owner = t.db.get<string | null>("owner_account", null);
   if (!owner) throw new HttpError(409, "unclaimed", "This tendril is not claimed");
   t.db.run("DELETE FROM release_events WHERE at < ?", t.now() - 24 * 60 * 60_000);

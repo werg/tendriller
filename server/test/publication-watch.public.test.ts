@@ -1,8 +1,7 @@
 import { evictDurableObject } from 'cloudflare:test';
 import { expect, it } from 'vitest';
-import { bytesDigest, createPeerIdentity, participantGrant, signPublicationManifest,
-  type AuthorityBundle, type SignedPublication } from '@chronolog/peer-generation/control';
-import { advance, create, inDO, req, stub, type Handle } from './helpers';
+import { createSigningIdentity, signPublicationManifest, type SignedPublication } from '@chronolog/authority';
+import { advance, api, create, inDO, req, stub, type Handle } from './helpers';
 import { peerApiJson } from './peer-exchange';
 import { PUBLICATION_WATCH_PROTOCOL } from '../src/publication-watch';
 import type { Tendril } from '../src/tendril';
@@ -60,21 +59,18 @@ async function withPausedPolicy(t: Tendril, change: () => void | Promise<void>) 
 }
 
 async function publisher(h: Handle) {
-  const author = await createPeerIdentity();
-  const authority = await peerApiJson<AuthorityBundle>(h, 'control/configure', {
-    historyId: 'watch-history', executionManifestDigest: '12'.repeat(32),
-    definition: { id: 'publication-watch', version: '1', schema: null, commands: [], queries: [] },
-    schemaAdministrator: author.publicKey, epoch: 0, keyDigest: '34'.repeat(32),
-    members: [{ grant: participantGrant(author.publicKey, { administrator: true, publisher: true }) }],
-  });
+  const author = await createSigningIdentity();
+  const response = await api(h, 'POST', 'application', { executionManifestDigest: '12'.repeat(32), executionProfile: 'events', publisherKeys: [author.publicKey] });
+  expect(response.status).toBe(200);
+  const metadata = await response.json() as any;
   let previous: SignedPublication | null = null;
   return async (text: string) => {
-    const data = new TextEncoder().encode(`<main>${text}</main>`), hash = await bytesDigest(data);
-    const descriptor = authority.descriptor.payload;
+    const data = new TextEncoder().encode(`<main>${text}</main>`), hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), byte => byte.toString(16).padStart(2, '0')).join('');
+    const descriptor = metadata.publicationAuthority;
     const publication = await signPublicationManifest({ applicationId: descriptor.applicationId,
-      historyId: descriptor.historyId, profile: descriptor.profile, controlRevision: authority.controls.at(-1)!.payload.revision,
+      membershipId: descriptor.grantId,
       author: author.publicKey, operationId: text, revision: previous ? previous.payload.revision + 1 : 0,
-      previous: previous?.id ?? null, definitionDigest: descriptor.definitionDigest,
+      previous: previous?.id ?? null,
       executionManifestDigest: descriptor.executionManifestDigest, entry: 'index.html',
       files: [{ path: 'index.html', type: 'text/html', hash, size: data.length }] }, author);
     const result = await peerApiJson(h, 'publication/publish', { publication,

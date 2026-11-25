@@ -1,13 +1,7 @@
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-
-const packageRoot = process.env.CHRONOLOG_SESSION_PACKAGE;
-export const peerModule = suffix => packageRoot ? pathToFileURL(join(resolve(packageRoot), suffix ? suffix + '.mjs' : 'index.mjs')).href :
-  import.meta.resolve('@chronolog/peer-session' + (suffix ? '/' + suffix : ''));
-export const p = await import(peerModule(''));
+import { p, worker, peerModule } from './physical-fixture.mjs';
+import { prepareCollaborationCommand } from '../protocol.mjs';
+export { p, worker, browser, peerModule, authorityForDevices } from './physical-fixture.mjs';
 export const native = await import(peerModule('native'));
-export const worker = await import(peerModule('worker'));
-export const browser = await import(peerModule('browser'));
 export const definition = p.defineApplication({ id: 'native-owner-check', version: '1', commands: {
   add: p.defineCommand({ description: 'Add one attributed observation', input: { type: 'string' }, prepare: text => p.program(p.emit('note', { text })) }),
   'collab.request': p.defineCommand({ description: 'Retain the collaboration client intent for attachment qualification', input: {
@@ -23,6 +17,8 @@ export const definition = p.defineApplication({ id: 'native-owner-check', versio
 } });
 export async function openRetainedOwner({ devicePath, authority, key }) {
   const device = await native.openNativeDevice({ path: devicePath });
-  const session = await native.openNativeApplication({ device, definition, authority, epochKeys: new Map([[0, new Uint8Array(key)]]) });
-  return worker.createApplicationOwner(session);
+  try {
+    const session = await p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, new Uint8Array(key)]]) });
+    return worker.createApplicationOwner(session, { prepareCommand: (endpoint, name, input) => prepareCollaborationCommand(endpoint, name, input, session.identity.publicKey) });
+  } catch (error) { await device.close(); throw error; }
 }

@@ -12,8 +12,6 @@ function loadPending(storage, key) {
   return null;
 }
 
-const isApplied = inspected => inspected?.state?.status === 'applied' || inspected?.state?.phase === 'applied';
-
 /** Mount into an authored page after its authenticated session is connected. */
 export function mountObservations({
   container, session, runtime, nativeDeviceId, storage = globalThis.localStorage, ...options
@@ -38,7 +36,7 @@ export function mountObservations({
   </section>`;
 
   const $ = selector => container.querySelector(selector);
-  const key = `observation-pending:${session.applicationId}:${session.deviceId}`;
+  const key = `observation-pending:${session.applicationId}:${session.identity.publicKey}`;
   const panelOwner = new AbortController();
   let closed = false, pending = loadPending(storage, key), saving = false, savedSample = null, latestState = null;
 
@@ -64,9 +62,10 @@ export function mountObservations({
     $('#observation-stop').disabled = !state.sharing;
     const displayedFix = state.sample?.fix ?? pending?.input.fix ?? null;
     $('#observation-sample').textContent = displayedFix ? JSON.stringify(displayedFix, null, 2) : 'No accepted sample.';
-    $('#observation-retain').disabled = saving || Boolean(pending) || !state.sample
+    const locked = pending && !pending.stored;
+    $('#observation-retain').disabled = session.status.canAuthor !== true || saving || Boolean(locked) || !state.sample
       || savedSample === `${state.sample.streamId}/${state.sample.sequence}`;
-    $('#observation-review').readOnly = saving || Boolean(pending);
+    $('#observation-review').readOnly = saving || Boolean(locked);
     $('#observation-inspect').disabled = !pending || saving;
     $('#observation-retry').disabled = !pending || saving;
   };
@@ -75,26 +74,59 @@ export function mountObservations({
   const requireGesture = event => { if (event?.isTrusted !== true) throw Error('Use a deliberate local action.'); };
   const waitSignal = () => AbortSignal.any([panelOwner.signal, AbortSignal.timeout(15_000)]);
 
-  const settle = result => {
-    if (result?.status === 'applied') {
-      if (result.outcome === 'accepted' && pending) {
-        savedSample = `${pending.input.streamId}/${pending.input.sequence}`;
-      }
-      storage.removeItem(key);
-      pending = null;
-      if (!closed) {
-        $('#observation-result').textContent = result.outcome === 'accepted'
-          ? 'Applied: accepted. The reviewed observation is retained.'
-          : `Applied: rejected (${result.rejectionCode ?? 'application validation'}). No observation was retained.`;
-      }
-    } else if (!closed) {
-      $('#observation-result').textContent = 'The operation remains pending. Inspect it before retrying the same identity.';
+  const settle = inspection => {
+    if (!inspection || inspection.operationId !== pending?.operationId) return;
+    const acknowledgedBefore = pending.stored === true;
+    if (inspection.stored) {
+      savedSample = `${pending.input.streamId}/${pending.input.sequence}`;
+      pending = { ...pending, stored: true, proposalId: inspection.proposalId };
+      storage.setItem(key, JSON.stringify(pending));
+      if (!acknowledgedBefore && $('#observation-review').value === pending.input.text) { $('#observation-review').value = ''; storage.removeItem(key + ':draft'); }
     }
+    if (!closed) $('#observation-result').textContent = `Operation ${inspection.operationId}. Stored locally: ${inspection.stored}. Materialized: ${inspection.materialized?.outcome ?? 'pending'}${inspection.materialized?.rejectionCode ? ` (${inspection.materialized.rejectionCode})` : ''} (revisable). Retained by peers: ${inspection.retained.filter(row => row?.payload?.peer !== session.identity.publicKey).length}. Finalized: ${inspection.finalized}. Excluded: ${inspection.excluded}. Original signed intent remains inspectable.`;
   };
-
-  async function waitForOperation(operation) {
-    settle(await operation.applied({ signal: waitSignal() }));
+  async function observeOperation(operation) { settle(await operation.inspect()); }
+  let inspectionTask, inspectDirty = false;
+  function inspectPending() {
+    inspectDirty = true;
+    return inspectionTask ??= (async () => {
+      while (inspectDirty && !closed && pending) {
+        inspectDirty = false; const operationId = pending.operationId;
+        const operation = await session.operations.get(operationId);
+        if (operationId !== pending?.operationId) { inspectDirty = true; continue; }
+        if (operation) await observeOperation(operation);
+        else if (!closed) $('#observation-result').textContent = `Original operation ${operationId} not yet visible; inspect/retry only its retained exact inputs and ID.`;
+      }
+    })().finally(() => { inspectionTask = undefined; });
   }
+  // Peer retention and finality are facts about the original operation that never change the
+  // materialization revision, so session.onChange alone would leave them stale. Observe only the
+  // one pending operation, rebinding when its ID changes and closing the iterator on rebind/close.
+  let factsFor = null, stopFacts = () => {};
+  function observeFacts() {
+    const operationId = pending?.operationId ?? null;
+    if (closed || operationId === factsFor) return;
+    stopFacts(); stopFacts = () => {}; factsFor = operationId;
+    if (operationId === null) return;
+    const owner = new AbortController(), signal = AbortSignal.any([panelOwner.signal, owner.signal]);
+    const iterator = session.operations.subscribe({ operationId, signal })[Symbol.asyncIterator]();
+    stopFacts = () => { owner.abort(); void iterator.return?.()?.catch?.(() => {}); };
+    void (async () => {
+      try {
+        for (;;) {
+          const next = await iterator.next();
+          if (signal.aborted || next.done) break;
+          const inspection = next.value;
+          // Facts for another application or operation are never shown; keep observing the bound one.
+          if (inspection?.applicationId !== session.applicationId || inspection.operationId !== operationId || pending?.operationId !== operationId) continue;
+          settle(inspection); render(latestState);
+        }
+      } catch (error) { if (!signal.aborted) showError(error); }
+    })();
+  }
+  const stopChanges = session.onChange(() => { void inspectPending().catch(showError); });
+  const stopStatus = session.onStatus(() => { render(latestState); });
+  $('#observation-review').addEventListener('input', () => { try { storage.setItem(key + ':draft', $('#observation-review').value); } catch (error) { showError(error); } });
 
   bind('#observation-simulate', event => source.start(event, 'simulated'));
   bind('#observation-location', event => source.start(event, 'location'));
@@ -103,16 +135,16 @@ export function mountObservations({
 
   bind('#observation-retain', async event => {
     requireGesture(event);
-    if (pending || saving) throw Error('Inspect the pending operation first.');
+    if (pending && !pending.stored || saving) throw Error('Inspect the original uncertain operation first.');
     // Freeze both human text and the exact displayed sample before dispatch.
     const input = retentionInput(source.reviewedSample(), $('#observation-review').value);
     const attempt = { operationId: crypto.randomUUID(), input };
     storage.setItem(key, JSON.stringify(attempt));
-    pending = attempt;
+    pending = attempt; observeFacts();
     saving = true;
     render(latestState);
     try {
-      await waitForOperation(await session.command('retainObservation', input, { operationId: attempt.operationId }));
+      await observeOperation(await session.command('retainObservation', input, { operationId: attempt.operationId }));
     } catch (error) {
       throw Error(`Operation ${attempt.operationId} is unresolved. Inspect or retry this exact identity. ${error.message}`);
     } finally {
@@ -121,43 +153,22 @@ export function mountObservations({
     }
   });
 
-  bind('#observation-inspect', async event => {
-    requireGesture(event);
-    if (!pending) return;
-    const inspected = await session.operations.inspect(pending.operationId);
-    if (isApplied(inspected)) {
-      settle({ status: 'applied', outcome: inspected.state.outcome, rejectionCode: inspected.state.rejectionCode });
-    } else if (!closed) {
-      $('#observation-result').textContent = `Operation ${pending.operationId}: ${JSON.stringify(inspected?.state ?? 'not yet saved')}. Retry keeps its original input.`;
-    }
-    render(latestState);
-  });
-
+  bind('#observation-inspect', async event => { requireGesture(event); await inspectPending(); render(latestState); });
   bind('#observation-retry', async event => {
-    requireGesture(event);
-    if (!pending || saving) return;
-    saving = true;
-    render(latestState);
+    requireGesture(event); if (!pending || saving) return; saving = true; render(latestState);
     try {
-      const inspected = await session.operations.inspect(pending.operationId);
-      if (isApplied(inspected)) {
-        settle({ status: 'applied', outcome: inspected.state.outcome, rejectionCode: inspected.state.rejectionCode });
-      } else if (inspected) {
-        await session.retry(pending.operationId);
-        settle(await session.operations.wait(pending.operationId, { signal: waitSignal() }));
-      } else {
-        await waitForOperation(await session.command('retainObservation', pending.input, { operationId: pending.operationId }));
-      }
-    } finally {
-      saving = false;
-      render(latestState);
-    }
+      const original = await session.operations.get(pending.operationId);
+      await observeOperation(original ? await session.operations.retry(pending.operationId) : await session.command('retainObservation', pending.input, { operationId: pending.operationId }));
+    } finally { saving = false; render(latestState); }
   });
 
   if (pending) {
+    observeFacts();
     $('#observation-review').value = pending.input.text;
-    $('#observation-result').textContent = `Unresolved operation ${pending.operationId}. Inspect it or deliberately retry the same identity.`;
+    $('#observation-result').textContent = `Retained original operation ${pending.operationId}. Inspect stored/materialized/retained/finalized facts; current outcomes can revise.`;
   }
+
+  try { $('#observation-review').value = storage.getItem(key + ':draft') ?? $('#observation-review').value; } catch (error) { showError(error); }
 
   void runtime.capabilities(['location']).then(report => {
     if (closed) return;
@@ -176,7 +187,7 @@ export function mountObservations({
     async close() {
       if (closed) return;
       closed = true;
-      panelOwner.abort();
+      panelOwner.abort(); stopFacts(); stopChanges(); stopStatus();
       for (const remove of bindings) remove();
       await source.close();
     },

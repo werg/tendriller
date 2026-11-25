@@ -1,4 +1,4 @@
-import type { PeerRevision } from '@chronolog/peer-session';
+import type { MaterializedRevision } from '@chronolog/peer-session';
 import type { CollaborationSession, CollaborationTask, CollaborationClaim, CollaborationResult, CollaborationMessage,
   CollaborationQuery, CollaborationTaskSnapshot, CollaborationSnapshot } from './index.mjs';
 
@@ -14,7 +14,7 @@ export interface CollaborationMessagePageOptions {readonly limit?:number;readonl
 export interface CollaborationThreadPageOptions extends CollaborationMessagePageOptions {readonly threadId:string}
 export interface CollaborationPage {
   readonly nextCursor:string|null;readonly hasMore:boolean;readonly total:number;readonly returned:number;
-  readonly limit:number;readonly revision:PeerRevision;
+  readonly limit:number;readonly revision:MaterializedRevision;
 }
 /** Current accepted evidence keeps its complete identity/fence without large content. */
 export type CollaborationAcceptedResult = Omit<CollaborationResult,'content'|'disposition'>&{readonly disposition:'accepted'};
@@ -25,7 +25,7 @@ export interface CollaborationTaskPage {
 export interface CollaborationResultPage {readonly results:readonly CollaborationResult[];readonly page:CollaborationPage}
 export interface CollaborationMessagePage {readonly messages:readonly CollaborationMessage[];readonly page:CollaborationPage}
 export interface CapturedCollaborationReader {
-  readonly revision:PeerRevision;readonly closed:boolean;
+  readonly revision:MaterializedRevision;readonly closed:boolean;
   tasks(options?:CollaborationTaskPageOptions):Promise<CollaborationQuery<CollaborationTaskPage>>;
   results(options?:CollaborationResultPageOptions):Promise<CollaborationQuery<CollaborationResultPage>>;
   messages(options?:CollaborationMessagePageOptions):Promise<CollaborationQuery<CollaborationMessagePage>>;

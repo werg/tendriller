@@ -70,7 +70,7 @@ actual authenticated-link loss, restores packets and requires a direct session.
 DevTools control remains accessible so restoration does not depend on a healthy
 application connection. The control probe verifies this TCP partition separately.
 
-Every supported profile requires native and browser commands, remote applied
+Every supported profile requires native and browser commands, remote materialized
 reads, exact retained operation IDs, real signal request/reply and encrypted PNG
 sensor evidence, then reload and further application work. The PNG and native
 inference result are deterministic fixtures, not physical camera/model-provider
@@ -123,8 +123,8 @@ remain explicitly unsupported until separately exercised.
 
 The background profile performs real work before restoring the foreground: a
 five-second signal request/reply and a native command followed by a fifteen-second
-public applied read. The event-only starter exposes this through the installed
-backend's `readView({view:'applied'}).readEvents()`; its declared notes query is
+public materialized read. The event-only starter exposes this through the installed
+backend's `readView().readEvents()` (the default local view); its declared notes query is
 the same event projection. Each view is released. The read must contain the exact
 new operation ID and text while the document remains hidden, without navigation.
 The authenticated direct revision must remain unchanged and relay payload must

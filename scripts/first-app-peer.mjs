@@ -1,6 +1,6 @@
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
-import { observeSetupReadiness } from './first-app-setup-readiness.mjs';
+import { describeLocalReadiness, observeLocalReadiness } from './first-app-setup-readiness.mjs';
 
 export async function authenticatedTransportSnapshot(participation, peerId) {
   const pending = participation.diagnostics();
@@ -62,27 +62,40 @@ export async function installStateSignalObservers() {
   })().catch(error => window.stateModeErrors.push(error.code || error.name));
 }
 
-/** The test participant owns the complete bootstrap, including its supervisor. */
-export function nativeTestPeerSource({ evidenceBase64, browserDeviceId, transportModule, networkQualification = false }) {
+/**
+ * Optional native participant for harnesses that need a second authoring peer. It
+ * uses only the tutorial's public bootstrap (`openSession`), the application
+ * session (`query`, `command`, `operations`, `signals`, `status`) and its separate
+ * participation controller. Nothing here creates a root, an epoch key or a
+ * membership: the device must already have been explicitly provisioned, and the
+ * ordinary application browser never depends on this process.
+ *
+ * Local durability (the command resolves once signed and stored), local
+ * materialization, peer retention and finality are reported as independent facts.
+ * No action waits for the network or a finalizer, and there is no second queue.
+ */
+export function nativeTestPeerSource({ evidenceBase64, browserPublicKey, transportModule, networkQualification = false }) {
   return `import assert from 'node:assert/strict';
 import {createInterface} from 'node:readline';
 import {openSession} from './session.mjs';
-import {superviseParticipant} from './helpers/participant-lifecycle.mjs';
 import {servePeerInference} from './media/inference-service.mjs';
 import {serveSignalRequests, sendPieces} from './helpers/signal-request.mjs';
 ${transportModule ? `import {closeLocalTransport} from ${JSON.stringify(transportModule)};` : 'const closeLocalTransport = async () => {};'}
+const describeLocalReadiness = ${describeLocalReadiness.toString()};
+const observeLocalReadiness = ${observeLocalReadiness.toString()};
 const owned = await openSession(), {session,supervisor} = owned;
-const setupReadiness = (${observeSetupReadiness.toString()})(owned);
+// The participation controller is separate from the session's authored history.
+const participation = owned.participation ?? session.participation;
+const localReadiness = observeLocalReadiness(session);
 const expectedEvidence = new Uint8Array(Buffer.from(${JSON.stringify(evidenceBase64)}, 'base64'));
-const lifecycleLog = [];
-let pairings, pairingStatus = null, inference, input, closing, inferenceCalls = 0, inferenceSource = null, requestTask, requestFailure;
-const requestsStopped = new AbortController();
+let inference, input, closing, inferenceCalls = 0, inferenceSource = null, requestTask, requestFailure;
+const requestsStopped = new AbortController(), stopObserving = [];
 const close = () => closing ??= (async () => {
   const errors = [];
   requestsStopped.abort();
+  for (const stop of stopObserving.splice(0)) { try { stop(); } catch (error) { errors.push(error); } }
   await requestTask;
   if(requestFailure) errors.push(requestFailure);
-  try { await pairings?.close(); } catch (error) { errors.push(error); }
   try { await inference?.close(); } catch (error) { errors.push(error); }
   try { await owned.close(); } catch (error) { errors.push(error); }
   // The local fixture owns its custom HTTP/WebSocket dispatcher separately from
@@ -90,11 +103,15 @@ const close = () => closing ??= (async () => {
   try { await closeLocalTransport(); } catch (error) { errors.push(error); }
   if (errors.length) throw new AggregateError(errors, 'Native test participant cleanup failed: ' + errors.map(error => error.message).join('; '));
 })();
+// Independent per-operation facts, never one collapsed "applied" flag.
+const facts = operation => {
+  const value = operation.inspect(), m = value.materialized;
+  return {operationId:operation.operationId, proposalId:operation.id, stored:value.stored, pending:value.pending,
+    materialized:m === null ? null : {outcome:m.outcome, rejectionCode:m.rejectionCode, failingStatementIndex:m.failingStatementIndex, revision:m.revision},
+    retainedBy:value.retained.map(evidence => evidence.signer), finalized:value.finalized, excluded:value.excluded};
+};
 try {
-  pairings = superviseParticipant({owned:{...owned,processPairings:options=>setupReadiness.processPairings(options)},watch:callbacks=>setupReadiness.watch(callbacks),
-    report:(value) => { if(value.pairing) pairingStatus={state:value.pairing.state,code:value.pairing.code ?? null};
-      if (lifecycleLog.length < 200) lifecycleLog.push({at:Date.now(),...(value.pairing ? {pairing:value.pairing.state,pairingId:value.pairing.pairingId ?? null} : {state:value.state ?? null,setup:value.setup ?? null})}); }});
-  inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserDeviceId)}], maxRequests: ${networkQualification ? 20 : 2},
+  inference = servePeerInference({session, allowedDevices: [${JSON.stringify(browserPublicKey)}], maxRequests: ${networkQualification ? 20 : 2},
     async infer({bytes, mediaType, source, signal}) {
       signal.throwIfAborted(); assert.deepEqual(bytes, expectedEvidence); assert.equal(mediaType, 'image/png');
       inferenceCalls++; inferenceSource = source;
@@ -103,19 +120,19 @@ try {
   });
   // Every participation change, with its peer set, so the harness can count churn.
   const participationLog = [];
-  // Application status transitions (phase, generation, database) for failure diagnosis.
+  // Session status transitions for failure diagnosis.
   const statusLog = [];
-  session.onStatus?.(status => { const last = statusLog.at(-1);
-    if (statusLog.length < 500 && (!last || last.phase !== status.phase || last.generation !== status.generation || last.database !== status.database))
-      statusLog.push({at:Date.now(),phase:status.phase,generation:status.generation,database:status.database}); });
-  session.participation.onStatus(status => { if (participationLog.length < 5000) participationLog.push({at:Date.now(),phase:status.phase,peers:[...status.connectedPeers].sort(),error:status.error}); });
+  stopObserving.push(session.onStatus(status => { const last = statusLog.at(-1);
+    if (statusLog.length < 500 && (!last || last.phase !== status.phase || last.database !== status.database || last.canAuthor !== status.canAuthor))
+      statusLog.push({at:Date.now(),phase:status.phase,database:status.database,canAuthor:status.canAuthor}); }));
+  if (participation) stopObserving.push(participation.onStatus(status => { if (participationLog.length < 5000) participationLog.push({at:Date.now(),phase:status.phase,peers:[...status.connectedPeers].sort(),error:status.error}); }));
   requestTask = serveSignalRequests(session, { signal: requestsStopped.signal, handle: async (q, input) => {
     if (q !== 'rows') throw Object.assign(Error('Unknown request'), { code: 'unknown' });
     assert.ok(Number.isSafeInteger(input?.count) && input.count >= 0 && input.count <= 1024);
     assert.ok(Number.isSafeInteger(input?.width) && input.width >= 0 && input.width <= 4096);
     return { rows: Array.from({ length: input.count }, (_value, index) => ({ index, label: 'row "' + index + '"', text: 'x'.repeat(input.width) })) };
   } }).catch(error => { requestFailure=Object.assign(Error('Signal reply service failed'), {code:error?.code || 'SIGNAL_REQUEST_FAILED'}); });
-  console.log(JSON.stringify({ready:true,deviceId:session.deviceId,ownerInstanceId:supervisor.ownerInstanceId}));
+  console.log(JSON.stringify({ready:true,publicKey:session.identity.publicKey,ownerInstanceId:supervisor.ownerInstanceId}));
   input = createInterface({input:process.stdin});
   for await (const line of input) {
     const request=JSON.parse(line);
@@ -123,7 +140,8 @@ try {
       let result;
       if(request.action==='query') result=await session.query('notes',null);
       ${networkQualification ? `else if(request.action==='transport-snapshot' || request.action==='transport-wait') {
-        const snapshot=()=>(${authenticatedTransportSnapshot.toString()})(session.participation,${JSON.stringify(browserDeviceId)});
+        assert.ok(participation, 'The participation controller is required for transport evidence');
+        const snapshot=()=>(${authenticatedTransportSnapshot.toString()})(participation,${JSON.stringify(browserPublicKey)});
         if(request.action==='transport-snapshot') result=await snapshot();
         else {
           assert.ok(['direct','relay','unknown'].includes(request.kind));
@@ -141,18 +159,19 @@ try {
               finally{checking=false;if(again){again=false;void check();}}
             };
             const timer=setTimeout(()=>finish(Error('NETWORK_QUALIFICATION_ROUTE_TIMEOUT')),55000);
-            remove=session.participation.onStatus(status=>{if(status.connectionRevision!==revision){revision=status.connectionRevision;void check();}});
+            remove=participation.onStatus(status=>{if(status.connectionRevision!==revision){revision=status.connectionRevision;void check();}});
           });
         }
       }` : ''}
-      else if(request.action==='setup-ready') {
-        const before=setupReadiness.snapshot(),started=performance.now();
-        const after=await setupReadiness.wait({signal:session.signal});
+      else if(request.action==='local-ready') {
+        // Local storage/key prerequisites only: never peers, the host or a finalizer.
+        const before=localReadiness.snapshot(),started=performance.now();
+        const after=await localReadiness.wait({signal:session.signal});
         result={before,after,elapsedMs:performance.now()-started};
       }
-      else if(request.action==='diagnostics') result={status:session.status,participation:session.participation.status,pairing:pairingStatus,setupReadiness:setupReadiness.snapshot(),statusLog,lifecycleLog,
+      else if(request.action==='diagnostics') result={status:session.status,participation:participation?.status ?? null,readiness:localReadiness.snapshot(),statusLog,
         signalRequests:{state:requestFailure?'failed':requestsStopped.signal.aborted?'closed':'running',code:requestFailure?.code ?? null}};
-      else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:{phase:session.participation.status.phase,peers:[...session.participation.status.connectedPeers].sort()}};
+      else if(request.action==='participation-log') result={entries:participationLog.splice(0),current:participation ? {phase:participation.status.phase,peers:[...participation.status.connectedPeers].sort()} : null};
       else if(request.action==='signal-state') {
         // Periodic state updates, as a dashboard sends them.
         for(let index=0;index<request.count;index++){ await session.signals.send('state',{index,at:Date.now()},{ttlMs:30000}); await new Promise(r=>setTimeout(r,request.intervalMs)); }
@@ -172,16 +191,26 @@ try {
           catch(error){failures.push(error.code||error.message);}
           pieceMs.push(Date.now()-pieceStarted);
         } } finally { clearInterval(lag); }
-        result={sent:request.pieces-failures.length,failures,retries,ms:Date.now()-started,pieceMs,eventLoopLagMaxMs:lagMax,participation:session.participation.status.phase};
+        result={sent:request.pieces-failures.length,failures,retries,ms:Date.now()-started,pieceMs,eventLoopLagMaxMs:lagMax,participation:participation?.status.phase ?? null};
       }
-      else if(request.action==='ordering-pause') result={pause:await session.orderingPause()};
-      else if(request.action==='pairing-process') result=await owned.processPairings();
       else if(request.action==='inference-status') result={...inference.snapshot(), calls:inferenceCalls, source:inferenceSource};
       else if(request.action==='command') {
-        const before=await session.query('notes',null);
-        const operation=await session.command('addNote',{text:request.text},{operationId:request.operationId,basedOn:before.revision});
-        result=await operation.applied({signal:AbortSignal.timeout(30000)});
-      } else if(request.action==='close') {
+        // Resolves once the signed operation is stored locally. The caller's operation ID is the idempotency key.
+        // The note ID defaults to the operation ID so a retried request addresses the same note, never a second one.
+        const operation=await session.command('putNote',{noteId:request.noteId ?? request.operationId,text:request.text},{operationId:request.operationId});
+        // Local materialization is observed separately; retention and finality are reported as they are, not awaited.
+        await operation.materialized({signal:AbortSignal.timeout(30000)});
+        result=facts(operation);
+      }
+      else if(request.action==='operation-facts') {
+        const operation=session.operations.get(request.proposalId);
+        result=operation ? facts(operation) : null;
+      }
+      else if(request.action==='operation-retry') {
+        // Re-offers the original signed attempt. It never re-signs or retimestamps.
+        result=facts(await session.operations.retry(request.proposalId));
+      }
+      else if(request.action==='close') {
         await close();
         console.log(JSON.stringify({id:request.id,closed:true,resources:process.getActiveResourcesInfo()}));
         break;

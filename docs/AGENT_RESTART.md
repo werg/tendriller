@@ -56,7 +56,7 @@ declared commands/queries when they must survive absence.
    existing approved binding; do not assume an unrelated local listener migrated.
 5. Resume retained events with the last **handled** cursor and unchanged topic
    filters, or rebuild the declared inbox query. Inspect a rejected/stale cursor
-   or recovery notice instead of silently starting at the end. Work can be
+   or revision-bound cursor error instead of silently starting at the end. Work can be
    delivered again after a crash; use stable request references and idempotency.
 6. For a request consumer with declared liveness support, announce its new run
    after its first successful read. Stop heartbeats on consumer failure. Verify

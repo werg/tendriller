@@ -18,6 +18,8 @@ async function fixture(t) {
   t.after(() => rm(directory, { recursive: true, force: true }));
   for (const file of ['host-adoption.mjs', 'account-setup.mjs', 'local.mjs'])
     await copyFile(join(root, 'docs/tutorial', file), join(directory, file));
+  await mkdir(join(directory, 'helpers'));
+  await copyFile(join(root, 'docs/tutorial/helpers/account-setup.mjs'), join(directory, 'helpers/account-setup.mjs'));
   await mkdir(join(directory, 'node_modules/@tendriller'), { recursive: true });
   await symlink(resolve(root, 'dist/sdk'), join(directory, 'node_modules/@tendriller/core'));
   await mkdir(join(directory, '.tendriller'), { mode: 0o700 });

@@ -64,10 +64,10 @@ it('requires the same participant incarnation and excludes revoked routes on the
   const page = await createTestPage(), guest = await page.participant();
   const socket = await fixtureSocket(guest.discoverySocket('peer-a'));
   try {
-    expect((await guest.exchange('discovery/advertise', { advertisement: advertisement() })).status).toBe(200);
-    expect((await page.ownerExchange('discovery/advertise', { advertisement: advertisement() })).status).toBe(409);
-    expect((await page.exchange('discovery/withdraw', { peerId: 'peer-a' })).status).toBe(409);
-    expect((await guest.exchange('discovery/withdraw', { peerId: 'peer-a' })).status).toBe(200);
+    expect((await guest.api('POST', 'peers/discovery', { action: 'advertise', advertisement: advertisement() })).status).toBe(200);
+    expect((await page.ownerApi('POST', 'peers/discovery', { action: 'advertise', advertisement: advertisement() })).status).toBe(409);
+    expect((await page.api('POST', 'peers/discovery', { action: 'withdraw', peerId: 'peer-a' })).status).toBe(409);
+    expect((await guest.api('POST', 'peers/discovery', { action: 'withdraw', peerId: 'peer-a' })).status).toBe(200);
   } finally { socket.close(); }
   const h = await create({ listener: false });
   const native = await subscribe(h, 'peer-a');
@@ -83,7 +83,7 @@ it('rejects leases and extra application metadata instead of retaining a polling
   const h = await create({ listener: false }); const socket = await subscribe(h, 'peer-a');
   try {
     expect((await peerApi(h, 'discovery/advertise', { advertisement: advertisement(), ttlMs: 120000 })).status).toBe(400);
-    for (const fields of [{ commands: [] }, { profiles: ['peer-generation-v1'] }, { coordinatorEligible: true }])
+    for (const fields of [{ commands: [] }, { applicationData: [] }, { writerEligible: true }])
       expect((await peerApi(h, 'discovery/advertise', { advertisement: { ...advertisement(), ...fields } })).status).toBe(400);
   } finally { socket.close(); }
 });

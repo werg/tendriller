@@ -62,7 +62,7 @@ export function servePeerInference({ session, allowedDevices, maxRequests = 1, m
         // Identity comes from the authenticated envelope, never a payload role.
         if (envelope.scope !== session.applicationId || !allowed.has(envelope.authorId)) continue;
         const input = envelope.payload;
-        if (!input || input.workerDeviceId !== session.deviceId || !validId(input.requestId)) continue;
+        if (!input || input.workerDeviceId !== session.identity.publicKey || !validId(input.requestId)) continue;
         const key = `${envelope.authorId}/${input.requestId}`;
         if (envelope.topic === INFERENCE_TOPICS.cancel) {
           if (Object.keys(input).sort().join(',') !== 'requestId,workerDeviceId') continue;
@@ -73,8 +73,8 @@ export function servePeerInference({ session, allowedDevices, maxRequests = 1, m
         }
         let request;
         try {
-          request = validRequest(jsonCopy(input, 12_000), { applicationId: session.applicationId, historyId: session.historyId,
-            workerDeviceId: session.deviceId, maxEvidenceBytes });
+          request = validRequest(jsonCopy(input, 12_000), { applicationId: session.applicationId,
+            workerDeviceId: session.identity.publicKey, maxEvidenceBytes });
         } catch { continue; }
         const fingerprint = requestFingerprint(request), previous = records.get(key);
         if (previous) {

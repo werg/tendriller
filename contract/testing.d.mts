@@ -29,8 +29,8 @@ export declare function initializeTestService(migrations: TestMigration[]): Prom
 export declare function createTestPage(options?: { application?: { id: string }; lifetime?: 'ad_hoc' | 'resident' }): Promise<{
   api(method: string, path: string, body?: unknown): Promise<Response>;
   ownerApi(method: string, path: string, body?: unknown): Promise<Response>;
-  exchange(operation: string, payload?: unknown): Promise<Response>;
-  ownerExchange(operation: string, payload?: unknown): Promise<Response>;
+  exchange(record: import('@tendriller/core/authority').AuthorityRecord): Promise<Response>;
+  ownerExchange(record: import('@tendriller/core/authority').AuthorityRecord): Promise<Response>;
   asset(path?: string): Promise<Response>;
   /** Real Worker HTTP and SDP frame traffic through this fixture; excludes synthetic setup. */
   readonly hostTraffic: TestHostTraffic;
@@ -43,7 +43,7 @@ export declare function createTestPage(options?: { application?: { id: string };
   relaySocket(channel: string, peerId: string, remotePeerId: string, lane: 'reliable' | 'live'): TestPeerSocket;
   ownerRelaySocket(channel: string, peerId: string, remotePeerId: string, lane: 'reliable' | 'live'): TestPeerSocket;
   participant(): Promise<{ account: string; api(method: string, path: string, body?: unknown): Promise<Response>;
-    exchange(operation: string, payload?: unknown): Promise<Response>;
+    exchange(record: import('@tendriller/core/authority').AuthorityRecord): Promise<Response>;
     discoverySocket(peerId: string): TestPeerSocket;
     rendezvousSocket(channel: string, peerId: string): TestPeerSocket; invitationSocket(peerId: string): TestPeerSocket;
     relaySocket(channel: string, peerId: string, remotePeerId: string, lane: 'reliable' | 'live'): TestPeerSocket }>;

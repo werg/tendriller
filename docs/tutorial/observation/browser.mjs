@@ -60,10 +60,10 @@ export function createObservationSource({
         if (lifetime.aborted) break;
         if (envelope.scope !== session.applicationId
           || envelope.authorId !== nativeDeviceId
-          || envelope.stream?.target !== session.deviceId) continue;
+          || envelope.stream?.target !== session.identity.publicKey) continue;
 
         const value = envelope.payload;
-        if (value?.recipient !== session.deviceId) continue;
+        if (value?.recipient !== session.identity.publicKey) continue;
 
         if (envelope.topic === TOPICS.request) {
           if (validRequest(value, now())) {

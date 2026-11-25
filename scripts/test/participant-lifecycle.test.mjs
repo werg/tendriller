@@ -4,25 +4,31 @@ import { superviseParticipant } from '../../docs/tutorial/helpers/participant-li
 import { watchApplicationSetup } from '../../contract/setup-watch.mjs';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const approved = (revision = 'approval-1') => ({ type: 'setup', version: 1, assistant: { proposalId: 'a'.repeat(64), approved: true, revision } });
+const revoked = () => ({ type: 'setup', version: 1, assistant: { proposalId: 'a'.repeat(64), approved: false, revision: null } });
+// The supervisor owns consent-driven optional components only. The native owner is the application
+// session; pairing reconciliation, ordering pauses and expiry timers no longer exist, so any
+// leftover hook on the owner must never be called.
+function removedHook(name) { return () => { throw Error(`${name} is not part of the participant lifecycle`); }; }
 function fixture(options = {}) {
   const stop = new AbortController(), closed = Promise.withResolvers(), reports = [], adapters = [];
-  let listener, statusListener, processing = 0;
-  const owned = { session: { signal: stop.signal }, processPairings: async () => { processing++; return options.results ?? []; } };
+  let listener, statusListener, watches = 0;
+  const owned = { session: { signal: stop.signal, orderingPause: removedHook('orderingPause') }, processPairings: removedHook('processPairings') };
   const lifecycle = superviseParticipant({ owned, proposalId: 'a'.repeat(64), report: value => reports.push(value),
     retryMs: 10, maxRetryMs: 20,
-    watch(callbacks) { listener = callbacks.onChange; statusListener = callbacks.onStatus; return { closed: closed.promise, close() { closed.resolve(); } }; },
+    watch(callbacks) { watches++; listener = callbacks.onChange; statusListener = callbacks.onStatus; return { closed: closed.promise, close() { closed.resolve(); } }; },
     startAdapter({ signal, onStatus }) {
       const done = Promise.withResolvers(), entry = { signal, onStatus, done, closes: 0 };
       adapters.push(entry);
       return { closed: done.promise, waitUntilOnline: async () => {}, close() { entry.closes++; done.resolve(); } };
     }, ...options });
-  return { lifecycle, stop, reports, adapters, notice: value => listener(value), status: value => statusListener(value), watchClosed: () => closed.resolve(), count: () => processing };
+  return { lifecycle, stop, reports, adapters, notice: value => listener(value), status: value => statusListener(value), watchClosed: () => closed.resolve(), watches: () => watches };
 }
 
-test('a delayed owner and a closed setup channel never stop the native participant', async () => {
+test('a closed setup channel never stops the native participant', async () => {
   const f = fixture(); let ended = false; f.lifecycle.done.then(() => { ended = true; });
-  f.notice({ ...approved(), assistant: { proposalId: 'a'.repeat(64), approved: false, revision: null } });
-  await flush(); assert.equal(f.adapters.length, 0); assert.equal(f.count(), 1);
+  f.notice(revoked());
+  await flush(); assert.equal(f.adapters.length, 0);
+  assert(f.reports.some(x => x.state === 'awaiting_assistant_consent' && x.participantRunning));
   f.watchClosed(); await flush(); assert.equal(ended, false);
   assert(f.reports.some(x => x.state === 'setup_channel_closed' && x.participantRunning));
   await f.lifecycle.close(); assert.equal(ended, true);
@@ -31,53 +37,44 @@ test('a delayed owner and a closed setup channel never stop the native participa
 test('approval starts an adapter, revocation stops only that component, and new consent reconnects it', async () => {
   const f = fixture(); f.notice(approved()); await flush(); await flush();
   assert.equal(f.adapters.length, 1);
-  f.notice({ ...approved(), assistant: { proposalId: 'a'.repeat(64), approved: false, revision: null } });
+  f.notice(revoked());
   await flush(); await flush(); assert(f.adapters[0].signal.aborted);
   f.notice(approved('approval-2')); await flush(); await flush();
   assert.equal(f.adapters.length, 2); assert(!f.adapters[1].signal.aborted);
   await f.lifecycle.close(); assert(f.adapters[1].signal.aborted);
 });
 
-test('a replaced adapter is fenced until a new consent revision and never aborts pairing', async () => {
+test('a replaced adapter is fenced until a new consent revision', async () => {
   const f = fixture(); f.notice(approved()); await flush();
   f.adapters[0].onStatus({ state: 'disconnected', reason: 'participant_replaced' });
   assert(f.adapters[0].signal.aborted); f.adapters[0].done.resolve();
   await flush(); await flush(); f.notice(approved()); await flush(); assert.equal(f.adapters.length, 1);
-  assert(f.count() >= 2); f.notice(approved('next')); await flush(); await flush(); assert.equal(f.adapters.length, 2);
+  f.notice(approved('next')); await flush(); await flush(); assert.equal(f.adapters.length, 2);
   await f.lifecycle.close();
 });
 
-test('idle setup does no polling and expiry triggers just one retained-request reconciliation', async t => {
+test('removed pairing, ordering-pause and expiry hooks are never called, and idle time causes no work', async t => {
   t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1000 });
-  let count = 0;
-  const f = fixture({ owned: { session: { signal: new AbortController().signal }, processPairings: async () => {
-    count++; return count === 1 ? [{ state: 'pending', expiresAt: 1500 }] : [{ state: 'expired', expiresAt: 1500 }];
-  } } });
-  f.notice(approved()); await flush(); t.mock.timers.tick(501); await flush(); assert.equal(count, 2);
-  t.mock.timers.tick(48 * 3600000); await flush(); assert.equal(count, 2);
+  const f = fixture(); f.notice(approved()); await flush(); await flush();
+  assert.equal(f.adapters.length, 1); assert.equal(f.watches(), 1);
+  t.mock.timers.tick(48 * 3600000); await flush();
+  // Only a setup notification can change consent; the clock never wakes the supervisor.
+  assert.equal(f.adapters.length, 1); assert.equal(f.watches(), 1); assert.equal(f.adapters[0].closes, 0);
+  assert(!f.reports.some(x => x.pairing || ['pairing_unavailable', 'setup_retry'].includes(x.state)));
   await f.lifecycle.close();
 });
 
-test('notifications arriving during reconciliation coalesce without concurrent signing operations', async () => {
-  let active = 0, max = 0, calls = 0; const gate = Promise.withResolvers();
-  const f = fixture({ owned: { session: { signal: new AbortController().signal }, processPairings: async () => {
-    calls++; max = Math.max(max, ++active); if (calls === 1) await gate.promise; active--; return [];
-  } } });
-  f.notice(approved()); f.notice(approved()); f.notice(approved()); gate.resolve(); await flush();
-  assert.equal(max, 1); assert.equal(calls, 2); await f.lifecycle.close();
-});
-
-
-test('commit reconciles its retained ordering pause immediately without another notice', async () => {
-  let paused = true, calls = 0;
-  const f = fixture({ owned: { session: { signal: new AbortController().signal, orderingPause: async () => paused },
-    processPairings: async () => { calls++; if (calls === 1) return [{ state: 'committed' }]; paused = false; return [{ state: 'verified' }]; }
+test('repeated notices for one approval start one adapter, even while its start is stalled', async () => {
+  const online = Promise.withResolvers(); let starts = 0;
+  const f = fixture({ startAdapter() {
+    starts++; return { closed: new Promise(() => {}), waitUntilOnline: () => online.promise, close() {} };
   } });
-  f.notice(approved()); await flush(); await flush();
-  assert.equal(calls, 2); assert.equal(paused, false);
+  f.notice(approved()); f.notice(approved()); f.notice(approved()); await flush();
+  assert.equal(starts, 1);
+  f.notice(approved()); online.resolve(); await flush(); await flush();
+  assert.equal(starts, 1);
   await f.lifecycle.close();
 });
-
 
 test('preparation retries only failures with independent capped backoff, then never polls a successful proposal', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
@@ -85,52 +82,62 @@ test('preparation retries only failures with independent capped backoff, then ne
   const f = fixture({ proposalId: undefined, prepareAdapter: async () => {
     calls++; if (calls <= 3) throw Object.assign(Error('outage'), {code:'NETWORK_UNAVAILABLE'}); return 'a'.repeat(64);
   } });
-  f.notice(approved()); await flush();
-  assert.equal(calls, 1); assert.equal(f.count(), 1); assert.equal(f.adapters.length, 0);
-  // Repeated successful pairing work must neither reset nor bypass preparation backoff.
+  await flush();
+  assert.equal(calls, 1); assert.equal(f.adapters.length, 0);
+  // Notices must neither reset nor bypass preparation backoff.
   f.notice(approved()); await flush(); t.mock.timers.tick(9); await flush(); assert.equal(calls, 1);
   t.mock.timers.tick(1); await flush(); assert.equal(calls, 2);
   f.notice(approved()); await flush(); t.mock.timers.tick(19); await flush(); assert.equal(calls, 2);
   t.mock.timers.tick(1); await flush(); assert.equal(calls, 3);
   t.mock.timers.tick(20); await flush(); await flush(); assert.equal(calls, 4); assert.equal(f.adapters.length, 1);
   assert.deepEqual(f.reports.filter(x => x.state === 'assistant_retry').map(x => x.retryInMs), [10,20,20]);
-  const pairings = f.count(); t.mock.timers.tick(86400000); await flush();
-  assert.equal(calls, 4); assert.equal(f.count(), pairings); assert.equal(f.adapters.length, 1);
+  t.mock.timers.tick(86400000); await flush();
+  assert.equal(calls, 4); assert.equal(f.adapters.length, 1);
   await f.lifecycle.close();
 });
 
-test('stalled optional preparation neither serializes pairing nor owns shutdown; late completion is inert', async () => {
+test('stalled optional preparation neither blocks consent handling nor owns shutdown; late completion is inert', async () => {
   const gate = Promise.withResolvers(); let prepareSignal;
   const f = fixture({ proposalId: undefined, prepareAdapter: ({signal}) => {prepareSignal = signal; return gate.promise;} });
   f.notice(approved()); await flush(); f.notice(approved()); await flush();
-  assert.equal(f.count(), 2); assert.equal(f.adapters.length, 0);
+  assert.equal(f.adapters.length, 0);
   await f.lifecycle.close(); assert(prepareSignal.aborted);
   gate.resolve('a'.repeat(64)); await flush(); assert.equal(f.adapters.length, 0);
 });
 
 for (const code of ['agent_binding_revoked', 'forbidden']) {
-  test(`terminal preparation ${code} stops optional retries while pairing remains available`, async t => {
+  test(`terminal preparation ${code} stops optional retries while the native participant stays available`, async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] }); let calls = 0;
     const f = fixture({ proposalId: undefined, prepareAdapter: async () => {calls++; throw Object.assign(Error(code), {code});} });
     f.notice(approved()); await flush(); t.mock.timers.tick(86400000); await flush();
-    f.notice(approved('next')); await flush(); assert.equal(calls, 1); assert.equal(f.count(), 2);
+    f.notice(approved('next')); await flush(); assert.equal(calls, 1);
     assert.equal(f.adapters.length, 0); assert(f.reports.some(x => x.state === 'assistant_stopped' && x.reason === code));
+    assert(f.reports.every(x => x.state === undefined || x.participantRunning === true));
     await f.lifecycle.close();
   });
 }
+
+test('a removed pairing-account code is not a terminal optional failure', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] }); let calls = 0;
+  const f = fixture({ proposalId: undefined, prepareAdapter: async () => { calls++; throw Object.assign(Error('legacy'), { code: 'pairing_account_revoked' }); } });
+  await flush(); t.mock.timers.tick(10); await flush();
+  assert.equal(calls, 2, 'only the current terminal codes stop retries');
+  assert(!f.reports.some(x => x.state === 'assistant_stopped'));
+  await f.lifecycle.close();
+});
 
 test('setup access revocation cancels a pending proposal and cannot be undone by late notices or replies', async () => {
   const gate = Promise.withResolvers(); let signal;
   const f = fixture({proposalId:undefined, prepareAdapter: options => {signal = options.signal; return gate.promise;}});
   f.notice(approved()); await flush(); f.status({state:'access_revoked'}); assert(signal.aborted);
   gate.resolve('a'.repeat(64)); await flush(); f.notice(approved('next')); await flush();
-  assert.equal(f.adapters.length, 0); assert.equal(f.count(), 2);
+  assert.equal(f.adapters.length, 0);
   await f.lifecycle.close();
 });
 
 test('revocation between scheduling and starting an adapter fences the old approval', async () => {
   const f = fixture(); f.notice(approved());
-  f.notice({...approved(),assistant:{proposalId:'a'.repeat(64),approved:false,revision:null}});
+  f.notice(revoked());
   await flush(); assert.equal(f.adapters.length, 0);
   f.notice(approved('next')); await flush(); assert.equal(f.adapters.length, 1);
   await f.lifecycle.close();
@@ -143,31 +150,21 @@ test('late online completion after revocation never forwards events and new cons
     return {closed:closed.promise,waitUntilOnline:()=>online.promise,close:()=>closed.resolve()};
   }});
   f.notice(approved()); await flush();
-  f.notice({...approved(),assistant:{proposalId:'a'.repeat(64),approved:false,revision:null}});
+  f.notice(revoked());
   await flush(); assert(adapters[0].signal.aborted);
   online.resolve(); await flush(); assert.equal(forwards, 0);
   f.notice(approved('new-consent')); await flush(); await flush(); assert.equal(forwards, 1);
   assert.equal(adapters.length, 2); await f.lifecycle.close();
 });
 
-
-test('a revoked pairing credential also fences optional preparation without ending native ownership', async () => {
-  const gate = Promise.withResolvers(); let signal, calls = 0;
-  const f = fixture({proposalId:undefined, prepareAdapter: options => {signal = options.signal; return gate.promise;},
-    owned:{session:{signal:new AbortController().signal},processPairings:async()=>{calls++; throw Object.assign(Error('revoked'),{code:'agent_binding_revoked'});}}});
-  await flush(); f.notice(approved()); await flush(); assert(signal.aborted);
-  gate.resolve('a'.repeat(64)); await flush(); f.notice(approved('next')); await flush();
-  assert.equal(calls, 2); assert.equal(f.adapters.length, 0); await f.lifecycle.close();
-});
-
-test('a failed adapter transport while starting cannot leave an unhandled rejection or stop pairing', async () => {
+test('a failed adapter transport while starting cannot leave an unhandled rejection or stop consent handling', async () => {
   const transport = Promise.withResolvers();
   const f = fixture({startAdapter:()=>({closed:transport.promise,waitUntilOnline:()=>new Promise(()=>{}),close(){}})});
   f.notice(approved()); await flush(); transport.reject(Error('transport failed')); await flush();
   f.notice({...approved(),assistant:{proposalId:null,approved:false,revision:null}}); await flush();
-  assert.equal(f.count(), 2); await f.lifecycle.close();
+  assert(f.reports.some(x => x.state === 'awaiting_assistant_consent'));
+  await f.lifecycle.close();
 });
-
 
 test('a synchronous approval-change status during adapter start cannot forward or restart stale consent', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] }); let forwards = 0, starts = 0, closes = 0;
@@ -179,7 +176,6 @@ test('a synchronous approval-change status during adapter start cannot forward o
   assert.equal(forwards, 0); assert.equal(starts, 1); assert.equal(closes, 1);
   f.notice(approved()); await flush(); assert.equal(starts, 1); await f.lifecycle.close();
 });
-
 
 test('optional synchronous activity failure stays isolated from the healthy transport',async t=>{
  t.mock.timers.enable({apis:['setTimeout']});
@@ -197,6 +193,28 @@ test('late optional activity errors after replacement or shutdown are fenced fro
  assert(!f.reports.some(x=>x.state==='adapter_activity_failed'));assert.equal(f.adapters[1].closes,0);
  await f.lifecycle.close();activities[1].reject(Error('late shutdown activity'));await flush();
  assert(!f.reports.some(x=>x.state==='adapter_activity_failed'));
+});
+
+test('an unavailable setup channel stops only the optional component and the participant keeps running', async () => {
+  const stop = new AbortController(), reports = []; let ended = false;
+  const lifecycle = superviseParticipant({ owned: { session: { signal: stop.signal } }, report: value => reports.push(value),
+    watch() { throw Object.assign(Error('private diagnostic'), { code: 'SETUP_WATCH_UNAVAILABLE' }); },
+    startAdapter() { throw Error('no adapter may start without a consent channel'); } });
+  lifecycle.done.then(() => { ended = true; });
+  await flush();
+  assert(reports.some(x => x.state === 'optional_setup_unavailable' && x.code === 'SETUP_WATCH_UNAVAILABLE' && x.participantRunning));
+  assert(reports.some(x => x.state === 'assistant_stopped'));
+  assert(!JSON.stringify(reports).includes('private diagnostic'));
+  assert.equal(ended, false);
+  await lifecycle.close(); assert.equal(ended, true);
+});
+
+test('the application session lifetime ends the participant and aborts its adapter', async () => {
+  const f = fixture(); f.notice(approved()); await flush(); await flush();
+  assert.equal(f.adapters.length, 1);
+  f.stop.abort(); await f.lifecycle.done;
+  assert(f.adapters[0].signal.aborted); assert.equal(f.adapters[0].closes, 1);
+  f.notice(approved('late')); await flush(); assert.equal(f.adapters.length, 1, 'a closed supervisor ignores late notices');
 });
 
 test('a missing application keeps reporting setup failures without closing the channel or claiming revocation', async t => {

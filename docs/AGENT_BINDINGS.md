@@ -40,7 +40,7 @@ There are at most 32 host bindings per tendril. Available scopes are:
 | `host:read` | Page metadata, discovery guides and application identity |
 | `host:manage` | Page lifecycle, guest links and host settings |
 | `participants:connect` | Authenticated participant transport and routing |
-| `control:write` | Signed control configuration and generation actions |
+| `control:write` | Signed authority configuration: application preparation, enrollment grants and membership |
 | `publication:write` | Signed code publication |
 | `assistant:manage` | Propose application exports for owner approval |
 | `agents:delegate` | Add, inspect and revoke credentials within the caller's authority |

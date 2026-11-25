@@ -8,11 +8,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'tutorial-assistant-'));
-  for (const name of ['assistant.mjs', 'session.mjs', 'local.mjs', 'domain.mjs', 'pairing-native.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
+  for (const name of ['assistant.mjs', 'session.mjs', 'local.mjs', 'domain.mjs']) await copyFile(join(root, 'docs/tutorial', name), join(directory, name));
   await mkdir(join(directory, 'helpers'));
-  await copyFile(join(root,'docs/tutorial/helpers/participant-lifecycle.mjs'),join(directory,'helpers/participant-lifecycle.mjs'));
-  await copyFile(join(root, 'docs/tutorial/helpers/cli-lifetime.mjs'), join(directory, 'helpers/cli-lifetime.mjs'));
-  for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session']]) {
+  for (const name of ['participant-lifecycle.mjs', 'cli-lifetime.mjs', 'native-session.mjs']) await copyFile(join(root, 'docs/tutorial/helpers', name), join(directory, 'helpers', name));
+  for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session'], ['@chronolog', 'authority', 'node_modules/@chronolog/authority']]) {
     await mkdir(join(directory, 'node_modules', scope), { recursive: true });
     await symlink(resolve(root, source), join(directory, 'node_modules', scope, name));
   }
@@ -36,10 +35,10 @@ test('assistant preparation retains one private key and event permissions are op
   await module.prepareAssistant({ events: true, signal });
   assert.deepEqual(calls[0].body.events, []);
   assert.deepEqual(calls[0].body.queries, ['notes']);
-  assert.deepEqual(calls[0].body.commands, ['addNote']);
+  assert.deepEqual(calls[0].body.commands, ['putNote'], 'the tool surface is the domain command, not a removed one');
   assert.deepEqual(calls[1], calls[0]);
   assert.equal(calls[0].signal, signal);
-  assert.equal(calls[2].body.events[0].name, 'note.added');
+  assert.deepEqual(calls[2].body.events.map(event => event.name), ['note.put', 'note.deleted'], 'declared events are the domain topics, with no legacy note.added alias');
   assert.deepEqual(calls[2].body.adapterHashes, calls[0].body.adapterHashes);
   assert.equal(await readFile(join(directory, '.tendriller/assistant-key.json'), 'utf8'), key);
   assert.equal((await stat(join(directory, '.tendriller/assistant-key.json'))).mode & 0o777, 0o600);
@@ -67,8 +66,9 @@ function runtime({events=false, failConnect=false}={}) {
     forward:async()=>{calls.push('events_forwarded');},report:value=>reports.push(value),
   };
   const watch = dependencies.watch;
-  dependencies.open = async () => {calls.push('open'); return {session, processPairings:async()=>{calls.push('pairings');return [];},watchSetup:watch,close:async()=>{calls.push('owner_closed');}};};
-  delete dependencies.watch;
+  // The consent channel is an explicit dependency. The owned bootstrap has no setup-watch or pairing hooks.
+  const removed = name => () => { throw Error(name + ' was removed'); };
+  dependencies.open = async () => {calls.push('open'); return {session, processPairings:removed('processPairings'), close:async()=>{calls.push('owner_closed');}};};
   return {stop,calls,reports,closed,watchClosed,dependencies};
 }
 test('optional adapter exit preserves the owner until the process is explicitly stopped',async t=>{
@@ -93,26 +93,26 @@ test('optional event forwarding cannot turn finite history iteration into applic
 });
 
 
-test('native owner and setup pairing run before a stalled proposal, then use its late proposal ID', async t => {
+test('native owner and consent watch run before a stalled proposal, then use its late proposal ID', async t => {
   const {module} = await fixture(t), f = runtime(), gate = Promise.withResolvers();
   const prepare = f.dependencies.prepare;
   f.dependencies.prepare = async options => { f.calls.push('preparing'); await gate.promise; return prepare(options); };
   const run = module.runAssistant({signal:f.stop.signal}, f.dependencies);
   await flush(); await flush();
   assert.deepEqual(f.calls.slice(0, 2), ['open', 'watch']);
-  assert(f.calls.includes('pairings')); assert(!f.calls.includes('online'));
+  assert(!f.calls.includes('online'));
   assert(f.reports.some(x => x.state === 'participant_running' && x.processLifetime.includes('Until this process')));
   gate.resolve(); await flush(); await flush();
   assert(f.calls.includes('online')); assert(!f.calls.includes('owner_closed'));
   f.stop.abort(); await run;
 });
 
-test('proposal errors leave native pairing live and abort fences late preparation completion', async t => {
+test('proposal errors leave the native owner and consent watch live and abort fences late preparation completion', async t => {
   const {module} = await fixture(t), f = runtime();
   f.dependencies.prepare = async () => { throw Object.assign(Error('private diagnostic'), {code:'NETWORK_UNAVAILABLE'}); };
   const run = module.runAssistant({signal:f.stop.signal}, f.dependencies);
   await flush(); await flush();
-  assert(f.calls.includes('pairings')); assert(!f.calls.includes('owner_closed'));
+  assert(f.calls.includes('watch')); assert(!f.calls.includes('owner_closed'));
   assert(f.reports.some(x => x.state === 'assistant_preparation_failed' && x.code === 'NETWORK_UNAVAILABLE'));
   assert(f.reports.some(x => x.state === 'assistant_retry'));
   assert(!JSON.stringify(f.reports).includes('private diagnostic'));
@@ -131,21 +131,25 @@ test('proposal errors leave native pairing live and abort fences late preparatio
 });
 
 
-test('canonical event recovery review preserves a healthy provider and its exact cursor without idle redials', { timeout: 10000 }, async t => {
+test('an unusable event outbox checkpoint is reviewed, never reset, and preserves a healthy provider without idle redials', { timeout: 10000 }, async t => {
   const { module, directory } = await fixture(t), f = runtime({ events: true }), providers = [];
-  const cursor = '"retained-private-event-cursor"\n', cursorFile = join(directory, '.tendriller/assistant-event-cursor.json');
+  // A retained checkpoint the current outbox forwarder cannot load (wrong format) must stay byte-identical.
+  const checkpoint = '"retained-private-event-cursor"\n', checkpointFile = join(directory, '.tendriller/assistant-event-cursor.json');
   await mkdir(join(directory, '.tendriller'), { mode: 0o700 });
-  await writeFile(cursorFile, cursor, { mode: 0o600 });
-  let change, forwards = 0;
+  await writeFile(checkpointFile, checkpoint, { mode: 0o600 });
+  let change, changeReads = 0;
   const originalOpen = f.dependencies.open;
   f.dependencies.open = async options => {
-    const owned = await originalOpen(options), originalWatch = owned.watchSetup;
-    // Use the actual public forwardSessionEvents, not a throwing substitute.
-    owned.session.changes = async function* () { forwards++; yield { kind: 'recovery' }; };
-    owned.session.readView = () => { throw Error('Recovery must be reviewed before reading or advancing'); };
-    owned.watchSetup = callbacks => { change = callbacks.onChange; return originalWatch(callbacks); };
+    const owned = await originalOpen(options);
+    // Use the actual public forwardSessionEvents. Neither reading nor following may start from an invalid checkpoint.
+    owned.session.changes = async function* () { changeReads++; };
+    owned.session.readView = () => { changeReads++; throw Error('An unusable checkpoint must be reviewed before reading'); };
+    owned.session.onStatus = () => () => {};
+    owned.session.operations = { get: () => null };
     return owned;
   };
+  const originalWatch = f.dependencies.watch;
+  f.dependencies.watch = callbacks => { change = callbacks.onChange; return originalWatch(callbacks); };
   delete f.dependencies.forward;
   f.dependencies.connect = ({ signal }) => {
     const done = Promise.withResolvers(), provider = { signal, done, closes: 0 };
@@ -166,25 +170,25 @@ test('canonical event recovery review preserves a healthy provider and its exact
   const run = module.runAssistant({ signal: f.stop.signal, events: true }, f.dependencies);
   t.after(async () => { f.stop.abort(); await run; });
   await settled(1);
-  assert.equal(forwards, 1); assert.equal(providers.length, 1); assert.equal(providers[0].closes, 0);
+  assert.equal(providers.length, 1); assert.equal(providers[0].closes, 0);
   assert.equal(providers[0].signal.aborted, false); assert(!f.calls.includes('owner_closed'));
   assert.deepEqual(f.reports.filter(x=>x.state==='adapter_activity_failed'), [{ state:'adapter_activity_failed',code:'adapter_activity_failed',participantRunning:true }]);
-  const pairingCalls = f.calls.filter(x=>x==='pairings').length;
+  const watchCalls = f.calls.filter(x=>x==='watch').length;
   t.mock.timers.tick(48 * 3600000); await flush();
-  assert.equal(providers.length, 1); assert.equal(forwards, 1);
-  assert.equal(f.calls.filter(x=>x==='pairings').length, pairingCalls);
+  assert.equal(providers.length, 1); assert.equal(failureCount(), 1, 'no idle retry of the failed activity');
+  assert.equal(f.calls.filter(x=>x==='watch').length, watchCalls, 'idle time opens no new consent channel');
   assert(!f.reports.some(x=>['assistant_retry','adapter_offline'].includes(x.state)));
-  assert.equal(await readFile(cursorFile,'utf8'), cursor);
+  assert.equal(changeReads, 0); assert.equal(await readFile(checkpointFile,'utf8'), checkpoint);
   // An actual consent revision replaces only its component, then retries the
-  // reviewed activity once with the original cursor; unchanged consent does not.
+  // reviewed activity once with the original checkpoint; unchanged consent does not.
   change({type:'setup',version:1,assistant:{proposalId:'a'.repeat(64),approved:true,revision:'consent'}});
   await flush(); assert.equal(providers.length,1);
   change({type:'setup',version:1,assistant:{proposalId:'a'.repeat(64),approved:true,revision:'new-consent'}});
   await settled(2); assert.equal(providers.length,2); assert.equal(providers[0].signal.aborted,true);
-  assert.equal(providers[1].closes,0); assert.equal(await readFile(cursorFile,'utf8'),cursor);
+  assert.equal(providers[1].closes,0); assert.equal(await readFile(checkpointFile,'utf8'),checkpoint);
   providers[1].done.resolve(); await flush(); await flush();
   t.mock.timers.tick(1000); await settled(3);
   assert.equal(providers.length,3); assert.equal(providers[2].signal.aborted,false);
-  assert.equal(forwards,3); assert.equal(await readFile(cursorFile,'utf8'),cursor);
+  assert.equal(changeReads,0); assert.equal(await readFile(checkpointFile,'utf8'),checkpoint);
   assert(!f.calls.includes('owner_closed'));
 });

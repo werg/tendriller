@@ -1,6 +1,6 @@
 # Owned peer participation
 
-Chronolog owns authenticated connections, reconnect grace, coordinator selection, freshness checks and recovery. Tendriller supplies bounded discovery, direct connection introductions and an opaque WebSocket relay through one adapter. Applications install one participation controller.
+Chronolog owns authenticated connections and bounded reconnect. No participant is selected to order operations. Peers union signed operations and replay them in canonical author-time order. Tendriller supplies bounded discovery, direct connection introductions and an opaque WebSocket relay through one adapter. Applications install one participation controller.
 
 ## One shipping transport path
 
@@ -17,7 +17,6 @@ Native owners use:
 import { participateNativeApplication } from '@tendriller/core/native-rtc';
 const participation = participateNativeApplication(session, {
   peers: host.peers,
-  control,
   onTransport: ({ peerId, kind }) => showTransport(peerId, kind),
 });
 ```
@@ -26,7 +25,7 @@ The standard session package installs its native RTC dependency automatically.
 There is no separate native-RTC archive or manual capability-install step.
 Browser applications keep the supplied `serveBrowserOwner` / `openBrowserOwner`
 composition. Its page-side bridge supplies RTC mechanics for the single shared
-or elected owner; identity, authentication, history and execution stay in that
+or elected owner; identity, authentication, stored operations and execution stay in that
 owner. Both browser engines and events/SQL starters consume this same path.
 Closing an RTC-serving page retires its transport; the existing session controller
 handles reconnection with another attached page or the fallback. It does not
@@ -44,13 +43,13 @@ The shipping policy does not configure a paid TURN service.
 If UDP, NAT, browser capabilities or network policy prevent a direct connection,
 the same attempt closes its RTC/signaling resources and uses the hosted encrypted
 WebSocket relay automatically. This fallback carries application bytes and costs
-host bandwidth. An owner cancellation never starts a relay. Recovery and retry
+host bandwidth. An owner cancellation never starts a relay. Reconnect and retry
 remain owned by Chronolog's one participation controller; a platform opener which
 ignores cancellation retains its physical-opening slot until it settles.
 
 `onTransport` reports a raw `direct` or `relay` selection, with a bounded fallback
-reason. It is diagnostic metadata, not evidence that a peer authenticated or a
-command applied. Do not report P2P solely because signaling or a data channel opened.
+reason. It is diagnostic metadata, not evidence that a peer authenticated or an
+operation was retained or materialized. Do not report P2P solely because signaling or a data channel opened.
 Verify actual application transfer and relay byte counters as described below.
 
 ### Improving an existing relay
@@ -59,7 +58,7 @@ The session's `reconsiderConnections()` accepts an actual network or RTC-provide
 change. It tries a direct-only authenticated replacement while the existing relay
 continues to serve the application. A blocked or cancelled candidate never opens
 another relay and never changes the device identity, signed operation IDs,
-generation or recovery authority. Successful authenticated replacements retire the
+author timestamps or authority. Successful authenticated replacements retire the
 old link with a bounded drain of in-flight requests.
 
 The maintained browser owner requests reconsideration when an authorized RTC
@@ -88,23 +87,23 @@ The underlying `createPeerIntroductions` API remains the host adapter primitive
 for transport qualification and specialized environments. The maintained native
 and browser entry points above are the application setup path.
 
-## Observe and approve recovery
+## Observe participation
 
-The controller exposes `status`, `onStatus`, `signal`, `approveRecovery(proposalId)` and `close()`. Its status distinguishes connection work, following, coordination, recovery, unavailable peers and an approval request. The session closes its controller with its other resources.
+The controller exposes `status` (`connected`, `disconnected` or `closed`, with connected and pending counts and an error), `onStatus`, `signal`, `closed`, `reconsiderConnections()`, `resume()` and `close()`. The session's `connectedPeers` is reported through its own status. The session closes its controller with its other resources.
 
-The controller reads current signed grants and authenticated peer evidence. Advertisements cannot grant coordination or recovery rights. A reconnect grace period permits a healthy coordinator to return. Recovery outside the configured freshness budget, or without a known observation, requires the displayed proposal to be approved. Approval is tied to that exact proposal; changed authority invalidates it. Application code presents that decision and the resulting loss/reapply notices.
+The controller reads current signed grants and authenticated peer evidence. Advertisements cannot grant any right. Peers exchange signed operations, retention and finality evidence and authority bundles. Merging is idempotent, and every receiver re-verifies it. There is no recovery proposal, approval or loss notice. A late earlier operation arrives as an ordinary fact and the application rederives from a coherent snapshot. Connection loss never blocks local authoring or provisional reads.
 
 Ordinary commands, queries, content and live signals use peer connections. The controller consumes required discovery notifications. A healthy idle participant
 does not renew advertisements, scan the host directory or synchronize on a timer.
 An initial connection or reconnect advertises once; directory changes and actual
 application/link changes trigger the relevant work. Chronolog owns bounded
-unavailable-peer retries and the explicit recovery grace/freshness decisions.
+unavailable-peer retries.
 
 ## Host transport primitives
 
 `host.peers.discover()`, `advertise(advertisement)` and `withdraw(peerId)` use the shared participant discovery facet. An advertisement contains exactly `{peerId,storageId,routes}`. These bounded routing hints exist only while their authenticated discovery
 WebSocket is connected. They carry no execution profiles, eligibility claims,
-recovery proofs, application commands or secrets. Independent retained coverage is verified after connection.
+authority proofs, application operations or secrets. Independent retained coverage is verified after connection.
 
 `host.peers.watchDiscovery(peerId, {signal})` opens the receive-only hibernating
 `peers/discovery/watch` channel using `tendriller.discovery.v1`. Its bounded
@@ -141,4 +140,4 @@ The adapter supports invitation routes and already-open rendezvous channels. Raw
 
 ## Qualification
 
-The public `@tendriller/engine/testing` fixture supplies authenticated sockets through real workerd upgrades, including `relaySocket(channel,peerId,remotePeerId,lane)`. `hostTraffic` records HTTP requests/body bytes and separate SDP, invitation and relay upgrades/frame bytes. Snapshot it around ordinary application work to distinguish control requests from relayed ciphertext. Direct traffic continues when the host disappears; relayed traffic needs the relay and incurs host bandwidth. Release qualification must exercise the default native/browser starter over real RTC, transfer a command/read, content and live signals, and measure no relay application payload after connection. Also force RTC failure to verify automatic fallback, cancellation, page-provider loss and shared/elected owner recovery. Independent native/browser scenarios must report their actual selected transport, relay payload byte deltas and source revisions. Local Workerd/socket tests do not establish real Internet reachability or operating cost.
+The public `@tendriller/engine/testing` fixture supplies authenticated sockets through real workerd upgrades, including `relaySocket(channel,peerId,remotePeerId,lane)`. `hostTraffic` records HTTP requests/body bytes and separate SDP, invitation and relay upgrades/frame bytes. Snapshot it around ordinary application work to distinguish control requests from relayed ciphertext. Direct traffic continues when the host disappears; relayed traffic needs the relay and incurs host bandwidth. Release qualification must exercise the default native/browser starter over real RTC, exchange an authored operation and its materialized read, content and live signals, and measure no relay application payload after connection. Also force RTC failure to verify automatic fallback, cancellation, page-provider loss and shared/elected owner reattachment. Independent native/browser scenarios must report their actual selected transport, relay payload byte deltas and source revisions. Local Workerd/socket tests do not establish real Internet reachability or operating cost.

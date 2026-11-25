@@ -6,6 +6,12 @@
 > and the exact published release manifest for current supported paths. A profile
 > name or capability probe does not qualify a SQL engine, browser persistence,
 > future agent wake, or participant availability after its process exits.
+>
+> This specification predates the authored operation-set architecture. Its
+> references to `peer-generation`, selected generations, coordinators and recovery
+> are historical design context, not current APIs. See
+> [authority records and publications](AUTHORITY_AND_PUBLICATIONS.md) and the
+> Chronolog `docs/CRDT_CONTRACT.md`.
 
 
 **Repositories:** `werg/tendriller`, `werg/chronolog-db`, `werg/tendriller-contrib`  

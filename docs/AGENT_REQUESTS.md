@@ -1,9 +1,11 @@
 # Requests, receipts, answers and listener presence
 
 A page-to-agent request has two lifecycles: its **journal operation** and the
-**consumer's work**. An accepted `applied` operation means the request is in the
-selected application history. It does not mean an agent has read it. A peer
-retention receipt (`shared()`) also does not acknowledge application-level work.
+**consumer's work**. A `stored` operation is a signed request durable on the
+sender's device, and a `materialized` accepted outcome means the current local
+replay admitted it. That outcome stays revisable until finalized. Neither means
+an agent has read it. A peer retention receipt (`retained()`) and a configured
+finality proof (`finalized()`) also do not acknowledge application-level work.
 
 The first-app archive includes `helpers/agent-requests.mjs`, an importable,
 application-owned pattern using public Chronolog commands and queries. It supplies
@@ -26,10 +28,10 @@ export const definition = defineApplication({
 });
 ```
 
-For an existing application, adding commands changes its signed definition.
-Follow the application's explicit definition/generation upgrade procedure; a UI
-republish alone cannot change that definition. Install the same definition in
-native and browser participants. The supplied Shared Notes definition stays
+For an existing application, adding commands changes its definition. A UI
+republish alone does not change the definition a participant opened, so install
+the same definition in every native and browser participant. Application schema
+changes are ordinary authorized transactions, not a code-publication step. The supplied Shared Notes definition stays
 unchanged; this helper is an optional pattern to adapt for a new domain.
 
 Requests address an enrolled participant's signing `deviceId` in `recipient`.
@@ -57,10 +59,10 @@ private mailbox. Adapt the domain's permissions and information model as needed.
 
 ## Send once, then show each state on the request
 
-Capture intent before dispatch, as in [uncertain submission](APP_PATTERNS.md#3-preserve-uncertain-intent-before-the-first-dispatch):
+Capture intent before dispatch, as in [uncertain submission](APP_PATTERNS.md#3-preserve-uncertain-intent-before-dispatch):
 
 ```js
-const pendingKey = `ask:${session.applicationId}:${session.historyId}:${session.deviceId}`;
+const pendingKey = `ask:${session.applicationId}:${session.identity.publicKey}`;
 if (localStorage.getItem(pendingKey)) throw Error('Resolve the previous submission first.');
 const pending = {
   operationId: crypto.randomUUID(), createdAtMs: Date.now(),
@@ -71,32 +73,34 @@ localStorage.setItem(pendingKey, JSON.stringify(pending)); // Failure prevents d
 const operation = await session.command(pending.command, pending.input, {
   operationId: pending.operationId,
 });
-const result = await operation.applied({ signal: AbortSignal.timeout(15_000) });
-// Inspect result.outcome. Accepted application is not receipt or answer.
+const result = await operation.materialized({ signal: AbortSignal.timeout(15_000) });
+// Inspect result.outcome. A provisional accepted outcome is not a receipt or answer.
 ```
 
 Keep this exact record after an uncertain reply/timeout. Inspect/retry the
-original operation; do not generate another request. Reapplication after recovery
-is a separate reviewed action with a new operation identity. Once the accepted
+original operation with `session.operations.get(id)` and `session.operations.retry(id)`;
+do not generate another request. If a configured closed-time frontier excludes the
+original, its intent stays inspectable. Sending the question again is a separate
+reviewed action with a new operation identity, never a silent retimestamp. Once the accepted
 request appears in `agentInbox`, the durable query supplies it after any reload;
 local storage is only for unresolved intent and per-device read/unread markers.
 
 | Evidence | Request card copy |
 | --- | --- |
 | Local pending reference, no observed operation | Sending; outcome not yet known |
-| Journal `saved` | Saved on this device; waiting to apply |
-| Journal `applied`, rejected | Request rejected; show the domain reason |
+| Operation `stored`, not yet materialized | Saved on this device; waiting for local materialization |
+| Operation `materialized`, rejected | Request rejected for now; show the domain reason and watch for revisions |
 | Query contains request, no receipt/answer | Sent at [time]; waiting for the listener to acknowledge |
 | Query contains receipt | Seen by [named consumer] at [time]; waiting for an answer |
 | Query contains answer | Answered at [time]; show the answer on this request |
-| `abandoned` / `needsReapply` or recovery reset | History changed; review this request before reapplying |
+| `excluded` by a configured closed frontier | Request was first seen behind a sealed time; review it before sending a new one |
 
 Use `createLiveView(session, { query: 'agentInbox', input: null, ... })` for one
 coherent snapshot. `requestDelivery(request)` returns `awaiting-receipt`, `seen`
 or `answered`; a late receipt never changes an answered card back to seen.
-Keep journal rejections, observation errors and recovery notices separate. On
-recovery replace the displayed query result instead of merging excluded answers
-back into it. Display an empty inbox, loading state and actionable error state.
+Keep operation rejections, observation errors and finality exclusions separate. When
+`session.changes()` reports a revision, replace the displayed query result with a
+fresh coherent snapshot instead of merging revised or excluded answers into it. Display an empty inbox, loading state and actionable error state.
 
 Each request's `sentAtMs` and each receipt/answer's `atMs` come from
 `view.readEvents(...).events[].authorTimestampMs`. This metadata **is available
@@ -107,13 +111,13 @@ cannot be represented, and keep clock disagreement visible.
 
 Render answers as named, readable cards or conversations, with expandable long
 text and links labeled by their destination's meaning. Use answer `eventId`s for
-per-device unread markers, scoped by application, history and browser profile; a page
+per-device unread markers, scoped by application and browser profile; a page
 reload must not recreate an answered request or mark every old answer unread.
 
 ## A consumer acknowledges actual work
 
 The consumer first reads the request, submits `agentReceipt`, and awaits its
-accepted application. It then performs the work and submits `agentAnswer` with
+accepted materialization. It then performs the work and submits `agentAnswer` with
 the same reference. Both use caller-owned stable operation IDs:
 
 ```js
@@ -125,15 +129,15 @@ const reference = request => ({
   consumerId, runId,
 });
 const workKey = request => createHash('sha256').update(JSON.stringify([
-  session.applicationId, session.historyId, request.requestAuthor, request.requestOperationId, consumerId,
+  session.applicationId, request.requestAuthor, request.requestOperationId, consumerId,
 ])).digest('hex');
 async function accepted(name, input, operationId) {
   const operation = await session.command(name, input, { operationId });
-  const result = await operation.applied({ signal: AbortSignal.timeout(15_000) });
+  const result = await operation.materialized({ signal: AbortSignal.timeout(15_000) });
   if (result.outcome !== 'accepted') throw Error(`Consumer command rejected: ${result.rejectionCode}`);
 }
 
-// Only consume rows addressed to session.deviceId and an implemented topic.
+// Only consume rows addressed to session.identity.publicKey and an implemented topic.
 const ref = reference(request);
 const key = workKey(request);
 await accepted('agentReceipt', ref, `receipt:${key}:${runId}`);
@@ -154,11 +158,12 @@ but must not reuse an answer ID with changed text or metadata.
 For a purely computed answer, caching the result before submission is enough.
 For a file edit, payment, email or other external effect, use the target system's
 idempotency support or a transactional work store and reconcile uncertain effects.
-Neither an applied request nor a receipt gives exactly-once external execution.
+Neither a materialized request nor a receipt gives exactly-once external execution.
 Persist an event replay cursor **after** durable handling/checkpointing, never on
 read alone. A crash before that checkpoint can redeliver a request; the work key
-and exact answer input make that redelivery safe. After recovery, inspect the
-selected history before continuing an old cursor or reapplying excluded work.
+and exact answer input make that redelivery safe. After a revision, reread a coherent snapshot and inspect any finality-excluded
+request before continuing an old cursor. A cursor is bound to the revision that
+produced it, so a stale one needs an explicit reread, never a silent skip.
 
 For an event-driven process use `tendril --session ./session.mjs --mode attach
 watch --events --topics '["agent/request"]'` with the last committed cursor, or the public event forwarder. Plain `watch`
@@ -172,7 +177,7 @@ const request = { ...event.payload,
   requestAuthor: event.author, requestOperationId: event.operationId };
 ```
 
-Use this mapping only for `agent/request` events from the intended history;
+Use this mapping only for `agent/request` events from the intended application;
 filter by recipient and implemented topic before accepting work.
 
 ## Live presence and streaming previews (preferred, zero durable writes)

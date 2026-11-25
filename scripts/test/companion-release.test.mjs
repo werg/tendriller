@@ -11,6 +11,7 @@ import { capabilities, openProposal, dispatchQualification, pushOwnerBootstrap, 
 import { waitingReceipt } from '../companion-release/receipt.mjs';
 import { bindRunName } from '../companion-release/qualification.mjs';
 
+import { FIRST_APP_PROFILES } from '../release-composition.mjs';
 const sha = letter => letter.repeat(40), hash = letter => letter.repeat(64);
 function archive(provenance, pkg) {
   const root = mkdtempSync(join(tmpdir(), 'tuple-fixture-'));
@@ -33,15 +34,15 @@ function fixture({ provenanceChanges = {}, packageChanges = {} } = {}) {
   };
   const pkg = { name: '@chronolog/peer-session', exports: { './webrtc-native': './webrtc-native.mjs' }, dependencies: { werift: '0.27.0' }, ...packageChanges };
   const provenance = { format: 'chronolog-peer-session-package/v1', ...kernel, nativeRtc: true, sqlEngines: [], ...provenanceChanges };
-  const components = ['sdk', 'runtime', 'engine', 'tools', 'starter'].map(role => asset(role, `${role}.tgz`));
+  const components = ['sdk', 'runtime', 'engine', 'tools', 'authority', 'session-sql-browser', 'starter'].map(role => asset(role, `${role}.tgz`));
   components.push(asset('session', 'session.tgz', archive(provenance, pkg)));
   const composition = seal({ format: 'tendriller-release-composition-v1', version: '1.2.3', contract: 3,
-    core, runtime: hash('c'), chronolog: { session: kernel }, components: components.map(({ url, ...rest }) => rest) });
+    core, runtime: hash('c'), chronolog: { session: kernel, authority:kernel, 'session-sql-browser':kernel }, profiles:FIRST_APP_PROFILES, components: components.map(({ url, ...rest }) => rest) });
   const manifest = { format: 'tendriller-core-release', version: '1.2.3', contract: 3, source_commit: core.source,
     source_tree: core.sourceTree, runtime: hash('c'), composition: { id: composition.id, file: 'composition.json' },
-    first_app: { file: 'tendriller-first-app-1.2.3.tgz', profile: 'events' },
+    first_app: { file: 'tendriller-first-app-1.2.3.tgz', profile: 'events', packages:FIRST_APP_PROFILES.events.packages,build_dependency:'esbuild@0.28.2' },first_apps:{sql:{file:'tendriller-first-app-sql-1.2.3.tgz',profile:'sql',packages:FIRST_APP_PROFILES.sql.packages,build_dependency:'esbuild@0.28.2'}},
     artifacts: [...components, asset('composition', 'composition.json', json(composition)),
-      asset('first-app', 'tendriller-first-app-1.2.3.tgz'), asset('core-provenance', 'provenance.json'),
+      asset('first-app', 'tendriller-first-app-1.2.3.tgz'),asset('first-app-sql','tendriller-first-app-sql-1.2.3.tgz'), asset('core-provenance', 'provenance.json'),
       asset('tools-provenance', 'tools.json'), asset('plugin', 'plugin.zip')] };
   bytes.set('manifest.json', Buffer.from(json(manifest)));
   const overrides = new Map();

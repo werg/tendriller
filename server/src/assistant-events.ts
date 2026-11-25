@@ -8,20 +8,21 @@ import { requireWritesOpen } from './service-state';
 import { pagePolicy } from './access';
 import { HttpError, readBody } from './http';
 import { sha256Hex } from './ids';
-import { withSelectedAssistantGeneration } from './peer-generations';
+import { withAssistantAuthority } from './authority';
+import { assistantRevision, assistantObservation } from '../../contract/assistant.mjs';
 import type { Tendril } from './tendril';
 import { callerContext, consumerCurrent, providerBindingId, requireConsumerOperation, type Consumer } from './assistant-bindings';
 
 const RETENTION = 256, JOB_LIMIT = 256, MAX_WATCHERS = 8, CALLBACK_DEADLINE = 4000;
 const DEFER_MS = 15 * 60_000, LEASE_MS = 15_000, MAX_ATTEMPTS = 8;
 const DAY = 86_400_000;
-type EventRow = { seq: number; source_id: string; generation: string; name: string; payload: string; created_at: number };
+type EventRow = { seq: number; source_id: string; proposal_id: string; revision: string; facts: string; name: string; payload: string; created_at: number };
 type Watcher = { id: string; grant_id: string; client_id: string; name: string; url: string; secret: string; previous_secret: string | null; rotate_until: number | null; verified_at: number; expires_at: number };
 type Job = EventRow & Watcher & { attempts: number; event_seq: number; watcher_id: string; block_reason: string | null; binding_id: string | null };
-type InboxFloor = { generation: string; through: number };
+type InboxFloor = { through: number };
 const toMessage = (t: Tendril, item: EventRow, applicationId: string) => ({
   name: MCP_APPLICATION_EVENT, timestamp: new Date(item.created_at).toISOString(),
-  data: { applicationId, event: item.name, sourceEventId: item.source_id, generation: item.generation, payload: JSON.parse(item.payload),
+  data: { applicationId, event: item.name, sourceEventId: item.source_id, proposalId: item.proposal_id, revision: JSON.parse(item.revision), ...JSON.parse(item.facts), payload: JSON.parse(item.payload),
     export: exportEvidence(t, item.seq) },
 });
 function exportEvidence(t: Tendril, sequence: number) {
@@ -71,23 +72,29 @@ async function unseal(t: Tendril, id: string, sealed: string) {
 }
 
 export async function ingestAssistantEvent(t: Tendril, adapterHash: string, deviceId: string, body: Record<string, unknown>) {
-  fields(body, ['type', 'id', 'name', 'sourceEventId', 'generation', 'payload', 'context'], ['type', 'id', 'name', 'sourceEventId', 'generation', 'payload']);
+  fields(body, ['type', 'id', 'name', 'sourceEventId', 'proposalId', 'revision', 'observation', 'change', 'payload', 'context'], ['type', 'id', 'name', 'sourceEventId', 'proposalId', 'revision', 'observation', 'change', 'payload']);
   const name = string(body.name, 80), sourceId = string(body.sourceEventId, 256);
-  const generation = string(body.generation, 64, APP_ID), payload = JSON.stringify(body.payload);
+  const proposalId = string(body.proposalId, 64, APP_ID), payload = JSON.stringify(body.payload);
+  let revision: string, facts: string;
+  try {
+    const observedRevision = assistantRevision(body.revision), observation = assistantObservation(body.observation);
+    if (!['upsert', 'retract'].includes(String(body.change)) || observation.materialized && observation.materialized.revision.digest !== observedRevision.digest) throw Error();
+    revision = JSON.stringify(observedRevision); facts = JSON.stringify({ observation, change: body.change });
+  } catch { throw new HttpError(400, 'invalid_event_observation'); }
   const context = callerContext(body.context);
   if (new TextEncoder().encode(payload).byteLength > EVENT_LIMIT) throw new HttpError(413, 'event_too_large');
   // A setup-backed adapter also checks its admitting grant at ingress; its
   // cached key is not independent authority after setup expiry or revocation.
   await admitPageTraffic(t.env, t.tid, connection(t)?.owner ?? null);
-  const retained = await withSelectedAssistantGeneration(t, async (selected, canUseDevice) => {
-    if (selected !== generation) throw new HttpError(409, 'event_generation_changed');
+  const retained = await withAssistantAuthority(t, async canUseDevice => {
     if (!await canUseDevice(deviceId, false) || !(await freshAdapters(t)).includes(adapterHash))
       throw new HttpError(403, 'adapter_device_not_enrolled');
     if (!connection(t)?.events.some(event => event.name === name)) throw new HttpError(403, 'event_not_approved');
-    const prior = t.db.one<{ seq: number; payload: string }>(
-      'SELECT seq,payload FROM assistant_events WHERE generation=? AND source_id=? AND name=?', generation, sourceId, name);
+    const prior = t.db.one<{ seq: number; payload: string; facts: string; device_id: string; provider_binding_id: string }>(
+      `SELECT e.seq,e.payload,e.facts,s.device_id,s.provider_binding_id FROM assistant_events e
+        JOIN assistant_export_source s ON s.event_seq=e.seq WHERE e.proposal_id=? AND e.revision=? AND e.source_id=? AND e.name=?`, proposalId, revision, sourceId, name);
     if (prior) {
-      if (prior.payload !== payload) throw new HttpError(409, 'event_identity_conflict');
+      if (prior.payload !== payload || prior.facts !== facts || prior.device_id !== deviceId || prior.provider_binding_id !== providerBindingId(adapterHash)) throw new HttpError(409, 'event_identity_conflict');
       const pending = t.db.one<{ due: number }>('SELECT MIN(due) AS due FROM assistant_jobs WHERE event_seq=?', prior.seq);
       return { seq: prior.seq, due: pending?.due ?? null };
     }
@@ -95,17 +102,17 @@ export async function ingestAssistantEvent(t: Tendril, adapterHash: string, devi
     if (watchers.length && (t.db.one<{ n: number }>('SELECT COUNT(*) AS n FROM assistant_jobs')!.n + watchers.length > JOB_LIMIT))
       throw new HttpError(429, 'delivery_backlog_full');
     return t.transaction(() => {
-      const { seq } = t.db.one<{ seq: number }>(`INSERT INTO assistant_events(source_id,generation,name,payload,created_at)
-        VALUES(?,?,?,?,?) RETURNING seq`, sourceId, generation, name, payload, now)!;
+      const { seq } = t.db.one<{ seq: number }>(`INSERT INTO assistant_events(source_id,proposal_id,revision,facts,name,payload,created_at)
+        VALUES(?,?,?,?,?,?,?) RETURNING seq`, sourceId, proposalId, revision, facts, name, payload, now)!;
       t.db.run('INSERT INTO assistant_export_source(event_seq,device_id,provider_binding_id,export_version,context) VALUES(?,?,?,?,?)',
         seq, deviceId, providerBindingId(adapterHash), connection(t)!.inboxVersion, JSON.stringify({ evidence: 'exporter-asserted', ...context }));
       for (const watcher of watchers)
         t.db.run('INSERT INTO assistant_jobs(event_seq,watcher_id,due) VALUES(?,?,?)', seq, watcher.id, now + 50);
       if (seq > RETENTION) {
-        const bound = seq - RETENTION, floor = inboxFloor(t, generation);
-        const retired = t.db.one<{ seq: number }>(`SELECT seq FROM assistant_events WHERE generation=? AND seq>? AND seq<=?
-          ORDER BY seq DESC LIMIT 1`, generation, floor, bound);
-        if (retired) t.db.set('assistant_inbox_floor', { generation, through: retired.seq });
+        const bound = seq - RETENTION, floor = inboxFloor(t);
+        const retired = t.db.one<{ seq: number }>(`SELECT seq FROM assistant_events WHERE seq>? AND seq<=?
+          ORDER BY seq DESC LIMIT 1`, floor, bound);
+        if (retired) t.db.set('assistant_inbox_floor', { through: retired.seq });
         t.db.run('DELETE FROM assistant_events WHERE seq<=? AND NOT EXISTS(SELECT 1 FROM assistant_jobs WHERE event_seq=assistant_events.seq)', bound);
         t.db.run('DELETE FROM assistant_export_source WHERE NOT EXISTS(SELECT 1 FROM assistant_events WHERE seq=event_seq)');
       }
@@ -119,9 +126,9 @@ export async function ingestAssistantEvent(t: Tendril, adapterHash: string, devi
   return retained.seq;
 }
 
-function inboxFloor(t: Tendril, generation: string | null): number {
+function inboxFloor(t: Tendril): number {
   const floor = t.db.get<InboxFloor | null>('assistant_inbox_floor', null);
-  return floor?.generation === generation ? floor.through : 0;
+  return floor?.through ?? 0;
 }
 
 export async function assistantInbox(t: Tendril, approved: Connection, params: Record<string, unknown>, consumer: Consumer) {
@@ -132,27 +139,25 @@ export async function assistantInbox(t: Tendril, approved: Connection, params: R
   for (const name of filter) requireConsumerOperation(consumer, 'events', String(name));
   const names = [...filter].sort() as string[];
   const cursor = after === null || after === 0 ? null : fields(after,
-    ['version', 'applicationId', 'agentBindingId', 'exportVersion', 'generation', 'filter', 'sequence']);
+    ['version', 'applicationId', 'agentBindingId', 'exportVersion', 'filter', 'sequence']);
   if (cursor && (cursor.version !== 1 || !Number.isSafeInteger(cursor.sequence) || Number(cursor.sequence) < 0 || !Array.isArray(cursor.filter)))
     throw new HttpError(400, 'invalid_cursor');
-  return withSelectedAssistantGeneration(t, generation => {
+  return withAssistantAuthority(t, () => {
     if (connection(t)?.version !== approved.version || !consumerCurrent(t, consumer)) throw new HttpError(403, 'connection_changed');
-    const floor = inboxFloor(t, generation);
+    const floor = inboxFloor(t);
     const scope = { version: 1, applicationId: approved.applicationId, agentBindingId: consumer.id,
-      exportVersion: approved.inboxVersion, generation, filter: names };
+      exportVersion: approved.inboxVersion, filter: names };
     const reset = cursor && (cursor.applicationId !== scope.applicationId || cursor.agentBindingId !== scope.agentBindingId ? 'binding_changed'
-      : cursor.exportVersion !== scope.exportVersion ? 'export_changed' : cursor.generation !== generation ? 'generation_changed'
+      : cursor.exportVersion !== scope.exportVersion ? 'export_changed'
       : JSON.stringify(cursor.filter) !== JSON.stringify(names) ? 'filter_changed' : Number(cursor.sequence) < floor ? 'retention_truncated' : null);
-    if (reset) return { generation, next: { ...scope, sequence: floor }, resetRequired: true, reason: reset,
+    if (reset) return { next: { ...scope, sequence: floor }, resetRequired: true, reason: reset,
       recovery: 'Inspect affected work, then explicitly continue with this reset cursor or start a fresh retained read.',
       hasMore: true, truncated: reset === 'retention_truncated', events: [] };
     const sequence = cursor ? Number(cursor.sequence) : floor;
-    const oldest = t.db.one<{ seq: number }>('SELECT seq FROM assistant_events WHERE generation=? AND seq>? ORDER BY seq LIMIT 1',
-      generation, floor)?.seq;
-    const events = t.db.all<EventRow>('SELECT * FROM assistant_events WHERE seq>? AND generation=? ORDER BY seq LIMIT ?',
-      sequence, generation, Number(limit) + 1);
+    const oldest = t.db.one<{ seq: number }>('SELECT seq FROM assistant_events WHERE seq>? ORDER BY seq LIMIT 1', floor)?.seq;
+    const events = t.db.all<EventRow>('SELECT * FROM assistant_events WHERE seq>? ORDER BY seq LIMIT ?', sequence, Number(limit) + 1);
     const page = events.slice(0, Number(limit));
-    return { generation, oldest: oldest ?? null, next: { ...scope, sequence: page.at(-1)?.seq ?? sequence }, resetRequired: false,
+    return { oldest: oldest ?? null, next: { ...scope, sequence: page.at(-1)?.seq ?? sequence }, resetRequired: false,
       hasMore: events.length > Number(limit), truncated: !cursor && floor > 0,
       events: page.filter(item => names.includes(item.name)).map(item => ({ sequence: item.seq, ...toMessage(t, item, approved.applicationId) })) };
   });
@@ -252,8 +257,8 @@ const joinedJobs = `SELECT e.*,w.*,j.event_seq,j.watcher_id,j.attempts,j.block_r
   LEFT JOIN assistant_watcher_bindings b ON b.watcher_id=w.id`;
 
 function finishDelivery(t: Tendril, job: Job, outcome: string, attempts = job.attempts) {
-  const receipt = t.db.one<{ seq: number }>(`INSERT INTO assistant_receipts(client_id,name,source_id,generation,watcher_id,outcome,attempts,updated_at)
-    VALUES(?,?,?,?,?,?,?,?) RETURNING seq`, job.client_id, job.name, job.source_id, job.generation, job.watcher_id, outcome, attempts, t.now())!;
+  const receipt = t.db.one<{ seq: number }>(`INSERT INTO assistant_receipts(client_id,name,source_id,proposal_id,revision,watcher_id,outcome,attempts,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?) RETURNING seq`, job.client_id, job.name, job.source_id, job.proposal_id, job.revision, job.watcher_id, outcome, attempts, t.now())!;
   if (receipt.seq > RETENTION)
     t.db.run('DELETE FROM assistant_receipts WHERE seq<=?', receipt.seq - RETENTION);
   t.db.run(`DELETE FROM assistant_watcher_bindings WHERE NOT EXISTS(SELECT 1 FROM assistant_watchers w WHERE w.id=watcher_id)
@@ -276,11 +281,11 @@ export function revokeAssistantConsumer(t: Tendril, id: string): void {
 
 export function assistantDeliveryStatus(t: Tendril, principal: Principal) {
   const pending = t.db.all(`SELECT j.watcher_id AS subscriptionId,e.source_id AS sourceEventId,e.name AS event,
-    e.generation AS generation,j.due AS nextAttemptAt,j.attempts,j.block_reason AS blockedReason
+    e.proposal_id AS proposalId,e.revision AS revision,j.due AS nextAttemptAt,j.attempts,j.block_reason AS blockedReason
     FROM assistant_jobs j JOIN assistant_watchers w ON w.id=j.watcher_id JOIN assistant_events e ON e.seq=j.event_seq
     WHERE w.client_id=? AND EXISTS(SELECT 1 FROM assistant_watcher_bindings b WHERE b.watcher_id=w.id AND b.binding_id=?)
     ORDER BY j.due LIMIT 25`, principal.client, principal.consumer!.id);
-  const recent = t.db.all(`SELECT watcher_id AS subscriptionId,source_id AS sourceEventId,name AS event,generation,
+  const recent = t.db.all(`SELECT watcher_id AS subscriptionId,source_id AS sourceEventId,name AS event,proposal_id AS proposalId,revision,
     outcome,attempts,updated_at AS updatedAt FROM assistant_receipts r WHERE client_id=? AND
     EXISTS(SELECT 1 FROM assistant_watcher_bindings b WHERE b.watcher_id=r.watcher_id AND b.binding_id=?)
     ORDER BY seq DESC LIMIT 25`, principal.client, principal.consumer!.id);
@@ -360,14 +365,13 @@ export async function runAssistantDelivery(t: Tendril) {
       let url: string;
       try { url = callbackTarget(t, job.url); }
       catch { defer(job, 'callback_origin_unavailable'); return; }
-      const eventId = 'evt_' + await sha256Hex(JSON.stringify([job.watcher_id, job.generation, job.source_id, job.name]));
+      const eventId = 'evt_' + await sha256Hex(JSON.stringify([job.watcher_id, job.proposal_id, job.revision, job.source_id, job.name]));
       const body = JSON.stringify({ eventId, ...toMessage(t, job, approved.applicationId), cursor: null });
-      const { pending } = await withSelectedAssistantGeneration(t, async generation => {
+      const { pending } = await withAssistantAuthority(t, async () => {
         if (!current(job)) return { pending: null };
         if (job.binding_id && !job.binding_id.startsWith('oauth_client_') && !t.db.one("SELECT 1 FROM assistant_consumers WHERE id=? AND status='active'", job.binding_id)) {
           finish(job, 'revoked'); return { pending: null };
         }
-        if (generation !== job.generation) { finish(job, 'superseded'); return { pending: null }; }
         const live = t.db.one<Watcher>('SELECT * FROM assistant_watchers WHERE id=?', job.watcher_id);
         if (live?.grant_id !== job.grant_id || live.secret !== job.secret || connection(t)?.version !== approved.version) {
           defer(job, 'subscription_changed', 100); return { pending: null };
