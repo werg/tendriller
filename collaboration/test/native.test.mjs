@@ -194,15 +194,14 @@ test('two actual terminal processes attach without reopening storage and retain 
   const bootstrap = join(f.root, 'attachment.mjs');
   await writeFile(bootstrap, `import {attachNativeSession} from ${JSON.stringify(nativeModule)};
 import {connectApplicationOwner} from ${JSON.stringify(peerModule('browser'))};
-export function openSession(){throw Error('A terminal must not reopen the signer');}
-export function attachSession({signal,context}){return attachNativeSession({directory:${JSON.stringify(f.ownerDirectory)},
-token:process.env.TENDRILLER_NATIVE_ATTACHMENT_KEY,connect:connectApplicationOwner,signal,context,
+export function attach({signal}){return attachNativeSession({directory:${JSON.stringify(f.ownerDirectory)},
+token:process.env.TENDRILLER_NATIVE_ATTACHMENT_KEY,connect:connectApplicationOwner,signal,context:{runId:process.env.FIXTURE_RUN},
 applicationId:${JSON.stringify(f.authority.descriptor.payload.applicationId)},definitionId:${JSON.stringify(definition.id)},definitionVersion:${JSON.stringify(definition.version)}});}`);
-  const cli = fileURLToPath(new URL('../../tools/cli/bin/tendril.mjs', import.meta.url));
+  const cli = fileURLToPath(new URL('../../tools/cli/test/support/run-cli.mjs', import.meta.url));
   const run = (token, text) => {
-    const process = spawn(globalThis.process.execPath, [cli, '--session', bootstrap, '--mode', 'attach', '--profile', 'retained-main',
-      '--run', text, 'command', 'add', JSON.stringify(text), '--operation', 'same-terminal-id'], {
-      env: { ...globalThis.process.env, TENDRILLER_NATIVE_ATTACHMENT_KEY: token }, stdio: ['ignore', 'pipe', 'pipe'],
+    const process = spawn(globalThis.process.execPath, [cli, '--fixture', bootstrap, '--page', 'retained-main',
+      'command', 'add', JSON.stringify(text), '--operation', 'same-terminal-id'], {
+      env: { ...globalThis.process.env, TENDRILLER_NATIVE_ATTACHMENT_KEY: token, FIXTURE_RUN: text }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     t.after(() => { if (process.exitCode === null && process.signalCode === null) process.kill('SIGKILL'); });
     let output = '', error = '';
@@ -303,14 +302,14 @@ console.log(JSON.stringify({ready:true}));`;
   const bootstrap = join(f.root, 'watch-attachment.mjs');
   await writeFile(bootstrap, `import {attachNativeSession} from ${JSON.stringify(nativeModule)};
 import {connectApplicationOwner} from ${JSON.stringify(peerModule('browser'))};
-export function openSession(){throw Error('WATCH_MUST_NOT_OPEN_ANOTHER_SIGNER');}
-export function attachSession({signal}){return attachNativeSession({directory:${JSON.stringify(f.ownerDirectory)},
+export function attach({signal}){return attachNativeSession({directory:${JSON.stringify(f.ownerDirectory)},
 token:process.env.TENDRILLER_NATIVE_ATTACHMENT_KEY,connect:connectApplicationOwner,signal,
 applicationId:${JSON.stringify(f.authority.descriptor.payload.applicationId)},definitionId:${JSON.stringify(definition.id)},
 definitionVersion:${JSON.stringify(definition.version)}});}`);
-  const cli = process.env.TENDRILLER_TOOLS_TEST_CLI ?? fileURLToPath(new URL('../../tools/cli/bin/tendril.mjs', import.meta.url));
+  // The real executable lifecycle with this attachment in place of tendril agent run.
+  const cli = fileURLToPath(new URL('../../tools/cli/test/support/run-cli.mjs', import.meta.url));
   const invoke = args => {
-    const process = spawn(globalThis.process.execPath, [cli, '--session', bootstrap, '--mode', 'attach', ...args], {
+    const process = spawn(globalThis.process.execPath, [cli, '--fixture', bootstrap, '--page', 'retained-main', ...args], {
       env: { ...globalThis.process.env, TENDRILLER_NATIVE_ATTACHMENT_KEY: token }, stdio: ['ignore', 'pipe', 'pipe'],
     });
     t.after(() => { if (process.exitCode === null && process.signalCode === null) process.kill('SIGKILL'); });

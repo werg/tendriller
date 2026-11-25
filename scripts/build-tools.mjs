@@ -52,7 +52,8 @@ const previewLibrary = { name: 'shared-preview-library', setup(builder) {
 async function bundle(source, target, plugins = []) {
   const result = await build({ absWorkingDir: root, entryPoints: [join(root, source)], outfile: join(out, target),
     bundle: true, platform: 'node', format: 'esm', target: 'node22', logLevel: 'warning', metafile: true,
-    external: ['bufferutil', 'utf-8-validate'], plugins: [embeddedRuntime, ...plugins],
+    // Native ownership loads the application's own Chronolog and core packages at run time.
+    external: ['bufferutil', 'utf-8-validate', '@chronolog/*', '@tendriller/core/native-owner', '@tendriller/core/ipc'], plugins: [embeddedRuntime, ...plugins],
     banner: { js: "import {createRequire as bundleRequire} from 'node:module'; const require=bundleRequire(import.meta.url);" },
   });
   for (const input of Object.keys(result.metafile.inputs)) inputs.add(input);
@@ -62,6 +63,7 @@ async function bundle(source, target, plugins = []) {
 await bundle('tools/preview/lib/preview.mjs', 'lib/preview.mjs');
 await bundle('tools/cli/lib/pack.mjs', 'lib/pack.mjs');
 await bundle('tools/cli/lib/session.mjs', 'lib/session.mjs');
+await bundle('tools/cli/lib/workspace.mjs', 'lib/workspace.mjs');
 const entries = { tendril: 'cli/bin/tendril.mjs', 'tendril-preview': 'preview/bin/tendril-preview.mjs' };
 for (const [name, source] of Object.entries(entries)) await bundle('tools/' + source, 'bin/' + name + '.mjs', [previewLibrary]);
 writeFileSync(join(out, 'README.md'), readFileSync(join(root, 'tools/README.md'), 'utf8').replaceAll('../docs/tools/', 'docs/'));
@@ -72,7 +74,9 @@ writeFileSync(join(out, 'THIRD_PARTY_NOTICES.txt'), [...notices].sort(([a], [b])
 writeJson(join(out, 'package.json'), { name: '@tendriller/tools', version: pkg.version, type: 'module',
   description: 'Application session, signed publication and browser preview tools for Tendriller', engines: pkg.engines,
   bin: Object.fromEntries(Object.keys(entries).map(name => [name, `bin/${name}.mjs`])),
-  exports: { './preview': './lib/preview.mjs', './session': './lib/session.mjs', './pack': './lib/pack.mjs' },
+  exports: { './preview': './lib/preview.mjs', './session': './lib/session.mjs', './pack': './lib/pack.mjs', './workspace': './lib/workspace.mjs' },
+  peerDependencies: { '@chronolog/peer-session': '*', '@tendriller/core': pkg.version },
+  peerDependenciesMeta: { '@chronolog/peer-session': { optional: true }, '@tendriller/core': { optional: true } },
   tendriller: { contract: runtimeManifest.contract, runtime: runtimeManifest.id },
 });
 writeJson(join(dist, 'tools-inputs.json'), [...inputs].sort());

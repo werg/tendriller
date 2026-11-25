@@ -14,6 +14,7 @@ const SOURCE_JSON = /^(?:package(?:-lock)?|tsconfig(?:\.[A-Za-z0-9_-]+)?)\.json$
 const EXCLUDED_FILES = new Set(['.env', '.env.local', 'provider-secrets.json', 'provider-local.mjs']);
 const SECRET_PATTERNS = [
   /\b(?:privateKey|secretKey|clientSecret|accessToken|refreshToken|apiKey)\b["']?\s*[:=]\s*["'][^"']{16,}["']/u,
+  /ta_[a-z2-7]{32}/u,
   /td_a_[a-f0-9]{64}/u,
   /td_n_[a-f0-9]{64}/u,
   /td_c_[a-f0-9-]{36}\.[a-f0-9]{64}/u,

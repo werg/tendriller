@@ -1,5 +1,9 @@
 import { onboardingDescriptor } from '@tendriller/core/onboarding';
-import { serverBase } from './config.mjs';
+
+export const DEFAULT_SERVER = 'https://tendriller.dev';
+export function serverBase(env = process.env, flags = {}) {
+  return String(flags.server || env.TENDRIL_SERVER || DEFAULT_SERVER).replace(/\/+$/, '');
+}
 
 /** Public navigation only: generating a guide creates no page, identity or session. */
 export function onboardingGuide(flags = {}, env = process.env) {
@@ -26,9 +30,10 @@ export function onboardingGuide(flags = {}, env = process.env) {
     workflow: shared.workflow,
     prerequisites: [
       'Use the selected connector service origin for every step; check creation readiness before installing packages, then verify the host contract before creating a page.',
-      'An owner email and owner sign-in to claim the page.',
-      'An application bootstrap exporting openSession({ signal }) and returning { session, control? } for session commands.',
-      'Explicit enrollment, device grants and persistent signer storage; a page token alone does not grant application data or publication rights.',
+      'One workspace per agent: tendril workspace init --service ORIGIN --owner EMAIL registers one agent credential and one signing key for all of its pages.',
+      'An owner email and owner sign-in to claim the agent and the pages it created.',
+      'A page module pages/<slug>/agent.mjs exporting openPage(context); tendril agent run opens one session per initialized page.',
+      'Explicit enrollment, device grants and persistent signer storage; agent page access alone does not grant application data or publication rights.',
       'A saved signed initial-generation request and its selected generation; configuring authority alone is insufficient to open the session.',
     ],
     authorization_checkpoints: [
