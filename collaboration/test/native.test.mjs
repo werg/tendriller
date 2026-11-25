@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createConnection } from 'node:net';
+import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { attachNativeSession, createNativeAttachmentKey, createNativeSessionSupervisor } from '../../session/native.mjs';
 import { createCollaborationClient } from '../client.mjs';
 import { createNativeFrames } from '../../session/native-transport.mjs';
+import { diagnosticFinding, transportCauseSummary } from '../../session/diagnostics.mjs';
 import { operationReference } from '../protocol.mjs';
 import { createViewStore } from '../local.mjs';
 import { p, native, browser, definition, peerModule, openRetainedOwner } from './native-fixture.mjs';
@@ -349,6 +351,146 @@ definitionVersion:${JSON.stringify(definition.version)}});}`);
   assert.deepEqual(JSON.parse(replay.stdout).events.map(event => event.payload), [{ text: 'after crash' }]);
 });
 
+
+test('a real fetch socket reset does not poison later requests on the same native owner', { timeout: 15_000 }, async t => {
+  const f = await fixture(t, { publisher: true });
+  let resetNext = false, resets = 0;
+  const server = createServer(async (request, response) => {
+    try {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      const frame = JSON.parse(body);
+      if (resetNext) { resetNext = false; resets++; response.destroy(); return; }
+      const result = frame.facet === 'control' ? f.authority : null;
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify(p.createParticipantResponse(frame, result)));
+    } catch { response.statusCode = 500; response.end(); }
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main',
+    openOwner: async () => {
+      const owner = await f.openOwner();
+      return Object.assign(owner, { control: owner.session.connectControlParticipant({ exchange: async (request, { signal }) => {
+        const response = await fetch(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(request), signal });
+        return response.json();
+      } }) });
+    },
+  });
+  t.after(() => supervisor.close());
+  const publisher = await supervisor.createBinding({ id: 'publisher', policy: { capabilities: ['publish'], maxRequests: 1 } });
+  const attached = await f.attach(publisher.token); t.after(() => attached.detach());
+  assert.equal(await attached.control.publication(), null);
+  resetNext = true;
+  await assert.rejects(attached.control.publication(), error => {
+    assert.equal(error.message, 'fetch failed');
+    assert.ok(error.transportCauses.codes.some(code => ['UND_ERR_SOCKET', 'ECONNRESET'].includes(code)));
+    assert.equal(diagnosticFinding(error).retrySafe, false);
+    assert.doesNotMatch(JSON.stringify(error), /127\.0\.0\.1|http:|remoteAddress|localAddress/); return true;
+  });
+  assert.equal(resets, 1);
+  assert.equal(await attached.control.publication(), null, 'restored connectivity reuses the existing owner and ordinary fetch path');
+  assert.equal(f.opened(), 1);
+});
+
+test('one native owner preserves bounded transport causes and recovers each publication failure phase', { timeout: 20_000 }, async t => {
+  const f = await fixture(t, { publisher: true });
+  const publications = await p.createPublicationRegistry({ store: new p.MemoryBytesStore(), authority: async () => f.authority });
+  const expectedCauses = { codes: ['EAI_AGAIN', 'ECONNRESET', 'ENETUNREACH', 'ETIMEDOUT'], truncated: false };
+  const networkFailure = () => new TypeError('fetch failed', { cause: new AggregateError(expectedCauses.codes.map(code =>
+    Object.assign(Error('private credential https://secret.invalid/?token=private'), {
+      code, address: '192.0.2.1', headers: { authorization: 'private' }, path: '/private/profile',
+    })), 'private aggregate') });
+  let fault = 'preparation';
+  const submissions = [];
+  const exchange = async (request, { signal } = {}) => {
+    if (fault === 'timeout') return new Promise((_, reject) => {
+      signal.throwIfAborted();
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    if (fault === 'preparation' || fault === 'selection' && request.facet === 'control') throw networkFailure();
+    let result;
+    if (request.facet === 'control' && request.action === 'read') result = f.authority;
+    else if (request.facet === 'publication' && request.action === 'read') {
+      const records = await publications.read(), id = request.payload.id;
+      const publication = id === undefined ? records.at(-1) : records.find(value => value.id === id);
+      result = publication ? { publication, version: publication.payload.revision + 1 } : null;
+    } else if (request.facet === 'publication' && request.action === 'publish') {
+      submissions.push(structuredClone(request.payload));
+      const publication = await publications.publish(request.payload.publication);
+      if (fault === 'submission') throw networkFailure(); // Host committed; its acknowledgement was lost.
+      result = { publication, version: publication.payload.revision + 1 };
+    } else throw Error('UNEXPECTED_HOST_REQUEST');
+    return p.createParticipantResponse(request, result);
+  };
+  let ownControl;
+  const supervisor = await createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main',
+    openOwner: async () => {
+      const owner = await f.openOwner();
+      ownControl = owner.session.connectControlParticipant({ exchange, timeoutMs: 250 });
+      return Object.assign(owner, { control: ownControl });
+    },
+  });
+  t.after(() => supervisor.close());
+  const publisher = await supervisor.createBinding({ id: 'publisher', policy: { capabilities: ['publish', 'queries'], maxRequests: 1 } });
+  const attached = await f.attach(publisher.token); t.after(() => attached.detach());
+  const bytes = Buffer.from('<main>Exact retained publication</main>'), hash = await p.bytesDigest(bytes);
+  const input = { operationId: 'network-recovery', entry: 'index.html', files: [{ path: 'index.html', hash, size: bytes.length, type: 'text/html' }] };
+  const assets = [{ hash, bytes: bytes.toString('base64') }];
+  let directError;
+  await assert.rejects(ownControl.preparePublication(input), error => {
+    directError = error; assert.deepEqual(transportCauseSummary(error), expectedCauses); return true;
+  });
+  await assert.rejects(attached.control.preparePublication(input), error => {
+    assert.equal(error.name, directError.name); assert.equal(error.message, directError.message);
+    assert.deepEqual(error.transportCauses, expectedCauses);
+    assert.equal(error.outcome, undefined); assert.equal(error.receipt, undefined);
+    assert.doesNotMatch(JSON.stringify(error), /private|192\.0|secret\.invalid/); return true;
+  });
+  assert.equal((await publications.read()).length, 0);
+  assert.equal(await attached.control.publicationOperation(input.operationId), null);
+  fault = 'healthy';
+  const publication = await attached.control.preparePublication(input);
+  fault = 'submission';
+  await assert.rejects(attached.control.publish(publication, assets), error => {
+    assert.equal(error.code, 'APPLICATION_PUBLICATION_OUTCOME_UNKNOWN');
+    assert.equal(error.outcome, 'unknown'); assert.equal(error.phase, 'submission');
+    assert.equal(error.operationId, publication.payload.operationId); assert.equal(error.publicationId, publication.id);
+    assert.equal(error.receipt, null); assert.deepEqual(error.transportCauses, expectedCauses);
+    assert.equal(diagnosticFinding(error).retrySafe, false);
+    assert.doesNotMatch(JSON.stringify(error), /private|192\.0|secret\.invalid/); return true;
+  });
+  const retained = await attached.control.publicationOperation(input.operationId);
+  assert.deepEqual(retained, { publication, receipt: null });
+  assert.equal((await publications.read()).length, 1, 'network codes do not imply rejection or non-submission');
+  fault = 'healthy';
+  assert.deepEqual(await attached.control.preparePublication(input), publication, 'reuse the original signature');
+  const receipt = await attached.control.publish(retained.publication, assets);
+  assert.deepEqual(receipt.publication, publication);
+  assert.deepEqual(submissions[1], submissions[0], 'exact retry retains original signed intent and all asset bytes');
+  assert.equal((await publications.read()).length, 1, 'no replacement publication is created');
+  const next = await attached.control.preparePublication({ ...input, operationId: 'acknowledged-then-disconnected' });
+  fault = 'selection';
+  await assert.rejects(attached.control.publish(next, assets), error => {
+    assert.equal(error.code, 'APPLICATION_PUBLICATION_COMMITTED');
+    assert.equal(error.outcome, 'committed'); assert.equal(error.phase, 'selection');
+    assert.equal(error.operationId, next.payload.operationId); assert.equal(error.publicationId, next.id);
+    assert.deepEqual(error.receipt, { publication: next, version: 2 });
+    assert.deepEqual(error.transportCauses, expectedCauses); assert.equal(diagnosticFinding(error).retrySafe, false); return true;
+  });
+  assert.deepEqual((await attached.control.publicationOperation(next.payload.operationId)).receipt, { publication: next, version: 2 });
+  fault = 'healthy';
+  assert.deepEqual(await attached.control.publication(), { publication: next, version: 2 });
+  fault = 'timeout';
+  await assert.rejects(attached.control.preparePublication({ ...input, operationId: 'after-timeout' }), /APPLICATION_CONTROL_TIMEOUT/);
+  fault = 'healthy';
+  const resumed = await attached.control.preparePublication({ ...input, operationId: 'after-timeout' });
+  assert.equal((await attached.control.publish(resumed, assets)).version, 3);
+  assert.equal((await attached.session.query('notes', null)).value.length, 0);
+  assert.equal(f.opened(), 1, 'failures release request slots and do not poison the owner lifetime or serialized control queue');
+});
 
 test('attached publication retains one signed intent through a lost reply, reconnect and binding rotation', { timeout: 20_000 }, async t => {
   const f = await fixture(t, { publisher: true });

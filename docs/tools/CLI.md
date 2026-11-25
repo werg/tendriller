@@ -310,6 +310,22 @@ survives failure of the subsequent selected-head read or local cleanup. Preserve
 the authored bytes and original operation; inspect before an exact retry. Never
 change the operation ID merely because the invocation failed.
 
+When known network causes are available, CLI JSON also includes
+`diagnostic.transportCauses`, for example
+`{"codes":["ECONNRESET","ENOTFOUND","UND_ERR_CONNECT_TIMEOUT"],"truncated":false}`.
+Own-mode failures and errors returned through the resident owner use the same
+sanitized formatter. It follows nested causes and aggregate members with bounded
+depth, member count and work, emits at most twelve distinct known codes and keeps
+the summary below 512 bytes. `truncated: true` means its traversal or output bound
+was reached; unknown details are omitted. It does not copy nested messages,
+stacks, attempted addresses, private paths, query strings, headers or credentials.
+
+These codes describe an observed transport failure. They do not establish whether
+a write reached the host, make `retrySafe` true, or change a publication's reported
+outcome, phase, identities or acknowledged receipt. Use the existing publication
+evidence and inspection procedure above; a DNS or socket error after submission
+does not establish `not_submitted` or authorize a new operation or signature.
+
 #### Recover a saved unscoped publication after an upgrade
 
 An intent created with standalone `--mode own`, or an older attachment that did

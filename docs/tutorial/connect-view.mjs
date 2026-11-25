@@ -1,15 +1,18 @@
 // A state-aware connection card for createOwnerConnection. One message, at most one
 // primary action, progress while setup runs, and technical details folded away.
 // While not connected, the app shows this card instead of empty or stale data.
-const STYLE = `.tc-card{display:flex;gap:.9rem;align-items:flex-start;background:#fff;color:#111a16;border:1px solid #dde5e0;border-radius:12px;padding:1rem 1.15rem;margin:1rem 0;box-shadow:0 1px 2px rgba(15,26,21,.05)}
-.tc-spinner{flex:none;width:1.15rem;height:1.15rem;margin-top:.15rem;border-radius:50%;border:2.5px solid #dde5e0;border-top-color:#146c4a;animation:tc-spin .9s linear infinite}
+// Public --tc-* colors are inherited from the authored root/container. Only
+// private fallback tokens are set here, so injected styles cannot shadow them.
+const STYLE = `.tc-card{--_tc-bg:#fff;--_tc-fg:#111a16;--_tc-muted:#53665d;--_tc-border:#dde5e0;--_tc-accent:#146c4a;--_tc-accent-fg:#fff;--_tc-accent-hover:#0f583c;display:flex;gap:.9rem;align-items:flex-start;background:var(--tc-bg,var(--_tc-bg));color:var(--tc-fg,var(--_tc-fg));border:1px solid var(--tc-border,var(--_tc-border));border-radius:12px;padding:1rem 1.15rem;margin:1rem 0;box-shadow:0 1px 2px rgba(15,26,21,.05)}
+.tc-spinner{flex:none;width:1.15rem;height:1.15rem;margin-top:.15rem;border-radius:50%;border:2.5px solid var(--tc-border,var(--_tc-border));border-top-color:var(--tc-accent,var(--_tc-accent));animation:tc-spin .9s linear infinite}
 .tc-card[data-phase=failed] .tc-spinner,.tc-card[data-phase=approve] .tc-spinner,.tc-card[data-phase=preview] .tc-spinner{display:none}
-.tc-title{font-weight:650;font-size:.95rem;margin:0 0 .18rem}.tc-detail{margin:0;font-size:.88rem;color:#53665d}
-.tc-action{margin-top:.75rem;padding:.45rem .9rem;border:0;border-radius:8px;background:#146c4a;color:#fff;font:inherit;font-size:.88rem;font-weight:620;cursor:pointer}
-.tc-action:hover{background:#0f583c}
-.tc-card details{margin-top:.55rem;font-size:.82rem;color:#53665d}.tc-card code{overflow-wrap:anywhere}
+.tc-title{font-weight:650;font-size:.95rem;margin:0 0 .18rem}.tc-detail{margin:0;font-size:.88rem;color:var(--tc-muted,var(--_tc-muted))}
+.tc-action{margin-top:.75rem;padding:.45rem .9rem;border:0;border-radius:8px;background:var(--tc-accent,var(--_tc-accent));color:var(--tc-accent-fg,var(--_tc-accent-fg));font:inherit;font-size:.88rem;font-weight:620;cursor:pointer}
+.tc-action:hover{background:var(--tc-accent-hover,var(--tc-accent,var(--_tc-accent-hover)))}
+.tc-action:focus-visible{outline:2px solid var(--tc-accent,var(--_tc-accent));outline-offset:3px}
+.tc-card details{margin-top:.55rem;font-size:.82rem;color:var(--tc-muted,var(--_tc-muted))}.tc-card code{overflow-wrap:anywhere}
 .tc-card[hidden]{display:none}@keyframes tc-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.tc-spinner{animation:none}}
-@media(prefers-color-scheme:dark){.tc-card{background:#141b18;color:#eef3f0;border-color:#26332d;box-shadow:none}.tc-spinner{border-color:#26332d;border-top-color:#1f9d68}.tc-detail,.tc-card details{color:#91a49a}.tc-action{background:#1f9d68;color:#05140d}.tc-action:hover{background:#26b377}}`;
+@media(prefers-color-scheme:dark){.tc-card{--_tc-bg:#141b18;--_tc-fg:#eef3f0;--_tc-muted:#91a49a;--_tc-border:#26332d;--_tc-accent:#1f9d68;--_tc-accent-fg:#05140d;--_tc-accent-hover:#26b377;box-shadow:none}}`;
 
 export function mountConnectionView(container, { hideWhenConnected = true } = {}) {
   if (!document.getElementById('tc-style')) document.head.append(Object.assign(document.createElement('style'), { id: 'tc-style', textContent: STYLE }));

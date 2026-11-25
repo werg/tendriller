@@ -73,6 +73,15 @@ exact ready result. Reopen the same directory and inspect the same operation
 after a lost reply. Restore the original private checkpoint if it is missing;
 never mint a replacement intent as a retry. `handle_saved` is not connected.
 
+`.tendriller/` is reserved for Tendriller-managed identity, setup and recovery
+state. Put application-specific local secrets, caches and other files in a
+separate directory such as `.local/`, and add that directory to your application's
+`.gitignore`. Any retained entry in `.tendriller/`, including an unfamiliar one,
+blocks fresh creation when there is no usable host handle. The
+`setup_recovery_required` diagnostic lists bounded, escaped entry names without
+reading their contents. Inspect the original project and resume its checkpoint;
+the helper never deletes, moves or ignores retained state to create a replacement.
+
 The account-linked setup credential lasts 24 hours even after owner claim and
 also depends on its original OAuth grant. To continue the same claimed app,
 stop the native peer, retain its complete checkpoint, and have the owner open
@@ -140,6 +149,13 @@ the participant committed while the page was away is found on the next open.
 Browser reloads retain the same public request and key; private signing keys stay
 in Worker storage. An expired or stale request is renewed for the same device; a
 denied one waits for an explicit "Ask again".
+
+Match the connection card to an authored palette with inherited `--tc-*` color
+properties on its container; see the [palette example](https://tendriller.dev/docs/APP_PATTERNS.md#match-an-application-owned-palette).
+For richer pages, preserve the starter's submission-state callback for every
+write control, including the final release after refresh; the
+[multi-control example](https://tendriller.dev/docs/APP_PATTERNS.md#keep-every-action-control-reactive)
+updates eligibility without replacing drafts or focus.
 
 Private native records are `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
 `pairing-ID-commit.json` and `pairing-ID-outcome.json` under `.tendriller/`.

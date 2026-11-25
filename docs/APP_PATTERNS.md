@@ -57,6 +57,33 @@ stale-data warnings above it. Keep data views hidden until `phase` is
 `openBrowserOwner`; the runtime binding installs once per page, so install it
 only after `connect` has made the app usable.
 
+### Match an application-owned palette
+
+Set the connection card's color properties on its mount container or `:root`.
+Inherited authored values survive the helper's stylesheet injection and later
+state renders. For an app-selected dark palette even while the system prefers
+light:
+
+```css
+#connection-slot {
+  color-scheme: dark;
+  --tc-bg: #171b2a;
+  --tc-fg: #f3f4ff;
+  --tc-muted: #b8bfd9;
+  --tc-border: #596581;
+  --tc-accent: #c4b5fd;
+  --tc-accent-fg: #211942;
+  --tc-accent-hover: #ddd6fe;
+}
+```
+
+The roles cover the surface, title, muted text, borders, spinner/focus accent,
+action text and action hover. Omit `--tc-accent-hover` to reuse an overridden
+`--tc-accent` on hover. Without overrides the card retains its light and
+system-dark defaults. The application owns theme choice: `color-scheme: dark`
+alone does not activate a `prefers-color-scheme` media query. These hooks change
+colors only; connection actions, accessibility and reduced motion are unchanged.
+
 User-facing copy for the codes an app can meet (developer causes are in
 [troubleshooting](TROUBLESHOOTING.md)):
 
@@ -338,6 +365,9 @@ the related values together.
 
 `session.changes()` is a stream of invalidations, not an event replay log.
 Retained events belong in a declared query or an explicit history consumer.
+The [native event-consumer example](AGENT_RESTART.md#native-event-reads-and-captured-view-lifetime)
+connects invalidation, captured event reads, `finally` release and durable handled
+checkpoints to the canonical recovery-review procedure.
 Connection progress is also separate: observe `session.participation.onStatus`
 for peer connectivity. A backend being installed is not proof that keys,
 materialization or peers are ready.
@@ -412,6 +442,64 @@ it refuses an absent attempt or one requiring reviewed reapplication.
 an applied/shared waiter also cancels only the waiter.
 
 ## 3. Preserve uncertain intent before the first dispatch
+
+### Keep every action control reactive
+
+Use `createSubmissionState(onChange)` for every write control, including cards
+and a persistent detail editor. Eligibility changes when an operation finishes
+even if no new data snapshot arrives. Keep record rendering subscribed to the
+live view and eligibility subscribed to submission state. Adapt the starter's
+existing submission instance and callback with this small multi-control pattern;
+do not add a second coordinator alongside it:
+
+```js
+// submission-controls-example
+import { createSubmissionState } from './helpers/submission-state.mjs';
+
+export function createWriteControls(root) {
+  const eligibility = { submit: 'canSubmit', retry: 'canRetry', reapply: 'canReapply' };
+  function render(state) {
+    for (const button of root.querySelectorAll('[data-write-action]')) {
+      button.disabled = !state[eligibility[button.dataset.writeAction]]
+        || button.dataset.domainBlocked === 'true';
+      button.setAttribute('aria-busy', String(state.working));
+    }
+    const status = root.querySelector('[data-submission-status]');
+    if (status) status.textContent = state.message;
+  }
+  const submission = createSubmissionState(render);
+  const sync = () => render(submission.snapshot);
+  sync();
+  return { submission, sync };
+}
+```
+
+For example, both a card's **Save** and the detail editor's **Save** use
+`data-write-action="submit"`; retained-operation buttons use `retry` or `reapply`.
+Keep a domain-invalid or unauthorized control blocked with
+`data-domain-blocked="true"`, and preserve domain checks in its handler too.
+After inserting a new card or changing its domain eligibility, call `sync()` to
+initialize it from the current snapshot. The callback only updates disabled/busy
+state and status text; it does not replace cards, inputs, focus or selection. Use
+the [preserved editor lifecycle](#domain-views-you-can-import) for data renders.
+
+Keep the starter's existing `application`, `participation`, `read`, pending and
+operation-observer updates wired to this same `submission` instance. A live-view
+read error or recovery must invalidate `coherent`; a later successful current
+read restores it. Continue to acquire `release = submission.begin()` inside the
+handler's `try`, retain the signed-operation reference, await its applied result,
+and finish the coherent refresh before calling `release?.()` exactly once in
+`finally`. That final callback re-enables all eligible controls without another
+query or data notification. An uncertain pending operation, failed refresh,
+disconnection or recovery keeps them blocked even after `working` is released.
+
+Do not move release ahead of refresh to force a data render. The current release
+closure is not an operation token: an early call followed by a second call in
+`finally` can clear another submission's working state. On errors preserve the
+appropriate original operation and recovery state; finishing this UI lifecycle
+does not cancel, retry or declare the command accepted.
+
+### Retain the original operation reference
 
 Chronolog owns the signed attempt and its delivery. The UI still needs enough
 local information to identify a first call whose reply was lost before the
