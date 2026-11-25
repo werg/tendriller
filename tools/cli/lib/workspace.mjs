@@ -187,6 +187,11 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
   };
   const getClient = async () => client ??= createAgentClient({ service: config.service, token: (await readCredential()).token },
     { ...(fetcher ? { fetch: fetcher } : {}), ...(WebSocket ? { WebSocket } : {}) });
+  // Another process (page new, page grant) may register pages while this one runs.
+  const refreshPages = async () => {
+    const current = await readJson(paths.config);
+    if (current?.agent?.id === config.agent.id) config.pages = current.pages;
+  };
   const pageDirectory = id => join(paths.pages, id);
   const record = async id => readJson(join(pageDirectory(id), 'page.json'), true);
   const workspace = {
@@ -200,6 +205,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
     },
     /** Resolve --page <slug|id> against the workspace registry. */
     async page(ref) {
+      await refreshPages();
       const slugs = Object.entries(config.pages ?? {});
       if (ref === undefined) {
         if (slugs.length === 1) ref = slugs[0][0];
@@ -212,6 +218,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       return { ...saved, slug, directory: pageDirectory(id), source: join(paths.sources, slug) };
     },
     async pages() {
+      await refreshPages();
       return Promise.all(Object.entries(config.pages ?? {}).map(async ([slug, { id }]) => {
         const saved = await record(id);
         return { slug, id, ...(saved ? { name: saved.name, application: saved.application } : { missing: true }),
@@ -223,6 +230,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
     async registerPage(slug, page) {
       if (!SLUG.test(slug ?? '')) throw failure('invalid_slug', 'Use a page slug of lowercase letters, digits and dashes (max 48).', 64);
       if (!PAGE_ID.test(page?.id ?? '')) throw failure('invalid_page', 'The host returned an invalid page identity.');
+      await refreshPages();
       const existing = config.pages?.[slug];
       if (existing && existing.id !== page.id) throw failure('slug_taken', `Slug ${slug} already names page ${existing.id}.`, 64);
       const other = Object.entries(config.pages ?? {}).find(([name, value]) => value.id === page.id && name !== slug);
@@ -237,6 +245,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       return workspace.page(slug);
     },
     async unregisterPage(slug) {
+      await refreshPages();
       const { [slug]: removed, ...rest } = config.pages ?? {};
       if (!removed) return false;
       config.pages = rest; await replaceJson(paths.config, config); return true;

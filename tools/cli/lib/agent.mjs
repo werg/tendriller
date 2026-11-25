@@ -38,11 +38,13 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
   }
   async function rescan({ remote = false } = {}) {
     if (stopping) return;
-    if (remote || granted === null) {
+    const listed = await workspace.pages();
+    // A page registered since the last listing (page new while running) is not in
+    // the cached grants yet; re-read them before treating it as ungranted.
+    if (remote || granted === null || listed.some(page => !granted.has(page.id))) {
       try { await refreshGrants(); }
       catch (error) { report({ state: 'grants_unavailable', code: safeCode(error), status: error.status ?? null }); }
     }
-    const listed = await workspace.pages();
     for (const page of listed) {
       if (granted && !granted.has(page.id)) { await closePage(page.id, 'grant_missing'); continue; }
       if (page.initialized && page.module && !pages.has(page.id)) openPage(page);
