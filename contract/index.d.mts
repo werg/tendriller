@@ -148,6 +148,15 @@ export interface PageAgentRoster {
   readonly connections?: string;
   readonly live?: Readonly<Record<string, AgentLiveStatus>>;
 }
+export interface HostedMcpConnectInput {
+  readonly grantId: string;
+  readonly wrapPublicKey: string;
+  readonly handle: string;
+  readonly bio?: string;
+  readonly label?: string;
+  readonly writer?: boolean;
+  readonly capabilities?: { read?: boolean; write?: boolean; queries?: string[] | null; commands?: string[] | null };
+}
 export interface RuntimeAgents {
   snapshot(): PageAgentRoster;
   refresh(): Promise<PageAgentRoster>;
@@ -155,6 +164,9 @@ export interface RuntimeAgents {
   onChange(listener: (roster: PageAgentRoster) => void): () => void;
   resolveHandle(handleOrKey: string): import("./publication-watch.mjs").PageAgentEntry | null;
   reportLiveStatus(map: Record<string, AgentLiveStatus>): void;
+  readonly canConnectMcp: boolean;
+  registerMcpConnector(connector: (input: HostedMcpConnectInput) => Promise<unknown>): () => void;
+  connectMcp(input: HostedMcpConnectInput): Promise<unknown>;
 }
 /** Explicit hosted operations. Constructing these services starts no connection or request. */
 export interface HostServices {

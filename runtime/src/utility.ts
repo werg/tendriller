@@ -226,12 +226,19 @@ export function mountUtility(api: RuntimeApi): () => void {
   agentPrimaryBox.append(agentPrimaryLabel, agentPrimarySelect);
   const agentOwnerBox = element("div"); agentOwnerBox.hidden = true;
   const agentList = element("div", undefined, "scopes agent-grants"); agentList.setAttribute("role", "group"); agentList.setAttribute("aria-label", "Account agents granted access");
+  const agentMcpBox = element("div", undefined, "agent-mcp-box"); agentMcpBox.hidden = true;
+  const agentMcpList = element("ul", undefined, "agent-roster");
+  agentMcpBox.append(
+    element("h4", "Hosted MCP (ChatGPT / OAuth)"),
+    element("p", "Connect an OAuth client directly to this page. Keys are wrapped to its Bearer token with zero plaintext keys stored on Tendriller.", "note"),
+    agentMcpList,
+  );
   const agentEmpty = element("p", "No agents on this page yet.", "note"); agentEmpty.hidden = true;
   const agentDashboard = element("a", "Add an agent on your dashboard", "secondary"); agentDashboard.target = "_blank"; agentDashboard.rel = "noopener";
   const agentConnections = element("a", "Hosted MCP connections", "secondary"); agentConnections.target = "_blank"; agentConnections.rel = "noopener";
   const agentLinks = element("div", undefined, "agent-links"); agentLinks.append(agentDashboard, agentConnections);
   agentOwnerBox.append(element("h4", "Account agent access"), element("p", "Checked agents can maintain this page. Add new agents from your dashboard.", "note"),
-    agentList, agentLinks);
+    agentList, agentMcpBox, agentLinks);
   const agentVisitorNote = element("p", "Only the page owner can change agent access or the primary agent.", "note"); agentVisitorNote.hidden = true;
   const agentLoading = element("p", "Loading…", "note");
   agentPanel.append(agentLoading, agentRosterList, agentEmpty, agentPrimaryBox, agentOwnerBox, agentVisitorNote);
@@ -437,8 +444,9 @@ export function mountUtility(api: RuntimeApi): () => void {
   };
   let lastAccountAgents: Array<{ id: string; handle: string; bio: string; granted: boolean }> = [];
   let canManageAgents = false;
+  const agentSnap = () => api.agents?.snapshot?.() ?? { primary_agent_id: null, agents: [], live: {} };
   const renderRosterView = () => {
-    const snap = api.agents.snapshot();
+    const snap = agentSnap();
     agentRosterList.replaceChildren();
     agentEmpty.hidden = snap.agents.length > 0;
     for (const agent of snap.agents) {
@@ -483,7 +491,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     agentPrimarySelect.disabled = true;
     showShareStatus("Updating primary agent…");
     try {
-      await api.agents.setPrimary(next);
+      await api.agents?.setPrimary?.(next);
       if (!disposed) showShareStatus(next ? "Primary agent updated." : "Primary agent cleared.");
     } catch (err) {
       if (!disposed) showShareStatus(err instanceof Error ? err.message : "Could not update primary agent.");
@@ -492,7 +500,96 @@ export function mountUtility(api: RuntimeApi): () => void {
       if (!disposed) agentPrimarySelect.disabled = false;
     }
   });
-  const offAgents = api.agents.onChange(() => { if (!disposed) renderRosterView(); });
+  let lastMcpGrants: { configured: boolean; grants: Array<{ id: string; client_id: string; client_name: string; wrap_public_key: string }>; connections: Array<{ grant_id: string; handle: string; label: string }> } | null = null;
+  const renderHostedMcpGrants = () => {
+    if (!canManageAgents || !lastMcpGrants || !lastMcpGrants.configured) {
+      agentMcpBox.hidden = true;
+      return;
+    }
+    agentMcpBox.hidden = false;
+    agentMcpList.replaceChildren();
+    const byGrant = new Map(lastMcpGrants.connections.map(c => [c.grant_id, c]));
+    if (lastMcpGrants.grants.length === 0) {
+      const li = element("li", undefined, "agent-card");
+      li.append(element("p", "No active OAuth clients yet. Authorize ChatGPT or another MCP client first, then connect it here.", "note"));
+      agentMcpList.append(li);
+      return;
+    }
+    for (const grant of lastMcpGrants.grants) {
+      const conn = byGrant.get(grant.id);
+      const li = element("li", undefined, "agent-card");
+      const top = element("div", undefined, "agent-card-top");
+      top.append(element("span", grant.client_name || grant.client_id, "agent-handle"));
+      const pills = element("div", undefined, "agent-pills");
+      pills.append(element("span", conn ? `Connected as @${conn.handle}` : "Not connected", conn ? "agent-pill online" : "agent-pill"));
+      top.append(pills);
+      li.append(top);
+      const actions = element("div", undefined, "agent-links");
+      if (conn) {
+        const discBtn = button("Disconnect", "secondary");
+        discBtn.addEventListener("click", async () => {
+          discBtn.disabled = true;
+          showShareStatus(`Disconnecting @${conn.handle}…`);
+          try {
+            const res = await fetch(`${api.identity.base}_tendril/mcp/${encodeURIComponent(grant.id)}`, { method: "DELETE", credentials: "same-origin" });
+            if (!res.ok) throw Error("Could not disconnect hosted MCP.");
+            await api.agents?.refresh?.().catch(() => {});
+            await refreshHostedMcpGrants();
+            if (!disposed) showShareStatus(`Disconnected @${conn.handle}.`);
+          } catch (err) {
+            if (!disposed) showShareStatus(err instanceof Error ? err.message : "Could not disconnect hosted MCP.");
+          } finally { if (!disposed) discBtn.disabled = false; }
+        });
+        actions.append(discBtn);
+      } else if (api.agents?.canConnectMcp) {
+        const defaultHandle = (grant.client_id || "assistant").toLowerCase().replace(/[^a-z0-9_-]/g, "").replace(/^[^a-z]+/, "") || "assistant";
+        const handleInput = document.createElement("input");
+        handleInput.type = "text";
+        handleInput.value = defaultHandle.slice(0, 32);
+        handleInput.placeholder = "handle (e.g. chatgpt)";
+        handleInput.setAttribute("aria-label", `Handle for ${grant.client_name || grant.client_id}`);
+        handleInput.style.cssText = "flex:1;min-width:8rem";
+        const connBtn = button("Connect to this page", "primary");
+        connBtn.addEventListener("click", async () => {
+          const handle = handleInput.value.trim().replace(/^@+/, "").toLowerCase();
+          if (!/^[a-z][a-z0-9_-]{1,31}$/.test(handle)) {
+            showShareStatus("Choose a lowercase handle (2–32 chars: a-z, 0-9, _, -).");
+            return;
+          }
+          connBtn.disabled = true; handleInput.disabled = true;
+          showShareStatus(`Connecting @${handle}…`);
+          try {
+            await api.agents?.connectMcp?.({
+              grantId: grant.id,
+              wrapPublicKey: grant.wrap_public_key,
+              handle,
+              bio: `Hosted MCP (${grant.client_name || grant.client_id})`,
+              label: sharePageName,
+            });
+            await refreshHostedMcpGrants();
+            if (!disposed) showShareStatus(`Connected @${handle} to this page.`);
+          } catch (err) {
+            if (!disposed) showShareStatus(err instanceof Error ? err.message : "Could not connect hosted MCP.");
+          } finally { if (!disposed) { connBtn.disabled = false; handleInput.disabled = false; } }
+        });
+        actions.append(handleInput, connBtn);
+      } else {
+        actions.append(element("span", "This page does not expose an in-browser key connector.", "note"));
+      }
+      li.append(actions);
+      agentMcpList.append(li);
+    }
+  };
+  const refreshHostedMcpGrants = async () => {
+    if (disposed || !api.identity.base || !canManageAgents) return;
+    try {
+      const res = await fetch(`${api.identity.base}_tendril/mcp/grants`, { credentials: "same-origin", cache: "no-store" });
+      if (!res.ok) return;
+      lastMcpGrants = await res.json();
+      if (!disposed) renderHostedMcpGrants();
+    } catch { /* offline or unavailable */ }
+  };
+  const offAgents = api.agents?.onChange?.(() => { if (!disposed) { renderRosterView(); renderHostedMcpGrants(); } }) ?? (() => {});
   const refreshShareState = async () => {
     if (disposed || !api.identity.base) return;
     try {
@@ -532,7 +629,7 @@ export function mountUtility(api: RuntimeApi): () => void {
           const data = await res.json().catch(() => null) as { error?: { message?: string } } | null;
           if (!res.ok) throw Error(data?.error?.message || "Could not change access. Try again.");
           box.defaultChecked = want;
-          await api.agents.refresh().catch(() => {});
+          await api.agents?.refresh?.().catch(() => {});
           if (!disposed) showShareStatus(want ? `@${agent.handle} can now maintain this page.` : `@${agent.handle} no longer has access.`);
         } catch (err) {
           if (disposed) return;
@@ -557,15 +654,16 @@ export function mountUtility(api: RuntimeApi): () => void {
         connections?: string;
         account_agents?: { id: string; handle: string; bio: string; granted: boolean }[];
       };
-      await api.agents.refresh().catch(() => {});
+      await api.agents?.refresh?.().catch(() => {});
       if (disposed) return;
       canManageAgents = Boolean(data.can_manage);
       if (data.account_agents) renderAccountAgentChecks(data.account_agents, data.dashboard ?? "/dashboard#agents", data.connections ?? "/connections");
       renderRosterView();
+      if (canManageAgents) void refreshHostedMcpGrants();
     } catch {
       if (!disposed) {
         renderRosterView();
-        if (api.agents.snapshot().agents.length === 0) {
+        if (agentSnap().agents.length === 0) {
           agentEmpty.textContent = "Could not load agents right now.";
           agentEmpty.hidden = false;
         }

@@ -408,6 +408,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
   const composer = el("div", "composer");
   const mentionMenu = el("div", "mention-menu");
   mentionMenu.setAttribute("role", "listbox");
+  mentionMenu.setAttribute("aria-label", "Mention an agent");
   mentionMenu.hidden = true;
 
   const targetRow = el("div", "target-row");

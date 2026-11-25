@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
-  testDir: ".", testMatch: "app-helpers.spec.ts", timeout: 30_000,
+  testDir: ".", testMatch: ["app-helpers.spec.ts", "multi-agent-chat.spec.ts"], timeout: 30_000,
   fullyParallel: false, workers: 1, reporter: [["list"]],
   outputDir: "../../test-results/app-helpers",
   use: { headless: true, trace: "retain-on-failure", screenshot: "only-on-failure" },

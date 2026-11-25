@@ -11,6 +11,7 @@ import { createSigningIdentity, signAppDescriptor, signMembership, epochKeyCommi
 import { authorityRecord } from '../../contract/authority.mjs';
 import { sealHostedKeys } from '../src/mcp-crypto';
 import { doltliteExecutionManifestDigest } from '../src/mcp-sql';
+import { PUBLICATION_WATCH_PROTOCOL } from '../src/publication-watch';
 import { create, inDO, ownerHeaders } from './helpers';
 
 const ISSUER = 'https://tendriller.dev', RESOURCE = ISSUER + '/mcp';
@@ -786,6 +787,59 @@ it('executes hosted MCP SQL domain.js using QuickJS-WASM + ephemeral in-memory D
     });
     expect(queried.result.isError).not.toBe(true);
     expect(queried.value.value).toEqual([{ id: 'bolts', qty: 42 }]);
+
+    // Verify encrypted SQL checkpointing (threshold = 2) + live `mcp-sync` push notice + DO eviction recovery
+    await inDO(f.page.id, t => { t.db.set('mcp_sql_checkpoint_threshold', 2); });
+    const watchResp = await request(pageBase + '_tendril/publication-ready', f.settings, {
+      headers: { ...pageOwner, Upgrade: 'websocket', 'Sec-WebSocket-Protocol': PUBLICATION_WATCH_PROTOCOL },
+    });
+    expect(watchResp.status).toBe(101);
+    const watchSock = watchResp.webSocket!;
+    const watchMsgs: any[] = [];
+    watchSock.addEventListener('message', ev => { watchMsgs.push(JSON.parse(ev.data as string)); });
+    watchSock.accept();
+    await expect.poll(() => watchMsgs.length).toBeGreaterThanOrEqual(1);
+
+    const add2 = await mcpCall(f.settings, issued.access_token, 'call_application_command', {
+      applicationId: f.page.application.id,
+      command: 'addItem',
+      input: { id: 'nuts', qty: 10 },
+      operationId: 'op-sql-nuts',
+    });
+    expect(add2.result.isError).not.toBe(true);
+    expect(add2.value.materialized.outcome).toBe('accepted');
+    await expect.poll(() => watchMsgs.some(m => m.type === 'mcp-sync' && m.version === 1)).toBe(true);
+    watchSock.close();
+
+    // Encrypted SQL checkpoint exists in mcp_store with ZERO plaintext SQLite header or row values
+    const ckptCheck = await inDO(f.page.id, t => {
+      const row = t.db.one<{ v: ArrayBuffer }>('SELECT v FROM mcp_store WHERE k=?', `sql-checkpoint/${f.page.application.id}`);
+      if (!row) return { exists: false, hasPlaintext: false, hasSqliteHeader: false };
+      const text = new TextDecoder().decode(new Uint8Array(row.v));
+      return {
+        exists: true,
+        bytes: row.v.byteLength,
+        hasPlaintext: text.includes('bolts') || text.includes('nuts'),
+        hasSqliteHeader: text.includes('SQLite format 3'),
+      };
+    });
+    expect(ckptCheck.exists).toBe(true);
+    expect(ckptCheck.hasPlaintext).toBe(false);
+    expect(ckptCheck.hasSqliteHeader).toBe(false);
+
+    // Evict DO and verify hydrated checkpoint + tail query returns all items accurately
+    await evictDurableObject(env.TENDRIL.get(env.TENDRIL.idFromName(f.page.id)));
+    await inDO(f.page.id, t => {
+      t.env.OAUTH_CONFIG_JSON = f.settings.OAUTH_CONFIG_JSON;
+      t.env.OAUTH_SIGNING_JWK = f.settings.OAUTH_SIGNING_JWK;
+    });
+    const afterCkptEvict = await mcpCall(f.settings, issued.access_token, 'query_application', {
+      applicationId: f.page.application.id,
+      query: 'items',
+      input: null,
+    });
+    expect(afterCkptEvict.result.isError).not.toBe(true);
+    expect(afterCkptEvict.value.value).toEqual([{ id: 'bolts', qty: 42 }, { id: 'nuts', qty: 10 }]);
   } finally {
     await inDO(f.page.id, t => { Object.assign(t.env, restore); });
   }

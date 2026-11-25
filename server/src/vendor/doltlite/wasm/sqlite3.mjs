@@ -448,6 +448,8 @@ TTY.init();
 
   // Begin ATPOSTCTORS hooks
   FS.ignorePermissions = false;
+  Module['__fs'] = FS;
+  if (typeof Module['__onFs'] === 'function') Module['__onFs'](FS);
   // End ATPOSTCTORS hooks
 }
 

@@ -27,6 +27,7 @@ export const TUTORIAL_FILES = Object.freeze([
   'shared/connect-view.mjs',
   'shared/connection.mjs',
   'shared/helpers/agent-requests.mjs',
+  'shared/helpers/hosted-mcp.mjs',
   'shared/helpers/browser-bootstrap.mjs',
   'shared/helpers/browser-profile.mjs',
   'shared/helpers/data-feed.mjs',

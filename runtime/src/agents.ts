@@ -1,4 +1,4 @@
-import type { AgentLiveStatus, PageAgentRoster, RuntimeAgents } from "../../contract/index.mjs";
+import type { AgentLiveStatus, HostedMcpConnectInput, PageAgentRoster, RuntimeAgents } from "../../contract/index.mjs";
 import type { AgentsRosterNotice, PageAgentEntry } from "../../contract/publication-watch.mjs";
 import type { TendrilConfig } from "./types";
 
@@ -41,6 +41,7 @@ export function createAgentsStore(cfg: TendrilConfig): AgentsStore {
   let dashboard: string | undefined;
   let connections: string | undefined;
   let live: Record<string, AgentLiveStatus> = {};
+  let mcpConnector: ((input: HostedMcpConnectInput) => Promise<unknown>) | null = null;
   const listeners = new Set<(roster: PageAgentRoster) => void>();
 
   const snapshot = (): PageAgentRoster => Object.freeze({
@@ -135,6 +136,25 @@ export function createAgentsStore(cfg: TendrilConfig): AgentsStore {
     reportLiveStatus(map: Record<string, AgentLiveStatus>) {
       live = { ...map };
       emit();
+    },
+    get canConnectMcp() {
+      return mcpConnector !== null;
+    },
+    registerMcpConnector(connector: (input: HostedMcpConnectInput) => Promise<unknown>) {
+      mcpConnector = connector;
+      emit();
+      return () => {
+        if (mcpConnector === connector) {
+          mcpConnector = null;
+          emit();
+        }
+      };
+    },
+    async connectMcp(input: HostedMcpConnectInput) {
+      if (!mcpConnector) {
+        throw new Error("This page has not registered an in-browser hosted MCP connector yet.");
+      }
+      return await mcpConnector(input);
     },
   });
 

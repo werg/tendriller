@@ -51,8 +51,17 @@ async function openAgentGrants(page: Page) {
   await page.route('**/t/example/_tendril/links', route => route.fulfill({ json: { name: 'Example', links: [] } }));
   await page.route('**/t/example/_tendril/agents', route => route.request().method() === 'POST'
     ? route.fulfill({ json: { ok: true } })
-    : route.fulfill({ json: { dashboard: 'https://service.test/dashboard#agents', agents: [
-      { id: 'ag_' + 'a'.repeat(26), name: 'builder', granted: true }, { id: 'ag_' + 'b'.repeat(26), name: 'reviewer', granted: false }] } }));
+    : route.fulfill({ json: {
+      primary_agent_id: 'ag_' + 'a'.repeat(26),
+      can_manage: true,
+      dashboard: 'https://service.test/dashboard#agents',
+      connections: 'https://service.test/connections',
+      agents: [{ id: 'ag_' + 'a'.repeat(26), handle: 'builder', bio: '', public_key: 'a'.repeat(64), kind: 'workspace', is_primary: true, granted_at: 1 }],
+      account_agents: [
+        { id: 'ag_' + 'a'.repeat(26), handle: 'builder', bio: '', granted: true },
+        { id: 'ag_' + 'b'.repeat(26), handle: 'reviewer', bio: '', granted: false },
+      ],
+    } }));
   await page.getByRole('button', { name: 'Add people & devices', exact: true }).click();
   await page.getByRole('tab', { name: 'An agent', exact: true }).click();
   await expect(page.locator('tendril-utility input[type=checkbox]')).toHaveCount(2);

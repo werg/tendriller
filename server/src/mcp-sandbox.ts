@@ -11,7 +11,7 @@
  */
 import { newQuickJSWASMModuleFromVariant, newVariant, shouldInterruptAfterDeadline, type QuickJSWASMModule } from 'quickjs-emscripten-core';
 import baseVariant from '@jitl/quickjs-ng-wasmfile-release-sync';
-import quickjsWasm from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
+import quickjsWasm from './vendor/quickjs/emscripten-module.wasm';
 import { HttpError } from './http';
 
 const DEFAULT_MEMORY_LIMIT = 16 * 1024 * 1024;

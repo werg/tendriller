@@ -1,5 +1,5 @@
 /** Page-origin metadata only, shared by holding pages and published-page utilities. */
-export function watchPublicationUpdates({ base, onCurrent, onAgents = () => {}, onStatus = () => {}, signal }) {
+export function watchPublicationUpdates({ base, onCurrent, onAgents = () => {}, onMcpSync = () => {}, onStatus = () => {}, signal }) {
   const protocol = 'tendriller.publication.v1';
   const endpoint = new URL('_tendril/publication-ready', base);
   if (endpoint.origin !== location.origin || !['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash)
@@ -9,6 +9,10 @@ export function watchPublicationUpdates({ base, onCurrent, onAgents = () => {}, 
     if (!value || typeof value !== 'object') throw Error('INVALID_PUBLICATION_NOTICE');
     if (value.type === 'agents' && value.version === 1 && Array.isArray(value.agents)) {
       onAgents(value);
+      return;
+    }
+    if (value.type === 'mcp-sync' && value.version === 1 && Object.keys(value).length === 2) {
+      onMcpSync(value);
       return;
     }
     if (Object.keys(value).sort().join() !== 'current,type,version' || value.type !== 'publication' || value.version !== 1 ||

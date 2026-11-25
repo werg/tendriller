@@ -96,3 +96,26 @@ export function notifyAgentsWatchers(t: Tendril): void {
     }));
   });
 }
+
+/** Notify open non-display browser tabs when new encrypted envelopes are available via `_tendril/mcp/sync`. */
+export function notifyMcpSyncWatchers(t: Tendril): void {
+  t.afterCommit(async () => {
+    const policies = new Map<string | null, ReturnType<typeof pagePolicy>>();
+    const watchers = t.ctx.getWebSockets(tag).filter(socket => socket.readyState === WebSocket.READY_STATE_OPEN);
+    const frame = JSON.stringify({ type: 'mcp-sync', version: 1 });
+    await Promise.all(watchers.map(async socket => {
+      const value = attachment(socket);
+      if (!value) { socket.close(4003, 'Page watch expired'); return; }
+      if (value.principal.role === 'display') return;
+      try {
+        if (!currentPrincipal(t, value.principal, value.key)) { socket.close(4003, 'Page access ended'); return; }
+        const visitor = value.principal.role === 'guest' ? value.principal.accountId : null;
+        let policy = policies.get(visitor);
+        if (!policy) policies.set(visitor, policy = pagePolicy(t, visitor));
+        if (await policy !== 'active' || !currentPrincipal(t, value.principal, value.key)) { socket.close(4003, 'Page access ended'); return; }
+        if (socket.readyState !== WebSocket.READY_STATE_OPEN) return;
+        socket.send(frame);
+      } catch { try { socket.close(1011, 'Page watch interrupted'); } catch { /* disconnected */ } }
+    }));
+  });
+}

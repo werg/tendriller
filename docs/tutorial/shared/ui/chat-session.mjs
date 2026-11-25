@@ -9,10 +9,12 @@ import {
   watchAgentsPresence,
   watchAgentStreams,
 } from '../helpers/agent-requests.mjs';
+import { enableHostedMcp } from '../helpers/hosted-mcp.mjs';
 
 export async function mountConnectedAgentChat({
   runtime = window.tendril,
   session,
+  peers,
   container,
   title = 'Assistant',
   layout = container ? 'embedded' : 'dock',
@@ -355,6 +357,10 @@ export async function mountConnectedAgentChat({
     } catch { /* closed */ }
   })();
 
+  const hostedMcp = peers
+    ? enableHostedMcp({ runtime, session, peers, label: title, signal: lifetime })
+    : null;
+
   await runtime.agents?.refresh?.().catch(() => {});
   syncRosterToUi();
   await refreshFeed();
@@ -362,6 +368,7 @@ export async function mountConnectedAgentChat({
   return Object.freeze({
     ...chat,
     refresh: refreshFeed,
+    syncHostedMcp: () => hostedMcp?.syncNow?.() ?? Promise.resolve({ supported: false, uploaded: 0, merged: 0 }),
     done: changeLoop,
     close() {
       stop.abort();
@@ -370,6 +377,7 @@ export async function mountConnectedAgentChat({
         window.removeEventListener('online', onOnlineChange);
         window.removeEventListener('offline', onOnlineChange);
       }
+      hostedMcp?.close();
       offAgents();
       presence.close();
       streams.close();

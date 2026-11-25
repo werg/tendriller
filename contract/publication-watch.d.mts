@@ -14,9 +14,14 @@ export interface AgentsRosterNotice {
   readonly primary_agent_id: string | null;
   readonly agents: readonly PageAgentEntry[];
 }
+export interface McpSyncNotice {
+  readonly type: 'mcp-sync';
+  readonly version: 1;
+}
 /** Persistent receive-only page-origin subscription, independent of application enrollment. */
 export function watchPublicationUpdates(options: { base: string; signal?: AbortSignal;
   onCurrent(notice: PublicationSelectionNotice): void;
   onAgents?(notice: AgentsRosterNotice): void;
+  onMcpSync?(notice: McpSyncNotice): void;
   onStatus?(status: { state: 'connected' | 'reconnecting' | 'access_ended' | 'protocol_error'; retryInMs?: number }): void;
 }): { close(): void };

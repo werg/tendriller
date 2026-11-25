@@ -22,11 +22,12 @@ import { readAuthorityBundle } from './authority';
 import { servedVersion } from './files';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { base64url } from './accounts/oauth-support';
-import { hexToBytes as parseHex, normalizeEd25519Pkcs8Hex, unbase64url, unsealHostedKeys } from './mcp-crypto';
+import { hexToBytes as parseHex, normalizeEd25519Pkcs8Hex, sealSqlCheckpoint, unbase64url, unsealHostedKeys, unsealSqlCheckpoint } from './mcp-crypto';
 import { createEphemeralSqlMaterializer, doltliteExecutionManifestDigest } from './mcp-sql';
 import { describeDomainBundle, runDomainCommand, runDomainQuery, type SandboxProgramStep, type SandboxReadBridge } from './mcp-sandbox';
 import { mcpOAuth, REQUEST_LIMIT, requireScope, string, type McpPrincipal } from './mcp-shared';
 import { MemoryBytesStore } from './mcp-store';
+import { notifyMcpSyncWatchers } from './publication-watch';
 import { requireWritesOpen } from './service-state';
 import { notifySetupChanged } from './setup-watch';
 import type { Tendril } from './tendril';
@@ -52,6 +53,9 @@ interface McpCapabilities {
 
 const DEFAULT_CAPABILITIES: McpCapabilities = { read: true, write: true, queries: null, commands: null };
 const ENVELOPE_PREFIX = 'envelope/';
+const SQL_CHECKPOINT_PREFIX = 'sql-checkpoint/';
+const DEFAULT_SQL_CHECKPOINT_THRESHOLD = 8;
+const MAX_SQL_CHECKPOINT_BYTES = 4 * 1024 * 1024;
 
 function asBytes(value: ArrayBuffer | Uint8Array): Uint8Array {
   return value instanceof Uint8Array ? value.slice() : new Uint8Array(value).slice();
@@ -282,10 +286,14 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
     }
     const copy = new Uint8Array(raw.byteLength);
     copy.set(raw);
-    t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + payload.proposalId, copy.buffer);
+    const exists = t.db.one('SELECT 1 AS x FROM mcp_store WHERE k=?', ENVELOPE_PREFIX + payload.proposalId);
+    if (!exists) {
+      t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + payload.proposalId, copy.buffer);
+      stored++;
+    }
     known.add(payload.proposalId);
-    stored++;
   }
+  if (stored > 0) notifyMcpSyncWatchers(t);
 
   const missing: Array<{ proposalId: string; envelopeBase64: string }> = [];
   for (const row of listEnvelopeRows(t)) {
@@ -375,12 +383,43 @@ async function withHostedSession<T>(
     (sqlDigest && bundle.descriptor.payload.executionManifestDigest === sqlDigest),
   );
 
+  // Load optional epoch-key-encrypted SQL checkpoint in RAM so large SQL apps skip replaying
+  // the already-materialized prefix while keeping zero plaintext SQLite on disk.
+  const checkpointKey = SQL_CHECKPOINT_PREFIX + applicationId;
+  const checkpointThreshold = Math.max(1, Number(t.db.get<number>('mcp_sql_checkpoint_threshold', DEFAULT_SQL_CHECKPOINT_THRESHOLD)));
+  let initialSqlBytes: Uint8Array | null = null;
+  let loadedCheckpointCount = 0;
+  if (isSql) {
+    const ckptRow = t.db.one<{ v: ArrayBuffer | Uint8Array }>('SELECT v FROM mcp_store WHERE k=?', checkpointKey);
+    if (ckptRow) {
+      const opened = await unsealSqlCheckpoint(epochKeys, applicationId, asBytes(ckptRow.v));
+      if (opened) {
+        initialSqlBytes = opened.sqliteBytes;
+        loadedCheckpointCount = opened.envelopeCount;
+      }
+    }
+  }
+
+  let latestEnvelopeCount = hydratedEnvelopes.length;
+  const currentEpoch = bundle.memberships.at(-1)?.payload.epoch ?? 0;
+  const currentEpochKey = epochKeys.get(currentEpoch) ?? null;
+
   const session = await createApplicationSession({
     device,
     definition: builtinDefinition(),
     authority,
     ...(isSql ? {
-      createMaterializer: async ({ rootPrincipal }: { rootPrincipal: string }) => createEphemeralSqlMaterializer(rootPrincipal),
+      createMaterializer: async ({ rootPrincipal }: { rootPrincipal: string }) => createEphemeralSqlMaterializer(rootPrincipal, {
+        initialBytes: initialSqlBytes,
+        onCloseBytes: async bytes => {
+          if (!currentEpochKey || bytes.byteLength > MAX_SQL_CHECKPOINT_BYTES) return;
+          if (latestEnvelopeCount < checkpointThreshold || latestEnvelopeCount <= loadedCheckpointCount) return;
+          const sealed = await sealSqlCheckpoint(currentEpochKey, applicationId, currentEpoch, latestEnvelopeCount, bytes);
+          const copy = new Uint8Array(sealed.byteLength);
+          copy.set(sealed);
+          t.db.run('INSERT INTO mcp_store(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v', checkpointKey, copy.buffer);
+        },
+      }),
     } : {}),
   } as any);
 
@@ -389,22 +428,29 @@ async function withHostedSession<T>(
     return await work({ session, domainBundle, isSql, roster: pageAgents(t) });
   } finally {
     // Export newly authored encrypted envelopes into shared `envelope/` retention (zero plaintext requests).
+    let addedEnvelopes = 0;
     try {
       for (const [k, rawJournal] of store.entries()) {
         if (k !== journalSuffix && !k.endsWith('/' + journalSuffix)) continue;
         const journal = decodeRecord<any>(rawJournal);
         const envelopes = Array.isArray(journal?.envelopes) ? journal.envelopes : [];
+        if (envelopes.length > latestEnvelopeCount) latestEnvelopeCount = envelopes.length;
         for (const envelope of envelopes) {
           const id = envelope?.payload?.proposalId;
           if (typeof id === 'string' && /^[a-f0-9]{64}$/u.test(id)) {
-            const bytes = encodeRecord(envelope);
-            const copy = new Uint8Array(bytes.byteLength);
-            copy.set(bytes);
-            t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + id, copy.buffer);
+            if (!hydratedSeen.has(id)) {
+              const bytes = encodeRecord(envelope);
+              const copy = new Uint8Array(bytes.byteLength);
+              copy.set(bytes);
+              t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + id, copy.buffer);
+              hydratedSeen.add(id);
+              addedEnvelopes++;
+            }
           }
         }
       }
     } catch { /* Journal export best-effort */ }
+    if (addedEnvelopes > 0) notifyMcpSyncWatchers(t);
     try { await session.close(); } catch { /* ignore */ }
     epochKeys.clear();
   }
