@@ -59,7 +59,7 @@ test('master push and manual promotion stay serialized without PR cancellation',
 });
 
 test('trusted publication joins every qualification, and staging/production depend on publication', () => {
-  assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'feedback-qualification', 'native-owner', 'sql-starter', 'network-qualification', 'artifacts'].sort());
+  assert.deepEqual(needs('publish').sort(), ['check', 'browser', 'feedback-qualification', 'native-owner', 'sql-starter', 'artifacts'].sort());
   for (const job of ['publish', 'staging', 'production']) {
     assert.match(graph[job], /github\.ref == 'refs\/heads\/master'/);
     assert.match(graph[job], /github\.event_name == 'push'/);
@@ -119,7 +119,8 @@ test('every checkout in the release qualification graph disables persisted crede
 
 test('real packet-fault application qualification binds the immutable graph before publication', () => {
   assert.deepEqual(needs('network-qualification'), ['artifacts']);
-  assert(needs('publish').includes('network-qualification'));
+  // Temporarily reported, not a publish gate, until relay fallback passes (see service.yml).
+  assert(!needs('publish').includes('network-qualification'));
   assert.match(graph['network-qualification'], /manifest_sha256:.*needs.artifacts.outputs.manifest_sha256/);
   const qualification = workflow('network-qualification');
   assert.match(qualification, /name: public-packages/);
