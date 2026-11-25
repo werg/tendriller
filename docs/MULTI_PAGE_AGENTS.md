@@ -1,7 +1,7 @@
 # Multi-page agents (design)
 
 One maintenance agent maintains many pages. It has one account-level identity
-and credential, runs one local program, and keeps one connection to the host
+and credential, runs one local page-owner program, and keeps one connection to the host
 for all control traffic. A single page is a workspace with one page.
 
 The workspace is the only model: one credential and one signing key per agent,
@@ -143,7 +143,7 @@ my-pages/
   an account-linked MCP `register_agent`.
 - `tendril page new <slug>` creates a page and its source folder.
 - `tendril page grant <slug> <page-id>` / `tendril page list` / `tendril status`.
-- `tendril agent run` is the only long-running local program: one hub
+- `tendril agent run` is the one workspace owner program: one hub
   connection, one Chronolog session per granted page (each with its own device
   store and the shared signer), one local socket for attach clients that name
   a page, one combined request/event stream with a cursor per page, automatic
@@ -157,3 +157,27 @@ my-pages/
 - A store pool serves many native stores from one worker thread.
 - `mergeSessionChanges(sessions)` combines change feeds with a cursor per
   application; the per-session exit listener is removed.
+
+## One conversation, several pages
+
+The workspace owner is not the interactive conversation's request handler.
+Its hub reconnects control streams, but it cannot by itself cause an ended
+Codex or ChatGPT turn to resume. Keep one receiver for the selected conversation
+when that is the user's goal; an extra agent per page changes that goal.
+
+Use [same-conversation delivery](CONVERSATION_DELIVERY.md) to select and qualify
+the actual host route. Preserve a handled cursor per application/history and
+stable request references; a combined stream's observed cursor map is not a
+record of handled work. Serialize receiver dispatch to the configured thread,
+not by waiting for its running turn to end: steer requests into the active Codex
+turn, and use queue/resume while idle or unloaded. Re-arm after bounded waits
+and recreate attachments after owner replacement. Verify a request from another
+page is injected into the same active turn before it finishes, then verify idle
+requests from both pages in that thread across turn ends.
+
+Bind [ephemeral presence](AGENT_REQUESTS.md) to each actual worker's lifetime and
+implemented topics. Several workers may share the agent signer, so browser
+presence selects `consumerId` and request topic as well as peer identity. Stop
+only the assistant worker and verify it becomes unavailable while the workspace
+owner and an unrelated fetch worker remain connected. Requests stay retained
+for later handling; connectivity never substitutes for receipt or answer.

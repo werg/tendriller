@@ -135,6 +135,26 @@ signed graph and retry only the original operation and bytes.
 Ctrl-C/SIGTERM on the agent program closes every page owner, then the hub and the
 attach socket. A failed cleanup or flush is nonzero.
 
+## Connect a request worker or conversation
+
+The workspace owner, an actual request worker and the surrounding conversation
+have separate lifetimes. A connected owner or `tendril watch --events` output
+does not start another conversation turn. Before promising that behavior, read
+the selected service's `/docs/CONVERSATION_DELIVERY.md` and qualify its exact host
+route in the same existing thread. The supplied `consumers/codex-queue.mjs`
+receiver steers a running Codex turn and uses queue/resume while idle or unloaded.
+Plain `codex queue` waits for a running turn to finish. Verify an incoming request
+is injected into the active turn before completion, then verify two idle wake
+requests across turn completion. Neither host admission nor a queue receipt
+proves the request was handled.
+
+Use `shared/helpers/agent-requests.mjs` for durable requests, receipts and answers,
+and worker-owned ephemeral presence. Only a worker handling the advertised topics
+may announce them. Match the intended peer, `consumerId` and request topic in the
+browser, and verify that stopping the worker removes its availability while the
+workspace owner stays connected. Keep per-page handled cursors with durable work;
+stdout/read cursors alone do not acknowledge handling.
+
 ## Adapt a page
 
 Keep device identity independent of titles: the page, pairing Worker and

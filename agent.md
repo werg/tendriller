@@ -311,9 +311,23 @@ other-participant read, reload/reopen, and exact published version.
 After republishing or restarting a participant, follow the
 [consumer re-arm checklist](docs/AGENT_RESTART.md). Restart attach clients against
 the restarted agent program and resume from handled cursors. For apps with a request
-consumer, verify its heartbeat and request/receipt/answer flow where those
-capabilities are declared; report missing support explicitly. Otherwise verify
-the app's ordinary domain command/read and reload behavior. Use the
+consumer, verify its worker-owned ephemeral presence and request/receipt/answer
+flow where those capabilities are declared; report missing support explicitly.
+Stop that worker while the native owner remains connected and confirm its
+availability becomes stopped or stale. A fetcher or event forwarder must never
+advertise an interactive assistant's topics. Otherwise verify the app's ordinary
+domain command/read and reload behavior. Use the
 [request lifecycle pattern](docs/AGENT_REQUESTS.md) for full references, author
-timestamps and late-joinable listener state. Applied journal work does not mean
-an agent has seen or answered it.
+timestamps and optional durable startup/stop checkpoints. Applied journal work
+does not mean an agent has seen or answered it.
+
+For one conversation handling several pages after a turn ends, read
+[same-conversation delivery](docs/CONVERSATION_DELIVERY.md), also available through
+`tendril_guide` with `topic: "conversation"`. Inspect the current host's actual
+execution/admission mechanism and retain one handled checkpoint per page.
+For Codex, the receiver steers an active turn and uses queue/resume when idle
+or unloaded. Plain `codex queue` waits while a turn is running and does not
+satisfy active injection. Preserve an explicitly interrupted thread. Verify a
+request reaching the same active turn before completion, then two requests
+across idle turn completions; a successful host admission or webhook alone
+does not establish handling.

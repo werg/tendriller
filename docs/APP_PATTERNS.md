@@ -278,13 +278,22 @@ It does not establish live pairing, replication or physical-phone behavior.
 
 ## Durable agent requests and listener status
 
-For work a native agent must consume, use the executable
-[request, receipt, answer and heartbeat pattern](AGENT_REQUESTS.md). It retains
-full operation references, author timestamps and last-seen consumer records for
-late-joining pages. Show saved/applied journal state separately from seen/answered
-work, and keep stale listener status visible on the request. An attached peer is
-not evidence of a running consumer. After a release or owner replacement, follow
-the [consumer restart checklist](AGENT_RESTART.md).
+For work an agent must consume, use the executable
+[request, receipt, answer and worker-presence pattern](AGENT_REQUESTS.md). It retains
+full operation references, author timestamps, durable receipts and answers.
+Ephemeral presence belongs to the actual handler's lifetime and implemented topics;
+optional durable startup/stop checkpoints remain separate. Match the intended
+consumer/topic as well as peer identity when several workers share a signer.
+
+Show saved/applied journal state separately from seen/answered work, and keep
+stopped/stale worker status visible. Verify that stopping only the worker removes
+its availability while the native owner stays connected. After a release or owner
+replacement, follow the [consumer restart checklist](AGENT_RESTART.md). If the
+existing conversation must receive requests while working or after its turn
+ends, additionally qualify the actual host through
+[same-conversation delivery](CONVERSATION_DELIVERY.md). For Codex this includes
+injection into the active turn as well as idle wake; deferred queue admission
+alone does not satisfy the active case.
 
 ## 1. A coherent live query
 

@@ -110,17 +110,32 @@ Verify a relevant query. Execute a write when requested and verify its applied
 result with a fresh read. Retain original operation IDs and inputs for uncertain
 retries. If the app is offline, resume its enrolled participant from the existing
 device store. Use `read_application_events` to catch up and keep its cursor.
-Verify a supported subscription before promising future background delivery;
-a page or mounted card does not guarantee a future wake of this conversation.
+For page requests to the same conversation, during a turn or while idle, read `tendril_guide` with
+`topic: "conversation"` (or the same-origin `/docs/CONVERSATION_DELIVERY.md`).
+Inspect the current host's subscription or exact existing-thread execution
+mechanism, authentication and owner-approved event. Use its retained thread
+binding and per-page handled checkpoints; never choose the latest thread or a
+new agent per page as a substitute. For Codex, inspect current thread state:
+use the verified steering route for an active turn and queue/resume for idle or
+unloaded state. Plain `codex queue` waits while a turn runs and does not satisfy
+active delivery. Respect explicit interruption. Verify a request injected into
+the same active turn before completion, then a request after the turn ends and
+another after the answering turn ends, with durable receipts and answers. A missing subscription tool, reauthentication or
+refused thread admission leaves that stage unqualified; retain pending requests.
+A connected page owner, event forwarder or mounted card alone does not establish
+future conversation wake.
 
 After a republish or participant restart, read the returned service origin's
 `/docs/AGENT_RESTART.md`. Reconnect attach clients to the restarted agent program, preserve
 handled cursors and exact pending inputs. For apps with a request consumer, verify
-heartbeat and request/receipt/answer behavior only through its declared capabilities;
-report missing support instead of inventing commands. For other apps, verify a
-domain command/read and reload. Use `/docs/AGENT_REQUESTS.md` for durable listener
-presence and addressed answers; applied journal state does not establish that an
-agent has read the request.
+worker-owned ephemeral presence and request/receipt/answer behavior only through
+its declared capabilities; report missing support instead of inventing commands.
+Bind presence to the actual handler's lifetime and implemented topics. Select
+its peer, `consumerId` and request topic in the browser. Stop only that worker
+while the native owner remains connected and confirm the assistant becomes
+stopped/stale. For other apps, verify a domain command/read and reload. Use
+`/docs/AGENT_REQUESTS.md` for this pattern and optional durable lifecycle
+checkpoints; applied journal state does not establish that an agent read work.
 
 For sign-in and linking recovery, use the returned service origin's
 `/docs/CHATGPT_INTEGRATION.md`. Users can revoke account access at

@@ -7,6 +7,7 @@ export async function mountConnectedAgentChat({
   runtime = window.tendril,
   session,
   peer,
+  consumerId,
   container,
   title = 'Assistant',
   layout = container ? 'embedded' : 'dock',
@@ -116,6 +117,8 @@ export async function mountConnectedAgentChat({
 
   const presence = watchAgentPresence(session, {
     peer,
+    consumerId,
+    requestTopic: topic,
     signal: lifetime,
     onChange(snap) {
       const status = snap.status === 'available' ? 'online'

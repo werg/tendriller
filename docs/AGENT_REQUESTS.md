@@ -175,49 +175,145 @@ const request = { ...event.payload,
 Use this mapping only for `agent/request` events from the intended history;
 filter by recipient and implemented topic before accepting work.
 
-## Live presence and streaming previews (preferred, zero durable writes)
+## Live presence belongs to the actual worker
 
 Peer connectivity only says an enrolled participant is reachable. It does not say
 whether its agent loop is actively handling requests or currently thinking.
-**Do not write periodic durable `agentHeartbeat` records every 30 seconds**—that
-adds ~120 signed journal entries per hour and burns through history quotas even
-while idle.
+When the native page owner, an event forwarder and the interactive request worker
+are separate, **only the actual handler may advertise its implemented topics**.
+An owner that fetches mail cannot advertise `chat` on behalf of a stopped
+assistant. A one-shot waiter is not an active assistant either.
 
-Instead, use the ephemeral signal helpers in `shared/helpers/agent-requests.mjs`:
+Use the ephemeral signal helpers in `shared/helpers/agent-requests.mjs`. They
+write zero durable Chronolog records. Start them only after the worker has made
+its first successful read, bind their signal to that worker's lifetime, and close
+them in its `finally`. This wrapper illustrates the ownership boundary:
 
 ```js
-// Native agent process: broadcasts presence ONLY while a peer is connected and
-// responds immediately to on-demand pings. Writes zero durable Chronolog records.
-import { announceAgentPresence, streamAgentReply } from '../../shared/helpers/agent-requests.mjs';
+import { announceAgentPresence } from '../../shared/helpers/agent-requests.mjs';
 
-const presence = announceAgentPresence(session, {
-  consumerId: 'ops-agent', role: 'Operations assistant', topics: ['chat'],
-});
-// While generating an answer, mark busy and stream live previews:
-presence.setState('busy');
-await streamAgentReply(session, {
-  requestAuthor: req.requestAuthor, requestOperationId: req.requestOperationId,
-  text: partialReply,
-});
-// Then commit the final durable agentAnswer and clear the stream:
-await streamAgentReply(session, {
-  requestAuthor: req.requestAuthor, requestOperationId: req.requestOperationId,
-  text: '', done: true,
-});
-presence.setState('listening');
+// Call inside the actual worker after its first successful inbox read.
+// handleRequests runs that worker's real loop and implements every listed topic.
+export async function whileHandlingRequests(session, { workerSignal, handleRequests }) {
+  const presence = announceAgentPresence(session, {
+    consumerId: 'ops-agent', role: 'Operations assistant', topics: ['chat'],
+    signal: workerSignal,
+  });
+  try {
+    await handleRequests({ signal: workerSignal, presence });
+  } finally {
+    await presence.close(); // Stop even if handling fails; leave the page owner alive.
+  }
+}
 ```
 
-On the browser side, `watchAgentPresence(session, { peer, onChange })` subscribes
-with `mode: 'latest', includeLatest: true` and sends an immediate ping on connect,
-so late-joining pages see live availability (`available`, `busy`, `stale`, `stopped`)
-right away without any durable writes. `watchAgentStream` feeds live thinking
-previews directly into `mountAgentChat.setStreamingReply(...)`.
+`handleRequests` above is the application's worker loop, not a Tendriller API.
+For a runnable implementation with actual reads, durable checkpoints, receipts,
+answers and automatic presence cleanup, use the worker below. It avoids placing
+an availability timer in the long-running native owner or event exporter.
+
+Several attached workers can share one authenticated signer. Select the intended
+consumer and implemented request topic in the browser as well as its peer:
+
+```js
+import { watchAgentPresence } from '../../shared/helpers/agent-requests.mjs';
+
+const observer = watchAgentPresence(session, {
+  peer: nativeDeviceId, consumerId: 'ops-agent', requestTopic: 'chat',
+  onChange: presence => renderAssistantAvailability(presence),
+});
+// Close the observer when this view is disposed.
+```
+
+The observer's `available`, `busy`, `stale` and `stopped` values are liveness
+hints. They do not acknowledge a request or establish future conversation wake.
+Keep a native transport indicator separate from the intended worker's indicator.
+A graceful worker exit can publish stopped; a crash must age to stale while the
+native peer remains connected. A fetch worker's signals must not refresh the
+assistant's indicator. Test this split-process failure explicitly.
+
+Inside an active handler, `presence.setState('busy')` and `streamAgentReply`
+can show transient progress. `watchAgentStream` supplies previews to
+`mountAgentChat.setStreamingReply(...)`. Commit the final durable `agentAnswer`
+before clearing its preview, and return to listening only if the worker will
+continue handling requests. Streaming and presence never replace durable answers.
+
+Presence defaults to a 15-second announcement interval and a 30-second signed
+lifetime, within the public session's default signal limit. Workers use distinct
+signal streams, and observers respect the signed expiry as well as their local
+freshness bound. A late retained frame never starts another full lifetime.
+
+## Run a supervised consumer with a handled checkpoint
+
+The starter ships `consumers/request-worker.mjs` and
+`shared/helpers/agent-consumer.mjs`. The worker attaches to the existing page
+owner, handles the request pattern's declared commands and query, and scopes its
+private checkpoint to the selected application/history, consumer and topics.
+It never opens a second signer or modifies an existing application's definition.
+
+In a workspace whose page already declares `agentRequest`, `agentReceipt`,
+`agentAnswer` and `agentInbox`, keep `npm run agent` running, then run:
+
+```sh
+node consumers/request-worker.mjs --workspace /absolute/workspace \
+  --page requests --consumer assistant --topics '["chat"]' \
+  --checkpoint /private/assistant.json --echo
+```
+
+`--echo` is a harmless runnable example: a real addressed `chat` request receives
+a durable receipt and an echo answer. It verifies consumption and restart, not
+LLM execution or an existing conversation wake. For application work, replace
+`--echo` with `--handler /absolute/handler.mjs`; that module exports
+`handleRequest(request, { signal, idempotencyKey })` and returns a nonempty
+answer string of at most 8,000 characters. Honor cancellation and use the retained
+key and provider receipts to reconcile external effects. The worker persists a
+`handling` marker before invoking the handler; a crash or failure there stops
+with `AGENT_CONSUMER_REVIEW_REQUIRED` on resume rather than repeating a possibly
+completed external effect.
+
+Run one logical handler for each recipient/topic. The checkpoint lock protects
+one file; it is not a distributed claim between workers using different files.
+On a deliberate first scan, the worker checks the current inbox and skips requests
+that already have durable answers. Keep the checkpoint private and persistent.
+Exact prepared receipt/answer inputs
+and work results survive restarts; the handled cursor advances after durable
+handling. A crash before checkpointing can redeliver work without changing its
+answer operation or input. Recovery and a checkpoint for a different scope stop
+for review. Never edit a cursor merely to make pending work disappear. The
+checkpoint has an exclusive `.lock`; after an abrupt kill, verify the previous
+worker is gone and reconcile pending work before removing a stale lock. The
+runner never steals a lock or starts a second checkpoint owner.
+
+Startup, handler, recovery and owner-loss failures exit nonzero. SIGINT/SIGTERM
+performs normal cleanup after attachment; the native page owner remains running.
+
+Use a bounded supervisor such as an existing user service with
+`Restart=on-failure`, `RestartSec=3`, `StartLimitIntervalSec=120` and
+`StartLimitBurst=6`. Supervise the worker command, not a one-shot `events` reader.
+Report exhausted retries and recovery/uncertain-effect stops; resolve their
+cause before restarting. Retain the owner and worker process identities
+separately. [Restart guidance](AGENT_RESTART.md) explains reattachment and
+recovered-cursor review.
+
+Verify a first request, stop only this worker with the native owner still
+connected, and submit a second request. The worker indicator must become stopped
+or stale; the second request remains awaiting acknowledgement. Restart with the
+same checkpoint and confirm its receipt/answer. For conversation delivery, also
+perform the [host rehearsal](CONVERSATION_DELIVERY.md#two-request-same-conversation-rehearsal):
+verify an incoming Codex request reaches the currently active turn before it
+ends, then verify two idle wake requests across successive turn completions.
+Steering or queue acceptance remains separate from the durable receipt/answer.
 
 ## Optional durable listener checkpoints
 
 If an application specifically requires an auditable durable record of when a
-consumer started or stopped (not a periodic timer), `agentHeartbeat` remains
-available as an occasional lifecycle command (`state: 'listening'` on startup,
-`state: 'stopped'` on shutdown). Avoid sub-minute polling intervals so the journal
-stays lean; use `consumerPresence` with explicit wall-clock expiry when displaying
-durable checkpoints.
+consumer started or stopped, `agentHeartbeat` remains available as an occasional
+lifecycle command. The actual worker may record `state: 'listening'` after its
+first successful read and `state: 'stopped'` on shutdown; a native owner must not
+write those records on behalf of an absent worker.
+
+Do not write periodic durable heartbeats. Use ephemeral presence for live
+availability and `consumerPresence` with explicit wall-clock expiry when displaying
+historical lifecycle checkpoints. A past startup record is not proof that the
+worker is still running. Keep durable requests, receipts and answers separate
+from these optional diagnostic records.

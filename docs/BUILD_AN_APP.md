@@ -44,6 +44,20 @@ independent of titles: the page, pairing Worker and application Worker all impor
 or replace a retained browser store. Keep `configuration.page_url` from the page
 record; the service origin and the published page origin serve different roles.
 
+## Requests to the existing agent conversation
+
+If the app must reach this same Codex or ChatGPT conversation during work or
+after its current turn ends, qualify that route during setup with
+[same-conversation delivery](CONVERSATION_DELIVERY.md) (`tendril_guide`,
+`topic: "conversation"`). The workspace program owns page sessions; a request
+worker and the host's conversation receiver have separate lifetimes.
+Advertise only the active worker's handled topics, and keep requests pending
+when its route is unavailable. For Codex, verify that a request arriving during
+a running turn is injected into that active turn, then test idle wake and a
+second request after the answering turn ends. Plain `codex queue` waits for
+the current turn to finish; the receiver needs the verified steering route
+for active delivery. A running page owner or printed event establishes neither.
+
 ## The route and its checkpoints
 
 | Step | Do this | Evidence that it worked |

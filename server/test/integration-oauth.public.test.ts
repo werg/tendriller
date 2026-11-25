@@ -95,6 +95,7 @@ it('provides a complete public MCP onboarding route without browsing or account 
   const guideTool = catalog.body.result.tools.find((item: any) => item.name === 'tendril_guide');
   expect(guideTool.securitySchemes).toEqual([{ type: 'noauth' }]);
   expect(guideTool.inputSchema.properties.topic.enum).toContain('build');
+  expect(guideTool.inputSchema.properties.topic.enum).toContain('conversation');
   const readGuide = async (args: object = {}) => {
     const reply = await call('tools/call', { name: 'tendril_guide', arguments: args });
     expect(reply.response.status).toBe(200);
@@ -110,6 +111,8 @@ it('provides a complete public MCP onboarding route without browsing or account 
     guideUnavailableAction: expect.stringContaining(origin + '/.well-known/tendriller.json') });
   expect(start.readiness).toMatchObject({ serviceOrigin: origin, mode: 'open', creation: { available: true } });
   expect(start.setup.readinessUrl).toBe(origin + '/api/readiness');
+  expect(start.setup).toMatchObject({ conversationGuide: origin + '/docs/CONVERSATION_DELIVERY.md',
+    conversationWake: 'not-established', conversationNextAction: expect.stringContaining('same existing thread') });
   expect(start.text).toContain('Node 24');
   expect(start.text).toContain('register_agent');
   expect(start.text).toContain('tendril workspace adopt');
@@ -127,9 +130,9 @@ it('provides a complete public MCP onboarding route without browsing or account 
     expect(paused.text.indexOf('Stop new-app setup before downloading')).toBeLessThan(paused.text.indexOf('npm install'));
     expect(paused.text).not.toContain('https://tendriller.dev');
   } finally { await env.ACCOUNTS.prepare("UPDATE service_state SET mode='open' WHERE id=1").run(); }
-  for (const topic of ['capabilities', 'connect', 'delivery', 'troubleshooting']) {
+  for (const topic of ['capabilities', 'connect', 'delivery', 'conversation', 'troubleshooting']) {
     const guide = await readGuide({ topic });
-    expect(guide.url).toBe(origin + '/docs/' + ({ capabilities: 'CAPABILITIES', connect: 'CLOUDFLARE_ASSISTANT', delivery: 'AGENT_DELIVERY', troubleshooting: 'TROUBLESHOOTING' } as Record<string, string>)[topic] + '.md');
+    expect(guide.url).toBe(origin + '/docs/' + ({ capabilities: 'CAPABILITIES', connect: 'CLOUDFLARE_ASSISTANT', delivery: 'AGENT_DELIVERY', conversation: 'CONVERSATION_DELIVERY', troubleshooting: 'TROUBLESHOOTING' } as Record<string, string>)[topic] + '.md');
     expect(guide.text.length).toBeGreaterThan(100);
   }
   const resources = await call('resources/list');

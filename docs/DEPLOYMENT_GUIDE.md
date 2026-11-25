@@ -137,3 +137,24 @@ launcher prove only template wiring and shutdown behavior; actual Linux, macOS,
 Windows, container, OAuth and remote transport deployments require their own
 recorded runs. Never label configured CI or an unexecuted template as a passed
 platform qualification.
+
+## Supervise request workers and conversation receivers separately
+
+The workspace's native owner keeps application sessions alive. An actual
+request worker and a Codex/ChatGPT conversation receiver each need their own
+verified lifetime, restart policy and private retained state. Use the
+[runnable request worker](AGENT_REQUESTS.md#run-a-supervised-consumer-with-a-handled-checkpoint)
+for worker-owned ephemeral presence, exact receipt/answer retries and a handled
+checkpoint. Stop only that worker and verify the assistant becomes stopped/stale
+while the native owner stays connected.
+
+For requests to the same existing conversation after a turn ends, use
+[same-conversation delivery](CONVERSATION_DELIVERY.md). The supplied multi-page
+Codex receiver targets an exact thread through an explicitly selected daemon.
+It steers a running turn and uses queue/resume while idle or unloaded. Plain
+`codex queue` waits while a turn runs, so deploying only that command does not
+satisfy active injection. Steer/queue admission still requires observed handling
+and durable-answer qualification in the intended thread.
+Keep uncertain admission/effect records and stop for reconciliation rather than
+allowing a supervisor to repeat them. A one-shot waiter that exits normally
+requires explicit re-arming; `Restart=on-failure` alone does not keep it armed.
