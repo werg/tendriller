@@ -34,6 +34,33 @@ export function authenticatedRouteMatches(value, kind, afterRevision) {
   return value.kind === kind && (afterRevision === undefined || value.connectionRevision > afterRevision);
 }
 
+/** Serialized into the participant; intentionally contains no module-local references.
+ * The snapshot joins two owners: the session's authenticated link set, whose
+ * revision changes as soon as a link authenticates, and the participation
+ * controller's route kind, which it records only after that link is handed back.
+ * Re-check on either owner's change, or a route recorded after the session's last
+ * change (e.g. a relay that is slower to finish its first facts) is never seen. */
+export function awaitAuthenticatedRoute({ session, participation, snapshot, matches, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    let stopped = false, checking = false, again = false, revision = -1, participationRevision = -1;
+    const removers = [];
+    const finish = (error, value) => { if (stopped) return; stopped = true; clearTimeout(timer); for (const remove of removers) remove(); error ? reject(error) : resolve(value); };
+    const check = async () => {
+      if (stopped) return;
+      if (checking) { again = true; return; }
+      checking = true;
+      try { const value = await snapshot(); if (matches(value)) finish(null, value); }
+      catch (error) { finish(error); }
+      finally { checking = false; if (again) { again = false; void check(); } }
+    };
+    const timer = setTimeout(() => finish(Error('NETWORK_QUALIFICATION_ROUTE_TIMEOUT')), timeoutMs);
+    removers.push(session.onStatus(status => { if (status.connectionRevision !== revision) { revision = status.connectionRevision; void check(); } }));
+    const unsubscribe = participation.onStatus?.(status => { if (status.connectionRevision !== participationRevision) { participationRevision = status.connectionRevision; void check(); } });
+    if (typeof unsubscribe === 'function') removers.push(unsubscribe);
+    void check();
+  });
+}
+
 export function memoryAvailableGb(read = readFileSync) {
   try {
     const value = /^MemAvailable:\s+(\d+)\s+kB\s*$/m.exec(read('/proc/meminfo', 'utf8'));
@@ -187,21 +214,8 @@ export async function openPage(context) {
           assert.ok(['direct', 'relay', 'unknown'].includes(request.kind));
           assert.ok(request.afterRevision === undefined || Number.isSafeInteger(request.afterRevision) && request.afterRevision >= 0);
           const matches = ${authenticatedRouteMatches.toString()};
-          return new Promise((resolve, reject) => {
-            let stopped = false, checking = false, again = false, revision = -1, remove = () => {};
-            const finish = (error, value) => { if (stopped) return; stopped = true; clearTimeout(timer); remove(); error ? reject(error) : resolve(value); };
-            const check = async () => {
-              if (stopped) return;
-              if (checking) { again = true; return; }
-              checking = true;
-              try { const value = await snapshot(); if (matches(value, request.kind, request.afterRevision)) finish(null, value); }
-              catch (error) { finish(error); }
-              finally { checking = false; if (again) { again = false; void check(); } }
-            };
-            const timer = setTimeout(() => finish(Error('NETWORK_QUALIFICATION_ROUTE_TIMEOUT')), 55000);
-            remove = session.onStatus(status => { if (status.connectionRevision !== revision) { revision = status.connectionRevision; void check(); } });
-            void check();
-          });
+          return (${awaitAuthenticatedRoute.toString()})({ session, participation: owner.participation, snapshot,
+            matches: value => matches(value, request.kind, request.afterRevision), timeoutMs: 55000 });
         }
         case 'setup-ready': {
           const before = setupReadiness.snapshot(), started = performance.now();

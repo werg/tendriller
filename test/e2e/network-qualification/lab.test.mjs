@@ -6,7 +6,7 @@ import { runNetworkScenario } from './scenarios.mjs';
 import { observeIdleDuration, progressWriter } from './idle-progress.mjs';
 import { releaseAnchor, selectedProductVersion, sha256 } from './anchor.mjs';
 import { currentOperationApplied, assertHiddenDirectPath } from './first-app.mjs';
-import { authenticatedTransportSnapshot, authenticatedRouteMatches } from '../../../scripts/first-app-peer.mjs';
+import { authenticatedTransportSnapshot, authenticatedRouteMatches, awaitAuthenticatedRoute } from '../../../scripts/first-app-peer.mjs';
 import { prepareMountTargets } from './mounts.mjs';
 import { createBrowserNetworkControls } from './browser-controls.mjs';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, symlink } from 'node:fs/promises';
@@ -403,4 +403,28 @@ test('release anchor rejects symlink artifacts even when external bytes match th
   await writeFile(join(root, 'external-manifest.json'), JSON.stringify(manifest));
   await symlink('../external-manifest.json', join(root, 'dist/manifest.json'));
   await assert.rejects(releaseAnchor(root), /regular file/);
+});
+
+test('a route recorded after the session link authenticates still satisfies the wait', async () => {
+  // Kernel order: the session counts the authenticated relay link and bumps its
+  // revision first; participation records the route kind only once the link's
+  // first facts are sent and the link is handed back.
+  const sessionListeners = new Set(), participationListeners = new Set(), links = [], routes = [];
+  const session = { status: { connectionRevision: 4 }, diagnostics: async () => links,
+    onStatus(listener) { sessionListeners.add(listener); listener(session.status); return () => sessionListeners.delete(listener); } };
+  const participation = { status: { connectionRevision: 2 }, diagnostics: async () => routes,
+    onStatus(listener) { participationListeners.add(listener); listener(participation.status); return () => participationListeners.delete(listener); } };
+  const snapshot = () => authenticatedTransportSnapshot(participation, 'browser', session);
+  const waiting = awaitAuthenticatedRoute({ session, participation, snapshot, timeoutMs: 1000,
+    matches: value => authenticatedRouteMatches(value, 'relay', 4) });
+  links.push({ peerId: 'browser', sentReliableBytes: 1, receivedReliableBytes: 1 });
+  session.status = { connectionRevision: 5 }; for (const listener of sessionListeners) listener(session.status);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  routes.push({ peerId: 'browser', kind: 'relay', reason: 'direct_timeout' });
+  participation.status = { connectionRevision: 3 }; for (const listener of participationListeners) listener(participation.status);
+  const value = await waiting;
+  assert.equal(value.kind, 'relay'); assert.equal(value.connectionRevision, 5);
+  assert.equal(sessionListeners.size + participationListeners.size, 0, 'the wait releases both subscriptions');
+  await assert.rejects(awaitAuthenticatedRoute({ session, participation, snapshot, timeoutMs: 50, matches: value => authenticatedRouteMatches(value, 'direct') }),
+    /NETWORK_QUALIFICATION_ROUTE_TIMEOUT/);
 });
