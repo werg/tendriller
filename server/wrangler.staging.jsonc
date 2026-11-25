@@ -27,6 +27,10 @@
       {
         "name": "ADMISSION",
         "class_name": "Admission"
+      },
+      {
+        "name": "AGENT_HUB",
+        "class_name": "AgentHub"
       }
     ]
   },
@@ -36,6 +40,12 @@
       "new_sqlite_classes": [
         "Tendril",
         "Admission"
+      ]
+    },
+    {
+      "tag": "agent-hub",
+      "new_sqlite_classes": [
+        "AgentHub"
       ]
     }
   ],

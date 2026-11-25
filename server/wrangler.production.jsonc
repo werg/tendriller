@@ -27,11 +27,16 @@
       {
         "name": "ADMISSION",
         "class_name": "Admission"
+      },
+      {
+        "name": "AGENT_HUB",
+        "class_name": "AgentHub"
       }
     ]
   },
   "migrations": [
-    { "tag": "baseline", "new_sqlite_classes": ["Tendril", "Admission"] }
+    { "tag": "baseline", "new_sqlite_classes": ["Tendril", "Admission"] },
+    { "tag": "agent-hub", "new_sqlite_classes": ["AgentHub"] }
   ],
   "d1_databases": [
     {
