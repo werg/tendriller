@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { superviseParticipant } from '../../docs/tutorial/helpers/participant-lifecycle.mjs';
+import { superviseParticipant } from '../../docs/tutorial/shared/participant-lifecycle.mjs';
 import { watchApplicationSetup } from '../../contract/setup-watch.mjs';
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const approved = (revision = 'approval-1') => ({ type: 'setup', version: 1, assistant: { proposalId: 'a'.repeat(64), approved: true, revision } });
@@ -203,16 +203,17 @@ test('a missing application keeps reporting setup failures without closing the c
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let probes = 0, ended = false;
   const f = fixture({ watch: callbacks => watchApplicationSetup({
-    api: 'https://service.example/api/t/aaaaaaaaaaaa', token: 'tk_' + 'a'.repeat(32), ...callbacks,
+    page: { socket() { throw Error('unused'); }, async request() {
+      probes++; throw Object.assign(Error('No such tendril'), { status: 404, code: 'not_found' });
+    } }, ...callbacks,
     openSocket() { throw Error('upgrade rejected'); },
-    fetcher: async () => { probes++; return Response.json({ error: { code: 'not_found', message: 'No such tendril' } }, { status: 404 }); },
   }) });
   f.lifecycle.done.then(() => { ended = true; });
   await flush(); t.mock.timers.tick(1000); await flush();
   const failures = f.reports.filter(x => x.setup?.state === 'application_not_found');
   assert.equal(probes, 2); assert.equal(failures.length, 2); assert.equal(ended, false);
   assert.deepEqual(failures.map(x => x.setup.retryInMs), [1000, 2000]);
-  assert(failures.every(x => /Recreate the application/.test(x.setup.next)));
+  assert(failures.every(x => /tendril page new/.test(x.setup.next)));
   assert(!f.reports.some(x => x.state === 'setup_channel_closed' || x.setup?.state === 'access_revoked'));
   assert(!JSON.stringify(f.reports).includes('Restore this retained host credential'));
   await f.lifecycle.close(); assert.equal(ended, true);

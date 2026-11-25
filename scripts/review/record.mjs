@@ -14,10 +14,10 @@ import { preflightReviewDeployment, reviewProvenance } from './preflight.mjs';
 export async function recordReview({ project, accessPath, output, composition, video = true, frameMs = 1500 }) {
   project = resolve(project); output = resolve(output);
   const access = readReviewAccess(accessPath), handle = JSON.parse(readFileSync(resolve(project, '.private/handle.json')));
-  assert.equal(new URL(handle.api).origin, access.origin);
+  assert.equal(handle.service, access.origin);
   const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   // The SDK and verifier use the same installed public archives as the native fixture.
-  const { core: { createClient }, session: { verifyAuthorityBundle, verifyPublicationManifest } } = await importReviewPackages(project);
+  const { core: { createAgentClient }, session: { verifyAuthorityBundle, verifyPublicationManifest } } = await importReviewPackages(project);
   const definition = JSON.parse(readFileSync(new URL('../../plugin/plugin.json', import.meta.url)));
   const cases = definition.extensions['com.openai'].review.test_cases;
   assert.equal(cases.positive.length, 6, 'Update the qualification when packaged cases change');
@@ -78,7 +78,7 @@ export async function recordReview({ project, accessPath, output, composition, v
       return { queries: value.queries.map(item => item.name), commands: value.commands.map(item => item.name), events: value.events.map(item => item.name), provider: value.provider };
     });
     await positive(2, async () => { const value = await query(); assert.equal(value.find(item => item.id === 'check-labels').complete, false); return value; });
-    const host = createClient(handle, { applicationId: app.applicationId });
+    const host = createAgentClient({ service: handle.service, token: handle.token }).page(handle.id, { applicationId: app.applicationId });
     const originalPublication = (await readWithAdmissionRetry(() => host.peers.publication())).publication.id;
     await page.goto(handle.page_url); await page.getByText('Incomplete · Check labels', { exact: true }).waitFor();
     if (video && frameMs) await new Promise(done => setTimeout(done, frameMs));

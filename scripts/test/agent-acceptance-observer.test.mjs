@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import * as p from '@chronolog/peer-session';
 import { openNativeDevice, openNativeApplication } from '@chronolog/peer-session/native';
-import { definition } from '../../docs/tutorial/domain.mjs';
+import { definition } from '../../docs/tutorial/templates/notes/domain.mjs';
 import { sessionMeasurement, verifySignedOperation, nativeMeasurement, probe } from '../agent-acceptance/observer-native.mjs';
 import { StarterObserver, verifyBrowserPublication } from '../agent-acceptance/observer.mjs';
 import { loadObserverConfig, publicationAddress } from '../agent-acceptance/observer-data.mjs';
@@ -163,7 +163,7 @@ test('native probe is a bounded real subprocess using existing app module and in
   writeFileSync(join(f.project, 'node_modules/@tendriller/core/index.mjs'), 'export const hostFixtureUnusedByNativeProbe = true;');
   writeFileSync(join(f.project, 'session.mjs'), `import {readFileSync} from 'node:fs';
 import {openNativeDevice,openNativeApplication} from '@chronolog/peer-session/native';
-import {definition} from ${JSON.stringify(new URL('../../docs/tutorial/domain.mjs', import.meta.url).href)};
+import {definition} from ${JSON.stringify(new URL('../../docs/tutorial/templates/notes/domain.mjs', import.meta.url).href)};
 export async function attachSession(){const device=await openNativeDevice({path:new URL('./device.sqlite',import.meta.url).pathname});
  const session=await openNativeApplication({device,definition,authority:JSON.parse(readFileSync(new URL('./authority.json',import.meta.url)))});
  return {session,detach:()=>session.close()};}`);

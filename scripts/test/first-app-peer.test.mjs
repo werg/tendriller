@@ -14,7 +14,7 @@ async function participant(t, { failInference = false, failPairing = false, orph
   const calls = join(directory, 'cleanup-calls');
   await mkdir(join(directory, 'media'));
   await mkdir(join(directory, 'helpers'));
-  await copyFile(new URL('../../docs/tutorial/helpers/participant-lifecycle.mjs', import.meta.url),join(directory,'helpers/participant-lifecycle.mjs'));
+  await copyFile(new URL('../../docs/tutorial/shared/participant-lifecycle.mjs', import.meta.url),join(directory,'helpers/participant-lifecycle.mjs'));
   await writeFile(join(directory, 'session.mjs'), `import {appendFile} from 'node:fs/promises';
 export async function openSession() {
   const resource = setInterval(() => {}, 1000);

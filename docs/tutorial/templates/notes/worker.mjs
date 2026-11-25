@@ -1,4 +1,4 @@
-import { browserProfileId } from './helpers/browser-profile.mjs';
+import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { verifyAuthorityBundle } from '@chronolog/peer-session';
 import { openBrowserDevice, openBrowserApplication } from '@chronolog/peer-session/worker';
 import { createPeersClient } from '@tendriller/core/peers';

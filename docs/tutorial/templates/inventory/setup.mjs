@@ -1,39 +1,23 @@
+// Explicit first setup of this SQL page. Run through the workspace:
+//   npm run init -- <slug>            npm run enroll -- <slug> BROWSER_PUBLIC_KEY
+// Requires the SQL-capable Chronolog archives (--sql-native, --sql-browser).
 import { randomBytes, randomUUID } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
-import { createPage, describeService, requireService, requireServiceOrigin, describeReadiness, requireCreationReady } from '@tendriller/core';
 import { bytesDigest, describeApplication, participantGrant, signTransitionRequest, verifyAuthorityBundle } from '@chronolog/peer-session';
-import { openNativeDevice } from '@chronolog/peer-session/native';
 import { definition } from './domain.mjs';
 import { createNativeEngine } from './engine.mjs';
-import { databasePath, devicePath, project, readPrivate, savePrivate, requireFreshProject } from './local.mjs';
 
-export async function createProject(service, owner, name = 'Shared inventory') {
-  if (!service || !owner) throw Error('Usage: npm run create -- https://YOUR_HOST VERIFIED_OWNER_EMAIL "Shared inventory"');
-  const origin = requireServiceOrigin(service);
-  const existing = await readPrivate('handle.json', true);
-  if (existing) {
-    if (new URL(existing.api).origin !== origin) throw Object.assign(Error('The saved handle belongs to another service origin. Resume it only with its matching connector, or use a separate directory for the requested service; never copy private device state between services.'), { code: 'service_origin_mismatch' });
-    return { serviceOrigin: origin, page_url: existing.page_url, resumed: true, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
-  }
-  await requireFreshProject();
-  requireCreationReady(await describeReadiness(origin), { service: origin });
-  requireService(await describeService(origin));
-  // Load optional native code only after same-origin readiness and compatibility
-  // pass, but diagnose its absence before creating any hosted page.
-  await createNativeEngine();
-  // A checkpoint restored during readiness or engine loading still prevents
-  // allocating a replacement page for this private application directory.
-  await requireFreshProject();
-  const handle = await createPage(origin, { owner, name });
-  await savePrivate('handle.json', handle);
-  return { serviceOrigin: origin, page_url: handle.page_url, next: 'Run npm run init now and prepare/publish the app while the owner signs in; do not wait for a claimed reply.' };
-}
+/** The page's materialized SQL database lives beside its device store. */
+export const databasePathOf = context => context.privatePath('materialized.sqlite');
 
-export async function initializeProject() {
-  const { handle, host } = await project();
-  if (await readPrivate('initialized.json', true)) return { initialized: true, next: 'npm run demo' };
-  // Explicit first setup may create a signer. All normal opens omit create:true.
-  const device = await openNativeDevice({ path: devicePath, create: true });
+/** Load the native engine before any page is created, so a missing engine never leaves an unusable page. */
+export const preflight = () => createNativeEngine();
+
+export async function initializePage(context) {
+  const { page, host } = context, readPrivate = context.readPrivate, savePrivate = context.savePrivate;
+  const databasePath = databasePathOf(context);
+  if (await readPrivate('initialized.json', true)) return { initialized: true, next: `npm run agent, then npm run demo -- ${page.slug}` };
+  // Only this first setup may create the page device; normal opens omit create.
+  const device = await context.openDevice({ create: true });
   let session;
   try {
     let initial = await readPrivate('initial-input.json', true);
@@ -45,7 +29,7 @@ export async function initializeProject() {
     const { prepareSqlApplication, openSqlApplication } = await import('@chronolog/peer-session/sql');
     let prepared = await readPrivate('schema.json', true);
     if (!prepared) prepared = await savePrivate('schema.json', await prepareSqlApplication({
-      engine, applicationId: handle.application.id, definition, schemaAdministrator: device.identity,
+      engine, applicationId: page.applicationId, definition, schemaAdministrator: device.identity,
     }));
     const configuration = {
       historyId: initial.historyId, definition: describeApplication(definition), schema: prepared.schema,
@@ -56,7 +40,7 @@ export async function initializeProject() {
     // The host accepts an exact configuration retry and rejects changed inputs.
     let authority = await host.peers.configureApplication(configuration);
     await verifyAuthorityBundle(authority);
-    if (authority.descriptor.payload.applicationId !== handle.application.id) throw Error('Unexpected application identity.');
+    if (authority.descriptor.payload.applicationId !== page.applicationId) throw Error('Unexpected application identity.');
     const pinned = await readPrivate('descriptor.json', true);
     if (pinned) await verifyAuthorityBundle(authority, pinned);
     else await savePrivate('descriptor.json', authority.descriptor);
@@ -82,15 +66,18 @@ export async function initializeProject() {
     // Activate durable storage and persist the creator's keyring without a domain query.
     const view = await session.readView();
     try {
-      await savePrivate('initialized.json', { applicationId: handle.application.id, deviceId: session.deviceId });
-      return { initialized: true, applicationId: handle.application.id, revision: view.revision, next: 'npm run demo' };
+      // The running agent program opens this page once initialized.json exists.
+      await savePrivate('initialized.json', { applicationId: page.applicationId, deviceId: session.deviceId });
+      return { initialized: true, applicationId: page.applicationId, revision: view.revision, next: `npm run agent, then npm run demo -- ${page.slug}` };
     } finally { view.release(); }
   } finally { if (session) await session.close(); else await device.close(); }
 }
 
-export async function enrollBrowser(publicKey) {
+/** Manual enrollment of one browser key. Stop `tendril agent run` first: it owns this page's device store. */
+export async function enrollBrowser(context, publicKey) {
   if (!/^[a-f0-9]{64}$/.test(publicKey ?? '')) throw Error('Copy the 64-character public key displayed by your own browser.');
-  const { host } = await project(), descriptor = await readPrivate('descriptor.json');
+  const { host } = context, readPrivate = context.readPrivate, savePrivate = context.savePrivate, databasePath = databasePathOf(context);
+  const descriptor = await readPrivate('descriptor.json');
   const info = await host.info();
   if (typeof info.owner_account_id !== 'string') {
     throw Error('This host must expose authenticated info.owner_account_id; update the host before using this tutorial enrollment.');
@@ -101,16 +88,16 @@ export async function enrollBrowser(publicKey) {
     // Lost replies resend the exact signed request, grants and account binding.
     await host.peers.selectGeneration(previous.request, { control: previous.control });
     await verifyAuthorityBundle(await host.peers.application(), descriptor);
-    return { enrolled: publicKey, next: 'Run npm run peer, then open or reload the page; it connects by itself.' };
+    return { enrolled: publicKey, next: 'Start npm run agent, then open or reload the page; it connects by itself.' };
   }
   const authority = await host.peers.application();
   const verified = await verifyAuthorityBundle(authority, descriptor);
   if (verified.grant(publicKey)) throw Error('This device already has a grant. Inspect its current rights instead of replacing them.');
-  const device = await openNativeDevice({ path: devicePath });
+  const device = await context.openDevice();
   let session;
   try {
     if (verified.current?.payload.coordinator !== device.identity.publicKey) {
-      throw Error('Enrollment expects this local device to be the current coordinator. Inspect authority; do not select an older prefix.');
+      throw Error('Enrollment expects this workspace agent to be the current coordinator. Inspect authority; do not select an older prefix.');
     }
     const prepared = await readPrivate('schema.json');
     const { openSqlApplication } = await import('@chronolog/peer-session/sql');
@@ -119,7 +106,7 @@ export async function enrollBrowser(publicKey) {
     const base = await session.recoveryPoint();
     const current = verified.control.payload;
     // The first-app browser reads and writes, but cannot publish, administer,
-    // select recovery or coordinate. Keep this native peer running for writes.
+    // select recovery or coordinate.
     const grant = { ...participantGrant(publicKey), coordinator: false, recovery: false };
     const control = { epoch: current.epoch, keyDigest: current.keyDigest,
       grants: [...current.grants, grant], recoveryFloor: current.recoveryFloor,
@@ -134,17 +121,6 @@ export async function enrollBrowser(publicKey) {
     await savePrivate(savedName, { request, control });
     await host.peers.selectGeneration(request, { control });
     await verifyAuthorityBundle(await host.peers.application(), descriptor);
-    return { enrolled: publicKey, next: 'Run npm run peer, then open or reload the page; it connects by itself.' };
+    return { enrolled: publicKey, next: 'Start npm run agent, then open or reload the page; it connects by itself.' };
   } finally { if (session) await session.close(); else await device.close(); }
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [action, ...args] = process.argv.slice(2);
-  try {
-    const result = action === 'create' ? await createProject(...args)
-      : action === 'init' ? await initializeProject()
-        : action === 'enroll' ? await enrollBrowser(args[0])
-          : (() => { throw Error('Use create, init, or enroll. See /docs/STATE_MODELS.md on the selected service origin.'); })();
-    console.log(JSON.stringify(result, null, 2));
-  } catch (error) { console.error(`${error.code ?? error.name}: ${error.message}`); process.exitCode = 1; }
 }

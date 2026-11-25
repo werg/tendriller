@@ -1,337 +1,179 @@
-# First application: Shared Notes
+# First application: an agent workspace
 
-When adapting this starter to a checklist or another application, first verify its
-unchanged connected loop, then change the domain and UI. Keep device identity
-independent of titles: the page, pairing Worker and application Worker all import
-`helpers/browser-profile.mjs`. Do not rename the profile in just one entry point
-or replace a retained browser store. Keep `configuration.page_url` from the page
-handle; the service origin and the published page origin serve different roles.
-
-Adapt these deliberate application choices: `domain.mjs`, the rendered views and
-command/query handlers in `page.mjs`, the display name/HTML, and the explicit
-assistant command/query selection and event projection in `assistant.mjs`.
-The build derives definition ID/version from the domain into public configuration;
-page plumbing has no second definition name to edit. It verifies the domain's
-public binding against the retained initialized descriptor and refuses a mismatch.
-A UI rebuild cannot replace an initialized definition. Restore that definition
-for existing history, or initialize a different domain in a fresh project.
-Do not rewrite retained history IDs as a branding change. Initialization uses a
-coherent read view; generic peer logs report revisions without querying domain data.
+This kit is a **workspace**: one maintenance agent with one credential and one
+signing key, one install, and any number of pages under `pages/<slug>/`. A single
+page is a workspace with one page. `tendril agent run` is the only long-running
+local program: one hub connection to the host, one Chronolog session per
+initialized page (each with its own device store and the shared signer), and one
+local attach socket that terminal commands, MCP clients and helpers name a page on.
 
 This is the complete source used by the selected service's
-`/docs/BUILD_AN_APP.md`. Node 24 is the qualified first-app runtime (the starter
-requires at least 24); core's separate minimum remains Node 22.15. Check that service's `/api/readiness`
-before acquiring dependencies. Follow its build guide to download and verify
-the immutable `tendriller-first-app-VERSION.tgz` release kit in a new application
-directory. The kit carries this starter, `composition.json`, and its exact SDK,
-tools and Chronolog events archives under `packages/`. Install those local
-archives after their hashes and the selected host's build identity agree.
+`/docs/BUILD_AN_APP.md`. Node 24 is the qualified first-app runtime (the kit
+requires at least 24); core's separate minimum remains Node 22.15. Check that
+service's `/api/readiness` before acquiring dependencies. Follow its build guide
+to download and verify the immutable `tendriller-first-app-VERSION.tgz` release
+kit in a new directory. The kit carries this source, `composition.json`, and its
+exact SDK, tools and Chronolog events archives under `packages/`; install those
+local archives once for the whole workspace after their hashes and the selected
+host's build identity agree.
 
 The host's `/downloads/tendriller-first-app.tgz` and this repository directory
 contain source for inspection. They are not the complete qualified release kit;
 do not combine them with same-version packages from another source checkpoint.
-For source development, build and qualify one clean matching composition as
-described in the selected service's development guide.
 
-The parent guide supplies the package acquisition commands and every setup
-checkpoint. For scripts that parse helper output, use `npm run --silent create -- ...`
-and `npm run --silent init`, or invoke `node setup.mjs create ...` / `node setup.mjs init`
-directly. Read JSON from stdout and check the exit status; Node diagnostics such as
-SQLite experimental warnings remain on stderr. Do not combine the streams or
-suppress warnings globally. Node 24 does not promise warning-free stderr.
+## Layout
 
-After installing those dependencies:
-
-```sh
-npm run setup:prepare -- https://YOUR_HOST "Shared notes"
-# Call prepare_tendril_setup through the same account-linked MCP connection
-# with the printed public arguments. Save its ready result under .tendriller/.
-npm run setup:finish -- .tendriller/account-setup-result.json
-npm run init
-npm run build
-npx tendril --session ./session.mjs --mode own --timeout 120 publish ./page --operation notes-release-1
-npm run serve # Native participant with optional reviewed MCP access.
-# Now give the owner the ready page URL; they sign in to open this version.
-# Do not wait for a claimed reply before publishing or starting the participant.
-# The owner opens the page. It connects by itself: a new browser creates its own
-# key, the native peer pauses ordering and stages the exact signed proposal, and
-# the page opens the service-origin approval once. One Approve tap returns to the
-# page, which connects as soon as the peer commits. Later visits just connect.
+```
+tendriller.json          { schemaVersion, service, agent: { id, name }, pages: { <slug>: { id } } }
+package.json             one install for every page
+setup.mjs                page lifecycle: new, init, enroll, build, deploy, assistant, demo
+shared/                  shared native composition, browser connection/pairing, helpers/, ui/, media/
+templates/notes/         events-backed Shared Notes page source
+templates/inventory/     guarded SQL inventory page source (needs the SQL Chronolog archives)
+pages/<slug>/            one page's source (copied from a template) -> pages/<slug>/dist/
+.tendriller/             private, gitignored
+  agent/                 identity.sqlite (shared signer), credential.json, attach.json, owner/
+  pages/<page-id>/       page.json, device.sqlite, descriptor and setup records
 ```
 
-Before claim, `awaiting_owner_claim` means the owner should open that published
-page and sign in. `awaiting_assistant_consent` is a separate optional permission
-review. Repeated unchanged waiting notices are coalesced; actual failures retain
-their codes and retry details. The participant stays running and waits for setup
-notifications, without polling for a claim.
+## Create, publish and run
 
-The account-linked route derives the verified owner on the host and requires its
-existing `tendrils:create` grant. It needs no local OAuth credential or owner email.
-`setup:prepare` atomically retains `.tendriller/account-setup.json` before printing
-the public request; `setup:finish` reconstructs the private handle only from its
-exact ready result. Reopen the same directory and inspect the same operation
-after a lost reply. Restore the original private checkpoint if it is missing;
-never mint a replacement intent as a retry. `handle_saved` is not connected.
-
-`.tendriller/` is reserved for Tendriller-managed identity, setup and recovery
-state. Put application-specific local secrets, caches and other files in a
-separate directory such as `.local/`, and add that directory to your application's
-`.gitignore`. Any retained entry in `.tendriller/`, including an unfamiliar one,
-blocks fresh creation when there is no usable host handle. The
-`setup_recovery_required` diagnostic lists bounded, escaped entry names without
-reading their contents. Inspect the original project and resume its checkpoint;
-the helper never deletes, moves or ignores retained state to create a replacement.
-
-The account-linked setup credential lasts 24 hours even after owner claim and
-also depends on its original OAuth grant. To continue the same claimed app,
-stop the native peer, retain its complete checkpoint, and have the owner open
-the existing `page_url` with `_tendril/manage` appended. Under **Add agent**,
-approve a named native binding with host read, participant connection and signed
-control permissions; include signed publication and assistant proposal access
-when used. Save its ten-minute code privately in
-`.tendriller/delegation-code.txt`, then run:
+After installing the packages:
 
 ```sh
-npm run host:adopt -- https://YOUR_HOST .tendriller/delegation-code.txt
-npx tendril --session ./session.mjs --mode own self
-npx tendril --session ./session.mjs --mode own query notes null
-npm run peer
+npx tendril workspace init --service https://YOUR_HOST --owner owner@example.com
+npm run page:new -- notes --template notes --name "Shared notes"
+npm run init -- notes
+npm run build -- notes
+npm run agent            # tendril agent run: keep it running
+npm run deploy -- notes  # publishes through the running agent program
+# Now give the owner the page_url from page:new; they sign in to claim the
+# agent and its pages. Do not wait for a claimed reply before publishing.
 ```
 
-This selects a separately retained host credential while keeping the original
-handle, setup intent, signer and signed operations. It refuses a replacing
-recovery code or another application's identity. If the reply is lost,
-`adoption_outcome_unknown` requires the owner to inspect and disconnect that
-named binding if present before explicitly approving another code; the helper
-does not resend the uncertain one-use code. A saved response is reused after
-the host confirms its credential remains active. Replaying an older successful
-attempt cannot overwrite a newer selected credential. If both the handle and
-connector access are lost, the owner can inspect `SERVICE_ORIGIN/dashboard/setups`
-and save its **Open existing page** link privately as
-`.tendriller/owner-page-url.txt`; the retained signed descriptor binds the same
-application for the same `host:adopt` command.
-Once reviewed delegation is saved, its credential and the retained descriptor
-also let `npm run create` resume the same page if the original handle is missing.
-It returns the existing page URL without allocating a replacement. Conflicting
-identity or incomplete retained recovery state stops creation; restore or
-continue that checkpoint instead of clearing it. This local resume result does
-not replace the real session and retained-data checks above.
-For lost credentials, retained operation inspection and assistant permission
-renewal, follow [same-app continuation](https://tendriller.dev/docs/BUILD_AN_APP.md#continue-the-same-app-after-setup-credential-expiry-or-loss).
-The original device checkpoint remains necessary; host delegation cannot
-recreate application signing keys. Keep all adoption records and code files
-private alongside the rest of `.tendriller/`.
+`workspace init` checks readiness, creates the shared signing key in
+`.tendriller/agent/identity.sqlite` and registers an unclaimed agent for that
+owner. The owner claims the agent by signing in to any page it created. On a
+signed-in dashboard the owner can instead add an agent and paste its one-time
+code: `npx tendril workspace join --service https://YOUR_HOST --code CODE`.
+Pages an agent creates are granted to it; an existing page needs the owner's
+explicit grant, after which `npx tendril page grant <slug> <page-id>` registers it.
 
-Without an account-linked creation route, use the supported explicit email route:
-`npm run create -- https://YOUR_HOST owner@example.com "Shared notes"`.
-Do not use it to replace an uncertain account-linked operation.
+`page:new` refuses a non-empty `pages/<slug>/` folder: retained source or build
+output belongs to an existing page. Choose another slug for an explicitly new
+page. The page URL and application identity stay private in
+`.tendriller/pages/<page-id>/page.json`; `tendriller.json` holds only slugs and ids.
+For scripts that parse helper output, use `npm run --silent init -- notes` or
+`node setup.mjs init notes`, read JSON from stdout and check the exit status.
 
-The running native owner handles pairing with its existing session and signer.
-After the browser proves possession of its own key, that owner retains the
-pairing intent, durably pauses command ordering and saves the exact signed
-proposal **before owner review**. The service review displays the fingerprint,
-account, application, origins, narrow reader/writer rights, selected generation,
-retained prefix and proposal digest. Approval binds that complete proposal.
-The host checks current account access, authority and the reviewed payload again
-when the normal signed control transition is selected. Existing grants and key
-commitments are preserved.
+`init` configures the page's application with the agent key as administrator and
+publisher, saves the signed genesis request before its first send, selects it and
+writes `initialized.json`. A running `tendril agent run` notices it and opens the
+page without a restart. Setup records are write-once: a retry never generates
+another identity or changes a signed transition.
 
-The native participant remains available for later devices through an
-authenticated setup WebSocket on the existing hibernating page object. Idle
-setup has no polling or heartbeat. Each review expires after ten minutes, with
-one local active-request deadline. Every request still needs the owner's
-approval on the service origin.
+Only `pages/<slug>/dist/` is publishable. `.tendriller/` holds the agent token,
+the signer and every page's device and setup records; keep it out of Git and page
+assets. The browser receives keys only through the authenticated session's
+reader-to-reader key exchange.
 
-The page uses `connection.mjs` and `connect-view.mjs`: opening it attaches to
-this browser's existing device owner (any tab), sets up a new browser, opens the
-approval with a return to the page, waits for the commit and connects. A request
-the participant committed while the page was away is found on the next open.
-Browser reloads retain the same public request and key; private signing keys stay
-in Worker storage. An expired or stale request is renewed for the same device; a
-denied one waits for an explicit "Ask again".
-
-Match the connection card to an authored palette with inherited `--tc-*` color
-properties on its container; see the [palette example](https://tendriller.dev/docs/APP_PATTERNS.md#match-an-application-owned-palette).
-For richer pages, preserve the starter's submission-state callback for every
-write control, including the final release after refresh; the
-[multi-control example](https://tendriller.dev/docs/APP_PATTERNS.md#keep-every-action-control-reactive)
-updates eligibility without replacing drafts or focus.
-
-Private native records are `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
-`pairing-ID-commit.json` and `pairing-ID-outcome.json` under `.tendriller/`.
-The durable ordering pause lives in the same native device store and survives
-process close and reopen. A lost response or unavailable status leaves uncertain
-work paused. Reopen the same project and participant to
-reconcile the original signed transition; never delete the records, copy the
-signer or sign a replacement prefix to resume writes. Only a verified exact
-outcome, or a confirmed terminal request with no committed transition, releases
-that pause. A later revoked grant is never restored by replay.
-
-With the resident owner stopped, `npm run pair` performs one bounded
-prepare/inspect/commit pass and closes that owner. It may stage a proposal and
-leave ordering paused for review; rerun the same command after the review.
-`npm run enroll -- PUBLIC_KEY` remains a deliberate manual administration route.
-A committed pairing still needs a successful peer session and real notes query
-before the page reports that it is connected.
-
-Only `page/` is publishable. `.tendriller/` holds the private agent handle,
-native device, initial key and exact setup requests; keep it out of Git and page
-assets. Setup records are write-once so a retry cannot silently generate another
-identity or change a signed transition. The browser receives keys only through
-the authenticated session's reader-to-reader key exchange.
-
-Before installing the packages, inspect the selected host's `/api/readiness`.
-`create` repeats that check and refuses paused, unavailable or older hosts with
-no readiness endpoint. It also refuses an existing handle for another service.
-Resume a saved production application only against its matching production
-connector; use a separate directory for staging. Never copy private signing
-state to make an origin mismatch disappear.
-
-Keep the native participant running for UI updates and use the explicitly scoped
-publication attachment:
+## The agent program
 
 ```sh
-npm run build
-npx tendril --session ./session.mjs --mode attach --timeout 120 publish ./page --operation notes-review-1
-npx tendril --session ./session.mjs --mode attach publication
+npm run agent                               # one process for every page
+npx tendril status                          # workspace, grants, registered pages
+npx tendril --page notes self               # attach to the notes page owner
+npx tendril --page notes query notes null
+npx tendril --page notes command addNote '{"text":"hello"}' --operation note-1
+npx tendril watch --events                  # every running page, with a cursor per page
+npx tendril mcp-stdio                       # local MCP; every tool takes page
 ```
 
-Fresh CLI bindings include `publish`; an older retained binding may need a
-deliberately provisioned publication credential. Follow
-[publication capability and retained bindings](https://tendriller.dev/docs/tools/CLI.md#publication-capability-and-retained-bindings)
-without editing retained supervisor records or resetting the signer.
+Session commands attach to the page owner inside the agent program; detaching
+never stops it and an unavailable agent never opens a second signer. The agent
+reconnects its hub connection with backoff. Losing the hub fails the page's
+control streams (setup notices, discovery, invitations, rendezvous, assistant)
+so each one reopens through its own retry, while local data, local writes and
+direct peer links continue. Page sync data (WebRTC, relay) never uses the hub.
 
-If publishing times out, retain `page/`, `.tendriller/` and the original
-operation. For an attached update, inspect `publication` and
-`publication-operation notes-review-1` through the same `--mode attach` binding.
-The initial `notes-release-1` above was published with `--mode own`; inspect that
-standalone operation using the same ownership path while the peer is stopped.
-Compare the exact signed graph before retrying, without changing its operation ID
-or bytes. A retained host receipt and a verified current head are separate
-observations. `--timeout 120` means 120 seconds; a timeout does not cancel an
-owner publication already in progress.
+The page's owner handles reviewed pairing with its existing session and signer.
+After the browser proves possession of its own key, the owner retains the pairing
+intent, durably pauses command ordering and saves the exact signed proposal
+**before owner review**. The service review displays the fingerprint, account,
+application, origins, narrow reader/writer rights, selected generation, retained
+prefix and proposal digest. Approval binds that complete proposal. Each review
+expires after ten minutes; idle setup has no polling or heartbeat.
+
+Private pairing records are `pairing-ID-intent.json`, `pairing-ID-prepared.json`,
+`pairing-ID-commit.json` and `pairing-ID-outcome.json` under the page's private
+folder. A lost response leaves uncertain work paused; keep the agent program and
+records and let it reconcile the original signed transition. Never delete the
+records, copy the signer or sign a replacement prefix to resume writes.
+`npm run enroll -- notes PUBLIC_KEY` remains a deliberate manual administration
+route; stop the agent program first, because it owns the page device while running.
+
+Before claim, `awaiting_owner_claim` means the owner should open the published
+page and sign in. `awaiting_assistant_consent` is a separate optional review.
 
 The browser can read/write notes but cannot administer, publish, coordinate or
-recover. Keep the native peer running for applied writes. This first-app policy
-can be expanded deliberately after reviewing the membership and availability
-requirements. With the peer running, ordinary CLI commands attach to its
-owner automatically. Use `--mode own` only for deliberate standalone ownership
-while the peer is stopped; it takes the same exclusive fence.
+recover. Keep the agent program running for applied writes from the agent and for
+live synchronization; local browser saves never wait for it.
 
-A freshly created `local-terminal` attachment explicitly includes `publish` with
-ordinary application capabilities, but not `ownerAdmin`. Retained bindings are
-reused as saved and are never upgraded during resume. For an older binding that
-lacks publication authority, deliberately create a separately scoped binding with
-`supervisor.createBinding({ id, policy: { capabilities: ['publish'] } })`, retain
-its credential privately, and use it for publication. Do not edit or replace a
-revoked binding record to restore access.
+If publishing times out, keep `dist/`, `.tendriller/` and the original operation.
+Inspect `npx tendril --page notes publication` and
+`npx tendril --page notes publication-operation OPERATION`, compare the exact
+signed graph and retry only the original operation and bytes.
 
-Ctrl-C/SIGTERM waits for owned shutdown. Standalone peer/assistant/SQL/inference
-entry points then flush their output and dispose the dedicated Node process,
-including lingering socket close handshakes. A failed cleanup or flush is
-nonzero; preserve the original device and operation references. Importing these
-runners never exits an embedding process or closes its sibling listeners. The
-shared `helpers/cli-lifetime.mjs` is included in the downloaded kit.
+Ctrl-C/SIGTERM on the agent program closes every page owner, then the hub and the
+attach socket. A failed cleanup or flush is nonzero.
 
-Several browser tabs attach to one profile owner. SharedWorker is preferred; the
-fallback uses an exclusive Web Lock and authenticated local routes. A tab closes
-its attachment, leaving the shared signer and sibling views intact. Drafts and
-pending references belong to each view; copying a draft is explicit. A duplicate
-live view ID receives a fresh ID. Reloading reopens the original signer journal.
+## Adapt a page
 
-The page exposes real connection/data state, local draft preservation, accepted
-versus rejected applied outcomes, operation inspection, exact retry and explicit
-close. Its initial live-view `ready()` wait keeps the same attachment during
-`PEER_RECOVERING` until a coherent read succeeds, with a fixed 30-second deadline
-and event-driven readiness. Fatal read errors and cancellation still fail setup.
-It imports `createLiveView` from `@chronolog/peer-session/browser` and
-the supplied operation-state and reviewed-input helpers. Adapt these modules directly rather than rebuilding transport and state
-fetching around another backend. Its localhost preview is clearly labeled
-layout-only. Follow the parent guide's deployed acceptance checks before reporting
-success: deliver the running hosted application and explain which process must
-remain alive, as described in [Agent delivery](https://tendriller.dev/docs/AGENT_DELIVERY.md).
+Keep device identity independent of titles: the page, pairing Worker and
+application Worker all import `shared/helpers/browser-profile.mjs`. Keep
+`configuration.page_url` from the page record; the service origin and the
+published page origin serve different roles.
+
+Adapt `pages/<slug>/domain.mjs`, the views and handlers in `page.mjs`, the display
+name/HTML, and the assistant selection in `assistant.mjs`. The build derives the
+definition ID/version into public configuration and refuses a definition that
+differs from the retained initialized descriptor. Restore that definition for
+existing history, or create a new page for a different domain.
 
 | Source | Purpose |
 | --- | --- |
-| `domain.mjs` | Shared events-backed command/query definition |
-| `account-setup.mjs` | Retain private setup intent, supply public MCP arguments, reconstruct exact ready handle |
-| `host-adoption.mjs` | Continue the same app through privately retained owner-reviewed host delegation |
-| `setup.mjs` | Explicit email creation, initialize/select genesis, one pairing pass or deliberate manual enrollment |
-| `local.mjs` | Private setup records and native host client |
-| `session.mjs` | Real resumable native session; CLI bootstrap and running peer |
-| `worker.mjs` | Browser device, owned session, authority and peer key acquisition |
-| `pairing-browser.mjs`, `pairing-worker.mjs` | Retain one public browser request and prove possession using its own fenced device |
-| `pairing-native.mjs` | Bounded processing on the existing native owner, durable ordering pause and exact reviewed transition recovery |
-| `page.mjs`, `index.html` | Editable UI and public session facade |
-| `build.mjs` | Browser bundling and a public-only publication graph |
-| `helpers/` | Importable coherent views, operation observations and reviewed input |
-| `media/` | Camera/file and runtime voice controls; opt-in native inference participant |
-| `sql/` | Separate guarded SQL starter, exact engine setup and resumable transaction demo |
-
-## Extend the running application
+| `setup.mjs` | Page lifecycle across the workspace |
+| `shared/local.mjs` | Page context from the workspace (`@tendriller/tools/workspace`) and the empty-folder check |
+| `shared/native-page.mjs` | One page's owner in the agent program: authority, control, participation, setup notices, pairing, assistant |
+| `shared/pairing-native.mjs` | Durable ordering pause and exact reviewed transition recovery |
+| `shared/participant-lifecycle.mjs` | Setup notices, pairing passes and the optional adapter on one owner |
+| `shared/connection.mjs`, `shared/connect-view.mjs` | Browser connection state and its card |
+| `shared/pairing-browser.mjs`, `shared/pairing-worker.mjs` | Browser pairing request and proof with its own fenced device |
+| `shared/helpers/`, `shared/ui/` | Importable coherent views, operation observations and reviewed input |
+| `shared/media/` | Camera/file and runtime voice controls; opt-in native inference participant |
+| `templates/notes/` | `domain.mjs`, `agent.mjs` (openPage), `setup.mjs`, `build.mjs`, `assistant.mjs`, `page.mjs`, `worker.mjs`, `index.html` |
+| `templates/inventory/` | Guarded SQL inventory: engine check, setup, agent, build, demo |
 
 [Application patterns](https://tendriller.dev/docs/APP_PATTERNS.md) explains the
-helper interfaces and their ownership boundaries. These are application-owned
-source modules, not additional SDK exports or a second synchronization layer.
-
-The page's **Review a photo** controls work with manual review immediately. The
-optional **Analyze photo** path needs the native inference participant described
-in [Reviewed AI input](https://tendriller.dev/docs/AI_INPUT.md), an allowed browser
-device, an explicit request budget, and the owner's provider credentials. Run that
-participant instead of a second process opening the same native store. Analysis
-only suggests text; **Save reviewed observation** submits the reviewed command.
-OpenAI is the included provider and is named in the page's consent. Disclose a
-custom provider in the authored page before publishing that adaptation. Voice
-likewise supplies an editable draft, with typed input always available.
+helper interfaces and their ownership boundaries. The page's **Review a photo**
+controls work with manual review immediately. The optional **Analyze photo** path
+needs `node shared/media/inference-peer.mjs --page notes ...`, which attaches to the
+running agent program (see [Reviewed AI input](https://tendriller.dev/docs/AI_INPUT.md)).
 
 For stock deductions or other guarded relational changes, follow
-[State models](https://tendriller.dev/docs/STATE_MODELS.md) and [the SQL starter](sql/README.md).
-It creates a separate application and needs the matching SQL-native engine
-archive. The events-only archive used above cannot run it. The SQL demo tests
-atomic two-bin transfers, rejection without partial changes, exact retry and
-reopen; its optional browser Worker is an integration source, not a second
-finished interface.
+[State models](https://tendriller.dev/docs/STATE_MODELS.md) and
+[the inventory template](templates/inventory/README.md). It needs the matching
+SQL-native and SQL-browser Chronolog archives; the events-only archive cannot run it.
 
-The source uses public package exports and no qualification fixture imports.
-It is a small working composition to adapt, not a general automatic enrollment
-service or a substitute for release qualification. The source of truth for
-capabilities remains the host descriptor and exact installed artifacts.
+## Optional MCP access
 
-
-For MCP access, run `npm run assistant:prepare` before owner sign-in and retain
-its returned review URL. Run one `npm run serve` process for the native
-participant plus its optional assistant adapter. Give the owner the ready page and
-review URL together. Claim adopts the prepared app, while assistant approval
-remains explicit; there is no need to type “claimed” back to the agent.
-
-The default assistant requests only the declared notes query and add-note command.
-For optional event forwarding, use `npm run assistant:prepare -- --events` and
-`npm run assistant -- --events` with the same reviewed choice. Forwarding events
-does not create an MCP subscription, run a future model turn, or extend this
-process's lifetime. The runner reports proposal preparation, the running native
-PID, actual adapter status and shutdown separately. Missing consent, adapter failure, revocation and replacement leave the native
-participant running. New consent reconnects only the adapter through setup
-notifications. Even `adapter_online` still
-requires a real MCP/browser round trip before setup is complete.
-
-If optional forwarding reports `adapter_activity_failed`, the native participant
-and healthy MCP provider stay running, but event continuity is unverified and
-forwarding is paused for that connection. Inspect the retained private
-`.tendriller/assistant-event-cursor.json` and the selected application's recovery
-history. Keep that exact cursor; do not delete it or silently choose a new start.
-After explicitly reviewing which events may be forwarded from that checkpoint,
-restart the existing runner from the same private project with
-`npm run serve -- --events` (equivalently `npm run assistant -- --events`).
-This explicitly restarts the native process too; its retained identity, cursor
-and operation records resume from that project. A still-unresolved review
-remains blocked rather than silently advancing its cursor.
-`eventsForwarding: true` means enabled, not verified continuity. Do not begin an
-idle qualification that requires forwarding while this review remains blocked.
-
-### Inspect the resident participant
-
-While `npm run peer` keeps the native owner running, `node session.mjs diagnostics`
-(or `node session.mjs status PROFILE`) attaches locally, takes one sanitized
-transport sample and detaches. The standard Page options menu shows the same
-authenticated-link evidence. Counters reset on link replacement and are not
-billing or operation-retention proof. See [transport diagnostics](https://tendriller.dev/docs/TRANSPORT_DIAGNOSTICS.md).
+Run `npm run assistant:prepare -- notes` before owner sign-in and retain its
+returned review URL; give the owner the ready page and review URL together. The
+running agent program connects the adapter after approval, through the page's
+setup notices. The default selection is the notes query and add-note command.
+`npm run assistant:prepare -- notes --events` also forwards `note.added` events from
+a retained private cursor (`assistant-event-cursor.json`). Forwarding does not
+create an MCP subscription, run a future model turn, or extend any process
+lifetime. Missing consent, adapter failure, revocation and replacement leave the
+page owner running. If forwarding reports `adapter_activity_failed`, keep the
+exact cursor and review the recovery history before restarting the agent program.

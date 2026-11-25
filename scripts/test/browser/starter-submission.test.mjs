@@ -15,7 +15,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
       build.onResolve({filter: /session\/transport-diagnostics\.mjs$/}, () => ({path: new URL('../../../dist/sdk/session/transport-diagnostics.mjs', import.meta.url).pathname}));
     }}],
   });
-  const bundle = await build({ entryPoints: ['docs/tutorial/page.mjs'], bundle: true, write: false, format: 'esm',
+  const bundle = await build({ entryPoints: ['docs/tutorial/templates/notes/page.mjs'], bundle: true, write: false, format: 'esm',
     plugins: [{ name: 'session-fixture', setup(build) {
       build.onResolve({ filter: /^(?:@tendriller\/core\/browser-owner|@chronolog\/peer-session\/tendriller|\.\/pairing-browser\.mjs)$/ }, args => ({ path: args.path, namespace: 'fixture' }));
       build.onLoad({ filter: /.*/, namespace: 'fixture' }, () => ({ contents: `
@@ -59,7 +59,7 @@ test('starter readiness, retained retry/reload, rejection and reconnect in Chrom
         }
       ` }));
     } }] });
-  const html = await readFile(new URL('../../../docs/tutorial/index.html', import.meta.url));
+  const html = await readFile(new URL('../../../docs/tutorial/templates/notes/index.html', import.meta.url));
   const server = createServer((req, res) => {
     res.setHeader('Content-Type', req.url === '/page.mjs' ? 'text/javascript' : req.url === '/configuration.json' ? 'application/json' : 'text/html');
     res.end(req.url === '/page.mjs' ? bundle.outputFiles[0].text : req.url === '/configuration.json'

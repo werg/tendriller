@@ -1,16 +1,16 @@
-import { browserProfileId } from './helpers/browser-profile.mjs';
+import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { openBrowserOwner } from '@tendriller/core/browser-owner';
 import { createLiveView, createViewStore, operationReference } from '@chronolog/peer-session/browser';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
-import { createSubmissionState } from './helpers/submission-state.mjs';
-import { createSignalRequests } from './helpers/signal-request.mjs';
-import { createOperationView } from './helpers/operation-view.mjs';
-import { mountReviewedMedia } from './media/panel.mjs';
-import { createBrowserPairing } from './pairing-browser.mjs';
-import { createOwnerConnection, reloadOnOwnerReplaced } from './connection.mjs';
-import { mountConnectionView } from './connect-view.mjs';
-import { mountDiagnosticsPanel, registerLifecycleFlush } from './helpers/diagnostics-panel.mjs';
-import { mountDevTelemetry } from './helpers/dev-telemetry.mjs';
+import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
+import { createSignalRequests } from '../../shared/helpers/signal-request.mjs';
+import { createOperationView } from '../../shared/helpers/operation-view.mjs';
+import { mountReviewedMedia } from '../../shared/media/panel.mjs';
+import { createBrowserPairing } from '../../shared/pairing-browser.mjs';
+import { createOwnerConnection, reloadOnOwnerReplaced } from '../../shared/connection.mjs';
+import { mountConnectionView } from '../../shared/connect-view.mjs';
+import { mountDiagnosticsPanel, registerLifecycleFlush } from '../../shared/helpers/diagnostics-panel.mjs';
+import { mountDevTelemetry } from '../../shared/helpers/dev-telemetry.mjs';
 
 const $ = selector => document.querySelector(selector);
 const configuration = await fetch(new URL('./configuration.json', import.meta.url)).then(response => response.json());

@@ -1,20 +1,23 @@
-// Run instead of `node session.mjs`: both need the same exclusive native signer.
-// Set OPENAI_API_KEY privately, then: node media/inference-peer.mjs \
+// Attaches to one page of the running `tendril agent run`; it never opens a signer.
+// Set OPENAI_API_KEY privately, then: node shared/media/inference-peer.mjs --page SLUG \
 //   --model YOUR_IMAGE_CAPABLE_MODEL --allow-device BROWSER_PUBLIC_KEY --max-requests 1
 // Enter credentials through your native environment/secret manager, not shell
 // history or authored files. Launching this process explicitly opts into costs.
 import { parseArgs } from 'node:util';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createCliLifetime } from '../helpers/cli-lifetime.mjs';
-import { openSession } from '../session.mjs';
+import { createCliLifetime } from '../cli-lifetime.mjs';
 import { servePeerInference } from './inference-service.mjs';
 import { digestPattern } from './inference-protocol.mjs';
 
 // The exported runner never owns the embedding process.
-export async function runInference({ args = process.argv.slice(2), signal } = {}, { onOwned, onClosed } = {}) {
+const attachRunning = async (page, options) => {
+  const [{ attachPage }, { workspace }] = await Promise.all([import('@tendriller/tools/workspace'), import('../local.mjs')]);
+  return attachPage(await workspace(), page, options);
+};
+export async function runInference({ args = process.argv.slice(2), signal, attach = attachRunning } = {}, { onOwned, onClosed } = {}) {
   signal?.throwIfAborted();
-  const { values } = parseArgs({ args, options: { 'allow-device': { type: 'string', multiple: true },
+  const { values } = parseArgs({ args, options: { page: { type: 'string' }, 'allow-device': { type: 'string', multiple: true },
     'max-requests': { type: 'string', default: '1' }, model: { type: 'string' }, provider: { type: 'string' },
     'max-output-tokens': { type: 'string', default: '600' } }, strict: true });
   const allowedDevices = values['allow-device'] ?? [], maxRequests = Number(values['max-requests']);
@@ -26,14 +29,14 @@ export async function runInference({ args = process.argv.slice(2), signal } = {}
   const infer = await provider.createInferenceProvider({ model: values.model, maxOutputTokens: Number(values['max-output-tokens']) });
   let owned, service;
   try {
-    owned = await openSession({ signal }); onOwned?.();
+    owned = await attach(values.page, { signal }); onOwned?.();
     service = servePeerInference({ session: owned.session, allowedDevices, maxRequests, infer, signal,
       onStatus: status => console.log(JSON.stringify({ inference: status })) });
     console.log(`Credential-protected inference peer: ${owned.session.deviceId}`);
     console.log('Requests and suggestions are visible to application readers. Provider credentials remain in this native process.');
-    console.log('Suggestions require page review and a separate declared command. Ctrl-C closes the peer; restart explicitly renews this process budget.');
+    console.log('Suggestions require page review and a separate declared command. Ctrl-C detaches this peer; the agent program keeps running. Restart explicitly renews this process budget.');
     await service.done;
-  } finally { try { await service?.close(); } finally { await owned?.close(); } if (owned) onClosed?.(); }
+  } finally { try { await service?.close(); } finally { await owned?.detach(); } if (owned) onClosed?.(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const cli = createCliLifetime();

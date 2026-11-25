@@ -1,16 +1,20 @@
-// Run on this starter's fresh development application, with npm run peer stopped.
+// Run on this page's fresh development application while npm run agent is running:
+//   npm run demo -- <slug>
 // This changes real retained state. It is safe to retry with the saved identities.
 import assert from 'node:assert/strict';
-import { openSession } from './session.mjs';
-import { readPrivate, savePrivate } from './local.mjs';
+import { attachPage } from '@tendriller/tools/workspace';
+import { workspace, slugOf } from '../../shared/local.mjs';
+
+const slug = slugOf(import.meta.url), selected = await workspace();
+const context = await selected.pageContext(slug), readPrivate = context.readPrivate, savePrivate = context.savePrivate;
+// Detach and attach again through the running agent program; the page owner never closes.
+const openSession = ({ signal }) => attachPage(selected, slug, { signal });
 
 const timeout = () => AbortSignal.timeout(30_000);
 const balances = snapshot => Object.fromEntries(snapshot.value.stock.map(row => [row.id, row.units]));
 let owned, session;
 async function closeOwned() {
-  // Closing only the kernel session starts supervisor cleanup asynchronously.
-  // Await the returned owner lifetime so its IPC listener and lease are gone.
-  await owned?.close();
+  await owned?.detach();
   owned = session = undefined;
 }
 try {
@@ -51,7 +55,7 @@ try {
   const deviceId = session.deviceId;
   await closeOwned();
   owned = await openSession({ signal: timeout() }); session = owned.session;
-  assert.equal(session.deviceId, deviceId, 'Reopen must retain the signer.');
+  assert.equal(session.deviceId, deviceId, 'Reattaching must retain the signer.');
   assert.deepEqual(balances(await session.query('inventory', null)), { destination: 3, source: 7 });
   assert.equal((await session.operations.get(transfer.options.operationId)).outcome, 'accepted');
   assert.equal((await session.operations.get(invalid.options.operationId)).outcome, 'rejected');
@@ -59,17 +63,17 @@ try {
   console.log(JSON.stringify({ status: 'passed', stock: { source: 7, destination: 3 },
     accepted: transfer.options.operationId, rejected: invalid.options.operationId,
     checked: ['guarded two-bin transfer and receipt', 'rejection leaves data and events unchanged',
-      'same signer and outcomes after close/reopen', 'saved input/revision/operation identities for exact retry'] }, null, 2));
+      'same signer and outcomes after detach/reattach', 'saved input/revision/operation identities for exact retry'] }, null, 2));
 } catch (error) {
   console.error(`${error.code ?? error.name}: ${error.message}`);
-  console.error('Inspect the saved demo operation IDs before retrying. Do not delete .tendriller or invent a new operation ID after an uncertain result.');
+  console.error('Inspect the saved demo operation IDs before retrying. Do not delete .tendriller/pages or invent a new operation ID after an uncertain result.');
   process.exitCode = 1;
 } finally {
   try { await closeOwned(); }
   catch (error) {
     // Report cleanup separately; never replace an already reported command or
     // reopen failure with an unhandled rejection from the finally block.
-    console.error(`SQL owner cleanup failed: ${error.code ?? error.name}: ${error.message}`);
+    console.error(`SQL attachment cleanup failed: ${error.code ?? error.name}: ${error.message}`);
     process.exitCode = 1;
   }
 }

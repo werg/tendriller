@@ -374,8 +374,8 @@ test('broken unpaired publication gets an explicit update and retains browser pa
     // Exercise the maintained public profile, pairing-intent and draft consumers.
     // The broken Worker models a released app that cannot enroll this browser.
     const fixture = await build({ stdin: { resolveDir: process.cwd(), sourcefile: 'publication-notice-fixture.mjs', contents: `
-      import { browserProfileId } from './docs/tutorial/helpers/browser-profile.mjs';
-      import { createBrowserPairing } from './docs/tutorial/pairing-browser.mjs';
+      import { browserProfileId } from './docs/tutorial/shared/helpers/browser-profile.mjs';
+      import { createBrowserPairing } from './docs/tutorial/shared/pairing-browser.mjs';
       import { createViewStore } from '@chronolog/peer-session/browser';
       const configuration={applicationId:window.__TENDRIL__.application.id,page_url:window.tendril.identity.base};
       const profileId=browserProfileId(configuration.applicationId), viewKey=profileId+':view';

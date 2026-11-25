@@ -265,3 +265,6 @@ export async function describeWorkspace(workspace, { signal, remote = true } = {
     agentProgram: { endpointRecorded: running }, ...(error ? { error } : {}) };
 }
 
+
+/** Attach to one page of the running `tendril agent run`; detaching never stops it. */
+export { attachPage } from './agent.mjs';

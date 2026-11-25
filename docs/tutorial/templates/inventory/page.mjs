@@ -1,8 +1,8 @@
 import { openBrowserOwner, createBrowserIdentity } from '@tendriller/core/browser-owner';
 import { createLiveView, createViewStore, describeOperationLifecycle } from '@chronolog/peer-session/browser';
 import { createApplicationBackend } from '@chronolog/peer-session/tendriller';
-import { mountDiagnosticsPanel } from '../helpers/diagnostics-panel.mjs';
-import { createSubmissionState } from '../helpers/submission-state.mjs';
+import { mountDiagnosticsPanel } from '../../shared/helpers/diagnostics-panel.mjs';
+import { createSubmissionState } from '../../shared/helpers/submission-state.mjs';
 import { transferIntent, checkIntentSession, retryIntent } from './ui-state.mjs';
 
 const $ = selector => document.querySelector(selector);

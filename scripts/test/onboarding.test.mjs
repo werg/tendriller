@@ -72,7 +72,7 @@ test('the domain-only onboarding graph points to shipped public documents and th
 });
 
 test('the documented visual patterns ship their executable source and actual screenshots', () => {
-  for (const path of ['ui/patterns.mjs', 'ui/showcase.html', 'ui/showcase.mjs'])
+  for (const path of ['shared/ui/patterns.mjs', 'shared/ui/showcase.html', 'shared/ui/showcase.mjs'])
     assert(TUTORIAL_FILES.includes(path), `Missing UI specimen: ${path}`);
   for (const path of ONBOARDING_IMAGES) {
     const source = readFileSync(join(root, path));
@@ -106,11 +106,19 @@ test('the downloadable starter contains complete parseable source and no local p
       }
     }
   }
-  for (const path of ['session.mjs', 'local.mjs', 'worker.mjs', 'account-setup.mjs', 'host-adoption.mjs',
-    'helpers/cli-lifetime.mjs', 'helpers/operation-view.mjs', 'helpers/reviewed-input.mjs',
-    'media/panel.mjs', 'media/inference-client.mjs', 'media/inference-peer.mjs', 'media/provider-openai.mjs',
-    'sql/setup.mjs', 'sql/session.mjs', 'sql/engine.mjs', 'sql/domain.mjs', 'sql/demo.mjs', 'sql/worker.mjs'])
+  for (const path of ['setup.mjs', 'shared/local.mjs', 'shared/native-page.mjs', 'shared/cli-lifetime.mjs',
+    'shared/helpers/operation-view.mjs', 'shared/helpers/reviewed-input.mjs',
+    'shared/media/panel.mjs', 'shared/media/inference-client.mjs', 'shared/media/inference-peer.mjs', 'shared/media/provider-openai.mjs',
+    'templates/notes/agent.mjs', 'templates/notes/setup.mjs', 'templates/notes/worker.mjs',
+    'templates/inventory/setup.mjs', 'templates/inventory/agent.mjs', 'templates/inventory/engine.mjs', 'templates/inventory/domain.mjs',
+    'templates/inventory/demo.mjs', 'templates/inventory/worker.mjs'])
     assert(TUTORIAL_FILES.includes(path), `The documented starter is missing ${path}`);
+  // One workspace install: no per-page package, project-level private folder or per-page long-running program.
+  for (const removed of ['session.mjs', 'local.mjs', 'account-setup.mjs', 'host-adoption.mjs', 'templates/inventory/package.json', 'deploy/participant.mjs'])
+    assert(!TUTORIAL_FILES.includes(removed), `Removed starter file still shipped: ${removed}`);
+  const scripts = JSON.parse(readFileSync(tutorialSource(root, 'package.json'), 'utf8')).scripts;
+  assert.equal(scripts.agent, 'tendril agent run');
+  assert(!Object.hasOwn(scripts, 'peer') && !Object.hasOwn(scripts, 'serve'), 'per-page programs are removed');
 });
 
 test('building a starter excludes nested private state, provider secrets, generated UI and dependencies', () => {
@@ -122,14 +130,12 @@ test('building a starter excludes nested private state, provider secrets, genera
       mkdirSync(dirname(join(directory, path)), { recursive: true });
       cpSync(join(root, path), join(directory, path));
     }
-    for (const path of ['.tendriller/handle.json', '.tendriller/device.sqlite', '.tendriller/epoch.json',
-      '.tendriller/account-setup.json', '.tendriller/account-setup-result.json', '.tendriller/account-setup-interrupted.tmp',
-      '.tendriller/host-credential.json', '.tendriller/host-adoption-private.json', '.tendriller/host-adoption-private-response.json', '.tendriller/delegation-code.txt',
-      '.tendriller/owner-page-url.txt', '.tendriller/host-selection.lock',
-      'node_modules/secret.txt', 'page/config.mjs', '.env',
-      'helpers/.env', 'media/.env', 'media/provider-local.mjs', 'media/provider-secrets.json',
-      'sql/.env', 'sql/.tendriller/handle.json', 'sql/.tendriller/device.sqlite', 'sql/.tendriller/initial-input.json',
-      'sql/node_modules/secret.txt', 'sql/page/config.mjs', 'sql/engine/local-build.wasm']) {
+    for (const path of ['.tendriller/agent/credential.json', '.tendriller/agent/identity.sqlite', '.tendriller/agent/attach.json',
+      '.tendriller/pages/aaaaaaaaaaaa/page.json', '.tendriller/pages/aaaaaaaaaaaa/device.sqlite', '.tendriller/pages/aaaaaaaaaaaa/initial-input.json',
+      'tendriller.json', 'node_modules/secret.txt', 'pages/notes/dist/config.mjs', 'pages/notes/domain.mjs', '.env',
+      'shared/helpers/.env', 'shared/media/.env', 'shared/media/provider-local.mjs', 'shared/media/provider-secrets.json',
+      'templates/inventory/.env', 'templates/inventory/.tendriller/device.sqlite',
+      'templates/inventory/node_modules/secret.txt', 'templates/inventory/dist/config.mjs', 'templates/inventory/engine/local-build.wasm']) {
       const destination = join(directory, 'docs/tutorial', path);
       mkdirSync(dirname(destination), { recursive: true });
       writeFileSync(destination, secret);
@@ -148,10 +154,10 @@ test('building a starter excludes nested private state, provider secrets, genera
     for (const file of TUTORIAL_FILES.filter(path => path.startsWith('deploy/')))
       assert.equal(digest(execFileSync('tar', ['-xOf', archive, file])), digest(readFileSync(tutorialSource(root, file))), `Stale mapped deployment file: ${file}`);
     for (const entry of entries.trim().split('\n'))
-      assert(!/(?:^|\/)(?:\.tendriller|node_modules)(?:\/|$)|(?:^|\/)\.env|page\/config|provider-local|provider-secrets|local-build|local-run/.test(entry), `Private archive path: ${entry}`);
+      assert(!/(?:^|\/)(?:\.tendriller|node_modules|pages|dist)(?:\/|$)|(?:^|\/)\.env|tendriller\.json|provider-local|provider-secrets|local-build|local-run/.test(entry), `Private archive path: ${entry}`);
     const content = execFileSync('tar', ['-xOf', archive], { encoding: 'utf8' });
     assert(!content.includes(secret), 'Source packaging must never substitute provider credentials or include private files.');
-    const provider = execFileSync('tar', ['-xOf', archive, 'media/provider-openai.mjs'], { encoding: 'utf8' });
+    const provider = execFileSync('tar', ['-xOf', archive, 'shared/media/provider-openai.mjs'], { encoding: 'utf8' });
     assert(provider.includes('process.env.OPENAI_API_KEY'), 'The native provider reads its credential at execution time.');
   } finally {
     if (providerKey === undefined) delete process.env.OPENAI_API_KEY;
@@ -192,15 +198,15 @@ test('events and SQL starter qualification use the current pinned session source
 
 test('live views have one SDK implementation and the starter page uses bounded initial readiness', () => {
   assert.equal(TUTORIAL_FILES.includes('helpers/live-view.mjs'), false);
-  assert.equal(existsSync(join(root, 'docs/tutorial/helpers/live-view.mjs')), false, 'Copied live-view implementation');
-  const source = readFileSync(join(root, 'docs/tutorial/page.mjs'), 'utf8');
+  assert.equal(existsSync(join(root, 'docs/tutorial/shared/helpers/live-view.mjs')), false, 'Copied live-view implementation');
+  const source = readFileSync(join(root, 'docs/tutorial/templates/notes/page.mjs'), 'utf8');
   assert.match(source, /import \{ createLiveView, createViewStore, operationReference \} from '@chronolog\/peer-session\/browser'/);
   assert.match(source, /await liveView\.ready\(\{[^}]*timeoutMs: 30_000/);
 });
 
 
 test('deployment template paths resolve to maintained root sources and guide links are public routes', () => {
-  const files = ['participant.mjs', 'Dockerfile', 'Dockerfile.dockerignore',
+  const files = ['Dockerfile', 'Dockerfile.dockerignore',
     'tendriller.service', 'dev.tendriller.participant.plist', 'install-windows-task.ps1'];
   for (const name of files) {
     const path = `deploy/${name}`;

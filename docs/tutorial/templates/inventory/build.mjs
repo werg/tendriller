@@ -1,24 +1,25 @@
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { applicationDefinitionDigest } from '@chronolog/peer-session';
 
 const assets = ['manifest.json', 'sqlite3.mjs', 'sqlite3.wasm', 'sqlite3-opfs-async-proxy.js'];
-export async function buildPage({ root = new URL('./', import.meta.url), engine = new URL('./engine/', root), readPrivate, bundle, verifyWasmBuild, definition } = {}) {
-  const output = new URL('./page/', root);
+// Build this SQL page into pages/<slug>/dist/: npm run build -- <slug>
+export async function buildPage(context, { root = new URL('./', import.meta.url), engine = new URL('./engine/', root), bundle, verifyWasmBuild, definition } = {}) {
+  definition ??= (await import('./domain.mjs')).definition;
+  verifyWasmBuild ??= (await import('@chronolog/peer-session/sql-browser')).verifyWasmBuild;
+  const output = new URL('./dist/', root), readPrivate = context.readPrivate, { page } = context;
   // A failed build must never leave a previous publication ready to upload.
   await rm(output, { recursive: true, force: true });
   try {
-    const handle = await readPrivate('handle.json'), descriptor = await readPrivate('descriptor.json');
-    const initialized = await readPrivate('initialized.json');
-    if (!handle.application?.id || initialized.applicationId !== handle.application.id ||
-        descriptor.payload?.applicationId !== handle.application.id || !initialized.deviceId)
-      throw Error('SQL setup records do not identify the same initialized application. Resume npm run init in the original project.');
+    const descriptor = await readPrivate('descriptor.json'), initialized = await readPrivate('initialized.json');
+    if (initialized.applicationId !== page.applicationId || descriptor.payload?.applicationId !== page.applicationId || !initialized.deviceId)
+      throw Error(`SQL setup records do not identify the same initialized application. Resume npm run init -- ${page.slug}.`);
     if (await applicationDefinitionDigest(definition) !== descriptor.payload.definitionDigest)
-      throw Error('The current domain definition differs from the retained initialized descriptor. Restore the original definition for this application; use a fresh project for a different domain. Keep the existing signer, history and descriptor.');
-    const pageUrl = new URL(handle.page_url);
+      throw Error('The current domain definition differs from the retained initialized descriptor. Restore the original definition for this application; create a new page for a different domain. Keep the existing signer, history and descriptor.');
+    const pageUrl = new URL(page.pageUrl);
     if (!['https:', 'http:'].includes(pageUrl.protocol) || pageUrl.username || pageUrl.password || pageUrl.search || pageUrl.hash)
-      throw Error('Invalid public page URL in the retained handle.');
+      throw Error('Invalid public page URL in the retained page record.');
     const files = new Map(await Promise.all(assets.map(async name => [name, await readFile(new URL(name, engine))])));
     const manifest = JSON.parse(files.get('manifest.json').toString('utf8'));
     const wasm = files.get('sqlite3.wasm');
@@ -29,9 +30,9 @@ export async function buildPage({ root = new URL('./', import.meta.url), engine 
     await verifyWasmBuild(wasm, manifest); // Verify bytes and supported identity with the installed public SQL package.
     await mkdir(new URL('engine/', output), { recursive: true });
     for (const [name, bytes] of files) await writeFile(new URL(`engine/${name}`, output), bytes);
-    await writeFile(new URL('configuration.json', output), JSON.stringify({ applicationId: handle.application.id,
+    await writeFile(new URL('configuration.json', output), JSON.stringify({ applicationId: page.applicationId,
       definitionId: definition.id, definitionVersion: definition.version,
-      page_url: handle.page_url, descriptor }, null, 2) + '\n');
+      page_url: page.pageUrl, descriptor }, null, 2) + '\n');
     await copyFile(new URL('index.html', root), new URL('index.html', output));
     await bundle({ absWorkingDir: fileURLToPath(root), entryPoints: { page: 'page.mjs', worker: 'worker.mjs' },
       outdir: fileURLToPath(output), bundle: true, splitting: true, format: 'esm', platform: 'browser',
@@ -39,18 +40,6 @@ export async function buildPage({ root = new URL('./', import.meta.url), engine 
     return fileURLToPath(output);
   } catch (cause) {
     await rm(output, { recursive: true, force: true });
-    throw new Error(`SQL page build failed; no publishable page/ remains. Complete init, install the matching --sql-browser package and put its four exact WASM assets in sql/engine/. ${cause.message}`, { cause });
-  }
-}
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try {
-    const { readPrivate } = await import('./local.mjs');
-    const { build } = await import('esbuild');
-    const { definition } = await import('./domain.mjs');
-    const { verifyWasmBuild } = await import('@chronolog/peer-session/sql-browser');
-    console.log(JSON.stringify({ built: await buildPage({ readPrivate, bundle: build, verifyWasmBuild, definition }) }));
-  } catch (error) {
-    await rm(new URL('./page/', import.meta.url), { recursive: true, force: true });
-    console.error(error.message); process.exitCode = 1;
+    throw new Error(`SQL page build failed; no publishable dist/ remains. Complete init, install the matching --sql-browser package and put its four exact WASM assets in pages/${page.slug}/engine/. ${cause.message}`, { cause });
   }
 }

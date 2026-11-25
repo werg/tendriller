@@ -7,7 +7,7 @@ export const REVIEW_FIXTURE_FILES = [
   ['review-app.mjs', 'plugin/review-app.mjs'],
   ['review-domain.mjs', 'plugin/review-domain.mjs'],
   ['review-assistant.mjs', 'plugin/review-assistant.mjs'],
-  ['support/participant-lifecycle.mjs', 'docs/tutorial/helpers/participant-lifecycle.mjs'],
+  ['support/participant-lifecycle.mjs', 'docs/tutorial/shared/participant-lifecycle.mjs'],
 ];
 export function installReviewFixtureSources(root, project) {
   for (const [file, source] of REVIEW_FIXTURE_FILES) {

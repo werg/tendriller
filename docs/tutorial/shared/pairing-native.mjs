@@ -1,8 +1,6 @@
 // Reviewed enrollment on the existing native owner. It never opens a
 // second signing store or replaces a retained transition after an uncertain send.
-import { peerDigest, verifyAuthorityBundle, signTransitionRequest } from '@chronolog/peer-session';
-import { createDevicePairingClient } from '@tendriller/core/pairing';
-import { readPrivate, savePrivate } from './local.mjs';
+import { peerDigest, verifyAuthorityBundle } from '@chronolog/peer-session';
 
 const PREFIX = 'pairing:';
 const pauseId = id => PREFIX + id;
@@ -26,8 +24,9 @@ export function assertPairingContext(status, { applicationId, serviceOrigin, pag
 
 /** One retained-request reconciliation pass. The notification-driven supervisor
  * serializes calls; the signed-control selector remains the host. */
-export async function advancePairing({ session, pairing, retain = savePrivate, restore = readPrivate, onStatus = () => {}, allowBrowserCoordinator = false, signal }) {
+export async function advancePairing({ session, pairing, retain, restore, onStatus = () => {}, allowBrowserCoordinator = false, signal }) {
   signal?.throwIfAborted();
+  if (typeof retain !== 'function' || typeof restore !== 'function') throw fail('PAIRING_STORAGE_REQUIRED', 'Supply the page\'s private record storage.');
   const persist = async (name, value) => {
     await retain(name, value);
     const checked = await restore(name, true);
@@ -88,7 +87,7 @@ export async function advancePairing({ session, pairing, retain = savePrivate, r
   }
   if (result.state === 'revoked') throw fail('PAIRING_ACCOUNT_REVOKED', 'This request lost account access. Keep its pause until a terminal review or exact outcome is reconciled.');
   if (!pause && original)
-    throw fail('PAIRING_PAUSE_MISSING', 'A prepared transition exists without its durable ordering pause. Preserve the original project for reconciliation; do not prepare or send another transition.');
+    throw fail('PAIRING_PAUSE_MISSING', 'A prepared transition exists without its durable ordering pause. Preserve the private page folder for reconciliation; do not prepare or send another transition.');
   const c = result.challenge, current = verified.current;
   if (!current || current.id !== c.expectedGeneration || verified.control.payload.revision !== c.controlRevision ||
       current.payload.coordinator !== session.deviceId || !verified.grant(session.deviceId)?.administrator)
@@ -137,23 +136,16 @@ export async function advancePairing({ session, pairing, retain = savePrivate, r
   return result;
 }
 
-/** Single-pass processor for the explicit `npm run pair` command and other native
- * consumers. All passes share one owner and serialize the exact same lifecycle. */
-export function createReviewedPairingProcessor({ handle, host, descriptor, session, identity, store, client, pairing: supplied }) {
-  const pairing = supplied ?? { applicationId: handle.application.id, serviceOrigin: new URL(handle.api).origin,
-    pageOrigin: new URL(handle.page_url).origin, descriptor, authority: options => host.peers.application(options),
-    signTransition: payload => signTransitionRequest(payload, identity),
-    client: client ?? createDevicePairingClient({ url: handle.api + '/peers/pairing', headers: { Authorization: 'Bearer ' + handle.token } }),
-  };
+/** Single-pass processor serialized on the page owner inside `tendril agent run`.
+ * `store` is the page's private records ({ save(name, value), load(name) }). */
+export function createReviewedPairingProcessor({ session, pairing, store }) {
   let running;
   return options => {
     if (running) return running;
     const signal = AbortSignal.any([AbortSignal.timeout(30_000), ...[options?.signal].filter(Boolean)]);
-    running = advancePairing({ session, pairing, signal,
-      ...(store ? { retain: (name, value) => store.save(name, value), restore: name => store.load(name) } : {}) })
+    running = advancePairing({ session, pairing, signal, retain: (name, value) => store.save(name, value), restore: name => store.load(name) })
       .then(result => result ? [{ pairingId: result.pairingId, state: result.state, publicKey: result.challenge.publicKey,
         nextAction: result.nextAction, expiresAt: result.expiresAt }] : []).finally(() => { running = undefined; });
     return running;
   };
 }
-

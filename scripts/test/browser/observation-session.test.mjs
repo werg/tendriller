@@ -9,8 +9,8 @@ import { build } from 'esbuild';
 import { chromium } from '@playwright/test';
 import * as peer from '@chronolog/peer-session';
 import { openNativeDevice, openNativeApplication } from '@chronolog/peer-session/native';
-import { definition } from '../../../docs/tutorial/observation/domain.mjs';
-import { serveObservations } from '../../../docs/tutorial/observation/receiver.mjs';
+import { definition } from '../../../docs/tutorial/shared/observation/domain.mjs';
+import { serveObservations } from '../../../docs/tutorial/shared/observation/receiver.mjs';
 import { createTestConnection } from '../../observation-fixture/connection.mjs';
 
 async function until(predicate, label, milliseconds = 10_000) {
@@ -24,8 +24,8 @@ test('real Chromium to native session: consent, coalesced live fixes, correlated
   t.after(async () => { for (const close of cleanup.reverse()) await close().catch(() => {}); await rm(directory, { recursive: true, force: true }); });
   const bundle = await build({ stdin: { contents: `
     import { openApplicationDevice, openPeerApplication, MemoryBytesStore } from '@chronolog/peer-session';
-    import { definition } from './docs/tutorial/observation/domain.mjs';
-    import { mountObservations } from './docs/tutorial/observation/panel.mjs';
+    import { definition } from './docs/tutorial/shared/observation/domain.mjs';
+    import { mountObservations } from './docs/tutorial/shared/observation/panel.mjs';
     import { installSensorWrappers } from './runtime/src/sensors.ts';
     import { createTestConnection } from './scripts/observation-fixture/connection.mjs';
     const tracker = installSensorWrappers();

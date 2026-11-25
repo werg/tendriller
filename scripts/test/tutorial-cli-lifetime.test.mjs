@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {Writable} from 'node:stream';
-import {createCliLifetime} from '../../docs/tutorial/helpers/cli-lifetime.mjs';
+import {createCliLifetime} from '../../docs/tutorial/shared/cli-lifetime.mjs';
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
 function runtime(stdout) {
  const process=new EventEmitter(),chunks=[];

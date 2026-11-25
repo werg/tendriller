@@ -36,7 +36,7 @@ For a **new** example application, copy this directory beside the starter's
 `helpers/` directory. Import `definition` from `observation/domain.mjs` in both the
 native and browser session bootstrap before creating its signed descriptor.
 Keep normal setup, publication, enrollment, and participation from the
-[session bootstrap guide](../../SESSION_BOOTSTRAP.md). Do not replace an existing
+[session bootstrap guide](../../../SESSION_BOOTSTRAP.md). Do not replace an existing
 history's definition with this one. A different app can instead declare an
 appropriate reviewed-retention command in its own definition.
 

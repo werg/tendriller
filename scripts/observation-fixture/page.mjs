@@ -1,7 +1,7 @@
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { startRuntime } from '../../runtime/src/kernel.ts';
-import { mountObservations } from '../../docs/tutorial/observation/panel.mjs';
-import { definition } from '../../docs/tutorial/observation/domain.mjs';
+import { mountObservations } from '../../docs/tutorial/shared/observation/panel.mjs';
+import { definition } from '../../docs/tutorial/shared/observation/domain.mjs';
 
 const worker = window.worker = new Worker('/worker.mjs', { type: 'module' });
 window.ready = new Promise((resolve, reject) => worker.addEventListener('message', async ({ data }) => {

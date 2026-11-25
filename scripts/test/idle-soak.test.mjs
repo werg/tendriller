@@ -29,12 +29,12 @@ test('quiet healthy setup watch uses no requests or heartbeat for 48 virtual hou
   t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});
   let opens=0,requests=0,changes=0,sends=0; const ws=new EventTarget();
   ws.send=()=>sends++;ws.close=()=>ws.dispatchEvent(Object.assign(new Event('close'),{code:1000}));
-  const watcher=watchApplicationSetup({api:'https://isolated.example/api/t/aaaaaaaaaaaa',token:'tk_'+'a'.repeat(32),onChange:()=>changes++,fetcher:()=>{requests++;throw Error();},openSocket:()=>{opens++;return ws;}});
+  const watcher=watchApplicationSetup({page:{socket(){throw Error('unused');},request(){requests++;throw Error();}},onChange:()=>changes++,openSocket:()=>{opens++;return ws;}});
   ws.dispatchEvent(new Event('open'));t.mock.timers.tick(48*HOUR);await flush();
   assert.deepEqual({opens,requests,changes,sends},{opens:1,requests:0,changes:0,sends:0});await watcher.close();
 });
 test('revoked watch expires active recovery after one read without idle retries',async()=>{
-  let requests=0,opens=0;const watcher=watchApplicationSetup({api:'https://isolated.example/api/t/aaaaaaaaaaaa',token:'tk_'+'a'.repeat(32),onChange(){},openSocket(){opens++;throw Error();},fetcher:async()=>{requests++;return new Response(null,{status:403});}});
+  let requests=0,opens=0;const watcher=watchApplicationSetup({page:{socket(){throw Error('unused');},async request(){requests++;throw Object.assign(Error('Forbidden'),{status:403,code:'forbidden'});}},onChange(){},openSocket(){opens++;throw Error();}});
   await watcher.closed;assert.equal(opens,1);assert.equal(requests,1);
 });
 test('active retry has attempt and wall deadline bounds',async()=>{

@@ -1,21 +1,18 @@
 import { pathToFileURL } from 'node:url';
-import { resolve } from 'node:path';
 import { serveObservations } from './receiver.mjs';
 import { whenConnected } from '../helpers/signal-request.mjs';
-import { createCliLifetime } from '../helpers/cli-lifetime.mjs';
+import { createCliLifetime } from '../cli-lifetime.mjs';
 
-// Attach to the already-running owner. This module never creates another signer.
+// Attach to the page owner inside the running `tendril agent run`. This module never
+// creates another signer. `attach({ signal })` returns { session, detach }.
 export async function runObservationReceiver({
-  sessionModule, allowedDevices, requestSource, signal,
+  attach, allowedDevices, requestSource, signal,
   onState = value => console.log(JSON.stringify(value)),
   onOpened = () => {},
   onClosed = () => {},
 }) {
-  const bootstrap = await import(pathToFileURL(resolve(sessionModule)).href);
-  if (typeof bootstrap.attachSession !== 'function') {
-    throw Error('The session module must export attachSession; run the retained native peer first.');
-  }
-  const attached = await bootstrap.attachSession({ signal });
+  if (typeof attach !== 'function') throw Error('Supply the page attachment; start npm run agent first.');
+  const attached = await attach({ signal });
   onOpened();
   let receiver;
   try {
@@ -42,17 +39,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const args = process.argv.slice(2), values = new Map();
     for (let index = 0; index < args.length; index += 2) {
-      if (!['--session', '--allow', '--request'].includes(args[index]) || !args[index + 1] || values.has(args[index])) {
-        throw Error('Usage: node observation/native.mjs --session ./session.mjs --allow DEVICE_ID[,DEVICE_ID] [--request simulated|location]');
+      if (!['--page', '--allow', '--request'].includes(args[index]) || !args[index + 1] || values.has(args[index])) {
+        throw Error('Usage: node shared/observation/native.mjs --page SLUG --allow DEVICE_ID[,DEVICE_ID] [--request simulated|location]');
       }
       values.set(args[index], args[index + 1]);
     }
-    if (!values.has('--session') || !values.has('--allow')
+    if (!values.has('--page') || !values.has('--allow')
       || (values.has('--request') && !['simulated', 'location'].includes(values.get('--request')))) {
-      throw Error('Supply --session, --allow, and an optional --request simulated|location.');
+      throw Error('Supply --page, --allow, and an optional --request simulated|location.');
     }
+    const [{ attachPage }, { workspace }] = await Promise.all([import('@tendriller/tools/workspace'), import('../local.mjs')]);
+    const selected = await workspace();
     await runObservationReceiver({
-      sessionModule: values.get('--session'),
+      attach: options => attachPage(selected, values.get('--page'), options),
       allowedDevices: values.get('--allow').split(','),
       requestSource: values.get('--request'),
       signal: cli.signal,
