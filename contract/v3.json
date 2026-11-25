@@ -3,63 +3,117 @@
   "$id": "https://tendriller.dev/contract/v3.json",
   "title": "Tendriller public contract v3",
   "$defs": {
-    "create": {
+    "agentRegistration": {
       "type": "object",
       "properties": {
-        "name": {
-          "type": "string",
-          "maxLength": 200
-        },
         "owner": {
           "type": "string",
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"
         },
-        "lifetime": {
-          "const": "ad_hoc"
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]*$"
         },
-        "mode": {
-          "enum": [
-            "interactive",
-            "dashboard"
-          ]
-        },
-        "application": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            }
-          },
-          "required": [
-            "id"
-          ],
-          "additionalProperties": false
+        "publicKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
         }
       },
       "required": [
-        "owner"
+        "owner",
+        "name",
+        "publicKey"
       ],
       "additionalProperties": false
     },
-    "pageHandle": {
+    "agentJoin": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._-]*$"
+        },
+        "publicKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      },
+      "required": [
+        "code",
+        "name",
+        "publicKey"
+      ],
+      "additionalProperties": false
+    },
+    "agentCredential": {
       "type": "object",
       "properties": {
         "id": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^ag_[a-z2-7]{26}$"
         },
-        "api": {
+        "name": {
           "type": "string"
         },
         "token": {
+          "type": "string",
+          "pattern": "^ta_[a-z2-7]{32}$"
+        },
+        "account_state": {
+          "enum": [
+            "unclaimed",
+            "claimed"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "token"
+      ],
+      "additionalProperties": true
+    },
+    "agentPageCreate": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "agentPage": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z2-7]{12}$"
+        },
+        "name": {
           "type": "string"
         },
         "page_url": {
           "type": "string"
         },
-        "name": {
-          "type": "string"
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16
         },
         "application": {
           "type": "object",
@@ -74,27 +128,40 @@
           ],
           "additionalProperties": false
         },
-        "expires_at": {
-          "anyOf": [
-            {
-              "type": "integer",
-              "minimum": 0
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "next_step": {
+        "lifetime": {
           "type": "string"
         }
       },
       "required": [
         "id",
-        "api",
-        "token",
         "page_url",
         "application"
+      ],
+      "additionalProperties": true
+    },
+    "agentPageList": {
+      "type": "object",
+      "properties": {
+        "pages": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/agentPage"
+          }
+        },
+        "next_cursor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pages"
       ],
       "additionalProperties": true
     },

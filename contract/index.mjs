@@ -8,12 +8,21 @@ export const ROLES = Object.freeze(['owner', 'guest', 'display']);
 const string = { type: 'string' }, integer = { type: 'integer', minimum: 0 };
 const object = (properties, required = [], additionalProperties = false) => ({ type: 'object', properties, required, additionalProperties });
 const application = object({ id: { type: 'string', pattern: '^[0-9a-f]{64}$' } }, ['id']);
+const pageId = { type: 'string', pattern: '^[a-z2-7]{12}$' }, agentId = { type: 'string', pattern: '^ag_[a-z2-7]{26}$' };
+const email = { type: 'string', maxLength: 254, pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' };
+const agentName = { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9][A-Za-z0-9 ._-]*$' };
+const publicKey = { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' };
 const error = object({ code: string, message: string, details: {} }, ['code', 'message'], true);
 export const schemas = Object.freeze({
-  create: object({ name: { type: 'string', maxLength: 200 }, owner: { type: 'string', maxLength: 254, pattern: '^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$' },
-    lifetime: { const: 'ad_hoc' }, mode: { enum: ['interactive', 'dashboard'] }, application }, ['owner']),
-  pageHandle: object({ id: string, api: string, token: string, page_url: string, name: string, application,
-    expires_at: { anyOf: [integer, { type: 'null' }] }, next_step: string }, ['id', 'api', 'token', 'page_url', 'application'], true),
+  agentRegistration: object({ owner: email, name: agentName, publicKey }, ['owner', 'name', 'publicKey']),
+  agentJoin: object({ code: { type: 'string', minLength: 1, maxLength: 128 }, name: agentName, publicKey }, ['code', 'name', 'publicKey']),
+  agentCredential: object({ id: agentId, name: string, token: { type: 'string', pattern: '^ta_[a-z2-7]{32}$' },
+    account_state: { enum: ['unclaimed', 'claimed'] } }, ['id', 'name', 'token'], true),
+  agentPageCreate: object({ name: { type: 'string', minLength: 1, maxLength: 200 } }),
+  agentPage: object({ id: pageId, name: string, page_url: string, scopes: { type: 'array', items: string, maxItems: 16 }, application,
+    lifetime: string }, ['id', 'page_url', 'application'], true),
+  agentPageList: object({ pages: { type: 'array', maxItems: 100, items: { $ref: '#/$defs/agentPage' } },
+    next_cursor: { anyOf: [string, { type: 'null' }] } }, ['pages'], true),
   serviceDescriptor: object({ contract: { const: 3 }, core_release: string, limits: { type: 'object' } }, ['contract', 'core_release', 'limits']),
   objectResponse: { type: 'object' }, error, errorResponse: object({ error }, ['error']),
 });

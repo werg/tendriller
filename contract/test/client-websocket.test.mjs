@@ -56,10 +56,9 @@ test('a real client sends a legal close frame while retaining an invalid invitat
 
 test('an invalid setup notice closes a real client safely without reconnecting', { timeout: 5000 }, async t => {
   const server = await host(t), notices = [], statuses = []; let opens = 0, probes = 0;
-  const watch = watchApplicationSetup({ api: 'https://service.example/api/t/aaaaaaaaaaaa', token: 'tk_' + 'a'.repeat(32),
+  const watch = watchApplicationSetup({ page: { socket() { throw Error('unused'); }, request() { probes++; throw Error('Invalid notices must not reconnect'); } },
     onChange: notice => notices.push(notice), onStatus: status => statuses.push(status),
-    openSocket() { opens++; return new WebSocket(server.url); },
-    fetcher() { probes++; throw Error('Invalid notices must not reconnect'); } });
+    openSocket() { opens++; return new WebSocket(server.url); } });
   t.after(() => watch.close());
   (await server.connected).send('{"unexpected":true}');
   await watch.closed;

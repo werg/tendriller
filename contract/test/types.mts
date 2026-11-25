@@ -1,12 +1,15 @@
-import type { RuntimeConfiguration, RuntimeApi, CreateRequest } from '../index.mjs';
-import { createClient, createPage } from '../client.mjs';
-const create: CreateRequest = { owner: 'owner@example.test', application: { id: '12'.repeat(32) } };
-const cfg: RuntimeConfiguration = { id: 'page', application: create.application!, base: '/p/', version: 0, documentPath: null, features: { speech: null, shared_by: 'Owner' } };
+import type { RuntimeConfiguration, RuntimeApi, AgentRegistration } from '../index.mjs';
+import { createAgentClient, registerAgent } from '../client.mjs';
+const create: AgentRegistration = { owner: 'owner@example.test', name: 'laptop', publicKey: 'A'.repeat(43) };
+const cfg: RuntimeConfiguration = { id: 'page', application: { id: '12'.repeat(32) }, base: '/p/', version: 0, documentPath: null, features: { speech: null, shared_by: 'Owner' } };
 declare const runtime: RuntimeApi;
 void runtime.application.ready(); void runtime.signals.ready(); void runtime.host.peers.application();
 void runtime.host.peers.application({ signal: new AbortController().signal });
 void runtime.publication.saveOffline(); void runtime.sensors.stopAll();
-void createPage('https://host.test', create); void createClient({ api: 'https://host.test/api/page', token: 'secret' });
-// @ts-expect-error Application selection never chooses an alternate implementation.
-const invalid: CreateRequest = { owner: 'owner@example.test', application: { kind: 'cloudflare', id: 'page' } };
+void registerAgent('https://host.test', create);
+const agent = createAgentClient({ service: 'https://host.test', token: 'ta_' });
+void agent.pages.create({ name: 'Notes' }); void agent.page('aaaaaaaaaaaa').peers.application();
+const stream = agent.hub.socket('aaaaaaaaaaaa', 'setup/watch', ['tendriller.setup.v1']); stream.onmessage = event => void event.data;
+// @ts-expect-error Agent registration names its public key explicitly.
+const invalid: AgentRegistration = { owner: 'owner@example.test', name: 'laptop' };
 void cfg; void invalid;

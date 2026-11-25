@@ -7,8 +7,7 @@ export interface SetupWatchStatus {
   next?: string;
 }
 export function validateSetupNotice(value: unknown): SetupNotice;
-export function watchApplicationSetup(options: { api: string; token: string; signal?: AbortSignal;
+export function watchApplicationSetup(options: { page: Pick<import('./client.mjs').PageClient, 'request' | 'socket'>; signal?: AbortSignal;
   onChange(notice: SetupNotice): void | Promise<void>; onStatus?(status: SetupWatchStatus): void;
-  fetcher?: typeof fetch;
-  openSocket?(url: string, protocols: string[]): WebSocket;
+  openSocket?(path: 'setup/watch', protocols: string[]): import('./peers.mjs').PeerSocket;
 }): { readonly closed: Promise<void>; close(): Promise<void> };

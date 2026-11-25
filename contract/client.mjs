@@ -1,5 +1,7 @@
 import { assertValid, CONTRACT_VERSION, validate } from './index.mjs';
 import { createPeersClient, PEER_RENDEZVOUS_PROTOCOL } from './peers.mjs';
+import { createAgentHub } from './hub.mjs';
+export { createAgentHub, HUB_PROTOCOL, HUB_LIMITS, HUB_PATHS, HubError, validateHubPath } from './hub.mjs';
 export class ApiError extends Error {
   constructor(status, error) {
     super(error?.message || `HTTP ${status}`);
@@ -18,44 +20,94 @@ function checked(schema, value, status) {
   return value;
 }
 
-/** Explicit host lifecycle and participant operations. Application execution belongs to Chronolog. */
-export function createClient({ api, token }, { fetch: fetcher = globalThis.fetch, applicationId } = {}) {
-  const base = api.replace(/\/+$/, '');
-  async function request(path, { method = "GET", body, signal, headers = {} } = {}, responseSchema) {
-    const response = await fetcher(base + path, {
-      method, signal, headers: { ...headers, Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+const AGENT_TOKEN = /^ta_[a-z2-7]{32}$/;
+const PAGE_ID = /^[a-z2-7]{12}$/;
+const parse = async response => {
+  const text = await response.text();
+  try { return text ? JSON.parse(text) : undefined; }
+  catch { throw new ApiError(response.status, { code: "invalid_response", message: "The service returned a non-JSON response" }); }
+};
+
+/** Unauthenticated agent registration. The owner claims the agent by signing in to a page it created. */
+export async function registerAgent(service, body, { fetch: fetcher = globalThis.fetch, signal } = {}) {
+  return credential(service, '/api/agents', assertValid('agentRegistration', body), fetcher, signal);
+}
+/** Join the inviting account with a one-time dashboard code. */
+export async function joinAgent(service, body, { fetch: fetcher = globalThis.fetch, signal } = {}) {
+  return credential(service, '/api/agents/join', assertValid('agentJoin', body), fetcher, signal);
+}
+async function credential(service, path, body, fetcher, signal) {
+  const origin = requireServiceOrigin(service);
+  const response = await fetcher(origin + path, { method: 'POST', redirect: 'error', cache: 'no-store', signal,
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const result = await parse(response);
+  if (!response.ok) throw new ApiError(response.status, result?.error);
+  return checked('agentCredential', result, response.status);
+}
+
+/** One account-level agent credential for every granted page. Construction performs no network work. */
+export function createAgentClient({ service, token }, { fetch: fetcher = globalThis.fetch, WebSocket: Socket = globalThis.WebSocket, hub: hubOptions = {} } = {}) {
+  const origin = requireServiceOrigin(service);
+  if (typeof token !== 'string' || !AGENT_TOKEN.test(token)) throw new ApiError(400, { code: 'invalid_agent_token', message: 'Supply the retained ta_ agent token.' });
+  async function call(url, { method = "GET", body, signal, headers = {} } = {}, responseSchema) {
+    const response = await fetcher(url, {
+      method, signal, redirect: 'error', headers: { ...headers, Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const text = await response.text();
-    let result;
-    try { result = text ? JSON.parse(text) : undefined; }
-    catch { throw new ApiError(response.status, { code: "invalid_response", message: "The service returned a non-JSON response" }); }
+    const result = await parse(response);
     if (!response.ok) throw new ApiError(response.status, result?.error);
     return responseSchema ? checked(responseSchema, result, response.status) : result;
   }
-  return Object.freeze({
-    peers: createPeersClient({ base, applicationId, request: (path, options) => request('/' + path, options), protocols: [PEER_RENDEZVOUS_PROTOCOL, token] }),
-    request,
-    info: () => request('', undefined, 'objectResponse'),
-    service: () => request('/service', undefined, 'serviceDescriptor'),
-  });
-}
-
-export async function createPage(service, body, { fetch: fetcher = globalThis.fetch } = {}) {
-  const origin = requireServiceOrigin(service);
-  const response = await fetcher(origin + "/api/tendrils", {
-    method: "POST", redirect: 'error', headers: { "Content-Type": "application/json" }, body: JSON.stringify(assertValid("create", body)),
-  });
-  let result;
-  try { result = await response.json(); } catch { throw new ApiError(response.status, { code: "invalid_response", message: "The service returned a non-JSON response" }); }
-  if (!response.ok) throw new ApiError(response.status, result?.error);
-  const handle = checked("pageHandle", result, response.status);
-  let api;
-  try { api = new URL(handle.api); } catch { /* Checked below without exposing credentials. */ }
-  if (!api || api.origin !== origin || api.username || api.password) {
-    throw new ApiError(409, { code: 'service_origin_mismatch', message: 'The returned page handle belongs to another service. Keep the selected service origin and inspect the creation result before retrying.' });
+  const request = (path, options, schema) => call(origin + '/api/agent' + path, options, schema);
+  let hub;
+  const getHub = () => hub ??= createAgentHub({ service: origin, token, WebSocket: Socket,
+    probe: ({ signal }) => request('', { signal }), ...hubOptions });
+  const pages = new Map();
+  function page(id, { applicationId } = {}) {
+    if (typeof id !== 'string' || !PAGE_ID.test(id)) throw new ApiError(400, { code: 'invalid_page', message: 'Expected a page identity.' });
+    const key = id + ':' + (applicationId ?? '');
+    if (pages.has(key)) return pages.get(key);
+    const base = `${origin}/api/agent/pages/${id}`;
+    const pageRequest = (path, options, schema) => call(base + path, options, schema);
+    // Control streams share the hub; relay lanes carry application data and stay direct.
+    const socket = (path, protocols = []) => getHub().socket(id, path, protocols);
+    const peerSocket = (url, protocols) => {
+      const target = new URL(url);
+      const path = target.pathname.slice(new URL(base).pathname.length + 1) + target.search;
+      if (path.startsWith('peers/relay?')) return new Socket(url, [...protocols, token]);
+      return socket(path, protocols);
+    };
+    const value = Object.freeze({
+      id, base,
+      peers: createPeersClient({ base, applicationId, request: (path, options) => pageRequest('/' + path, options), protocols: [PEER_RENDEZVOUS_PROTOCOL], socket: peerSocket }),
+      request: pageRequest,
+      socket,
+      info: () => pageRequest('', undefined, 'objectResponse'),
+      service: () => pageRequest('/service', undefined, 'serviceDescriptor'),
+    });
+    pages.set(key, value);
+    return value;
   }
-  return handle;
+  return Object.freeze({
+    service: origin,
+    request,
+    self: options => request('', options, 'objectResponse'),
+    pages: Object.freeze({
+      list: ({ cursor, signal } = {}) => request('/pages' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), { signal }, 'agentPageList'),
+      async *all({ signal } = {}) {
+        let cursor;
+        do {
+          const result = await this.list({ cursor, signal });
+          yield* result.pages;
+          cursor = result.next_cursor;
+        } while (cursor);
+      },
+      create: (body = {}, { signal } = {}) => request('/pages', { method: 'POST', body: assertValid('agentPageCreate', body), signal }, 'agentPage'),
+    }),
+    page,
+    get hub() { return getHub(); },
+    close() { hub?.close(); },
+  });
 }
 
 /** Check capabilities before a tool creates a page or writes application data. */
