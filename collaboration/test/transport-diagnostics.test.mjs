@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {setImmediate as tick} from 'node:timers/promises';
 import {createTransportDiagnostics,TRANSPORT_DIAGNOSTIC_LIMIT} from '../../session/transport-diagnostics.mjs';
 const id='a'.repeat(64),other='b'.repeat(64);
-const row=(overrides={})=>({peerId:id,kind:'direct',sentBytes:12,receivedBytes:9,sentReliableBytes:10,receivedReliableBytes:8,sentLiveBytes:2,receivedLiveBytes:1,sentRequests:1,receivedRequests:0,...overrides});
+const row=(overrides={})=>({peerId:id,kind:'direct',sentReliableBytes:10,receivedReliableBytes:8,sentLiveBytes:2,receivedLiveBytes:1,...overrides});
 function fixture(read=async()=>[row()]){
  const listeners=new Set();let calls=0;
  const source={status:{phase:'connected',connectedPeers:[id],connectionRevision:0},async diagnostics(){calls++;return read();},onStatus(fn){listeners.add(fn);fn(this.status);return()=>listeners.delete(fn);},reconsiderConnections(){throw Error('MUST_NOT_RECONSIDER');}};
@@ -24,9 +24,22 @@ test('only authenticated rows are exposed, with bounded metadata and no identity
  assert(Object.isFrozen(report));assert(Object.isFrozen(report.connections));assert(Object.isFrozen(report.connections[0]));view.close();assert.equal(f.listeners,0);
 });
 test('missing or invalid counters remain unavailable rather than becoming invented zeros',async()=>{
- const f=fixture(async()=>[row({kind:'secret-kind',reason:'secret-reason',sentBytes:undefined,receivedBytes:NaN,sentReliableBytes:-1,receivedLiveBytes:Infinity,sentRequests:0})]);
+ const f=fixture(async()=>[row({kind:'secret-kind',reason:'secret-reason',sentReliableBytes:-1,receivedLiveBytes:Infinity,sentRequests:0})]);
  const view=createTransportDiagnostics(f.source),report=await view.refresh(),link=report.connections[0];
- assert.equal(link.kind,'unknown');assert.equal(link.reason,null);for(const key of['sentBytes','receivedBytes','sentReliableBytes','receivedLiveBytes'])assert.equal(link[key],null);assert.equal(link.sentRequests,0);view.close();
+ assert.equal(link.kind,'unknown');assert.equal(link.reason,null);for(const key of['sentBytes','receivedBytes','sentReliableBytes','receivedLiveBytes'])assert.equal(link[key],null);
+ assert.equal(link.receivedReliableBytes,8);assert.equal('sentRequests' in link,false);assert.equal('receivedRequests' in link,false);view.close();
+});
+test('link totals add measured reliable and live framing; a link without a live route counts reliable framing only',async()=>{
+ const f=fixture(async()=>[row(),row({connectionId:'no-live',sentLiveBytes:undefined,receivedLiveBytes:undefined,sentBytes:999,receivedBytes:999}),row({connectionId:'huge',sentReliableBytes:Number.MAX_SAFE_INTEGER})]);
+ const view=createTransportDiagnostics(f.source),[live,reliable,huge]=(await view.refresh()).connections;
+ assert.deepEqual([live.sentBytes,live.receivedBytes],[12,9]);assert.deepEqual([reliable.sentBytes,reliable.receivedBytes,reliable.sentLiveBytes],[10,8,null]);
+ assert.equal(huge.sentBytes,Number.MAX_SAFE_INTEGER);view.close();
+});
+test('agent handles name links only through the supplied local lookup and never expose the key',async()=>{
+ const f=fixture(),seen=[];const view=createTransportDiagnostics(f.source,{agentHandle:peerId=>{seen.push(peerId);return'notekeeper';}});
+ const report=await view.refresh();assert.equal(report.connections[0].agent,'notekeeper');assert.equal(seen.at(-1),id);assert.equal(JSON.stringify(report).includes(id),false);view.close();
+ const plain=createTransportDiagnostics(fixture().source);assert.equal((await plain.refresh()).connections[0].agent,null);plain.close();
+ assert.throws(()=>createTransportDiagnostics(f.source,{agentHandle:'notekeeper'}),/agentHandle/);
 });
 test('a diagnostic sample is capped before iterating an oversized sparse result',async()=>{
  const values=new Array(1_000_000);values[0]=row();const f=fixture(async()=>values),view=createTransportDiagnostics(f.source);
@@ -58,7 +71,7 @@ test('unsupported and failed diagnostics never expose exception text or fake tra
 });
 
 test('a connectionRevision change samples a same-peer replacement once and reports the reset current-link counters',async()=>{
- let direct=false;const f=fixture(async()=>[row({kind:direct?'direct':'relay',reason:direct?undefined:'direct_failed',sentBytes:direct?0:1000})]);
+ let direct=false;const f=fixture(async()=>[row({kind:direct?'direct':'relay',reason:direct?undefined:'direct_failed',sentReliableBytes:direct?0:1000,sentLiveBytes:0})]);
  f.source.status.connectionRevision=0;const view=createTransportDiagnostics(f.source);await view.refresh();assert.equal(f.calls,1);
  direct=true;f.change({phase:'connected',connectedPeers:[id],connectionRevision:1});await tick();
  assert.equal(f.calls,2);assert.equal(view.status().connectionRevision,1);assert.equal(view.status().connections[0].kind,'direct');assert.equal(view.status().connections[0].sentBytes,0);
@@ -115,7 +128,8 @@ test('the current session DTO preserves physical links to one signer and labels 
  const inspector=createTransportDiagnostics(source);
  try{const report=await inspector.refresh();assert.equal(report.phase,'connected');assert.equal(report.authenticatedPeers,1);assert.equal(report.connections.length,2);assert.equal(report.limited,false);
   assert.deepEqual(report.connections.map(row=>row.sentReliableBytes),[4,7]);
-  for(const row of report.connections){assert.equal(row.kind,'unknown');assert.equal(row.sentBytes,null);assert.equal(row.sentLiveBytes,null);assert.equal(row.receivedLiveBytes,null);}
+  assert.deepEqual(report.connections.map(row=>row.sentBytes),[4,7]);
+  for(const row of report.connections){assert.equal(row.kind,'unknown');assert.equal(row.sentLiveBytes,null);assert.equal(row.receivedLiveBytes,null);}
   assert.doesNotMatch(JSON.stringify(report),/physical-a|physical-b/);
  }finally{inspector.close();}
 });

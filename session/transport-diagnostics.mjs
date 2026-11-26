@@ -6,14 +6,22 @@ const kinds = new Set(['direct','relay','unknown']);
 const reasons = new Set(['direct_failed','direct_timeout']);
 const peer = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const counter = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+const handle = value => typeof value === 'string' && /^[a-z][a-z0-9_-]{1,31}$/.test(value) ? value : null;
+// A link's total is its measured reliable framing plus its live frames. A link
+// without a live route reports no live fields and carries no live frames; a
+// present but malformed live counter leaves the total unknown.
+const total = (reliable, live) => reliable === null ? null : live === undefined ? reliable : counter(live) === null ? null : Math.min(Number.MAX_SAFE_INTEGER, reliable + live);
 const signalRejections = value => value && typeof value === 'object' && !Array.isArray(value)
   ? Object.freeze({ total: counter(value.total), clockSkew: counter(value.clockSkew), expired: counter(value.expired),
     unauthorized: counter(value.unauthorized), duplicate: counter(value.duplicate), capacity: counter(value.capacity) }) : null;
 
 /** The source is the owned participant's authenticated-link diagnostics API.
  * Raw adapter onTransport selections deliberately have no input path here. */
-export function createTransportDiagnostics(participation, { signal, timeoutMs = 5000 } = {}) {
+export function createTransportDiagnostics(participation, { signal, timeoutMs = 5000, agentHandle } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw TypeError('Invalid local diagnostics deadline');
+  if (agentHandle !== undefined && typeof agentHandle !== 'function') throw TypeError('agentHandle must be a function');
+  // Names a link only by a known agent's public @handle; the key itself never leaves.
+  const agentOf = peerId => { if (!agentHandle) return null; try { return handle(agentHandle(peerId)); } catch { return null; } };
   const listeners = new Set(); let closed = false, stopStatus = () => {}, version = 0, pending, physicalPending = false, refreshAfterPending = false, connectionRevision = null;
   let phase = 'unknown', peers = null, sampled = false, sampleLimited = false, statusLimited = false, failure = null, rows = [];
   let cancelRead = () => {};
@@ -22,8 +30,8 @@ export function createTransportDiagnostics(participation, { signal, timeoutMs = 
     return Object.freeze({ protocol: TRANSPORT_DIAGNOSTIC_PROTOCOL,
       state: closed ? 'closed' : !supported ? 'unavailable' : 'available', phase, connectionRevision,
       authenticatedPeers: peers?.size ?? (sampled ? new Set(rows.map(row => row.peerId)).size : null), sampled, limited: statusLimited || sampleLimited, error: failure,
-      connections: Object.freeze(rows.map((row, index) => Object.freeze({ link: index + 1, kind: row.kind, reason: row.reason,
-        sentBytes: row.sentBytes, receivedBytes: row.receivedBytes, sentReliableBytes: row.sentReliableBytes, receivedReliableBytes: row.receivedReliableBytes, sentLiveBytes: row.sentLiveBytes, receivedLiveBytes: row.receivedLiveBytes, sentRequests: row.sentRequests, receivedRequests: row.receivedRequests, signalRejections: row.signalRejections }))),
+      connections: Object.freeze(rows.map((row, index) => Object.freeze({ link: index + 1, agent: agentOf(row.peerId), kind: row.kind, reason: row.reason,
+        sentBytes: row.sentBytes, receivedBytes: row.receivedBytes, sentReliableBytes: row.sentReliableBytes, receivedReliableBytes: row.receivedReliableBytes, sentLiveBytes: row.sentLiveBytes, receivedLiveBytes: row.receivedLiveBytes, signalRejections: row.signalRejections }))),
     });
   }
   const notify = (listener, value) => { try { void Promise.resolve(listener(value)).catch(() => {}); } catch {} };
@@ -70,8 +78,10 @@ export function createTransportDiagnostics(participation, { signal, timeoutMs = 
         const linkId = typeof item?.connectionId === 'string' && item.connectionId.length <= 128 && /^[A-Za-z0-9_.:-]+$/.test(item.connectionId) ? item.connectionId : item?.peerId;
         if (!item || !peer(item.peerId) || seen.has(linkId) || peers && !peers.has(item.peerId)) { nextSampleLimited = true; continue; }
         seen.add(linkId);
+        const sentReliableBytes = counter(item.sentReliableBytes), receivedReliableBytes = counter(item.receivedReliableBytes);
         next.push({ peerId: item.peerId, kind: kinds.has(item.kind) ? item.kind : 'unknown', reason: item.kind === 'relay' && reasons.has(item.reason) ? item.reason : null,
-          sentBytes: counter(item.sentBytes), receivedBytes: counter(item.receivedBytes), sentReliableBytes: counter(item.sentReliableBytes), receivedReliableBytes: counter(item.receivedReliableBytes), sentLiveBytes: counter(item.sentLiveBytes), receivedLiveBytes: counter(item.receivedLiveBytes), sentRequests: counter(item.sentRequests), receivedRequests: counter(item.receivedRequests), signalRejections: signalRejections(item.signalRejections) });
+          sentBytes: total(sentReliableBytes, item.sentLiveBytes), receivedBytes: total(receivedReliableBytes, item.receivedLiveBytes),
+          sentReliableBytes, receivedReliableBytes, sentLiveBytes: counter(item.sentLiveBytes), receivedLiveBytes: counter(item.receivedLiveBytes), signalRejections: signalRejections(item.signalRejections) });
       }
       rows = next; sampleLimited = nextSampleLimited; sampled = true; failure = null; emit();
     }, () => {

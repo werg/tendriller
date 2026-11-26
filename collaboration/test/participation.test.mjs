@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { participateApplication, PEER_TRANSPORT_POLICY } from '../../session/participation.mjs';
 import { validatePeerAdvertisement } from '../../contract/discovery.mjs';
+import { createTransportDiagnostics } from '../../session/transport-diagnostics.mjs';
+import { createApplicationOwner } from '@chronolog/peer-session/worker';
+import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { p, memoryStore, authorityForDevices, createPhysicalSession } from './physical-fixture.mjs';
 const flush = () => new Promise(setImmediate);
 async function until(predicate) { const end = Date.now() + 4000; while (!predicate()) { if (Date.now() > end) throw Error('PARTICIPATION_TEST_DEADLINE'); await flush(); } }
@@ -225,6 +228,22 @@ test('a relay link is promoted to direct after a network change, and a failed pr
   try {
     await eventually(() => controllers.every(controller => controller.status.connectedPeers.length === 1));
     assert.deepEqual(await kinds(), ['relay', 'relay']);
+    // Owner attachments read the session itself: it reports the selected route
+    // and fallback reason beside its own measured per-link counters.
+    for (const session of sessions) {
+      const [row, ...rest] = await session.diagnostics();
+      assert.equal(rest.length, 0); assert.equal(row.kind, 'relay'); assert.ok(['direct_failed', 'direct_timeout'].includes(row.reason));
+      assert.ok(Number.isSafeInteger(row.sentReliableBytes) && row.sentReliableBytes > 0); assert.equal(typeof row.connectionId, 'string');
+    }
+    // The Worker-owner composition: a page facade attached to the owner sees the same route and link totals.
+    const ports = new MessageChannel(), owner = createApplicationOwner(sessions[0]); owner.attach(ports.port1);
+    const facade = await connectApplicationOwner(ports.port2, { applicationId: sessions[0].applicationId, timeoutMs: 2000 });
+    const inspector = createTransportDiagnostics(facade);
+    try {
+      const [link] = (await inspector.refresh()).connections;
+      assert.equal(link.kind, 'relay'); assert.ok(link.reason === 'direct_failed' || link.reason === 'direct_timeout');
+      assert.ok(link.sentBytes >= link.sentReliableBytes && link.sentReliableBytes > 0); assert.ok(link.receivedBytes > 0);
+    } finally { inspector.close(); await facade.detach(); ports.port1.close(); ports.port2.close(); } // owner.close() would close the session itself.
     // UDP still blocked: the promotion fails and the working relay link stays.
     const revisions = controllers.map(controller => controller.status.connectionRevision);
     await controllers[observer].reconsiderConnections();
@@ -240,6 +259,11 @@ test('a relay link is promoted to direct after a network change, and a failed pr
     await operation.materialized();
     const known = index => new Set(sessions[index].exportFacts().envelopes.map(envelope => envelope.payload.proposalId));
     await eventually(() => known(dialer).size === 1 && [...known(dialer)].every(id => known(observer).has(id)));
+    const [direct] = await sessions[observer].diagnostics();
+    assert.equal(direct.kind, 'direct'); assert.equal('reason' in direct, false);
+    // Closing the controller hands the session back its own unannotated report.
+    await controllers[observer].close();
+    assert.equal(Object.hasOwn(sessions[observer], 'diagnostics'), false);
   } finally { stops.forEach(stop => stop()); await Promise.allSettled(controllers.map(controller => controller.close())); await Promise.allSettled(sessions.map(session => session.close())); }
 });
 

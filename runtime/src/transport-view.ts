@@ -1,39 +1,70 @@
-import type { RuntimeTransport, TransportDiagnosticReport } from '../../contract/transport-diagnostics.mjs';
+import type { RuntimeTransport, TransportDiagnosticConnection, TransportDiagnosticReport } from '../../contract/transport-diagnostics.mjs';
+
+/** Human data size in decimal units (1 KB = 1000 bytes), e.g. "140.1 KB". */
+export function formatDataSize(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes, unit = 0;
+  while (value >= 1000 && unit < units.length - 1) { value /= 1000; unit++; }
+  const digits = unit === 0 || value >= 100 ? 0 : 1;
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: digits })} ${units[unit]}`;
+}
+
+const size = (value: number | null) => value === null ? 'not measured' : formatDataSize(value);
+const route = (link: TransportDiagnosticConnection) => link.kind === 'direct' ? 'Direct connection'
+  : link.kind === 'relay' ? link.reason === 'direct_timeout' ? 'Via relay (a direct connection timed out)'
+    : link.reason === 'direct_failed' ? 'Via relay (a direct connection could not be made)' : 'Via relay'
+  : 'Connection type not reported';
+
+/** Plain-language summary of the bounded local report; never peer keys or addresses. */
+export function connectionSummary(report: TransportDiagnosticReport): string {
+  const count = report.authenticatedPeers;
+  let text = report.state === 'closed' ? report.phase === 'closed' ? 'Not connected. This page has stopped syncing; reload it to reconnect.' : 'Connection details are paused.'
+    : report.state === 'unavailable' ? 'Connection details are not available on this page.'
+    : count === null ? 'Checking for connected devices…'
+    : count > 0 ? `Connected to ${count} ${count === 1 ? 'device' : 'devices'}.`
+    : report.phase === 'connecting' ? 'Connecting… Your changes are saved on this device.'
+    : 'Not connected. Your changes are saved on this device and will sync when a device or your agent is online.';
+  if (report.error) text += report.error === 'timed_out' ? ' Reading connection details took too long; select Refresh to try again.' : ' Connection details could not be read; select Refresh to try again.';
+  return text;
+}
 
 /** The standard menu renders only the bounded local report, never peer identities. */
 export function mountTransportInspector(transport: RuntimeTransport): { element: HTMLElement; open(): void; close(): void } {
-  const section = document.createElement('section'); section.className = 'section'; section.setAttribute('aria-label', 'Application connections');
-  const heading = document.createElement('h3'); heading.textContent = 'Application connections';
-  const summary = document.createElement('p'); summary.setAttribute('aria-live', 'polite'); summary.setAttribute('aria-atomic', 'true');
-  const scope = document.createElement('p'); scope.className = 'note'; scope.textContent = 'Authenticated session links only. A raw transport selection is not a successful connection. Counters measure framed payload, excluding encryption/socket overhead and SDP. Counters belong to the current link and reset on replacement. They are not billing or stored/materialized/retained/finalized operation proof.';
-  const list = document.createElement('ul');
-  const refresh = document.createElement('button'); refresh.type = 'button'; refresh.className = 'secondary'; refresh.textContent = 'Refresh connection details';
-  const freshness = document.createElement('p'); freshness.className = 'note'; freshness.textContent = 'Local samples only; no periodic polling or network probes.';
-  section.append(heading, summary, scope, list, refresh, freshness);
+  const make = <K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string) => {
+    const node = document.createElement(tag); if (className) node.className = className; if (text) node.textContent = text; return node;
+  };
+  const section = make('section', 'section'); section.setAttribute('aria-label', 'Application connections');
+  const heading = make('h3', undefined, 'Application connections');
+  const summary = make('p'); summary.setAttribute('aria-live', 'polite'); summary.setAttribute('aria-atomic', 'true');
+  const list = make('ul', 'conn-list'); list.setAttribute('aria-label', 'Connected devices');
+  const refresh = make('button', 'secondary', 'Refresh'); refresh.type = 'button'; refresh.setAttribute('aria-label', 'Refresh connection details');
+  const technical = make('details', 'conn-tech'); const technicalSummary = make('summary', undefined, 'Technical details');
+  const lanes = make('ul'); const sampling = make('p');
+  const scope = make('p', undefined, 'Data counts are framed sync payload on the current link, before encryption and network overhead, and restart when a link is replaced. They are not billing figures and do not show that a change was stored or finalized.');
+  technical.append(technicalSummary, lanes, sampling, scope);
+  section.append(heading, summary, list, technical, refresh);
   let disposed = false, reading = false;
-  const amount = (value: number | null, unit: string) => value === null ? 'unavailable' : `${value.toLocaleString()} ${unit}`;
   const render = (report: TransportDiagnosticReport) => {
     if (disposed) return;
-    const count = report.authenticatedPeers;
-    summary.textContent = report.state === 'closed' ? report.phase === 'closed' ? 'The application participant is closed.' : 'Local connection observation is closed.'
-      : report.state === 'unavailable' ? count === null ? 'Connection details unavailable. This page has not registered a participant with local diagnostics.' : 'This participant does not expose local connection details.'
-      : count === null ? 'Authenticated connectivity has not been reported.'
-      : `${count} authenticated ${count === 1 ? 'peer' : 'peers'} reported. Application state: ${report.phase.replaceAll('-', ' ')}.`;
-    if (report.error) summary.textContent += report.error === 'timed_out' ? ' The local read timed out; try refreshing.' : ' Local details could not be read; try refreshing.';
-    list.replaceChildren();
+    summary.textContent = connectionSummary(report);
+    list.replaceChildren(); lanes.replaceChildren();
+    let device = 0;
     for (const link of report.connections) {
-      const item = document.createElement('li'), title = document.createElement('strong'), data = document.createElement('p');
-      title.textContent = `Link ${link.link}: ${link.kind === 'direct' ? 'Direct' : link.kind === 'relay' ? 'Relay' : 'Transport unavailable'} (authenticated)`;
-      data.textContent = `Sent: ${amount(link.sentBytes, 'bytes')}; received: ${amount(link.receivedBytes, 'bytes')}. Peer protocol requests: ${amount(link.sentRequests, 'sent')}; ${amount(link.receivedRequests, 'received')}.`;
-      const lanes = document.createElement('p'); lanes.className = 'note';
-      lanes.textContent = `Reliable: ${amount(link.sentReliableBytes, 'sent bytes')}; ${amount(link.receivedReliableBytes, 'received bytes')}. Live: ${amount(link.sentLiveBytes, 'sent bytes')}; ${amount(link.receivedLiveBytes, 'received bytes')}.`;
-      item.append(title, data, lanes);
-      if (link.reason) { const reason = document.createElement('p'); reason.className = 'note'; reason.textContent = link.reason === 'direct_timeout' ? 'Fallback reason: the direct attempt timed out.' : 'Fallback reason: the direct attempt failed.'; item.append(reason); }
+      const name = link.agent ? `@${link.agent}` : `Device ${++device}`;
+      const item = make('li', 'conn-item');
+      const data = link.receivedBytes === null && link.sentBytes === null ? 'Data use not measured'
+        : `Received ${size(link.receivedBytes)} · Sent ${size(link.sentBytes)}`;
+      item.append(make('strong', 'conn-name', name), make('p', 'conn-route', route(link)), make('p', undefined, data));
       list.append(item);
+      const detail = [`${name} (link ${link.link}, ${link.kind}${link.reason ? `, ${link.reason.replace('_', ' ')}` : ''})`,
+        `reliable ${size(link.sentReliableBytes)} sent, ${size(link.receivedReliableBytes)} received`,
+        `live ${size(link.sentLiveBytes)} sent, ${size(link.receivedLiveBytes)} received`];
+      if (link.signalRejections?.total != null) detail.push(`${link.signalRejections.total.toLocaleString()} live signals rejected`);
+      lanes.append(make('li', undefined, detail.join('; ') + '.'));
     }
-    if (!report.sampled && report.state === 'available') freshness.textContent = 'Select Refresh for current local transport details. No periodic polling or network probes.';
-    else freshness.textContent = 'Last local sample; counters are not continuously monitored. No network probes.';
-    if (report.limited) freshness.textContent += ' Some details were omitted.';
+    list.hidden = report.connections.length === 0; lanes.hidden = report.connections.length === 0;
+    sampling.textContent = (!report.sampled && report.state === 'available' ? 'Not sampled yet; select Refresh.' : 'Sampled on this device when you open this panel or select Refresh.')
+      + ' Nothing is polled or probed over the network.' + (report.limited ? ' Some links were left out.' : '');
     refresh.disabled = reading || report.state !== 'available';
   };
   const read = async () => {

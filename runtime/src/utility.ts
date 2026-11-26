@@ -1,4 +1,5 @@
 import { mountTransportInspector } from "./transport-view";
+import { nameTransportAgents } from "./transport";
 import { encodePublicationPath } from "./paths";
 import { observeUtilityBar, observeVisualViewport, utilityBottom, utilityLeft, utilityMaxWidth, utilityRight, utilityTop } from "./utility-layout";
 import { renderQrSvg } from "./qr";
@@ -63,6 +64,9 @@ export function mountUtility(api: RuntimeApi): () => void {
     .secondary{border:1px solid #8888;width:100%;font-weight:600}.note{font-size:12px;opacity:.8}
     .section{border-top:1px solid #8885;padding-top:14px;margin-top:14px}.links{display:flex;flex-wrap:wrap;gap:2px;margin:12px -8px -8px;border-top:1px solid #8885;padding-top:6px}.links a{font-size:12px}
     .diag-list{list-style:none;margin:0 0 10px;padding:0;display:grid;gap:6px}.diag-item{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;padding:6px 8px;border-radius:8px;background:#8881;overflow-wrap:anywhere}
+    .conn-list{list-style:none;margin:0 0 10px;padding:0;display:grid;gap:8px}.conn-item{border:1px solid #8884;border-radius:10px;padding:8px 10px;display:grid;gap:2px;background:#8881;min-width:0}
+    .conn-name{font-weight:700;font-size:13px;overflow-wrap:anywhere}.conn-item p{margin:0;font-size:12px;overflow-wrap:anywhere}.conn-route{opacity:.85}
+    .conn-tech{margin:4px 0 10px}.conn-tech summary{font-size:12px;opacity:.85;cursor:pointer;padding:6px 0;min-height:32px}.conn-tech ul{margin:4px 0 8px;padding-left:18px;font-size:12px}.conn-tech li+li{margin-top:4px}.conn-tech p{font-size:12px;opacity:.8;margin:0 0 6px}
     .diag-actions{display:flex;gap:6px;flex-wrap:wrap}.diag-actions .secondary{width:auto;flex:1}
     .share-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}.share-bar button{flex:1;min-width:110px}
     .share-primary-row{display:flex;gap:6px;margin-bottom:8px}.share-primary-row .primary{margin-bottom:0;flex:1}.share-primary-row .qr-toggle{flex:0 0 auto;border:1px solid #8888;font-weight:600;white-space:nowrap}
@@ -739,6 +743,9 @@ export function mountUtility(api: RuntimeApi): () => void {
     }
   });
   const transportInspector = mountTransportInspector(api.transport); panel.append(transportInspector.element);
+  // Links to a page agent show its public @handle; other devices stay anonymous.
+  const nameTransportLinks = () => nameTransportAgents(api.transport, peerId => agentSnap().agents.find(agent => agent.public_key === peerId)?.handle ?? null);
+  nameTransportLinks(); const offTransportNames = api.agents?.onChange?.(() => { if (!disposed) nameTransportLinks(); }) ?? (() => {});
   const diagnostics = element("section", undefined, "section"); diagnostics.hidden = true;
   const diagHeading = element("h3", "Diagnostics");
   const diagList = element("ul", undefined, "diag-list");
@@ -1130,7 +1137,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     updateKeyboardLayout();
   });
   return () => {
-    disposed = true; stopFollowing(); voiceControls?.dispose(); transportInspector.close(); offUpdate(); offAgents(); offBroadcasts(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
+    disposed = true; stopFollowing(); voiceControls?.dispose(); transportInspector.close(); offTransportNames(); nameTransportAgents(api.transport, null); offUpdate(); offAgents(); offBroadcasts(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     document.removeEventListener("focusin", updateKeyboardLayout); document.removeEventListener("focusout", updateKeyboardLayout);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();

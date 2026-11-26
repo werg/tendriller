@@ -94,17 +94,22 @@ export function participateApplication(session, { peers, openDirectConnection,
     }
     cancelPassiveFallback(peer.identity);
     const controller = new AbortController(), connectionSignal = AbortSignal.any([signal, controller.signal]);
-    opening.set(peer.identity, controller); introduced.set(peer.identity, invitation?.channel); changed(); let connection;
+    opening.set(peer.identity, controller); introduced.set(peer.identity, invitation?.channel); changed(); let connection, route;
     try {
       const target = { peer, ...(invitation === undefined ? {} : { invitation }) };
       connection = await (promote ? adapter.transport.upgrade(target, { signal: connectionSignal }) : adapter.transport.open(target, { signal: connectionSignal }));
       // The direct path is physically open: hand the peer over from its relay link.
       if (upgrade) { connectionSignal.throwIfAborted(); retire(peer.identity); }
+      // Record the route before authentication: the session's own connection
+      // revision changes as soon as the link authenticates, and a diagnostics
+      // read it triggers must already see this link's route kind.
+      route = adapter.transport.describe(connection); descriptions.set(peer.identity, route);
       const link = await session.connectPeer({ connection, peerIdentity: peer.identity, signal: connectionSignal });
-      if (signal.aborted || link.signal.aborted) { await link.close(); if (!signal.aborted) scheduleRetry(); return; }
-      links.set(peer.identity, link); descriptions.set(peer.identity, adapter.transport.describe(connection)); connectionRevision++; error = null; retryCount = 0; clearTimeout(retry); retry = undefined;
+      if (signal.aborted || link.signal.aborted) { if (descriptions.get(peer.identity) === route) descriptions.delete(peer.identity); await link.close(); if (!signal.aborted) scheduleRetry(); return; }
+      links.set(peer.identity, link); connectionRevision++; error = null; retryCount = 0; clearTimeout(retry); retry = undefined;
       link.signal.addEventListener('abort', () => { if (links.get(peer.identity) === link) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; } changed(); scheduleRetry(); }, { once: true });
     } catch (cause) {
+      if (route && descriptions.get(peer.identity) === route && !links.has(peer.identity)) descriptions.delete(peer.identity);
       try { await connection?.close(); } catch {}
       // A failed promotion keeps the working relay link; nothing needs a retry.
       if (!connectionSignal.aborted && !links.has(peer.identity)) { error = `connect:${failureCode(cause, 'peer_connection_unavailable')}`; scheduleRetry(); }
@@ -161,11 +166,30 @@ export function participateApplication(session, { peers, openDirectConnection,
     if (session.authority.grant(invitation.peer.identity)?.reader) void connect(invitation.peer, invitation.token);
     else void refresh().then(() => { if (session.authority.grant(invitation.peer.identity)?.reader) return connect(invitation.peer, invitation.token); });
   });
+  // One report per authenticated link: the session's own counters for each
+  // physical connection, annotated with the route this controller selected for
+  // that peer (direct or relay, plus the fallback reason). Links this controller
+  // did not open keep the session's `kind: 'unknown'`.
+  const sessionDiagnostics = typeof session.diagnostics === 'function' ? session.diagnostics.bind(session) : null;
+  async function diagnostics() {
+    const rows = sessionDiagnostics ? await sessionDiagnostics() : [...links.keys()].map(peerId => ({ peerId, kind: 'unknown' }));
+    return (Array.isArray(rows) ? rows : []).map(row => {
+      const route = row && descriptions.get(row.peerId);
+      if (!route) return row;
+      const { reason: _, ...rest } = row;
+      return { ...rest, kind: route.kind, ...(route.kind === 'relay' && route.reason ? { reason: route.reason } : {}) };
+    });
+  }
+  // Every owner attachment reads `session.diagnostics()` (`diagnostics.peers`), so
+  // the owned session reports the same annotated rows while this controller runs.
+  let annotated = false;
+  try { Object.defineProperty(session, 'diagnostics', { value: diagnostics, configurable: true, writable: true }); annotated = true; } catch {}
   const stopAuthority = session.authority.subscribe(() => { void advertise(); void refresh(); });
   const closed = new Promise(resolve => {
     let stopping = false;
     const shutdown = () => {
       if (stopping) return; stopping = true; stopAuthority(); clearTimeout(retry);
+      if (annotated && session.diagnostics === diagnostics) { try { delete session.diagnostics; } catch {} }
       for (const timer of passiveFallbacks.values()) clearTimeout(timer);
       passiveFallbacks.clear();
       for (const controller of opening.values()) controller.abort(signal.reason);
@@ -176,7 +200,7 @@ export function participateApplication(session, { peers, openDirectConnection,
   void refresh();
   return Object.freeze({ get status() { return status(); }, signal, closed,
     onStatus(listener) { listeners.add(listener); try { listener(status()); } catch {} return () => listeners.delete(listener); },
-    async diagnostics() { return [...links.keys()].map(peerId => ({ peerId, ...descriptions.get(peerId) })); },
+    diagnostics,
     reconsiderConnections() { return Promise.all([refresh(), promoteRelays()]).then(() => undefined); }, resume() { return refresh(); },
     async close() { stop.abort(new Error('PARTICIPATION_CLOSED')); await closed; },
   });

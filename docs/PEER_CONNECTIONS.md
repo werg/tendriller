@@ -82,6 +82,9 @@ returns direct/relay/unknown routing and bounded fallback reasons with reliable
 and live application framing byte counts. These exclude SDP, encryption and
 WebSocket/UDP overhead and are not a Cloudflare billing estimate. `unknown` means
 a custom transport did not describe its route; it must not be reported as P2P.
+While the controller runs, the owned session's own `session.diagnostics()` (and so
+every owner attachment, including the browser page facade) returns the same
+route-annotated rows; closing the controller restores the session's `unknown` kind.
 Read diagnostics when displaying the inspector or explicitly refreshing it;
 do not turn the inspector into another polling loop.
 

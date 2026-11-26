@@ -1,36 +1,59 @@
 import {test,expect,type Page} from '@playwright/test';
 import {build} from 'esbuild';
 const compiled=await build({stdin:{contents:"export {mountUtility} from './runtime/src/utility.ts';export {createTransportBinding} from './runtime/src/transport.ts';",resolveDir:new URL('../..',import.meta.url).pathname,loader:'ts'},bundle:true,format:'iife',globalName:'Inspector',platform:'browser',write:false});
-async function fixture(page:Page,registered=true){
+async function fixture(page:Page,registered=true,roster:any[]=[]){
  await page.route('https://inspector.test/**',route=>route.fulfill({contentType:'text/html',body:'<!doctype html><title>Transport inspector</title><body><button>App</button></body>'}));
  await page.goto('https://inspector.test/');await page.addScriptTag({content:compiled.outputFiles[0].text});
- await page.evaluate(registered=>{
+ await page.evaluate(([registered,roster])=>{
   const w=window as any;w.reads=0;w.hostReads=0;w.listeners=new Set();w.binding=w.Inspector.createTransportBinding();
-  w.source={status:{phase:'connected',connectedPeers:['a'.repeat(64)],connectionRevision:0},onStatus(fn:any){w.listeners.add(fn);fn(this.status);return()=>w.listeners.delete(fn);},async diagnostics(){w.reads++;return[{peerId:'a'.repeat(64),kind:w.kind??'relay',reason:'direct_timeout',sentBytes:w.total??12,receivedBytes:9,sentReliableBytes:10,receivedReliableBytes:8,sentLiveBytes:2,receivedLiveBytes:1,sentRequests:1,receivedRequests:0,token:'DO_NOT_DISPLAY',address:'DO_NOT_DISPLAY'}];},reconsiderConnections(){throw Error('MUST_NOT_RECONSIDER');}};
+  w.source={status:{phase:'connected',connectedPeers:['a'.repeat(64)],connectionRevision:0},onStatus(fn:any){w.listeners.add(fn);fn(this.status);return()=>w.listeners.delete(fn);},async diagnostics(){w.reads++;return[{peerId:'a'.repeat(64),kind:w.kind??'relay',reason:'direct_timeout',sentReliableBytes:w.total??10,receivedReliableBytes:143_445,sentLiveBytes:2,receivedLiveBytes:1,token:'DO_NOT_DISPLAY',address:'DO_NOT_DISPLAY'}];},reconsiderConnections(){throw Error('MUST_NOT_RECONSIDER');}};
   if(registered)w.binding.api.install(w.source);
-  const noop=()=>()=>{};
-  w.dispose=w.Inspector.mountUtility({transport:w.binding.api,identity:{base:'https://inspector.test/',version:1,publication:null,managementUrl:'https://inspector.test/manage'},publication:{pinned:false,onUpdate:noop},installation:{status:()=>({state:'unavailable',platform:'desktop'}),on:noop},sensors:{status:()=>({active:[],pending:[]}),on:noop,stopAll:()=>0}});
+  const noop=()=>()=>{};w.roster={primary_agent_id:null,agents:roster,live:{}};w.rosterListeners=new Set();
+  const agents={snapshot:()=>w.roster,onChange(fn:any){w.rosterListeners.add(fn);return()=>w.rosterListeners.delete(fn);}};
+  w.dispose=w.Inspector.mountUtility({transport:w.binding.api,agents,identity:{base:'https://inspector.test/',version:1,publication:null,managementUrl:'https://inspector.test/manage'},publication:{pinned:false,onUpdate:noop},installation:{status:()=>({state:'unavailable',platform:'desktop'}),on:noop},sensors:{status:()=>({active:[],pending:[]}),on:noop,stopAll:()=>0}});
   w.fetch=()=>{w.hostReads++;throw Error('MUST_NOT_FETCH');};w.WebSocket=class{constructor(){w.hostReads++;throw Error('MUST_NOT_OPEN_SOCKET');}};
- },registered);
+ },[registered,roster] as const);
 }
 test('Page options shows only authenticated local evidence and samples again only on explicit action',async({page})=>{
  await page.clock.install();await fixture(page);expect(await page.evaluate(()=>(window as any).reads)).toBe(0);
  await page.clock.fastForward(3600_000);expect(await page.evaluate(()=>(window as any).reads)).toBe(0);
  await page.getByRole('button',{name:'Page options',exact:true}).click();
  const inspector=page.getByRole('region',{name:'Application connections'});
- await expect(inspector).toContainText('1 authenticated peer');await expect(inspector).toContainText('Link 1: Relay (authenticated)');
- await expect(inspector).toContainText('Fallback reason: the direct attempt timed out.');await expect(inspector).toContainText('Reliable: 10 sent bytes');await expect(inspector).toContainText('Live: 2 sent bytes');
- await expect(inspector).toContainText('not billing');await expect(inspector).not.toContainText('DO_NOT_DISPLAY');await expect(inspector).not.toContainText('a'.repeat(64));
+ await expect(inspector).toContainText('Connected to 1 device.');await expect(inspector).toContainText('Device 1');
+ await expect(inspector).toContainText('Via relay (a direct connection timed out)');await expect(inspector).toContainText('Received 143 KB · Sent 12 B');
+ const technical=inspector.getByText('Technical details');const lanes=inspector.getByText('reliable 10 B sent');
+ await expect(lanes).toBeHidden();await technical.focus();await page.keyboard.press('Enter');await expect(lanes).toBeVisible();
+ await expect(inspector).toContainText('live 2 B sent, 1 B received');await expect(inspector).toContainText('not billing figures');
+ await expect(inspector).not.toContainText('DO_NOT_DISPLAY');await expect(inspector).not.toContainText('a'.repeat(64));await expect(inspector).not.toContainText('unavailable');
  expect(await page.evaluate(()=>(window as any).reads)).toBe(1);await page.clock.fastForward(3600_000);expect(await page.evaluate(()=>(window as any).reads)).toBe(1);
  await inspector.getByRole('button',{name:'Refresh connection details'}).click();expect(await page.evaluate(()=>(window as any).reads)).toBe(2);
  await page.evaluate(()=>{const w=window as any;w.source.status={phase:'connecting',connectedPeers:[],connectionRevision:1};for(const fn of w.listeners)fn(w.source.status);});
- await expect(inspector).toContainText('0 authenticated peers');await expect(inspector).not.toContainText('Link 1:');expect(await page.evaluate(()=>(window as any).hostReads)).toBe(0);
+ await expect(inspector).toContainText('Connecting… Your changes are saved on this device.');await expect(inspector).not.toContainText('Device 1');expect(await page.evaluate(()=>(window as any).hostReads)).toBe(0);
+ await page.evaluate(()=>{const w=window as any;w.source.status={phase:'disconnected',connectedPeers:[],connectionRevision:1};for(const fn of w.listeners)fn(w.source.status);});
+ await expect(inspector.locator('[aria-live=polite]')).toHaveText('Not connected. Your changes are saved on this device and will sync when a device or your agent is online.');
  await page.keyboard.press('Escape');await expect(page.getByRole('button',{name:'Page options',exact:true})).toBeFocused();
+});
+test('a link to a page agent shows its public handle, follows roster changes and never the key',async({page})=>{
+ await fixture(page,true,[{id:'ag',handle:'notekeeper',bio:'',public_key:'a'.repeat(64),kind:'workspace',is_primary:true,granted_at:0}]);
+ await page.evaluate(()=>{(window as any).kind='direct';});
+ await page.getByRole('button',{name:'Page options',exact:true}).click();
+ const inspector=page.getByRole('region',{name:'Application connections'});
+ await expect(inspector.getByRole('list',{name:'Connected devices'})).toContainText('@notekeeper');await expect(inspector).toContainText('Direct connection');
+ await expect(inspector).not.toContainText('Via relay');await expect(inspector).not.toContainText('a'.repeat(64));
+ await page.evaluate(()=>{const w=window as any;w.roster={...w.roster,agents:[]};for(const fn of w.rosterListeners)fn(w.roster);});
+ await expect(inspector).toContainText('Device 1');await expect(inspector).not.toContainText('@notekeeper');expect(await page.evaluate(()=>(window as any).reads)).toBe(1);
+});
+test('the inspector stays readable at 320px without horizontal scrolling',async({page})=>{
+ await page.setViewportSize({width:320,height:720});await fixture(page);await page.getByRole('button',{name:'Page options',exact:true}).click();
+ const inspector=page.getByRole('region',{name:'Application connections'});await expect(inspector).toContainText('Device 1');
+ await inspector.getByText('Technical details').click();
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+ const box=await inspector.boundingBox();expect(box!.x).toBeGreaterThanOrEqual(0);expect(box!.x+box!.width).toBeLessThanOrEqual(320);
 });
 test('unregistered details stay unavailable without claiming a relay or inventing counters',async({page})=>{
  await fixture(page,false);await page.getByRole('button',{name:'Page options',exact:true}).click();
- const inspector=page.getByRole('region',{name:'Application connections'});await expect(inspector).toContainText('Connection details unavailable');
- await expect(inspector.getByRole('button',{name:'Refresh connection details'})).toBeDisabled();await expect(inspector).not.toContainText('0 bytes');expect(await page.evaluate(()=>(window as any).reads)).toBe(0);
+ const inspector=page.getByRole('region',{name:'Application connections'});await expect(inspector).toContainText('Connection details are not available on this page.');
+ await expect(inspector.getByRole('button',{name:'Refresh connection details'})).toBeDisabled();await expect(inspector).not.toContainText('0 B');expect(await page.evaluate(()=>(window as any).reads)).toBe(0);
 });
 test('disposed menu ignores an outstanding sample and removes its report observer',async({page})=>{
  await fixture(page);await page.evaluate(()=>{const w=window as any;w.source.diagnostics=()=>new Promise(resolve=>w.complete=resolve);});
@@ -41,11 +64,11 @@ test('disposed menu ignores an outstanding sample and removes its report observe
 
 test('same-peer connection replacement updates the menu once and counters describe the replacement link',async({page})=>{
  await fixture(page);await page.getByRole('button',{name:'Page options',exact:true}).click();
- const inspector=page.getByRole('region',{name:'Application connections'});await expect(inspector).toContainText('Link 1: Relay');
+ const inspector=page.getByRole('region',{name:'Application connections'});await expect(inspector).toContainText('Via relay');
  await page.evaluate(()=>{const w=window as any;w.kind='direct';w.total=0;w.source.status={...w.source.status,connectionRevision:1};for(const fn of w.listeners)fn(w.source.status);});
- await expect(inspector).toContainText('Link 1: Direct');await expect(inspector).not.toContainText('Fallback reason:');await expect(inspector).toContainText('Sent: 0 bytes');
+ await expect(inspector).toContainText('Direct connection');await expect(inspector).not.toContainText('Via relay');await expect(inspector).toContainText('Sent 2 B');
  expect(await page.evaluate(()=>(window as any).reads)).toBe(2);
  await page.evaluate(()=>{const w=window as any;w.total=500;for(const fn of w.listeners)fn(w.source.status);});
- expect(await page.evaluate(()=>(window as any).reads)).toBe(2);await expect(inspector).toContainText('Sent: 0 bytes');
- await inspector.getByRole('button',{name:'Refresh connection details'}).click();await expect(inspector).toContainText('Sent: 500 bytes');
+ expect(await page.evaluate(()=>(window as any).reads)).toBe(2);await expect(inspector).toContainText('Sent 2 B');
+ await inspector.getByRole('button',{name:'Refresh connection details'}).click();await expect(inspector).toContainText('Sent 502 B');
 });

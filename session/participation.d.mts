@@ -2,12 +2,26 @@ import type { ApplicationSession, FramedPeerConnection } from '@chronolog/peer-s
 import type { PeersClient, PeerRendezvous } from '../contract/peers.mjs';
 export { PEER_TRANSPORT_POLICY } from '../contract/transport-policy.mjs';
 export interface ApplicationParticipationStatus { readonly phase: 'connecting' | 'connected' | 'disconnected' | 'closed'; readonly connectedPeers: readonly string[]; readonly connectionRevision: number; readonly pendingConnections: number; readonly error: string | null }
+/** One authenticated physical link. Counters are the session's measured framing; absent fields are unmeasured. */
+export interface ApplicationLinkDiagnostics {
+  readonly connectionId?: string;
+  readonly peerId: string;
+  readonly kind: 'direct' | 'relay' | 'unknown';
+  readonly reason?: 'direct_failed' | 'direct_timeout';
+  readonly sentReliableBytes?: number;
+  readonly receivedReliableBytes?: number;
+  readonly sentLiveBytes?: number;
+  readonly receivedLiveBytes?: number;
+  readonly signalRejections?: Readonly<Record<'total' | 'clockSkew' | 'expired' | 'unauthorized' | 'duplicate' | 'capacity', number>>;
+}
 export interface ApplicationParticipation {
   readonly status: ApplicationParticipationStatus;
   readonly signal: AbortSignal;
   readonly closed: Promise<void>;
   onStatus(listener: (status: ApplicationParticipationStatus) => void): () => void;
-  diagnostics(): Promise<readonly { readonly peerId: string; readonly kind: 'direct' | 'relay' | 'unknown'; readonly reason?: string }[]>;
+  /** The session's per-link diagnostics, annotated with the route this controller selected.
+   * While the controller runs, the owned session's own `diagnostics()` returns the same rows. */
+  diagnostics(): Promise<readonly ApplicationLinkDiagnostics[]>;
   reconsiderConnections(): Promise<void>;
   resume(): Promise<void>;
   close(): Promise<void>;
