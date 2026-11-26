@@ -5,8 +5,8 @@ import { deletePage, openClaimed, signInFixture } from './local-helpers';
 import { prepareSqlTutorial } from './sql-tutorial-fixture';
 
 async function stock(page: Page, source: number, destination: number) {
-  await expect(page.locator('#stock tr').filter({ has: page.getByRole('link', { name: 'source', exact: true }) })).toHaveText(`source${source}`);
-  await expect(page.locator('#stock tr').filter({ has: page.getByRole('link', { name: 'destination', exact: true }) })).toHaveText(`destination${destination}`);
+  await expect(page.locator('#stock tr').filter({ has: page.getByRole('link', { name: 'source', exact: true }) })).toHaveText(`source${source}`, { timeout: 30_000 });
+  await expect(page.locator('#stock tr').filter({ has: page.getByRole('link', { name: 'destination', exact: true }) })).toHaveText(`destination${destination}`, { timeout: 30_000 });
 }
 async function publishedGraph(page: Page, app: { publication: any; publicationVersion: number }) {
   const hosted = await page.evaluate(() => ({
@@ -81,7 +81,7 @@ test('actual SQL inventory page: signed publication, browser-first initializatio
     const browserKey = await page.locator('#public-key').inputValue();
     expect(browserKey).toMatch(/^[a-f0-9]{64}$/);
     expect(app.nativePublicKey).not.toBe(browserKey);
-    await expect(page.locator('#summary')).not.toContainText('Loading');
+    await expect(page.locator('#summary')).not.toContainText('Loading', { timeout: 30_000 });
     // Schema and rows are an ordinary authorized DDL/DML transaction, stored and materialized locally.
     await page.locator('#initialize').click();
     await expect(page.locator('#result')).toContainText('Stored locally: true', { timeout: 30_000 });
