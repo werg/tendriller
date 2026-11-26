@@ -17,6 +17,7 @@ dist/
 .consumer-*/
 .tendriller-dev-host/
 
-# Build outputs: the runtime identity and the generated deploy configs
+# Build outputs: the runtime identity, compiled release changelog, and generated deploy configs
 server/src/runtime-release.json
+server/src/release-changelog.json
 server/*.deploy.jsonc

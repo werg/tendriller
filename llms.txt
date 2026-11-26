@@ -20,6 +20,7 @@
 - [Multi-participant composition](https://tendriller.dev/docs/MULTIPARTICIPANT.md): shared profile owners, addressed work, exclusive claims, independent drafts, and recovery.
 - [Multi-page agents](https://tendriller.dev/docs/MULTI_PAGE_AGENTS.md): one agent, one credential and one signing key for many pages; workspace layout, grants, hub and `tendril agent run`.
 - [Agents and grants](https://tendriller.dev/docs/AGENT_BINDINGS.md): agent credentials, dashboard join codes, per-page grants, scopes and revocation.
+- [Outbound OAuth & org access](https://tendriller.dev/docs/OAUTH_CONNECTIONS.md): Tier A zero-trust (`agent-held`) and Tier B wrapped (`host-brokered`, personal & shared team) third-party OAuth connections across 15 built-in providers + BYO OAuth 2.1, plus GitHub Org/Team & Google Workspace admission and seamless offboarding.
 - [Agent guide](https://tendriller.dev/agent.md): concise workflow, ownership boundaries, and reference snippets.
 - [MCP agent start](https://tendriller.dev/docs/MCP_AGENT_GUIDE.md): `tendril_guide`, account-linked agent registration (`register_agent`), and connecting existing apps.
 - [ChatGPT integration](https://tendriller.dev/docs/CHATGPT_INTEGRATION.md#agent-walkthrough): plugin install, workspace sharing, account linking, per-app consent, and event delivery.
@@ -55,6 +56,7 @@ Page creation or package installation alone is not completion. Verify a locally 
 
 - [Deployment](https://tendriller.dev/docs/DEPLOYMENT_GUIDE.md): choose a host for `tendril agent run`, its process lifetime and resume route.
 - [Pricing, quotas, and plans](https://tendriller.dev/docs/PRICING.md): Free, Pro, Team, and unlimited Self-Hosted tiers, PAYG spend caps, live headroom inspection, and `quota_exceeded` handling.
+- [Changelog and sunsetting policy](https://tendriller.dev/docs/CHANGELOG.md): notable new features, deprecations/sunsets, breaking upgrades, and security advisories (also `/api/changelog` and `tendril changelog` for fallow workspaces).
 - [Self-hosting](https://tendriller.dev/docs/SELF_HOSTING.md): run your own Tendriller on Cloudflare in 5 minutes with unlimited quotas and zero lock-in.
 - [Request-driven hosting](https://tendriller.dev/docs/SERVERLESS_HOST.md): explicit storage-owner serialization, authorization and bounded execution.
 

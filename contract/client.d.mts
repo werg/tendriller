@@ -32,6 +32,7 @@ export interface AgentClient {
   reportVersions(versions: import('./broadcasts.mjs').ClientVersions, options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
   broadcasts(options?: { audience?: import('./broadcasts.mjs').BroadcastAudience; since?: number; verifyKeys?: readonly import('./broadcasts.mjs').BroadcastPublicJwk[] | 'discover'; etag?: string | null; signal?: AbortSignal }): Promise<import('./broadcasts.mjs').BroadcastFeedResult>;
   broadcastKeys(options?: { signal?: AbortSignal }): Promise<{ issuer: string; keys: import('./broadcasts.mjs').BroadcastPublicJwk[] }>;
+  changelog(options?: { since?: string; sinceCore?: string; category?: 'feature' | 'deprecation' | 'breaking' | 'security'; limit?: number; signal?: AbortSignal }): Promise<import('./broadcasts.mjs').ChangelogResponse>;
   readonly pages: {
     list(options?: { cursor?: string; signal?: AbortSignal }): Promise<AgentPageList>;
     all(options?: { signal?: AbortSignal }): AsyncIterable<AgentPage>;
@@ -102,4 +103,4 @@ export interface ServiceReadiness {
 }
 export function describeReadiness(service: string, options?: ClientOptions & { signal?: AbortSignal }): Promise<ServiceReadiness>;
 export function requireCreationReady(readiness: ServiceReadiness, options?: { service?: string }): ServiceReadiness;
-export { fetchBroadcastKeys, fetchBroadcasts, verifyBroadcastSignature, evaluateBroadcastMatch, matchesBroadcast, validateClientVersions } from './broadcasts.mjs';
+export { fetchBroadcastKeys, fetchBroadcasts, fetchChangelog, verifyBroadcastSignature, evaluateBroadcastMatch, matchesBroadcast, validateClientVersions } from './broadcasts.mjs';

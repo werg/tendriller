@@ -51,6 +51,14 @@ npx wrangler deploy --config server/wrangler.my-tendriller.jsonc
 
 Polar.sh billing secrets (`POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_PRODUCTS_JSON`) are completely optional — leave them unset on a private or self-hosted deployment.
 
+### Outbound OAuth & Org/Team tie-ins (optional)
+
+Every self-hosted instance automatically unlocks both Tier A (`agent-held`), Tier B (`host-brokered`, personal & shared team `page` custody), BYO custom OAuth 2.1 providers (`custom:<slug>`), and GitHub/Google org group admission:
+
+- **Dedicated config encryption key (recommended):** Set `OAUTH_CONFIG_KEY` (32 random bytes) so BYO `client_secret`s and inbound HMAC webhook secrets are AES-256-GCM encrypted in D1 independently of `HOST_ATTESTATION_KEY`.
+- **Built-in third-party providers:** Register OAuth apps with redirect URI `https://app.yourdomain.com/auth/outbound/callback/<provider>` and upload them as one JSON map in `OUTBOUND_OAUTH_CLIENTS_JSON` (or run `node scripts/setup-oauth.mjs --config server/wrangler.my-tendriller.jsonc`). Use a **separate Google OAuth client** and a **separate GitHub OAuth/GitHub App** for outbound connections so login scopes stay minimal and clean.
+- **Instant GitHub org offboarding (optional):** Set `GITHUB_ORG_WEBHOOK_SECRET` and point org/GitHub App webhooks (`organization`, `membership`) to `https://app.yourdomain.com/api/webhooks/github-org`.
+
 ## 4. Move an existing workspace to your self-hosted instance
 
 1. Download your account export from `/dashboard/export` on your previous host if you want an archive.

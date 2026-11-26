@@ -372,6 +372,7 @@ it('Tier B (host-brokered wrapped proxy): enforces K_conn wrapping, auto-refresh
     const dashHtml = await dashRes.text();
     expect(dashHtml).toContain('External app &amp; agent connections');
     expect(dashHtml).toContain('Sync GitHub Orgs &amp; Teams');
+    expect(dashHtml).toContain('Register a custom OAuth 2.1 provider (BYO)');
     expect(dashHtml).toContain('custom:tracker');
   } finally {
     fetchMock.mockRestore();

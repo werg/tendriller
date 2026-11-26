@@ -241,4 +241,58 @@ describe("System-wide Ed25519-signed broadcasts and version inventory", () => {
     await req(`/api/admin/broadcasts/${ownerOnly.payload.id}`, { method: "DELETE", anonymous: true, headers: { Cookie: cookie } });
     await req(`/api/admin/broadcasts/${everyone.payload.id}`, { method: "DELETE", anonymous: true, headers: { Cookie: cookie } });
   });
+
+  it("auto-syncs bundled deploy broadcasts idempotently without resurrecting revoked rows, and serves /api/changelog", async () => {
+    const cookie = await adminCookie("github", "bc-admin-rel");
+
+    // /api/changelog returns structured entries with filtering and sunsetting policy.
+    const clRes = await req("/api/changelog?category=feature", { anonymous: true });
+    expect(clRes.status).toBe(200);
+    const cl = await clRes.json() as {
+      issuer: string;
+      core_release: string;
+      changelog_md_url: string;
+      sunsetting_policy: Record<string, unknown>;
+      entries: Array<{ slug: string; category: string; broadcast_id: string | null; docs_url: string }>;
+    };
+    expect(cl.issuer).toBe(BASE);
+    expect(cl.changelog_md_url).toBe(`${BASE}/changelog.md`);
+    expect(cl.entries.length).toBeGreaterThanOrEqual(2);
+    expect(cl.entries.every(e => e.category === "feature")).toBe(true);
+    expect(cl.entries[0].docs_url.startsWith(`${BASE}/`)).toBe(true);
+
+    // Filtering by a future date yields an empty list cleanly.
+    const futureRes = await req("/api/changelog?since=2099-01-01", { anonymous: true });
+    expect(futureRes.status).toBe(200);
+    expect(((await futureRes.json()) as { entries: unknown[] }).entries).toEqual([]);
+
+    // Invalid since format -> 400
+    const badSince = await req("/api/changelog?since=not-a-date", { anonymous: true });
+    expect(badSince.status).toBe(400);
+
+    // Bundled release broadcasts are automatically Ed25519-signed and present for agents (not dashboard!).
+    const agentFeedRes = await req("/api/broadcasts?audience=agents", { anonymous: true });
+    expect(agentFeedRes.status).toBe(200);
+    const agentFeed = await agentFeedRes.json() as { keys: BroadcastPublicJwk[]; broadcasts: SignedBroadcast[] };
+    const releaseId = cl.entries[0].broadcast_id!;
+    expect(releaseId).toMatch(/^bc_[a-z2-7]{26}$/);
+    const bundled = agentFeed.broadcasts.find(b => b.payload.id === releaseId);
+    expect(bundled).toBeTruthy();
+    const verified = await verifyBroadcastSignature(bundled!, agentFeed.keys, { issuer: BASE });
+    expect(verified.valid).toBe(true);
+    expect(bundled!.payload.audiences).toEqual(["agents", "mcp"]);
+
+    // Dashboard feed must NOT contain deploy-driven feature broadcasts.
+    const dashFeed = await (await req("/api/broadcasts?audience=dashboard", { anonymous: true })).json() as { broadcasts: SignedBroadcast[] };
+    expect(dashFeed.broadcasts.some(b => b.payload.id === releaseId)).toBe(false);
+
+    // Revoking a bundled broadcast keeps it revoked even if sync runs again!
+    const revRes = await req(`/api/admin/broadcasts/${releaseId}`, { method: "DELETE", anonymous: true, headers: { Cookie: cookie } });
+    expect(revRes.status).toBe(200);
+    const { syncReleaseBroadcasts } = await import("../src/broadcasts");
+    const resync = await syncReleaseBroadcasts(env, { force: true });
+    expect(resync.synced).toBe(0);
+    const afterRevoke = await (await req("/api/broadcasts?audience=agents", { anonymous: true })).json() as { broadcasts: SignedBroadcast[] };
+    expect(afterRevoke.broadcasts.some(b => b.payload.id === releaseId)).toBe(false);
+  });
 });

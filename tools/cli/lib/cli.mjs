@@ -3,7 +3,7 @@ import { parseArgs, intFlag } from './args.mjs';
 import { jsonInput, runSessionCommand, watchPages, watchSession, watchSignals, withSession } from './session.mjs';
 import { onboardingGuide, publicServiceOrigin, serverBase } from './guide.mjs';
 import { diagnosticFinding } from '@tendriller/core/diagnostics';
-import { describeReadiness, describeService, fetchBroadcasts } from '@tendriller/core';
+import { describeReadiness, describeService, fetchBroadcasts, fetchChangelog } from '@tendriller/core';
 import { probeCapabilities } from '@tendriller/core/probe';
 import { serveStdioMcp } from './mcp-stdio.mjs';
 import { exportSourceHandoff } from './handoff.mjs';
@@ -20,6 +20,7 @@ Start with a service origin (no workspace required):
   service --server URL                  Read the public host contract and limits
   readiness --server URL                Check current creation availability before setup
   broadcasts [--server URL] [--audience A] [--all] [--ack ID]  Read & verify signed system broadcasts (dependency upgrades, security advisories)
+  changelog [--server URL] [--since YYYY-MM-DD] [--since-core VER] [--category CAT] [--limit N]  Pull notable platform changelog & sunsetting notices (use when returning to a fallow workspace)
   handoff source <out.tgz> [--project DIR]  Pack non-secret source files for another sandbox
 
 Workspace (one agent credential and signing key for many pages):
@@ -88,7 +89,7 @@ const flagsByCommand = {
   signal: ['ttl'], finality: ['through'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
-  readiness: ['server'], service: ['server'], broadcasts: ['server', 'audience', 'all', 'ack'],
+  readiness: ['server'], service: ['server'], broadcasts: ['server', 'audience', 'all', 'ack'], changelog: ['server', 'since', 'since-core', 'category', 'limit'],
   workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role', 'add', 'remove', 'label'], agent: ['handle', 'bio'], connection: ['server', 'tier', 'custody', 'scopes', 'actions', 'page', 'label'], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
@@ -97,9 +98,9 @@ const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0
   'command-batch': [1, 1], operation: [1, 1], retry: [1, 1],
   events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], finality: [1, 2], definition: [0, 0], publication: [0, 0],
   'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
-  readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], connection: [1, 2], 'mcp-stdio': [0, 0],
+  readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], changelog: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], connection: [1, 2], 'mcp-stdio': [0, 0],
   info: [0, 0], meta: [1, 1], release: [0, 0], link: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
-const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service', 'broadcasts']);
+const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service', 'broadcasts', 'changelog']);
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
@@ -113,6 +114,25 @@ async function publicCommand(command, args, flags, signal) {
   if (command === 'handoff') {
     if (args[0] !== 'source') throw invalid('Use: tendril handoff source <output.tgz> [--project DIR]');
     return exportSourceHandoff(flags.project ?? process.cwd(), args[1]);
+  }
+  if (command === 'changelog') {
+    const wsRoot = flags.workspace ?? (process.env.TENDRIL_WORKSPACE || (!flags.server ? findWorkspace() : null));
+    let server = '';
+    if (flags.server || process.env.TENDRIL_SERVER) {
+      server = publicServiceOrigin(serverBase(process.env, flags));
+    } else if (wsRoot) {
+      const workspace = await openWorkspace({ root: wsRoot });
+      server = workspace.config.service;
+    } else {
+      throw invalid('changelog requires a workspace or --server / TENDRIL_SERVER');
+    }
+    return fetchChangelog(server, {
+      ...(typeof flags.since === 'string' ? { since: flags.since } : {}),
+      ...(typeof flags['since-core'] === 'string' ? { sinceCore: flags['since-core'] } : {}),
+      ...(typeof flags.category === 'string' ? { category: flags.category } : {}),
+      ...(flags.limit !== undefined ? { limit: intFlag(flags.limit, 'limit') } : {}),
+      signal,
+    });
   }
   if (command === 'broadcasts') {
     const wsRoot = flags.workspace ?? (process.env.TENDRIL_WORKSPACE || (!flags.server ? findWorkspace() : null));
@@ -359,7 +379,7 @@ export async function main(argv, { attach } = {}) {
   if (!Object.hasOwn(flagsByCommand, cmd)) throw invalid(`Unknown command: ${cmd}`);
   const pageScoped = sessionCommands.has(cmd) || hostCommands.has(cmd) || cmd === 'status' && flags.page !== undefined;
   const session = sessionCommands.has(cmd) || cmd === 'status' && flags.page !== undefined;
-  const allowed = new Set(['pretty', 'timeout', ...(workspaceFree.has(cmd) && cmd !== 'broadcasts' ? [] : ['workspace']),
+  const allowed = new Set(['pretty', 'timeout', ...(workspaceFree.has(cmd) && cmd !== 'broadcasts' && cmd !== 'changelog' ? [] : ['workspace']),
     ...(pageScoped || cmd === 'status' ? ['page'] : []), ...flagsByCommand[cmd]]);
   for (const name of Object.keys(flags)) if (!allowed.has(name)) throw invalid(`${cmd} does not accept --${name}`);
   const [min, max] = arity[cmd];

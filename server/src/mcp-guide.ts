@@ -10,7 +10,7 @@ export type AssistantGuideTopic = keyof typeof assistantGuides;
 
 export async function assistantGuide(env: Env, origin: string, topic: unknown = 'start') {
   if (typeof topic !== 'string' || !Object.hasOwn(assistantGuides, topic))
-    throw new HttpError(400, 'invalid_guide_topic', 'Choose start, build, capabilities, sensors, connect, deployment, delivery, conversation, pricing, self_hosting or troubleshooting.');
+    throw new HttpError(400, 'invalid_guide_topic', 'Choose start, build, capabilities, sensors, connect, deployment, delivery, conversation, oauth, pricing, self_hosting, changelog or troubleshooting.');
   const path = assistantGuides[topic as AssistantGuideTopic];
   const response = await env.ASSETS.fetch(new Request(origin + path));
   if (!response.ok) {

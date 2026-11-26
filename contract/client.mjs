@@ -1,9 +1,9 @@
 import { assertValid, CONTRACT_VERSION, validate } from './index.mjs';
 import { createPeersClient, PEER_RENDEZVOUS_PROTOCOL } from './peers.mjs';
 import { createAgentHub } from './hub.mjs';
-import { fetchBroadcastKeys, fetchBroadcasts, validateClientVersions } from './broadcasts.mjs';
+import { fetchBroadcastKeys, fetchBroadcasts, fetchChangelog, validateClientVersions } from './broadcasts.mjs';
 export { createAgentHub, HUB_PROTOCOL, HUB_LIMITS, HUB_PATHS, HubError, validateHubPath } from './hub.mjs';
-export { fetchBroadcastKeys, fetchBroadcasts, verifyBroadcastSignature, evaluateBroadcastMatch, matchesBroadcast, validateClientVersions } from './broadcasts.mjs';
+export { fetchBroadcastKeys, fetchBroadcasts, fetchChangelog, verifyBroadcastSignature, evaluateBroadcastMatch, matchesBroadcast, validateClientVersions } from './broadcasts.mjs';
 export class ApiError extends Error {
   constructor(status, error) {
     super(error?.message || `HTTP ${status}`);
@@ -118,6 +118,7 @@ export function createAgentClient({ service, token }, { fetch: fetcher = globalT
     reportVersions: (versions, options = {}) => request('/versions', { method: 'PUT', body: validateClientVersions(versions), ...options }, 'objectResponse'),
     broadcasts: (options = {}) => fetchBroadcasts(origin, { audience: 'agents', ...options, fetch: fetcher }),
     broadcastKeys: (options = {}) => fetchBroadcastKeys(origin, { ...options, fetch: fetcher }),
+    changelog: (options = {}) => fetchChangelog(origin, { ...options, fetch: fetcher }),
     pages: Object.freeze({
       list: ({ cursor, signal } = {}) => request('/pages' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''), { signal }, 'agentPageList'),
       async *all({ signal } = {}) {

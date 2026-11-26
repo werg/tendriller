@@ -1056,11 +1056,35 @@ export async function renderAccountExternalConnectionsSection(
       ).join('')}</ul>`
     : '<p class="empty">No verified organization or team memberships cached yet. Sign in with a Google Workspace account or sync your GitHub orgs & teams below.</p>';
 
-  const customHtml = customProviders.results.length
-    ? `<div style="margin-top:1rem"><h3 style="margin:.25rem 0 .5rem">Custom BYO OAuth 2.1 providers</h3><ul class="list">${customProviders.results.map(p =>
-        `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(p.name)} <code>custom:${escapeHtml(p.slug)}</code></div><p class="list-item-sub">Allowed hosts: ${escapeHtml((JSON.parse(p.allowed_hosts || '[]') as string[]).join(', '))}</p></div></li>`,
-      ).join('')}</ul></div>`
-    : '';
+  const builtinViews = listBuiltinProviderViews(env);
+  const providerPills = builtinViews.map(p =>
+    `<span class="badge${p.configured ? ' ok' : ''}" title="${escapeHtml(p.configured ? `${p.name} ready on this host` : `${p.name} not configured on host — use BYO custom:<slug>`)}">${escapeHtml(p.id)}${p.configured ? ' ✓' : ''}</span>`,
+  ).join(' ');
+
+  const customHtml = `<div style="margin-top:1.25rem">
+    <h3 style="margin:.25rem 0 .5rem">Built-in provider availability</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:.4rem;margin-bottom:.9rem">${providerPills}</div>
+    ${customProviders.results.length
+      ? `<h3 style="margin:.5rem 0 .5rem">Custom BYO OAuth 2.1 providers</h3><ul class="list" id="byo-provider-list">${customProviders.results.map(p =>
+          `<li class="list-item" data-byo-slug="${escapeHtml(p.slug)}"><div class="list-item-main"><div class="list-item-title">${escapeHtml(p.name)} <code>custom:${escapeHtml(p.slug)}</code></div><p class="list-item-sub">Allowed hosts: ${escapeHtml((JSON.parse(p.allowed_hosts || '[]') as string[]).join(', '))}</p></div><button class="button sm danger" type="button" data-delete-byo="${escapeHtml(p.slug)}">Remove</button></li>`,
+        ).join('')}</ul>`
+      : ''}
+    <details style="margin-top:.9rem">
+      <summary style="cursor:pointer;font-weight:600">Register a custom OAuth 2.1 provider (BYO)</summary>
+      <p class="muted" style="margin:.5rem 0 .75rem">Use your own OAuth app for any provider not enabled on this host. Set its redirect URI to <code>${escapeHtml(publicBase(env))}/auth/outbound/callback/custom%3A&lt;slug&gt;</code>.</p>
+      <form id="byo-provider-form" style="display:grid;gap:.6rem;max-width:34rem">
+        <label style="display:grid;gap:.2rem"><span class="muted">Slug (lowercase, e.g. <code>my-linear</code>)</span><input name="slug" required pattern="[a-z0-9][a-z0-9_-]{1,31}" placeholder="my-linear"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Display name</span><input name="name" required placeholder="My Linear"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Authorize URL (HTTPS)</span><input name="authorize_url" type="url" required placeholder="https://linear.app/oauth/authorize"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Token URL (HTTPS)</span><input name="token_url" type="url" required placeholder="https://api.linear.app/oauth/token"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Client ID</span><input name="client_id" required></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Client Secret (optional for PKCE public clients; encrypted at rest)</span><input name="client_secret" type="password" autocomplete="new-password"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Allowed API hosts (comma-separated HTTPS hostnames)</span><input name="allowed_hosts" required placeholder="api.linear.app"></label>
+        <label style="display:grid;gap:.2rem"><span class="muted">Default scopes (comma-separated, optional)</span><input name="default_scopes" placeholder="read,write"></label>
+        <div class="actions tight"><button class="button sm" type="submit">Save custom provider</button><span class="muted" id="byo-status" aria-live="polite"></span></div>
+      </form>
+    </details>
+  </div>`;
 
   const html = `
 <section class="card" style="margin-top:1.5rem">
@@ -1080,7 +1104,7 @@ export async function renderAccountExternalConnectionsSection(
   </div>
 </section>`;
 
-  const script = `(function(){document.querySelectorAll('[data-revoke-conn]').forEach(function(btn){btn.addEventListener('click',function(){var id=btn.getAttribute('data-revoke-conn');if(!id)return;btn.disabled=true;btn.textContent='Revoking...';fetch('/api/account/connections/'+encodeURIComponent(id)+'/revoke',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-conn-id]');if(li)li.remove();}).catch(function(){btn.disabled=false;btn.textContent='Revoke';});});});})();`;
+  const script = `(function(){document.querySelectorAll('[data-revoke-conn]').forEach(function(btn){btn.addEventListener('click',function(){var id=btn.getAttribute('data-revoke-conn');if(!id)return;btn.disabled=true;btn.textContent='Revoking...';fetch('/api/account/connections/'+encodeURIComponent(id)+'/revoke',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-conn-id]');if(li)li.remove();}).catch(function(){btn.disabled=false;btn.textContent='Revoke';});});});document.querySelectorAll('[data-delete-byo]').forEach(function(btn){btn.addEventListener('click',function(){var slug=btn.getAttribute('data-delete-byo');if(!slug)return;btn.disabled=true;fetch('/api/account/oauth/providers/'+encodeURIComponent(slug),{method:'DELETE',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-byo-slug]');if(li)li.remove();}).catch(function(){btn.disabled=false;});});});var form=document.getElementById('byo-provider-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var st=document.getElementById('byo-status');var fd=new FormData(form);var split=function(v){return String(v||'').split(',').map(function(s){return s.trim();}).filter(Boolean);};var body={slug:fd.get('slug'),name:fd.get('name'),authorize_url:fd.get('authorize_url'),token_url:fd.get('token_url'),client_id:fd.get('client_id'),allowed_hosts:split(fd.get('allowed_hosts')),default_scopes:split(fd.get('default_scopes'))};var sec=String(fd.get('client_secret')||'').trim();if(sec)body.client_secret=sec;if(st)st.textContent='Saving...';fetch('/api/account/oauth/providers',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error((d&&d.error&&d.error.message)||'Save failed');return d;});}).then(function(){if(st)st.textContent='Saved! Reloading...';location.reload();}).catch(function(err){if(st)st.textContent=err.message||'Save failed';});});}})();`;
 
   return { html, script };
 }

@@ -6,6 +6,8 @@ Start here when given a service domain and asked to build an app. Deliver the wo
 
 To test an app against a release before touching production, use the [local release host](LOCAL_HOST.md). It provides a verified host and synthetic test owner for the same create, init, publish and connect flow below.
 
+**Returning to an older or fallow workspace?** Before editing or redeploying an existing workspace, run `tendril status` (check its `catchup` and `broadcasts` fields) and pull the [platform changelog](CHANGELOG.md) via `tendril changelog --since YYYY-MM-DD` (or `/changelog.md` / `/api/changelog`) to catch any security advisories, upcoming sunsets, breaking upgrades, or new built-in capabilities landed while the repo was idle.
+
 ## Requests to the existing agent conversation
 
 If the app must reach this same Codex or ChatGPT conversation during work or

@@ -11,6 +11,7 @@ import { RUNTIME_FEATURES, RUNTIME_RESOURCES } from "../runtime/resources.mjs";
 import { runtimeManifest } from "./runtime-manifest.mjs";
 import { buildOnboardingAssets } from "./onboarding.mjs";
 import { buildBootstrap } from "./build-bootstrap.mjs";
+import { buildReleaseChangelog } from "./release-changelog.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const out = join(root, "server/public");
@@ -33,6 +34,7 @@ const releaseIdentity = { name: 'release-source', setup(builder) {
 
 export async function buildPublicArtifacts() {
   buildBootstrap();
+  buildReleaseChangelog(root);
   const packageVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
   if (packageVersion !== CORE_RELEASE) throw new Error("Package and public core release identities must agree");
   mkdirSync(dist, { recursive: true });

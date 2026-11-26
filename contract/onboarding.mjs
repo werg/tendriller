@@ -3,7 +3,7 @@ export const ASSISTANT_GUIDES = Object.freeze({
   start: '/docs/MCP_AGENT_GUIDE.md', build: '/docs/BUILD_AN_APP.md',
   capabilities: '/docs/CAPABILITIES.md', sensors: '/docs/SENSORS.md', connect: '/docs/CLOUDFLARE_ASSISTANT.md',
   deployment: '/docs/DEPLOYMENT_GUIDE.md', delivery: '/docs/AGENT_DELIVERY.md', conversation: '/docs/CONVERSATION_DELIVERY.md',
-  pricing: '/docs/PRICING.md', self_hosting: '/docs/SELF_HOSTING.md', troubleshooting: '/docs/TROUBLESHOOTING.md',
+  oauth: '/docs/OAUTH_CONNECTIONS.md', pricing: '/docs/PRICING.md', self_hosting: '/docs/SELF_HOSTING.md', changelog: '/docs/CHANGELOG.md', troubleshooting: '/docs/TROUBLESHOOTING.md',
 });
 
 // Build substitutes the exact checkout into both packed SDK and host.
@@ -46,19 +46,24 @@ export function onboardingDescriptor(base) {
       cli: url('/docs/tools/CLI.md'),
       multi_page_agents: url('/docs/MULTI_PAGE_AGENTS.md'),
       conversation_delivery: url(ASSISTANT_GUIDES.conversation),
+      oauth: url(ASSISTANT_GUIDES.oauth),
       pricing: url(ASSISTANT_GUIDES.pricing),
       self_hosting: url(ASSISTANT_GUIDES.self_hosting),
+      changelog: url(ASSISTANT_GUIDES.changelog),
     },
     interfaces: {
       service_descriptor: url('/api/service'),
       readiness: url('/api/readiness'),
       broadcasts: url('/api/broadcasts'),
       broadcast_keys: url('/.well-known/tendriller-broadcast-keys.json'),
+      changelog: url('/api/changelog'),
+      changelog_markdown: url('/changelog.md'),
       contract: url('/contract/v3.json'),
       pricing: url('/pricing'),
       pricing_markdown: url('/pricing.md'),
       self_host: url('/self-host'),
       billing: url('/dashboard/billing'),
+      oauth_providers: url('/api/oauth/providers'),
       register_agent: { method: 'POST', url: url('/api/agents'), required: ['owner', 'handle', 'publicKey', 'wrapKey'] },
       join_agent: { method: 'POST', url: url('/api/agents/join'), required: ['code', 'handle', 'publicKey', 'wrapKey'] },
       create_page: { method: 'POST', url: url('/api/agent/pages'), authorization: 'agent token' },

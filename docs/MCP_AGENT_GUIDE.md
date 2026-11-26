@@ -16,9 +16,14 @@ another website builder does not attach an application to this session.
 
 This guide is available through `tendril_guide` even before account linking.
 Use its `topic` argument for the maintained instructions themselves: `build`,
-`capabilities`, `sensors`, `connect`, `delivery`, `pricing`, `self_hosting` or `troubleshooting`. You do not need a web
+`capabilities`, `sensors`, `connect`, `delivery`, `oauth`, `pricing`, `self_hosting`, `changelog` or `troubleshooting`. You do not need a web
 browsing tool to read those documents. Use the `serviceOrigin` returned by MCP
 throughout; staging must stay on staging.
+
+When returning to a workspace that has been fallow for a while, call `get_broadcasts` and
+`tendril_guide` with `topic: "changelog"` (or `GET /api/changelog?since=YYYY-MM-DD`) before making
+changes so you catch any security advisories, deprecations/sunsets, breaking upgrades, or new
+built-in capabilities.
 
 `get_profile` also reports the linked account's live `account.plan`, `account.quotas`,
 `account.usage`, and `billingUrl` / `pricingUrl` / `selfHostUrl` links. Local `tendril agent run`

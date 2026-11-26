@@ -156,6 +156,31 @@ export declare function satisfiesVersionConstraint(version: string, constraint: 
 export declare function evaluateBroadcastMatch(payload: BroadcastPayload, context?: BroadcastMatchContext): BroadcastMatchResult;
 export declare function matchesBroadcast(payload: BroadcastPayload, context?: BroadcastMatchContext): boolean;
 export declare function fetchBroadcastKeys(serviceOrigin: string, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<{ issuer: string; keys: BroadcastPublicJwk[] }>;
+export interface ChangelogEntry {
+  slug: string;
+  date: string;
+  category: 'feature' | 'deprecation' | 'breaking' | 'security';
+  core_version: string;
+  title: string;
+  summary: string;
+  body: string;
+  docs_url: string;
+  sunset_at: string | null;
+  supersedes: string | null;
+  broadcast_id: string | null;
+  broadcast_severity: BroadcastSeverity | null;
+}
+
+export interface ChangelogResponse {
+  schema_version: 1;
+  issuer: string;
+  core_release: string;
+  latest_date: string | null;
+  changelog_md_url: string;
+  sunsetting_policy: Record<string, unknown>;
+  entries: ChangelogEntry[];
+}
+
 export declare function fetchBroadcasts(serviceOrigin: string, options?: {
   audience?: BroadcastAudience;
   since?: number;
@@ -164,3 +189,11 @@ export declare function fetchBroadcasts(serviceOrigin: string, options?: {
   fetch?: typeof globalThis.fetch;
   signal?: AbortSignal;
 }): Promise<BroadcastFeedResult>;
+export declare function fetchChangelog(serviceOrigin: string, options?: {
+  since?: string;
+  sinceCore?: string;
+  category?: 'feature' | 'deprecation' | 'breaking' | 'security';
+  limit?: number;
+  fetch?: typeof globalThis.fetch;
+  signal?: AbortSignal;
+}): Promise<ChangelogResponse>;

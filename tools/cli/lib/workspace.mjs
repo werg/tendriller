@@ -12,7 +12,8 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createWorkspacePage } from './page-creation.mjs';
 import { randomBytes } from 'node:crypto';
-import { agentCredential, createAgentClient, describeReadiness, describeService, evaluateBroadcastMatch, fetchBroadcastKeys, fetchBroadcasts, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin, validateClientVersions, verifyBroadcastSignature } from '@tendriller/core';
+import { agentCredential, createAgentClient, describeReadiness, describeService, evaluateBroadcastMatch, fetchBroadcastKeys, fetchBroadcasts, fetchChangelog, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin, validateClientVersions, verifyBroadcastSignature } from '@tendriller/core';
+import { compareSemver } from '@tendriller/core/broadcasts';
 
 export const WORKSPACE_FILE = 'tendriller.json';
 export const SLUG = /^[a-z0-9][a-z0-9-]{0,47}$/u;
@@ -440,11 +441,12 @@ export async function readBroadcastState(workspace) {
   }
   const saved = await readJson(workspace.paths.broadcasts, true);
   if (!saved || typeof saved !== 'object') {
-    return { schemaVersion: 1, lastSeq: 0, acknowledged: [], trustedKeys: [], items: [] };
+    return { schemaVersion: 1, lastSeq: 0, lastSyncedAt: null, acknowledged: [], trustedKeys: [], items: [] };
   }
   return {
     schemaVersion: 1,
     lastSeq: Number.isSafeInteger(saved.lastSeq) && saved.lastSeq >= 0 ? saved.lastSeq : 0,
+    lastSyncedAt: Number.isSafeInteger(saved.lastSyncedAt) && saved.lastSyncedAt > 0 ? saved.lastSyncedAt : null,
     acknowledged: Array.isArray(saved.acknowledged) ? saved.acknowledged.filter(v => typeof v === 'string') : [],
     trustedKeys: Array.isArray(saved.trustedKeys) ? saved.trustedKeys : [],
     items: Array.isArray(saved.items) ? saved.items : [],
@@ -457,6 +459,7 @@ export async function saveBroadcastState(workspace, state) {
   await replaceJson(workspace.paths.broadcasts, {
     schemaVersion: 1,
     lastSeq: state.lastSeq ?? 0,
+    lastSyncedAt: state.lastSyncedAt ?? Date.now(),
     acknowledged: [...new Set(state.acknowledged ?? [])].slice(-200),
     trustedKeys: state.trustedKeys ?? [],
     items: (state.items ?? []).slice(-100),
@@ -522,17 +525,24 @@ export async function acknowledgeWorkspaceBroadcast(workspace, id) {
   return { acknowledged: true, id };
 }
 
+const FALLOW_WORKSPACE_MS = 14 * 86_400_000;
+
 /** Bounded, non-secret status for terminals and the status command. */
 export async function describeWorkspace(workspace, { signal, remote = true } = {}) {
-  const [pages, versions] = await Promise.all([
+  const [pages, versions, priorBroadcastState] = await Promise.all([
     workspace.pages(),
     detectWorkspaceVersions(workspace.root, workspace.config.kit),
+    readBroadcastState(workspace),
   ]);
-  let agent = null, granted = null, broadcasts = null, error;
+  let agent = null, granted = null, broadcasts = null, catchup = null, error;
   if (remote) {
     try {
       const client = await workspace.client();
-      agent = await client.self({ signal });
+      const [selfRes, serviceInfo] = await Promise.all([
+        client.self({ signal }),
+        describeService(workspace.config.service, { signal }).catch(() => null),
+      ]);
+      agent = selfRes;
       granted = [];
       for await (const page of client.pages.all({ signal })) granted.push({ id: page.id, name: page.name, scopes: page.scopes ?? [] });
       broadcasts = await syncWorkspaceBroadcasts(workspace, { signal }).then(res => ({
@@ -542,12 +552,44 @@ export async function describeWorkspace(workspace, { signal, remote = true } = {
           id, seq, kind, severity, title, summary, docs_url, action, matchReasons,
         })),
       })).catch(() => null);
+
+      const installedCore = versions.core ?? versions.packages?.['@tendriller/core'] ?? null;
+      const hostCore = serviceInfo?.core_release ?? null;
+      const coreBehind = Boolean(installedCore && hostCore && compareSemver(installedCore, hostCore) === -1);
+      const fallow = Boolean(priorBroadcastState.lastSyncedAt && (Date.now() - priorBroadcastState.lastSyncedAt) > FALLOW_WORKSPACE_MS);
+      if (coreBehind || fallow) {
+        const sinceDate = priorBroadcastState.lastSyncedAt ? new Date(priorBroadcastState.lastSyncedAt).toISOString().slice(0, 10) : undefined;
+        const changelog = await fetchChangelog(workspace.config.service, {
+          ...(sinceDate ? { since: sinceDate } : {}),
+          ...(coreBehind && installedCore ? { sinceCore: installedCore } : {}),
+          signal,
+        }).catch(() => null);
+        const counts = { security: 0, breaking: 0, deprecation: 0, feature: 0 };
+        for (const item of changelog?.entries ?? []) {
+          if (Object.hasOwn(counts, item.category)) counts[item.category]++;
+        }
+        const origin = new URL(workspace.config.service).origin;
+        const cmdHint = sinceDate
+          ? `tendril changelog --since ${sinceDate}`
+          : installedCore ? `tendril changelog --since-core ${installedCore}` : 'tendril changelog';
+        catchup = {
+          stale: true,
+          reasons: [...(coreBehind ? ['core_behind_host'] : []), ...(fallow ? ['fallow_workspace'] : [])],
+          installedCore,
+          hostCore,
+          lastSyncedAt: priorBroadcastState.lastSyncedAt ? new Date(priorBroadcastState.lastSyncedAt).toISOString() : null,
+          counts,
+          changelogUrl: `${origin}/changelog.md`,
+          nextAction: `Run \`${cmdHint}\` or read ${origin}/changelog.md before modifying or redeploying this workspace.`,
+        };
+      }
     } catch (cause) { error = { code: cause.code ?? 'agent_unavailable', status: cause.status ?? null, message: cause.message }; }
   }
   const running = await stat(join(workspace.paths.owner, 'endpoint.json')).then(() => true, () => false);
   return { workspace: workspace.root, service: workspace.config.service, agent: { ...workspace.config.agent, ...(agent ? { remote: agent } : {}) },
     versions,
     ...(broadcasts ? { broadcasts } : {}),
+    ...(catchup ? { catchup } : {}),
     pages: pages.map(page => ({ ...page, granted: granted ? granted.some(item => item.id === page.id) : null })),
     unregistered: granted ? granted.filter(item => !pages.some(page => page.id === item.id)) : null,
     agentProgram: { endpointRecorded: running }, ...(error ? { error } : {}) };

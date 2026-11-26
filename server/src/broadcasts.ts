@@ -5,19 +5,26 @@ import {
   BROADCAST_AUDIENCES,
   BROADCAST_LIMITS,
   BROADCAST_SCHEMA_VERSION,
+  compareSemver,
   generateBroadcastKeyPair,
   publicJwkFromPrivate,
   signBroadcastPayload,
   validateBroadcastInput,
   validateBroadcastKey,
   validateClientVersions,
+  type BroadcastAction,
   type BroadcastAudience,
+  type BroadcastKind,
+  type BroadcastMatch,
   type BroadcastPayload,
   type BroadcastPrivateJwk,
   type BroadcastPublicJwk,
+  type BroadcastSeverity,
   type ClientVersions,
   type SignedBroadcast,
 } from '../../contract/broadcasts.mjs';
+import { CORE_RELEASE } from '../../contract/index.mjs';
+import releaseChangelog from './release-changelog.json';
 import type { Env } from './env';
 import { HttpError } from './http';
 import { BROADCAST_ID_RE, newBroadcastId, safeEqual, sha256Hex } from './ids';
@@ -220,6 +227,192 @@ export async function revokeBroadcast(env: Env, actor: string, id: string, reaso
   return true;
 }
 
+interface BundledReleaseBroadcast {
+  id: string;
+  kind: BroadcastKind;
+  severity: BroadcastSeverity;
+  audiences: BroadcastAudience[];
+  title: string;
+  summary: string;
+  body: string;
+  docs_path: string;
+  action: BroadcastAction | null;
+  match: BroadcastMatch | null;
+  dismissible: boolean;
+  expires_at: number | null;
+  supersedes_id: string | null;
+}
+
+export interface BundledChangelogEntry {
+  slug: string;
+  date: string;
+  category: 'feature' | 'deprecation' | 'breaking' | 'security';
+  core_version: string;
+  title: string;
+  summary: string;
+  body: string;
+  docs_path: string;
+  sunset_at: string | null;
+  supersedes: string | null;
+  broadcast: BundledReleaseBroadcast | null;
+}
+
+const BUNDLED_ENTRIES = (releaseChangelog.entries ?? []) as unknown as BundledChangelogEntry[];
+const syncedDbs = new WeakSet<object>();
+
+function resolveEntryDocsUrl(issuer: string, docsPath: string): string {
+  if (docsPath.startsWith('https://') || docsPath.startsWith('http://')) return docsPath;
+  return new URL(docsPath, issuer).href;
+}
+
+/**
+ * Zero-secret deploy-driven broadcast sync: idempotently publishes any active
+ * `broadcast: true` entries compiled into `release-changelog.json` using each
+ * entry's deterministic `bc_...` ID. Warm isolate requests do 0 D1 queries, and
+ * manually revoked rows are never resurrected because `INSERT OR IGNORE` skips
+ * any ID already present in `system_broadcasts`.
+ */
+export async function syncReleaseBroadcasts(env: Env, options: { now?: number; force?: boolean } = {}): Promise<{ synced: number }> {
+  if (!env.ACCOUNTS) return { synced: 0 };
+  if (!options.force && syncedDbs.has(env.ACCOUNTS)) return { synced: 0 };
+  const now = options.now ?? Date.now();
+  const candidates = BUNDLED_ENTRIES.filter(
+    e => e.broadcast && (e.broadcast.expires_at === null || e.broadcast.expires_at > now),
+  );
+  if (!candidates.length) {
+    syncedDbs.add(env.ACCOUNTS);
+    return { synced: 0 };
+  }
+  try {
+    const placeholders = candidates.map(() => '?').join(',');
+    const existingRows = await env.ACCOUNTS.prepare(`SELECT id FROM system_broadcasts WHERE id IN (${placeholders})`)
+      .bind(...candidates.map(c => c.broadcast!.id)).all<{ id: string }>();
+    const existingIds = new Set(existingRows.results.map(r => r.id));
+    const missing = candidates.filter(c => !existingIds.has(c.broadcast!.id));
+    if (!missing.length) {
+      syncedDbs.add(env.ACCOUNTS);
+      return { synced: 0 };
+    }
+    const signingKey = await ensureSigningKey(env);
+    const issuer = issuerOrigin(env);
+    let synced = 0;
+    // Publish oldest-to-newest so monotonic seq matches chronological release order.
+    for (const entry of [...missing].reverse()) {
+      const spec = entry.broadcast!;
+      const docsUrl = resolveEntryDocsUrl(issuer, spec.docs_path);
+      const inserted = await env.ACCOUNTS.prepare(`INSERT OR IGNORE INTO system_broadcasts (
+          id, kind, severity, audiences, title, summary, body, docs_url, action_json, match_json,
+          dismissible, issuer, payload_json, signature_alg, signature_kid, signature_b64, created_by, created_at, expires_at, superseded_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', 'Ed25519', ?, '', 'release', ?, ?, NULL) RETURNING seq`)
+        .bind(
+          spec.id, spec.kind, spec.severity, JSON.stringify(spec.audiences), spec.title, spec.summary, spec.body,
+          docsUrl, spec.action ? JSON.stringify(spec.action) : null, spec.match ? JSON.stringify(spec.match) : null,
+          spec.dismissible ? 1 : 0, issuer, signingKey.kid, now, spec.expires_at,
+        ).first<{ seq: number }>();
+      if (!inserted) continue;
+      const payload: BroadcastPayload = {
+        schema_version: BROADCAST_SCHEMA_VERSION,
+        id: spec.id,
+        seq: inserted.seq,
+        issuer,
+        kind: spec.kind,
+        severity: spec.severity,
+        audiences: spec.audiences,
+        title: spec.title,
+        summary: spec.summary,
+        body: spec.body,
+        docs_url: docsUrl,
+        action: spec.action,
+        match: spec.match,
+        dismissible: spec.dismissible,
+        created_at: now,
+        expires_at: spec.expires_at,
+        superseded_by: null,
+      };
+      const signed = await signBroadcastPayload(payload, signingKey);
+      const stmts = [
+        env.ACCOUNTS.prepare('UPDATE system_broadcasts SET payload_json = ?, signature_alg = ?, signature_kid = ?, signature_b64 = ? WHERE id = ?')
+          .bind(JSON.stringify(payload), signed.signature.alg, signed.signature.kid, signed.signature.sig, spec.id),
+        env.ACCOUNTS.prepare('INSERT INTO audit_log (id, actor, action, subject, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(crypto.randomUUID(), 'release', 'broadcast_publish', spec.id, `release/${entry.slug}: ${spec.title}`, now),
+      ];
+      if (spec.supersedes_id) {
+        stmts.push(
+          env.ACCOUNTS.prepare('UPDATE system_broadcasts SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL')
+            .bind(spec.id, spec.supersedes_id),
+        );
+      }
+      await env.ACCOUNTS.batch(stmts);
+      synced++;
+    }
+    syncedDbs.add(env.ACCOUNTS);
+    return { synced };
+  } catch {
+    // Non-fatal if broadcasts migration is absent in minimal test fixtures.
+    return { synced: 0 };
+  }
+}
+
+const VALID_CHANGELOG_CATEGORIES = new Set(['feature', 'deprecation', 'breaking', 'security']);
+
+/** Structured public `/api/changelog` view for agents returning to fallow workspaces. */
+export function getChangelog(env: Env, options: {
+  since?: string | null;
+  sinceCore?: string | null;
+  category?: string | null;
+  limit?: number;
+} = {}) {
+  const issuer = issuerOrigin(env);
+  const since = options.since?.trim() || null;
+  if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) {
+    throw new HttpError(400, 'bad_request', 'since must be a YYYY-MM-DD date');
+  }
+  const sinceCore = options.sinceCore?.trim() || null;
+  const category = options.category?.trim() || null;
+  if (category && !VALID_CHANGELOG_CATEGORIES.has(category)) {
+    throw new HttpError(400, 'bad_request', 'category must be one of feature, deprecation, breaking, security');
+  }
+  const limit = Math.min(200, Math.max(1, options.limit ?? 50));
+
+  const filtered = BUNDLED_ENTRIES.filter(entry => {
+    if (category && entry.category !== category) return false;
+    if (since && entry.date < since) return false;
+    if (sinceCore) {
+      const cmp = compareSemver(entry.core_version, sinceCore);
+      if (cmp !== null && cmp < 0) return false;
+      if (cmp === 0 && !since) {
+        // Same core version: include only if explicitly requested without a newer core filter,
+        // or keep entries from this exact release when the caller passes since_core == old release.
+        return false;
+      }
+    }
+    return true;
+  }).slice(0, limit);
+
+  return {
+    schema_version: 1,
+    issuer,
+    core_release: CORE_RELEASE,
+    latest_date: BUNDLED_ENTRIES[0]?.date ?? null,
+    changelog_md_url: `${issuer}/changelog.md`,
+    sunsetting_policy: releaseChangelog.sunsetting_policy,
+    entries: filtered.map(entry => ({
+      slug: entry.slug,
+      date: entry.date,
+      category: entry.category,
+      core_version: entry.core_version,
+      title: entry.title,
+      summary: entry.summary,
+      body: entry.body,
+      docs_url: resolveEntryDocsUrl(issuer, entry.docs_path),
+      sunset_at: entry.sunset_at,
+      supersedes: entry.supersedes,
+      broadcast_id: entry.broadcast?.id ?? null,
+      broadcast_severity: entry.broadcast?.severity ?? null,
+    })),
+  };
+}
+
 /** Query active signed broadcasts, optionally filtered by audience(s) and sequence cursor. */
 export async function listActiveBroadcasts(env: Env, options: {
   audience?: BroadcastAudience;
@@ -227,6 +420,7 @@ export async function listActiveBroadcasts(env: Env, options: {
   since?: number;
   limit?: number;
 } = {}): Promise<BroadcastListResponse> {
+  await syncReleaseBroadcasts(env);
   const { issuer, keys } = await publicBroadcastKeys(env);
   if (!env.ACCOUNTS) {
     return { issuer, keys, latest_seq: 0, etag: '"bc-empty"', broadcasts: [] };
@@ -279,6 +473,7 @@ export async function listActiveBroadcasts(env: Env, options: {
 /** Admin view including recently revoked/expired broadcasts. */
 export async function listAllBroadcastsForAdmin(env: Env, limit = 50): Promise<StoredBroadcastRecord[]> {
   if (!env.ACCOUNTS) return [];
+  await syncReleaseBroadcasts(env);
   try {
     const rows = await env.ACCOUNTS.prepare("SELECT * FROM system_broadcasts WHERE signature_b64 != '' ORDER BY seq DESC LIMIT ?")
       .bind(limit).all<BroadcastRow>();
@@ -295,6 +490,7 @@ export async function listAllBroadcastsForAdmin(env: Env, limit = 50): Promise<S
 /** Lightweight readiness summary (never throws if migration hasn't run). */
 export async function broadcastSummary(env: Env): Promise<{ latestSeq: number; activeCount: number; criticalCount: number }> {
   if (!env.ACCOUNTS) return { latestSeq: 0, activeCount: 0, criticalCount: 0 };
+  await syncReleaseBroadcasts(env);
   try {
     const now = Date.now();
     const row = await env.ACCOUNTS.prepare(`SELECT

@@ -12,7 +12,7 @@ import { dashboard } from "./accounts/keys";
 import { accountData } from "./accounts/data";
 import { reportPage } from "./abuse/report";
 import { adminAccount, adminPage, appealPage } from "./abuse/admin";
-import { checkBroadcastAdminToken, createBroadcast, fleetVersionSummary, listActiveBroadcasts, listAllBroadcastsForAdmin, publicBroadcastKeys, revokeBroadcast, validAudienceParam } from "./broadcasts";
+import { checkBroadcastAdminToken, createBroadcast, fleetVersionSummary, getChangelog, listActiveBroadcasts, listAllBroadcastsForAdmin, publicBroadcastKeys, revokeBroadcast, validAudienceParam } from "./broadcasts";
 import { budgetWebhook } from "./budget";
 import { polarWebhookRoute, pricingPage, routeBillingDashboard, selfHostPage } from "./billing/routes";
 import { redeemPageCode, routePageAuth } from "./accounts/page";
@@ -191,9 +191,9 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     }
     return pricingPage(req, env);
   }
-  if (path === "/pricing.md" || path === "/self-host.md") {
+  if (path === "/pricing.md" || path === "/self-host.md" || path === "/changelog.md") {
     if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation is read-only");
-    const docPath = path === "/pricing.md" ? "/docs/PRICING.md" : "/docs/SELF_HOSTING.md";
+    const docPath = path === "/pricing.md" ? "/docs/PRICING.md" : path === "/self-host.md" ? "/docs/SELF_HOSTING.md" : "/docs/CHANGELOG.md";
     const guide = await asset(env, url, docPath);
     if (!guide.ok) return guide;
     const body = (await guide.text()).replaceAll("https://tendriller.dev", publicBase(env));
@@ -343,6 +343,29 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       if (req.method !== 'GET' && req.method !== 'HEAD') return errorResponse(405, 'method_not_allowed', 'Readiness is read-only');
       const readiness = await serviceReadiness(env);
       const response = json(readiness, readiness.mode === 'unavailable' ? 503 : 200, { Link: onboardingLinks(publicBase(env)) });
+      return req.method === 'HEAD' ? new Response(null, response) : response;
+    }
+    if (path === "/api/changelog") {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return errorResponse(405, 'method_not_allowed', 'Changelog is read-only');
+      const accept = req.headers.get('Accept') ?? '';
+      if (accept.includes('text/markdown') && !accept.includes('application/json')) {
+        const guide = await asset(env, url, '/docs/CHANGELOG.md');
+        if (guide.ok) {
+          const body = (await guide.text()).replaceAll('https://tendriller.dev', publicBase(env));
+          return new Response(req.method === 'HEAD' ? null : body, {
+            headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'public, max-age=60', 'X-Content-Type-Options': 'nosniff', Vary: 'Accept', Link: onboardingLinks(publicBase(env)) },
+          });
+        }
+      }
+      const limitRaw = url.searchParams.get('limit');
+      if (limitRaw !== null && !/^\d+$/.test(limitRaw)) return errorResponse(400, 'bad_request', 'limit must be a positive integer');
+      const data = getChangelog(env, {
+        since: url.searchParams.get('since'),
+        sinceCore: url.searchParams.get('since_core'),
+        category: url.searchParams.get('category'),
+        ...(limitRaw !== null ? { limit: Number(limitRaw) } : {}),
+      });
+      const response = withCors(json(data, 200, { 'Cache-Control': 'public, max-age=60', Link: onboardingLinks(publicBase(env)) }));
       return req.method === 'HEAD' ? new Response(null, response) : response;
     }
     if (path === "/api/broadcasts") {

@@ -18,6 +18,7 @@ tendril guide --server https://YOUR_HOST          # workflow and documentation l
 tendril readiness --server https://YOUR_HOST      # current creation availability
 tendril service --server https://YOUR_HOST        # public contract and limits
 tendril broadcasts --server https://YOUR_HOST     # verified Ed25519-signed upgrade & security broadcasts
+tendril changelog --server https://YOUR_HOST [--since YYYY-MM-DD] [--since-core VER]  # notable platform changelog & sunsetting notices (run when returning to a fallow workspace)
 tendril probe --server https://YOUR_HOST --check-network
 ```
 

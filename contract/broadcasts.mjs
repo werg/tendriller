@@ -550,3 +550,33 @@ export async function fetchBroadcasts(serviceOrigin, {
     rejected,
   };
 }
+
+/** Fetch notable release changelog entries from `/api/changelog`, optionally filtered for fallow-workspace catch-up. */
+export async function fetchChangelog(serviceOrigin, {
+  since,
+  sinceCore,
+  category,
+  limit,
+  fetch: fetcher = globalThis.fetch,
+  signal,
+} = {}) {
+  const origin = new URL(serviceOrigin).origin;
+  const url = new URL('/api/changelog', origin);
+  if (since) url.searchParams.set('since', String(since));
+  if (sinceCore) url.searchParams.set('since_core', String(sinceCore));
+  if (category) url.searchParams.set('category', String(category));
+  if (limit !== undefined && limit !== null) url.searchParams.set('limit', String(limit));
+  const response = await fetcher(url.href, { signal, redirect: 'error', cache: 'no-cache' });
+  if (!response.ok) {
+    throw Object.assign(new Error(`Could not fetch changelog (${response.status})`), {
+      status: response.status, code: 'changelog_unavailable',
+    });
+  }
+  const data = await response.json();
+  if (!isPlainObject(data) || data.issuer !== origin || !Array.isArray(data.entries)) {
+    throw Object.assign(new Error('Invalid changelog response'), {
+      status: response.status, code: 'changelog_invalid',
+    });
+  }
+  return data;
+}

@@ -158,6 +158,15 @@ other's checks at the same source commit. Newer runs supersede older runs for th
 same branch or PR; master push and manual promotion runs remain serialized without
 cancelling an active promotion. Trusted branch qualification also supplies the
 successful push/dispatch evidence required by branch previews. Only trusted master
+
+## Release changelog, sunsetting & deploy-synced broadcasts
+
+Notable changes are authored as one JSON file per change in `releases/entries/<YYYY-MM-DD>-<slug>.json` (one file per change avoids merge conflicts across parallel branches). Do **not** add an entry for routine bugfixes, test-only edits, copy tweaks, or internal refactors.
+
+- **Allowed categories:** `feature`, `deprecation` (requires `sunset_at: "YYYY-MM-DD"`), `breaking`, `security`.
+- **Sunsetting windows:** 7–14 days for experimental APIs, 30 days for stable public APIs, and immediate advisory + 24–72h (or immediate if actively exploited) for security issues. Once `sunset_at` elapses, remove the legacy path in a follow-up PR with a `breaking` entry whose `supersedes` points to the deprecation slug.
+- **Zero-secret deploy sync:** `npm run build` runs `scripts/release-changelog.mjs`, validating every entry against `contract/broadcasts.mjs` (`validateBroadcastInput`), rejecting any human UI audience (`dashboard`, `page_owners`, `page_all`), generating `docs/CHANGELOG.md`, and bundling `server/src/release-changelog.json` into the Worker. On deploy (staging, production, or self-hosted), `syncReleaseBroadcasts()` derives each entry's deterministic `bc_...` ID from its slug, idempotently Ed25519-signs and inserts any unseen non-expired `broadcast: true` entries into `system_broadcasts` (once per isolate; 0 D1 queries on warm requests), updates `superseded_by` for `supersedes`, and never resurrects manually revoked rows.
+- **Fallow-workspace catch-up:** The compiled changelog is served at `/changelog.md`, `/docs/CHANGELOG.md`, `/api/changelog` (`?since=YYYY-MM-DD`, `?since_core=VERSION`, `?category=...`), and MCP `tendril_guide(topic: "changelog")`. `tendril status` inspects installed `@tendriller/core` against `/api/service` and `.tendriller/agent/broadcasts.json`'s `lastSyncedAt` (14-day threshold), surfacing a `catchup` hint pointing to `tendril changelog`.
 publishes, using `source-<full commit SHA>` release tags, with the manifest uploaded
 last. Package versions may stay unchanged across source checkpoints; the existing
 `v0.3.0-rc.17` release is never overwritten. Missing or different published bytes

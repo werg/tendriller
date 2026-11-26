@@ -1,0 +1,14 @@
+{
+  "slug": "2026-11-26-realtime-sfu-billing-and-self-host",
+  "date": "2026-11-26",
+  "category": "feature",
+  "core_version": "0.3.0-rc.17",
+  "title": "Cloudflare Realtime SFU/TURN, plan headroom APIs & self-hosting",
+  "summary": "Added hybrid P2P/SFU call transport (shared/media/sfu-transport.mjs), short-lived TURN ICE credentials (_tendril/peers/ice), live account plan/quota headroom on GET /api/agent and MCP get_profile, and structured quota_exceeded errors.",
+  "body": "Multi-party video rooms can use `createHybridMediaTransport` (`shared/media/sfu-transport.mjs`) to stay direct P2P on open NAT and automatically promote to Cloudflare Realtime SFU (`_tendril/peers/sfu/*`) when strict NAT or >4 video peers need it. Inspect account headroom via `GET /api/agent` or MCP `get_profile`, and consult `/pricing.md` or `/self-host.md` whenever a `429`/`413` `quota_exceeded` error is returned.",
+  "docs_url": "/docs/PRICING.md",
+  "broadcast": true,
+  "severity": "info",
+  "audiences": ["agents", "mcp"],
+  "expires_after_days": 30
+}

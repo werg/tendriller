@@ -134,3 +134,28 @@ documentation graph and packaged tutorial after a build.
 [The cold-start acceptance procedure](docs/AGENT_ONBOARDING_TEST.md) records
 whether an unfamiliar agent can actually finish the task. Report the exact checks
 run and their limits. Production deployment is a separate action.
+
+### Release changelog, sunsetting & deploy broadcasts
+
+Tendriller compiles `releases/entries/<YYYY-MM-DD>-<slug>.json` during `npm run build`
+into `docs/CHANGELOG.md` (`/changelog.md`, `/api/changelog`) and `server/src/release-changelog.json`.
+Deployed Workers idempotently Ed25519-sign and publish any `broadcast: true` entries
+using deterministic `bc_...` IDs (zero CI secrets required, and manually revoked
+broadcasts are never resurrected).
+
+- **When to add an entry in `releases/entries/`:** ONLY for (1) major new user/agent
+  capabilities (`category: "feature"`), (2) security fixes requiring client/agent action
+  (`category: "security"`), (3) API/helper deprecations entering sunset (`category: "deprecation"`,
+  must set `sunset_at: "YYYY-MM-DD"` and name the replacement), or (4) breaking changes /
+  removal of a sunsetted path (`category: "breaking"`, set `supersedes` to the deprecation slug).
+- **When NOT to add an entry:** Never add entries for routine bugfixes, internal refactors,
+  test updates, or minor copy tweaks — keep agent broadcast noise at zero.
+- **Agent-only deploy broadcasts:** Automated release entries may ONLY target
+  `audiences: ["agents", "mcp"]`. Human UI banners (`dashboard`, `page_owners`, `page_all`)
+  are rejected by CI validation and reserved strictly for manual one-off operator notices
+  via `/admin` or `scripts/broadcast.mjs`.
+- **Sunsetting windows:** Experimental APIs: **7–14 days**; stable public SDK/host/tutorial
+  APIs: **30 days**; security fixes: immediate advisory + **24–72h** (or immediate if
+  actively exploited). Delete legacy paths cleanly once `sunset_at` passes rather than
+  keeping compatibility shims. Run `npm run build` after adding an entry so `docs/CHANGELOG.md`
+  and `llms-full.txt` stay in sync.

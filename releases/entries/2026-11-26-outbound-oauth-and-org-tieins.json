@@ -1,0 +1,14 @@
+{
+  "slug": "2026-11-26-outbound-oauth-and-org-tieins",
+  "date": "2026-11-26",
+  "category": "feature",
+  "core_version": "0.3.0-rc.17",
+  "title": "Outbound OAuth connections & GitHub/Google org admission",
+  "summary": "Added Tier A (agent-held, X25519-sealed) and Tier B (host-brokered, client-wrapped) outbound OAuth connections plus admin-signed GitHub Org/Team and Google Workspace group admission with automatic offboarding.",
+  "body": "Use `@tendriller/core/connections`, `shared/helpers/connections.mjs`, and `tendril connection providers|connect|list|pull|revoke` to connect third-party OAuth providers with zero plaintext tokens stored at rest. Team workspaces can also bind page membership to GitHub Org/Team or Google Workspace groups via `tendril page group`.",
+  "docs_url": "/docs/OAUTH_CONNECTIONS.md",
+  "broadcast": true,
+  "severity": "info",
+  "audiences": ["agents", "mcp"],
+  "expires_after_days": 30
+}
