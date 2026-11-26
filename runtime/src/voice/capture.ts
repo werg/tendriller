@@ -1,6 +1,9 @@
 // Push-to-talk recording and in-browser Cactus Whistle transcription.
+// Uses direct 16 kHz PCM capture via AudioWorklet when available (avoiding mobile
+// MediaRecorder/decodeAudioData codec failures), falling back cleanly to MediaRecorder.
 import type { RuntimeArtifactFeatures } from "../../../contract/index.mjs";
 import { mediaRequestSettled } from "../sensors";
+import { decodeAudioToPcm16k, type SharedSpeechWorker } from "./shared-worker";
 
 export type CaptureMode = "local" | null;
 export type CaptureStage = "model" | "microphone_permission" | "recorder" | "transcription";
@@ -95,14 +98,26 @@ export class SpeechCapture {
   private offTracks: (() => void) | null = null;
   private meterTimer: ReturnType<typeof setInterval> | null = null;
   private meterContext: AudioContext | null = null;
+  private pcmContext: AudioContext | null = null;
+  private pcmNode: AudioWorkletNode | null = null;
+  private pcmSource: MediaStreamAudioSourceNode | null = null;
+  private pcmChunks: Float32Array[] = [];
+  private pcmTotalSamples = 0;
+  private pcmActive = false;
+  private sharedRelease: (() => void) | null = null;
+  private initAbort: AbortController | null = null;
+  private transcribeAbort: AbortController | null = null;
 
   constructor(private h: CaptureHandlers, private lang: () => string,
-    private base: string, private speech: RuntimeArtifactFeatures["speech"]) {
-    this.mode = !!speech && typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia && !!window.OfflineAudioContext && !!window.Worker ? "local" : null;
+    private base: string, private speech: RuntimeArtifactFeatures["speech"],
+    private workletUrl?: string, private sharedWorker?: SharedSpeechWorker) {
+    const hasAudioWorklet = !!workletUrl && typeof AudioContext !== "undefined" && typeof AudioWorkletNode !== "undefined";
+    const hasMediaRecorder = typeof MediaRecorder !== "undefined" && !!window.OfflineAudioContext;
+    this.mode = !!speech && !!navigator.mediaDevices?.getUserMedia && (hasAudioWorklet || hasMediaRecorder) && !!window.Worker ? "local" : null;
   }
 
   get microphoneActive(): boolean { return this.listening; }
-  get busy(): boolean { return this.starting || this.requesting || !!this.recorder || this.processing; }
+  get busy(): boolean { return this.starting || this.requesting || !!this.recorder || this.pcmActive || this.processing; }
 
   private call(action: string, payload: Record<string, unknown> = {}, transfer: Transferable[] = []): Promise<any> {
     if (!this.worker) return Promise.reject(new Error("Speech worker unavailable"));
@@ -138,6 +153,22 @@ export class SpeechCapture {
         this.consented = true;
       }
       if (!current()) throw new Error(this.disposed ? "Speech capture is disposed" : "Speech setup cancelled");
+      if (this.sharedWorker) {
+        if (!this.sharedRelease) this.sharedRelease = this.sharedWorker.retain();
+        const ac = new AbortController();
+        this.initAbort = ac;
+        try {
+          await this.sharedWorker.ensureInit(this.speech, {
+            onProgress: text => { if (current()) this.h.onInterim(text); },
+            signal: ac.signal,
+          });
+        } finally {
+          if (this.initAbort === ac) this.initAbort = null;
+        }
+        if (!current()) throw new Error("Speech setup cancelled");
+        this.prepared = true;
+        return;
+      }
       const worker = this.worker = new Worker(new URL("voice-worker.js", new URL(this.base, location.href)).href);
       worker.onmessage = (event: MessageEvent) => {
         if (this.worker !== worker || !current()) return;
@@ -212,7 +243,7 @@ export class SpeechCapture {
       stage = "microphone_permission";
       const media = navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
       this.requesting = true;
-      const opening = media.then(stream => {
+      const opening = media.then(async stream => {
         if (this.cancelled || session !== this.session || this.disposed) { stream.getTracks().forEach(track => track.stop()); return; }
         stage = "recorder";
         this.stream = stream;
@@ -234,21 +265,30 @@ export class SpeechCapture {
               track.removeEventListener?.("mute", interrupted);
             }
           };
-          const chunks: Blob[] = [];
-          let bytes = 0;
-          const rec = new MediaRecorder(stream);
-          this.recorder = rec;
-          rec.ondataavailable = event => {
-            if (session !== this.session || this.cancelled) return;
-            bytes += event.data.size;
-            if (bytes > 16 * 1024 * 1024) { this.cancel(); this.h.onError("Recording exceeded its memory limit. Try a shorter utterance."); return; }
-            if (event.data.size) chunks.push(event.data);
-          };
-          rec.onerror = interrupted;
-          rec.onstop = () => { void this.finish(new Blob(chunks, { type: rec.mimeType }), session, rec, stream); };
-          rec.start(1000);
+
+          // Prefer direct 16 kHz PCM capture via AudioWorklet (immune to mobile MediaRecorder codec issues).
+          const startedPcm = await this.tryStartPcmCapture(stream, session);
+          if (this.cancelled || session !== this.session || this.disposed) {
+            this.releaseStream();
+            return;
+          }
+          if (!startedPcm) {
+            const chunks: Blob[] = [];
+            let bytes = 0;
+            const rec = new MediaRecorder(stream);
+            this.recorder = rec;
+            rec.ondataavailable = event => {
+              if (session !== this.session || this.cancelled) return;
+              bytes += event.data.size;
+              if (bytes > 16 * 1024 * 1024) { this.cancel(); this.h.onError("Recording exceeded its memory limit. Try a shorter utterance."); return; }
+              if (event.data.size) chunks.push(event.data);
+            };
+            rec.onerror = interrupted;
+            rec.onstop = () => { void this.finish(new Blob(chunks, { type: rec.mimeType }), session, rec, stream); };
+            rec.start(1000);
+            this.startMeter(stream);
+          }
           this.listening = true;
-          this.startMeter(stream);
           this.h.onState(true);
           this.h.onInterim("");
           this.maxTimer = setTimeout(() => this.stop(), 30_000);
@@ -324,14 +364,102 @@ export class SpeechCapture {
     try { this.h.onLevel?.(0); } catch { /* ignore */ }
   }
 
+  private async tryStartPcmCapture(stream: MediaStream, session: number): Promise<boolean> {
+    if (!this.workletUrl || typeof AudioContext === "undefined" || typeof AudioWorkletNode === "undefined") return false;
+    let ctx: AudioContext | null = null;
+    try {
+      ctx = new AudioContext();
+      if (!ctx.audioWorklet) { void ctx.close().catch(() => {}); return false; }
+      await ctx.audioWorklet.addModule(this.workletUrl);
+      if (this.cancelled || session !== this.session || this.disposed) {
+        void ctx.close().catch(() => {});
+        return true;
+      }
+      if (ctx.state === "suspended") await ctx.resume().catch(() => {});
+      const source = ctx.createMediaStreamSource(stream);
+      const node = new AudioWorkletNode(ctx, "tendriller-voice-pcm", {
+        numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1, channelCountMode: "explicit",
+      });
+      this.pcmChunks = [];
+      this.pcmTotalSamples = 0;
+      const maxSamples = 16_000 * 30;
+      node.port.onmessage = (event: MessageEvent) => {
+        if (session !== this.session || this.cancelled) return;
+        const msg = event.data;
+        if (msg?.type === "pcm" && msg.samples && typeof msg.samples.byteLength === "number") {
+          const chunk = new Float32Array(msg.samples);
+          const remaining = maxSamples - this.pcmTotalSamples;
+          if (remaining > 0) {
+            const take = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining);
+            this.pcmChunks.push(take);
+            this.pcmTotalSamples += take.length;
+          }
+          if (typeof msg.level === "number") {
+            try { this.h.onLevel?.(msg.level); } catch { /* ignore */ }
+          }
+          if (this.pcmTotalSamples >= maxSamples && this.pcmActive) this.stop();
+        } else if (msg?.type === "level" && typeof msg.level === "number") {
+          try { this.h.onLevel?.(msg.level); } catch { /* ignore */ }
+        }
+      };
+      source.connect(node);
+      node.connect(ctx.destination);
+      node.port.postMessage({ type: "capture", sequence: session, enabled: true });
+      this.pcmContext = ctx;
+      this.pcmSource = source;
+      this.pcmNode = node;
+      this.pcmActive = true;
+      return true;
+    } catch {
+      try { void ctx?.close().catch(() => {}); } catch {}
+      this.teardownPcm();
+      return false;
+    }
+  }
+
+  private teardownPcm(): void {
+    this.pcmActive = false;
+    try { this.pcmNode?.port.postMessage({ type: "close" }); } catch {}
+    try { this.pcmSource?.disconnect(); } catch {}
+    try { this.pcmNode?.disconnect(); } catch {}
+    this.pcmSource = null;
+    this.pcmNode = null;
+    if (this.pcmContext) {
+      void this.pcmContext.close().catch(() => {});
+      this.pcmContext = null;
+    }
+  }
+
   private releaseStream(): void {
     this.stopMeter();
+    this.teardownPcm();
     this.offTracks?.(); this.offTracks = null;
     this.stream?.getTracks().forEach(track => track.stop()); this.stream = null;
     if (this.listening) { this.listening = false; this.h.onState(false); }
   }
 
   stop(): void {
+    if (this.pcmActive) {
+      const session = this.session;
+      this.clearTimers();
+      this.pcmActive = false;
+      this.processing = true; this.processingSession = session;
+      try { this.pcmNode?.port.postMessage({ type: "capture", sequence: session, enabled: false }); } catch {}
+      // Give the worklet one micro-window (~35ms) to flush trailing samples before tearing down.
+      setTimeout(() => {
+        const chunks = this.pcmChunks;
+        const total = this.pcmTotalSamples;
+        this.pcmChunks = [];
+        this.pcmTotalSamples = 0;
+        this.releaseStream();
+        if (this.cancelled || session !== this.session) return;
+        const merged = new Float32Array(total);
+        let offset = 0;
+        for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+        void this.transcribePcm(merged, session);
+      }, 35);
+      return;
+    }
     const rec = this.recorder;
     if (!rec) { this.cancel(); return; }
     this.clearTimers();
@@ -351,10 +479,24 @@ export class SpeechCapture {
   cancel(): void {
     ++this.session; this.cancelled = true; this.cancelStart?.();
     this.clearTimers();
+    this.pcmChunks = []; this.pcmTotalSamples = 0;
     const recorder = this.recorder; this.recorder = null;
     try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch { /* All tracks are stopped below. */ }
     this.releaseStream();
-    if (!this.prepared || this.processing) this.failWorker(new Error("Speech capture cancelled"));
+    if (this.sharedWorker) {
+      if (!this.prepared) {
+        ++this.loadingGeneration;
+        this.ready = null;
+        this.initAbort?.abort();
+        this.initAbort = null;
+      }
+      if (this.processing) {
+        this.transcribeAbort?.abort();
+        this.transcribeAbort = null;
+      }
+    } else if (!this.prepared || this.processing) {
+      this.failWorker(new Error("Speech capture cancelled"));
+    }
     this.processing = false;
     this.h.onInterim("");
   }
@@ -363,7 +505,54 @@ export class SpeechCapture {
     if (this.disposed) return;
     this.disposed = true;
     this.cancel();
-    this.failWorker(new Error("Speech capture disposed"));
+    if (this.sharedWorker) {
+      this.initAbort?.abort();
+      this.initAbort = null;
+      this.transcribeAbort?.abort();
+      this.transcribeAbort = null;
+      this.ready = null;
+      this.prepared = false;
+      this.sharedRelease?.();
+      this.sharedRelease = null;
+    } else {
+      this.failWorker(new Error("Speech capture disposed"));
+    }
+  }
+
+  private async transcribePcm(samples: Float32Array, session: number): Promise<void> {
+    if (this.cancelled || session !== this.session) return;
+    if (!samples.length) {
+      this.processing = false;
+      this.h.onError("No audio was recorded. Try again or type instead.");
+      return;
+    }
+    this.processing = true; this.processingSession = session;
+    this.h.onInterim("Transcribing on this device…");
+    try {
+      const language = this.lang().split("-")[0]!.toLowerCase();
+      let text = "";
+      if (this.sharedWorker) {
+        const ac = new AbortController();
+        this.transcribeAbort = ac;
+        try {
+          text = await this.sharedWorker.transcribe(samples, language, { signal: ac.signal });
+        } finally {
+          if (this.transcribeAbort === ac) this.transcribeAbort = null;
+        }
+      } else {
+        const copy = new Float32Array(samples);
+        const result = await this.call("transcribe", { samples: copy.buffer, language }, [copy.buffer]);
+        text = String(result?.text ?? "").trim();
+      }
+      if (this.cancelled || session !== this.session) return;
+      if (text) this.h.onFinal(text);
+      else this.h.onError("I didn't catch that. Try again or type instead.");
+    } catch {
+      if (!this.cancelled && session === this.session) this.h.onError("On-device transcription failed. You can type instead.");
+    } finally {
+      if (this.processingSession === session) this.processing = false;
+      if (session === this.session) this.h.onInterim("");
+    }
   }
 
   private async finish(blob: Blob, session: number, recorder: MediaRecorder, stream: MediaStream): Promise<void> {
@@ -376,33 +565,11 @@ export class SpeechCapture {
     this.processing = true; this.processingSession = session;
     this.h.onInterim("Transcribing on this device…");
     try {
-      // Offline decoding does not need an autoplay-capable playback device.
-      const decoder = new OfflineAudioContext(1, 1, 16000);
-      const decoded = await decoder.decodeAudioData(await blob.arrayBuffer());
-      if (this.cancelled || session !== this.session) return;
-      const channels = decoded.numberOfChannels;
-      const length = Math.min(decoded.length, decoded.sampleRate * 30);
-      if (!channels || !length || !Number.isFinite(decoded.sampleRate) || decoded.sampleRate <= 0) throw new Error("Invalid decoded audio");
-      const mono = new Float32Array(length);
-      for (let channel = 0; channel < channels; channel++) {
-        const data = decoded.getChannelData(channel);
-        for (let i = 0; i < length; i++) mono[i] += data[i] / channels;
-      }
-      const out = new Float32Array(Math.ceil(length * 16000 / decoded.sampleRate));
-      for (let i = 0; i < out.length; i++) {
-        const position = i * decoded.sampleRate / 16000;
-        const left = Math.floor(position);
-        const fraction = position - left;
-        out[i] = mono[left] * (1 - fraction) + (mono[Math.min(left + 1, length - 1)] ?? 0) * fraction;
-      }
-      if (this.cancelled || session !== this.session) return;
-      const result = await this.call("transcribe", { samples: out.buffer, language: this.lang().split("-")[0].toLowerCase() }, [out.buffer]);
-      if (this.cancelled || session !== this.session) return;
-      if (result.text?.trim()) this.h.onFinal(result.text.trim());
-      else this.h.onError("I didn't catch that. Try again or type instead.");
+      const out = await decodeAudioToPcm16k(blob);
+      const bounded = out.length > 16_000 * 30 ? out.subarray(0, 16_000 * 30) : out;
+      await this.transcribePcm(bounded, session);
     } catch {
-      if (!this.cancelled && session === this.session) this.h.onError("On-device transcription failed. You can type instead.");
-    } finally {
+      if (!this.cancelled && session === this.session) this.h.onError("On-device audio decoding failed in this browser. Try again or type instead.");
       if (this.processingSession === session) this.processing = false;
       if (session === this.session) this.h.onInterim("");
     }

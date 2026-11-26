@@ -32,6 +32,10 @@ export type InjectConfig = {
   broadcastKeys?: import("../../contract/broadcasts.mjs").BroadcastPublicJwk[];
   /** Nonzero when at least one active system broadcast exists on the service. */
   broadcastLatestSeq?: number;
+  /** Authenticated access role of this page load ("owner" | "guest" | "display"). */
+  viewerRole?: import("../../contract/index.mjs").Role;
+  /** Optional default facet id bound to the share/invite link that opened this page. */
+  defaultView?: string;
   /** Server-rendered install branding, not part of the runtime configuration. */
   branding?: PageBranding;
 } & ({ publication: PublicationManifest; documentPath: string } | { publication?: null; documentPath: null });
@@ -59,6 +63,8 @@ export function runtimeTags(cfg: InjectConfig, installTags = `<link rel="manifes
     application: cfg.application, peerBootstrap: cfg.peerBootstrap, ...(cfg.iconRaster ? { iconRaster: cfg.iconRaster } : {}),
     ...(cfg.broadcastKeys?.length ? { broadcastKeys: cfg.broadcastKeys } : {}),
     ...(cfg.broadcastLatestSeq ? { broadcastLatestSeq: cfg.broadcastLatestSeq } : {}),
+    ...(cfg.viewerRole ? { viewerRole: cfg.viewerRole } : {}),
+    ...(cfg.defaultView ? { defaultView: cfg.defaultView } : {}),
     features: { ...cfg.features, ...publication?.runtime.features }, ...(publication ? { publication } : {}) };
   return (
     `<base href="${attr(documentBase)}">` +

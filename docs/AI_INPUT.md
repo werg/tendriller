@@ -306,10 +306,9 @@ sensor cancellation boundary. A browser-owned permission dialog may remain
 visible after cancellation, but a late stream is stopped. The default source
 supports no automatic capture loop. Dispose the controller on teardown.
 
-`shared/media/voice.mjs` wraps the existing optional `createVoice` lifecycle. By default
-it loads `import(tendril.assetUrl('voice.mjs'))`, preserving the selected runtime.
-A bundled app can supply `loadVoice: () => import('@tendriller/runtime/voice')`.
-`@tendriller/core/voice` supplies types, not this runtime constructor.
+For simple on-device dictation into a `<textarea>`/`<input>` or transcribing an uploaded audio file/buffer without building a custom controller, call `const { bindDictation, transcribeAudio } = await window.tendril.loadVoice()`. All voice helpers in a tab share one verified Cactus Whistle WASM worker pool and capture 16 kHz mono PCM directly via `AudioWorklet` (with `MediaRecorder` fallback).
+
+For custom reviewed-draft flows with explicit preparation phases, `shared/media/voice.mjs` wraps the existing optional `createVoice` lifecycle. By default it uses `tendril.loadVoice()` (falling back to `import(tendril.assetUrl('voice.mjs'))`), preserving the selected runtime. A bundled app can supply `loadVoice: () => import('@tendriller/runtime/voice')`. `@tendriller/core/voice` supplies types, not this runtime constructor.
 
 ```js
 import { createVoiceController } from '../../shared/media/voice.mjs';

@@ -11,6 +11,7 @@ export type ShareLink = {
   role: "owner" | "guest" | "display";
   label: string | null;
   email?: string | null;
+  view?: string | null;
   expires_at: number | null;
 };
 
@@ -180,6 +181,29 @@ export function createShareModal(
   labelInput.setAttribute("aria-label", "Invite label (optional)");
   labelField.append(labelInput);
 
+  const viewField = el("div", undefined, "field"); viewField.hidden = true;
+  viewField.append(el("label", "Target view (optional)"));
+  const viewSelect = el("select", undefined, "select");
+  viewSelect.setAttribute("aria-label", "Target view (optional)");
+  viewField.append(viewSelect);
+
+  const refreshViewSelect = () => {
+    const facets = api.publication?.facets ?? [];
+    viewField.hidden = facets.length <= 1;
+    if (viewField.hidden) return;
+    const prev = viewSelect.value;
+    clearChildren(viewSelect);
+    const defOpt = el("option", "Default view for participant");
+    defOpt.value = "";
+    viewSelect.append(defOpt);
+    for (const f of facets) {
+      const opt = el("option", f.title ? `${f.title} (${f.id})` : f.id);
+      opt.value = f.id;
+      viewSelect.append(opt);
+    }
+    if (prev && facets.some(f => f.id === prev)) viewSelect.value = prev;
+  };
+
   const createInviteBtn = btn("Create invite link", "btn primary full");
   const readyCard = el("div", undefined, "card-box highlight"); readyCard.hidden = true;
 
@@ -193,7 +217,7 @@ export function createShareModal(
   displayCard.addEventListener("click", () => { selectedRole = "display"; syncRoleUi(); });
   syncRoleUi();
 
-  personOwnerWrap.append(roleGrid, expiryWrap, emailField, labelField, createInviteBtn, readyCard);
+  personOwnerWrap.append(roleGrid, expiryWrap, emailField, labelField, viewField, createInviteBtn, readyCard);
   personPanel.append(personLoading, personOwnerWrap, personVisitorNote);
 
   // ─ Tab 3: Links & Pending Guest Requests ─
@@ -292,6 +316,7 @@ export function createShareModal(
       const pills = el("div", undefined, "row");
       pills.append(el("span", roleText, link.role === "guest" ? "pill accent" : "pill"));
       if (link.email) pills.append(el("span", link.email, "pill"));
+      if (link.view) pills.append(el("span", `View: ${link.view}`, "pill"));
       pills.append(el("span", formatExpiry(link.expires_at), expired ? "pill danger" : "pill"));
       top.append(el("strong", link.label || roleText), pills);
 
@@ -382,6 +407,7 @@ export function createShareModal(
       const payload: Record<string, unknown> = { role: selectedRole };
       if (selectedRole === "guest" && emailInput.value.trim()) payload.email = emailInput.value.trim();
       if (labelInput.value.trim()) payload.label = labelInput.value.trim();
+      if (!viewField.hidden && viewSelect.value) payload.view = viewSelect.value;
       if (selectedExpiry) payload.expires_in = Number(selectedExpiry);
       const res = await fetch(`${api.identity.base}_tendril/links`, {
         method: "POST", credentials: "same-origin",
@@ -395,6 +421,7 @@ export function createShareModal(
       const created = await res.json() as ShareLink;
       emailInput.value = "";
       labelInput.value = "";
+      viewSelect.value = "";
       showReadyLink(created);
       await refreshShare();
       if (canNativeShare()) setStatus("Link ready. Tap Share, Copy, or QR below.");
@@ -442,6 +469,7 @@ export function createShareModal(
     onOpen(initialTab?: "device" | "person" | "links") {
       setStatus("");
       manualLink.hidden = true;
+      refreshViewSelect();
       selectTab(initialTab ?? activeTab);
       if (activeTab !== "device") void refreshShare();
     },

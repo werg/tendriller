@@ -49,12 +49,18 @@ One Tendriller page can expose multiple URL-addressable views (**facets**) over 
 ```json
 {
   "default": "stage",
+  "defaultFor": {
+    "role:display": "stage",
+    "role:guest+form:phone": "notes"
+  },
   "facets": [
     { "id": "stage", "title": "Live stage", "module": "facets/stage.mjs", "description": "Agent-updatable stage" },
-    { "id": "notes", "title": "Shared notes", "module": "facets/notes.mjs" }
+    { "id": "notes", "title": "Shared notes", "module": "facets/notes.mjs", "roles": ["owner", "guest"] }
   ]
 }
 ```
+
+Optional `defaultFor` rules (`device:<id>`, `participant:<id>`, `role:<r>+form:<f>`, `role:<r>`, `form:<f>`) and per-facet `roles` let one page route different participants, roles, or form factors to dedicated views automatically; see [Dedicated UIs per participant, role, or device](#dedicated-uis-per-participant-role-or-device-facets) for invite-link target views and live Chronolog view bindings (`shared/helpers/view-bindings.mjs`).
 
 ### 2. Write a facet or slot module (`facets/stage.mjs`)
 
@@ -456,3 +462,61 @@ const agent = createCallAgent({
 ```
 
 Direct peer links negotiate mid-session RTP tracks and `app:*` DataChannels in-band via W3C Perfect Negotiation; peers on the encrypted WebSocket relay keep CRDT sync, chat, and on-device per-person transcripts running while honestly reporting A/V media unavailable.
+
+## On-device speech recognition from page code
+
+Load the lazy voice module via `await window.tendril.loadVoice()` rather than bundling a second WASM model. All callers in a tab share one Cactus Whistle WASM worker pool, and microphone capture streams 16 kHz mono PCM directly via `AudioWorklet` (falling back to `MediaRecorder` only when `AudioWorklet` is unavailable):
+
+```js
+const { bindDictation, transcribeAudio } = await window.tendril.loadVoice();
+
+// Drop-in dictation bound to a textarea (tap-to-toggle + hold-to-talk, dispatches 'input'):
+const mic = bindDictation(window.tendril, document.querySelector('#notes'), {
+  button: document.querySelector('#dictate-btn'),
+  mode: 'append', // 'append' | 'replace'
+  onStatus: status => { statusEl.textContent = status.message ?? ''; },
+});
+
+// One-shot transcription of an uploaded Blob/ArrayBuffer or 16 kHz Float32Array (no mic needed):
+const { text } = await transcribeAudio(window.tendril, audioFile, { language: 'en-US' });
+```
+
+## Dedicated UIs per participant, role, or device (facets)
+
+Publish multiple view modules over one Chronolog session with `facets.json` and `tendril.publication.mountFacets(...)`. Combine declarative `defaultFor` rules (role, form factor, participant, device), invite-link target views (`POST _tendril/links` with `view` or Share & invite → Target view), and optional Chronolog view bindings from `shared/helpers/view-bindings.mjs`:
+
+```json
+{
+  "default": "workspace",
+  "defaultFor": {
+    "role:display": "kiosk",
+    "role:guest+form:phone": "guest-mobile",
+    "role:guest": "guest",
+    "form:phone": "mobile"
+  },
+  "facets": [
+    { "id": "workspace", "title": "Workspace", "module": "facets/workspace.mjs", "roles": ["owner"] },
+    { "id": "guest", "title": "Guest", "module": "facets/guest.mjs", "roles": ["owner", "guest"] },
+    { "id": "kiosk", "title": "Wallboard", "module": "facets/kiosk.mjs" }
+  ]
+}
+```
+
+```js
+import { createViewBindingSource } from '../../shared/helpers/view-bindings.mjs';
+
+const bindings = createViewBindingSource(session, {
+  deviceId: session.status.deviceId,
+  participantId: session.status.accountId,
+  role: window.tendril.identity.role,
+});
+
+const facets = await window.tendril.publication.mountFacets(document.querySelector('#app'), {
+  bindings,
+  deviceId: session.status.deviceId,
+  participantId: session.status.accountId,
+  context: { session },
+});
+// Render switcher tabs from facets.visible() so role-scoped facets stay clean;
+// any remote setViewBinding() Chronolog event hot-swaps the mounted view live.
+```

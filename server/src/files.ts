@@ -212,7 +212,7 @@ export function publicationManifest(t: Tendril, version: number, base: string): 
 
 /** Serve exact published bytes and their pinned runtime. */
 export async function servePageFile(t: Tendril, req: Request, base: string, rest: string,
-  role: "owner" | "guest" | "display", accountId: string | null): Promise<Response> {
+  role: "owner" | "guest" | "display", accountId: string | null, linkId: string | null = null): Promise<Response> {
   const application = selectedApplication(t);
   // A display link has no peer-introduction permission. Application capabilities
   // remain independently authenticated by Chronolog after connection setup.
@@ -252,12 +252,14 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   const branding = () => ({ name: t.db.get("name", "Tendril"), shortName: t.db.get<string | null>("short_name", null),
     themeColor: t.db.get<string | null>("theme_color", null), icon: t.db.get<string | null>("icon", null) });
 
+  const linkView = linkId ? t.db.get<string | null>(`link_view:${linkId}`, null) : null;
+
   if (!file) {
     if (rest === "") {
       headers.set("Content-Type", "text/html; charset=utf-8");
       headers.delete("X-Tendril-Publication");
       headers.set("Cache-Control", "no-store");
-      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: null, features: t.features(), publication: null, branding: branding() });
+      const html = injectRuntime(holdingPage(t.db.get("name", "Tendril")), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: null, features: t.features(), publication: null, viewerRole: role, ...(linkView ? { defaultView: linkView } : {}), branding: branding() });
       return new Response(html, { headers });
     }
     return new Response("Not found", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-cache" } });
@@ -289,6 +291,8 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base),
       broadcastKeys,
       ...(bcSummary.activeCount > 0 ? { broadcastLatestSeq: bcSummary.latestSeq } : {}),
+      viewerRole: role,
+      ...(linkView ? { defaultView: linkView } : {}),
       branding: {
         ...branding(),
         appleIcon: await appleTouchIcon(t, base, new URL(base, req.url).href).catch(() => null),

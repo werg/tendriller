@@ -78,10 +78,24 @@ export interface FacetDescriptor {
   readonly title: string;
   readonly module: string;
   readonly description?: string;
+  /** Optional roles this facet is designed for (e.g. ["owner", "guest", "display"]). */
+  readonly roles?: readonly Role[];
 }
 export interface FacetsManifest {
   readonly default: string;
+  /**
+   * Optional declarative routing rules mapping selectors to a facet id.
+   * Supported keys: "role:<owner|guest|display>", "form:<phone|tablet|desktop>",
+   * "role:<role>+form:<form>", "participant:<id>", "device:<id>".
+   */
+  readonly defaultFor?: Readonly<Record<string, string>>;
   readonly facets: readonly FacetDescriptor[];
+}
+export interface FacetBindingSource {
+  /** Return the currently assigned facet id for this device/participant/role, or null for default routing. */
+  resolve(): string | null;
+  /** Subscribe to live binding changes (e.g. Chronolog session updates); returns unsubscribe fn. */
+  onChange(listener: () => void): () => void;
 }
 export interface MountFacetsOptions<T = Record<string, unknown>> {
   /** Relative path to a JSON facets manifest in the publication (default "facets.json") or an inline manifest object. */
@@ -90,6 +104,18 @@ export interface MountFacetsOptions<T = Record<string, unknown>> {
   readonly param?: string;
   /** Optional fallback facet id overriding manifest.default when no URL parameter is present. */
   readonly defaultFacet?: string;
+  /** Viewer role override (defaults to `tendril.identity.role`). */
+  readonly role?: Role;
+  /** Optional authenticated participant identifier (e.g. account id or @handle) for `participant:` routing. */
+  readonly participantId?: string;
+  /** Optional device identifier (e.g. signing public key) for `device:` routing. */
+  readonly deviceId?: string;
+  /** Optional device form factor override ("phone" | "tablet" | "desktop"); auto-detected from viewport when omitted. */
+  readonly formFactor?: "phone" | "tablet" | "desktop";
+  /** Optional live per-participant / per-device Chronolog view binding source. */
+  readonly bindings?: FacetBindingSource;
+  /** Remember explicit manual facet switches on this device in localStorage (default false). */
+  readonly rememberDevice?: boolean;
   /** Additional relative file paths or directory prefixes owned by these facets. */
   readonly owns?: readonly string[];
   readonly context?: T;
@@ -101,6 +127,8 @@ export interface MountFacetsOptions<T = Record<string, unknown>> {
 export interface MountedFacets {
   readonly current: FacetDescriptor;
   list(): readonly FacetDescriptor[];
+  /** Facets available to the current viewer role (omitting facets restricted to other roles). */
+  visible(): readonly FacetDescriptor[];
   select(id: string, options?: { readonly replace?: boolean }): Promise<void>;
   url(id: string, options?: { readonly pinned?: boolean }): string;
   onChange(listener: (state: { readonly current: FacetDescriptor; readonly facets: readonly FacetDescriptor[] }) => void): () => void;
@@ -125,6 +153,10 @@ export type RuntimeConfiguration = {
   broadcastKeys?: import("./broadcasts.mjs").BroadcastPublicJwk[];
   /** Latest active system broadcast sequence number (omitted or 0 when no broadcasts are active, avoiding eager page fetches). */
   broadcastLatestSeq?: number;
+  /** Authenticated access role of the current page load ("owner" | "guest" | "display"). */
+  viewerRole?: Role;
+  /** Optional default facet id bound to the share/invite link that opened this page. */
+  defaultView?: string;
 } & (
   /** Decoded logical path of this document, independently of the publication's root entry. */
   { publication: PublicationManifest; documentPath: string }
@@ -382,13 +414,15 @@ export interface RuntimeServices {
   /** No-prompt inspection. Unknown filter keys are ignored; an empty filter queries nothing. */
   capabilities(filter?: readonly string[]): Promise<CapabilityReport>;
   readonly version: number;
-  readonly identity: Readonly<{ page: string; version: number; publication: string | null; documentPath: string | null; base: string; managementUrl: string }>;
+  readonly identity: Readonly<{ page: string; version: number; publication: string | null; documentPath: string | null; base: string; managementUrl: string; role?: Role; defaultView?: string | null }>;
   /** Browser installation state and an explicit native prompt; never registers offline support. */
   readonly installation: RuntimeInstallation;
   /** Pure URL builder for authored document/fragment links; preserves live or explicit pinned navigation. No fetch or navigation. */
   documentUrl(reference: string): string;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
   assetUrl(path: string): string;
+  /** Lazily load the optional on-device voice & ASR module (`createVoice`, `transcribeAudio`, `bindDictation`, `createStreamTranscriber`). */
+  loadVoice(): Promise<Record<string, any>>;
   /** Publication lifecycle, offline persistence, URL-addressable facets, and live hot-swappable slots. */
   publication: {
     saveOffline(): Promise<{ id: string; status: "ready" }>;
@@ -410,6 +444,8 @@ export interface RuntimeServices {
     mountSlot<T = Record<string, unknown>>(name: string, container: HTMLElement, options: MountSlotOptions<T>): Promise<MountedSlot>;
     /** Mount URL-addressable, hot-swappable facets from `facets.json` (or an inline manifest). */
     mountFacets<T = Record<string, unknown>>(container: HTMLElement, options?: MountFacetsOptions<T>): Promise<MountedFacets>;
+    /** Currently mounted facet descriptors on this page (empty when the page does not use facets). */
+    readonly facets?: readonly FacetDescriptor[];
     /** Called when a new release is selected (live hot-swapped, requires reload, or reverted to this document's release). */
     onUpdate(listener: (update: PublicationUpdate) => void): () => void;
     /** Defer the automatic full-page reload while there is unsaved work or an active call; call the result to release. */

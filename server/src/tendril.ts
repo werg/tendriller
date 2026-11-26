@@ -214,11 +214,12 @@ export class Tendril extends DurableObject<Env> {
           if (body.role !== "guest" && body.role !== "display") throw new HttpError(400, "bad_request", "role must be guest or display");
           const label = typeof body.label === "string" ? body.label.trim().slice(0, 100) || null : null;
           const email = validOptionalEmail(body.email);
+          const view = typeof body.view === "string" ? body.view.trim() || null : null;
           const link = await this.createLink(body.role, label, parseShareExpiry(body.expires_in), false, () => {
             owns();
             const total = this.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM links")?.n ?? 0;
             if (total >= 50) throw new HttpError(429, "link_limit", "At most 50 links are allowed per page");
-          }, email);
+          }, email, view);
           addActivity(this, { kind: "link", summary: `Created ${body.role} link${label ? ` (${label})` : ""}${email ? ` for ${email}` : ""}`, by: `owner:${accountId}` });
           return json(this.renderLink(link), 201);
         }
@@ -646,9 +647,13 @@ export class Tendril extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- links
 
-  async createLink(role: Role, label: string | null, expiresIn: number | null, fromAgent = false, beforeInsert?: () => void, expectedEmail: string | null = null): Promise<Link> {
+  async createLink(role: Role, label: string | null, expiresIn: number | null, fromAgent = false, beforeInsert?: () => void, expectedEmail: string | null = null, targetView: string | null = null): Promise<Link> {
     if (expectedEmail !== null && role !== "guest") throw new HttpError(400, "bad_request", "Email restriction is only supported on guest invite links");
     const email = expectedEmail === null ? null : validOptionalEmail(expectedEmail);
+    const view = targetView === null || targetView === "" ? null : targetView.trim();
+    if (view !== null && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(view)) {
+      throw new HttpError(400, "bad_request", "view must be a lowercase facet id (a-z, 0-9, _, -)");
+    }
     const id = newLinkId();
     const key = newPageKey();
     const hash = await sha256Hex(key);
@@ -662,13 +667,17 @@ export class Tendril extends DurableObject<Env> {
       }
       this.db.run("INSERT INTO links (id, key, key_hash, role, label, created_at, expires_at, created_by_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, key, hash, role, label, now, expires, fromAgent ? 1 : 0);
       if (email) this.db.set(`link_email:${id}`, email);
+      if (view) this.db.set(`link_view:${id}`, view);
     });
     return { id, key, role, label, expected_email: email, created_at: now, expires_at: expires, created_by_agent: fromAgent ? 1 : 0 };
   }
 
   renderLink(l: Link) {
     const email = l.expected_email !== undefined ? l.expected_email : this.db.get<string | null>(`link_email:${l.id}`, null);
-    return { id: l.id, url: this.linkUrl(l.key), role: l.role, label: l.label ?? null, email: email ?? null, created_at: l.created_at, expires_at: l.expires_at ?? null };
+    const view = this.db.get<string | null>(`link_view:${l.id}`, null);
+    const baseUrl = this.linkUrl(l.key);
+    const url = view ? `${baseUrl}?view=${encodeURIComponent(view)}` : baseUrl;
+    return { id: l.id, url, role: l.role, label: l.label ?? null, email: email ?? null, ...(view ? { view } : {}), created_at: l.created_at, expires_at: l.expires_at ?? null };
   }
 
   listLinks() {

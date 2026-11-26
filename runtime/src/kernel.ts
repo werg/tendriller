@@ -108,8 +108,17 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   const installation = createInstallation();
   const transport = createTransportBinding();
   const errors = createErrorTracker(cfg.id, entry => core.bus.emit("error", entry));
-  const identity = Object.freeze({ page: cfg.id, version: cfg.version, publication: cfg.publication?.id || null, documentPath: cfg.documentPath,
-    base: new URL(cfg.base, location.href).href, managementUrl: new URL(cfg.base + "_tendril/manage", location.href).href });
+  const identity = Object.freeze({
+    page: cfg.id,
+    version: cfg.version,
+    publication: cfg.publication?.id || null,
+    documentPath: cfg.documentPath,
+    base: new URL(cfg.base, location.href).href,
+    managementUrl: new URL(cfg.base + "_tendril/manage", location.href).href,
+    ...(cfg.viewerRole ? { role: cfg.viewerRole } : {}),
+    ...(cfg.defaultView ? { defaultView: cfg.defaultView } : {}),
+  });
+  let mountedFacetsCatalog: readonly import("../../contract/index.mjs").FacetDescriptor[] = Object.freeze([]);
   const observe = () => observeCapabilities(() => tracker.status().active, report => core.bus.emit("capabilities", report));
   let capabilityObserver: ReturnType<typeof observe> | null = observe();
   const sensorChanged = () => {
@@ -154,11 +163,16 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
       get pinned() { return updates.pinned; },
       get policy() { return updates.policy; },
       get updateAvailable() { return updates.updateAvailable; },
+      get facets() { return mountedFacetsCatalog; },
       latest: () => slotManager.latest(),
       assetUrl: (path, publication) => slotManager.assetUrl(path, publication),
       facetUrl: (id, opts) => buildFacetUrl(cfg, id, { ...opts, pinned: opts?.pinned ?? updates.pinned }),
       mountSlot: (name, container, opts) => slotManager.mountSlot(name, container, opts),
-      mountFacets: (container, opts) => mountFacets(slotManager, cfg, container, { ...opts, pinned: updates.pinned }),
+      mountFacets: (container, opts) => mountFacets(slotManager, cfg, container, {
+        ...opts,
+        pinned: updates.pinned,
+        onCatalogChange: list => { mountedFacetsCatalog = Object.freeze([...list]); },
+      }),
       onUpdate: listener => updates.onUpdate(listener),
       hold: () => updates.hold(),
       update: () => updates.update(),
@@ -168,6 +182,10 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
       if (!path || /[?#\\]/.test(path) || path.startsWith("/") || /^[a-z]+:/i.test(path) || path.split("/").some(part => !part || part === "." || part === "..") || decodeURIComponent(path) !== path)
         throw new TypeError("Runtime assets require an unencoded relative path");
       return runtimeAsset(cfg, path);
+    },
+    loadVoice() {
+      const url = runtimeAsset(cfg, "voice.mjs");
+      return import(/* @vite-ignore */ url);
     },
     sensors: {
       status: () => tracker.status(),

@@ -136,3 +136,45 @@ it('the status page keeps the labels the deployment smoke check reads', async ()
   const html = await (await req('/status', { anonymous: true })).text();
   expect(html).toMatch(/Operational|New page creation paused|Read-only or unavailable/);
 });
+
+it('invite and display links support an optional target view and inject viewerRole + defaultView into page HTML', async () => {
+  const h = await create({ name: 'Multi-view board' });
+  const cookie = await serviceCookie(h.id);
+  const headers = { Cookie: cookie, 'Content-Type': 'application/json', Origin: BASE };
+
+  // Invalid view id is rejected
+  const bad = await req(`/dashboard/t/${h.id}/invite`, {
+    method: 'POST', headers, body: JSON.stringify({ role: 'display', view: '../bad' }),
+  });
+  expect(bad.status).toBe(400);
+
+  // Dashboard invite with view appends ?view= and returns view
+  const dashRes = await req(`/dashboard/t/${h.id}/invite`, {
+    method: 'POST', headers, body: JSON.stringify({ role: 'display', label: 'Wallboard', view: 'kiosk' }),
+  });
+  expect(dashRes.status).toBe(201);
+  const dashLink = await dashRes.json() as { id: string; url: string; view?: string };
+  expect(dashLink.view).toBe('kiosk');
+  expect(dashLink.url).toContain('?view=kiosk');
+
+  // Opening the display link HTML (even without ?view= in query) injects viewerRole:"display" & defaultView:"kiosk"
+  const rawDisplayUrl = dashLink.url.split('?')[0]!;
+  const displayHtml = await (await req(rawDisplayUrl, { anonymous: true })).text();
+  expect(displayHtml).toContain('"viewerRole":"display"');
+  expect(displayHtml).toContain('"defaultView":"kiosk"');
+
+  // Page-local POST _tendril/links supports view and DELETE cleans up link_view:<id>
+  const pageLinkRes = await req(`${h.page_url}_tendril/links`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ role: 'guest', label: 'Field crew', view: 'guest-mobile' }),
+  });
+  expect(pageLinkRes.status).toBe(201);
+  const pageLink = await pageLinkRes.json() as { id: string; url: string; view?: string };
+  expect(pageLink.view).toBe('guest-mobile');
+  expect(pageLink.url).toContain('?view=guest-mobile');
+
+  const delRes = await req(`${h.page_url}_tendril/links/${pageLink.id}`, { method: 'DELETE' });
+  expect(delRes.status).toBe(204);
+  const leftover = await inDO(h.id, t => t.db.get<string | null>(`link_view:${pageLink.id}`, null));
+  expect(leftover).toBeNull();
+});

@@ -21,7 +21,7 @@ function abortable(task, signal) {
  * onDraft receives a candidate; let the person edit/review it before a command.
  */
 export function createVoiceController({ runtime, consent, consentMode = consent ? 'session' : 'auto', onDraft, onStatus = () => {},
-  loadVoice = () => import(runtime.assetUrl('voice.mjs')) }) {
+  loadVoice = () => (typeof runtime.loadVoice === 'function' ? runtime.loadVoice() : import(runtime.assetUrl('voice.mjs'))) }) {
   if (typeof onDraft !== 'function') throw Error('Supply a transcript draft callback.');
   if (consentMode !== 'auto' && typeof consent !== 'function') throw Error('Supply a voice consent callback or use consentMode: "auto".');
   let voice = null, loading = null, owner = null, attempt = null, phase = 'idle', error = null, disposed = false;

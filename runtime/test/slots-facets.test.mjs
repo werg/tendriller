@@ -305,3 +305,111 @@ test('mountFacets reads ?view=<id>, switches via pushState/popstate, and live-up
   await facets.dispose();
   manager.close();
 });
+
+test('mountFacets resolves role, formFactor, invite defaultView, defaultFor, and live Chronolog bindings in precedence order', async () => {
+  const v1 = pub(1, [
+    ['index.html', 'h_html'],
+    ['facets.json', 'h_fj1'],
+    ['facets/admin.mjs', 'h_a'],
+    ['facets/guest.mjs', 'h_g'],
+    ['facets/guest-phone.mjs', 'h_gp'],
+    ['facets/kiosk.mjs', 'h_k'],
+    ['facets/vip.mjs', 'h_v'],
+  ]);
+  const manifest = {
+    default: 'admin',
+    defaultFor: {
+      'role:display': 'kiosk',
+      'role:guest+form:phone': 'guest-phone',
+      'role:guest': 'guest',
+      'participant:acc_vip': 'vip',
+    },
+    facets: [
+      { id: 'admin', title: 'Admin', module: 'facets/admin.mjs', roles: ['owner'] },
+      { id: 'guest', title: 'Guest', module: 'facets/guest.mjs', roles: ['owner', 'guest'] },
+      { id: 'guest-phone', title: 'Guest Mobile', module: 'facets/guest-phone.mjs', roles: ['owner', 'guest'] },
+      { id: 'kiosk', title: 'Wallboard', module: 'facets/kiosk.mjs' },
+      { id: 'vip', title: 'VIP', module: 'facets/vip.mjs', roles: ['owner', 'guest'] },
+    ],
+  };
+
+  // Validate parseFacetsManifest rejects invalid role/rule keys
+  assert.throws(() => mod.parseFacetsManifest({
+    default: 'a',
+    facets: [{ id: 'a', title: 'A', module: 'a.mjs', roles: ['superuser'] }],
+  }), /roles must be/);
+  assert.throws(() => mod.parseFacetsManifest({
+    default: 'a',
+    defaultFor: { 'role:guest': 'missing' },
+    facets: [{ id: 'a', title: 'A', module: 'a.mjs' }],
+  }), /unknown facet/);
+
+  const makeManager = (cfg, urlRef) => mod.createSlotManager(cfg, {
+    latest: async () => ({ version: 1, publication: v1 }),
+    href: () => urlRef.href,
+    importModule: async () => ({
+      mount(root, ctx) { root.append(`mounted:${ctx.app.facet.id}`); },
+    }),
+  });
+
+  // 1. Role + formFactor rule: guest on phone -> guest-phone; visible() hides owner-only admin
+  const guestUrl = { href: 'https://app.example/s/demo/' };
+  const guestCfg = { ...cfgFor(1, v1), viewerRole: 'guest' };
+  const guestMgr = makeManager(guestCfg, guestUrl);
+  const guestContainer = fakeContainer();
+  const guestFacets = await mod.mountFacets(guestMgr, guestCfg, guestContainer, {
+    formFactor: 'phone',
+    fetch: async () => ({ ok: true, status: 200, json: async () => manifest }),
+    href: () => guestUrl.href,
+    pushUrl: u => { guestUrl.href = u; },
+    onPopState: () => () => {},
+  });
+  assert.equal(guestFacets.current.id, 'guest-phone');
+  assert.deepEqual(guestFacets.visible().map(f => f.id), ['guest', 'guest-phone', 'kiosk', 'vip']);
+  await guestFacets.dispose();
+  guestMgr.close();
+
+  // 2. Invite defaultView beats defaultFor; live Chronolog binding beats defaultView & hot-swaps live
+  const vipUrl = { href: 'https://app.example/s/demo/' };
+  const vipCfg = { ...cfgFor(1, v1), viewerRole: 'guest', defaultView: 'kiosk' };
+  const vipMgr = makeManager(vipCfg, vipUrl);
+  const vipContainer = fakeContainer();
+  let boundFacet = null;
+  const bindingListeners = new Set();
+  const bindings = {
+    resolve: () => boundFacet,
+    onChange(fn) { bindingListeners.add(fn); return () => bindingListeners.delete(fn); },
+  };
+  const catalogSnapshots = [];
+  const vipFacets = await mod.mountFacets(vipMgr, vipCfg, vipContainer, {
+    participantId: 'acc_vip',
+    bindings,
+    onCatalogChange: list => catalogSnapshots.push(list.map(f => f.id)),
+    fetch: async () => ({ ok: true, status: 200, json: async () => manifest }),
+    href: () => vipUrl.href,
+    pushUrl: u => { vipUrl.href = u; },
+    onPopState: () => () => {},
+  });
+  assert.equal(vipFacets.current.id, 'kiosk', 'Invite defaultView beats participant defaultFor');
+  assert.deepEqual(catalogSnapshots[0], ['admin', 'guest', 'guest-phone', 'kiosk', 'vip']);
+
+  // Remote Chronolog binding updates -> hot-swaps live to 'vip'
+  boundFacet = 'vip';
+  for (const fn of bindingListeners) fn();
+  await new Promise(r => setTimeout(r, 15));
+  assert.equal(vipFacets.current.id, 'vip', 'Live binding hot-swapped the view');
+  assert.deepEqual(vipContainer.shadowRoot.children, ['mounted:vip']);
+
+  // Explicit ?view= URL override is NOT hijacked by subsequent binding changes
+  await vipFacets.select('guest');
+  assert.equal(vipFacets.current.id, 'guest');
+  assert.match(vipUrl.href, /\?view=guest$/);
+  boundFacet = 'kiosk';
+  for (const fn of bindingListeners) fn();
+  await new Promise(r => setTimeout(r, 15));
+  assert.equal(vipFacets.current.id, 'guest', 'Explicit ?view= stays pinned over binding changes');
+
+  await vipFacets.dispose();
+  assert.deepEqual(catalogSnapshots.at(-1), [], 'Catalog clears on dispose');
+  vipMgr.close();
+});

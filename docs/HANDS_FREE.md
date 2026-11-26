@@ -1,21 +1,37 @@
 # Voice, spoken replies and full-duplex chat
 
-`@tendriller/runtime/voice` provides three layers for voice and chat, all
-lazy-loaded so the headless kernel stays tiny and never acquires a microphone on
-page load:
+`await window.tendril.loadVoice()` (the lazy runtime voice module, equivalent to `@tendriller/runtime/voice`) keeps the headless kernel tiny and never acquires a microphone or downloads the speech model on page load. All callers in a tab share one verified **Cactus Whistle WASM worker pool**, and microphone capture streams 16 kHz mono PCM directly via `AudioWorklet` (with `MediaRecorder` as automatic fallback so mobile Firefox/Safari codec quirks never break transcription):
 
-1. **`mountAgentChat(runtime, options)`** — a complete, mobile-first voice + text
+1. **`bindDictation(runtime, target, options)`** — drop-in on-device dictation for any `<textarea>`, `<input>`, or callback. Wires tap-to-toggle + press-and-hold on an optional button (`data-state`, `aria-pressed`, `--level`) and dispatches standard `input` events.
+2. **`transcribeAudio(runtime, audio, options)`** — one-shot on-device transcription of a `Blob`, `File`, `ArrayBuffer`, `AudioBuffer`, or `Float32Array` (auto-chunks recordings longer than 28 seconds, never requests microphone access). Also exports `decodeAudioToPcm16k` and `classifyCaptureError`.
+3. **`mountAgentChat(runtime, options)`** — a complete, mobile-first voice + text
    chat drawer/panel with 1-tap or press-and-hold mic, live RMS audio level ring,
    optional immediate voice send or draft review, browser/neural TTS spoken
    replies, instant **Stop speaking** & barge-in, hands-free conversation loop,
    live streaming reply bubble, context chips (e.g. *"About: CPU card"*), and
    file/photo attach hooks. Pair with `shared/ui/chat-session.mjs` (`mountConnectedAgentChat`)
    to connect directly to a Chronolog session.
-2. **`mountVoiceControls(runtime, options)`** — standalone voice dock or inline
+4. **`mountVoiceControls(runtime, options)`** — standalone voice dock or inline
    panel with tap-to-talk, wake word, direct-send toggle, and spoken TTS controls.
    Also accessible on every hosted page via **Page options → Set up voice input**.
-3. **`createVoice(runtime, options)`** — low-level voice input, output, wake-word
+5. **`createVoice(runtime, options)`** — low-level voice input, output, wake-word
    and audio-level adapter for custom UIs.
+
+## Quick start from normal page code
+
+```js
+const { bindDictation, transcribeAudio } = await window.tendril.loadVoice();
+
+// 1. Bind a button + textarea for on-device dictation (shares the tab's WASM worker):
+const mic = bindDictation(window.tendril, document.querySelector('#notes'), {
+  button: document.querySelector('#dictate-btn'),
+  mode: 'append', // 'append' | 'replace'
+  onStatus: st => { statusEl.textContent = st.message ?? ''; },
+});
+
+// 2. Transcribe an uploaded audio clip or pre-recorded PCM buffer without a microphone:
+const { text, durationMs } = await transcribeAudio(window.tendril, file, { language: 'en-US' });
+```
 
 ## Consent modes (no per-utterance popups)
 

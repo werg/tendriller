@@ -2,7 +2,8 @@ import type { SpeechStatus } from "../../../contract/voice.mjs";
 import type { RuntimeApi, RuntimeArtifactFeatures } from "../../../contract/index.mjs";
 import { createSpeechOutput, type SpeechMediaSessionOptions } from "./output";
 import { createPreferences } from "./preferences";
-import { SpeechCapture } from "./capture";
+import { SpeechCapture, classifyCaptureError } from "./capture";
+import { getSharedSpeechWorker, decodeAudioToPcm16k } from "./shared-worker";
 import { WakeWordCapture, type WakeMode, type WakeState } from "./wakeword";
 import { LocalWakeCapture } from "./local-wake";
 import { acquireMicrophoneSession, type MicrophoneSession } from "./microphone";
@@ -55,6 +56,9 @@ export type { StreamTranscriber, StreamTranscriberOptions, StreamTranscriptSegme
 export { ContinuousPcmSegmenter, PcmResampler, PcmVoiceSegmenter } from "./pcm";
 export type { ContinuousPcmSegment } from "./pcm";
 export { SPEECH_DOWNLOAD_BYTES, SPEECH_MODEL_BYTES, SPEECH_LANGUAGES } from "./resources";
+export { transcribeAudio, bindDictation } from "./dictation";
+export type { TranscribeAudioOptions, BindDictationOptions, DictationBinding } from "./dictation";
+export { classifyCaptureError, decodeAudioToPcm16k };
 
 type InputSession = { kind: "capture" | WakeMode; epoch: number; abort: AbortController; lease?: MicrophoneSession; released: boolean };
 const terminal = (state: WakeState) => state === "off" || state === "paused" || state === "error";
@@ -234,7 +238,9 @@ export function createVoice(runtime: RuntimeApi, options: VoiceOptions) {
           reportCapture("error", message);
         },
         onLevel: options.level ? level => { if (!disposed) try { options.level?.(level); } catch { /* ignore */ } } : undefined,
-      }, language, new URL(".", runtime.assetUrl("voice-worker.js")).href, selected);
+      }, language, new URL(".", runtime.assetUrl("voice-worker.js")).href, selected,
+      runtime.assetUrl("voice-pcm-worklet.js"),
+      getSharedSpeechWorker(runtime.assetUrl("voice-worker.js"), selected.sha256));
     }
     const selected = capture;
     await selected.prepare();

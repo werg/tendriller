@@ -814,3 +814,53 @@ test('the page options bar drags to any corner, snaps there, remembers it and st
   await page.evaluate(() => { const w = window as any; w.disposeUtility(); w.mount(); });
   await expect.poll(async () => { const b = await box(); return b.x + b.width > 340 && b.y < 40; }).toBe(true);
 });
+
+test('Share & invite exposes optional Target view selector when facets are mounted and sends view in link creation', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 800 });
+  await fixture(page);
+  const links: any[] = [];
+  let postedBody: any = null;
+  await page.route('https://layout.test/_tendril/links**', async route => {
+    const request = route.request();
+    if (request.method() === 'POST') {
+      postedBody = request.postDataJSON();
+      const created = {
+        id: 'lnk_view',
+        url: `https://layout.test/kiosk/${postedBody.view ? `?view=${postedBody.view}` : ''}`,
+        role: postedBody.role,
+        label: postedBody.label ?? null,
+        view: postedBody.view ?? null,
+        expires_at: null,
+      };
+      links.push(created);
+      await route.fulfill({ status: 201, json: created });
+      return;
+    }
+    await route.fulfill({ json: { name: 'Board', links } });
+  });
+  await page.route('https://layout.test/_tendril/guests**', route => route.fulfill({ json: { guests: [] } }));
+  await page.evaluate(() => {
+    const w = window as any;
+    Object.defineProperty(navigator, 'share', { configurable: true, value: undefined });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => {} } });
+    w.api.publication.facets = [
+      { id: 'workspace', title: 'Workspace', module: 'facets/workspace.mjs' },
+      { id: 'kiosk', title: 'Wallboard', module: 'facets/kiosk.mjs' },
+    ];
+    w.disposeUtility();
+    w.mount();
+  });
+
+  await page.getByRole('button', { name: 'Page options', exact: true }).click();
+  await page.getByRole('button', { name: /Share & invite/ }).click();
+  await page.getByRole('tab', { name: 'Invite person', exact: true }).click();
+
+  const viewSelect = page.getByRole('combobox', { name: 'Target view (optional)', exact: true });
+  await expect(viewSelect).toBeVisible();
+  await viewSelect.selectOption('kiosk');
+  await page.getByRole('button', { name: 'Create invite link', exact: true }).click();
+
+  await expect.poll(() => postedBody).toEqual({ role: 'guest', view: 'kiosk', expires_in: 604800 });
+  await page.getByRole('tab', { name: /Links/ }).click();
+  await expect(page.getByText('View: kiosk', { exact: true })).toBeVisible();
+});

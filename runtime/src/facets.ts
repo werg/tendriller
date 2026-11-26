@@ -13,6 +13,8 @@ import { validPublicationPath } from "./paths";
 const FACET_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const PARAM_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
 const MAX_FACETS = 32;
+const VALID_ROLES = new Set(["owner", "guest", "display"]);
+const DEFAULT_FOR_KEY = /^(?:role:(?:owner|guest|display)|form:(?:phone|tablet|desktop)|role:(?:owner|guest|display)\+form:(?:phone|tablet|desktop)|participant:[A-Za-z0-9_.:@-]{1,128}|device:[A-Za-z0-9_.:-]{1,128})$/;
 
 /** Validate an authored `facets.json` or inline facets manifest. */
 export function parseFacetsManifest(raw: unknown): FacetsManifest {
@@ -49,18 +51,46 @@ export function parseFacetsManifest(raw: unknown): FacetsManifest {
     if (value.description !== undefined && (typeof value.description !== "string" || value.description.length > 300)) {
       throw new TypeError(`Facet "${value.id}" description must be a string up to 300 chars`);
     }
+    let roles: Array<"owner" | "guest" | "display"> | undefined;
+    if (value.roles !== undefined) {
+      if (!Array.isArray(value.roles) || value.roles.length === 0 || value.roles.some(r => typeof r !== "string" || !VALID_ROLES.has(r))) {
+        throw new TypeError(`Facet "${value.id}" roles must be a non-empty array of owner, guest, or display`);
+      }
+      roles = [...new Set(value.roles as Array<"owner" | "guest" | "display">)];
+    }
     facets.push(Object.freeze({
       id: value.id,
       title: value.title.trim(),
       module: value.module,
       ...(value.description !== undefined ? { description: value.description } : {}),
+      ...(roles ? { roles: Object.freeze(roles) } : {}),
     }));
   }
   if (!seen.has(input.default)) {
     throw new TypeError(`Default facet "${input.default}" is not declared in facets`);
   }
+  let defaultFor: Readonly<Record<string, string>> | undefined;
+  if (input.defaultFor !== undefined) {
+    if (!input.defaultFor || typeof input.defaultFor !== "object" || Array.isArray(input.defaultFor)) {
+      throw new TypeError("Facets manifest defaultFor must be an object mapping selectors to facet ids");
+    }
+    const entries = Object.entries(input.defaultFor as Record<string, unknown>);
+    if (entries.length > 64) throw new TypeError("Facets manifest defaultFor supports at most 64 rules");
+    const validated: Record<string, string> = {};
+    for (const [selector, facetId] of entries) {
+      if (!DEFAULT_FOR_KEY.test(selector)) {
+        throw new TypeError(`Invalid defaultFor selector: ${selector}`);
+      }
+      if (typeof facetId !== "string" || !seen.has(facetId)) {
+        throw new TypeError(`defaultFor selector "${selector}" references unknown facet "${String(facetId)}"`);
+      }
+      validated[selector] = facetId;
+    }
+    defaultFor = Object.freeze(validated);
+  }
   return Object.freeze({
     default: input.default,
+    ...(defaultFor ? { defaultFor } : {}),
     facets: Object.freeze(facets),
   });
 }
@@ -112,12 +142,20 @@ function readFacetParam(param: string, href = typeof location !== "undefined" ? 
   }
 }
 
+function detectFormFactor(): "phone" | "tablet" | "desktop" {
+  if (typeof window === "undefined" || typeof window.innerWidth !== "number" || window.innerWidth <= 0) return "desktop";
+  if (window.innerWidth < 640) return "phone";
+  if (window.innerWidth < 1024) return "tablet";
+  return "desktop";
+}
+
 export interface MountFacetsRuntimeOptions<T = Record<string, unknown>> extends MountFacetsOptions<T> {
   readonly pinned?: boolean;
   readonly fetch?: typeof fetch;
   readonly href?: () => string;
   readonly pushUrl?: (url: string, replace: boolean) => void;
   readonly onPopState?: (listener: () => void) => () => void;
+  readonly onCatalogChange?: (facets: readonly FacetDescriptor[]) => void;
 }
 
 /**
@@ -162,22 +200,78 @@ export async function mountFacets<T = Record<string, unknown>>(
   };
 
   let manifest = await loadManifest();
+  const viewerRole = options.role ?? cfg.viewerRole;
+  const formFactor = options.formFactor ?? detectFormFactor();
+  const devicePrefKey = `tendril:facet-pref:${cfg.id}:${param}`;
+
+  const readRemembered = (): string | null => {
+    if (!options.rememberDevice) return null;
+    try {
+      const saved = localStorage.getItem(devicePrefKey);
+      return saved && FACET_ID.test(saved) ? saved : null;
+    } catch { return null; }
+  };
+  const saveRemembered = (id: string) => {
+    if (!options.rememberDevice) return;
+    try { localStorage.setItem(devicePrefKey, id); } catch { /* ignore */ }
+  };
+
+  const facetById = (id: string | null | undefined): FacetDescriptor | null => {
+    if (!id) return null;
+    return manifest.facets.find(item => item.id === id) ?? null;
+  };
+
+  const resolveDefaultFor = (): FacetDescriptor | null => {
+    const rules = manifest.defaultFor;
+    if (!rules) return null;
+    const keys: string[] = [];
+    if (options.deviceId) keys.push(`device:${options.deviceId}`);
+    if (options.participantId) keys.push(`participant:${options.participantId}`);
+    if (viewerRole) keys.push(`role:${viewerRole}+form:${formFactor}`);
+    if (viewerRole) keys.push(`role:${viewerRole}`);
+    keys.push(`form:${formFactor}`);
+    for (const key of keys) {
+      const hit = facetById(rules[key]);
+      if (hit) return hit;
+    }
+    return null;
+  };
+
   const resolveFacet = (requested: string | null): FacetDescriptor => {
-    if (requested) {
-      const hit = manifest.facets.find(item => item.id === requested);
-      if (hit) return hit;
-    }
-    if (options.defaultFacet) {
-      const hit = manifest.facets.find(item => item.id === options.defaultFacet);
-      if (hit) return hit;
-    }
-    return manifest.facets.find(item => item.id === manifest.default) ?? manifest.facets[0];
+    // 1. Explicit URL parameter (?view=<id>) always wins for deep links
+    const fromUrl = facetById(requested);
+    if (fromUrl) return fromUrl;
+    // 2. Live per-device / per-participant / per-role Chronolog binding
+    const fromBinding = facetById(options.bindings?.resolve?.());
+    if (fromBinding) return fromBinding;
+    // 3. Invite-link target view
+    const fromInvite = facetById(cfg.defaultView);
+    if (fromInvite) return fromInvite;
+    // 4. Device-remembered manual choice
+    const fromRemembered = facetById(readRemembered());
+    if (fromRemembered) return fromRemembered;
+    // 5. Declarative manifest.defaultFor (device -> participant -> role+form -> role -> form)
+    const fromRules = resolveDefaultFor();
+    if (fromRules) return fromRules;
+    // 6. Explicit options.defaultFacet
+    const fromOption = facetById(options.defaultFacet);
+    if (fromOption) return fromOption;
+    // 7. Manifest default
+    return facetById(manifest.default) ?? manifest.facets[0]!;
+  };
+
+  const visibleFacets = (): readonly FacetDescriptor[] => {
+    if (!viewerRole) return manifest.facets;
+    const matching = manifest.facets.filter(f => !f.roles || f.roles.includes(viewerRole));
+    return matching.length > 0 ? Object.freeze(matching) : manifest.facets;
   };
 
   let active = resolveFacet(readFacetParam(param, getHref()));
+  options.onCatalogChange?.(manifest.facets);
   let disposed = false;
   const changeListeners = new Set<(state: { current: FacetDescriptor; facets: readonly FacetDescriptor[] }) => void>();
   const notifyChange = () => {
+    options.onCatalogChange?.(manifest.facets);
     const snapshot = Object.freeze({ current: active, facets: manifest.facets });
     for (const listener of changeListeners) {
       try { listener(snapshot); } catch {}
@@ -194,13 +288,14 @@ export async function mountFacets<T = Record<string, unknown>>(
   };
 
   let slot: MountedSlot | null = null;
-  const select = async (id: string, selectOptions: { replace?: boolean; updateUrl?: boolean } = {}): Promise<void> => {
+  const select = async (id: string, selectOptions: { replace?: boolean; updateUrl?: boolean; remember?: boolean } = {}): Promise<void> => {
     if (disposed) throw new Error("FACETS_DISPOSED");
     const target = manifest.facets.find(item => item.id === id);
     if (!target) throw Object.assign(new Error(`Unknown facet "${id}"`), { code: "facet_not_found" });
     const previous = active;
     active = target;
     facetAppContext.facet = active;
+    if (selectOptions.remember !== false) saveRemembered(target.id);
     if (selectOptions.updateUrl !== false) {
       const nextUrl = buildFacetUrl(cfg, target.id, { param, pinned, href: getHref() });
       if (nextUrl !== getHref()) pushUrl(nextUrl, selectOptions.replace === true);
@@ -211,9 +306,20 @@ export async function mountFacets<T = Record<string, unknown>>(
     if (previous.id !== target.id || previous.module !== target.module) notifyChange();
   };
 
+  const offBindings = options.bindings?.onChange?.(() => {
+    if (disposed) return;
+    // Only auto-switch on binding updates when no explicit ?view= URL override is active
+    if (readFacetParam(param, getHref())) return;
+    const next = resolveFacet(null);
+    if (next.id !== active.id) {
+      void select(next.id, { updateUrl: false, remember: false }).catch(() => {});
+    }
+  }) ?? (() => {});
+
   const api: MountedFacets = Object.freeze({
     get current() { return active; },
     list: () => manifest.facets,
+    visible: visibleFacets,
     select: (id: string, selectOptions?: { replace?: boolean }) => select(id, selectOptions),
     url: (id: string, urlOptions?: { pinned?: boolean }) =>
       buildFacetUrl(cfg, id, { param, pinned: urlOptions?.pinned ?? pinned, href: getHref() }),
@@ -226,7 +332,9 @@ export async function mountFacets<T = Record<string, unknown>>(
       disposed = true;
       unregisterOwned();
       offPopState();
+      offBindings();
       changeListeners.clear();
+      options.onCatalogChange?.([]);
       await slot?.dispose();
       slot = null;
     },
@@ -273,6 +381,8 @@ export async function mountFacets<T = Record<string, unknown>>(
     disposed = true;
     unregisterOwned();
     offPopState();
+    offBindings();
+    options.onCatalogChange?.([]);
     throw error;
   }
 

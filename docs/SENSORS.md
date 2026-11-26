@@ -52,7 +52,7 @@ hardware or add new capability keys.
 | Capability / sensor | Standard browser API or starter module | `tendril.capabilities()` key(s) | `tendril.sensors` tracking | Fallback |
 | --- | --- | --- | --- | --- |
 | Camera (photo/frame) | `shared/media/camera.mjs` (`createCameraController`) or `getUserMedia` | `camera` | Automatic (`camera`) | Image file picker (`camera.useFile`) |
-| Voice (on-device STT / wake / TTS) | `shared/media/voice.mjs` (`createVoiceController`) or `mountVoiceControls` from `@tendriller/runtime/voice` | `microphone`, `speech_recognition`, `speech_synthesis` | Automatic (`microphone`) | Typed input |
+| Voice (on-device STT / wake / TTS) | `await tendril.loadVoice()` (`bindDictation`, `transcribeAudio`, `createVoice`, `mountVoiceControls`), or `shared/media/voice.mjs` (`createVoiceController`) | `microphone`, `speech_recognition`, `speech_synthesis` | Automatic (`microphone`) | Typed input |
 | Raw audio clip | `getUserMedia({ audio: true })` + `MediaRecorder` | `microphone` | Automatic (`microphone`) | Audio file upload |
 | Screen capture (frame) | `navigator.mediaDevices.getDisplayMedia` | `screen_capture` | Automatic (`screen`) | Screenshot file upload |
 | Location (fix / watch) | `navigator.geolocation` | `location` | Automatic (`location`) | Manual stop/address selection |

@@ -43,16 +43,18 @@ Safari device-qualification guarantee.
 | `signals` | Independent ephemeral send/subscribe binding |
 | `host.peers` | Filtered participant exchange, discovery, bootstrap hints and bounded introductions |
 | `host.request(path,options)` | Explicit relative host lifecycle request with the page account session |
-| `identity` | Page/version/publication identity, base and management URL |
+| `identity` | Page/version/publication identity, base, management URL, plus optional `role` (`owner` \| `guest` \| `display`) and invite `defaultView` |
 | `ready()` | Authored UI readiness |
 | `on(...)` | Local readiness, capability and sensor observations |
 | `capabilities(filter?)` | Inspect selected browser APIs and permissions in parallel without requesting access |
 | `sensors` | Observe tracked use and cancel active or pending acquisitions |
 | `assetUrl(path)` | Resolve an explicit dependency in the pinned runtime |
+| `loadVoice()` | Lazily import the runtime voice module (`bindDictation`, `transcribeAudio`, `createVoice`, `createStreamTranscriber`, `mountVoiceControls`, `mountAgentChat`, `decodeAudioToPcm16k`) sharing one per-tab Cactus Whistle WASM worker |
 | `installation` | Observe browser installation state and explicitly request an available native prompt |
 | `notifications.status()`, `enable()`, `disable()`, `setBadge(count?)` | Explicit opt-in Web Push subscription and supported app badging; see [notification gates](#web-push-notifications) |
 | `documentUrl(reference)` | Build a document or fragment URL in this page’s current live or explicitly pinned context; performs no navigation |
 | `publication.saveOffline()` | Explicitly retain the complete current code graph |
+| `publication.mountSlot()`, `mountFacets()`, `facetUrl()`, `facets` | Hot-swappable Shadow DOM slots and role/form-factor/invite/Chronolog-binding routed facets over one Chronolog session |
 | `transport.install(participation)`, `status()`, `onChange()`, `refresh()` | Bounded local authenticated-link diagnostics; no polling, probes or host queries. See [transport diagnostics](TRANSPORT_DIAGNOSTICS.md) |
 | `publication.updateAvailable`, `onUpdate`, `hold()`, `update()`, `pinned`, `policy` | Latest-release behaviour: observe a newer selected release, defer the automatic switch while there is unsaved work, or switch now |
 
@@ -425,15 +427,23 @@ review-and-copy draft. Opening them does not download the model or open a
 microphone. A separate trusted local Start action is required. Generic controls
 never submit application commands.
 
-An authored page can import `mountVoiceControls` from
-`import(runtime.assetUrl('voice.mjs'))` or `@tendriller/runtime/voice` and supply a
-`container` and optional `transcript(text)` callback. That callback runs only when
-the person reviews the draft and chooses **Use text**. The lower-level
-`createVoice` adapter accepts explicit consent, transcript, and status callbacks;
-`startWake({ phrase, mode: 'model' })` selects the pinned local path. Its
-`microphoneActive` state is separate from preparation, and `stop()` cancels
-pending starts and results. `voice.speak(text)` stops input before queuing output.
-Construction starts no capture, playback or model download.
+An authored page can lazily load the runtime voice module via
+`await runtime.loadVoice()` (equivalent to `import(runtime.assetUrl('voice.mjs'))`
+or `@tendriller/runtime/voice`). All callers in a tab share one verified Cactus
+Whistle WASM worker pool, and microphone capture streams 16 kHz mono PCM directly
+via `AudioWorklet` (falling back to `MediaRecorder` only when `AudioWorklet` is
+unavailable). High-level helpers include `bindDictation(runtime, target, options)`
+for drop-in `<textarea>`/`<input>`/callback dictation and
+`transcribeAudio(runtime, audio, options)` for one-shot transcription of a `Blob`,
+`File`, `ArrayBuffer`, `AudioBuffer`, or `Float32Array` (auto-chunking >28s clips
+without requesting a microphone). `mountVoiceControls` accepts a `container` and
+optional `transcript(text)` callback that runs when the person reviews the draft
+and chooses **Use text**. The lower-level `createVoice` adapter accepts explicit
+consent, transcript, and status callbacks; `startWake({ phrase, mode: 'model' })`
+selects the pinned local path. Its `microphoneActive` state is separate from
+preparation, and `stop()` cancels pending starts and results. `voice.speak(text)`
+stops input before queuing output. Construction starts no capture, playback or
+model download.
 
 The verified speech model is 16,919,407 bytes; model plus engines total
 18,224,260 bytes. Listening is bounded and foreground-only, with same-origin
