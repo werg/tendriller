@@ -142,3 +142,10 @@ test('guide uses the chosen service origin for all hosted links and validates pu
   for (const server of ['http://example.com', 'https://example.com/page', 'https://example.com/?token=secret', 'https://example.com/#page', 'file:///tmp/service'])
     assert.throws(() => onboardingGuide({ server }, {}), /service origin/);
 });
+
+test('command output serializes BigInt author times and admission records as decimal strings', async () => {
+  const { jsonText } = await import('../lib/cli.mjs');
+  const devices = { page: 'notes', members: [{ publicKey: 'a'.repeat(64), admittedAtMs: 1795636455530n, reader: true }], pending: [] };
+  assert.deepEqual(JSON.parse(jsonText(devices)), { page: 'notes', members: [{ publicKey: 'a'.repeat(64), admittedAtMs: '1795636455530', reader: true }], pending: [] });
+  assert.equal(jsonText({ at: 2n ** 64n }, true), '{\n  "at": "18446744073709551616"\n}');
+});

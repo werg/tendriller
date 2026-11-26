@@ -303,6 +303,12 @@ async function pageAdmission(workspace, action, slug, value, flags, signal) {
     note: 'The link fragment carries the invite secret; share it only with the invitee. Revoke with page revoke-invite.' };
 }
 
+/** JSON output for every command. Chronolog author times and admission records carry BigInt values,
+ * which JSON cannot represent; emit them as decimal strings, as the wire contracts do. */
+export function jsonText(value, pretty) {
+  return JSON.stringify(value, (_key, item) => typeof item === 'bigint' ? item.toString() : item, pretty ? 2 : undefined);
+}
+
 /** Parse, validate and run one invocation. `attach` replaces the agent attachment in tests only. */
 export async function main(argv, { attach } = {}) {
   const { cmd, args, flags } = parseArgs(argv);
@@ -336,7 +342,7 @@ export async function main(argv, { attach } = {}) {
   process.once('SIGINT', abort); process.once('SIGTERM', abort);
   const timer = seconds ? setTimeout(() => lifetime.abort(Object.assign(Error('Invocation timed out; inspect or retry the original operation'), { code: 'invocation_timeout' })), seconds * 1000) : undefined;
   const emit = async value => {
-    if (!process.stdout.write(JSON.stringify(value, null, flags.pretty ? 2 : undefined) + '\n')) await once(process.stdout, 'drain', { signal: lifetime.signal });
+    if (!process.stdout.write(jsonText(value, flags.pretty) + '\n')) await once(process.stdout, 'drain', { signal: lifetime.signal });
   };
   const openPage = ref => attach ? options => attach({ page: ref, ...options })
     : async options => { const workspace = await openWorkspace({ root: workspaceDir ?? findWorkspace() }); return { ...await attachPage(workspace, ref, options), page: ref ?? null }; };
@@ -348,7 +354,7 @@ export async function main(argv, { attach } = {}) {
         const refs = attach ? [undefined] : (await workspace.pages()).filter(page => page.initialized).map(page => page.id);
         if (!refs.length) throw Object.assign(Error('No initialized pages to watch. Initialize a page and keep tendril agent run running.'), { code: 'OWNER_UNREACHABLE' });
         completedResult = await watchPages(refs.map(ref => ({ page: ref ?? null, open: openPage(ref) })), emit, { ...watchOptions, signal: lifetime.signal });
-        console.error(JSON.stringify({ watch: completedResult }));
+        console.error(jsonText({ watch: completedResult }));
       } else await withSession(openPage(flags.page), async owned => {
         if (cmd === 'watch') completedResult = await watchSession(owned, emit, { ...watchOptions, signal: lifetime.signal });
         else if (cmd === 'logs') completedResult = await watchSignals(owned, emit, {
@@ -357,8 +363,8 @@ export async function main(argv, { attach } = {}) {
         });
         else completedResult = await runSessionCommand(owned, cmd === 'status' ? 'status' : cmd, args, flags, { signal: lifetime.signal });
       }, { signal: lifetime.signal });
-      if (cmd === 'watch' && !combined) console.error(JSON.stringify({ watch: completedResult }));
-      else if (cmd === 'logs') console.error(JSON.stringify({ logs: completedResult }));
+      if (cmd === 'watch' && !combined) console.error(jsonText({ watch: completedResult }));
+      else if (cmd === 'logs') console.error(jsonText({ logs: completedResult }));
       else if (cmd !== 'watch') await emit(completedResult);
     } else if (workspaceFree.has(cmd)) await emit(await publicCommand(cmd, args, flags, lifetime.signal));
     else {
@@ -407,7 +413,7 @@ export function runExecutable(argv = process.argv.slice(2), options = {}) {
   return main(argv, options).catch(error => {
     const exit = error?.exit;
     process.exitCode = Number.isInteger(exit) && exit >= 1 && exit <= 255 ? exit : 1;
-    console.error(JSON.stringify({ error: { code: error.code ?? 'command_failed', message: error.message },
+    console.error(jsonText({ error: { code: error.code ?? 'command_failed', message: error.message },
       diagnostic: diagnosticFinding(error, { scope: error.scope ?? {} }),
       ...(Number.isInteger(error.status) ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}),
       ...(error.publication ? { publication: error.publication } : {}),
