@@ -60,9 +60,11 @@ export async function listConnections(workspace, signal) {
 }
 
 /**
- * Unseal any pending Tier A X25519 handoff envelopes using the workspace's private wrapKey,
- * save each plaintext token strictly inside `.tendriller/private/connections/<id>.json` (0600),
- * and call `/ack` so the host wipes the sealed envelope.
+ * Unseal any pending X25519 handoff envelopes using the workspace's private wrapKey:
+ * - Tier A (`agent-held`): unseals OAuth tokens directly to `.tendriller/private/connections/<id>.json` (0600).
+ * - Tier B (`host-brokered`): unseals `connection_key` (`K_conn`) to `.tendriller/private/connections/<id>.json` (0600)
+ *   so the agent can invoke `/api/agent/connections/<id>/invoke` with zero manual copy-paste.
+ * Calls `/ack` so the host immediately wipes the ephemeral sealed handoff envelope.
  */
 export async function pullAgentConnections(workspace, signal) {
   const { connections } = await listConnections(workspace, signal);
@@ -72,22 +74,37 @@ export async function pullAgentConnections(workspace, signal) {
   const pulled = [];
 
   for (const conn of connections ?? []) {
-    if (conn.tier !== 'agent-held' || !conn.sealed_handoff) continue;
+    if (!conn.sealed_handoff) continue;
     const aad = `${conn.id}:${cred.agentId}:${conn.provider}`;
-    const tokens = await unsealAgentTokens(wrap.privateKey, wrap.publicKey, conn.sealed_handoff, aad);
+    const payload = await unsealAgentTokens(wrap.privateKey, wrap.publicKey, conn.sealed_handoff, aad);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const file = join(dir, `${conn.id}.json`);
-    writeFileSync(file, JSON.stringify({
-      id: conn.id,
-      provider: conn.provider,
-      label: conn.label,
-      scopes: conn.scopes,
-      external_label: conn.external_label,
-      tokens,
-      saved_at: Date.now(),
-    }, null, 2) + '\n', { mode: 0o600 });
+    const record = conn.tier === 'host-brokered'
+      ? {
+          id: conn.id,
+          provider: conn.provider,
+          tier: conn.tier,
+          custody: conn.custody,
+          label: conn.label,
+          scopes: conn.scopes,
+          actions: conn.actions,
+          external_label: conn.external_label,
+          connection_key: payload.connection_key,
+          saved_at: Date.now(),
+        }
+      : {
+          id: conn.id,
+          provider: conn.provider,
+          tier: conn.tier,
+          label: conn.label,
+          scopes: conn.scopes,
+          external_label: conn.external_label,
+          tokens: payload,
+          saved_at: Date.now(),
+        };
+    writeFileSync(file, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
     await agentFetch(workspace, `/api/agent/connections/${encodeURIComponent(conn.id)}/ack`, { method: 'POST', signal });
-    pulled.push({ id: conn.id, provider: conn.provider, path: file });
+    pulled.push({ id: conn.id, provider: conn.provider, tier: conn.tier, path: file });
   }
   return { pulled };
 }

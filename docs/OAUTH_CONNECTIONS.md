@@ -202,7 +202,20 @@ tendril page group my-board --remove r_github_team_acme_eng
 
 ---
 
-### Recipe 4: Inbound Webhooks (Zero OAuth Token Decryption)
+### Recipe 4: Hosted MCP Assistant Access (Zero Browser UI & Zero Local Agent)
+
+When a user links ChatGPT or Claude Desktop via Hosted `/mcp`, the assistant can connect and query external services 24/7 even when the user has no browser open and no `tendril agent run` running — while still storing **zero plaintext OAuth tokens and zero plaintext `K_conn` keys** at rest in D1:
+
+1. Call `list_external_connections` to inspect configured providers, actions, and existing connections (`mcp_callable: true`).
+2. Call `connect_external_provider({ provider: "google", scopes: ["https://www.googleapis.com/auth/calendar.readonly"] })` and share `authorize_url` with the user in chat.
+3. When the user approves, the host wraps the OAuth tokens under a fresh `K_conn` **and** X25519-seals `K_conn` to the MCP OAuth grant's `wrap_public_key`.
+4. Call `invoke_external_connection({ connection_id, action: "google.calendar.events:list", params: { calendar_id: "primary" } })`. On each call, the live MCP OAuth Bearer token unseals `wrap_private_key` → unseals `K_conn` → unwraps the OAuth token strictly in RAM (auto-refreshing if expired) → calls the allowlisted upstream endpoint with `redirect: "manual"` → discards RAM.
+
+*(Workspace agents initiating Tier B via `tendril connection connect <provider> --tier host-brokered` get the same zero-copy-paste auto-handoff: `K_conn` X25519-seals to the agent's `wrapKey`, and `tendril agent run` / `tendril connection pull` saves `connection_key` to `.tendriller/private/connections/<id>.json` (`0600`) and wipes the host handoff on `/ack`.)*
+
+---
+
+### Recipe 5: Inbound Webhooks (Zero OAuth Token Decryption)
 
 Configure a webhook secret on any connection without exposing or decrypting OAuth tokens:
 ```http

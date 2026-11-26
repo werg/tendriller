@@ -7,6 +7,7 @@ import { unsealAgentTokens, consumeConnectionCallbackFragment } from '../../cont
 import { sha256Hex } from '../src/ids';
 import { applyPlanToAccount } from '../src/billing/entitlements';
 import { route } from '../src/router';
+import { mcpConnectExternalProvider, mcpInvokeExternalConnection, mcpListExternalConnections } from '../src/oauth-outbound/routes';
 
 async function importX25519Priv(raw32: Uint8Array): Promise<CryptoKey> {
   const prefix = new Uint8Array([0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20]);
@@ -429,6 +430,99 @@ it('Tier B (host-brokered wrapped proxy): enforces K_conn wrapping, auto-refresh
     expect(dashHtml).toContain('Sync GitHub Orgs &amp; Teams');
     expect(dashHtml).toContain('Register a custom OAuth 2.1 provider (BYO)');
     expect(dashHtml).toContain('custom:tracker');
+  } finally {
+    fetchMock.mockRestore();
+  }
+});
+
+it('Tier B agent auto-handoff and Hosted MCP tools invoke external connections with zero browser UI and zero plaintext keys at rest', async () => {
+  const agentWrap = await generateWrapKeyPair();
+  const h = await create({ name: 'Headless Integrations', agentKeys: { wrapKey: agentWrap.publicKeyHex } });
+  await applyPlanToAccount(env, h.account!, 'pro');
+  const acctHeaders = { Cookie: h.session!, 'Content-Type': 'application/json', Origin: BASE };
+
+  expect((await req('/api/account/oauth/providers', {
+    method: 'POST', anonymous: true, headers: acctHeaders,
+    body: JSON.stringify({
+      slug: 'calapi', name: 'CalAPI',
+      authorize_url: 'https://cal.example.org/auth',
+      token_url: 'https://cal.example.org/token',
+      client_id: 'cal_cid', client_secret: 'cal_sec',
+      allowed_hosts: ['api.cal.example.org'],
+    }),
+  })).status).toBe(201);
+
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const u = String(input);
+    if (u === 'https://cal.example.org/token') {
+      return Response.json({ access_token: 'CAL_SECRET_ACCESS', refresh_token: 'CAL_REFRESH', expires_in: 3600 });
+    }
+    if (u === 'https://api.cal.example.org/events') {
+      return Response.json({ items: [{ title: 'Standup' }], auth: new Headers(init?.headers).get('Authorization') });
+    }
+    throw new Error(`Unexpected fetch: ${u}`);
+  });
+
+  try {
+    // 1. Workspace agent initiates Tier B -> callback X25519-seals K_conn to agent wrapKey -> agent unseals, acks, invokes!
+    const agStart = await (await agentReq(h.token, 'POST', '/api/agent/connections/connect', {
+      provider: 'custom:calapi', tier: 'host-brokered', custody: 'personal', actions: ['http:request'],
+    })).json() as { connection_id: string; state: string };
+    const agCb = await req(`/auth/outbound/callback/custom%3Acalapi?code=ag1&state=${encodeURIComponent(agStart.state)}`, {
+      anonymous: true, headers: { Cookie: h.session!, Accept: 'application/json' },
+    });
+    expect(agCb.status).toBe(201);
+
+    const agList = await (await agentReq(h.token, 'GET', '/api/agent/connections')).json() as {
+      connections: Array<{ id: string; tier: string; sealed_handoff?: any }>;
+    };
+    const agConn = agList.connections.find(c => c.id === agStart.connection_id);
+    expect(agConn?.tier).toBe('host-brokered');
+    expect(agConn?.sealed_handoff).toBeTruthy();
+    const agPriv = await importX25519Priv(agentWrap.privateKeyBytes);
+    const unsealedAg = await unsealAgentTokens(agPriv, agentWrap.publicKeyHex, agConn!.sealed_handoff, `${agStart.connection_id}:${h.agent.id}:custom:calapi`) as unknown as { connection_key: string };
+    expect(unsealedAg.connection_key).toBeTruthy();
+
+    expect((await agentReq(h.token, 'POST', `/api/agent/connections/${agStart.connection_id}/ack`, {})).status).toBe(200);
+    const agInvoke = await agentReq(h.token, 'POST', `/api/agent/connections/${agStart.connection_id}/invoke`, {
+      action: 'http:request', method: 'GET', url: 'https://api.cal.example.org/events',
+    }, { 'X-Connection-Key': unsealedAg.connection_key });
+    expect(agInvoke.status).toBe(200);
+    expect(((await agInvoke.json()) as { body: { auth: string } }).body.auth).toBe('Bearer CAL_SECRET_ACCESS');
+
+    // 2. Hosted MCP initiates Tier B -> K_conn sealed to MCP grant's wrap_public_key -> invokes with zero UI / zero local agent!
+    const mcpWrap = await generateWrapKeyPair();
+    const mcpGrantId = 'grant_mcp_test_1';
+    const mcpStarted = await mcpConnectExternalProvider(env, h.account!, mcpGrantId, mcpWrap.publicKeyHex, {
+      provider: 'custom:calapi', actions: ['http:request'],
+    });
+    const mcpCb = await req(`/auth/outbound/callback/custom%3Acalapi?code=mcp1&state=${encodeURIComponent(mcpStarted.state)}`, {
+      anonymous: true, headers: { Cookie: h.session!, Accept: 'application/json' },
+    });
+    expect(mcpCb.status).toBe(201);
+    const { connection_key: rawMcpKConn } = await mcpCb.json() as { connection_key: string };
+
+    // Verify D1 stores ZERO plaintext K_conn or OAuth access token
+    const d1Row = await env.ACCOUNTS!.prepare('SELECT wrapped_tokens, sealed_handoff FROM outbound_connections WHERE id = ?')
+      .bind(mcpStarted.connection_id).first<{ wrapped_tokens: string; sealed_handoff: string }>();
+    expect(d1Row?.wrapped_tokens).not.toContain('CAL_SECRET_ACCESS');
+    expect(d1Row?.sealed_handoff).not.toContain(rawMcpKConn);
+
+    const listed = await mcpListExternalConnections(env, h.account!);
+    expect(listed.connections.find(c => c.id === mcpStarted.connection_id)?.mcp_callable).toBe(true);
+
+    // Invoke via Hosted MCP with the matching grant's RAM wrapPrivateKey
+    const mcpResult = await mcpInvokeExternalConnection(env, h.account!, mcpGrantId, mcpWrap.publicKeyHex, mcpWrap.privateKeyBytes, {
+      connection_id: mcpStarted.connection_id, action: 'http:request', method: 'GET', url: 'https://api.cal.example.org/events',
+    });
+    expect(mcpResult.status).toBe(200);
+    expect((mcpResult.body as { items: Array<{ title: string }> }).items[0]?.title).toBe('Standup');
+
+    // A different MCP grant CANNOT unseal K_conn
+    const otherWrap = await generateWrapKeyPair();
+    await expect(mcpInvokeExternalConnection(env, h.account!, 'grant_other', otherWrap.publicKeyHex, otherWrap.privateKeyBytes, {
+      connection_id: mcpStarted.connection_id, action: 'http:request', method: 'GET', url: 'https://api.cal.example.org/events',
+    })).rejects.toMatchObject({ status: 403 });
   } finally {
     fetchMock.mockRestore();
   }

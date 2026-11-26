@@ -35,7 +35,9 @@ import {
   generateConnectionKey,
   sealAgentTokens,
   sealHostConfigSecret,
+  sealX25519Payload,
   unsealHostConfigSecret,
+  unsealX25519Payload,
   unwrapConnectionTokens,
   verifyHmacSha256,
   wrapConnectionTokens,
@@ -186,7 +188,7 @@ export async function startOutboundConnect(
   env: Env,
   accountId: string,
   body: Record<string, unknown>,
-  defaults: { agentId?: string | null; agentWrapKey?: string | null } = {},
+  defaults: { agentId?: string | null; agentWrapKey?: string | null; mcpGrantId?: string | null; mcpWrapKey?: string | null } = {},
 ): Promise<{ connection_id: string; authorize_url: string; state: string; tier: OutboundTier; custody: OutboundCustody; provider: string; scopes: string[]; actions: string[]; expires_at: number }> {
   const providerId = typeof body.provider === 'string' ? body.provider.trim().toLowerCase() : '';
   if (!PROVIDER_ID_RE.test(providerId)) {
@@ -232,6 +234,15 @@ export async function startOutboundConnect(
       if (!ag) throw new HttpError(404, 'agent_not_found', 'Target agent was not found on this account');
       agentWrapKey = ag.wrap_key;
     }
+  } else if (defaults.mcpGrantId && defaults.mcpWrapKey) {
+    // Hosted MCP Tier B flow: seal K_conn to the MCP OAuth grant's X25519 wrap_public_key (zero plaintext at rest).
+    agentId = null;
+    agentWrapKey = `mcp:${defaults.mcpGrantId}:${defaults.mcpWrapKey}`;
+  } else if (agentId && AGENT_ID_RE.test(agentId) && !agentWrapKey) {
+    // Workspace-agent-initiated Tier B flow: look up agent wrapKey so K_conn auto-seals for zero-copy-paste pull.
+    const ag = await env.ACCOUNTS.prepare('SELECT wrap_key FROM agents WHERE id = ? AND account_id = ? AND revoked_at IS NULL')
+      .bind(agentId, accountId).first<{ wrap_key: string }>();
+    if (ag) agentWrapKey = ag.wrap_key;
   }
 
   let pageId: string | null = typeof body.page_id === 'string' && body.page_id ? body.page_id : null;
@@ -442,6 +453,25 @@ export async function handleOutboundCallback(req: Request, env: Env, url: URL, p
       tokens,
       aadFor(pending.connection_id, session.accountId, pending.custody),
     );
+    // Zero-copy-paste K_conn handoff to Hosted MCP grant or workspace agent wrapKey (still zero plaintext at rest).
+    if (pending.agent_wrap_key?.startsWith('mcp:')) {
+      const parts = pending.agent_wrap_key.split(':');
+      const mcpGrantId = parts[1] ?? '';
+      const mcpWrapPub = parts[2] ?? '';
+      if (mcpGrantId && mcpWrapPub) {
+        sealedHandoff = await sealX25519Payload(
+          mcpWrapPub,
+          { connection_key: oneTimeConnectionKey, mcp_grant: mcpGrantId },
+          `${pending.connection_id}:mcp:${mcpGrantId}:${providerId}`,
+        );
+      }
+    } else if (pending.agent_id && pending.agent_wrap_key) {
+      sealedHandoff = await sealX25519Payload(
+        pending.agent_wrap_key,
+        { connection_key: oneTimeConnectionKey },
+        `${pending.connection_id}:${pending.agent_id}:${providerId}`,
+      );
+    }
   }
 
   await env.ACCOUNTS.prepare(`INSERT INTO outbound_connections
@@ -459,10 +489,11 @@ export async function handleOutboundCallback(req: Request, env: Env, url: URL, p
       .bind(pending.connection_id, pending.page_id, pending.custody, pending.actions, session.accountId, now).run();
   }
 
-  if (pending.tier === 'agent-held' && pending.agent_id) {
+  if (pending.agent_id && sealedHandoff) {
     await notifyAgentHubEvent(env, pending.agent_id, pending.page_id, 'outbound-connection-ready', {
       connection_id: pending.connection_id,
       provider: providerId,
+      tier: pending.tier,
     });
   }
 
@@ -1114,4 +1145,107 @@ export async function renderAccountExternalConnectionsSection(
   const script = `(function(){document.querySelectorAll('[data-revoke-conn]').forEach(function(btn){btn.addEventListener('click',function(){var id=btn.getAttribute('data-revoke-conn');if(!id)return;btn.disabled=true;btn.textContent='Revoking...';fetch('/api/account/connections/'+encodeURIComponent(id)+'/revoke',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-conn-id]');if(li)li.remove();}).catch(function(){btn.disabled=false;btn.textContent='Revoke';});});});document.querySelectorAll('[data-delete-byo]').forEach(function(btn){btn.addEventListener('click',function(){var slug=btn.getAttribute('data-delete-byo');if(!slug)return;btn.disabled=true;fetch('/api/account/oauth/providers/'+encodeURIComponent(slug),{method:'DELETE',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-byo-slug]');if(li)li.remove();}).catch(function(){btn.disabled=false;});});});var form=document.getElementById('byo-provider-form');if(form){form.addEventListener('submit',function(e){e.preventDefault();var st=document.getElementById('byo-status');var fd=new FormData(form);var split=function(v){return String(v||'').split(',').map(function(s){return s.trim();}).filter(Boolean);};var body={slug:fd.get('slug'),name:fd.get('name'),authorize_url:fd.get('authorize_url'),token_url:fd.get('token_url'),client_id:fd.get('client_id'),allowed_hosts:split(fd.get('allowed_hosts')),default_scopes:split(fd.get('default_scopes'))};var sec=String(fd.get('client_secret')||'').trim();if(sec)body.client_secret=sec;if(st)st.textContent='Saving...';fetch('/api/account/oauth/providers',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(d){if(!r.ok)throw new Error((d&&d.error&&d.error.message)||'Save failed');return d;});}).then(function(){if(st)st.textContent='Saved! Reloading...';location.reload();}).catch(function(err){if(st)st.textContent=err.message||'Save failed';});});}})();`;
 
   return { html, script };
+}
+
+/** Hosted MCP helper: list live OAuth providers + account's active external connections. */
+export async function mcpListExternalConnections(env: Env, accountId: string) {
+  const [conns, custom, ent] = await Promise.all([
+    env.ACCOUNTS.prepare('SELECT * FROM outbound_connections WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 50')
+      .bind(accountId).all<OutboundConnectionRow>(),
+    env.ACCOUNTS.prepare('SELECT id, slug, name, default_scopes, allowed_hosts, pkce FROM oauth_custom_providers WHERE account_id = ? ORDER BY slug ASC')
+      .bind(accountId).all<CustomProviderRecord>(),
+    resolveOAuthEntitlements(env, accountId),
+  ]);
+  const providers = [
+    ...listBuiltinProviderViews(env),
+    ...custom.results.map(r => ({
+      id: `custom:${r.slug}`,
+      name: r.name,
+      category: 'custom',
+      configured: true,
+      pkce: r.pkce === 1,
+      supports_agent_held: true,
+      supports_host_brokered: true,
+      default_scopes: JSON.parse(r.default_scopes) as string[],
+      allowed_api_hosts: JSON.parse(r.allowed_hosts) as string[],
+      actions: [],
+    })),
+  ];
+  return {
+    entitlements: ent,
+    connections: conns.results.map(r => ({
+      ...connectionView(r),
+      mcp_callable: r.tier === 'host-brokered' && Boolean(r.wrapped_tokens) && Boolean(r.sealed_handoff),
+    })),
+    providers,
+  };
+}
+
+/** Hosted MCP helper: start a Tier B (`host-brokered`) external OAuth connection whose `K_conn` auto-seals to this MCP grant's wrapKey. */
+export async function mcpConnectExternalProvider(
+  env: Env,
+  accountId: string,
+  grantId: string,
+  wrapPublicKeyHex: string | null,
+  args: Record<string, unknown>,
+) {
+  if (!wrapPublicKeyHex) {
+    throw new HttpError(403, 'wrap_key_required', 'Reconnect this MCP client to enable zero-plaintext-at-rest external OAuth connections.');
+  }
+  return startOutboundConnect(
+    env,
+    accountId,
+    { ...args, tier: 'host-brokered' },
+    { mcpGrantId: grantId, mcpWrapKey: wrapPublicKeyHex },
+  );
+}
+
+/**
+ * Hosted MCP helper: invoke an allowlisted action on a Tier B (`host-brokered`) external connection
+ * with zero browser UI or local agent required. Unseals `K_conn` strictly in RAM from the MCP OAuth
+ * Bearer token's `wrapPrivateKey` (or accepts an optional caller-supplied `connection_key`).
+ */
+export async function mcpInvokeExternalConnection(
+  env: Env,
+  accountId: string,
+  grantId: string,
+  wrapPublicKeyHex: string | null,
+  wrapPrivateKeyRaw32: Uint8Array | null,
+  args: Record<string, unknown>,
+) {
+  const connId = typeof args.connection_id === 'string' ? args.connection_id : '';
+  if (!CONNECTION_ID_RE.test(connId)) throw new HttpError(400, 'invalid_arguments', 'Valid connection_id is required');
+  const action = typeof args.action === 'string' && args.action.trim() ? args.action.trim() : '';
+  if (!action) throw new HttpError(400, 'invalid_arguments', 'action is required');
+
+  const row = await env.ACCOUNTS.prepare('SELECT * FROM outbound_connections WHERE id = ? AND account_id = ? AND revoked_at IS NULL')
+    .bind(connId, accountId).first<OutboundConnectionRow>();
+  if (!row) throw new HttpError(404, 'connection_not_found', 'External connection not found on this account');
+
+  let kConn = typeof args.connection_key === 'string' && args.connection_key.trim() ? args.connection_key.trim() : '';
+  if (!kConn) {
+    if (!row.sealed_handoff || !wrapPublicKeyHex || !wrapPrivateKeyRaw32) {
+      throw new HttpError(403, 'connection_key_required', 'This connection is not sealed to this MCP grant. Connect it via connect_external_provider or pass connection_key.');
+    }
+    const unsealed = await unsealX25519Payload<{ connection_key?: string; mcp_grant?: string }>(
+      wrapPrivateKeyRaw32,
+      wrapPublicKeyHex,
+      row.sealed_handoff,
+      `${row.id}:mcp:${grantId}:${row.provider}`,
+    );
+    if (!unsealed?.connection_key || unsealed.mcp_grant !== grantId) {
+      throw new HttpError(403, 'connection_key_invalid', 'This MCP grant cannot unseal this connection wrap key.');
+    }
+    kConn = unsealed.connection_key;
+  }
+
+  return invokeWrappedConnection(env, row, JSON.parse(row.actions) as string[], kConn, {
+    action,
+    ...(isPlainObject(args.params) ? { params: args.params as Record<string, string> } : {}),
+    ...(isPlainObject(args.query) ? { query: args.query as Record<string, string> } : {}),
+    ...(args.body !== undefined ? { body: args.body } : {}),
+    ...(typeof args.method === 'string' ? { method: args.method } : {}),
+    ...(typeof args.url === 'string' ? { url: args.url } : {}),
+    ...(isPlainObject(args.headers) ? { headers: args.headers as Record<string, string> } : {}),
+  });
 }
