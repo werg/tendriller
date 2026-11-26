@@ -35,6 +35,8 @@ The owner signs in on the published page. The browser (`shared/helpers/browser-b
 
 Inventory uses the same lifecycle with `--template inventory`. Tables and labels are ordinary authorized CREATE/ALTER/DML programs in its browser UI, not setup metadata. A later earlier operation can revise outcomes, rows and schema; local drafts, stable selection, focus and exact signed intents remain separate from the current materialization.
 
+Call rooms use `--template call` and include URL-addressable, hot-swappable facets (`facets.json`, `facets/stage.mjs`, `facets/notes.mjs`). Editing only `facets/*.mjs` or `facets.json` and running `npm run deploy -- <slug>` updates the live stage inside its Shadow DOM without reloading the call or dropping WebRTC media, and `?view=<id>` links open specific views over the same Chronolog data.
+
 ## The single agent program
 
 `npm run agent` starts the ONE hub/program. It opens every initialized page from its own cached store with the shared signer and runs that page's admission: as creator it admits the owner's browsers; on a browser-first page it waits until a member admits it from its signed host grant (dashboard checkbox, `tendril page grant` or the creator grant). Admitted browsers' reads and Save never depend on it. Import data through an attached session while it runs:

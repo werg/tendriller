@@ -186,6 +186,14 @@ An explicitly selected browser signed-frontier policy can be prepared with `npm 
 
 For the selected SQL kit, run the same commands from its workspace (`npm run page:new -- inventory --template inventory`). Its manifest is computed from the kit's verified package-public WASM graph without supplemental acquisition, a native addon or native data process. Tables are created later by an ordinary browser transaction. See [state models](STATE_MODELS.md).
 
+### Live stage updates & URL-addressable facets
+
+Pages that keep long-lived browser state (such as `templates/call/` with active WebRTC video/audio) or expose multiple views over the same Chronolog data can use `tendril.publication.mountFacets` / `mountSlot`:
+
+1. Keep domain data in Chronolog commands/queries and high-frequency previews in signals or `app:*` DataChannels—never publish code just to update data.
+2. When you *do* want to update a visualization, whiteboard, or companion view live without reloading the shell, edit `facets/stage.mjs` (or add `facets/<name>.mjs` and list it in `facets.json`) and run `npm run deploy -- <slug>`.
+3. Because `build.mjs` bundles each facet standalone (`splitting: false`), only the changed facet's SHA-256 changes; open tabs hot-swap it live inside Shadow DOM (preserving media tracks and `ctx.slotState`) and expose shareable `?view=<id>` URLs over the exact same Chronolog state. See [URL-addressable facets & hot-swappable slots](APP_PATTERNS.md#url-addressable-facets--hot-swappable-slots).
+
 ## 5. Give the ready page URL to the person
 
 Do not wait for a “claimed” reply. Start `npm run agent` and keep it running, then give the owner the page URL. They open the already-published page and complete their own sign-in. The browser creates its device key and wrap key, and the host attests them for the owner account. The agent (or any other online member) verifies that attestation against the signed admission policy, appends the browser to membership and wraps the epoch keys to it. Until then the page shows that it is waiting and retries; nothing needs pasting. On a `--browser-first` page the first browser creates the genesis itself and its key is saved **locally before sending**; a lost reply resends the same genesis, never replacement keys.

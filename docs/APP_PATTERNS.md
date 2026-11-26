@@ -37,11 +37,98 @@ colors only; connection actions, accessibility and reduced motion are unchanged.
 
 ## URL-addressable facets & hot-swappable slots
 
-One Tendriller page can expose multiple URL-addressable views (**facets**) over the same Chronolog `applicationId` and hot-swap individual UI modules live without reloading the page shell (ideal for an agent continuously pushing charts, whiteboards, or notes during an active WebRTC call):
+One Tendriller page can expose multiple URL-addressable views (**facets**) over the same Chronolog `applicationId` and hot-swap individual UI modules live without reloading the page shell—ideal when an agent continually updates visualizations, whiteboards, slides, or notes during an active WebRTC video call.
 
-- **Atomic signed publications remain the unit of trust and offline caching.** The host never tracks separate component versions. Instead, bundle each facet/slot entry (`facets/*.mjs`, `slots/*.mjs`) standalone (`splitting: false`) so editing a facet changes only its own asset SHA-256 in the publication manifest.
-- **Single slot (`tendril.publication.mountSlot`):** mounts a module exporting `mount(root, ctx)` inside an open Shadow DOM (`isolation: 'shadow'` default) with an automatic `ctx.signal` (`AbortSignal` aborted on swap/unmount). When a new publication arrives over the existing hibernating publication watch and only owned slot paths changed, the runtime imports the new module from its immutable `/_publications/<id>/` URL, runs cleanup, and mounts the replacement—zero full-page reload. If the import fails, the previous slot stays alive.
-- **URL facets (`tendril.publication.mountFacets`):** reads `facets.json` (`{ default, facets: [{ id, title, module, description? }] }`), selects the facet named by `?view=<id>`, supports Back/Forward via `history.pushState`/`popstate`, builds shareable links with `facets.url(id)`, and updates the facet catalog live when `facets.json` changes. See `templates/call/` for a complete working example.
+### How it fits Tendriller's atomic publication model
+- **One atomic signed publication on the host.** The host never tracks independent component versions or partial manifests. Every publish produces one complete, signed, immutable `/_publications/<id>/` tree.
+- **Standalone module bundling (`splitting: false`).** Bundle each facet/slot entry (`facets/*.mjs`, `slots/*.mjs`) as its own standalone ES module—separate from `page.mjs` / `worker.mjs`—so editing `facets/stage.mjs` changes **only** its SHA-256 in the publication manifest. If a facet shares code-split chunks with `page.mjs`, changing it will change `page.mjs` or chunk hashes and trigger a full reload instead of a live hot-swap.
+- **Live manifest diffing.** When the page's existing hibernating publication watch notifies a new version, the runtime fetches `_tendril/info` once (zero polling or idle traffic) and compares the old and new `PublicationManifest.assets` by SHA-256. If every changed/added/removed path belongs to mounted slots or declared facet prefixes (and neither `runtime` nor `entry` changed), it imports the updated module from `/_publications/<newId>/<path>` and swaps it in-place with zero reload. If offline caching was already enabled on the page, the new publication graph is mirrored into the Service Worker cache in the background.
+
+### 1. Declare `facets.json`
+
+```json
+{
+  "default": "stage",
+  "facets": [
+    { "id": "stage", "title": "Live stage", "module": "facets/stage.mjs", "description": "Agent-updatable stage" },
+    { "id": "notes", "title": "Shared notes", "module": "facets/notes.mjs" }
+  ]
+}
+```
+
+### 2. Write a facet or slot module (`facets/stage.mjs`)
+
+Every slot/facet module exports `mount(root, ctx)` and may return a synchronous or async cleanup function:
+
+```js
+export function mount(root, ctx) {
+  // Default isolation is open Shadow DOM, so styles never leak into the page shell.
+  const style = document.createElement('style');
+  style.textContent = `.card { font-family: system-ui; padding: 16px; }`;
+  const card = document.createElement('div');
+  card.className = 'card';
+
+  // Ephemeral UI state (zoom, scroll, local toggle) survives live hot-swaps in ctx.slotState.
+  const zoom = ctx.slotState.get('zoom') ?? 1;
+  ctx.slotState.set('zoom', zoom);
+  card.textContent = `Stage v${ctx.version} (zoom ${zoom}x)`;
+  root.append(style, card);
+
+  // Use ctx.signal (aborted automatically before swap/unmount) and return cleanup for subscriptions.
+  const off = ctx.app.session.onChange(() => {
+    if (ctx.signal.aborted) return;
+    /* re-query coherent Chronolog snapshot */
+  });
+  return () => { off(); };
+}
+```
+
+### 3. Mount facets (or a single slot) in `page.mjs`
+
+```js
+// URL-addressable facets (?view=stage, ?view=notes) with pushState/popstate Back/Forward:
+const facets = await window.tendril.publication.mountFacets(document.querySelector('#stage-host'), {
+  manifest: 'facets.json', // default
+  param: 'view',           // default: ?view=<id>
+  context: { session, signals: session.signals, rtc: attachment.rtc },
+  onChange({ current, facets: list }) {
+    // Update your facet tab bar when the user switches views or the agent adds a new facet in facets.json
+  },
+  onError(error, { phase }) {
+    // If a newly published module fails to import, the previous mounted slot stays alive.
+    console.warn('Facet update failed during', phase, error);
+  },
+});
+
+// Build a shareable URL that opens directly into a specific facet over the same Chronolog state:
+const boardLink = facets.url('notes'); // e.g. https://.../s/<page>/?view=notes
+
+// Or mount a single standalone hot-swappable slot without URL routing:
+const slot = await window.tendril.publication.mountSlot('stage', document.querySelector('#stage-host'), {
+  module: 'slots/stage.mjs',
+  owns: ['slots/'],
+  context: { session },
+  isolation: 'shadow', // 'shadow' (default) | 'light'
+});
+```
+
+### 4. Bundle standalone in `build.mjs`
+
+```js
+// Bundle each facet/slot independently (splitting: false) so shell hashes never churn.
+await bundle({
+  absWorkingDir,
+  entryPoints: ['facets/stage.mjs'],
+  outfile: 'dist/facets/stage.mjs',
+  bundle: true,
+  splitting: false,
+  format: 'esm',
+  platform: 'browser',
+  target: 'es2022',
+});
+```
+
+See `templates/call/` (`facets.json`, `facets/stage.mjs`, `facets/notes.mjs`, `build.mjs`, `shared/ui/call-room.mjs`) for a complete working example where an agent updates `facets/stage.mjs` and runs `npm run deploy -- call` mid-call without dropping video or audio.
 
 ## Domain views you can import
 

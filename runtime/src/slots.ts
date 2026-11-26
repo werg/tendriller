@@ -158,6 +158,7 @@ interface SlotEntry {
   readonly isolation: "shadow" | "light";
   readonly owns: readonly string[];
   readonly context: Record<string, unknown>;
+  readonly slotState: Map<string, unknown>;
   readonly onSwap?: MountSlotOptions["onSwap"];
   readonly onError?: MountSlotOptions["onError"];
   path: string;
@@ -265,6 +266,7 @@ export function createSlotManager(cfg: TendrilConfig, options: SlotManagerOption
       version,
       publication,
       signal: controller.signal,
+      slotState: entry.slotState,
       app: entry.context,
     });
 
@@ -358,6 +360,7 @@ export function createSlotManager(cfg: TendrilConfig, options: SlotManagerOption
         isolation,
         owns,
         context: (opts.context ?? {}) as Record<string, unknown>,
+        slotState: new Map<string, unknown>(),
         onSwap: opts.onSwap,
         onError: opts.onError,
         path: opts.module,
@@ -399,6 +402,7 @@ export function createSlotManager(cfg: TendrilConfig, options: SlotManagerOption
           slots.delete(name);
           await enqueue(entry, async () => {
             await unmountEntry(entry);
+            entry.slotState.clear();
             clearRoot(getMountRoot(entry));
           });
         },
@@ -480,7 +484,10 @@ export function createSlotManager(cfg: TendrilConfig, options: SlotManagerOption
       for (const entry of [...slots.values()]) {
         entry.disposed = true;
         slots.delete(entry.name);
-        void enqueue(entry, () => unmountEntry(entry));
+        void enqueue(entry, async () => {
+          await unmountEntry(entry);
+          entry.slotState.clear();
+        });
       }
     },
   });

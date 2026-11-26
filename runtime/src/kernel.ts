@@ -65,6 +65,17 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     };
   };
   const slotManager = createSlotManager(cfg, { latest: fetchLatestPublication });
+  // If the user already opted into offline caching, mirror hot-swapped publications
+  // into the existing Service Worker cache in the background (never registers a new SW).
+  const syncHotSwappedOfflineCache = (publication: import("../../contract/index.mjs").PublicationManifest | null | undefined) => {
+    if (!publication || typeof navigator === "undefined" || !("serviceWorker" in navigator) || (window as any).__TENDRIL_NO_SW__) return;
+    const expectedScope = new URL(cfg.base, location.href).href;
+    void navigator.serviceWorker.getRegistration(expectedScope).then(existing => {
+      if (existing?.active && existing.scope === expectedScope) {
+        return savePublicationOffline(cfg.base, publication);
+      }
+    }).catch(() => {});
+  };
   // The address bar keeps the page's own URL so a reload or new tab opens the latest
   // selected release. Opening an immutable /_publications/ID/ URL pins explicitly.
   const updates = watchPublicationUpdates(cfg, {
@@ -73,7 +84,11 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     onAgents: notice => agents.applyNotice(notice),
     onMcpSync: notice => core.bus.emit("mcp-sync", notice),
     hasHotSwappableSlots: () => slotManager.hasRegistrations(),
-    onBeforeSwitch: version => slotManager.handlePublicationChange(version),
+    onBeforeSwitch: async version => {
+      const outcome = await slotManager.handlePublicationChange(version);
+      if (outcome.handled && outcome.kind === "hot-swapped") syncHotSwappedOfflineCache(outcome.publication);
+      return outcome;
+    },
   });
   let registration: Promise<ServiceWorkerRegistration> | undefined;
   const registerOffline = () => registration ??= registerServiceWorker(cfg, core).then(registered => {

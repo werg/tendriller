@@ -151,6 +151,7 @@ test('mountSlot hot-swaps live on slot-only publication change, aborts previous 
     'https://app.example/s/demo/_publications/1/slots/stage.mjs': {
       mount(root, ctx) {
         signals.push(ctx.signal);
+        ctx.slotState.set('zoom', 2.5);
         events.push(`mount:v${ctx.version}`);
         root.append(`rendered:v${ctx.version}`);
         return () => { events.push(`unmount:v${ctx.version}`); };
@@ -159,8 +160,9 @@ test('mountSlot hot-swaps live on slot-only publication change, aborts previous 
     'https://app.example/s/demo/_publications/2/slots/stage.mjs': {
       mount(root, ctx) {
         signals.push(ctx.signal);
-        events.push(`mount:v${ctx.version}`);
-        root.append(`rendered:v${ctx.version}`);
+        const zoom = ctx.slotState.get('zoom');
+        events.push(`mount:v${ctx.version}:zoom=${zoom}`);
+        root.append(`rendered:v${ctx.version}:zoom=${zoom}`);
         return () => { events.push(`unmount:v${ctx.version}`); };
       },
     },
@@ -196,8 +198,8 @@ test('mountSlot hot-swaps live on slot-only publication change, aborts previous 
   assert.equal(r2.kind, 'hot-swapped');
   assert.equal(signals[0].aborted, true, 'Previous slot AbortSignal is aborted on swap');
   assert.equal(signals[1].aborted, false);
-  assert.deepEqual(events, ['mount:v1', 'unmount:v1', 'mount:v2']);
-  assert.deepEqual(container.shadowRoot.children, ['rendered:v2']);
+  assert.deepEqual(events, ['mount:v1', 'unmount:v1', 'mount:v2:zoom=2.5']);
+  assert.deepEqual(container.shadowRoot.children, ['rendered:v2:zoom=2.5']);
   assert.equal(slot.version, 2);
   assert.equal(swaps.length, 2);
 
@@ -207,7 +209,7 @@ test('mountSlot hot-swaps live on slot-only publication change, aborts previous 
   assert.equal(r3.handled, true);
   assert.equal(errors.length, 1);
   assert.equal(errors[0].phase, 'import');
-  assert.deepEqual(container.shadowRoot.children, ['rendered:v2']);
+  assert.deepEqual(container.shadowRoot.children, ['rendered:v2:zoom=2.5']);
   assert.equal(signals[1].aborted, false);
 
   // Publish v4 (shell index.html changed) -> falls back to reload

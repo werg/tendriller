@@ -47,6 +47,7 @@ const publicationFiles: Record<number, Record<string, { type: string; body: stri
       type: 'text/javascript',
       sha256: 'h_stage_1',
       body: `export function mount(root, ctx) {
+        ctx.slotState.set('panX', 42);
         const el = document.createElement('div');
         el.id = 'facet-body';
         el.textContent = 'Stage v1 (' + ctx.app.label + ')';
@@ -86,7 +87,7 @@ const publicationFiles: Record<number, Record<string, { type: string; body: stri
       body: `export function mount(root, ctx) {
         const el = document.createElement('div');
         el.id = 'facet-body';
-        el.textContent = 'Stage v2 LIVE (' + ctx.app.label + ')';
+        el.textContent = 'Stage v2 LIVE (' + ctx.app.label + ', panX=' + ctx.slotState.get('panX') + ')';
         root.append(el);
       }`,
     },
@@ -221,7 +222,7 @@ test('hot-swaps facet modules and catalog live without reloading the call canvas
   //    must hot-swap live with ZERO reload and preserve __shellToken + canvas!
   currentVersion = 2;
   stream.send(JSON.stringify({ type: 'publication', version: 1, current: 2 }));
-  await expect(page.locator('#stage-host >> #facet-body')).toHaveText('Stage v2 LIVE (LiveCall)');
+  await expect(page.locator('#stage-host >> #facet-body')).toHaveText('Stage v2 LIVE (LiveCall, panX=42)');
   expect(await page.evaluate(() => ({
     reloads: (window as any).__reloads,
     unmounts: (window as any).__unmounts,

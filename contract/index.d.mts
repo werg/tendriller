@@ -44,6 +44,8 @@ export interface SlotContext<T = Record<string, unknown>> {
   readonly publication: PublicationManifest | null;
   /** Aborted automatically just before unmount or live hot-swap. */
   readonly signal: AbortSignal;
+  /** Ephemeral in-memory map preserved across live hot-swaps of this slot and cleared on dispose. */
+  readonly slotState: Map<string, unknown>;
   /** Application-supplied services (e.g. session, signals, rtc, runtime). */
   readonly app: T;
 }

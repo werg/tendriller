@@ -50,3 +50,11 @@ A publisher key signs `signPublicationManifest(...)` from `@chronolog/authority`
 The signed digests describe authored files. Served HTML additionally carries deliberate runtime injection, so verify the signed manifest and authored asset hashes; the rendered document's digest is expected to differ.
 
 The host retains signed publication records and their complete code graph. `publication()` returns the head, and `publication(id)` returns an exact historical receipt. Exact retries can return an older receipt without selecting it again. Restore is a new signed release. A stale tab or diagnostics cannot silently rewind the code head.
+
+### Live hot-swapping & URL-addressable facets
+
+Because every release is served immutably at `/_publications/<id>/` with per-file SHA-256 hashes in `_tendril/info`, a running page can safely hot-swap UI subtrees without adding separate component registries or relaxing signed publication integrity:
+
+- **Manifest-diff classification:** when a page mounts slots (`tendril.publication.mountSlot`) or URL-addressable facets (`tendril.publication.mountFacets` backed by `facets.json`) and a new version arrives on the existing publication watch, the runtime diffs the old and new publication manifests. If every changed path falls within owned slot/facet paths (and neither `entry` nor `runtime` changed), it imports the updated standalone ES module from `/_publications/<newId>/<path>`, aborts the previous slot's `AbortSignal`, runs cleanup, and mounts the replacement inside its Shadow DOM—preserving live WebRTC connections, canvases, and `ctx.slotState` with zero page reload.
+- **Shell/domain changes stay safe:** any change to `index.html`, `page.mjs`, `worker.mjs`, `domain.js`, or runtime falls back to the normal `live`/`careful` reload policy and respects `tendril.publication.hold()` (e.g. deferring full reload until a video call ends).
+- **Shareable facets over one state:** `tendril.publication.facetUrl(id)` / `facets.url(id)` encodes `?view=<id>` while preserving live vs `/_publications/<id>/` pinned context, unrelated query parameters, and `#hash` deep links—so sharing a facet URL opens a different view over the exact same Chronolog `applicationId`. See [application patterns](APP_PATTERNS.md#url-addressable-facets--hot-swappable-slots).
