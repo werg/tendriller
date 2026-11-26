@@ -139,8 +139,10 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
     const slot = 'Workshop bench · 15:00';
     await Promise.all([run(a, 'reserve', slot, 'reserve-a'), run(b, 'reserve', slot, 'reserve-b')]);
     await converge(first);
+    // Like the claims above: wait until both devices have replayed both reservations and agree on one winner.
+    await expect.poll(async () => (await Promise.all([a, b].flatMap(session => ['reserve-a', 'reserve-b'].map(operation => outcomeOf(session, operation))))).join(','))
+      .toMatch(/^(accepted,rejected,accepted,rejected|rejected,accepted,rejected,accepted)$/);
     const bookings = await Promise.all(['reserve-a', 'reserve-b'].map(operation => outcomeOf(a, operation)));
-    await expect.poll(async () => (await Promise.all(['reserve-a', 'reserve-b'].map(operation => outcomeOf(b, operation)))).join(',')).toBe(bookings.join(','));
     expect([...bookings].sort()).toEqual(['accepted', 'rejected']);
     const [holder, waiting] = bookings[0] === 'accepted' ? [a, b] : [b, a];
     expect((await run(waiting, 'cancel', slot, 'not-holder')).outcome).toBe('rejected');
