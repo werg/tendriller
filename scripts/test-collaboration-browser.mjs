@@ -2,10 +2,12 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { chromium } from '@playwright/test';
+import {launchNetworkBrowser} from '../test/e2e/network-qualification/browser-launch.mjs';
 import { createServer } from 'node:http';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 
+const qualifyLifecycle = process.env.TENDRILLER_BROWSER_LIFECYCLE === '1';
 const root = resolve(import.meta.dirname, '..');
 const reportRoot = resolve(process.env.TENDRILLER_BROWSER_OUTPUT ?? join(root, '.results'));
 const out = join(reportRoot, 'collaboration-browser-assets');
@@ -49,7 +51,7 @@ window.passiveReady=(async()=>{
 });
 await new Promise(done => server.listen(0, '127.0.0.1', done));
 const base = `http://127.0.0.1:${server.address().port}`;
-let browser;
+let browser, lifecycleBrowser;
 const evidence = {
   status: 'failed',
   stage: 'launch',
@@ -84,7 +86,12 @@ function observe(page, label) {
 const deadline = setTimeout(() => { evidence.failure = `Browser qualification exceeded its 120 second deadline at ${evidence.stage}`; void browser?.close(); }, 120000);
 try {
   const launchOptions = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {};
-  browser = await chromium.launch({ headless: true, ...launchOptions });
+  if (qualifyLifecycle) {
+    lifecycleBrowser = await launchNetworkBrowser(launchOptions);
+    browser = lifecycleBrowser.browser;
+  } else {
+    browser = await chromium.launch({ headless: true, ...launchOptions });
+  }
   evidence.browser = browser.version();
 
   await stage('passive-public-import-does-not-open-storage-workers-or-peer-discovery', async () => {
@@ -99,7 +106,7 @@ try {
     }
   });
 
-  const context = await browser.newContext();
+  const context = lifecycleBrowser?.context ?? await browser.newContext();
   const profile = 'qualification-single-tab';
   const one = await context.newPage();
   const two = await context.newPage();
@@ -132,6 +139,57 @@ try {
     await one.evaluate(() => window.attachment.resume());
     assert.equal(await one.evaluate(() => window.session.endpoint.endpointIncarnation), before);
   });
+
+  if (qualifyLifecycle) {
+    await stage('automatic-freeze-retains-document-and-owner', async () => {
+      // Genuine headed Chromium Page Lifecycle freeze/resume of the active tab and its dedicated Worker.
+      const before = await one.evaluate(() => {
+        window.freezeMarker = crypto.randomUUID();
+        window.freezeEvents = [];
+        for (const type of ['freeze', 'resume']) document.addEventListener(type, () => window.freezeEvents.push(type));
+        return {
+          marker: window.freezeMarker,
+          endpoint: window.session.endpoint,
+          publicKey: window.session.identity.publicKey,
+        };
+      });
+      const cdp = await context.newCDPSession(one);
+      let cover;
+      try {
+        await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
+        cover = await context.newPage();
+        await cover.goto('about:blank');
+        await cover.bringToFront();
+        assert.equal(await one.evaluate(() => document.hidden), true, 'Selected document must really be hidden before freeze');
+        await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
+        // Hold frozen past the 15s fence; actual Chromium suspension, not a synthetic suspend() call.
+        await new Promise(resolve => setTimeout(resolve, 16000));
+        await cdp.send('Page.setWebLifecycleState', { state: 'active' });
+        await cover.close();
+        cover = undefined;
+        await one.bringToFront();
+        await one.waitForFunction(() => window.freezeEvents.includes('resume'), null, { timeout: 5000 });
+        const after = await one.evaluate(async () => ({
+          marker: window.freezeMarker,
+          events: window.freezeEvents,
+          endpoint: window.session.endpoint,
+          publicKey: window.session.identity.publicKey,
+          aborted: window.session.signal.aborted,
+          eventsRead: (await window.session.query('messages', null)).value.events.length,
+        }));
+        assert.equal(after.marker, before.marker);
+        assert.deepEqual(after.events, ['freeze', 'resume']);
+        assert.deepEqual(after.endpoint, before.endpoint);
+        assert.equal(after.publicKey, before.publicKey);
+        assert.equal(after.aborted, false);
+        assert.equal(after.eventsRead, 1);
+      } finally {
+        await cdp.send('Page.setWebLifecycleState', { state: 'active' }).catch(() => {});
+        await cover?.close();
+        await cdp.detach();
+      }
+    }, 35000);
+  }
 
   await stage('second-tab-reports-active-elsewhere-without-stealing', async () => {
     await two.goto(url('discussion.html', 'tab-two'));
@@ -170,11 +228,13 @@ try {
     singleActiveTabLock: true,
     explicitTakeoverPreservesState: true,
     suspendResume: true,
+    automaticChromiumFreezeResume:qualifyLifecycle,
     asyncIdentityBootstrap: true,
     participantFocus: true,
     reloadPreservesState: true,
   });
-  await context.close();
+  if (lifecycleBrowser) await Promise.all(context.pages().map(page => page.close()));
+  else await context.close();
   evidence.stage = 'complete';
   evidence.status = 'passed';
   console.log(JSON.stringify(evidence, null, 2));
@@ -184,7 +244,8 @@ try {
   throw error;
 } finally {
   clearTimeout(deadline);
-  await browser?.close();
+  if (lifecycleBrowser) await lifecycleBrowser.close();
+  else await browser?.close();
   await new Promise(done => server.close(done));
   await writeFile(join(reportRoot, 'collaboration-browser.json'), JSON.stringify(evidence, null, 2) + '\n');
 }
