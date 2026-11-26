@@ -112,12 +112,23 @@ it('records Google Workspace hd domains (excluding consumer gmail.com) and syncs
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
     if (url.includes('/user/orgs')) return Response.json([{ login: 'Acme' }]);
-    if (url.includes('/user/teams')) return Response.json([{ slug: 'eng', name: 'Engineering', organization: { login: 'Acme' } }]);
+    if (url.includes('/user/teams') && !url.includes('page=2')) {
+      return new Response(JSON.stringify([{ slug: 'eng', name: 'Engineering', organization: { login: 'Acme' } }]), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          Link: '<https://api.github.com/user/teams?per_page=100&page=2>; rel="next"',
+        },
+      });
+    }
+    if (url.includes('/user/teams') && url.includes('page=2')) {
+      return Response.json([{ slug: 'platform', name: 'Platform', organization: { login: 'Acme' } }]);
+    }
     throw new Error(`Unexpected fetch: ${url}`);
   });
   try {
     const synced = await syncGitHubOrgGroups(env, '9001', acc, 'gho_token');
-    expect(synced.groups.sort()).toEqual(['github-org:acme', 'github-team:acme/eng']);
+    expect(synced.groups.sort()).toEqual(['github-org:acme', 'github-team:acme/eng', 'github-team:acme/platform']);
     expect(synced.departed).toEqual([]);
   } finally {
     fetchMock.mockRestore();

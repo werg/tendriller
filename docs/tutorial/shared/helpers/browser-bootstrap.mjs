@@ -23,6 +23,13 @@ export async function bootstrapBrowser({ configuration, device, signal }) {
   return { authority, peers, wrapKey };
 }
 /** Start the one admission controller beside an open browser session; pass its extensions to the owner. */
-export function admitBrowserSession(session, { peers, wrapKey }) {
-  return createAdmission(session, { peers, wrapKey, store: session.device.store, subject: 'device', label: 'Browser device' });
+export function admitBrowserSession(session, { peers, wrapKey, onEpochRotated } = {}) {
+  return createAdmission(session, {
+    peers,
+    wrapKey,
+    store: session.device.store,
+    subject: 'device',
+    label: 'Browser device',
+    ...(onEpochRotated ? { onEpochRotated } : {}),
+  });
 }

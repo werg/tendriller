@@ -24,7 +24,7 @@ export function publicationControl(context,definition) {
   },publish:(publication,assets)=>context.host.peers.publish(publication,assets),
  });
 }
-export async function openNativePage(context,{definition,createMaterializer,assistant}={}) {
+export async function openNativePage(context,{definition,createMaterializer,assistant,onEpochRotated}={}) {
  context.signal?.throwIfAborted();
  const initialized=await context.readPrivate('initialized.json',true);
  if(initialized?.applicationId!==context.page.applicationId||initialized.publicKey!==context.signer.publicKey)throw Object.assign(Error(`Run npm run init -- ${context.page.slug} first; browser reads and Save never require the agent`),{code:'native_page_init_required'});
@@ -35,6 +35,7 @@ export async function openNativePage(context,{definition,createMaterializer,assi
   const {authority}=await openPageAuthority({store:device.store,identity:device.identity,wrapKey:context.wrapKey,peers:context.host.peers,applicationId:context.page.applicationId,executionManifestDigest:initialized.executionManifestDigest,create:false,signal:context.signal});
   session=await createApplicationSession({device,definition,authority,...(createMaterializer?{createMaterializer}: {})});
   admission=createAdmission(session,{peers:context.host.peers,wrapKey:context.wrapKey,store:device.store,subject:'agent',
+   ...(onEpochRotated?{onEpochRotated}:{}),
    onEvent:notice=>context.report({admission:notice.kind,publicKey:notice.publicKey,label:notice.label??null,...(notice.reason?{reason:notice.reason}:{})})});
   let phase;admission.subscribe(state=>{if(state.phase!==phase){phase=state.phase;context.report({admission:'phase',phase});}});
   participation=participateNativeApplication(session,{peers:context.host.peers,onNotification:()=>void admission.refresh()});

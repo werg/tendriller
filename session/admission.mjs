@@ -154,7 +154,7 @@ export function composeOwnerExtensions(...extensions) {
  * keys wrapped, and offers administrator actions. Returns an owner extension.
  */
 export function createAdmission(session, { peers, wrapKey, store, subject = 'device', label = subject === 'agent' ? 'Agent' : 'Browser device',
-  now = () => Date.now(), memberIntervalMs = 0, waitingIntervalMs = 3_000, onEvent = () => {} } = {}) {
+  now = () => Date.now(), memberIntervalMs = 0, waitingIntervalMs = 3_000, onEvent = () => {}, onEpochRotated = null } = {}) {
   const authority = session.authority, identity = session.device.identity, applicationId = session.applicationId;
   const listeners = new Set(), lifetime = new AbortController();
   // A key that was ever a member and is not now was removed; it never re-requests admission by itself.
@@ -385,6 +385,9 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
             epochKeyDigest: await epochKeyCommitment(applicationId, nextEpoch, nextKey),
           }, { rotateTo: nextKey });
           await wrapAll(true);
+          if (typeof onEpochRotated === 'function') {
+            try { await onEpochRotated({ epoch: nextEpoch, reason: 'org-offboarded', publicKey: targetKey, group: dep.payload.group }); } catch { /* best-effort K_conn rekey */ }
+          }
           await peers.ackDeparture?.(targetKey, { signal: lifetime.signal }).catch(() => {});
           notice({ kind: 'org-offboarded', publicKey: targetKey, group: dep.payload.group, epoch: nextEpoch });
         } catch (error) {
@@ -458,7 +461,11 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
         const epoch = Math.max(...authority.bundle().memberships.map(item => item.payload.epoch)) + 1, key = crypto.getRandomValues(new Uint8Array(32));
         // The new epoch key is wrapped only to the remaining members.
         await extend({ members: head.members.filter(member => member.publicKey !== publicKey), epoch, epochKeyDigest: await epochKeyCommitment(applicationId, epoch, key) }, { rotateTo: key });
-        await wrapAll(true); return { removed: publicKey, epoch };
+        await wrapAll(true);
+        if (typeof onEpochRotated === 'function') {
+          try { await onEpochRotated({ epoch, reason: 'removed', publicKey }); } catch { /* best-effort K_conn rekey */ }
+        }
+        return { removed: publicKey, epoch };
       });
     },
     async 'admission.mode'(mode) {

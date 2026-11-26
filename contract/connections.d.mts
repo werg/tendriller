@@ -47,3 +47,31 @@ export declare function createPageConnectionsClient(
   runtime: { identity: { base: string } },
   options?: { fetch?: typeof globalThis.fetch },
 ): PageConnectionsClient;
+
+export interface ConnectionHandoffPayload {
+  readonly connection: {
+    readonly id: string;
+    readonly provider: string;
+    readonly label: string;
+    readonly tier: 'agent-held' | 'host-brokered';
+    readonly custody: 'personal' | 'page';
+    readonly page_id: string | null;
+    readonly agent_id: string | null;
+    readonly scopes: readonly string[];
+    readonly actions: readonly string[];
+    readonly external_subject: string | null;
+    readonly external_label: string | null;
+  };
+  readonly connection_key?: string | null;
+}
+
+export declare function consumeConnectionCallbackFragment(
+  loc?: { hash?: string; pathname?: string; search?: string },
+  hist?: { replaceState?: (data: unknown, unused: string, url?: string | URL | null) => void },
+): ConnectionHandoffPayload | null;
+
+export declare function listenForConnectionPopup(
+  serviceOrigin: string,
+  onResult: (payload: ConnectionHandoffPayload) => void,
+  target?: EventTarget,
+): () => void;

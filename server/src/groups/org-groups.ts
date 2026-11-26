@@ -116,6 +116,33 @@ export async function recordGoogleWorkspaceDomain(
   }
 }
 
+/** Follow GitHub RFC 5988 Link pagination (`rel="next"`), bounded to `maxPages` and pinned to `api.github.com`. */
+async function fetchGitHubPaginated<T>(
+  initialUrl: string,
+  headers: Record<string, string>,
+  { maxPages = 5, required = false }: { maxPages?: number; required?: boolean } = {},
+): Promise<T[]> {
+  const items: T[] = [];
+  let nextUrl: string | null = initialUrl;
+  for (let page = 0; page < maxPages && nextUrl; page++) {
+    const parsed = new URL(nextUrl);
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'api.github.com') break;
+    const res = await fetch(nextUrl, { headers, redirect: 'manual' });
+    if (!res.ok) {
+      if (required && page === 0) {
+        throw new HttpError(502, 'github_org_sync_failed', `Could not read GitHub organizations (${res.status})`);
+      }
+      break;
+    }
+    const batch = await res.json().catch(() => null);
+    if (Array.isArray(batch)) items.push(...(batch as T[]));
+    const link = res.headers.get('Link') ?? '';
+    const nextMatch = /<([^>]+)>;\s*rel="next"/i.exec(link);
+    nextUrl = nextMatch ? nextMatch[1]! : null;
+  }
+  return items;
+}
+
 /** Sync a user's verified GitHub organizations & teams using an OAuth token with `read:org`. */
 export async function syncGitHubOrgGroups(
   env: Env,
@@ -125,13 +152,10 @@ export async function syncGitHubOrgGroups(
   now = Date.now(),
 ): Promise<{ groups: string[]; departed: string[] }> {
   const headers = { Authorization: `Bearer ${accessToken}`, Accept: 'application/vnd.github+json', 'User-Agent': 'Tendriller' };
-  const [orgsRes, teamsRes] = await Promise.all([
-    fetch('https://api.github.com/user/orgs?per_page=100', { headers }),
-    fetch('https://api.github.com/user/teams?per_page=100', { headers }),
+  const [orgs, teams] = await Promise.all([
+    fetchGitHubPaginated<{ login?: string }>('https://api.github.com/user/orgs?per_page=100', headers, { required: true }),
+    fetchGitHubPaginated<{ slug?: string; name?: string; organization?: { login?: string } }>('https://api.github.com/user/teams?per_page=100', headers),
   ]);
-  if (!orgsRes.ok) throw new HttpError(502, 'github_org_sync_failed', `Could not read GitHub organizations (${orgsRes.status})`);
-  const orgs = await orgsRes.json() as Array<{ login?: string }>;
-  const teams = teamsRes.ok ? (await teamsRes.json() as Array<{ slug?: string; name?: string; organization?: { login?: string } }>) : [];
 
   const nextGroups = new Map<string, string>();
   for (const org of Array.isArray(orgs) ? orgs : []) {

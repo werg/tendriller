@@ -15,6 +15,7 @@ import { inspectAccessToken } from './accounts/oauth-tokens';
 import { base64url } from './accounts/oauth-support';
 import { servicePage } from './accounts/ui';
 import { escapeHtml } from './inject';
+import { renderAccountExternalConnectionsSection } from './oauth-outbound/routes';
 import { HttpError, isPlainObject, json, readBody } from './http';
 import { sha256Hex } from './ids';
 import { APP_ID, REQUEST_LIMIT, mcpOAuth, fields, listConnected, requireScope, resolveConnection, string, type McpPrincipal, type Rpc } from './mcp-shared';
@@ -257,7 +258,12 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
           return `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(row.label)} <span class="badge ok">@${escapeHtml(row.handle)}</span></div><p class="list-item-sub">Hosted MCP via ${escapeHtml(clientName)} · keys wrapped to OAuth token</p></div><a class="button sm secondary" href="/dashboard">Open from dashboard</a></li>`;
         }).join('') + '</ul>'
       : '<p class="empty">No pages are opted into hosted MCP yet. Open any page and use <strong>Page options → Agents</strong> to opt it in.</p>';
-    return servicePage('Hosted MCP connections', `<div class="page-head"><span class="eyebrow">Integrations</span><h1>Hosted MCP connections</h1><p class="lead">Opt-in pages whose keys are wrapped to your OAuth clients’ Bearer tokens (zero plaintext keys stored on Tendriller).</p></div>${listHtml}<div class="actions"><a class="button secondary" href="/oauth/connections">Manage OAuth clients</a><a class="button ghost" href="/dashboard">Back to dashboard</a></div>`);
+    const external = await renderAccountExternalConnectionsSection(env, owner.id);
+    return servicePage(
+      'Connections',
+      `<div class="page-head"><span class="eyebrow">Integrations</span><h1>Connections</h1><p class="lead">Opt-in hosted MCP pages, external OAuth integrations, and verified organization memberships.</p></div><section class="card"><span class="eyebrow">Hosted MCP</span><h2>Assistant page connections</h2><p class="lead">Opt-in pages whose keys are wrapped to your OAuth clients’ Bearer tokens (zero plaintext keys stored on Tendriller).</p>${listHtml}<div class="actions" style="margin-top:1rem"><a class="button secondary sm" href="/oauth/connections">Manage OAuth clients</a></div></section>${external.html}<div class="actions" style="margin-top:1.5rem"><a class="button ghost" href="/dashboard">Back to dashboard</a></div>`,
+      external.script,
+    );
   }
 
   if (req.headers.has('Origin') && req.headers.get('Origin') !== config.issuer) throw new HttpError(403, 'invalid_origin');

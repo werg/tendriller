@@ -3,7 +3,7 @@ import { env } from 'cloudflare:workers';
 import { agentReq, BASE, create, inDO, req } from './helpers';
 import { generateWrapKeyPair } from '../src/mcp-crypto';
 import { generateConnectionKey } from '../src/oauth-outbound/crypto';
-import { unsealAgentTokens } from '../../contract/connections.mjs';
+import { unsealAgentTokens, consumeConnectionCallbackFragment } from '../../contract/connections.mjs';
 import { sha256Hex } from '../src/ids';
 
 async function importX25519Priv(raw32: Uint8Array): Promise<CryptoKey> {
@@ -205,6 +205,7 @@ it('Tier B (host-brokered wrapped proxy): enforces K_conn wrapping, auto-refresh
       return Response.json({ access_token: 'FRESH_TOKEN_2', refresh_token: 'REFRESH_2', expires_in: 3600 });
     }
     if (url === 'https://api.tracker.example.org/v1/items') {
+      expect(init?.redirect).toBe('manual');
       const auth = new Headers(init?.headers).get('Authorization');
       return Response.json({ ok: true, auth });
     }
@@ -301,10 +302,17 @@ it('Tier B (host-brokered wrapped proxy): enforces K_conn wrapping, auto-refresh
     });
     expect(guestPersonalRes.status).toBe(403);
 
-    // Inbound HMAC webhook verifies without decrypting OAuth tokens
+    // Inbound HMAC webhook verifies without decrypting OAuth tokens, and its secret is encrypted at rest in D1
     const whSetup = await (await req(`/api/account/connections/${startTeam.connection_id}/webhook`, {
       method: 'POST', anonymous: true, headers: acctHeaders, body: JSON.stringify({ mode: 'hmac' }),
     })).json() as { webhook_url: string; secret: string };
+    const storedSecretRow = await env.ACCOUNTS!.prepare('SELECT webhook_secret_hash FROM outbound_connections WHERE id = ?')
+      .bind(startTeam.connection_id).first<{ webhook_secret_hash: string }>();
+    expect(storedSecretRow?.webhook_secret_hash).not.toContain(whSetup.secret);
+    const storedCustomRow = await env.ACCOUNTS!.prepare('SELECT client_secret FROM oauth_custom_providers WHERE slug = ?')
+      .bind('tracker').first<{ client_secret: string }>();
+    expect(storedCustomRow?.client_secret).not.toBe('tr_sec');
+    expect(storedCustomRow?.client_secret).toMatch(/^enc:v1:/);
     const whBody = JSON.stringify({ event: 'issue.created', id: 42 });
     const goodSig = `sha256=${await hmacHex(whSetup.secret, whBody)}`;
     expect((await req(whSetup.webhook_url, {
@@ -313,6 +321,43 @@ it('Tier B (host-brokered wrapped proxy): enforces K_conn wrapping, auto-refresh
     expect((await req(whSetup.webhook_url, {
       method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json', 'X-Hub-Signature-256': goodSig, 'X-GitHub-Event': 'issues' }, body: whBody,
     })).status).toBe(202);
+
+    // Agent-side rekey (`POST /api/agent/connections/:id/rekey`) supports headless org offboarding
+    const kConn3 = generateConnectionKey();
+    const agentRekey = await agentReq(h.token, 'POST', `/api/agent/connections/${startTeam.connection_id}/rekey`, {
+      old_key: kConn2,
+      new_key: kConn3,
+    });
+    expect(agentRekey.status).toBe(200);
+    expect((await req(`${h.page_url}_tendril/connections/${startTeam.connection_id}/invoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Connection-Key': kConn3 },
+      body: JSON.stringify({ action: 'http:request', method: 'GET', url: 'https://api.tracker.example.org/v1/items' }),
+    })).status).toBe(200);
+
+    // HTML callback delivers zero-copy-paste fragment handoff to page return_to + Copy button, and /connections lists it
+    const startHtml = await (await req('/api/account/connections', {
+      method: 'POST', anonymous: true, headers: acctHeaders,
+      body: JSON.stringify({ provider: 'custom:tracker', tier: 'host-brokered', custody: 'personal', return_to: h.page_url, actions: ['http:request'] }),
+    })).json() as { state: string };
+    const htmlCb = await req(`/auth/outbound/callback/custom%3Atracker?code=html1&state=${encodeURIComponent(startHtml.state)}`, {
+      anonymous: true, headers: { Cookie: h.session!, Accept: 'text/html' },
+    });
+    expect(htmlCb.status).toBe(200);
+    const htmlText = await htmlCb.text();
+    expect(htmlText).toContain('tendril-copy-kconn');
+    const fragMatch = /#tendril-connection=([A-Za-z0-9_-]+)/.exec(htmlText);
+    expect(fragMatch).toBeTruthy();
+    const parsedHandoff = consumeConnectionCallbackFragment({ hash: `#tendril-connection=${fragMatch![1]}`, pathname: '/', search: '' }, null as any);
+    expect(parsedHandoff?.connection_key).toBeTruthy();
+    expect(parsedHandoff?.connection.provider).toBe('custom:tracker');
+
+    const dashRes = await req('/connections', { anonymous: true, headers: { Cookie: h.session! } });
+    expect(dashRes.status).toBe(200);
+    const dashHtml = await dashRes.text();
+    expect(dashHtml).toContain('External app &amp; agent connections');
+    expect(dashHtml).toContain('Sync GitHub Orgs &amp; Teams');
+    expect(dashHtml).toContain('custom:tracker');
   } finally {
     fetchMock.mockRestore();
   }

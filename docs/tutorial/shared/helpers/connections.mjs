@@ -118,3 +118,40 @@ export async function rekeyAllPageConnections({ session, runtime, epoch = 0, fet
   }
   return rotated;
 }
+
+/**
+ * Agent-side equivalent of `rekeyAllPageConnections`: rotates every `page`-custody Tier B `K_conn`
+ * via `/api/agent/connections/:id/rekey` and persists fresh keys in Chronolog under the new epoch.
+ */
+export async function rekeyPageConnectionsForAgent({ session, serviceOrigin, agentToken, epoch = 0, fetch: fetcher = globalThis.fetch }) {
+  const base = serviceOrigin.replace(/\/+$/u, '');
+  const view = await session.readView();
+  let keys;
+  try {
+    ({ keys } = await readPageConnectionKeys(view));
+  } finally {
+    await view.release();
+  }
+  const rotated = [];
+  for (const entry of keys) {
+    const nextKey = randomConnectionKey();
+    const res = await fetcher(`${base}/api/agent/connections/${encodeURIComponent(entry.connectionId)}/rekey`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${agentToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ old_key: entry.connectionKey, new_key: nextKey }),
+    });
+    if (!res.ok) throw new Error(`Agent connection rekey failed (${res.status})`);
+    const op = await session.command('setPageConnectionKey', {
+      connectionId: entry.connectionId,
+      provider: entry.provider,
+      connectionKey: nextKey,
+      epoch,
+    });
+    await op.materialized();
+    rotated.push(entry.connectionId);
+  }
+  return rotated;
+}

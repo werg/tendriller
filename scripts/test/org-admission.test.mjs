@@ -154,9 +154,11 @@ test('createAdmission seamlessly admits org members via admin-signed group polic
   });
   const ownerSession = await p.createApplicationSession({ device: ownerDev, definition, authority: ownerAuth });
   const ownerEvents = [];
+  const rotatedEpochs = [];
   const ownerAdm = createAdmission(ownerSession, {
     peers: ownerPeers, wrapKey: ownerWrap, store: ownerDev.store,
     onEvent: ev => ownerEvents.push(ev),
+    onEpochRotated: info => rotatedEpochs.push(info),
   });
   t.after(async () => { ownerAdm.close(); await ownerSession.close(); });
 
@@ -201,6 +203,9 @@ test('createAdmission seamlessly admits org members via admin-signed group polic
   assert.equal(ownerAdm.state.members.some(m => m.publicKey === aliceDev.identity.publicKey), false);
   assert.equal(host.remainingDepartures, 0, 'Departure acknowledged after Chronolog revocation');
   assert.ok(ownerEvents.some(e => e.kind === 'org-offboarded' && e.publicKey === aliceDev.identity.publicKey));
+  assert.equal(rotatedEpochs.length, 1, 'onEpochRotated hook fired automatically on org departure');
+  assert.equal(rotatedEpochs[0].epoch, 1);
+  assert.equal(rotatedEpochs[0].reason, 'org-offboarded');
 
   // Verify guardrail: a forged/host departure targeting the page owner is REFUSED
   await host.emitDeparture('owner_acc', ownerDev.identity.publicKey);

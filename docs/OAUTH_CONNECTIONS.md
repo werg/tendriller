@@ -24,7 +24,7 @@ Query `GET /api/oauth/providers` (or run `tendril connection providers`) for the
 - **Personal, Health & Media:** `spotify`, `strava`, `fitbit`, `oura`
 - **Generic BYO OAuth 2.1 / OIDC:** Register any custom HTTPS provider (`POST /api/account/oauth/providers` with `slug`, `authorize_url`, `token_url`, `client_id`, `allowed_hosts`) and connect as `custom:<slug>`.
 
-Operators configure built-in outbound client credentials via the Worker secret `OUTBOUND_OAUTH_CLIENTS_JSON` (a JSON map `{ "<provider>": { "client_id": "...", "client_secret": "..." } }`); `github` and `google` automatically fall back to `GITHUB_CLIENT_ID`/`GOOGLE_CLIENT_ID`.
+Operators configure built-in outbound client credentials via the Worker secret `OUTBOUND_OAUTH_CLIENTS_JSON` (a JSON map `{ "<provider>": { "client_id": "...", "client_secret": "..." } }`); `github` and `google` automatically fall back to `GITHUB_CLIENT_ID`/`GOOGLE_CLIENT_ID`. Optional `OAUTH_CONFIG_KEY` (falling back to `HOST_ATTESTATION_KEY`) envelope-encrypts BYO provider `client_secret`s and inbound HMAC webhook secrets at rest in D1.
 
 ### Tier A (Zero-Trust Agent-Held) Workflow
 
@@ -32,33 +32,47 @@ Operators configure built-in outbound client credentials via the Worker secret `
 # 1. Start an agent-held connection (share authorize_url with the user in chat)
 tendril connection connect github --tier agent-held --scopes "read:user,repo"
 
-# 2. After the user approves, unseal the X25519 handoff locally (0600) and wipe it from the host
+# 2. If `tendril agent run` is active, it automatically pulls, unseals (0600), and wipes the host handoff
+#    via the hub's `outbound-connection-ready` event; otherwise pull manually:
 tendril connection pull
 
-# 3. Revoke anytime
+# 3. Revoke anytime (or from /connections in your browser)
 tendril connection revoke <connection-id>
 ```
 
 ### Tier B (Wrapped Host-Brokered) Workflow
 
 ```js
-import { createPageConnectionsClient } from '@tendriller/core/connections';
+import {
+  consumeConnectionCallbackFragment,
+  createPageConnectionsClient,
+  listenForConnectionPopup,
+} from '@tendriller/core/connections';
 import { pageConnectionCommands, pageConnectionQueries, rekeyAllPageConnections } from '../../shared/helpers/connections.mjs';
 
 const conns = createPageConnectionsClient(window.tendril);
 
-// Invoke an allowlisted provider action (K_conn is sent only in TLS header; never stored in plaintext on host)
+// Zero-copy-paste browser handoff: receive K_conn from the OAuth callback via URL fragment or popup postMessage
+const fromRedirect = consumeConnectionCallbackFragment();
+const stopPopup = listenForConnectionPopup(serviceOrigin, ({ connection, connection_key }) => {
+  // Store K_conn locally (personal custody) or in encrypted Chronolog via setPageConnectionKey (page custody)
+});
+
+// Invoke an allowlisted provider action (K_conn is sent only in TLS X-Connection-Key header; redirects are never followed)
 const result = await conns.invoke(connectionId, kConn, {
   action: 'google.calendar.events:list',
   params: { calendar_id: 'primary' },
   query: { maxResults: '10', singleEvents: 'true' },
 });
 
-// For `custody: "page"` team connections, store K_conn inside Chronolog so admitted members can use it,
-// and call rekeyAllPageConnections({ session, runtime: window.tendril, epoch }) after rotating the epoch key.
+// For `custody: "page"` team connections, pass `onEpochRotated` to `admitBrowserSession` / `openNativePage`
+// / `createAdmission` to call `rekeyAllPageConnections` / `rekeyPageConnectionsForAgent` automatically
+// whenever a member is removed or offboarded from an org.
 ```
 
-### Inbound Webhooks (Zero Token Decryption)
+### Account Dashboard & Inbound Webhooks (Zero Token Decryption)
+
+Visit `/connections` on the service origin to review or revoke external OAuth connections, inspect registered BYO providers, and view or refresh verified organizations & teams (**Sync GitHub Orgs & Teams**).
 
 Configure a webhook secret on any connection (`POST /api/account/connections/:id/webhook`). Incoming deliveries to `POST /api/webhooks/connections/:id` verify HMAC-SHA256 (`X-Hub-Signature-256`, `Linear-Signature`, or `X-Tendriller-Signature-256`) without touching OAuth tokens and forward signed wake events to the agent hub.
 

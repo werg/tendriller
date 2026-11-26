@@ -166,3 +166,74 @@ export async function verifyHmacSha256(secret: string, body: ArrayBuffer, signat
   const provided = hexToBytes(rawHex);
   return constantTimeEqual(expected, provided);
 }
+
+const HOST_SECRET_PREFIX = 'enc:v1:';
+
+async function deriveHostConfigKey(
+  keyMaterial: string,
+  context: string,
+  usage: ('encrypt' | 'decrypt')[],
+): Promise<CryptoKey> {
+  const ikm = await crypto.subtle.importKey('raw', asBuffer(encoder.encode(keyMaterial)), 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    {
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: asBuffer(encoder.encode('tendriller-oauth-config-salt-v1')),
+      info: asBuffer(encoder.encode(`tendriller-oauth-config-v1:${context}`)),
+    },
+    ikm,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    usage,
+  );
+}
+
+/**
+ * Envelope-encrypt host-side OAuth config secrets (BYO provider `client_secret`, inbound HMAC webhook secret)
+ * at rest in D1 using HKDF-SHA256 + AES-256-GCM derived from `OAUTH_CONFIG_KEY` (or `HOST_ATTESTATION_KEY`).
+ */
+export async function sealHostConfigSecret(
+  env: { OAUTH_CONFIG_KEY?: string; HOST_ATTESTATION_KEY?: string },
+  plaintext: string,
+  context: string,
+): Promise<string> {
+  const material = env.OAUTH_CONFIG_KEY || env.HOST_ATTESTATION_KEY;
+  if (!material) return plaintext;
+  const key = await deriveHostConfigKey(material, context, ['encrypt']);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const aad = encoder.encode(`tendriller-oauth-config-v1:${context}`);
+  const ct = new Uint8Array(await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: asBuffer(iv), additionalData: asBuffer(aad) },
+    key,
+    asBuffer(encoder.encode(plaintext)),
+  ));
+  return `${HOST_SECRET_PREFIX}${base64url(iv)}:${base64url(ct)}`;
+}
+
+/** Decrypt a host-side OAuth config secret stored via `sealHostConfigSecret` (passes through unencrypted legacy values). */
+export async function unsealHostConfigSecret(
+  env: { OAUTH_CONFIG_KEY?: string; HOST_ATTESTATION_KEY?: string },
+  stored: string,
+  context: string,
+): Promise<string> {
+  if (!stored.startsWith(HOST_SECRET_PREFIX)) return stored;
+  const material = env.OAUTH_CONFIG_KEY || env.HOST_ATTESTATION_KEY;
+  if (!material) throw new HttpError(500, 'config_key_missing', 'OAUTH_CONFIG_KEY or HOST_ATTESTATION_KEY is required to read stored OAuth config secret');
+  const parts = stored.slice(HOST_SECRET_PREFIX.length).split(':');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new HttpError(500, 'config_secret_corrupt', 'Stored encrypted config secret is malformed');
+  }
+  const key = await deriveHostConfigKey(material, context, ['decrypt']);
+  const aad = encoder.encode(`tendriller-oauth-config-v1:${context}`);
+  try {
+    const plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: asBuffer(unbase64url(parts[0])), additionalData: asBuffer(aad) },
+      key,
+      asBuffer(unbase64url(parts[1])),
+    );
+    return decoder.decode(plain);
+  } catch {
+    throw new HttpError(500, 'config_secret_decrypt_failed', 'Could not decrypt stored OAuth config secret');
+  }
+}

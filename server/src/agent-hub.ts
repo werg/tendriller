@@ -61,10 +61,11 @@ export class AgentHub extends DurableObject<Env> {
       if (url.pathname === "/connect") return this.accept(req);
       if (url.pathname === '/event' && req.method === 'POST') {
         const body = await readJson(req, 64 * 1024);
-        if (typeof body.page !== 'string' || !TENDRIL_ID_RE.test(body.page) || typeof body.kind !== 'string') throw new HttpError(400, 'bad_request');
-        const delivered = this.send({ t: 'event', page: body.page, kind: body.kind, data: body.data ?? {} });
-        if (body.kind === 'revoked' || body.kind === 'page-deleted')
-          for (const stream of [...this.streams.values()]) if (stream.page === body.page) this.closeStream(stream, 4003, 'Agent access revoked');
+        const page = body.page === null ? null : typeof body.page === 'string' && TENDRIL_ID_RE.test(body.page) ? body.page : undefined;
+        if (page === undefined || typeof body.kind !== 'string') throw new HttpError(400, 'bad_request');
+        const delivered = this.send({ t: 'event', page, kind: body.kind, data: body.data ?? {} });
+        if (page && (body.kind === 'revoked' || body.kind === 'page-deleted'))
+          for (const stream of [...this.streams.values()]) if (stream.page === page) this.closeStream(stream, 4003, 'Agent access revoked');
         return json({ delivered }, 202);
       }
       if (url.pathname === '/close' && req.method === 'POST') {

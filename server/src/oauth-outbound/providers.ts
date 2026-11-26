@@ -4,6 +4,7 @@
  */
 import type { Env } from '../env';
 import { HttpError } from '../http';
+import { unsealHostConfigSecret } from './crypto';
 
 export type OutboundTier = 'agent-held' | 'host-brokered';
 export type OutboundCustody = 'personal' | 'page';
@@ -34,6 +35,12 @@ export interface OutboundProviderSpec {
   readonly defaultScopes: readonly string[];
   readonly extraAuthParams?: Readonly<Record<string, string>>;
   readonly tokenAcceptJson?: boolean;
+  /** How confidential client credentials are sent on token exchange/refresh (`body` default, `basic` for Notion/Airtable/Fitbit/Figma). */
+  readonly tokenAuthMethod?: 'body' | 'basic';
+  /** Request body encoding on token exchange/refresh (`form` default, `json` for Notion). */
+  readonly tokenContentType?: 'form' | 'json';
+  /** Scope list delimiter on the authorize URL (` ` default, `,` for Strava). */
+  readonly scopeDelimiter?: ' ' | ',';
   /** Optional profile lookup URL for external_subject / external_label display. */
   readonly profileUrl?: string;
   readonly actions: readonly ProviderActionTemplate[];
@@ -114,6 +121,8 @@ export const BUILTIN_PROVIDERS: readonly OutboundProviderSpec[] = Object.freeze<
     allowedApiHosts: ['api.notion.com'],
     defaultScopes: [],
     extraAuthParams: { owner: 'user' },
+    tokenAuthMethod: 'basic',
+    tokenContentType: 'json',
     actions: [
       { id: 'notion.search', description: 'Search Notion pages and databases', method: 'POST', url: 'https://api.notion.com/v1/search', scopes: [], extraHeaders: { 'Notion-Version': '2022-06-28' } },
       { id: 'notion.pages:get', description: 'Read a Notion page', method: 'GET', url: 'https://api.notion.com/v1/pages/{page_id}', scopes: [], extraHeaders: { 'Notion-Version': '2022-06-28' } },
@@ -149,6 +158,7 @@ export const BUILTIN_PROVIDERS: readonly OutboundProviderSpec[] = Object.freeze<
     supportsHostBrokered: true,
     allowedApiHosts: ['api.figma.com'],
     defaultScopes: ['files:read'],
+    tokenAuthMethod: 'basic',
     actions: [
       { id: 'figma.files:get', description: 'Read a Figma file', method: 'GET', url: 'https://api.figma.com/v1/files/{file_key}', scopes: ['files:read'] },
       { id: 'figma.comments:list', description: 'List comments on a Figma file', method: 'GET', url: 'https://api.figma.com/v1/files/{file_key}/comments', scopes: ['files:read'] },
@@ -165,6 +175,7 @@ export const BUILTIN_PROVIDERS: readonly OutboundProviderSpec[] = Object.freeze<
     supportsHostBrokered: true,
     allowedApiHosts: ['api.airtable.com'],
     defaultScopes: ['data.records:read', 'schema.bases:read'],
+    tokenAuthMethod: 'basic',
     actions: [
       { id: 'airtable.bases:list', description: 'List Airtable bases', method: 'GET', url: 'https://api.airtable.com/v0/meta/bases', scopes: ['schema.bases:read'] },
       { id: 'airtable.records:list', description: 'List records in a table', method: 'GET', url: 'https://api.airtable.com/v0/{base_id}/{table}', scopes: ['data.records:read'] },
@@ -307,6 +318,7 @@ export const BUILTIN_PROVIDERS: readonly OutboundProviderSpec[] = Object.freeze<
     supportsHostBrokered: true,
     allowedApiHosts: ['www.strava.com'],
     defaultScopes: ['activity:read_all'],
+    scopeDelimiter: ',',
     actions: [
       { id: 'strava.activities:list', description: 'List Strava athlete activities', method: 'GET', url: 'https://www.strava.com/api/v3/athlete/activities', scopes: ['activity:read_all'] },
     ],
@@ -323,6 +335,7 @@ export const BUILTIN_PROVIDERS: readonly OutboundProviderSpec[] = Object.freeze<
     supportsHostBrokered: true,
     allowedApiHosts: ['api.fitbit.com'],
     defaultScopes: ['activity', 'sleep', 'heartrate'],
+    tokenAuthMethod: 'basic',
     actions: [
       { id: 'fitbit.activity:read', description: 'Read daily Fitbit activity summary', method: 'GET', url: 'https://api.fitbit.com/1/user/-/activities/date/{date}.json', scopes: ['activity'] },
       { id: 'fitbit.sleep:read', description: 'Read Fitbit sleep logs for a date', method: 'GET', url: 'https://api.fitbit.com/1.2/user/-/sleep/date/{date}.json', scopes: ['sleep'] },
@@ -455,7 +468,10 @@ export async function resolveProvider(env: Env, accountId: string, providerId: s
       defaultScopes,
       actions: [],
     };
-    return { spec, clientId: row.client_id, clientSecret: row.client_secret, isCustom: true };
+    const clientSecret = row.client_secret
+      ? await unsealHostConfigSecret(env, row.client_secret, `custom-provider:${accountId}:${slug}`)
+      : null;
+    return { spec, clientId: row.client_id, clientSecret, isCustom: true };
   }
   const spec = BUILTIN_MAP.get(providerId);
   if (!spec) throw new HttpError(404, 'provider_not_found', `Unsupported provider "${providerId}"`);

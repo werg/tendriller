@@ -66,6 +66,8 @@ export interface Env {
   BROADCAST_ADMIN_TOKEN?: string;
   /** Optional JSON map of outbound OAuth provider credentials: `{ github: { client_id, client_secret }, linear: ... }`. */
   OUTBOUND_OAUTH_CLIENTS_JSON?: string;
+  /** Optional secret key material for envelope-encrypting BYO OAuth client secrets & HMAC webhook secrets at rest in D1 (falls back to HOST_ATTESTATION_KEY). */
+  OAUTH_CONFIG_KEY?: string;
   /** Optional HMAC-SHA256 secret for verifying GitHub org/team membership webhooks (`/api/webhooks/github-org`). */
   GITHUB_ORG_WEBHOOK_SECRET?: string;
 }

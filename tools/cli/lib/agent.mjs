@@ -4,6 +4,7 @@
 import { existsSync, watch as watchFiles } from 'node:fs';
 import { join } from 'node:path';
 import { evaluateBroadcastMatch, verifyBroadcastSignature } from '@tendriller/core';
+import { pullAgentConnections } from './connections.mjs';
 import { acknowledgeWorkspaceBroadcast, detectWorkspaceVersions, readBroadcastState, saveBroadcastState } from './workspace.mjs';
 
 const PAGE_RETRY_MS = 1000, PAGE_MAX_RETRY_MS = 60_000;
@@ -157,13 +158,34 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     }
   }
 
+  let pullingConnections = null;
+  async function syncPendingAgentConnections() {
+    if (stopping || pullingConnections) return pullingConnections;
+    pullingConnections = (async () => {
+      try {
+        const { pulled } = await pullAgentConnections(workspace, signal);
+        for (const item of pulled) {
+          report({ outbound_connection_pulled: item });
+        }
+      } catch {
+        /* best-effort auto-pull; manual `tendril connection pull` remains available */
+      } finally {
+        pullingConnections = null;
+      }
+    })();
+    return pullingConnections;
+  }
+
   const hub = client.hub;
   const stopEvents = hub.events(event => void onHubEvent(event).catch(() => {}));
   const stopBroadcasts = hub.broadcasts?.(batch => void onHubBroadcasts(batch).catch(() => {})) ?? (() => {});
   hub.sendHello?.({ versions, lastBroadcastSeq: broadcastCache.lastSeq });
   const stopStatus = hub.onStatus(status => {
     report({ hub: status.state, ...(status.retryInMs === undefined ? {} : { retryInMs: status.retryInMs }) });
-    if (status.state === 'connected' && status.reconnected) scheduleRescan(true);
+    if (status.state === 'connected') {
+      if (status.reconnected) scheduleRescan(true);
+      void syncPendingAgentConnections();
+    }
     if (status.state === 'revoked') report({ state: 'agent_revoked', next: 'The owner revoked this agent or its token. Re-register the workspace agent; local page data is kept.' });
   });
   hub.connect();
@@ -274,6 +296,10 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     } else if (event.kind === 'revoked' || event.kind === 'page-deleted') {
       granted?.delete(event.page);
       await closePage(event.page, event.kind);
+    } else if (event.kind === 'outbound-connection-ready') {
+      await syncPendingAgentConnections();
+    } else if (event.kind === 'outbound-connection-revoked') {
+      report({ outbound_connection_revoked: event.data ?? {} });
     }
   }
 

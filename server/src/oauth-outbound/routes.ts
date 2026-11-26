@@ -9,6 +9,7 @@ import type { Tendril } from '../tendril';
 import type { PagePrincipal } from '../access';
 import { allows } from '../access';
 import { addActivity } from '../activity';
+import { readAuthorityBundle } from '../authority';
 import { serviceSession } from '../accounts/auth';
 import { authenticateAgentRequest, type GrantedAgent } from '../agents';
 import { HttpError, isPlainObject, json, readJson } from '../http';
@@ -33,6 +34,8 @@ import {
 import {
   generateConnectionKey,
   sealAgentTokens,
+  sealHostConfigSecret,
+  unsealHostConfigSecret,
   unwrapConnectionTokens,
   verifyHmacSha256,
   wrapConnectionTokens,
@@ -91,11 +94,26 @@ function aadFor(id: string, accountId: string, custody: OutboundCustody): string
   return `${id}:${accountId}:${custody}`;
 }
 
-function safeReturnTo(value: unknown): string {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || value.includes('\\')) {
-    return '/connections';
+function safeReturnTo(value: unknown, env?: Env): string {
+  if (typeof value !== 'string' || !value.trim()) return '/connections';
+  const trimmed = value.trim().slice(0, 512);
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//') && !trimmed.includes('\\')) {
+    return trimmed;
   }
-  return value.slice(0, 512);
+  // Allow same-service or page-subdomain HTTPS return URLs (e.g. for zero-copy-paste `#tendril-connection=` handoff).
+  if (env) {
+    try {
+      const parsed = new URL(trimmed);
+      const serviceOrigin = new URL(publicBase(env)).origin;
+      const pageBase = (env.PAGE_BASE_DOMAIN ?? '').toLowerCase();
+      const host = parsed.hostname.toLowerCase();
+      if (parsed.origin === serviceOrigin) return parsed.toString();
+      if (pageBase && (parsed.protocol === 'https:' || parsed.protocol === 'http:') && host.endsWith(`.${pageBase}`)) {
+        return parsed.toString();
+      }
+    } catch { /* fallback */ }
+  }
+  return '/connections';
 }
 
 function parseStringList(value: unknown, maxItems = 32, maxLen = 160): string[] {
@@ -143,8 +161,9 @@ export function connectionView(row: OutboundConnectionRow, opts: { includeSealed
   };
 }
 
-async function notifyAgentHubEvent(env: Env, agentId: string, pageId: string, kind: string, data: Record<string, unknown>): Promise<void> {
-  if (!env.AGENT_HUB || !TENDRIL_ID_RE.test(pageId)) return;
+async function notifyAgentHubEvent(env: Env, agentId: string, pageId: string | null, kind: string, data: Record<string, unknown>): Promise<void> {
+  if (!env.AGENT_HUB) return;
+  if (pageId !== null && !TENDRIL_ID_RE.test(pageId)) return;
   try {
     const res = await env.AGENT_HUB.get(env.AGENT_HUB.idFromName(agentId)).fetch(new Request('https://hub.internal/event', {
       method: 'POST',
@@ -233,7 +252,7 @@ export async function startOutboundConnect(
     .bind(
       await sha256Hex(state), connectionId, accountId, providerId, tier, custody,
       agentId, agentWrapKey, pageId, label, JSON.stringify(scopes), JSON.stringify(requestedActions),
-      verifier, safeReturnTo(body.return_to), now, expiresAt,
+      verifier, safeReturnTo(body.return_to, env), now, expiresAt,
     ).run();
 
   const callback = `${publicBase(env)}/auth/outbound/callback/${encodeURIComponent(providerId)}`;
@@ -242,7 +261,7 @@ export async function startOutboundConnect(
   auth.searchParams.set('redirect_uri', callback);
   auth.searchParams.set('response_type', 'code');
   auth.searchParams.set('state', state);
-  if (scopes.length) auth.searchParams.set('scope', scopes.join(' '));
+  if (scopes.length) auth.searchParams.set('scope', scopes.join(resolved.spec.scopeDelimiter ?? ' '));
   if (resolved.spec.pkce) {
     auth.searchParams.set('code_challenge', challenge);
     auth.searchParams.set('code_challenge_method', 'S256');
@@ -264,82 +283,94 @@ export async function startOutboundConnect(
   };
 }
 
+function buildTokenRequest(
+  resolved: ResolvedProvider,
+  fields: Record<string, string>,
+): { headers: Record<string, string>; body: string | URLSearchParams } {
+  const useBasic = resolved.spec.tokenAuthMethod === 'basic' && Boolean(resolved.clientSecret);
+  const useJson = resolved.spec.tokenContentType === 'json';
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'User-Agent': 'Tendriller-OAuth-Broker/1.0',
+  };
+  const payload: Record<string, string> = { ...fields };
+  if (useBasic) {
+    headers.Authorization = `Basic ${btoa(`${resolved.clientId}:${resolved.clientSecret}`)}`;
+  } else {
+    payload.client_id = resolved.clientId;
+    if (resolved.clientSecret) payload.client_secret = resolved.clientSecret;
+  }
+  if (useJson) {
+    headers['Content-Type'] = 'application/json';
+    return { headers, body: JSON.stringify(payload) };
+  }
+  headers['Content-Type'] = 'application/x-www-form-urlencoded';
+  return { headers, body: new URLSearchParams(payload) };
+}
+
+function parseTokenResponse(data: Record<string, unknown>, fallbackRefresh?: string): OutboundTokenSet {
+  // Slack returns HTTP 200 with `{ ok: false, error: "..." }` on OAuth errors.
+  if (data.ok === false) {
+    throw new HttpError(502, 'oauth_exchange_failed', `Provider returned error: ${String(data.error ?? 'unknown')}`);
+  }
+  const authedUser = data.authed_user && typeof data.authed_user === 'object' ? data.authed_user as Record<string, unknown> : null;
+  const accessToken = typeof data.access_token === 'string' && data.access_token
+    ? data.access_token
+    : typeof authedUser?.access_token === 'string' && authedUser.access_token
+      ? authedUser.access_token
+      : '';
+  if (!accessToken) throw new HttpError(502, 'oauth_exchange_failed', 'Provider did not issue an access_token');
+  const expiresIn = typeof data.expires_in === 'number' && Number.isFinite(data.expires_in) ? data.expires_in : null;
+  const refresh = typeof data.refresh_token === 'string' && data.refresh_token
+    ? data.refresh_token
+    : typeof authedUser?.refresh_token === 'string' && authedUser.refresh_token
+      ? authedUser.refresh_token
+      : (fallbackRefresh ?? null);
+  const scope = typeof data.scope === 'string'
+    ? data.scope
+    : typeof authedUser?.scope === 'string'
+      ? authedUser.scope
+      : undefined;
+  return {
+    access_token: accessToken,
+    refresh_token: refresh,
+    token_type: typeof data.token_type === 'string' ? data.token_type : 'Bearer',
+    scope,
+    expires_at: expiresIn !== null ? Date.now() + expiresIn * 1000 : null,
+  };
+}
+
 async function exchangeProviderCode(
   resolved: ResolvedProvider,
   code: string,
   redirectUri: string,
   verifier: string,
 ): Promise<OutboundTokenSet> {
-  const params = new URLSearchParams({
+  const fields: Record<string, string> = {
     grant_type: 'authorization_code',
     code,
     redirect_uri: redirectUri,
-    client_id: resolved.clientId,
-  });
-  if (resolved.spec.pkce) params.set('code_verifier', verifier);
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'User-Agent': 'Tendriller-OAuth-Broker/1.0',
   };
-  if (resolved.clientSecret) {
-    if (resolved.spec.id === 'notion') {
-      headers.Authorization = `Basic ${btoa(`${resolved.clientId}:${resolved.clientSecret}`)}`;
-    } else {
-      params.set('client_secret', resolved.clientSecret);
-    }
-  }
-  const res = await fetch(resolved.spec.tokenUrl, { method: 'POST', headers, body: params });
+  if (resolved.spec.pkce) fields.code_verifier = verifier;
+  const { headers, body } = buildTokenRequest(resolved, fields);
+  const res = await fetch(resolved.spec.tokenUrl, { method: 'POST', headers, body, redirect: 'manual' });
   if (!res.ok) throw new HttpError(502, 'oauth_exchange_failed', `Provider token exchange failed (${res.status})`);
   const data = await res.json() as Record<string, unknown>;
-  const accessToken = typeof data.access_token === 'string' ? data.access_token
-    : typeof (data.authed_user as Record<string, unknown> | undefined)?.access_token === 'string'
-      ? String((data.authed_user as Record<string, unknown>).access_token) : '';
-  if (!accessToken) throw new HttpError(502, 'oauth_exchange_failed', 'Provider did not issue an access_token');
-  const expiresIn = typeof data.expires_in === 'number' && Number.isFinite(data.expires_in) ? data.expires_in : null;
-  return {
-    access_token: accessToken,
-    refresh_token: typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : null,
-    token_type: typeof data.token_type === 'string' ? data.token_type : 'Bearer',
-    scope: typeof data.scope === 'string' ? data.scope : undefined,
-    expires_at: expiresIn !== null ? Date.now() + expiresIn * 1000 : null,
-  };
+  return parseTokenResponse(data);
 }
 
 async function refreshProviderToken(
   resolved: ResolvedProvider,
   refreshToken: string,
 ): Promise<OutboundTokenSet> {
-  const params = new URLSearchParams({
+  const { headers, body } = buildTokenRequest(resolved, {
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
-    client_id: resolved.clientId,
   });
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    'Content-Type': 'application/x-www-form-urlencoded',
-    'User-Agent': 'Tendriller-OAuth-Broker/1.0',
-  };
-  if (resolved.clientSecret) {
-    if (resolved.spec.id === 'notion') {
-      headers.Authorization = `Basic ${btoa(`${resolved.clientId}:${resolved.clientSecret}`)}`;
-    } else {
-      params.set('client_secret', resolved.clientSecret);
-    }
-  }
-  const res = await fetch(resolved.spec.tokenUrl, { method: 'POST', headers, body: params });
+  const res = await fetch(resolved.spec.tokenUrl, { method: 'POST', headers, body, redirect: 'manual' });
   if (!res.ok) throw new HttpError(502, 'oauth_refresh_failed', `Provider token refresh failed (${res.status})`);
   const data = await res.json() as Record<string, unknown>;
-  const accessToken = typeof data.access_token === 'string' ? data.access_token : '';
-  if (!accessToken) throw new HttpError(502, 'oauth_refresh_failed', 'Provider refresh response missing access_token');
-  const expiresIn = typeof data.expires_in === 'number' && Number.isFinite(data.expires_in) ? data.expires_in : null;
-  return {
-    access_token: accessToken,
-    refresh_token: typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : refreshToken,
-    token_type: typeof data.token_type === 'string' ? data.token_type : 'Bearer',
-    scope: typeof data.scope === 'string' ? data.scope : undefined,
-    expires_at: expiresIn !== null ? Date.now() + expiresIn * 1000 : null,
-  };
+  return parseTokenResponse(data, refreshToken);
 }
 
 async function lookupExternalProfile(resolved: ResolvedProvider, accessToken: string): Promise<{ subject: string | null; label: string | null }> {
@@ -421,7 +452,7 @@ export async function handleOutboundCallback(req: Request, env: Env, url: URL, p
       .bind(pending.connection_id, pending.page_id, pending.custody, pending.actions, session.accountId, now).run();
   }
 
-  if (pending.tier === 'agent-held' && pending.agent_id && pending.page_id) {
+  if (pending.tier === 'agent-held' && pending.agent_id) {
     await notifyAgentHubEvent(env, pending.agent_id, pending.page_id, 'outbound-connection-ready', {
       connection_id: pending.connection_id,
       provider: providerId,
@@ -449,14 +480,35 @@ export async function handleOutboundCallback(req: Request, env: Env, url: URL, p
     return json(responsePayload, 201, { 'Cache-Control': 'no-store' });
   }
 
+  // Zero-copy-paste browser handoff for Tier B:
+  // 1) If return_to is a page URL, append #tendril-connection=<base64url> (fragments never hit the server).
+  // 2) If opened as a popup (window.opener), postMessage strictly to the validated return_to origin.
+  // 3) Always keep a manual 1-click Copy fallback box.
+  let continueHref = pending.return_to;
+  let targetOrigin = new URL(publicBase(env)).origin;
+  try {
+    const retUrl = new URL(pending.return_to, publicBase(env));
+    targetOrigin = retUrl.origin;
+    if (oneTimeConnectionKey && (retUrl.origin !== new URL(publicBase(env)).origin || retUrl.pathname !== '/connections')) {
+      const fragmentPayload = base64url(new TextEncoder().encode(JSON.stringify(responsePayload)));
+      retUrl.hash = `tendril-connection=${fragmentPayload}`;
+      continueHref = retUrl.toString();
+    }
+  } catch { /* keep default continueHref */ }
+
   const keyBlock = oneTimeConnectionKey
-    ? `<div class="card" style="margin-top:1rem"><h2>One-time connection wrap key</h2><p class="muted">Tendriller stores only wrapped ciphertext and never retains this key. Save it in your page/device or copy it now:</p><pre><code>${escapeHtml(oneTimeConnectionKey)}</code></pre></div>`
-    : `<p class="muted">Your token was sealed directly to your agent’s X25519 wrap key. Run <code>tendril connection pull</code> or let <code>tendril agent run</code> receive it automatically.</p>`;
+    ? `<div class="card" style="margin-top:1rem"><h2>One-time connection wrap key</h2><p class="muted">Tendriller stores only wrapped ciphertext and never retains this key. Your page can receive it automatically, or copy it now:</p><pre><code id="tendril-kconn">${escapeHtml(oneTimeConnectionKey)}</code></pre><div class="actions tight" style="margin-top:.75rem"><button class="button secondary sm" type="button" id="tendril-copy-kconn">Copy key</button><span class="muted" id="tendril-handoff-status" aria-live="polite"></span></div></div>`
+    : `<p class="muted">Your token was sealed directly to your agent’s X25519 wrap key. If <code>tendril agent run</code> is active, it pulls automatically; otherwise run <code>tendril connection pull</code>.</p>`;
+
+  const safeJson = (v: unknown) => JSON.stringify(v).replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+  const script = oneTimeConnectionKey
+    ? `(function(){var payload=${safeJson(responsePayload)};var origin=${safeJson(targetOrigin)};var btn=document.getElementById('tendril-copy-kconn');var st=document.getElementById('tendril-handoff-status');if(btn){btn.addEventListener('click',function(){navigator.clipboard&&navigator.clipboard.writeText(payload.connection_key).then(function(){btn.textContent='Copied';}).catch(function(){});});}try{if(window.opener&&!window.opener.closed){window.opener.postMessage({type:'tendriller:oauth-connection',connection:payload.connection,connection_key:payload.connection_key},origin);if(st)st.textContent='Delivered to opening page.';}}catch(e){}})();`
+    : '';
 
   return servicePage(
     `${resolved.spec.name} connected`,
-    `<section class="card"><span class="eyebrow">External connection ready</span><h1>${escapeHtml(resolved.spec.name)} connected</h1><p class="lead">Mode: <strong>${escapeHtml(pending.tier)}</strong>${pending.tier === 'host-brokered' ? ` · Custody: <strong>${escapeHtml(pending.custody)}</strong>` : ''}</p>${keyBlock}<div class="actions" style="margin-top:1.25rem"><a class="button" href="${escapeHtml(pending.return_to)}">Continue</a></div></section>`,
-    '',
+    `<section class="card"><span class="eyebrow">External connection ready</span><h1>${escapeHtml(resolved.spec.name)} connected</h1><p class="lead">Mode: <strong>${escapeHtml(pending.tier)}</strong>${pending.tier === 'host-brokered' ? ` · Custody: <strong>${escapeHtml(pending.custody)}</strong>` : ''}</p>${keyBlock}<div class="actions" style="margin-top:1.25rem"><a class="button" href="${escapeHtml(continueHref)}">Continue</a></div></section>`,
+    script,
     200,
   );
 }
@@ -501,6 +553,7 @@ export async function invokeWrappedConnection(
   const upstream = await fetch(outbound.url, {
     method: outbound.method,
     headers: upstreamHeaders,
+    redirect: 'manual',
     ...(outbound.body !== undefined ? { body: outbound.body } : {}),
   });
 
@@ -513,7 +566,7 @@ export async function invokeWrappedConnection(
     parsedBody = text.slice(0, 256 * 1024);
   }
   const safeRespHeaders: Record<string, string> = {};
-  for (const name of ['content-type', 'etag', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'retry-after']) {
+  for (const name of ['content-type', 'etag', 'location', 'x-ratelimit-remaining', 'x-ratelimit-reset', 'retry-after']) {
     const v = upstream.headers.get(name);
     if (v) safeRespHeaders[name] = v;
   }
@@ -619,7 +672,8 @@ export async function routeOutboundOAuthApi(req: Request, env: Env, url: URL): P
     // - HMAC-SHA256 verified against the stored webhook secret key OR bearer secret hash match.
     let verified = false;
     if (sig && row.webhook_secret_hash.startsWith('hmac:')) {
-      verified = await verifyHmacSha256(row.webhook_secret_hash.slice(5), rawBody, sig);
+      const hmacSecret = await unsealHostConfigSecret(env, row.webhook_secret_hash.slice(5), `webhook:${row.id}`);
+      verified = await verifyHmacSha256(hmacSecret, rawBody, sig);
     } else if (secretHeader && (await sha256Hex(secretHeader)) === row.webhook_secret_hash) {
       verified = true;
     }
@@ -674,7 +728,8 @@ export async function routeOutboundOAuthApi(req: Request, env: Env, url: URL): P
         ? assertSafeExternalUrl(b.revoke_url.trim(), 'revoke_url').toString() : null;
       const clientId = typeof b.client_id === 'string' && b.client_id.trim() ? b.client_id.trim().slice(0, 256) : '';
       if (!clientId) throw new HttpError(400, 'bad_request', 'client_id is required');
-      const clientSecret = typeof b.client_secret === 'string' && b.client_secret ? b.client_secret.slice(0, 512) : null;
+      const rawSecret = typeof b.client_secret === 'string' && b.client_secret ? b.client_secret.slice(0, 512) : null;
+      const clientSecret = rawSecret ? await sealHostConfigSecret(env, rawSecret, `custom-provider:${session.accountId}:${slug}`) : null;
       const defaultScopes = parseStringList(b.default_scopes, 32, 160);
       const allowedHosts = parseStringList(b.allowed_hosts, 16, 253).map(h => assertSafeExternalHost(h, 'allowed_hosts'));
       if (!allowedHosts.length) throw new HttpError(400, 'bad_request', 'allowed_hosts must contain at least one public HTTPS API host');
@@ -735,7 +790,9 @@ export async function routeOutboundOAuthApi(req: Request, env: Env, url: URL): P
         const b = await readJson(req, 2048).catch(() => ({}));
         const secret = isPlainObject(b) && typeof b.secret === 'string' && b.secret.length >= 16 ? b.secret.slice(0, 256) : randomToken();
         const mode = isPlainObject(b) && b.mode === 'bearer' ? 'bearer' : 'hmac';
-        const stored = mode === 'hmac' ? `hmac:${secret}` : await sha256Hex(secret);
+        const stored = mode === 'hmac'
+          ? `hmac:${await sealHostConfigSecret(env, secret, `webhook:${connId}`)}`
+          : await sha256Hex(secret);
         await env.ACCOUNTS.prepare('UPDATE outbound_connections SET webhook_secret_hash = ?, updated_at = ? WHERE id = ?')
           .bind(stored, Date.now(), connId).run();
         return json({
@@ -806,7 +863,7 @@ export async function routeAgentConnectionsApi(req: Request, env: Env, url: URL)
     return json({ sealed_tokens: JSON.parse(sealed), provider: resolved.spec.id }, 200, { 'Cache-Control': 'no-store' });
   }
 
-  const single = /^\/api\/agent\/connections\/(oc_[a-z2-7]{26})(?:\/(ack|invoke|revoke))?$/.exec(path);
+  const single = /^\/api\/agent\/connections\/(oc_[a-z2-7]{26})(?:\/(ack|invoke|rekey|revoke))?$/.exec(path);
   if (single) {
     const [, connId, sub] = single;
     if (sub === 'ack' && m === 'POST') {
@@ -827,6 +884,19 @@ export async function routeAgentConnectionsApi(req: Request, env: Env, url: URL)
       if (!isPlainObject(b) || typeof b.action !== 'string') throw new HttpError(400, 'bad_request', 'action is required');
       const result = await invokeWrappedConnection(env, row, JSON.parse(row.actions) as string[], kConn, b as any);
       return json(result, 200, { 'Cache-Control': 'no-store' });
+    }
+    if (sub === 'rekey' && m === 'POST') {
+      const b = await readJson(req, 4096);
+      if (!isPlainObject(b) || typeof b.old_key !== 'string' || typeof b.new_key !== 'string') {
+        throw new HttpError(400, 'bad_request', 'old_key and new_key are required');
+      }
+      const row = await env.ACCOUNTS.prepare(`SELECT c.* FROM outbound_connections c
+        WHERE c.id = ? AND c.account_id = ? AND c.revoked_at IS NULL
+          AND (c.agent_id = ? OR c.page_id IN (SELECT page_id FROM agent_grants WHERE agent_id = ?))`)
+        .bind(connId, agent.account_id, agent.id, agent.id).first<OutboundConnectionRow>();
+      if (!row) throw new HttpError(404, 'connection_not_found', 'Connection not accessible to this agent');
+      await rekeyWrappedConnection(env, row, b.old_key, b.new_key);
+      return json({ rekeyed: true, id: connId });
     }
     if ((sub === 'revoke' && m === 'POST') || (!sub && m === 'DELETE')) {
       const row = await env.ACCOUNTS.prepare('SELECT id FROM outbound_connections WHERE id = ? AND account_id = ? AND agent_id = ?')
@@ -926,9 +996,19 @@ export async function handlePageConnections(t: Tendril, req: Request, sub: strin
     }
 
     if (action === 'rekey' && m === 'POST') {
-      if (!principal.accountId || (grant.account_id !== principal.accountId && ownerAccount !== principal.accountId)) {
-        throw new HttpError(403, 'forbidden');
+      if (!principal.accountId) throw new HttpError(403, 'forbidden');
+      let canRekey = grant.account_id === principal.accountId || ownerAccount === principal.accountId;
+      if (!canRekey && grant.grant_custody === 'page') {
+        // Also allow any current Chronolog administrator on `page`-custody connections (e.g. org-admin rotating epoch keys).
+        const bundle = await readAuthorityBundle(t);
+        if (bundle) {
+          const adminKeys = new Set(bundle.memberships.at(-1)!.payload.members.filter(mem => mem.administrator).map(mem => mem.publicKey));
+          canRekey = bundle.memberships.some(mem =>
+            mem.payload.admitted.some(a => a.attestation.payload.accountId === principal.accountId && adminKeys.has(a.publicKey)),
+          );
+        }
       }
+      if (!canRekey) throw new HttpError(403, 'forbidden');
       const b = await readJson(req, 4096);
       if (!isPlainObject(b) || typeof b.old_key !== 'string' || typeof b.new_key !== 'string') {
         throw new HttpError(400, 'bad_request', 'old_key and new_key are required');
@@ -940,4 +1020,67 @@ export async function handlePageConnections(t: Tendril, req: Request, sub: strin
   }
 
   throw new HttpError(404, 'not_found');
+}
+
+/**
+ * Render the account-level External OAuth Connections, BYO Providers, and Verified Org/Team Groups
+ * section embedded in `/connections` (Item 9).
+ */
+export async function renderAccountExternalConnectionsSection(
+  env: Env,
+  accountId: string,
+): Promise<{ html: string; script: string }> {
+  if (!env.ACCOUNTS) return { html: '', script: '' };
+  const now = Date.now();
+  const [conns, groups, customProviders] = await Promise.all([
+    env.ACCOUNTS.prepare('SELECT * FROM outbound_connections WHERE account_id = ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 50')
+      .bind(accountId).all<OutboundConnectionRow>().catch(() => ({ results: [] as OutboundConnectionRow[] })),
+    env.ACCOUNTS.prepare('SELECT provider, group_id, display_name, expires_at FROM identity_groups WHERE account_id = ? AND expires_at > ? ORDER BY group_id ASC LIMIT 100')
+      .bind(accountId, now).all<{ provider: string; group_id: string; display_name: string | null; expires_at: number }>().catch(() => ({ results: [] })),
+    env.ACCOUNTS.prepare('SELECT slug, name, allowed_hosts FROM oauth_custom_providers WHERE account_id = ? ORDER BY slug ASC LIMIT 32')
+      .bind(accountId).all<{ slug: string; name: string; allowed_hosts: string }>().catch(() => ({ results: [] })),
+  ]);
+
+  const connHtml = conns.results.length
+    ? `<ul class="list" id="ext-conn-list">${conns.results.map(c => {
+        const scopes = (JSON.parse(c.scopes || '[]') as string[]).slice(0, 6).join(', ');
+        const tierLabel = c.tier === 'agent-held' ? 'Zero-trust (agent-held)' : `Wrapped proxy (${c.custody})`;
+        const who = c.external_label ? ` · ${escapeHtml(c.external_label)}` : '';
+        return `<li class="list-item" data-conn-id="${escapeHtml(c.id)}"><div class="list-item-main"><div class="list-item-title">${escapeHtml(c.label || c.provider)} <span class="badge">${escapeHtml(c.provider)}</span> <span class="badge ok">${escapeHtml(tierLabel)}</span></div><p class="list-item-sub">${scopes ? `Scopes: ${escapeHtml(scopes)}` : 'Default scopes'}${who}</p></div><button class="button sm danger" type="button" data-revoke-conn="${escapeHtml(c.id)}">Revoke</button></li>`;
+      }).join('')}</ul>`
+    : '<p class="empty">No external OAuth connections yet. Ask your agent in chat to connect GitHub, Google, Linear, Notion, Slack, Spotify, or any custom OAuth 2.1 provider.</p>';
+
+  const groupHtml = groups.results.length
+    ? `<ul class="list">${groups.results.map(g =>
+        `<li class="list-item"><div class="list-item-main"><div class="list-item-title"><code>${escapeHtml(g.group_id)}</code> <span class="badge">${escapeHtml(g.provider)}</span></div><p class="list-item-sub">${escapeHtml(g.display_name || g.group_id)}</p></div></li>`,
+      ).join('')}</ul>`
+    : '<p class="empty">No verified organization or team memberships cached yet. Sign in with a Google Workspace account or sync your GitHub orgs & teams below.</p>';
+
+  const customHtml = customProviders.results.length
+    ? `<div style="margin-top:1rem"><h3 style="margin:.25rem 0 .5rem">Custom BYO OAuth 2.1 providers</h3><ul class="list">${customProviders.results.map(p =>
+        `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escapeHtml(p.name)} <code>custom:${escapeHtml(p.slug)}</code></div><p class="list-item-sub">Allowed hosts: ${escapeHtml((JSON.parse(p.allowed_hosts || '[]') as string[]).join(', '))}</p></div></li>`,
+      ).join('')}</ul></div>`
+    : '';
+
+  const html = `
+<section class="card" style="margin-top:1.5rem">
+  <span class="eyebrow">External OAuth</span>
+  <h2>External app &amp; agent connections</h2>
+  <p class="lead">Third-party connections never store plaintext OAuth tokens on Tendriller (X25519 sealed to your agent or AES-256-GCM wrapped under your key).</p>
+  ${connHtml}
+  ${customHtml}
+</section>
+<section class="card" style="margin-top:1.5rem">
+  <span class="eyebrow">Org &amp; Team Access</span>
+  <h2>Verified organizations &amp; teams</h2>
+  <p class="lead">Used to admit you seamlessly to team pages configured with GitHub Organization/Team or Google Workspace domain rules.</p>
+  ${groupHtml}
+  <div class="actions" style="margin-top:1rem">
+    <a class="button secondary sm" href="/auth/github?org_sync=1&return_to=%2Fconnections">Sync GitHub Orgs &amp; Teams</a>
+  </div>
+</section>`;
+
+  const script = `(function(){document.querySelectorAll('[data-revoke-conn]').forEach(function(btn){btn.addEventListener('click',function(){var id=btn.getAttribute('data-revoke-conn');if(!id)return;btn.disabled=true;btn.textContent='Revoking...';fetch('/api/account/connections/'+encodeURIComponent(id)+'/revoke',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'}).then(function(r){if(!r.ok)throw new Error();var li=btn.closest('[data-conn-id]');if(li)li.remove();}).catch(function(){btn.disabled=false;btn.textContent='Revoke';});});});})();`;
+
+  return { html, script };
 }

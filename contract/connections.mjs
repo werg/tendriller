@@ -117,3 +117,40 @@ export function createPageConnectionsClient(runtime, { fetch: fetcher = globalTh
     }),
   });
 }
+
+/**
+ * Consume a zero-copy-paste `#tendril-connection=<base64url>` handoff fragment after a Tier B OAuth redirect.
+ * Fragments are never sent to the host. Clears the fragment from `history` when `replaceState` is available.
+ */
+export function consumeConnectionCallbackFragment(loc = globalThis.location, hist = globalThis.history) {
+  const hash = typeof loc?.hash === 'string' ? loc.hash : '';
+  const match = /(?:^#|&)tendril-connection=([A-Za-z0-9_-]+)/u.exec(hash);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(decoder.decode(base64urlToBytes(match[1])));
+    if (!parsed || typeof parsed !== 'object' || !parsed.connection) return null;
+    if (hist && typeof hist.replaceState === 'function' && typeof loc?.pathname === 'string') {
+      const cleaned = hash.replace(/(?:^#|&)tendril-connection=[A-Za-z0-9_-]+/u, '').replace(/^&/u, '#');
+      hist.replaceState(null, '', `${loc.pathname}${loc.search ?? ''}${cleaned === '#' ? '' : cleaned}`);
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Listen for a Tier B OAuth completion `postMessage` from an authorization popup opened on `serviceOrigin`.
+ * Strictly validates `event.origin === new URL(serviceOrigin).origin`. Returns an unsubscribe function.
+ */
+export function listenForConnectionPopup(serviceOrigin, onResult, target = globalThis) {
+  const expectedOrigin = new URL(serviceOrigin).origin;
+  const handler = event => {
+    if (event.origin !== expectedOrigin) return;
+    const data = event.data;
+    if (!data || data.type !== 'tendriller:oauth-connection' || !data.connection) return;
+    onResult({ connection: data.connection, connection_key: data.connection_key ?? null });
+  };
+  target.addEventListener('message', handler);
+  return () => target.removeEventListener('message', handler);
+}
