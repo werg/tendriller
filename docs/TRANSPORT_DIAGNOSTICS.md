@@ -6,10 +6,16 @@ screen readers), for example *Connected to 1 device.* or *Not connected. Your
 changes are saved on this device and will sync when a device or your agent is
 online.* Each current link then shows:
 
-- **who**: the page agent's public `@handle` when the link's authenticated
-  signing key matches the page's agent roster, otherwise an anonymous
-  *Device 1*, *Device 2*, … (the runtime has no safe local evidence that a peer
-  is the owner's own other device, so it does not claim that);
+- **who**, resolved locally in this page and never shown as a key:
+  - an agent by its public `@handle` (from the page's agent roster, or the
+    host-attested `@handle` label of its signed admission);
+  - **Your other device** for another device admitted under the viewer's own
+    account, with a short label: a specific attestation label if the device
+    has one, *created this page* for the page creator, or else the date it was
+    admitted (for example *Your other device (added Nov 3, 2026)*), with an
+    **Admin** badge when the signed membership makes it an administrator;
+  - another member by its host-verified email, or *Member 1*, *Member 2*, …;
+  - *Device 1*, *Device 2*, … when the page has no matching member state;
 - **route**: *Direct connection* or *Via relay*, with the fallback reason when
   the direct attempt timed out or failed;
 - **data**: received and sent payload in decimal units (B, KB, MB).
@@ -69,11 +75,26 @@ application payloads and arbitrary exception messages. The report is capped at
 64 links and uses closed-vocabulary error categories. `sampled: false` means the
 current connection set has not been sampled successfully.
 
-`agent` is the only name a report carries: the validated public handle (without
-`@`) returned by an optional local `agentHandle(peerId)` lookup, re-evaluated on
-each status read. The page runtime supplies one from its agent roster; other
-consumers get `null` unless they pass their own. The signing key never enters
-the report.
+`peer` is the only identity a report carries: `{ role, handle, label, email, administrator }`
+with `role` one of `agent`, `own-device`, `member` or `unknown`. It comes from
+an optional local `describePeer(peerId)` lookup, is re-evaluated on each status
+read, and is validated (handle pattern, bounded control-free label, email
+shape); anything else becomes `unknown`. The signing key never enters the
+report.
+
+The page runtime composes that lookup from two local sources. Its agent roster
+supplies handles. When the installed source exposes owner `extensions` with
+the `@tendriller/core/admission` extension (the tutorial templates compose it),
+the runtime subscribes to its `admission` notices and reads `admission.state`
+once on each explicit refresh, then matches the peer key to a signed admitted
+member. The viewer's account is its own member's host-attested `accountId`; a
+creator viewer, which created the page from the owner account, owns the page's admission accounts. A member with the
+same account is the viewer's other device; any other member is named by its
+attested email when present. `administrator` is the same signed membership fact
+the Devices view badges (owner-account devices are administrators by default;
+attested agents are not); the panel shows the same **Admin** badge, and the field
+is `null` for peers absent from that state. Peers absent from that state stay anonymous. No
+host request is made for any of this.
 
 ## Counter scope
 
@@ -133,9 +154,11 @@ import { createTransportDiagnostics, readTransportDiagnostics }
   from '@tendriller/core/transport-diagnostics';
 
 const report = await readTransportDiagnostics(session, { signal });
-// Optional: name links by a known agent's public handle; the key stays local.
-const inspector = createTransportDiagnostics(session, { signal,
-  agentHandle: peerId => agents.find(agent => agent.public_key === peerId)?.handle ?? null });
+// Optional: describe links locally (agent, own device or member); the key stays local.
+const inspector = createTransportDiagnostics(session, { signal, describePeer: peerId => {
+  const agent = agents.find(item => item.public_key === peerId);
+  return agent ? { role: 'agent', handle: agent.handle } : null;
+} });
 const off = inspector.onChange(renderConnectionSummary);
 await inspector.refresh();
 off();

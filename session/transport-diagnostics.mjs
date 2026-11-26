@@ -7,6 +7,14 @@ const reasons = new Set(['direct_failed','direct_timeout']);
 const peer = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 const counter = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const handle = value => typeof value === 'string' && /^[a-z][a-z0-9_-]{1,31}$/.test(value) ? value : null;
+const label = value => typeof value === 'string' && value.length <= 64 && /^[^\u0000-\u001f\u007f]+$/u.test(value.trim()) ? value.trim() : null;
+const email = value => typeof value === 'string' && value.length <= 254 && /^[^\s@\u0000-\u001f]+@[^\s@\u0000-\u001f]+$/u.test(value) ? value : null;
+const UNKNOWN_PEER = Object.freeze({ role: 'unknown', handle: null, label: null, email: null, administrator: null });
+const admin = value => typeof value === 'boolean' ? value : null;
+/** Closed-vocabulary peer description; anything else is an anonymous peer. */
+const describe = value => value?.role === 'agent' ? Object.freeze({ role: 'agent', handle: handle(value.handle), label: null, email: null, administrator: admin(value.administrator) })
+  : value?.role === 'own-device' ? Object.freeze({ role: 'own-device', handle: null, label: label(value.label), email: null, administrator: admin(value.administrator) })
+  : value?.role === 'member' ? Object.freeze({ role: 'member', handle: null, label: null, email: email(value.email), administrator: admin(value.administrator) }) : UNKNOWN_PEER;
 // A link's total is its measured reliable framing plus its live frames. A link
 // without a live route reports no live fields and carries no live frames; a
 // present but malformed live counter leaves the total unknown.
@@ -17,11 +25,11 @@ const signalRejections = value => value && typeof value === 'object' && !Array.i
 
 /** The source is the owned participant's authenticated-link diagnostics API.
  * Raw adapter onTransport selections deliberately have no input path here. */
-export function createTransportDiagnostics(participation, { signal, timeoutMs = 5000, agentHandle } = {}) {
+export function createTransportDiagnostics(participation, { signal, timeoutMs = 5000, describePeer } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw TypeError('Invalid local diagnostics deadline');
-  if (agentHandle !== undefined && typeof agentHandle !== 'function') throw TypeError('agentHandle must be a function');
-  // Names a link only by a known agent's public @handle; the key itself never leaves.
-  const agentOf = peerId => { if (!agentHandle) return null; try { return handle(agentHandle(peerId)); } catch { return null; } };
+  if (describePeer !== undefined && typeof describePeer !== 'function') throw TypeError('describePeer must be a function');
+  // Maps a verified signing key to a bounded local description; the key itself never leaves.
+  const peerOf = peerId => { if (!describePeer) return UNKNOWN_PEER; try { return describe(describePeer(peerId)); } catch { return UNKNOWN_PEER; } };
   const listeners = new Set(); let closed = false, stopStatus = () => {}, version = 0, pending, physicalPending = false, refreshAfterPending = false, connectionRevision = null;
   let phase = 'unknown', peers = null, sampled = false, sampleLimited = false, statusLimited = false, failure = null, rows = [];
   let cancelRead = () => {};
@@ -30,7 +38,7 @@ export function createTransportDiagnostics(participation, { signal, timeoutMs = 
     return Object.freeze({ protocol: TRANSPORT_DIAGNOSTIC_PROTOCOL,
       state: closed ? 'closed' : !supported ? 'unavailable' : 'available', phase, connectionRevision,
       authenticatedPeers: peers?.size ?? (sampled ? new Set(rows.map(row => row.peerId)).size : null), sampled, limited: statusLimited || sampleLimited, error: failure,
-      connections: Object.freeze(rows.map((row, index) => Object.freeze({ link: index + 1, agent: agentOf(row.peerId), kind: row.kind, reason: row.reason,
+      connections: Object.freeze(rows.map((row, index) => Object.freeze({ link: index + 1, peer: peerOf(row.peerId), kind: row.kind, reason: row.reason,
         sentBytes: row.sentBytes, receivedBytes: row.receivedBytes, sentReliableBytes: row.sentReliableBytes, receivedReliableBytes: row.receivedReliableBytes, sentLiveBytes: row.sentLiveBytes, receivedLiveBytes: row.receivedLiveBytes, signalRejections: row.signalRejections }))),
     });
   }

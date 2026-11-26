@@ -743,8 +743,8 @@ export function mountUtility(api: RuntimeApi): () => void {
     }
   });
   const transportInspector = mountTransportInspector(api.transport); panel.append(transportInspector.element);
-  // Links to a page agent show its public @handle; other devices stay anonymous.
-  const nameTransportLinks = () => nameTransportAgents(api.transport, peerId => agentSnap().agents.find(agent => agent.public_key === peerId)?.handle ?? null);
+  // Links to a page agent show its public @handle; admission state names the rest.
+  const nameTransportLinks = () => nameTransportAgents(api.transport, () => agentSnap().agents);
   nameTransportLinks(); const offTransportNames = api.agents?.onChange?.(() => { if (!disposed) nameTransportLinks(); }) ?? (() => {});
   const diagnostics = element("section", undefined, "section"); diagnostics.hidden = true;
   const diagHeading = element("h3", "Diagnostics");

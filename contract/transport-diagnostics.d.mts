@@ -7,11 +7,30 @@ export interface TransportSignalRejections {
   readonly duplicate: number | null;
   readonly capacity: number | null;
 }
+/**
+ * A bounded, local description of an authenticated peer:
+ * - `agent`: a page agent, with its public handle (without "@") when known;
+ * - `own-device`: another device signed in to the viewer's own account, with a short safe label when known;
+ * - `member`: another admitted member, with its host-verified email when known;
+ * - `unknown`: no description.
+ */
+export interface TransportPeer {
+  readonly role: 'agent' | 'own-device' | 'member' | 'unknown';
+  readonly handle: string | null;
+  readonly label: string | null;
+  readonly email: string | null;
+  /** Whether the signed page membership makes this peer an administrator; null when not described. */
+  readonly administrator: boolean | null;
+}
+export type TransportPeerDescription =
+  | { readonly role: 'agent'; readonly handle?: string | null; readonly administrator?: boolean | null }
+  | { readonly role: 'own-device'; readonly label?: string | null; readonly administrator?: boolean | null }
+  | { readonly role: 'member'; readonly email?: string | null; readonly administrator?: boolean | null };
 /** Cached authenticated-link evidence, never raw adapter selection or delivery proof. */
 export interface TransportDiagnosticConnection {
   readonly link: number;
-  /** The page agent's public @handle (without "@") when `agentHandle` names this link's signing key; otherwise null. */
-  readonly agent: string | null;
+  /** Who is on the other end, from the local `describePeer` lookup; `unknown` without one. Never the key. */
+  readonly peer: TransportPeer;
   /** The route the participant selected for this link; `unknown` when the source does not say. */
   readonly kind: 'direct' | 'relay' | 'unknown';
   /** Why a relay link fell back from direct, when known. Always null for direct links. */
@@ -40,13 +59,19 @@ export interface TransportDiagnosticSource {
   readonly status?: unknown;
   diagnostics?(): Promise<readonly unknown[]>;
   onStatus?(listener: (status: unknown) => void): () => void;
+  /** Owner extensions. When the owner composes page admission, the runtime reads its
+   * `admission.state` locally to name links; peer keys never leave this page. */
+  readonly extensions?: {
+    call(name: string, args?: readonly unknown[]): Promise<unknown>;
+    subscribe(listener: (notice: unknown) => void): () => void;
+  };
 }
 export interface TransportDiagnosticOptions {
   readonly signal?: AbortSignal;
   /** Local read deadline in milliseconds (1–30000, default 5000). */
   readonly timeoutMs?: number;
-  /** Maps an authenticated signing key to a known agent's public handle, or null. Evaluated locally on each status read. */
-  readonly agentHandle?: (peerId: string) => string | null | undefined;
+  /** Describes an authenticated signing key (agent, own device or member), or null. Evaluated locally on each status read. */
+  readonly describePeer?: (peerId: string) => TransportPeerDescription | null | undefined;
 }
 export interface TransportDiagnostics {
   status(): TransportDiagnosticReport;

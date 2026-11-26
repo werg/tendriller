@@ -10,6 +10,7 @@ import { QUALIFICATION_SOCKET_ENV, qualificationSocketPath, connectQualification
 import { prepareSignalQualification, createSignalQualification, qualifyFirstAppSignals } from './first-app-signals.mjs';
 import {qualifyFirstAppMedia} from './first-app-media.mjs';
 import { qualifyFirstAppPublication } from './first-app-publication.mjs';
+import { expectConnectionInspector } from './first-app-connections.mjs';
 
 export const EVIDENCE_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/lXcAAAAASUVORK5CYII=', 'base64');
 export async function prepareWorkspaceQualification({ app, slug, feedback, network }) {
@@ -54,7 +55,7 @@ export function admittedAgent(program, pageId, label) {
   return program.waitFor(value => value.page === pageId && value.canAuthor === true, `${label}: agent admitted with page keys`, 90000);
 }
 
-export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, publicKey, first, second, profile, setup, tendril, node, cli, preload, expect, report, service, transportCounters, transport, feedback, network, checkpoint, passed, sha256 }) {
+export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, publicKey, first, second, profile, setup, tendril, node, cli, preload, expect, report, screenshot, service, transportCounters, transport, feedback, network, checkpoint, passed, sha256 }) {
   const events = [], socketDirectory = process.platform === 'linux' ? `@first-app-${crypto.randomUUID()}` : join(app, '.tendriller', 'qualification-sockets');
   if (!socketDirectory.startsWith('@')) await mkdir(socketDirectory, { mode: 0o700 });
   let program, peer, journalProfile, lateProfile, failure;
@@ -92,6 +93,15 @@ export async function qualifyFirstAppWorkspace({ app, slug, primary, journal, pu
     assert.equal(retry.proposalId, firstCommand.proposalId); assert.equal(retry.authorTimestampMs, firstCommand.authorTimestampMs);
     await expect(first.page.locator('#notes')).toContainText('Optional native workspace author', { timeout: 30000 });
     passed('one hub, agent admitted automatically from its signed grant, exact native retries keep proposal/time and browser convergence');
+    // Browser↔native: the built-in inspector names the agent by @handle with its actual route and data.
+    const linkLog = await peer.request('participation-log');
+    try { report.agent_connection_inspector = await expectConnectionInspector(first.page, { expect, name: '@first-app', transport, screenshot, label: 'connections-agent' }); }
+    catch (error) {
+      report.agent_connection_debug = { before: linkLog, after: await peer.request('participation-log').catch(cause => cause.message),
+        browser: await first.page.evaluate(() => window.tendril.transport.status()).catch(cause => cause.message) };
+      throw error;
+    }
+    passed('Application connections shows the native agent by @handle, its actual route and non-zero received data');
 
     checkpoint('optional workspace: agent-first page; the owner browser is admitted by the running agent');
     journalProfile = await opened(journal); await save(journalProfile.page, 'Journal browser operation');

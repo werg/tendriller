@@ -15,6 +15,15 @@ const route = (link: TransportDiagnosticConnection) => link.kind === 'direct' ? 
     : link.reason === 'direct_failed' ? 'Via relay (a direct connection could not be made)' : 'Via relay'
   : 'Connection type not reported';
 
+/** Who a link reaches, from the report's bounded peer description; numbered when anonymous. */
+export function peerName(link: TransportDiagnosticConnection, counters: { member: number; device: number }): string {
+  const { peer } = link;
+  if (peer.role === 'agent') return peer.handle ? `@${peer.handle}` : 'Agent';
+  if (peer.role === 'own-device') return peer.label ? `Your other device (${peer.label})` : 'Your other device';
+  if (peer.role === 'member') return peer.email ?? `Member ${++counters.member}`;
+  return `Device ${++counters.device}`;
+}
+
 /** Plain-language summary of the bounded local report; never peer keys or addresses. */
 export function connectionSummary(report: TransportDiagnosticReport): string {
   const count = report.authenticatedPeers;
@@ -48,13 +57,16 @@ export function mountTransportInspector(transport: RuntimeTransport): { element:
     if (disposed) return;
     summary.textContent = connectionSummary(report);
     list.replaceChildren(); lanes.replaceChildren();
-    let device = 0;
+    const counters = { member: 0, device: 0 };
     for (const link of report.connections) {
-      const name = link.agent ? `@${link.agent}` : `Device ${++device}`;
+      const name = peerName(link, counters);
       const item = make('li', 'conn-item');
       const data = link.receivedBytes === null && link.sentBytes === null ? 'Data use not measured'
         : `Received ${size(link.receivedBytes)} · Sent ${size(link.sentBytes)}`;
-      item.append(make('strong', 'conn-name', name), make('p', 'conn-route', route(link)), make('p', undefined, data));
+      const title = make('strong', 'conn-name', name);
+      // Same signed fact and wording as the Devices view's Admin badge.
+      if (link.peer.administrator) { const badge = make('span', 'agent-pill', 'Admin'); badge.title = 'Administrator: can approve and remove devices and change access settings'; title.append(' ', badge); }
+      item.append(title, make('p', 'conn-route', route(link)), make('p', undefined, data));
       list.append(item);
       const detail = [`${name} (link ${link.link}, ${link.kind}${link.reason ? `, ${link.reason.replace('_', ' ')}` : ''})`,
         `reliable ${size(link.sentReliableBytes)} sent, ${size(link.receivedReliableBytes)} received`,

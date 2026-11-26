@@ -10,6 +10,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { setGlobalDispatcher } from 'undici';
 import { chromium, expect } from '@playwright/test';
+import { expectConnectionInspector } from './first-app-connections.mjs';
 import { TUTORIAL_FILES } from './onboarding.mjs';
 import { readBrowserRtcEvidence, hasNonTurnTraffic } from './first-app-rtc-evidence.mjs';
 import { createFirstAppWebsocketProxyWorker } from './first-app-websocket-host.mjs';
@@ -490,6 +491,12 @@ try {
   const actualCounters = await transportCounters(); report.transport = actualCounters;
   if (values.transport === 'relay') assert.ok(actualCounters.relayBinaryBytes > 0, 'Forced fallback must carry actual opaque application frames');
   else { const evidence = await page.evaluate(readBrowserRtcEvidence); report.rtc = evidence; assert.ok(hasNonTurnTraffic(evidence), 'Direct qualification needs actual RTC data evidence'); assert.equal(actualCounters.relayBinaryBytes, 0, 'Direct application data must bypass hosted relay'); }
+  // The built-in inspector names each browser as the owner's other device, with the real route and data.
+  report.connection_inspector = {
+    desktop: await expectConnectionInspector(page, { expect, name: 'Your other device', transport: values.transport, screenshot, label: 'connections-desktop' }),
+    phone: await expectConnectionInspector(second.page, { expect, name: 'Your other device (created this page)', transport: values.transport, screenshot, label: 'connections-phone' }),
+  };
+  passed('Application connections names the other browser as the owner\'s device, with its actual route and non-zero received data');
   await expect.poll(() => page.evaluate(async ({ id, peer }) => {
     const operation = await window.tendril.application.backend.operations.get(id);
     return operation ? (await operation.inspect()).retained.some(evidence => evidence.signer === peer) : false;
@@ -532,7 +539,7 @@ try {
   passed('fresh desktop/320px profiles, long-lived identity and materialized state after second-device reload');
   if(nativeWorkspace){
     const primary={...handle,application:pageRecord.application};
-    const common={app,slug,primary,journal,publicKey:prepared.publisherKey,first,second,profile,setup,tendril,node,cli,preload,expect,report,service:SERVICE,transportCounters,transport:values.transport,feedback:feedbackQualification,network:networkLab,checkpoint,passed,sha256};
+    const common={app,slug,primary,journal,publicKey:prepared.publisherKey,first,second,profile,setup,tendril,node,cli,preload,expect,report,screenshot,service:SERVICE,transportCounters,transport:values.transport,feedback:feedbackQualification,network:networkLab,checkpoint,passed,sha256};
     if(sqlBrowser)await qualifyFirstAppSqlWorkspace(common);else await qualifyFirstAppWorkspace(common);
   }
   report.native_checks = nativeWorkspace?'passed':'not-required'; report.browser_checks = 'passed'; report.status = values.diagnostic ? 'diagnostic-passed' : 'passed'; report.qualified = !values.diagnostic;

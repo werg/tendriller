@@ -35,11 +35,16 @@ test('link totals add measured reliable and live framing; a link without a live 
  assert.deepEqual([live.sentBytes,live.receivedBytes],[12,9]);assert.deepEqual([reliable.sentBytes,reliable.receivedBytes,reliable.sentLiveBytes],[10,8,null]);
  assert.equal(huge.sentBytes,Number.MAX_SAFE_INTEGER);view.close();
 });
-test('agent handles name links only through the supplied local lookup and never expose the key',async()=>{
- const f=fixture(),seen=[];const view=createTransportDiagnostics(f.source,{agentHandle:peerId=>{seen.push(peerId);return'notekeeper';}});
- const report=await view.refresh();assert.equal(report.connections[0].agent,'notekeeper');assert.equal(seen.at(-1),id);assert.equal(JSON.stringify(report).includes(id),false);view.close();
- const plain=createTransportDiagnostics(fixture().source);assert.equal((await plain.refresh()).connections[0].agent,null);plain.close();
- assert.throws(()=>createTransportDiagnostics(f.source,{agentHandle:'notekeeper'}),/agentHandle/);
+test('peer descriptions come only from the supplied local lookup, use a closed vocabulary and never expose the key',async()=>{
+ const f=fixture(),seen=[];let next={role:'agent',handle:'notekeeper'};const view=createTransportDiagnostics(f.source,{describePeer:peerId=>{seen.push(peerId);return next;}});
+ const report=await view.refresh();assert.deepEqual(report.connections[0].peer,{role:'agent',handle:'notekeeper',label:null,email:null,administrator:null});assert.equal(seen.at(-1),id);assert.equal(JSON.stringify(report).includes(id),false);
+ next={role:'own-device',label:'added Nov 3, 2026',email:'leak@example.test',handle:'leak',administrator:true};assert.deepEqual(view.status().connections[0].peer,{role:'own-device',handle:null,label:'added Nov 3, 2026',email:null,administrator:true});
+ next={role:'member',email:'friend@example.test',administrator:'yes'};assert.deepEqual(view.status().connections[0].peer,{role:'member',handle:null,label:null,email:'friend@example.test',administrator:null});
+ for(const bad of[{role:'admin'},{role:'agent',handle:'Not A Handle'},{role:'member',email:'no at sign'},{role:'own-device',label:'line\nbreak'},null,'agent']){next=bad;const peer=view.status().connections[0].peer;
+  assert.ok(peer.role==='unknown'||peer.handle===null&&peer.email===null&&peer.label===null,JSON.stringify(bad));}
+ next=()=>{throw Error('SECRET');};const thrower=createTransportDiagnostics(f.source,{describePeer:()=>{throw Error('SECRET');}});await thrower.refresh();assert.equal(thrower.status().connections[0].peer.role,'unknown');thrower.close();view.close();
+ const plain=createTransportDiagnostics(fixture().source);assert.equal((await plain.refresh()).connections[0].peer.role,'unknown');plain.close();
+ assert.throws(()=>createTransportDiagnostics(f.source,{describePeer:'notekeeper'}),/describePeer/);
 });
 test('a diagnostic sample is capped before iterating an oversized sparse result',async()=>{
  const values=new Array(1_000_000);values[0]=row();const f=fixture(async()=>values),view=createTransportDiagnostics(f.source);
