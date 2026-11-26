@@ -265,7 +265,7 @@ export function createAdmission(session, {
   memberIntervalMs = 0, waitingIntervalMs = 3_000, onEvent = () => {}, onEpochRotated = null,
 } = {}) {
   const identity = session.device.identity;
-  const applicationId = session.applicationId;
+  const applicationId = session.chainId ?? session.applicationId;
   const listeners = new Set();
   const lifetime = new AbortController();
   let attestation = null, invite = null, inviteLoaded = false, timer, running, again = false, closed = false;

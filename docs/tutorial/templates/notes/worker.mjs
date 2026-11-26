@@ -38,6 +38,7 @@ serveBrowserOwner({
           const epochKeys = opened.epoch0Key ? new Map([[0, opened.epoch0Key]]) : undefined;
           session = await createApplicationSession({
             device,
+            applicationId: configuration.applicationId,
             genesis: opened.genesisBytes,
             casNodes: opened.casNodes,
             wasmModule,

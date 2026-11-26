@@ -84,6 +84,7 @@ export async function openNativePage(context, { definition, imports, topics, ass
     const epochKeys = opened.epoch0Key ? new Map([[0, opened.epoch0Key]]) : undefined;
     session = await createApplicationSession({
       device,
+      applicationId: context.page.applicationId,
       genesis: opened.genesisBytes,
       casNodes: opened.casNodes,
       ...(epochKeys ? { epochKeys } : {}),
