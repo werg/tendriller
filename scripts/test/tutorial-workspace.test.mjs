@@ -20,7 +20,7 @@ async function kit(t) {
   const directory = await mkdtemp(join(tmpdir(), 'kit-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await cp(join(root, 'docs/tutorial'), directory, { recursive: true });
-  for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session'], ['@chronolog', 'authority', 'node_modules/@chronolog/authority']]) {
+  for (const [scope, name, source] of [['@tendriller', 'core', 'dist/sdk'], ['@chronolog', 'peer-session', 'node_modules/@chronolog/peer-session'], ['@chronolog', 'authority', 'node_modules/@chronolog/authority'], ['@jitl', 'quickjs-ng-wasmfile-release-sync', 'node_modules/@jitl/quickjs-ng-wasmfile-release-sync']]) {
     await mkdir(join(directory, 'node_modules', scope), { recursive: true });
     await symlink(join(root, source), join(directory, 'node_modules', scope, name));
   }
