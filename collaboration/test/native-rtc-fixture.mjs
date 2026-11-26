@@ -16,7 +16,7 @@ const peers = {
   rendezvous(_channel, identity) {
     const index = ids.indexOf(identity); assert.ok(index >= 0);
     return { ready: Promise.resolve({ role: index ? 'answerer' : 'offerer' }), messages: queues[index],
-      async send(value) { sent.push(value.type); queues[1-index].push(value); }, close() { queues[index].close(); } };
+      async send(value) { if (value?.type) sent.push(value.type); queues[1-index].push(value); }, close() { queues[index].close(); } };
   },
   relay() { relayCalls++; throw Error('Expected actual native direct RTC'); },
 };

@@ -143,7 +143,7 @@ export function composeOwnerExtensions(...extensions) {
  * keys wrapped, and offers administrator actions. Returns an owner extension.
  */
 export function createAdmission(session, { peers, wrapKey, store, subject = 'device', label = subject === 'agent' ? 'Agent' : 'Browser device',
-  now = () => Date.now(), memberIntervalMs = 20_000, waitingIntervalMs = 3_000, onEvent = () => {} } = {}) {
+  now = () => Date.now(), memberIntervalMs = 0, waitingIntervalMs = 3_000, onEvent = () => {} } = {}) {
   const authority = session.authority, identity = session.device.identity, applicationId = session.applicationId;
   const listeners = new Set(), lifetime = new AbortController();
   // A key that was ever a member and is not now was removed; it never re-requests admission by itself.
@@ -309,7 +309,7 @@ export function createAdmission(session, { peers, wrapKey, store, subject = 'dev
     observeMembership(); emit();
   }
   function schedule(ms) {
-    clearTimeout(timer); if (closed) return;
+    clearTimeout(timer); if (closed || !ms || ms <= 0) return;
     timer = setTimeout(() => { void refresh(); }, ms); timer.unref?.();
   }
   function refresh() {
