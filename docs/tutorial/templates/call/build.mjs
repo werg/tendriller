@@ -58,6 +58,8 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       target: 'es2022',
       outExtension: { '.js': '.mjs' },
       chunkNames: 'chunks/[name]-[hash]',
+      assetNames: 'assets/[name]-[hash]',
+      loader: { '.wasm': 'file' },
     });
     if (existsSync(new URL('facets.json', root))) {
       await copyFile(new URL('facets.json', root), new URL('facets.json', output));

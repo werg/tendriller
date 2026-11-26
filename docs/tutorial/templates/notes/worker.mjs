@@ -1,3 +1,4 @@
+import quickJsWasmUrl from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
 import { admitBrowserSession, bootstrapBrowser } from '../../shared/helpers/browser-bootstrap.mjs';
 import { hostedMcpExtensions } from '../../shared/helpers/hosted-mcp.mjs';
@@ -7,6 +8,12 @@ import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
 import { participateApplication } from '@tendriller/core/participation';
 import { definition, imports, topics } from './domain.mjs';
+
+const quickJsWasmPromise = (async () => {
+  const res = await fetch(new URL(quickJsWasmUrl, self.location.href));
+  if (!res.ok) throw Error(`Failed to load QuickJS WASM (${res.status})`);
+  return WebAssembly.compile(await res.arrayBuffer());
+})();
 
 serveBrowserOwner({
   async load({ signal }) {
@@ -24,12 +31,16 @@ serveBrowserOwner({
         const device = await openBrowserDevice({ name: profileId, create: true });
         let session, participation, admission;
         try {
-          const opened = await bootstrapBrowser({ configuration, device, imports, topics, signal });
+          const [opened, wasmModule] = await Promise.all([
+            bootstrapBrowser({ configuration, device, imports, topics, signal }),
+            quickJsWasmPromise,
+          ]);
           const epochKeys = opened.epoch0Key ? new Map([[0, opened.epoch0Key]]) : undefined;
           session = await createApplicationSession({
             device,
             genesis: opened.genesisBytes,
             casNodes: opened.casNodes,
+            wasmModule,
             ...(epochKeys ? { epochKeys } : {}),
             definition,
           });

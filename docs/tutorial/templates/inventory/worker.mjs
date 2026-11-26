@@ -1,3 +1,5 @@
+import quickJsWasmUrl from '@jitl/quickjs-ng-wasmfile-release-sync/wasm';
+import sqliteCasWasmUrl from '@chronolog/peer-session/sqlite-cas.wasm';
 import { createApplicationSession } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
@@ -7,6 +9,13 @@ import { admitBrowserSession, bootstrapBrowser } from '../../shared/helpers/brow
 import { hostedMcpExtensions } from '../../shared/helpers/hosted-mcp.mjs';
 import { composeOwnerExtensions } from '@tendriller/core/admission';
 import { definition, imports, topics } from './domain.mjs';
+
+const loadWasm = async url => {
+  const res = await fetch(new URL(url, self.location.href));
+  if (!res.ok) throw Error(`Failed to load WASM (${res.status})`);
+  return WebAssembly.compile(await res.arrayBuffer());
+};
+const wasmModulesPromise = Promise.all([loadWasm(quickJsWasmUrl), loadWasm(sqliteCasWasmUrl)]);
 
 serveBrowserOwner({
   async load({ signal }) {
@@ -24,12 +33,17 @@ serveBrowserOwner({
         const device = await openBrowserDevice({ name: profileId, create: true });
         let session, participation, admission;
         try {
-          const opened = await bootstrapBrowser({ configuration, device, imports, topics, signal });
+          const [opened, [wasmModule, sqliteWasmModule]] = await Promise.all([
+            bootstrapBrowser({ configuration, device, imports, topics, signal }),
+            wasmModulesPromise,
+          ]);
           const epochKeys = opened.epoch0Key ? new Map([[0, opened.epoch0Key]]) : undefined;
           session = await createApplicationSession({
             device,
             genesis: opened.genesisBytes,
             casNodes: opened.casNodes,
+            wasmModule,
+            sqliteWasmModule,
             ...(epochKeys ? { epochKeys } : {}),
             definition,
           });
