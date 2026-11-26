@@ -58,17 +58,24 @@ function policyGrant(input) {
 
 /**
  * Create a Chronolog v2 GenesisBlock for a Tendriller page.
- * Pins the host attestation key, owner admission accounts, and default owner-device grant
- * inside `$permissions.admission`.
+ * By default pins the host attestation key, owner admission accounts, and default owner-device
+ * grant inside `$permissions.admission`. Pass `admission: null` or supply a custom
+ * `topics.$permissions` reducer (e.g. `multisigMembers` or `openMembers`) to opt out of
+ * host-attested admission completely.
  */
 export async function createPageGenesis({
   identity, wrapKey, hostKey, accounts = [], mode = 'attested', ownerGrant = DEFAULT_OWNER_GRANT,
-  privateChain = true, imports, topics, finalitySchedule, frozenReducers, salt,
+  admission = undefined, privateChain = true, imports, topics, finalitySchedule, frozenReducers, salt,
 }) {
-  const grant = policyGrant(ownerGrant);
-  if (!HEX.test(identity?.publicKey ?? '') || !HEX.test(hostKey ?? '') || !HEX.test(wrapKey ?? '')) {
+  const customPerms = Boolean(topics && Object.hasOwn(topics, '$permissions'));
+  const hostAttested = admission !== null && !customPerms;
+  if (!HEX.test(identity?.publicKey ?? '') || !HEX.test(wrapKey ?? '')) {
     throw failure('GENESIS_INPUT_INVALID');
   }
+  if (hostAttested && !HEX.test(hostKey ?? '')) {
+    throw failure('GENESIS_INPUT_INVALID');
+  }
+  const grant = hostAttested ? policyGrant(ownerGrant) : null;
   const created = await createChainGenesis({
     creator: {
       publicKey: identity.publicKey,
@@ -80,13 +87,22 @@ export async function createPageGenesis({
       finalizer: true,
     },
     privateChain,
-    hostPublicKey: hostKey,
+    ...(hostAttested ? { hostPublicKey: hostKey } : {}),
     imports,
     topics,
     finalitySchedule,
     frozenReducers,
     salt,
   });
+  if (!hostAttested) {
+    return {
+      chainId: created.chainId,
+      genesis: created.genesis,
+      genesisBytes: created.genesisBytes,
+      casNodes: created.casNodes,
+      epoch0Key: created.epoch0Key,
+    };
+  }
   // Embed full Tendriller admission policy into initial $permissions.admission and re-encode deterministically.
   const genesis = structuredClone(created.genesis);
   genesis.initialTopics.$permissions = {
@@ -525,9 +541,10 @@ export function createAdmission(session, {
       await syncWithHost();
       observeMembership();
       const me = session.isMember(identity.publicKey);
+      const hasHostAdmission = Boolean(session.permissions().admission?.hostKey);
       if (!me) {
-        if (!wasMember) await attest();
-      } else if (session.isAdministrator(identity.publicKey)) {
+        if (!wasMember && hasHostAdmission) await attest();
+      } else if (session.isAdministrator(identity.publicKey) && hasHostAdmission) {
         await adminDuties();
       }
       lastError = null;

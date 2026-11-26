@@ -208,8 +208,7 @@ export async function validateSignedGroupPolicy(
     throw new HttpError(400, 'invalid_group_policy', 'Group policy must be a signed record');
   }
   await verifyRecord(GROUP_POLICY_DOMAIN, signed);
-  const signerMember = state.permissions.members.find(m => m.publicKey === signed.signer);
-  if (!signerMember?.administrator) {
+  if (!state.permissions.administrators.has(signed.signer)) {
     throw new HttpError(403, 'administrator_required', 'Group policy must be signed by a current page administrator');
   }
   const p = signed.payload;

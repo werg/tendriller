@@ -163,9 +163,11 @@ test('native collaboration full references survive a lost response, reconnect an
 });
 
 const nativeModule = new URL('../../session/native.mjs', import.meta.url).href;
-function child(t, source, data) {
+async function child(t, source, data) {
+  const dataPath = `${data.ownerDirectory}-${Math.random().toString(16).slice(2)}.bin`;
+  await writeFile(dataPath, p.encodeRecord(data));
   const process = spawn(globalThis.process.execPath, ['--input-type=module', '-e', source], {
-    env: { ...globalThis.process.env, TENDRILLER_NATIVE_TEST: p.bytesToHex(p.encodeRecord(data)) }, stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...globalThis.process.env, TENDRILLER_NATIVE_TEST_FILE: dataPath }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   t.after(() => { if (process.exitCode === null && process.signalCode === null) process.kill('SIGKILL'); });
   let output = '', error = '';
@@ -212,13 +214,14 @@ applicationId:${JSON.stringify(f.applicationId)}});}`);
 
 test('process crash releases the fence and a successor resumes the same signer and exact stored authored proposal', { timeout: 20_000 }, async t => {
   const f = await fixture(t), token = createNativeAttachmentKey();
-  const script = `import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
+  const script = `import {readFileSync} from 'node:fs';
+import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
 import {p,openRetainedOwner} from ${JSON.stringify(new URL('./native-fixture.mjs', import.meta.url).href)};
-const data=p.decodeRecord(p.hexToBytes(process.env.TENDRILLER_NATIVE_TEST));
+const data=p.decodeRecord(new Uint8Array(readFileSync(process.env.TENDRILLER_NATIVE_TEST_FILE)));
 const supervisor=await createNativeSessionSupervisor({directory:data.ownerDirectory,profileId:'retained-main',
 openOwner:()=>openRetainedOwner(data),bindings:[{id:'retained-agent',token:data.token}]});
 process.stdout.write(JSON.stringify({deviceId:supervisor.profile.publicKey,ownerInstanceId:supervisor.ownerInstanceId})+'\\n');`;
-  const old = child(t, script, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, genesisBytes: [...f.genesisBytes], casNodes: f.casNodes.map(n => ({ hash: n.hash, bytes: [...n.bytes], partition: n.partition })), key: [...f.key], token });
+  const old = await child(t, script, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, genesisBytes: [...f.genesisBytes], casNodes: f.casNodes.map(n => ({ hash: n.hash, bytes: [...n.bytes], partition: n.partition })), key: [...f.key], token });
   const previous = await old.ready();
   assert.equal(previous.deviceId, f.deviceId);
   await assert.rejects(createNativeSessionSupervisor({ directory: f.ownerDirectory, profileId: 'retained-main', openOwner: f.openOwner }),
@@ -285,13 +288,14 @@ test('private directory and immutable profile identity are enforced before expos
 
 test('CLI watch reports a crashed owner and snapshot cursors cannot silently cross a revised projection', { timeout: 20_000 }, async t => {
   const f = await fixture(t), token = createNativeAttachmentKey();
-  const source = `import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
+  const source = `import {readFileSync} from 'node:fs';
+import {createNativeSessionSupervisor} from ${JSON.stringify(nativeModule)};
 import {p,openRetainedOwner} from ${JSON.stringify(new URL('./native-fixture.mjs', import.meta.url).href)};
-const data=p.decodeRecord(p.hexToBytes(process.env.TENDRILLER_NATIVE_TEST));
+const data=p.decodeRecord(new Uint8Array(readFileSync(process.env.TENDRILLER_NATIVE_TEST_FILE)));
 const supervisor=await createNativeSessionSupervisor({directory:data.ownerDirectory,profileId:'retained-main',
 openOwner:()=>openRetainedOwner(data),bindings:[{id:'listener',token:data.token}]});
 console.log(JSON.stringify({ready:true}));`;
-  const owner = child(t, source, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, genesisBytes: [...f.genesisBytes], casNodes: f.casNodes.map(n => ({ hash: n.hash, bytes: [...n.bytes], partition: n.partition })), key: [...f.key], token });
+  const owner = await child(t, source, { ownerDirectory: f.ownerDirectory, devicePath: f.devicePath, genesisBytes: [...f.genesisBytes], casNodes: f.casNodes.map(n => ({ hash: n.hash, bytes: [...n.bytes], partition: n.partition })), key: [...f.key], token });
   await owner.ready();
   const writer = await f.attach(token); t.after(() => writer.detach());
   await (await writer.session.command('add', 'before crash', { operationId: 'before-crash' })).materialized();

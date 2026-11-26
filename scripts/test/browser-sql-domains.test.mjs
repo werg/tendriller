@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as log from '@chronolog/peer-session';
-import { checklist, intake, CHECKLIST_REDUCER, INTAKE_REDUCER } from '../../test/e2e/specimens/sql-domains.mjs';
+import { checklist, intake, CHECKLIST_TOPICS, INTAKE_TOPICS } from '../../test/e2e/specimens/sql-domains.mjs';
 
-test('specimen domains declare no static schema and target Chronolog v2 topics', () => {
+test('specimen domains declare no static schema and target built-in chronolog/sql', () => {
   for (const definition of [checklist(log), intake(log)]) {
     assert.equal(Object.hasOwn(definition, 'schema'), false);
     const initUpdates = definition.commands.initialize.prepare(null);
     assert.equal(Array.isArray(initUpdates), true);
-    assert.equal(initUpdates[0].input.kind, 'initialize');
+    assert.equal(initUpdates[0].input.action, 'migrate');
   }
-  assert.ok(CHECKLIST_REDUCER.includes("from 'chronolog:sqlite'"));
-  assert.ok(INTAKE_REDUCER.includes("from 'chronolog:sqlite'"));
+  assert.deepEqual(CHECKLIST_TOPICS, { checklist: { module: 'chronolog/sql' } });
+  assert.deepEqual(INTAKE_TOPICS, { intake: { module: 'chronolog/sql' } });
 });
 
 test('legacy v1 collective IDs are removed in Chronolog v2', () => {
@@ -19,14 +19,14 @@ test('legacy v1 collective IDs are removed in Chronolog v2', () => {
   assert.equal('GROUP_COLLECTIVE_ID' in log, false);
 });
 
-test('specimen queries delegate cleanly to topic view.query snapshots', async () => {
+test('specimen queries delegate cleanly to topic view.query SQL snapshots', async () => {
   const calls = [];
   const fakeView = {
     async query(topic, input) {
       calls.push([topic, input]);
-      if (input?.kind === 'ready') return [[0]];
-      if (input?.kind === 'board') return [[1, 'task', null, 0]];
-      return [['body', 2]];
+      if (input?.sql?.includes('sqlite_master')) return { rows: [[0]] };
+      if (input?.sql?.includes('FROM tasks')) return { rows: [[1, 'task', null, 0]] };
+      return { rows: [['body', 2]] };
     },
   };
   assert.deepEqual(await checklist(log).queries.ready.read(fakeView, null), [[0]]);

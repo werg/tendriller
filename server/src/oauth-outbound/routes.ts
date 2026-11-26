@@ -1002,7 +1002,7 @@ export async function handlePageConnections(t: Tendril, req: Request, sub: strin
         // Also allow any current Chronolog administrator on `page`-custody connections (e.g. org-admin rotating epoch keys).
         const state = await readControlState(t);
         if (state) {
-          const adminKeys = new Set(state.permissions.members.filter(mem => mem.administrator).map(mem => mem.publicKey));
+          const adminKeys = state.permissions.administrators;
           const attestations = t.db.get<Record<string, { payload: { accountId?: string; publicKey?: string } }>>('group_attestations', {});
           canRekey = Object.values(attestations).some(a =>
             a.payload?.accountId === principal.accountId && a.payload?.publicKey && adminKeys.has(a.payload.publicKey),

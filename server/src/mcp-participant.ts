@@ -67,6 +67,12 @@ const HOSTED_REQUESTS_PREFIX = 'hosted-requests/';
 
 function validateSchemaInput(schema: any, value: unknown): string | null {
   if (!schema || typeof schema !== 'object') return null;
+  if (Array.isArray(schema.anyOf)) {
+    for (const option of schema.anyOf) {
+      if (validateSchemaInput(option, value) === null) return null;
+    }
+    return 'Value does not match any allowed schema option';
+  }
   if (schema.type === 'null') return value === null || value === undefined ? null : 'Expected null';
   if (schema.type === 'string') return typeof value === 'string' ? null : 'Expected string';
   if (schema.type === 'boolean') return typeof value === 'boolean' ? null : 'Expected boolean';

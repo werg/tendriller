@@ -185,7 +185,7 @@ export async function exchangePeerPublication(
       nextState.publications.history.some(h => h.opId === parsed.opId);
     if (!accepted) {
       // Distinguish unauthorized publisher vs revision conflict for clear caller errors.
-      const isPub = state.permissions.members.some(m => m.publicKey === parsed.author && (m.publisher || m.administrator));
+      const isPub = state.permissions.publishers.has(parsed.author) || state.permissions.administrators.has(parsed.author);
       if (!isPub) throw new HttpError(403, 'publisher_required', 'Author is not an authorized publisher or administrator');
       throw new HttpError(409, 'peer_publication_rejected', 'The $publications reducer rejected this release');
     }

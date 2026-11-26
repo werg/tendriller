@@ -86,25 +86,30 @@ test('local signing/storage readiness permits Save without peers, SQL readiness 
   state.application({ canAuthor: false, phase: 'ready', database: 'ready', connectedPeers: 8 }); assert.equal(state.snapshot.canSubmit, false);
 });
 
-test('SQL schema and RLS policies live in the Chronolog v2 ES Module reducer, never immutable definition schema', async () => {
-  const { definition, deriveInventory, INVENTORY_REDUCER_SOURCE } = await import('../../docs/tutorial/templates/inventory/domain.mjs');
+test('SQL schema, preconditions, and RLS policies use first-class chronolog/sql with zero custom reducer boilerplate', async () => {
+  const { definition, deriveInventory, topics, imports } = await import('../../docs/tutorial/templates/inventory/domain.mjs');
   assert.equal(Object.hasOwn(definition, 'schema'), false);
+  assert.deepEqual(imports, {});
+  assert.deepEqual(topics, { inventory: { module: 'chronolog/sql' } });
   const initial = definition.commands.initialize.prepare(null);
-  assert.deepEqual(initial, [{ topic: 'inventory', input: { action: 'initialize' } }]);
+  assert.equal(initial[0].topic, 'inventory');
+  assert.equal(initial[0].input.action, 'migrate');
+  assert.ok(initial[0].input.policies.inventory.insert.includes('actor()'));
   const grant = definition.commands.grantBinWrites.prepare({ publicKey: '11'.repeat(32) });
-  assert.deepEqual(grant, [{ topic: 'inventory', input: { action: 'grantBinWrites', publicKey: '11'.repeat(32) } }]);
-  assert.ok(INVENTORY_REDUCER_SOURCE.includes("from 'chronolog:sqlite'"));
-  assert.ok(INVENTORY_REDUCER_SOURCE.includes("from 'chronolog/rls'"));
+  assert.equal(grant[0].input.mode, 'admin');
+  assert.ok(grant[0].input.statements[0].sql.includes('bin_grants'));
   let label = false;
   const view = {
-    async query(topic) {
+    async query(topic, input) {
       assert.equal(topic, 'inventory');
-      return {
-        initialized: true,
-        hasLabel: label,
-        stock: label ? [{ id: 'source', units: 10, label: 'new field' }] : [{ id: 'source', units: 10 }],
-        transfers: [],
-      };
+      if (input?.kind === 'tables') return { tables: [{ name: 'inventory', type: 'table' }, { name: 'transfers', type: 'table' }] };
+      if (input?.sql === 'PRAGMA table_info(inventory)') {
+        return { rows: label ? [[0, 'id'], [1, 'units'], [2, 'owner'], [3, 'label']] : [[0, 'id'], [1, 'units'], [2, 'owner']] };
+      }
+      if (input?.sql?.includes('FROM inventory')) {
+        return { rows: label ? [['source', 10, 'new field']] : [['source', 10]] };
+      }
+      return { rows: [] };
     },
   };
   assert.equal((await deriveInventory(view)).hasLabel, false);

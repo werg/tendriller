@@ -4,7 +4,7 @@ import { openWebSocketConnection } from '@chronolog/peer-session/websocket';
 import { createPeersClient } from '@tendriller/core/peers';
 import { authorityRecord, authorityRecordBytes } from '@tendriller/core/authority';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
-import { checklist, intake, CHECKLIST_REDUCER, INTAKE_REDUCER } from './sql-domains.mjs';
+import { checklist, intake, CHECKLIST_TOPICS, INTAKE_TOPICS } from './sql-domains.mjs';
 import { signSpecimenGenesis } from './genesis.mjs';
 
 const fixture = (() => {
@@ -101,8 +101,8 @@ if (fixture) serveBrowserOwner({
           device = await openBrowserDevice({ name: fixture.name });
           const isIntake = Boolean(fixture.respondent);
           const definition = isIntake ? intake(log) : checklist(log);
-          const imports = isIntake ? { 'app/intake': INTAKE_REDUCER } : { 'app/checklist': CHECKLIST_REDUCER };
-          const topics = isIntake ? { intake: { module: 'app/intake' } } : { checklist: { module: 'app/checklist' } };
+          const imports = {};
+          const topics = isIntake ? INTAKE_TOPICS : CHECKLIST_TOPICS;
           peers = fixturePeers(fixture, true);
           const key = new Uint8Array(fixture.key);
           const opened = await pageGenesis(device, peers, key, fixture.members, imports, topics);

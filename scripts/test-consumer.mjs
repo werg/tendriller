@@ -225,8 +225,15 @@ export default {
   const sessionSource = packageJson.devDependencies['@chronolog/peer-session'];
   assert.ok(sessionSource.startsWith('file:'), 'Pin the qualified public Chronolog archive.');
   // The native RTC dependency is pinned by the session archive and installed by npm.
-  run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
-    '--cache', join(directory, 'npm-cache'), resolve(root, sessionSource.slice(5))]);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund',
+        '--cache', join(directory, 'npm-cache'), resolve(root, sessionSource.slice(5))]);
+      break;
+    } catch (error) {
+      if (attempt >= 2 || !/ETIMEDOUT|ECONNRESET|EAI_AGAIN/i.test(String(error?.code ?? error?.message ?? ''))) throw error;
+    }
+  }
   writeFileSync(join(directory, 'collaboration.mjs'), `
 import assert from 'node:assert/strict';
 import { createCollaborationDefinition, createCollaborationClient } from '@tendriller/core/collaboration';

@@ -27,11 +27,16 @@ const noteId = { type: 'string', minLength: 1, maxLength: 128 };
  * on every replica (browser, native agent, and opt-in hosted MCP — no separate `domain.js`).
  */
 export const NOTES_REDUCER_SOURCE = `
+function isWriter(ctx, author) {
+  const checked = ctx.query('$permissions', { check: 'writer', actor: author });
+  if (typeof checked === 'boolean') return checked;
+  const perms = ctx.topic('$permissions');
+  return Boolean(perms && Array.isArray(perms.members) && perms.members.some(m => m.publicKey === author && (m.writer === true || m.administrator === true)));
+}
+
 export default {
   reduce(state, tx, ctx) {
-    const perms = ctx.topic('$permissions');
-    const writer = perms && Array.isArray(perms.members) && perms.members.some(m => m.publicKey === tx.author && m.writer === true);
-    if (!writer) return { ok: false, code: 'writer_required' };
+    if (!isWriter(ctx, tx.author)) return { ok: false, code: 'writer_required' };
     const notes = state && typeof state === 'object' && state.notes ? { ...state.notes } : {};
     const input = tx.payload;
     if (!input || typeof input !== 'object') return { ok: false, code: 'invalid_input' };

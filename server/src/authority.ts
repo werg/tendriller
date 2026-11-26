@@ -106,6 +106,12 @@ export interface MaterializedControlState {
   readonly historyDigest: string;
   readonly permissions: {
     readonly members: readonly ControlMember[];
+    readonly readers: ReadonlySet<string>;
+    readonly writers: ReadonlySet<string>;
+    readonly administrators: ReadonlySet<string>;
+    readonly publishers: ReadonlySet<string>;
+    readonly openReaders: boolean;
+    readonly openWriters: boolean;
     readonly admission: ControlAdmissionPolicy | null;
   };
   readonly keys: {
@@ -268,30 +274,113 @@ export async function replayBlindHostControl(input: {
     }
   }
 
-  const everMembers = new Set<string>();
-  const initialPerms = genesis.initialTopics.$permissions as { members?: Array<{ publicKey?: string }> } | undefined;
-  if (Array.isArray(initialPerms?.members)) {
-    for (const m of initialPerms.members) if (typeof m?.publicKey === 'string') everMembers.add(m.publicKey);
-  }
-  for (const op of input.publicOps) {
-    for (const u of op.core.updates) {
-      if (u.topic === '$permissions' && u.input && typeof u.input === 'object' && !Array.isArray(u.input)) {
-        const rec = u.input as Record<string, unknown>;
-        const member = rec.member as { publicKey?: string } | undefined;
-        if (typeof member?.publicKey === 'string') everMembers.add(member.publicKey);
-      }
-    }
-  }
-
   const kernel = new TopicKernel({
     genesis,
     cas,
     blindHostMode: true,
     wasmModule: quickJsWasm,
   });
+
+  // Evaluate initial readers via $permissions.query() before replaying ops so revocations are detected
+  // regardless of the $permissions reducer's internal state schema!
+  const evaluatePermissions = async (k: TopicKernel): Promise<MaterializedControlState['permissions']> => {
+    const parseKeyList = (val: unknown): { keys: Set<string>; open: boolean } => {
+      const keys = new Set<string>();
+      let open = false;
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          if (item === '*') open = true;
+          else if (typeof item === 'string') keys.add(item);
+        }
+      }
+      return { keys, open };
+    };
+    const parseMembers = (val: unknown): ControlMember[] =>
+      Array.isArray(val)
+        ? val.filter((m): m is ControlMember => m !== null && typeof m === 'object' && typeof (m as ControlMember).publicKey === 'string')
+        : [];
+
+    try {
+      const summary = await k.query('$permissions', { summary: true });
+      if (
+        summary !== null && typeof summary === 'object' && !Array.isArray(summary) &&
+        Array.isArray((summary as Record<string, unknown>).administrators) &&
+        Array.isArray((summary as Record<string, unknown>).readers)
+      ) {
+        const s = summary as Record<string, unknown>;
+        const readers = parseKeyList(s.readers);
+        const writers = parseKeyList(s.writers);
+        const admins = parseKeyList(s.administrators);
+        const pubs = parseKeyList(s.publishers);
+        const admission = (s.admission !== null && typeof s.admission === 'object' && !Array.isArray(s.admission))
+          ? s.admission as ControlAdmissionPolicy
+          : null;
+        return {
+          members: parseMembers(s.members),
+          readers: readers.keys,
+          writers: writers.keys,
+          administrators: admins.keys,
+          publishers: pubs.keys,
+          openReaders: s.openReaders === true || readers.open,
+          openWriters: s.openWriters === true || writers.open,
+          admission,
+        };
+      }
+      const [rRaw, wRaw, aRaw, pRaw, mRaw, admRaw] = await Promise.all([
+        k.query('$permissions', { list: 'readers' }).catch(() => null),
+        k.query('$permissions', { list: 'writers' }).catch(() => null),
+        k.query('$permissions', { list: 'administrators' }).catch(() => null),
+        k.query('$permissions', { list: 'publishers' }).catch(() => null),
+        k.query('$permissions', { list: 'members' }).catch(() => null),
+        k.query('$permissions', { admission: true }).catch(() => null),
+      ]);
+      if (Array.isArray(rRaw) || Array.isArray(wRaw) || Array.isArray(aRaw)) {
+        const readers = parseKeyList(rRaw);
+        const writers = parseKeyList(wRaw);
+        const admins = parseKeyList(aRaw);
+        const pubs = parseKeyList(pRaw);
+        const admission = (admRaw !== null && typeof admRaw === 'object' && !Array.isArray(admRaw))
+          ? admRaw as ControlAdmissionPolicy
+          : null;
+        return {
+          members: parseMembers(mRaw),
+          readers: readers.keys,
+          writers: writers.keys,
+          administrators: admins.keys,
+          publishers: pubs.keys,
+          openReaders: readers.open,
+          openWriters: writers.open,
+          admission,
+        };
+      }
+    } catch {
+      // Fall back to raw topic inspection below
+    }
+
+    const raw = k.topic('$permissions') as { members?: ControlMember[]; admission?: ControlAdmissionPolicy | null } | null;
+    const members = parseMembers(raw?.members);
+    return {
+      members,
+      readers: new Set(members.filter(m => m.reader).map(m => m.publicKey)),
+      writers: new Set(members.filter(m => m.writer || m.administrator).map(m => m.publicKey)),
+      administrators: new Set(members.filter(m => m.administrator).map(m => m.publicKey)),
+      publishers: new Set(members.filter(m => m.publisher || m.administrator).map(m => m.publicKey)),
+      openReaders: false,
+      openWriters: false,
+      admission: raw?.admission ?? null,
+    };
+  };
+
+  const everMembers = new Set<string>();
+  const initialPerms = await evaluatePermissions(kernel);
+  for (const pk of initialPerms.readers) everMembers.add(pk);
+  for (const m of initialPerms.members) everMembers.add(m.publicKey);
+
   const materialized = await kernel.materialize(input.publicOps);
+  const permissions = await evaluatePermissions(kernel);
+  for (const pk of permissions.readers) everMembers.add(pk);
+  for (const m of permissions.members) everMembers.add(m.publicKey);
   const topics = kernel.topics as Record<string, any>;
-  const permissions = (topics.$permissions ?? { members: [], admission: null }) as MaterializedControlState['permissions'];
   const keys = (topics.$keys ?? { currentEpoch: -1, epochs: {} }) as MaterializedControlState['keys'];
   const finality = (topics.$finality ?? { schedule: [{ effectiveAfterMs: -1, policy: { kind: 'none' } }] }) as MaterializedControlState['finality'];
   const publications = (topics.$publications ?? { revision: 0, current: null, history: [] }) as MaterializedControlState['publications'];
@@ -368,10 +457,17 @@ export async function readControlState(t: Tendril): Promise<MaterializedControlS
  *    releases when `$finality` has an active finalizing policy).
  */
 export function reconcileHostEffects(t: Tendril, state: MaterializedControlState): void {
-  const activeReaders = new Set(state.permissions.members.filter(m => m.reader).map(m => m.publicKey));
+  const previousReaders = new Set(t.db.get<string[]>('v2_known_readers', []));
+  const activeReaders = state.permissions.readers;
   const revokedKeys = new Set<string>();
-  for (const pk of state.everMembers) {
-    if (!activeReaders.has(pk)) revokedKeys.add(pk);
+  if (!state.permissions.openReaders) {
+    for (const pk of new Set([...previousReaders, ...state.everMembers])) {
+      if (!activeReaders.has(pk)) revokedKeys.add(pk);
+    }
+  }
+  const mergedKnown = [...new Set([...previousReaders, ...activeReaders, ...state.everMembers])].sort();
+  if (mergedKnown.length !== previousReaders.size || mergedKnown.some(k => !previousReaders.has(k))) {
+    t.db.set('v2_known_readers', mergedKnown);
   }
 
   if (revokedKeys.size > 0) {
@@ -773,34 +869,6 @@ async function initializeGenesis(
     throw new HttpError(400, 'authority_application_mismatch', 'Genesis chainId does not match this page’s pinned applicationId');
   }
 
-  const perms = genesis.initialTopics.$permissions as { members?: ControlMember[]; admission?: ControlAdmissionPolicy | null } | undefined;
-  if (!perms || !Array.isArray(perms.members) || !perms.members.length) {
-    throw new HttpError(400, 'authority_genesis_invalid', 'Genesis must declare initial $permissions.members');
-  }
-  const admins = perms.members.filter(m => m.administrator && m.reader && m.writer);
-  if (!admins.length) throw new HttpError(400, 'authority_root_member_invalid');
-
-  const owner = t.db.get<string | null>('owner_account', null);
-  if (principal.kind === 'agent') {
-    requireAgentScope(principal, 'control:write');
-    const grant = localAgentGrant(t, principal.agentId);
-    if (!grant || !admins.some(a => a.publicKey === agentKeyHex(grant.public_key))) {
-      throw new HttpError(403, 'initializer_root_required');
-    }
-  } else if (principal.role !== 'owner' || !owner || principal.accountId !== owner) {
-    throw new HttpError(403, 'owner_required');
-  }
-
-  const hostKey = hostAttestationKey(t.env);
-  if (!hostKey || !await loadHostAttestationIdentity(t.env)) throw new HttpError(503, 'attestation_unconfigured');
-  if (perms.admission?.hostKey !== hostKey) throw new HttpError(400, 'admission_host_key_mismatch');
-  if (Array.isArray(perms.admission?.accounts)) {
-    const accounts = await admissionAccounts(t);
-    if (accounts.length && accounts.some(acc => !perms.admission!.accounts!.includes(acc))) {
-      throw new HttpError(400, 'admission_accounts_mismatch');
-    }
-  }
-
   const casNodes = parseCasNodesInput(casNodesInput);
   const initialOpsRaw = Array.isArray(initialOpsInput) ? initialOpsInput : [];
   if (initialOpsRaw.length > 32) throw new HttpError(400, 'too_many_operations');
@@ -811,13 +879,53 @@ async function initializeGenesis(
     verifiedOps.push({ opId: parsed.opId, author: parsed.author, authorTimestampMs: parsed.authorTimestampMs, raw, kernelInput: parsed.kernelInput });
   }
 
-  // Validate full deterministic blind-host replay before committing!
-  const state = await replayBlindHostControl({
-    genesisBytes,
-    publicCas: casNodes,
-    publicOps: verifiedOps.map(o => o.kernelInput),
-    checkpoints: [],
-  });
+  // Validate full deterministic blind-host replay & evaluate $permissions via TopicKernel.query()!
+  // This decouples Tendriller from any single hardcoded $permissions state shape (supporting
+  // attestedMembers, multisigMembers, openMembers, or custom capability reducers).
+  let state: MaterializedControlState;
+  try {
+    state = await replayBlindHostControl({
+      genesisBytes,
+      publicCas: casNodes,
+      publicOps: verifiedOps.map(o => o.kernelInput),
+      checkpoints: [],
+    });
+  } catch {
+    throw new HttpError(400, 'authority_genesis_invalid', 'Genesis failed deterministic blind-host replay');
+  }
+
+  const admins = [...state.permissions.administrators].filter(pk =>
+    (state.permissions.openReaders || state.permissions.readers.has(pk)) &&
+    (state.permissions.openWriters || state.permissions.writers.has(pk)),
+  );
+  if (!admins.length) throw new HttpError(400, 'authority_root_member_invalid');
+
+  const owner = t.db.get<string | null>('owner_account', null);
+  if (principal.kind === 'agent') {
+    requireAgentScope(principal, 'control:write');
+    const grant = localAgentGrant(t, principal.agentId);
+    if (!grant || !admins.includes(agentKeyHex(grant.public_key))) {
+      throw new HttpError(403, 'initializer_root_required');
+    }
+  } else if (principal.role !== 'owner' || !owner || principal.accountId !== owner) {
+    throw new HttpError(403, 'owner_required');
+  }
+
+  // Host-attested admission is OPT-IN: enforce hostKey & admissionAccounts when the chain
+  // declares an admission policy, while allowing non-host-attested authority models (admission: null)
+  // such as multisig or open-write chains without host coupling!
+  const admission = state.permissions.admission;
+  if (admission !== null) {
+    const hostKey = hostAttestationKey(t.env);
+    if (!hostKey || !await loadHostAttestationIdentity(t.env)) throw new HttpError(503, 'attestation_unconfigured');
+    if (admission.hostKey !== hostKey) throw new HttpError(400, 'admission_host_key_mismatch');
+    if (Array.isArray(admission.accounts)) {
+      const accounts = await admissionAccounts(t);
+      if (accounts.length && accounts.some(acc => !admission.accounts!.includes(acc))) {
+        throw new HttpError(400, 'admission_accounts_mismatch');
+      }
+    }
+  }
 
   await freshAuthorityAccess(t, principal);
   t.transaction(() => {

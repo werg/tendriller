@@ -52,6 +52,8 @@ function ensureSchema(db) {
 
 function isAdmin(ctx, author) {
   if (STATIC_ADMINS.has(author)) return true;
+  const checked = ctx.query('$permissions', { check: 'administrator', actor: author });
+  if (typeof checked === 'boolean') return checked;
   const perms = ctx.topic('$permissions');
   return Boolean(perms && Array.isArray(perms.members) && perms.members.some(m => m.publicKey === author && m.administrator === true));
 }

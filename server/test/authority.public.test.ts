@@ -609,4 +609,102 @@ describe('public-control sync, invites, and late-revocation host reconciliation'
       expect((await answer.json<any>()).error.code).toBe('authority_record_invalid');
     }
   });
+
+  it('initializes and syncs non-host-attested multisigMembers (2-of-3 quorum) and openMembers chains via $permissions.query()', async () => {
+    const s1 = await device();
+    const s2 = await device();
+    const s3 = await device();
+    const newcomer = await device();
+
+    // 1. Multisig 2-of-3 governance with ZERO host attestation and map-shaped members state!
+    const msPage = await createTestPage();
+    const msCreated = await createChainGenesis({
+      creator: { publicKey: s1.identity.publicKey, wrapKey: s1.wrapKey, reader: true, writer: true, administrator: true },
+      privateChain: true,
+      topics: {
+        $permissions: {
+          module: 'chronolog/permissions',
+          export: 'multisigMembers',
+          initialState: {
+            threshold: 2,
+            signers: [s1.identity.publicKey, s2.identity.publicKey, s3.identity.publicKey],
+            members: {},
+            proposals: {},
+          },
+        },
+        inventory: { module: 'chronolog/sql' },
+      },
+    });
+
+    await body(await msPage.ownerApi('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(msCreated.genesisBytes),
+      casNodes: msCreated.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }));
+
+    // Newcomer is NOT yet a reader -> participant sync rejected!
+    const makeParticipantSync = async (signer: Device, chainId: string) => {
+      const signed = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
+        applicationId: chainId,
+        requestId: crypto.randomUUID(),
+        action: 'control.sync',
+      }, signer.identity);
+      return msPage.ownerApi('POST', 'peers/participant', rec(signed));
+    };
+    expect(await failure(await makeParticipantSync(newcomer, msCreated.chainId))).toEqual({ status: 403, code: 'participant_member_required' });
+
+    // Signer 1 proposes admitting newcomer (1/2 approvals — still not admitted)
+    const chainIdBytes = hexToBytes(msCreated.chainId);
+    const propOp = await signControlOp(chainIdBytes, s1.identity, [{
+      topic: '$permissions',
+      input: {
+        action: 'propose',
+        proposalId: 'add-newcomer',
+        kind: 'setMember',
+        member: { publicKey: newcomer.identity.publicKey, wrapKey: newcomer.wrapKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false },
+      },
+    }], { authorTimestampMs: 1000n });
+    await body(await syncOps(msPage.ownerApi, [propOp]));
+    expect(await failure(await makeParticipantSync(newcomer, msCreated.chainId))).toEqual({ status: 403, code: 'participant_member_required' });
+
+    // Signer 2 approves -> 2/2 quorum executes atomically; blind host recognizes newcomer via $permissions.query()!
+    const approveOp = await signControlOp(chainIdBytes, s2.identity, [{
+      topic: '$permissions',
+      input: { action: 'approve', proposalId: 'add-newcomer' },
+    }], { authorTimestampMs: 2000n });
+    await body(await syncOps(msPage.ownerApi, [approveOp]));
+    expect((await makeParticipantSync(newcomer, msCreated.chainId)).status).toBe(200);
+
+    // 2. Open-read / open-write chain (zero host attestation): stranger can sync immediately!
+    const openPage = await createTestPage();
+    const openCreated = await createChainGenesis({
+      creator: { publicKey: s1.identity.publicKey, wrapKey: s1.wrapKey, reader: true, writer: true, administrator: true },
+      privateChain: false,
+      topics: {
+        $permissions: {
+          module: 'chronolog/permissions',
+          export: 'openMembers',
+          initialState: {
+            admins: [s1.identity.publicKey],
+            members: [],
+            openRead: true,
+            openWrite: true,
+            admission: null,
+          },
+        },
+        board: { module: 'chronolog/sql' },
+      },
+    });
+    await body(await openPage.ownerApi('POST', 'peers/enrollment', {
+      action: 'initialize',
+      genesis: authorityRecord(openCreated.genesisBytes),
+      casNodes: openCreated.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }));
+    const strangerSync = await signRecord(PARTICIPANT_REQUEST_DOMAIN, {
+      applicationId: openCreated.chainId,
+      requestId: crypto.randomUUID(),
+      action: 'control.sync',
+    }, newcomer.identity);
+    expect((await openPage.ownerApi('POST', 'peers/participant', rec(strangerSync))).status).toBe(200);
+  });
 });
