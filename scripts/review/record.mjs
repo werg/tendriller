@@ -18,7 +18,7 @@ export async function recordReview({ project, accessPath, output, composition, v
   assert.equal(handle.service, access.origin);
   const readiness = await preflightReviewDeployment(access.origin, composition, { allowStagingCreationPause: true });
   // The SDK and verifier use the same installed public archives as the native fixture.
-  const { core: { createAgentClient }, coreAuthority: { authorityRecordBytes }, session: { verifyAuthorityBundle, verifyPublicationManifest, decodeRecord } } = await importReviewPackages(project);
+  const { core: { createAgentClient }, coreAuthority: { authorityRecordBytes }, session: { decodeGenesisBlock, decodeSignedOperation, verifySignedOperation } } = await importReviewPackages(project);
   assert(browser && context && page && token, 'Provide the initialized browser owner profile and its linked-account token');
   const definition = JSON.parse(readFileSync(new URL('../../plugin/plugin.json', import.meta.url)));
   const cases = definition.extensions['com.openai'].review.test_cases;
@@ -122,11 +122,11 @@ export async function recordReview({ project, accessPath, output, composition, v
     assert.deepEqual(await query(), unchanged);
     // The signed page is code, independent of data: it must remain the original verified publication.
     const metadata = await readWithAdmissionRetry(() => host.peers.application());
-    await verifyAuthorityBundle(decodeRecord(authorityRecordBytes(metadata.authority)));
+    decodeGenesisBlock(authorityRecordBytes(metadata.genesis));
     const publication = await readWithAdmissionRetry(() => host.peers.publication());
-    assert.equal(publication.publication.id, originalPublication, 'Data commands must not require or change signed code');
-    await verifyPublicationManifest(publication.publication, metadata.publicationAuthority);
-    report.publication = publication.publication.id;
+    assert.equal(publication.id, originalPublication, 'Data commands must not require or change signed code');
+    if (publication.op) await verifySignedOperation(decodeSignedOperation(authorityRecordBytes(publication.op)));
+    report.publication = publication.id;
     await page.goto(handle.page_url); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     await page.reload(); await page.getByText('✓ Complete · Check labels', { exact: true }).waitFor({ timeout: 60000 });
     await page.screenshot({ path: resolve(output, 'verified-page.png'), fullPage: true });

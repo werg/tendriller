@@ -1,4 +1,4 @@
-import { defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
+import { defineCommand, defineQuery } from '@chronolog/peer-session';
 
 // Multi-agent Chronolog communication pipe.
 // Use the authenticated event.author, never a claimed author in an input.
@@ -82,7 +82,7 @@ export const agentRequestCommands = Object.freeze({
       if (input.inReplyTo && !/^[a-f0-9]{64}$/u.test(input.inReplyTo.author)) {
         throw Error('AGENT_MESSAGE_REPLY_AUTHOR_INVALID');
       }
-      return program(emit('agent/message', input));
+      return [{ topic: 'agent/message', input }];
     },
   }),
   agentReceipt: defineCommand({
@@ -102,7 +102,7 @@ export const agentRequestCommands = Object.freeze({
       if (!/^[a-f0-9]{64}$/u.test(input.messageAuthor)) {
         throw Error('AGENT_RECEIPT_AUTHOR_INVALID');
       }
-      return program(emit('agent/receipt', input));
+      return [{ topic: 'agent/receipt', input }];
     },
   }),
 });

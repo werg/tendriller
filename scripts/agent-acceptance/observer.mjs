@@ -9,8 +9,9 @@ import { mcpDiscovery, domainDiscovery } from './discovery.mjs';
 
 function policyEvidence(authority, sdk) {
   if (!authority) return null;
-  const policy = authority.descriptor.finalityPolicy;
-  return { kind: policy.kind, record: Buffer.from(sdk.encodeRecord(policy)).toString('hex') };
+  const schedule = authority.finality?.schedule ?? [{ effectiveAfterMs: -1, policy: { kind: 'none' } }];
+  const policy = schedule[0]?.policy ?? { kind: 'none' };
+  return { kind: policy.kind, record: Buffer.from(sdk.encodeRecord(authority.finality)).toString('hex') };
 }
 function token(text, value) {
   return text.split(/[^A-Za-z0-9_.:-]+/u).includes(value);
@@ -66,29 +67,56 @@ export async function browserIdentity(owner, config) {
   }
   return { runtime, address, url: page.url(), at: now(), actionIndex: owner.actions?.length ?? 0 };
 }
+async function decodePublicationOp(record, sdk, expectedChainId) {
+  const raw = record instanceof Uint8Array ? record : sdk.hexToBytes(record?.record ?? '');
+  const signed = sdk.decodeSignedOperation(raw);
+  const { core, opId } = await sdk.verifySignedOperation(signed);
+  const chainId = sdk.bytesToHex(core.chainId);
+  if (expectedChainId) same(chainId, expectedChainId, 'publication-application');
+  const update = core.updates.find(u => u.topic === '$publications');
+  if (!update || !update.input || typeof update.input !== 'object' || Array.isArray(update.input)) {
+    throw new MeasurementError('publication-topic-missing', 'failed');
+  }
+  return {
+    id: sdk.bytesToHex(opId),
+    chainId,
+    author: sdk.bytesToHex(core.author),
+    operationId: core.operationId,
+    payload: update.input,
+    raw,
+  };
+}
+
 export function verifyBrowserPublication(browser, receipt) {
   same(browser.runtime.version, receipt.version, 'browser-selected-version');
-  // Runtime publication IDs are host version strings, not Chronolog digests.
   same(browser.runtime.publication, String(receipt.version), 'browser-publication-version-id');
   const path = need(browser.runtime.documentPath, 'browser-document-path');
-  if (!receipt.publication.payload.files.some(file => file.path === path && file.type === 'text/html')) throw new MeasurementError('browser-unsigned-document', 'failed');
+  const files = receipt.files ?? receipt.publication?.payload?.files ?? [];
+  if (!files.some(file => file.path === path && file.type === 'text/html')) throw new MeasurementError('browser-unsigned-document', 'failed');
 }
-export async function verifyPublicationLineage(current, claimed, receipts, sdk, authority) {
-  const byId = new Map(receipts.map(receipt => [receipt.publication.id, receipt]));
-  byId.set(claimed.publication.id, claimed);
+
+export async function verifyPublicationLineage(current, claimed, receipts, sdk, expectedChainId) {
+  const decode = async r => ({ receipt: r, decoded: await decodePublicationOp(r.op ?? r.publication, sdk, expectedChainId) });
+  const currentEntry = await decode(current);
+  const claimedEntry = await decode(claimed);
+  const byId = new Map();
+  for (const r of receipts) {
+    const entry = await decode(r);
+    byId.set(entry.decoded.id, entry);
+  }
+  byId.set(claimedEntry.decoded.id, claimedEntry);
   const lineage = [], seen = new Set();
-  for (let receipt = current; lineage.length < 256;) {
-    const publication = receipt.publication;
-    if (seen.has(publication.id)) throw new MeasurementError('publication-parent-cycle', 'failed');
-    seen.add(publication.id);
-    await sdk.verifyPublicationManifest(publication, authority);
-    lineage.push({ publicationId: publication.id, version: receipt.version, revision: publication.payload.revision });
-    if (publication.id === claimed.publication.id) return lineage;
-    if (publication.payload.previous === null) throw new MeasurementError('publication-not-descendant-of-claim', 'failed');
-    const previous = need(byId.get(publication.payload.previous), 'publication-parent-receipt-unobserved');
-    same(publication.payload.revision, previous.publication.payload.revision + 1, 'publication-cas-revision');
-    same(receipt.version, previous.version + 1, 'publication-host-version-lineage');
-    receipt = previous;
+  for (let entry = currentEntry; lineage.length < 256;) {
+    const { receipt, decoded } = entry;
+    if (seen.has(decoded.id)) throw new MeasurementError('publication-parent-cycle', 'failed');
+    seen.add(decoded.id);
+    lineage.push({ publicationId: decoded.id, version: receipt.version, revision: decoded.payload.revision });
+    if (decoded.id === claimedEntry.decoded.id) return lineage;
+    if (decoded.payload.previous === null || decoded.payload.previous === undefined) throw new MeasurementError('publication-not-descendant-of-claim', 'failed');
+    const previous = need(byId.get(decoded.payload.previous), 'publication-parent-receipt-unobserved');
+    same(decoded.payload.revision, previous.decoded.payload.revision + 1, 'publication-cas-revision');
+    same(receipt.version, previous.receipt.version + 1, 'publication-host-version-lineage');
+    entry = previous;
   }
   throw new MeasurementError('publication-lineage-bound');
 }
@@ -192,9 +220,8 @@ export class StarterObserver {
     const publicationAuthority = need(metadata.publicationAuthority, 'independent-publication-authority');
     same(publicationAuthority.applicationId, config.applicationId, 'publisher-application');
     let authority;
-    if (metadata.authority && config.descriptor) {
-      const bundle = sdk.decodeRecord(core.authorityRecordBytes(metadata.authority));
-      authority = await verifiedAuthority(bundle, config.descriptor, sdk);
+    if (metadata.genesis && config.descriptor) {
+      authority = await verifiedAuthority(core.authorityRecordBytes(metadata.genesis), config.descriptor, sdk);
     }
     const info = await host.info();
     same(info.id, config.handle.id, 'host-page-id');
@@ -202,16 +229,16 @@ export class StarterObserver {
     same(info.page_url, config.handle.page_url, 'host-authoritative-page-url');
     return { host, sdk, authority, publicationAuthority, info };
   }
-  async publication(config, { host, sdk, publicationAuthority }) {
+  async publication(config, { host, sdk }) {
     const receipt = need(await host.peers.publication(), 'selected-publication');
-    await sdk.verifyPublicationManifest(receipt.publication, publicationAuthority);
-    same(receipt.publication.payload.applicationId, config.applicationId, 'publication-application');
-    same(receipt.publication.payload.operationId, need(config.publication?.operationId, 'publication-operation-id'), 'publication-operation');
+    const decoded = await decodePublicationOp(receipt.op ?? receipt.publication, sdk, config.applicationId);
+    same(decoded.operationId, need(config.publication?.operationId, 'publication-operation-id'), 'publication-operation');
+    const normalized = { ...receipt, id: decoded.id, files: decoded.payload.files, payload: decoded.payload, operationId: decoded.operationId };
     this.state.publications ??= {};
     const previous = this.state.publications[String(receipt.version)];
-    if (previous) same(previous.publication.id, receipt.publication.id, 'publication-version-rebound');
-    this.state.publications[String(receipt.version)] = structuredClone(receipt); this.save();
-    return receipt;
+    if (previous) same(previous.id, normalized.id, 'publication-version-rebound');
+    this.state.publications[String(receipt.version)] = structuredClone(normalized); this.save();
+    return normalized;
   }
   async browser(config) {
     const browser = await browserMeasurement(this.owner, config);
@@ -221,7 +248,7 @@ export class StarterObserver {
       receipt = await this.publication(config, context);
     }
     verifyBrowserPublication(browser, receipt);
-    return { ...browser, verifiedPublication: { id: receipt.publication.id, version: receipt.version, documentPath: browser.runtime.documentPath } };
+    return { ...browser, verifiedPublication: { id: receipt.id, version: receipt.version, documentPath: browser.runtime.documentPath } };
   }
   async snapshot(config, options = {}) {
     if (!config.native) throw new MeasurementError('optional-native-observer-not-configured');
@@ -325,21 +352,21 @@ export class StarterObserver {
     return { beforeDeviceId: before.native.deviceId, afterDeviceId: snapshot.native.deviceId, localDurable: true, before, after: current };
   }
   async publicationRetry(config, options) {
-    const { host, sdk, publicationAuthority } = await this.host(config);
-    const intent = recordFile(config.project, need(config.publication?.intent, 'saved-publication-file')).value;
-    await sdk.verifyPublicationManifest(intent, publicationAuthority);
-    same(intent.payload.applicationId, config.applicationId, 'retry-publication-application');
-    same(intent.payload.operationId, config.publication.operationId, 'retry-publication-operation');
-    const publicationHash = hash(sdk.encodeRecord(intent)), key = 'lost-publication-response-before';
+    const { host, sdk } = await this.host(config);
+    const intentRecord = recordFile(config.project, need(config.publication?.intent, 'saved-publication-file')).value;
+    const intent = await decodePublicationOp(intentRecord, sdk, config.applicationId);
+    same(intent.operationId, config.publication.operationId, 'retry-publication-operation');
+    const publicationHash = hash(intent.raw), key = 'lost-publication-response-before';
     if (options.action === 'drop') {
-      this.checkpoint(key, { publicationHash, operationId: intent.payload.operationId, publicationId: intent.id });
+      this.checkpoint(key, { publicationHash, operationId: intent.operationId, publicationId: intent.id });
     }
     const before = need(this.state.checkpoints[key], 'publication-drop-checkpoint');
     same(before.publicationHash, publicationHash, 'changed-publication-intent');
     const assets = recordFile(config.project, need(config.publication.assets, 'publication-assets-file')).value;
     if (!Array.isArray(assets)) throw new MeasurementError('publication-assets-array', 'failed');
-    const receipt = await host.peers.publish(intent, assets);
-    same(receipt.publication.id, intent.id, 'publication-retry-receipt');
+    const receipt = await host.peers.publish(intentRecord, assets);
+    const receiptDecoded = await decodePublicationOp(receipt.op ?? receipt.publication, sdk, config.applicationId);
+    same(receiptDecoded.id, intent.id, 'publication-retry-receipt');
     const receiptHash = hash(sdk.encodeRecord(receipt));
     if (options.action === 'drop') {
       this.checkpoint('lost-publication-response-dropped', { receiptHash });
@@ -347,9 +374,9 @@ export class StarterObserver {
     }
     const dropped = need(this.state.checkpoints['lost-publication-response-dropped'], 'publication-dropped-ack-witness');
     same(receiptHash, dropped.receiptHash, 'publication-original-receipt');
-    const selected = await this.publication(config, { host, sdk, publicationAuthority });
-    same(selected.publication.id, intent.id, 'publication-current-head');
-    return { operationId: intent.payload.operationId, retryOperationId: intent.payload.operationId, publicationHash, retryPublicationHash: before.publicationHash,
+    const selected = await this.publication(config, { host, sdk });
+    same(selected.id, intent.id, 'publication-current-head');
+    return { operationId: intent.operationId, retryOperationId: intent.operationId, publicationHash, retryPublicationHash: before.publicationHash,
       responseLost: true, receiptCount: 1, receiptId: receiptHash, retryReceiptId: dropped.receiptHash, publicationId: intent.id,
       fault: 'Evaluator discarded a real publish acknowledgement; this is not a network partition test' };
   }
@@ -369,7 +396,7 @@ export class StarterObserver {
         const browser = await browserIdentity(this.owner, config);
         verifyBrowserPublication(browser, receipt);
         if (options.phase === 'claim-boundary') {
-          same(before.receipt.publication.id, receipt.publication.id, 'claim-boundary-publication-changed');
+          same(before.receipt.id, receipt.id, 'claim-boundary-publication-changed');
           const expectedOwner = need(this.owner?.access?.accountId ?? config.ownerAccountId, 'expected-owner-account');
           same(need(info.owner_account_id, 'owner-claim-not-observed'), expectedOwner, 'claimed-owner-account');
           this.checkpoint('claim-boundary', { before: before.receipt, after: receipt, beforeAt: before.observedAt,
@@ -378,16 +405,16 @@ export class StarterObserver {
         const boundary = need(this.state.checkpoints['claim-boundary'], 'claim-boundary-checkpoint-not-observed');
         same(info.owner_account_id, boundary.ownerAccountId, 'claimed-owner-changed');
         const ancestors = (config.publication.ancestors ?? []).map(ref => recordFile(config.project, ref).value);
-        const lineage = await verifyPublicationLineage(receipt, boundary.after, [...Object.values(this.state.publications), ...ancestors], context.sdk, context.publicationAuthority);
-        return { signatureVerified: true, publicationId: receipt.publication.id, operationId: receipt.publication.payload.operationId,
+        const lineage = await verifyPublicationLineage(receipt, boundary.after, [...Object.values(this.state.publications), ...ancestors], context.sdk, config.applicationId);
+        return { signatureVerified: true, publicationId: receipt.id, operationId: receipt.operationId,
           receipt, browser, claimBoundary: boundary, signedCasLineage: lineage, finalityPolicy: policyEvidence(authority, context.sdk) };
       }
       if (check === 'authority') {
         need(authority, 'pinned-data-authority');
-        return { descriptorVerified: true, applicationId: authority.descriptor.applicationId, finalityPolicy: policyEvidence(authority, context.sdk) };
+        return { descriptorVerified: true, applicationId: authority.applicationId, finalityPolicy: policyEvidence(authority, context.sdk) };
       }
-      return { unclaimed: info.owner_account_id === null, signatureVerified: true, publicationId: receipt.publication.id,
-        operationId: receipt.publication.payload.operationId, receipt, publicationAuthority: context.publicationAuthority };
+      return { unclaimed: info.owner_account_id === null, signatureVerified: true, publicationId: receipt.id,
+        operationId: receipt.operationId, receipt, publicationAuthority: context.publicationAuthority };
     }
     if (check === 'connected') {
       const snapshot = await this.snapshot(config), process = processMeasurement(config.native.project, config.native.process);

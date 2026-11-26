@@ -62,8 +62,8 @@ function project(inspection) {
     applicationId: text(inspection.applicationId), author: text(inspection.author), authorTimestampMs: text(inspection.authorTimestampMs),
     proposalId: text(inspection.proposalId), operationId: text(inspection.operationId),
     stored: inspection.stored === true, pending: text(inspection.pending),
-    materialized: done ? {outcome: text(done.outcome), rejectionCode: text(done.rejectionCode), failingStatementIndex: Number.isInteger(done.failingStatementIndex) ? done.failingStatementIndex : null,
-      revision: done.revision ? {digest: text(done.revision.digest), view: text(done.revision.view), executionManifestDigest: text(done.revision.executionManifestDigest), policyDigest: text(done.revision.policyDigest)} : null} : null,
+    materialized: done ? {outcome: text(done.outcome), rejectionCode: text(done.rejectionCode),
+      revision: done.revision ? {digest: text(done.revision.digest), stateRoot: text(done.revision.stateRoot), historyDigest: text(done.revision.historyDigest), view: text(done.revision.view)} : null} : null,
     retained: Array.isArray(inspection.retained) ? inspection.retained.map(item => ({peer: text(item?.payload?.peer), storageId: text(item?.payload?.storageId)})) : [],
     finalized: inspection.finalized === true, excluded: inspection.excluded === true,
   };
@@ -74,7 +74,7 @@ const handleOf = value => {
 };
 const waitValid = wait => wait === undefined || FACTS.includes(wait);
 function supported(session, wait) {
-  if (wait === 'finalized' && session?.authority?.descriptor?.finalityPolicy?.kind === 'none')
+  if (wait === 'finalized' && session?.finality?.status?.().hasActiveFinality === false)
     throw fail('finality_unsupported', 'This application uses the no-finality policy; finalized waits are unsupported.', 409);
 }
 /** Waits for one independent fact. `stored` (the default) performs no network or materialization wait. */

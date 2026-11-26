@@ -35,5 +35,5 @@ test('the host control client refuses raw application data before HTTP and expos
   assert.equal(requests, 0);
   for (const name of ['submit', 'range', 'coverage', 'selectGeneration', 'administerGeneration']) assert.equal(client[name], undefined);
   assert.equal(typeof client.prepare, 'function'); assert.equal(typeof client.enroll, 'function'); assert.equal(client.grant, undefined);
-  for (const name of ['enrollAgent', 'initialize', 'membership', 'admissions', 'wrap', 'wraps']) assert.equal(typeof client[name], 'function');
+  for (const name of ['enrollAgent', 'initialize', 'syncControl', 'admissions', 'publish', 'publication']) assert.equal(typeof client[name], 'function');
 });

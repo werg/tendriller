@@ -114,7 +114,7 @@ test('outcome observation subscribes before querying and closes its waiter witho
   const session={applicationId:app,identity:{publicKey:signer},command(){cancellations++;},
     async query(){assert.equal(subscribed,true);queries++;
       if(queries===1){pending({done:false,value:{}});return{value:{task:{status:'open'}}};}
-      return{value:{task:{status:'completed'}},revision:{digest:'a'.repeat(64),view:'local',executionManifestDigest:'b'.repeat(64),policyDigest:'c'.repeat(64)}};
+      return{value:{task:{status:'completed'}},revision:{digest:'a'.repeat(64),view:'local',stateRoot:'b'.repeat(64),historyDigest:'c'.repeat(64),orderLength:1}};
     },
     changes({signal}){return{[Symbol.asyncIterator](){return this;},next(){subscribed=true;return new Promise((resolve,reject)=>{
       pending=resolve;signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});},async return(){returned=true;return{done:true};}};}

@@ -1,6 +1,10 @@
 import { evictDurableObject } from 'cloudflare:test';
 import { expect, it } from 'vitest';
-import { createSigningIdentity, signPublicationManifest, type SignedPublication } from '@chronolog/authority';
+import {
+  bytesToHex, createChainGenesis, createSigningIdentity, encodeGenesisBlock, encodeSignedOperation,
+  genesisChainId, hexToBytes, signOperationCore,
+} from '@chronolog/peer-session';
+import { authorityRecord } from '../../contract/authority.mjs';
 import { advance, api, create, inDO, req, stub, type Handle } from './helpers';
 import { peerApiJson } from './peer-exchange';
 import { PUBLICATION_WATCH_PROTOCOL } from '../src/publication-watch';
@@ -60,23 +64,72 @@ async function withPausedPolicy(t: Tendril, change: () => void | Promise<void>) 
 
 async function publisher(h: Handle) {
   const author = await createSigningIdentity();
-  const response = await api(h, 'POST', 'application', { executionManifestDigest: '12'.repeat(32), executionProfile: 'events', publisherKeys: [author.publicKey] });
-  expect(response.status).toBe(200);
-  const metadata = await response.json() as any;
-  let previous: SignedPublication | null = null;
+  const appMeta = await (await api(h, 'GET', 'application')).json() as {
+    hostAttestationKey: string;
+    admissionAccounts: string[];
+  };
+  const created = await createChainGenesis({
+    creator: {
+      publicKey: author.publicKey,
+      wrapKey: '11'.repeat(32),
+      reader: true,
+      writer: true,
+      administrator: true,
+      publisher: true,
+      finalizer: true,
+    },
+    privateChain: true,
+    hostPublicKey: appMeta.hostAttestationKey,
+  });
+  const genesis = structuredClone(created.genesis) as any;
+  genesis.initialTopics.$permissions = {
+    ...(genesis.initialTopics.$permissions as any),
+    admission: {
+      hostKey: appMeta.hostAttestationKey,
+      mode: 'attested',
+      accounts: appMeta.admissionAccounts,
+      grant: { reader: true, writer: true, administrator: true },
+      invites: [],
+    },
+  };
+  const genesisBytes = encodeGenesisBlock(genesis);
+  const chainIdBytes = genesisChainId(genesisBytes);
+  const initResp = await req(`${h.page_url}_tendril/peers/enrollment`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      action: 'initialize',
+      genesis: authorityRecord(genesisBytes),
+      casNodes: created.casNodes.map(n => ({ hash: n.hash, bytes: bytesToHex(n.bytes) })),
+    }),
+  });
+  expect(initResp.status).toBe(200);
+  await initResp.json();
+  let seq = 0;
   return async (text: string) => {
-    const data = new TextEncoder().encode(`<main>${text}</main>`), hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), byte => byte.toString(16).padStart(2, '0')).join('');
-    const descriptor = metadata.publicationAuthority;
-    const publication = await signPublicationManifest({ applicationId: descriptor.applicationId,
-      membershipId: descriptor.grantId,
-      author: author.publicKey, operationId: text, revision: previous ? previous.payload.revision + 1 : 0,
-      previous: previous?.id ?? null,
-      executionManifestDigest: descriptor.executionManifestDigest, entry: 'index.html',
-      files: [{ path: 'index.html', type: 'text/html', hash, size: data.length }] }, author);
-    const result = await peerApiJson(h, 'publication/publish', { publication,
-      assets: [{ hash, bytes: btoa(String.fromCharCode(...data)) }] });
-    previous = publication;
-    return result;
+    const data = new TextEncoder().encode(`<main>${text}</main>`);
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', data)), byte => byte.toString(16).padStart(2, '0')).join('');
+    const signed = await signOperationCore({
+      version: 1,
+      chainId: chainIdBytes,
+      author: hexToBytes(author.publicKey),
+      operationId: text,
+      authorTimestampMs: BigInt(Date.now() + seq++),
+      nonce: crypto.getRandomValues(new Uint8Array(16)),
+      visibility: 'public',
+      updates: [{
+        topic: '$publications',
+        input: {
+          action: 'publish',
+          entry: 'index.html',
+          files: [{ path: 'index.html', type: 'text/html', hash, size: data.length }],
+        },
+      }],
+    }, author.privateKey);
+    return peerApiJson(h, 'publication/publish', {
+      op: authorityRecord(encodeSignedOperation(signed)),
+      assets: [{ hash, bytes: btoa(String.fromCharCode(...data)) }],
+    });
   };
 }
 

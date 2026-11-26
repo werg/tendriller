@@ -1,60 +1,39 @@
-# Authority records and signed publications
+# Authority records and signed publications (Chronolog v2)
 
-Tendriller hosts portable Chronolog authority records and signed code releases. It never orders, executes or reads application operations. Application data is an authored operation set that peers union and replay in canonical signed author-time order (see `docs/CRDT_CONTRACT.md` in the Chronolog repository). Authority and publication records answer different questions: who may hold keys, finalize or release code. The host signs only short-lived admission attestations; it never signs descriptors or membership and never sees epoch keys.
+Tendriller's Cloudflare Worker Durable Object acts as a **blind public-control participant** in Chronolog v2. It stores only:
+- the canonical `GenesisBlock` (`v2_genesis`),
+- verified public-control `SignedOperation` records (`v2_public_ops`, strictly `$*` topics),
+- verified public CAS nodes (`v2_public_cas`, e.g. `$reducers` ES Module sources),
+- verified finality checkpoints (`v2_checkpoints`), and
+- short-lived host-signed admission attestations (`signHostAttestationV2`, evidence only).
 
-All applications use the common owned session. A fixed internal record format versions authenticated records. Application callers do not select alternate runtime profiles.
+It executes `TopicKernel({ blindHostMode: true })` over ONLY public-control operations to materialize `$permissions`, `$keys`, `$finality`, and `$publications` — bit-for-bit identical to every full replica, with zero epoch keys and zero encrypted application data.
 
-## What the host stores
+## Host SDK operations (`@tendriller/core/authority`)
 
-| Record | Meaning |
-| --- | --- |
-| Descriptor | `{applicationId, rootPrincipal, authorityPublicKey, executionManifestDigest, finalityPolicy}`. The execution manifest pins deterministic engine/platform semantics, not an application schema. |
-| Membership chain | Creator- or member-signed revisions with a predecessor digest, an exclusive author-time activation floor, independent grants with each member's wrap key, the epoch key commitment, the admission policy, admitted-member evidence and signed invites. |
-| Pending admissions | Host-signed `HostAttestation` records for keys that are not yet members (at most 64 per page, at most 60 minutes each). |
-| Key wraps | Member-signed `KeyWrap` records sealing epoch keys to one reader's wrap key (at most 4 per recipient). |
-| Publication chain | Signed monotonic UI/code releases and their immutable assets. |
-| Finality proofs | Optional signed admission and closed-time evidence, only when the descriptor's policy is not `none`. |
-
-The metadata chain is evidence for a session's verified authority cache. It does not supply SQL operation order and does not overwrite SQL membership, grants or schema. Those are ordinary authored transactions.
-
-## Host SDK operations
-
-The host's authority client encodes signed authority and finality records as canonical tagged-JSON bytes from `@chronolog/authority.encodeRecord`, transported as `{record: lowercaseHexBytes}` (not CBOR); JSON enrollment action envelopes carry these in their `proof`, `bundle`, `wrap` and `attestation` fields, while challenge, invite and recipient inputs remain ordinary JSON. It does not verify returned signed records. Publication is the exception: `publish(publication, assets)` sends the raw `SignedPublication` JSON with canonical base64 asset bytes, and `publication(id?)` returns a JSON `{publication, version}` receipt (see [protocol](PROTOCOL.md)). Callers verify signatures with `@chronolog/authority` before trusting a result.
+Canonical Chronolog v2 records (`GenesisBlock`, `SignedOperation`, `FinalityCheckpoint`, `SignedHostAttestationV2`) are transported as `{ record: "<lowercaseHex>" }` via `authorityRecord` / `authorityRecordBytes`.
 
 | Method | Purpose |
 | --- | --- |
-| `application()` | Read selection, prepared configuration, publication authority, the current authority record (null before the creator initializes), `hostAttestationKey` and `admissionAccounts`. |
-| `prepare(configuration)` | Private setup credential: `{executionManifestDigest, executionProfile, publisherKeys, requestedFinality?, tools?}`. Identical retries are accepted; changed immutable setup is rejected. |
-| `challenge(publicKey)` / `enroll(proof, invite?)` | A signed-in account at the exact page origin obtains a challenge and proves its device key and wrap key. The answer carries the host attestation; an optional `{inviteId, secret}` redeems an invite. |
-| `enrollAgent()` | A granted agent receives an attestation for its registered signing and wrap keys. |
-| `initialize(bundle)` | Store the creator's genesis once. |
-| `membership(bundle)` | Store a member-signed revision that extends the head by exactly one. |
-| `admissions()` / `wrap(wrap)` / `wraps(recipient)` | Read pending attestations and wrap coverage; deliver and fetch member-signed key wraps. |
-| `participant(record)` | A signed portable authority, publication or finality request. No application programs are accepted. |
-| `publication(id?)` / `publish(publication, assets)` | Read the head or an exact historical receipt, and publish a signed release with its assets. |
+| `application()` | Read selection, optional prepared config, stored `genesis` (`null` before init), blind-host `stateRoot`, `historyDigest`, `currentEpoch`, `closedThroughMs`, `hostAttestationKey`, and `admissionAccounts`. |
+| `prepare(configuration)` | Optional pre-genesis metadata (`publisherKeys`, `executionProfile`, `tools`). |
+| `challenge(publicKey)` / `enroll(proof, invite?)` | Signed-in browser proves its Ed25519 + X25519 keys at the exact page origin and receives a `signHostAttestationV2` attestation. |
+| `enrollAgent()` | Granted agent receives a `signHostAttestationV2` attestation for its registered keys. |
+| `initialize({ genesis, casNodes?, publicOps? })` | Store the creator's canonical `GenesisBlock` and public CAS nodes once; validated via blind-host `TopicKernel` before commit. |
+| `syncControl({ publicOps?, casNodes?, checkpoints?, knownOpIds?, knownCasHashes? })` | Bidirectionally merge verified public-control operations, public CAS nodes, and finality checkpoints. Automatically prunes admitted pending attestations, closes revoked peer sockets, and reconciles active code releases. |
+| `admissions()` | Read pending `signHostAttestationV2` records for keys not yet present in `$permissions.members`. |
+| `publication(id?)` / `publish(op, assets)` | Read the current (or historical) `$publications` receipt, or submit a signed `$publications` public-control op plus canonical base64 asset bytes not already in R2. |
+| `participant(record)` | Member-signed `control.sync` transport for peers. |
 
-[Session bootstrap](SESSION_BOOTSTRAP.md#admission-wire-contract) gives the exact wire contract and [membership](MEMBERSHIP.md#admission) the admission rules.
+## Signed code releases (`$publications`) & late-revocation reconciliation
 
-## Verified opening and retries
+Publishing UI code is just an ordinary signed public-control operation targeting `$publications` (`chronolog/publications` standard reducer):
+1. A member with `publisher: true` or `administrator: true` signs a public `$publications` op naming `entry` and the exact `{ path, hash, size, type }` file graph (with optional `expectedRevision`).
+2. `publish(op, assets)` verifies the signature, checks every file path and SHA-256 hash, replays the candidate op through `TopicKernel({ blindHostMode: true })` to enforce `$permissions` and revision guards, uploads new immutable bytes to R2, and commits the DO version atomically.
+3. **Provisional vs. finalized host serving rule:**
+   - **When `$finality` has an active finalizing policy (`signed-frontier`, `fixed-validator`, `blockchain-anchor`):** the host only advances the served release (`current`) to releases present in the *finalized* `$publications` state!
+   - **When `$finality` is `none` (default for offline-first apps):** the host serves `$publications.current` provisionally. If a late earlier revocation arrives via `syncControl` and invalidates a publisher before their release's authored timestamp, `TopicKernel` re-materializes `$publications` without that release, and `reconcileHostEffects` **immediately rolls back `current`** to the previous valid release (or unpublishes to `0`) and **closes WebSockets** for the revoked peer! (Already-downloaded browser bytes cannot be recalled retroactively, which is why high-assurance deployments enable an active `$finality` policy.)
 
-A session opens from its cached verified authority and keys. `session.mergeAuthority(bundle)` verifies and retains newer public evidence without waiting for the host. Competing membership changes against one predecessor cannot both win. Exact retries return the original signed result, and changed evidence under an old identity conflicts. Account and credential revocation is rechecked after asynchronous verification and before commit.
+## Live hot-swapping & URL-addressable facets
 
-## Session outcomes
-
-Operation identities, author times and signed bytes belong to the session. A `stored` operation is locally durable. A `materialized` outcome is a coherent accepted or rejected result at a revision that earlier operations can revise. `retained` evidence and optional `finalized` proofs are independent. No peer or host assigns operation order. See [state models](STATE_MODELS.md).
-
-## Code chain
-
-A publisher key signs `signPublicationManifest(...)` from `@chronolog/authority`. The manifest binds the application, publisher grant, execution manifest digest, author, operation ID, monotonic revision, predecessor, entry and file list. `publish(signed, assets)` verifies files and compare-and-set against the release head. The signed code chain lives outside application operations, and data operations never require a new release.
-
-The signed digests describe authored files. Served HTML additionally carries deliberate runtime injection, so verify the signed manifest and authored asset hashes; the rendered document's digest is expected to differ.
-
-The host retains signed publication records and their complete code graph. `publication()` returns the head, and `publication(id)` returns an exact historical receipt. Exact retries can return an older receipt without selecting it again. Restore is a new signed release. A stale tab or diagnostics cannot silently rewind the code head.
-
-### Live hot-swapping & URL-addressable facets
-
-Because every release is served immutably at `/_publications/<id>/` with per-file SHA-256 hashes in `_tendril/info`, a running page can safely hot-swap UI subtrees without adding separate component registries or relaxing signed publication integrity:
-
-- **Manifest-diff classification:** when a page mounts slots (`tendril.publication.mountSlot`) or URL-addressable facets (`tendril.publication.mountFacets` backed by `facets.json`) and a new version arrives on the existing publication watch, the runtime diffs the old and new publication manifests. If every changed path falls within owned slot/facet paths (and neither `entry` nor `runtime` changed), it imports the updated standalone ES module from `/_publications/<newId>/<path>`, aborts the previous slot's `AbortSignal`, runs cleanup, and mounts the replacement inside its Shadow DOM—preserving live WebRTC connections, canvases, and `ctx.slotState` with zero page reload.
-- **Shell/domain changes stay safe:** any change to `index.html`, `page.mjs`, `worker.mjs`, `domain.js`, or runtime falls back to the normal `live`/`careful` reload policy and respects `tendril.publication.hold()` (e.g. deferring full reload until a video call ends).
-- **Shareable facets over one state:** `tendril.publication.facetUrl(id)` / `facets.url(id)` encodes `?view=<id>` while preserving live vs `/_publications/<id>/` pinned context, unrelated query parameters, and `#hash` deep links—so sharing a facet URL opens a different view over the exact same Chronolog `applicationId`. See [application patterns](APP_PATTERNS.md#url-addressable-facets--hot-swappable-slots).
+Every release is served immutably at `/_publications/<version>/` with per-file SHA-256 hashes in `_tendril/info`. When a page mounts slots (`tendril.publication.mountSlot`) or facets (`tendril.publication.mountFacets`) and a new version arrives whose changed files all belong to owned slots/facets, the runtime hot-swaps only those modules without reloading WebRTC calls or losing local state.

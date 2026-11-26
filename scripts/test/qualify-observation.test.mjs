@@ -41,7 +41,7 @@ test('an owning Worker retains its signer and fixture keys and attaches a restri
   assert.doesNotMatch(page, /privateKey|epochKeys|__bootstrap|\{authority,key/);
   assert.match(worker, /rawSubmit:false,rawSql:false/);
   assert.match(worker, /capabilities:\['commands','queries','events','content','signals','operations','diagnostics'\]/);
-  assert.match(qualifier, /finalityPolicy: \{ kind: 'none' \}/);
+  assert.match(qualifier, /createChainGenesis/);
 });
 
 test('Root helpers and independent operation facts remain exercised by the real qualifier', () => {

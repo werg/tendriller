@@ -2,26 +2,26 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { mkdtemp, mkdir, readFile, writeFile, access, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createHash } from 'node:crypto';
 import { transferIntent, retryIntent, checkIntentSession } from '../../docs/tutorial/templates/inventory/ui-state.mjs';
 import { buildPage } from '../../docs/tutorial/templates/inventory/build.mjs';
 import { registerLifecycleFlush } from '../../docs/tutorial/shared/helpers/diagnostics-panel.mjs';
 
-const snapshot = () => ({ revision: { digest: 'reviewed', view: 'local', executionManifestDigest: 'engine', policyDigest: 'none' }, value: { stock: [{ id: 'source', units: 10 }, { id: 'destination', units: 0 }] } });
+const snapshot = () => ({ revision: { digest: 'reviewed', view: 'local', stateRoot: 'engine', historyDigest: 'none' }, value: { stock: [{ id: 'source', units: 10 }, { id: 'destination', units: 0 }] } });
 const reference = { applicationId: 'app', author: 'device', operationId: 'op', proposalId: 'proposal' };
 function retained() { return { ...transferIntent(snapshot(), { from: 'source', to: 'destination', units: 2 }, 'op'), reference }; }
 function session(stored = false) {
   const calls = [], inspection = { stored, operationId: 'op', proposalId: 'proposal', materialized: null, retained: [], finalized: false, excluded: false }, operation = { inspect: async () => inspection };
   return { applicationId: 'app', identity: { publicKey: 'device' }, calls, operations: { get: async id => { calls.push(['get', id]); return stored ? operation : null; }, retry: async id => { calls.push(['retry', id]); return operation; } }, command: async (...args) => { calls.push(['command', ...args]); return operation; } };
 }
+
 test('transfer clones reviewed guard values as local context, not an ordering barrier', () => {
   const before = snapshot(), intent = transferIntent(before, { from: 'source', to: 'destination', units: 2 }, 'op');
   before.revision.digest = 'changed'; before.value.stock[0].units = 3;
   assert.equal(intent.reviewedRevision.digest, 'reviewed'); assert.equal(intent.input.expectedSource, 10); assert.equal(intent.operationId, 'op'); assert.equal('basedOn' in intent, false);
   const offline = transferIntent(null, { from: 'source', to: 'destination', units: 2, expectedSource: 10, expectedDestination: 0 }, 'offline'); assert.equal(offline.reviewedRevision, null);
 });
+
 test('uncertain pre-storage retry retains original inputs/ID, while stored retry uses only signed journal', async () => {
   const pending = retained(), fresh = session(); await retryIntent(fresh, pending);
   assert.deepEqual(fresh.calls, [['get', 'op'], ['command', 'transfer', pending.input, { operationId: 'op' }]]);
@@ -29,110 +29,40 @@ test('uncertain pre-storage retry retains original inputs/ID, while stored retry
   const wrong = session(); wrong.identity.publicKey = 'other'; assert.throws(() => checkIntentSession(wrong, pending), /another application or signer/); assert.deepEqual(wrong.calls, []);
 });
 
-test('build requires setup and exact engine graph, removes stale or partial output', async t => {
+test('Chronolog v2 SQL page build requires preparation, emits zero legacy engine files, and cleans up on failure', async t => {
   const directory = await mkdtemp(tmpdir() + '/sql-ui-build-'), root = pathToFileURL(directory + '/');
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const output = new URL('dist/', root), engine = new URL('engine/', root);
-  await mkdir(engine); await writeFile(new URL('index.html', root), '<html>SQL</html>');
-  const wasm = Buffer.from('fixture-engine'), manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex'), loaderSha256: createHash('sha256').update('module').digest('hex') };
-  for (const [name, bytes] of Object.entries({ 'manifest.json': JSON.stringify(manifest), 'sqlite3.wasm': wasm, 'sqlite3.mjs': 'module', 'sqlite3-opfs-async-proxy.js': 'proxy' })) await writeFile(new URL(name, engine), bytes);
-  const records = { 'handle.json': { application: { id: 'app' }, page_url: 'https://page.example/', privateCredential: 'never publish' },
-    'host-configuration.json': { executionManifestDigest: 'engine-digest' },
-    'prepared.json': { applicationId: 'app', publisherKey: 'independent-publisher', executionManifestDigest: 'engine-digest' } };
-  const build = options => buildPage({ readPrivate: options.readPrivate, signer: { publicKey: 'independent-publisher' },
-    page: { applicationId: 'app', pageUrl: 'https://page.example/', slug: 'stock' } }, options);
-  const opts = { root, readPrivate: async name => records[name], verifyWasmBuild: (bytes, meta) => { assert.deepEqual(bytes, wasm); assert.deepEqual(meta, manifest); }, bundle: async () => {} };
-  const retained = structuredClone(records);
+  const output = new URL('dist/', root);
+  await writeFile(new URL('index.html', root), '<html>SQL</html>');
+  const records = {
+    'handle.json': { application: { id: 'app' }, page_url: 'https://page.example/', privateCredential: 'never publish' },
+    'prepared.json': { applicationId: 'app', publisherKey: 'independent-publisher' },
+  };
+  const build = options => buildPage({
+    readPrivate: options.readPrivate,
+    signer: { publicKey: 'independent-publisher' },
+    page: { applicationId: 'app', pageUrl: 'https://page.example/', slug: 'stock' },
+  }, options);
+  const opts = { root, readPrivate: async name => records[name], bundle: async () => {} };
+  const retainedRecords = structuredClone(records);
   await build(opts);
-  assert.deepEqual(records, retained, 'a build never rewrites retained host configuration or preparation');
-  assert.equal((await readFile(new URL('engine/sqlite3.wasm', output))).toString(), wasm.toString());
-  const config = JSON.parse(await readFile(new URL('configuration.json', output)));
-  assert.deepEqual(Object.keys(config).sort(), ['applicationId', 'executionManifestDigest', 'page_url']);
-  assert.equal(config.executionManifestDigest, 'engine-digest');
-  // Building needs host configuration and preparation only: no initialization marker, schema or native device.
+  assert.deepEqual(records, retainedRecords, 'a build never rewrites retained preparation');
+  const config = JSON.parse(await readFile(new URL('configuration.json', output), 'utf8'));
+  assert.deepEqual(Object.keys(config).sort(), ['applicationId', 'page_url']);
+  // Zero legacy DoltLite / sqlite3.wasm files are copied into dist/
+  await assert.rejects(access(new URL('engine/sqlite3.wasm', output)), { code: 'ENOENT' });
   assert.equal(Object.hasOwn(records, 'initialized.json'), false);
+
   for (const failure of [
     { readPrivate: async () => { throw Error('missing setup'); } },
     { readPrivate: async name => name === 'prepared.json' ? { ...records[name], applicationId: 'other' } : records[name] },
     { readPrivate: async name => name === 'prepared.json' ? { ...records[name], publisherKey: 'another-signer' } : records[name] },
-    { verifyWasmBuild: () => { throw Error('unsupported profile'); } },
     { bundle: async () => { throw Error('bundle failed'); } },
   ]) {
     await mkdir(output, { recursive: true }); await writeFile(new URL('stale', output), 'stale');
     await assert.rejects(build({ ...opts, ...failure }), /no publishable dist/);
     await assert.rejects(access(output), { code: 'ENOENT' });
   }
-  await writeFile(new URL('sqlite3.mjs', engine), 'mismatched loader');
-  await assert.rejects(build(opts), /loader does not match/);
-  await assert.rejects(access(output), { code: 'ENOENT' });
-  await writeFile(new URL('sqlite3.mjs', engine), 'module');
-  await writeFile(new URL('sqlite3.wasm', engine), 'wrong');
-  await assert.rejects(build(opts), /does not match/);
-  await assert.rejects(access(output), { code: 'ENOENT' });
-  await rm(new URL('manifest.json', engine));
-  await assert.rejects(build(opts), /no publishable dist/);
-});
-
-test('the default build verifier is the selected package\'s public sql-browser export, still hash-checked and cleaned up on failure', async t => {
-  // Injecting verifyWasmBuild hides a broken default. Run a copy of the template's build.mjs with NO injected
-  // verifier inside a project whose only @chronolog/peer-session is a small declared fixture package, so the
-  // default import resolves exactly the way an installed public SQL kit would. This does not claim the real
-  // sealed kit verifies anything; it proves the build calls the selected package's export with the engine bytes and manifest.
-  const directory = await mkdtemp(tmpdir() + '/sql-ui-default-verify-'), root = pathToFileURL(directory + '/');
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const calls = join(directory, 'verifier-calls.json');
-  const packageDirectory = join(directory, 'node_modules/@chronolog/peer-session');
-  await mkdir(packageDirectory, { recursive: true });
-  await writeFile(join(packageDirectory, 'package.json'), JSON.stringify({ name: '@chronolog/peer-session', version: '0.0.0-fixture', type: 'module',
-    exports: { './sql-browser': './sql-browser.mjs' } }));
-  await writeFile(join(packageDirectory, 'sql-browser.mjs'), `import { appendFileSync, existsSync } from 'node:fs';
-export async function verifyWasmBuild(bytes, manifest) {
-  appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ bytes: Buffer.from(bytes).toString(), wasmBytes: manifest.wasmBytes }) + '\\n');
-  if (existsSync(${JSON.stringify(join(directory, 'reject-engine'))})) throw Error('unsupported engine profile');
-}`);
-  await writeFile(join(directory, 'build.mjs'), await readFile(new URL('../../docs/tutorial/templates/inventory/build.mjs', import.meta.url), 'utf8'));
-  await writeFile(join(directory, 'index.html'), '<html>SQL</html>');
-  const engine = join(directory, 'engine'); await mkdir(engine);
-  const wasm = Buffer.from('fixture-engine'), loader = 'module';
-  const manifest = { wasmBytes: wasm.length, wasmSha256: createHash('sha256').update(wasm).digest('hex'), loaderSha256: createHash('sha256').update(loader).digest('hex') };
-  for (const [name, bytes] of Object.entries({ 'manifest.json': JSON.stringify(manifest), 'sqlite3.wasm': wasm, 'sqlite3.mjs': loader, 'sqlite3-opfs-async-proxy.js': 'proxy' })) await writeFile(join(engine, name), bytes);
-  const records = { 'host-configuration.json': { executionManifestDigest: 'engine-digest' },
-    'prepared.json': { applicationId: 'app', publisherKey: 'independent-publisher', executionManifestDigest: 'engine-digest' } };
-  const context = { readPrivate: async name => records[name], signer: { publicKey: 'independent-publisher' },
-    page: { applicationId: 'app', pageUrl: 'https://page.example/', slug: 'stock' } };
-  const { buildPage } = await import(pathToFileURL(join(directory, 'build.mjs')).href);
-  const output = new URL('dist/', root), bundled = [];
-  const build = () => buildPage(context, { bundle: async options => { bundled.push(options.entryPoints); } });
-  const readCalls = async () => (await readFile(calls, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-  // The default verifier receives the exact engine bytes and manifest of the retained graph.
-  await build();
-  assert.deepEqual(await readCalls(), [{ bytes: wasm.toString(), wasmBytes: wasm.length }]);
-  assert.equal((await readFile(new URL('engine/sqlite3.wasm', output))).toString(), wasm.toString());
-  assert.equal(bundled.length, 2);
-  // The same hash and manifest checks still run before the verifier and the build leaves nothing publishable.
-  await writeFile(join(engine, 'sqlite3.wasm'), 'wrong');
-  await assert.rejects(build(), /no publishable dist[\s\S]*does not match/);
-  await assert.rejects(access(output), { code: 'ENOENT' });
-  assert.equal((await readCalls()).length, 1, 'a hash mismatch fails before the verifier is asked');
-  await writeFile(join(engine, 'sqlite3.wasm'), wasm);
-  // A verifier rejection fails closed and removes stale output.
-  await writeFile(join(directory, 'reject-engine'), '');
-  await mkdir(output, { recursive: true }); await writeFile(new URL('stale', output), 'stale');
-  await assert.rejects(build(), /no publishable dist[\s\S]*unsupported engine profile/);
-  await assert.rejects(access(output), { code: 'ENOENT' });
-  assert.equal((await readCalls()).length, 2);
-  // A selected package without the public export is an explicit build failure, never a silently skipped verification.
-  // (A separate project: ES modules cache the first resolution of the fixture package above.)
-  const bare = await mkdtemp(tmpdir() + '/sql-ui-no-verifier-');
-  t.after(() => rm(bare, { recursive: true, force: true }));
-  await mkdir(join(bare, 'node_modules/@chronolog/peer-session'), { recursive: true }); await mkdir(join(bare, 'engine'));
-  await writeFile(join(bare, 'node_modules/@chronolog/peer-session/package.json'), JSON.stringify({ name: '@chronolog/peer-session', version: '0.0.0-fixture', type: 'module', exports: {} }));
-  await writeFile(join(bare, 'build.mjs'), await readFile(join(directory, 'build.mjs'), 'utf8'));
-  await writeFile(join(bare, 'index.html'), '<html>SQL</html>');
-  for (const name of ['manifest.json', 'sqlite3.wasm', 'sqlite3.mjs', 'sqlite3-opfs-async-proxy.js']) await writeFile(join(bare, 'engine', name), await readFile(join(engine, name)));
-  const { buildPage: bareBuild } = await import(pathToFileURL(join(bare, 'build.mjs')).href);
-  await assert.rejects(bareBuild(context, { bundle: async () => assert.fail('must not bundle without a verified engine') }), /no publishable dist/);
-  await assert.rejects(access(join(bare, 'dist')), { code: 'ENOENT' });
 });
 
 test('lifecycle notifications contain async flush and error-reporter rejections, and unregister', async t => {
@@ -155,13 +85,31 @@ test('local signing/storage readiness permits Save without peers, SQL readiness 
   const finish = state.begin(); assert.equal(state.snapshot.canSubmit, false); finish(); assert.equal(state.snapshot.canSubmit, true);
   state.application({ canAuthor: false, phase: 'ready', database: 'ready', connectedPeers: 8 }); assert.equal(state.snapshot.canSubmit, false);
 });
-test('SQL schema and column grants are ordinary programs, never immutable definition schema', async () => {
-  const { definition, deriveInventory } = await import('../../docs/tutorial/templates/inventory/domain.mjs');
+
+test('SQL schema and RLS policies live in the Chronolog v2 ES Module reducer, never immutable definition schema', async () => {
+  const { definition, deriveInventory, INVENTORY_REDUCER_SOURCE } = await import('../../docs/tutorial/templates/inventory/domain.mjs');
   assert.equal(Object.hasOwn(definition, 'schema'), false);
-  const initial = definition.commands.initialize.prepare(null); assert.ok(initial.steps.some(step => typeof step.sql === 'string' && step.sql.startsWith('CREATE TABLE')));
+  const initial = definition.commands.initialize.prepare(null);
+  assert.deepEqual(initial, [{ topic: 'inventory', input: { action: 'initialize' } }]);
   const grant = definition.commands.grantBinWrites.prepare({ publicKey: '11'.repeat(32) });
-  assert.deepEqual(grant.steps[0].columns, ['units']); assert.equal(grant.steps[0].op, 'grant');
+  assert.deepEqual(grant, [{ topic: 'inventory', input: { action: 'grantBinWrites', publicKey: '11'.repeat(32) } }]);
+  assert.ok(INVENTORY_REDUCER_SOURCE.includes("from 'chronolog:sqlite'"));
+  assert.ok(INVENTORY_REDUCER_SOURCE.includes("from 'chronolog/rls'"));
   let label = false;
-  const view = { async query(sql) { if (sql.includes('sqlite_master')) return { rows: [['inventory', 'table'], ['transfers', 'table']] }; if (sql.startsWith('PRAGMA')) return { rows: label ? [[0,'id'],[1,'units'],[2,'label']] : [[0,'id'],[1,'units']] }; if (sql.includes('FROM transfers')) return { rows: [] }; return { rows: label ? [['source',10,'new field']] : [['source',10]] }; } };
-  assert.equal((await deriveInventory(view)).hasLabel, false); label = true; const after = await deriveInventory(view); assert.equal(after.hasLabel, true); assert.equal(after.stock[0].label, 'new field');
+  const view = {
+    async query(topic) {
+      assert.equal(topic, 'inventory');
+      return {
+        initialized: true,
+        hasLabel: label,
+        stock: label ? [{ id: 'source', units: 10, label: 'new field' }] : [{ id: 'source', units: 10 }],
+        transfers: [],
+      };
+    },
+  };
+  assert.equal((await deriveInventory(view)).hasLabel, false);
+  label = true;
+  const after = await deriveInventory(view);
+  assert.equal(after.hasLabel, true);
+  assert.equal(after.stock[0].label, 'new field');
 });

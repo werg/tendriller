@@ -6,7 +6,35 @@ import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { p, worker, browser, createPhysicalSession } from '../../collaboration/test/physical-fixture.mjs';
-const definition=p.defineApplication({id:'ergonomics',version:'1',commands:{add:p.defineCommand({description:'Retain one value',input:{type:'object',properties:{a:{type:'integer'}},required:['a'],additionalProperties:false},prepare:value=>p.program(p.emit('value',value))})},queries:{list:p.defineQuery({description:'Read materialized values',input:{type:'null'},read:view=>({count:view.readEvents({topics:['value']}).events.length})})}});
+const VALUE_REDUCER = `
+export default {
+  reduce(state, tx) {
+    const items = Array.isArray(state) ? [...state] : [];
+    items.push(tx.payload);
+    return { ok: true, state: items, events: [{ topic: 'value', payload: tx.payload }] };
+  },
+  query(state) { return { count: Array.isArray(state) ? state.length : 0 }; },
+};
+`;
+const reducerOpts = { imports: { 'app/values': VALUE_REDUCER }, topics: { values: { module: 'app/values' } } };
+const definition = p.defineApplication({
+  id: 'ergonomics',
+  version: '1',
+  commands: {
+    add: p.defineCommand({
+      description: 'Retain one value',
+      input: { type: 'object', properties: { a: { type: 'integer' } }, required: ['a'], additionalProperties: false },
+      prepare: value => [{ topic: 'values', input: value }],
+    }),
+  },
+  queries: {
+    list: p.defineQuery({
+      description: 'Read materialized values',
+      input: { type: 'null' },
+      read: view => ({ count: view.readEvents({ topics: ['value'] }).events.length }),
+    }),
+  },
+});
 
 import { packTarGz, unpackTarGz, listTarGz, readTarGzFile } from '../../contract/archive.mjs';
 import { createReleaseDownloader, extractVerifiedTarGz } from '../../contract/release-verify.mjs';
@@ -154,10 +182,18 @@ test('cross-platform IPC naming, atomic lock stale recovery, and INSTANCE_UNRESP
 test('connectOrStartNativeSession supports bounded zero-IPC mode and concurrent shared startup convergence over loopback TCP', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'tendriller-cos-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const appId = '11'.repeat(32);
-  let opened=0;
-  const openOwner=async()=>{opened++;return worker.createApplicationOwner(await createPhysicalSession({definition,applicationId:appId}));};
-  const connect=browser.connectApplicationOwner;
+  const sharedDevice = await p.openApplicationDevice({ store: (await import('../../collaboration/test/physical-fixture.mjs')).memoryStore(), create: true });
+  const seed = await (await import('../../collaboration/test/physical-fixture.mjs')).genesisForDevices([sharedDevice], reducerOpts);
+  await sharedDevice.close();
+  const appId = seed.chainId;
+  let opened = 0;
+  const openOwner = async () => {
+    opened++;
+    const device = await p.openApplicationDevice({ store: (await import('../../collaboration/test/physical-fixture.mjs')).memoryStore(), create: true, managedSigner: sharedDevice.identity });
+    const session = await p.createApplicationSession({ device, definition, genesis: seed.genesisBytes, casNodes: seed.casNodes, epochKeys: new Map([[0, seed.key]]) });
+    return worker.createApplicationOwner(session);
+  };
+  const connect = browser.connectApplicationOwner;
   // 1. Bounded zero-IPC mode
   const boundedDir = join(dir, 'bounded');
   const bounded = await connectOrStartNativeSession({
@@ -211,7 +247,7 @@ test('source handoff blocks secrets and excludes device state', async t => {
 });
 
 test('local Stdio MCP batch acknowledges locally stored operations without conflating materialization or peer retention', async () => {
-  const session=await createPhysicalSession({definition,applicationId:'33'.repeat(32)});
+  const session=await createPhysicalSession({definition,applicationId:'33'.repeat(32),...reducerOpts});
   const pages={list:async()=>[{slug:'notes'}],open:async page=>{assert.equal(page,'notes');return {session};}};
   try {
     const init=await handleStdioMcpMessage(pages,{jsonrpc:'2.0',id:1,method:'initialize',params:{}});

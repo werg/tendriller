@@ -42,7 +42,7 @@ try {
   for (const artifact of packagesProof.artifacts)
     assert.equal(createHash('sha256').update(readFileSync(join(root, 'dist', artifact.file))).digest('hex'), artifact.sha256);
   const peerProof = JSON.parse(readFileSync(join(directory, 'node_modules/@tendriller/engine/authority-provenance.json')));
-  assert.equal(peerProof.dirty, false); assert.equal(peerProof.profile, 'chronolog-crdt-v1');
+  assert.equal(peerProof.dirty, false); assert.equal(peerProof.profile, 'chronolog-crdt-v2');
   assert.ok(peerProof.inputs.every(input => !/(?:materializer|peer-session|transport-ssb|node-core\/src\/node\.ts|node:)/.test(input)));
   assert.equal(existsSync(join(directory, 'node_modules/@chronolog')), false, 'The engine embeds its portable participant dependency');
   for (const key of ['./records', './members', './scopes', './host', './assistant']) assert.equal(core.exports[key], undefined);
@@ -250,7 +250,9 @@ for (const api of [createCollaborationDefinition, createCollaborationClient, ope
 const collaboration = createCollaborationDefinition({id:'consumer', version:'1'});
 assert.equal(collaboration.definition.schema, undefined);
 assert.equal(collaboration.definition.commands['collab.rebind'], undefined);
-assert.ok(collaboration.initializationProgram.steps.some(step => typeof step.sql === 'string' && step.sql.startsWith('CREATE TABLE')));
+assert.equal(typeof collaboration.reducerSource, 'string');
+assert.ok(collaboration.reducerSource.includes('chronolog:sqlite'));
+assert.equal(collaboration.topics.collab.module, 'tendriller/collab');
 const reference = operationReference({applicationId:'a'.repeat(64),identity:{publicKey:'b'.repeat(64)}},'exact-handle');
 assert.equal(reference.proposalId,undefined);
 assert.equal('generation' in reference,false);
@@ -267,7 +269,7 @@ import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/c
 import { createTransportDiagnostics, readTransportDiagnostics, type TransportDiagnosticReport } from '@tendriller/core/transport-diagnostics';
 import { defineApplication, defineQuery, createApplicationSession, createLiveView, createScopedApplicationTools,
   type LiveView, type ApplicationSession, type MaterializedRevision, type OperationInspection,
-  type SignedKeyWrap, createWrapKeyPair, importWrapPrivateKey } from '@chronolog/peer-session';
+  createWrapKeyPair, importWrapPrivateKey } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 import type { ApplicationDevice } from '@chronolog/peer-session';
 import { createAuthorityClient, type EnrollmentChallenge } from '@tendriller/core/authority';
@@ -283,7 +285,7 @@ void setupWatch.close; void authorityClient; void enrolledApplicationId;
 declare const owner: NativeSessionOwner;
 declare const browser: BrowserOwnerOptions;
 declare const worker: BrowserOwnerConfiguration;
-const collaboration = createCollaborationDefinition({id:'consumer',version:'1',members:['a'.repeat(64)]});
+const collaboration = createCollaborationDefinition({id:'consumer',version:'1'});
 declare const nativeSession: ApplicationSession;
 declare const browserSession: WorkerApplicationSession;
 const client = createCollaborationClient({session:nativeSession});
@@ -291,17 +293,17 @@ const browserClient = createCollaborationClient({session:browserSession});
 const report: DiagnosticReport = await diagnoseApplicationSession(nativeSession);
 const attached = await openBrowserOwner(browser);
 const browserView = createLiveView(attached.session, async view => {
-  const rows = await view.query('SELECT title FROM notes');
-  return rows.rows.map(row => String(row[0]));
+  const rows = await view.query('collab', { kind: 'notes' });
+  return Array.isArray(rows) ? rows.map(String) : [];
 });
 const viewDefinition = defineApplication({id:'views',version:'1',commands:{},queries:{notes:defineQuery({description:'Read notes',input:{type:'null'},read:()=>['typed']})}});
 declare const device: ApplicationDevice;
-const opened = await createApplicationSession({device,definition:viewDefinition,applicationId:'a'.repeat(64)});
-const initialized = await nativeSession.submit({program:collaboration.initializationProgram,operationId:'root-initialization',authorTimestampMs:1n});
+const opened = await createApplicationSession({device,definition:viewDefinition,genesis:new Uint8Array()});
+const initialized = await nativeSession.submit({updates:[{topic:'collab',input:{kind:'note.put',title:'Hello'}}],operationId:'root-initialization',authorTimestampMs:1n});
 const stored: boolean = initialized.stored;
 const inspected: OperationInspection = await initialized.inspect();
 const originalProposal: string = inspected.proposalId;
-const pendingMaterializer: 'body'|'key'|'authority'|'materializer'|null = inspected.pending;
+const pendingMaterializer: 'dependency'|'key'|null = inspected.pending;
 const projected = await initialized.materialized();
 const projectionRevision: MaterializedRevision = projected.revision;
 const peerEvidence = await initialized.retained({timeoutMs:1000});
@@ -312,30 +314,25 @@ void originalProposal; void pendingMaterializer; void projectionRevision; void p
 initialized.applied();
 // @ts-expect-error There is no ambiguous shared acknowledgement.
 initialized.shared();
-// @ts-expect-error Schema is ordinary authorized DDL, not immutable setup metadata.
+// @ts-expect-error Schema is ordinary reducer SQL, not immutable setup metadata.
 collaboration.definition.schema;
-// The one admission mechanism: a member wraps the current keys to an admitted recipient's X25519 wrap key.
 const recipientWrap = await createWrapKeyPair();
-const keyWrap: SignedKeyWrap = await nativeSession.provisioning.wrapKeys('b'.repeat(64));
-const installedEpochs: readonly number[] = await nativeSession.provisioning.unwrapKeys(keyWrap, await importWrapPrivateKey(recipientWrap.privateKey));
+void importWrapPrivateKey(recipientWrap.privateKey);
 const admissionState: unknown = await browserSession.extensions.call('admission.state');
-void installedEpochs; void admissionState;
+void admissionState;
 const consumerAdmission: PageAdmission = createAdmission(nativeSession, { peers: authorityClient, wrapKey: await deviceWrapKey(device.store), subject: 'agent' });
 const consumerPhase: AdmissionState['phase'] = consumerAdmission.state.phase;
 void consumerPhase; consumerAdmission.close();
-// @ts-expect-error Copy-paste provisioning requests no longer exist.
-nativeSession.provisioning.createProvisioningRequest();
-await browserSession.mergeAuthority(nativeSession.authority.bundle());
 const inspector=createTransportDiagnostics(browserSession);
 const transportReport:TransportDiagnosticReport=await inspector.refresh();
 const oneShot:TransportDiagnosticReport=await readTransportDiagnostics(nativeSession);
 window.tendril.transport.install(browserSession);
 void transportReport;void oneShot;inspector.close();
 const typedView: LiveView<readonly string[]> = createLiveView(opened, async view => {
-  const rows = await view.query('SELECT title FROM notes');
+  const rows = await view.query('collab', { kind: 'notes' });
   const applicationId: string = view.applicationId;
   void applicationId;
-  return rows.rows.map(row => String(row[0]));
+  return Array.isArray(rows) ? rows.map(String) : [];
 });
 const coherent = await typedView.ready({timeoutMs:30000});
 const digest: string = coherent.revision.digest;
@@ -358,7 +355,7 @@ const supervisor = await createNativeSessionSupervisor({directory:'/private',pro
 void attachNativeSession;
 void collaboration; void client; void report; void serving; void supervisor;
 `);
-  run(process.execPath, [join(root,'node_modules/typescript/bin/tsc'),'--noEmit','--strict','--target','es2022','--module','nodenext','--moduleResolution','nodenext','--lib','es2023,dom','collaboration.mts']);
+  run(process.execPath, [join(root,'node_modules/typescript/bin/tsc'),'--noEmit','--strict','--target','es2022','--module','nodenext','--moduleResolution','nodenext','--lib','es2023,esnext.disposable,dom','collaboration.mts']);
   console.log('Independent SDK/runtime/engine/tools and pinned collaboration consumer passed runtime imports and strict declarations using only public artifacts.');
 } catch(error) {
   if(error.stdout) process.stderr.write(error.stdout);

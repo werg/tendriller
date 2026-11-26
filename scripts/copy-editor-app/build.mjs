@@ -86,7 +86,6 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
         page_url: context.page.pageUrl,
         serviceOrigin: context.service,
         pageId: context.page.id,
-        executionManifestDigest: config.executionManifestDigest,
         agentPublicKey: context.signer.publicKey,
       }, null, 2) + '\n',
     );
@@ -103,16 +102,6 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       target: 'es2022',
       outExtension: { '.js': '.mjs' },
       chunkNames: 'chunks/[name]-[hash]',
-    });
-    await bundle({
-      absWorkingDir: fileURLToPath(root),
-      entryPoints: ['domain.mjs'],
-      outfile: fileURLToPath(new URL('domain.js', output)),
-      bundle: true,
-      format: 'esm',
-      platform: 'neutral',
-      target: 'es2022',
-      external: ['@chronolog/peer-session'],
     });
     return fileURLToPath(output);
   } catch (cause) {

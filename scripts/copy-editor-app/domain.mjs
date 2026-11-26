@@ -1,4 +1,4 @@
-import { defineApplication, defineCommand, defineQuery, emit, program } from '@chronolog/peer-session';
+import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
 
 const copyKey = { type: 'string', minLength: 1, maxLength: 160 };
 const copyText = { type: 'string', maxLength: 4000 };
@@ -76,12 +76,12 @@ export const definition = defineApplication({
     putEdit: defineCommand({
       description: 'Store a revisable inline copy edit in the shared Chronolog session.',
       input: editItem,
-      prepare: (input) => program(emit('copy.edit', input)),
+      prepare: (input) => [{ topic: 'copy.edit', input }],
     }),
     undoEdit: defineCommand({
       description: 'Revert a pending inline copy edit.',
       input: { type: 'object', properties: { key: copyKey }, required: ['key'], additionalProperties: false },
-      prepare: (input) => program(emit('copy.undo', input)),
+      prepare: (input) => [{ topic: 'copy.undo', input }],
     }),
     submitBatch: defineCommand({
       description: 'Submit pending copy edits and an optional note to the repo agent.',
@@ -96,7 +96,7 @@ export const definition = defineApplication({
         required: ['batchId', 'page', 'note', 'edits'],
         additionalProperties: false,
       },
-      prepare: (input) => program(emit('copy.submit', input)),
+      prepare: (input) => [{ topic: 'copy.submit', input }],
     }),
     markApplied: defineCommand({
       description: 'Record that the agent applied submitted keys into server/src/site-copy.json.',
@@ -109,7 +109,7 @@ export const definition = defineApplication({
         required: ['batchId', 'keys'],
         additionalProperties: false,
       },
-      prepare: (input) => program(emit('copy.applied', input)),
+      prepare: (input) => [{ topic: 'copy.applied', input }],
     }),
   },
   queries: {

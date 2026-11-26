@@ -140,8 +140,8 @@ export async function buildEngine() {
   const authoritySnapshot = () => {
     const bytes = readFileSync(join(authorityRoot, 'provenance.json'));
     const proof = JSON.parse(bytes.toString('utf8'));
-    if (proof.profile !== 'chronolog-crdt-v1' || proof.format !== 'chronolog-authority-package/v1')
-      throw new Error('Build requires the authored-operation authority package');
+    if (proof.profile !== 'chronolog-crdt-v2' || proof.format !== 'chronolog-authority-package/v2')
+      throw new Error('Build requires the Chronolog v2 authored-operation authority package');
     const files = Object.fromEntries(Object.entries(proof.sha256).map(([name, expected]) => {
       const actual = sha256(readFileSync(join(authorityRoot, name)));
       if (actual !== expected) throw new Error(`Authority package content changed: ${name}`);
@@ -154,10 +154,12 @@ export async function buildEngine() {
   const wasmBundlePlugin = {
     name: 'worker-wasm-assets',
     setup(builder) {
-      builder.onResolve({ filter: /(?:\.wasm$|^@jitl\/quickjs-ng-wasmfile-release-sync\/wasm$)/ }, args => {
+      builder.onResolve({ filter: /(?:\.wasm$|^@jitl\/quickjs-ng-wasmfile-release-sync\/wasm$|^@chronolog\/peer-session\/sqlite-cas\.wasm$)/ }, args => {
         let resolved;
         if (args.path === '@jitl/quickjs-ng-wasmfile-release-sync/wasm') {
           resolved = join(root, 'node_modules/@jitl/quickjs-ng-wasmfile-release-sync/dist/emscripten-module.wasm');
+        } else if (args.path === '@chronolog/peer-session/sqlite-cas.wasm') {
+          resolved = join(root, 'node_modules/@chronolog/peer-session/wasm/sqlite-cas.wasm');
         } else {
           resolved = join(args.resolveDir, args.path);
         }
@@ -166,6 +168,14 @@ export async function buildEngine() {
         wasmAssets.add(name);
         return { path: `./${name}`, external: true };
       });
+      builder.onResolve({ filter: /^module$/ }, () => ({
+        path: 'workerd-empty-module',
+        namespace: 'workerd-stub',
+      }));
+      builder.onLoad({ filter: /.*/, namespace: 'workerd-stub' }, () => ({
+        contents: 'export function createRequire() { throw new Error("node:module is unavailable in Cloudflare Workers"); }',
+        loader: 'js',
+      }));
     },
   };
   const result = await build({

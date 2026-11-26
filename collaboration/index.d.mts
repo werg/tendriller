@@ -1,5 +1,5 @@
 import type { ApplicationDefinition, ApplicationSession, MaterializedRevision,
-  OperationInspection, MaterializedOperation, RetentionEvidence, ChangeProgram, ViewStore, WaitOptions } from '@chronolog/peer-session';
+  OperationInspection, MaterializedOperation, RetentionEvidence, ChainTopicSeed, ViewStore, WaitOptions } from '@chronolog/peer-session';
 export type { ViewStore } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 import type { CollaborationTaskPageOptions, CollaborationResultPageOptions, CollaborationMessagePageOptions,
@@ -89,8 +89,9 @@ export interface CollaborationSnapshot {
 export interface CollaborationQuery<Value> {readonly revision:MaterializedRevision;readonly value:Value}
 export interface RetainedOperation {readonly reference:OperationReference;readonly viewId:string;readonly context:Readonly<Record<string,unknown>>}
 export { createViewStore } from '@chronolog/peer-session';
-/** Submit initializationProgram as an ordinary root-authored transaction; members receive explicit table INSERT grants (not crypto enrollment). */
-export declare function createCollaborationDefinition(options?:{id?:string;version?:string;administrators?:readonly string[];members?:readonly string[];limits?:Partial<typeof COLLABORATION_LIMITS>}):{readonly definition:ApplicationDefinition;readonly initializationProgram:ChangeProgram};
+/** Create a Chronolog v2 collaboration ES Module reducer, genesis topic/import seeds, and ApplicationDefinition. */
+export declare function createCollaborationReducerSource(options?:{administrators?:readonly string[];limits?:Partial<typeof COLLABORATION_LIMITS>}):string;
+export declare function createCollaborationDefinition(options?:{id?:string;version?:string;administrators?:readonly string[];limits?:Partial<typeof COLLABORATION_LIMITS>}):{readonly definition:ApplicationDefinition;readonly reducerSource:string;readonly imports:Readonly<Record<string,string>>;readonly topics:Readonly<Record<string,ChainTopicSeed>>};
 export interface ApplicationEndpointBinding { readonly endpointId:string;readonly endpointIncarnation:string;readonly ownerInstanceId?:string;readonly context?:Readonly<Record<string,unknown>> }
 export type CollaborationSession = ApplicationSession|WorkerApplicationSession;
 export interface CollaborationClient<Session extends CollaborationSession=CollaborationSession> {

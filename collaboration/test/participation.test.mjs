@@ -5,7 +5,7 @@ import { validatePeerAdvertisement } from '../../contract/discovery.mjs';
 import { createTransportDiagnostics } from '../../session/transport-diagnostics.mjs';
 import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
-import { p, memoryStore, authorityForDevices, createPhysicalSession } from './physical-fixture.mjs';
+import { p, memoryStore, genesisForDevices, createPhysicalSession } from './physical-fixture.mjs';
 const flush = () => new Promise(setImmediate);
 async function until(predicate) { const end = Date.now() + 4000; while (!predicate()) { if (Date.now() > end) throw Error('PARTICIPATION_TEST_DEADLINE'); await flush(); } }
 function stream(signal, first = []) {
@@ -37,7 +37,7 @@ test('an ACTUAL public session advertises its retained DEVICE storage identity, 
     await until(() => server.advertisements.length === 1);
     assert.equal(server.advertisements[0].storageId, session.device.storageId);
     assert.equal(server.advertisements[0].peerId, session.identity.publicKey);
-    const operation = await session.submit({ operationId: 'independent-local-write', program: p.program(p.emit('local', { stored: true })) });
+    const operation = await session.submit({ operationId: 'independent-local-write', updates: [{ topic: 'events', input: { eventTopic: 'local', payload: { stored: true } } }] });
     assert.equal(operation.stored, true); assert.equal(session.status.canAuthor, true);
     assert.equal(controller.status.connectedPeers.length, 0);
     await operation.materialized();
@@ -61,27 +61,29 @@ test('failed advertisement retries through the existing bounded lifecycle and pr
   } finally { await controller.close(); await session.close(); }
 });
 
-test('real keyless-to-reader authority changes retry routing admission, without creating data keys or fetching app facts', async () => {
+test('real keyless-to-reader membership changes retry routing admission, without creating data keys or fetching app facts', async () => {
   const root = await p.openApplicationDevice({ store: memoryStore(), create: true });
   const recipient = await p.openApplicationDevice({ store: memoryStore(), create: true });
-  const { authority, key } = await authorityForDevices([root]);
-  const session = await p.createApplicationSession({ device: recipient, definition: p.defineApplication({ id: 'recipient-routing', version: '1', commands: {}, queries: {} }), authority });
+  const { genesisBytes, casNodes, key } = await genesisForDevices([root]);
+  const rootSession = await p.createApplicationSession({ device: root, definition: p.defineApplication({ id: 'root-routing', version: '1', commands: {}, queries: {} }), genesis: genesisBytes, casNodes, epochKeys: new Map([[0, key]]) });
+  const session = await p.createApplicationSession({ device: recipient, definition: p.defineApplication({ id: 'recipient-routing', version: '1', commands: {}, queries: {} }), genesis: genesisBytes, casNodes });
   let admitted = false;
   const server = host({ fail: () => !admitted }), controller = participateApplication(session, { peers: server.peers, openDirectConnection: forbiddenDirect });
   try {
     await until(() => controller.status.error === 'advertise:routing_admission_unavailable'); await flush();
-    assert.equal(session.status.canAuthor, false); assert.equal(session.authority.epochKey(0), null);
-    const membership = await p.signMembership({ ...authority.memberships[0].payload, revision: 1, previous: await p.recordDigest(authority.memberships[0]), authorTimeAfterMs: 0n,
-      members: [...authority.memberships[0].payload.members, { publicKey: recipient.identity.publicKey, wrapKey: null, reader: true, writer: true, administrator: false, publisher: false, finalizer: false }] }, root.identity);
+    assert.equal(session.status.canAuthor, false); assert.equal(session.epochKey(0), null);
+    await rootSession.admitMember({ publicKey: recipient.identity.publicKey, reader: true, writer: true, administrator: false });
+    const exported = await rootSession.exportFacts({ includePrivateCas: false });
     admitted = true;
-    await session.mergeAuthority({ ...authority, memberships: [...authority.memberships, membership] });
+    await session.mergeFacts({ publicOps: exported.publicOps, encryptedEnvelopes: [], casNodes: [], retentions: [], checkpoints: [] });
     await until(() => server.advertisements.length === 1);
     assert.equal(server.advertisements[0].storageId, recipient.storageId);
-    assert.equal(session.authority.epochKey(0), null, 'Crypto membership never invents a missing key');
-    await session.authority.installEpochKey(0, key);
+    assert.equal(session.epochKey(0), null, 'Crypto membership never invents a missing key');
+    await session.installEpochKey(0, key);
+    await session.retryMaterialization();
     assert.equal(session.status.canAuthor, true);
     await flush(); assert.equal(server.advertisements.length, 1);
-  } finally { await controller.close(); await session.close(); await root.close(); }
+  } finally { await controller.close(); await session.close(); await rootSession.close(); }
 });
 
 test('a real owned session, retained device identity and actual RTC opener are required', () => {
@@ -179,10 +181,10 @@ async function eventually(predicate, ms = 15_000) { const end = Date.now() + ms;
 
 test('a peer whose path died silently accepts the replacement its remote dials, instead of keeping the dead link', async () => {
   const devices = [await p.openApplicationDevice({ store: memoryStore(), create: true }), await p.openApplicationDevice({ store: memoryStore(), create: true })];
-  const { authority, key } = await authorityForDevices(devices);
-  const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, authority, epochKeys: new Map([[0, key]]),
+  const { chainId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
+  const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, key]]),
     definition: p.defineApplication({ id: 'dead-path', version: '1', commands: {}, queries: {} }) })));
-  const host = sharedHost(authority.descriptor.payload.applicationId);
+  const host = sharedHost(chainId);
   const controllers = sessions.map(session => participateApplication(session, { peers: host.peersFor(session.identity.publicKey), directTimeoutMs: 500,
     openDirectConnection: host.openDirectConnection }));
   // Exactly one side dials: the lower signing identity.
@@ -199,25 +201,25 @@ test('a peer whose path died silently accepts the replacement its remote dials, 
     assert.ok(controllers[zombie].status.connectionRevision > revision, 'The remote\'s new invitation replaced the dead link');
     const [, second] = host.channels.values();
     assert.equal(second.joined.length, 2, 'Both ends joined the replacement introduction');
-    const operation = await sessions[dialer].submit({ operationId: 'after-replacement', program: p.program(p.emit('replaced', { ok: true })) });
+    const operation = await sessions[dialer].submit({ operationId: 'after-replacement', updates: [{ topic: 'events', input: { eventTopic: 'replaced', payload: { ok: true } } }] });
     await operation.materialized();
     // A redelivered copy of the replacement's own hint cannot tear it down.
     const settled = controllers[zombie].status.connectionRevision, replayed = host.invitations.at(-1);
     host.deliver(replayed.target, { channel: replayed.channel, requesterPeerId: replayed.requesterPeerId }); await flush(); await flush();
     assert.equal(controllers[zombie].status.connectionRevision, settled); assert.equal(host.channels.size, 2);
     // Signed work authored after the fault replicates over the replacement link.
-    const known = index => new Set(sessions[index].exportFacts().envelopes.map(envelope => envelope.payload.proposalId));
-    assert.equal(known(dialer).size, 1);
-    await eventually(() => [...known(dialer)].every(id => known(zombie).has(id)));
+    const count = index => sessions[index].readEvents({ topics: ['replaced'] }).events.length;
+    assert.equal(count(dialer), 1);
+    await eventually(() => count(zombie) === 1);
   } finally { await Promise.allSettled(controllers.map(controller => controller.close())); await Promise.allSettled(sessions.map(session => session.close())); }
 });
 
 test('a relay link is promoted to direct after a network change, and a failed promotion keeps the relay', async () => {
   const devices = [await p.openApplicationDevice({ store: memoryStore(), create: true }), await p.openApplicationDevice({ store: memoryStore(), create: true })];
-  const { authority, key } = await authorityForDevices(devices);
-  const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, authority, epochKeys: new Map([[0, key]]),
+  const { chainId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
+  const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, key]]),
     definition: p.defineApplication({ id: 'relay-promotion', version: '1', commands: {}, queries: {} }) })));
-  const host = sharedHost(authority.descriptor.payload.applicationId, { relays: true });
+  const host = sharedHost(chainId, { relays: true });
   host.state.udpBlocked = true;
   const controllers = sessions.map(session => participateApplication(session, { peers: host.peersFor(session.identity.publicKey), directTimeoutMs: 300,
     upgradeCooldownMs: 0, openDirectConnection: host.openDirectConnection }));
@@ -255,10 +257,10 @@ test('a relay link is promoted to direct after a network change, and a failed pr
     await controllers[observer].reconsiderConnections();
     let current; await eventually(() => { void kinds().then(value => { current = value; }); return current?.join() === 'direct,direct'; });
     assert.equal(maxLinks, 1, 'The relay link is retired before the direct link authenticates: never two links to one peer');
-    const operation = await sessions[dialer].submit({ operationId: 'after-promotion', program: p.program(p.emit('promoted', { ok: true })) });
+    const operation = await sessions[dialer].submit({ operationId: 'after-promotion', updates: [{ topic: 'events', input: { eventTopic: 'promoted', payload: { ok: true } } }] });
     await operation.materialized();
-    const known = index => new Set(sessions[index].exportFacts().envelopes.map(envelope => envelope.payload.proposalId));
-    await eventually(() => known(dialer).size === 1 && [...known(dialer)].every(id => known(observer).has(id)));
+    const count = index => sessions[index].readEvents({ topics: ['promoted'] }).events.length;
+    await eventually(() => count(dialer) === 1 && count(observer) === 1);
     const [direct] = await sessions[observer].diagnostics();
     assert.equal(direct.kind, 'direct'); assert.equal('reason' in direct, false);
     // Closing the controller hands the session back its own unannotated report.
@@ -269,10 +271,10 @@ test('a relay link is promoted to direct after a network change, and a failed pr
 
 test('a reloaded passive peer breaks the dialer zombie-link deadlock via its bounded one-shot fallback', async () => {
   const devices = [await p.openApplicationDevice({ store: memoryStore(), create: true }), await p.openApplicationDevice({ store: memoryStore(), create: true })];
-  const { authority, key } = await authorityForDevices(devices);
-  const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, authority, epochKeys: new Map([[0, key]]),
+  const { chainId, genesisBytes, casNodes, key } = await genesisForDevices(devices);
+  const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, key]]),
     definition: p.defineApplication({ id: 'passive-reload', version: '1', commands: {}, queries: {} }) })));
-  const host = sharedHost(authority.descriptor.payload.applicationId);
+  const host = sharedHost(chainId);
   const dialer = sessions[0].identity.publicKey < sessions[1].identity.publicKey ? 0 : 1, passive = 1 - dialer;
   const dialerController = participateApplication(sessions[dialer], { peers: host.peersFor(sessions[dialer].identity.publicKey), directTimeoutMs: 500,
     passiveDialDelayMs: 120, openDirectConnection: host.openDirectConnection });
@@ -292,10 +294,10 @@ test('a reloaded passive peer breaks the dialer zombie-link deadlock via its bou
       passiveDialDelayMs: 120, openDirectConnection: host.openDirectConnection });
     await eventually(() => host.channels.size === 2 && dialerController.status.connectionRevision > dialerRevision &&
       dialerController.status.connectedPeers.length === 1 && passiveController.status.connectedPeers.length === 1, 5000);
-    const op = await sessions[passive].submit({ operationId: 'after-passive-reload', program: p.program(p.emit('reloaded', { ok: true })) });
+    const op = await sessions[passive].submit({ operationId: 'after-passive-reload', updates: [{ topic: 'events', input: { eventTopic: 'reloaded', payload: { ok: true } } }] });
     await op.materialized();
-    const known = index => new Set(sessions[index].exportFacts().envelopes.map(envelope => envelope.payload.proposalId));
-    await eventually(() => [...known(passive)].every(id => known(dialer).has(id)));
+    const count = index => sessions[index].readEvents({ topics: ['reloaded'] }).events.length;
+    await eventually(() => count(passive) === 1 && count(dialer) === 1);
   } finally {
     await Promise.allSettled([dialerController.close(), passiveController.close()]);
     await Promise.allSettled(sessions.map(session => session.close()));

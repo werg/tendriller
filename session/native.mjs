@@ -2,7 +2,8 @@ import { lstat, mkdir, open, readFile } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { serialize } from 'node:v8';
-import { canonicalJson, PUBLICATION_LIMITS } from '@chronolog/peer-session';
+import { canonicalJson } from '@chronolog/peer-session';
+const MAX_PUBLICATION_FILES = 256;
 const identifier = value => { if (typeof value !== 'string' || !value.length || value.length > 512 || /[\u0000-\u001f]/u.test(value)) throw Error('INVALID_IDENTIFIER'); return value; };
 const OWNER_PROTOCOL = 'chronolog/authored-session/owner/v1';
 import { createNativeFrames as frames } from './native-transport.mjs';
@@ -275,7 +276,7 @@ async function supervise({ directory: path, profileId, openOwner, bindings = [],
           else if (method === 'preparePublication') value = await control.preparePublication({ ...args[0], operationId: operation(args[0]?.operationId) });
           else if (method === 'publish') {
             const publication = checkedPublication(args[0]), assets = args[1];
-            if (!Array.isArray(assets) || assets.length > PUBLICATION_LIMITS.files ||
+            if (!Array.isArray(assets) || assets.length > MAX_PUBLICATION_FILES ||
                 assets.some(asset => !publicationAsset(asset?.hash, asset?.bytes)))
               throw failure('SUPERVISOR_PROTOCOL_INVALID');
             value = await control.publish(publication, assets);
@@ -291,7 +292,7 @@ async function supervise({ directory: path, profileId, openOwner, bindings = [],
               client.stagedAssets.set(stageId, stage = { assets: new Map(), bytes: 0 });
             }
             let asset = stage.assets.get(hash);
-            if (asset?.done || (!asset && stage.assets.size >= PUBLICATION_LIMITS.files))
+            if (asset?.done || (!asset && stage.assets.size >= MAX_PUBLICATION_FILES))
               throw failure('SUPERVISOR_PROTOCOL_INVALID');
             if (client.stagedBytes + slice.length > PUBLICATION_STAGE_BYTES) throw failure('PEER_PUBLICATION_TOO_LARGE');
             if (!asset) stage.assets.set(hash, asset = { parts: [], done: false });
@@ -488,7 +489,7 @@ export async function attachNativeSession({ directory: path, token, connect, app
     publicationOperation: operationId => callControl('publicationOperation', [operationId]),
     preparePublication: input => callControl('preparePublication', [input]),
     async publish(publication, assets) {
-      if (!Array.isArray(assets) || assets.length > PUBLICATION_LIMITS.files ||
+      if (!Array.isArray(assets) || assets.length > MAX_PUBLICATION_FILES ||
           assets.some(asset => !publicationAsset(asset?.hash, asset?.bytes))) throw failure('SUPERVISOR_PROTOCOL_INVALID');
       const payloadBytes = assets.reduce((sum, item) => sum + item.bytes.length, 0);
       if (payloadBytes > PUBLICATION_STAGE_BYTES) throw failure('PEER_PUBLICATION_TOO_LARGE');

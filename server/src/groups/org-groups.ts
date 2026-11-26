@@ -3,14 +3,14 @@
  * admin-signed page group policies, companion host group attestations,
  * and seamless zero-trust org offboarding (Issue #136 Part 2).
  */
-import { requireHostAttestationIdentity, signRecord, verifyRecord, type AuthorityBundle, type Signed } from '../host-attestation';
+import { requireHostAttestationIdentity, signRecord, verifyRecord, type Signed } from '../host-attestation';
 import type { Env } from '../env';
 import type { Tendril } from '../tendril';
 import type { PagePrincipal } from '../access';
 import { allows } from '../access';
 import { addActivity } from '../activity';
 import { selectedApplication } from '../application';
-import { readAuthorityBundle } from '../authority';
+import { readControlState, type MaterializedControlState } from '../authority';
 import { notifyDiscoveryWatchers } from '../discovery';
 import { HttpError, isPlainObject, json, readJson } from '../http';
 import { TENDRIL_ID_RE } from '../ids';
@@ -198,18 +198,17 @@ export async function accountVerifiedGroups(env: Env, accountId: string, now = D
   return rows.results.map(r => r.group_id);
 }
 
-/** Validate an admin-signed PageGroupPolicy against the page's current Chronolog AuthorityBundle. */
+/** Validate an admin-signed PageGroupPolicy against the page's current Chronolog v2 `$permissions`. */
 export async function validateSignedGroupPolicy(
   t: Tendril,
-  bundle: AuthorityBundle,
+  state: MaterializedControlState,
   signed: Signed<PageGroupPolicy>,
 ): Promise<PageGroupPolicy> {
   if (!signed || typeof signed !== 'object' || !signed.payload || typeof signed.signer !== 'string' || typeof signed.signature !== 'string') {
     throw new HttpError(400, 'invalid_group_policy', 'Group policy must be a signed record');
   }
   await verifyRecord(GROUP_POLICY_DOMAIN, signed);
-  const head = bundle.memberships.at(-1)!;
-  const signerMember = head.payload.members.find(m => m.publicKey === signed.signer);
+  const signerMember = state.permissions.members.find(m => m.publicKey === signed.signer);
   if (!signerMember?.administrator) {
     throw new HttpError(403, 'administrator_required', 'Group policy must be signed by a current page administrator');
   }
@@ -342,29 +341,25 @@ export async function enforceOrgDepartureOnPage(
     }
   }
 
-  // Layer 2: Sign host departure attestations for every Chronolog member device key admitted for this account
-  // (excluding creator/owner and individually invited members).
-  const bundle = await readAuthorityBundle(t);
+  // Layer 2: Sign host departure attestations for every Chronolog member device key associated with this account
+  // (excluding genesis administrators and individually invited members).
+  const state = await readControlState(t);
   const signedDepartures: Signed<OrgDeparturePayload>[] = [];
-  if (bundle) {
-    const head = bundle.memberships.at(-1)!;
-    const rootPrincipal = bundle.descriptor.payload.rootPrincipal;
-    const admittedViaAccount = new Map<string, { accountId: string; inviteId: string | null }>();
-    for (const m of bundle.memberships) {
-      for (const a of m.payload.admitted) {
-        admittedViaAccount.set(a.publicKey, {
-          accountId: a.attestation.payload.accountId,
-          inviteId: a.attestation.payload.inviteId,
-        });
-      }
-    }
-    const targetKeys = head.payload.members
+  if (state) {
+    const genesisAdmins = new Set(
+      ((state.genesis.initialTopics.$permissions as { members?: Array<{ publicKey: string; administrator?: boolean }> } | undefined)?.members ?? [])
+        .filter(m => m.administrator)
+        .map(m => m.publicKey),
+    );
+    const attestations = t.db.get<Record<string, Signed<GroupAttestationPayload>>>('group_attestations', {});
+    const accountKeys = new Set(
+      Object.values(attestations)
+        .filter(a => a.payload.accountId === input.accountId)
+        .map(a => a.payload.publicKey),
+    );
+    const targetKeys = state.permissions.members
       .map(m => m.publicKey)
-      .filter(pk => {
-        if (pk === rootPrincipal) return false;
-        const ev = admittedViaAccount.get(pk);
-        return ev && ev.accountId === input.accountId && ev.inviteId === null;
-      });
+      .filter(pk => !genesisAdmins.has(pk) && accountKeys.has(pk));
 
     if (targetKeys.length > 0) {
       const host = await requireHostAttestationIdentity(t.env);
@@ -508,12 +503,12 @@ export async function handlePageGroups(t: Tendril, req: Request, sub: string, pr
   if (sub === 'groups/policy' && m === 'PUT') {
     if (!allows(principal, 'page.owner') && principal.role !== 'guest') throw new HttpError(403, 'forbidden');
     const owner = t.db.get<string | null>('owner_account', null);
-    const bundle = await readAuthorityBundle(t);
-    if (!bundle) throw new HttpError(409, 'page_uninitialized', 'Initialize page authority before setting group admission rules');
+    const state = await readControlState(t);
+    if (!state) throw new HttpError(409, 'page_uninitialized', 'Initialize page authority before setting group admission rules');
     const b = await readJson(req, 64 * 1024);
     if (!isPlainObject(b) || !isPlainObject(b.policy)) throw new HttpError(400, 'bad_request', 'Signed policy object is required');
     const signed = b.policy as unknown as Signed<PageGroupPolicy>;
-    const verified = await validateSignedGroupPolicy(t, bundle, signed);
+    const verified = await validateSignedGroupPolicy(t, state, signed);
     if (verified.rules.length > 0 && owner) {
       await requireTeamOrgEntitlement(t.env, owner);
     }
@@ -543,8 +538,8 @@ export async function handlePageGroups(t: Tendril, req: Request, sub: string, pr
   const ackMatch = /^groups\/departures\/([a-f0-9]{64})\/ack$/.exec(sub);
   if (ackMatch && m === 'POST') {
     const pk = ackMatch[1]!;
-    const bundle = await readAuthorityBundle(t);
-    const stillMember = bundle?.memberships.at(-1)?.payload.members.some(mem => mem.publicKey === pk) ?? false;
+    const state = await readControlState(t);
+    const stillMember = state?.permissions.members.some(mem => mem.publicKey === pk) ?? false;
     if (stillMember) {
       throw new HttpError(409, 'member_still_present', 'Cannot clear departure until Chronolog membership removes this device key');
     }

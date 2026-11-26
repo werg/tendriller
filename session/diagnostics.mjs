@@ -69,7 +69,7 @@ export async function diagnoseApplicationSession(session, { mode = 'own', signal
   const findings=[];let status={},definition=null,participation=null,endpoints,participant;
   const add=(code,severity='error')=>findings.push(diagnosticFinding(code,{scope:{...scope,...status},state:status,severity}));
   try{status=stateOf(session.status);}catch(error){add(error);}
-  try{const value=session.describe();const names=entries=>Array.isArray(entries)?entries.map(entry=>text(entry?.name)).filter(Boolean).slice(0,256):[];
+  try{const value=await session.describe();const names=entries=>Array.isArray(entries)?entries.map(entry=>text(entry?.name)).filter(Boolean).slice(0,256):[];
     definition={...pick(value,['id','version']),commands:names(value.commands),queries:names(value.queries)};
   }catch(error){add(error);}
   try{participant=session;if(typeof session.diagnostics==='function')participation={phase:status.phase==='closed'?'closed':status.connectedPeers>0?'connected':'disconnected',

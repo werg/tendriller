@@ -9,14 +9,18 @@ const TASK_BUDGET = { json: 384 * 1024, bytes: 512 * 1024, nodes: 28_000 };
 const EVIDENCE_BUDGET = { json: 128 * 1024, bytes: 192 * 1024, nodes: 14_000 };
 const encoder = new TextEncoder();
 const recordsSql = `SELECT j.id,j.sequence,j.type,j.task_id,j.slot_id,j.author,j.body,
-  lower(hex(j.proposal_id)),t.operation_id,lower(hex(t.author_id)),t.outcome
-  FROM collab_journal j LEFT JOIN chronolog_transactions t ON t.tx_id=j.proposal_id`;
+  j.proposal_id,j.operation_id
+  FROM collab_journal j`;
+
+function queryCollab(view, sql, params) {
+  return view.query('collab', { sql, params });
+}
 
 function revisionOf(view) {
   const revision = view?.revision;
   if (!/^[0-9a-f]{64}$/u.test(revision?.digest) || !['local', 'final'].includes(revision?.view) ||
-      !/^[0-9a-f]{64}$/u.test(revision?.executionManifestDigest) || !/^[0-9a-f]{64}$/u.test(revision?.policyDigest))
-    throw new CollaborationError('PROVENANCE_UNAVAILABLE', 'The captured view must bind the operation set, execution manifest, policy and view kind');
+      !/^[0-9a-f]{64}$/u.test(revision?.stateRoot) || !/^[0-9a-f]{64}$/u.test(revision?.historyDigest))
+    throw new CollaborationError('PROVENANCE_UNAVAILABLE', 'The captured view must bind the v2 revision digest, stateRoot, historyDigest and view kind');
   return structuredClone(revision);
 }
 function integer(value) {
@@ -36,23 +40,21 @@ function source(encoded, author) {
     deviceId: author, evidence: 'signer-asserted', contextEvidence: 'caller-asserted' };
 }
 function verified(row, view) {
-  const [id, sequence, type, taskId, slotId, author, body, proposalId, operationId, verifiedAuthor, outcome] = row;
-  if (outcome !== 'accepted' || verifiedAuthor !== author || typeof operationId !== 'string' || !operationId ||
+  const [id, sequence, type, taskId, slotId, author, body, proposalId, operationId] = row;
+  if (typeof operationId !== 'string' || !operationId ||
       !/^[0-9a-f]{64}$/u.test(proposalId) || !/^[0-9a-f]{64}$/u.test(view.applicationId))
     throw new CollaborationError('PROVENANCE_UNAVAILABLE', 'The selected domain record does not match authenticated proposal/actor evidence');
   return { id, sequence: integer(sequence), type, taskId, slotId, author, body: JSON.parse(body),
     operation: Object.freeze({ applicationId: view.applicationId, author, operationId, proposalId }) };
 }
 async function count(view, where, parameters) {
-  const result = await view.query(`SELECT COUNT(*) FROM collab_journal j WHERE ${where}`, parameters);
+  const result = await queryCollab(view, `SELECT COUNT(*) FROM collab_journal j WHERE ${where}`, parameters);
   return integer(result.rows[0]?.[0]);
 }
 async function* records(view, where, parameters, after = 0) {
   revisionOf(view);
   for (;;) {
-    // A captured Worker view also returns these rows over a bounded facade.
-    // Small SQL batches bound that inner response before the outer page budget.
-    const result = await view.query(`${recordsSql} WHERE (${where}) AND j.sequence>? ORDER BY j.sequence LIMIT ${RECORD_BATCH}`, [...parameters, after]);
+    const result = await queryCollab(view, `${recordsSql} WHERE (${where}) AND j.sequence>? ORDER BY j.sequence LIMIT ${RECORD_BATCH}`, [...parameters, after]);
     for (const row of result.rows) { const record = verified(row, view); after = record.sequence; yield record; }
     if (result.rows.length < RECORD_BATCH) return;
   }
@@ -134,9 +136,12 @@ async function currentTask(view, request) {
   const taskId = request.taskId, body = request.body, revision = revisionOf(view);
   const version = await count(view, 'j.task_id=?', [taskId]);
   const controls = await selected(view, "j.task_id=? AND j.type IN ('cancel','finalize')", [taskId], 2);
-  const current = await selected(view, 'j.id IN (SELECT id FROM collab_latest_claims WHERE task_id=?)', [taskId], 32);
+  const latestClaimSubquery = `SELECT c.id FROM collab_journal c WHERE c.task_id=j.task_id AND c.type IN ('claim','handoff')
+    AND NOT EXISTS (SELECT 1 FROM collab_journal n WHERE n.task_id=c.task_id AND n.slot_id=c.slot_id AND n.type IN ('claim','handoff') AND n.sequence>c.sequence)`;
+  const current = await selected(view, `j.task_id=? AND j.id IN (${latestClaimSubquery})`, [taskId], 32);
   const acknowledgements = await selected(view, `j.task_id=? AND j.type='ackCancel' AND EXISTS (
-    SELECT 1 FROM collab_latest_claims c WHERE c.task_id=j.task_id AND c.slot_id=j.slot_id
+    SELECT 1 FROM collab_journal c WHERE c.task_id=j.task_id AND c.slot_id=j.slot_id AND c.type IN ('claim','handoff')
+      AND NOT EXISTS (SELECT 1 FROM collab_journal n WHERE n.task_id=c.task_id AND n.slot_id=c.slot_id AND n.type IN ('claim','handoff') AND n.sequence>c.sequence)
       AND json_extract(c.body,'$.epoch')=json_extract(j.body,'$.claimEpoch'))`, [taskId], 32);
   const accepted = await selected(view, "j.task_id=? AND j.type='result' AND json_extract(j.body,'$.disposition')='accepted'", [taskId], 32);
   const cancel = controls.find(record => record.type === 'cancel'), finalized = controls.find(record => record.type === 'finalize');
@@ -176,8 +181,9 @@ export async function readCollaborationTasks(view, input = {}) {
   if (options.eligibleSigner !== undefined) {
     filter.eligibleSigner = signerId(options.eligibleSigner);
     where.push(`(EXISTS (SELECT 1 FROM json_each(j.body,'$.slots') s,json_each(s.value,'$.eligibleSigners') e WHERE e.value=?) OR
-      EXISTS (SELECT 1 FROM collab_latest_claims c WHERE c.task_id=j.task_id AND
-        CASE WHEN c.type='handoff' THEN json_extract(c.body,'$.assignee') ELSE c.author END=?))`);
+      EXISTS (SELECT 1 FROM collab_journal c WHERE c.task_id=j.task_id AND c.type IN ('claim','handoff')
+        AND NOT EXISTS (SELECT 1 FROM collab_journal n WHERE n.task_id=c.task_id AND n.slot_id=c.slot_id AND n.type IN ('claim','handoff') AND n.sequence>c.sequence)
+        AND CASE WHEN c.type='handoff' THEN json_extract(c.body,'$.assignee') ELSE c.author END=?))`);
     parameters.push(filter.eligibleSigner, filter.eligibleSigner);
   }
   if (filter.state !== 'all') where.push(`${filter.state === 'open' ? 'NOT ' : ''}EXISTS

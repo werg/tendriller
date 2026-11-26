@@ -59,24 +59,30 @@ try {
     await page.goto(`http://127.0.0.1:${server.address().port}/`); await page.waitForFunction(() => window.identity);
     const owningWorker = await created, browserId = await page.evaluate(() => window.identity);
     device = await openNativeDevice({ path: join(temporary, 'native.sqlite'), create: true });
-    const signer = await p.createSigningIdentity(), key = crypto.getRandomValues(new Uint8Array(32));
-    const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest()), applicationId = '73'.repeat(32);
-    const descriptor = await p.signAppDescriptor({ applicationId, rootPrincipal: device.identity.publicKey,
-      authorityPublicKey: signer.publicKey, executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), finalityPolicy: { kind: 'none' } }, signer);
-    const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
-      epochKeyDigest: await p.epochKeyCommitment(applicationId, 0, key),
-      members: [device.identity.publicKey, browserId].map((publicKey, index) => ({ publicKey, wrapKey: null, reader: true, writer: true, administrator: index === 0, publisher: index === 0, finalizer: false })),
-      admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true, administrator: true } }, admitted: [], invites: [] }, signer);
-    authority = { descriptor, memberships: [membership] };
-    session = await p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, key]]) });
+    const chain = await p.createChainGenesis({
+      creator: { publicKey: device.identity.publicKey, reader: true, writer: true, administrator: true, publisher: true, finalizer: false },
+      members: [{ publicKey: browserId, reader: true, writer: true, administrator: false, publisher: false, finalizer: false }],
+      privateChain: true,
+    });
+    const applicationId = chain.chainId;
+    const key = chain.epoch0Key;
+    session = await p.createApplicationSession({
+      device,
+      definition,
+      genesis: chain.genesisBytes,
+      casNodes: chain.casNodes,
+      epochKeys: new Map([[0, key]]),
+    });
     receiver = serveObservations({ session, allowedDevices: [browserId] });
     mediaReceiver = servePeerInference({ session, allowedDevices: [browserId], maxRequests: 2, infer: async input => {
       const received = { bytes: input.bytes.length, sha256: hash(input.bytes), mediaType: input.mediaType, context: input.context, source: input.source };
       mediaReceived.push(received); return { text: 'Deterministic local transport check only.', sha256: received.sha256 };
     } });
     const workerSetup = owningWorker.evaluate(value => self.initializeWorker(value), {
-      authority: { descriptor, memberships: [{ ...membership, payload: { ...membership.payload, authorTimeAfterMs: '-1' } }] },
-      key: [...key], nativePublicKey: session.identity.publicKey,
+      genesisBytes: [...chain.genesisBytes],
+      casNodes: chain.casNodes.map(n => ({ hash: n.hash, bytes: [...n.bytes], partition: n.partition })),
+      key: [...key],
+      nativePublicKey: session.identity.publicKey,
     });
     link = await Promise.all([session.connectPeer({ connection: bridge.connection, peerIdentity: browserId }), workerSetup]).then(([link]) => link);
     return page.evaluate(value => window.setup(value), { applicationId, nativePublicKey: session.identity.publicKey });

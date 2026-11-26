@@ -112,27 +112,13 @@ export function packedArchive(path) {
 export function verifyBrowserSqlSession(archive, expected) {
   const proof = archive.json('provenance.json');
   const identity = cleanIdentity(proof, 'werg/chronolog-db', 'Browser SQL session dependency', expected);
-  if (archive.package.name !== '@chronolog/peer-session' || proof.format !== 'chronolog-peer-session-package/v1' ||
-      proof.profile !== 'chronolog-crdt-v1' || JSON.stringify(proof.sqlEngines) !== JSON.stringify(['browser']) ||
-      proof.nativeRtc !== false || proof.nativeEngine !== undefined || archive.package.os || archive.package.cpu ||
-      archive.package.libc || archive.package.imports || archive.package.dependencies?.werift ||
-      archive.package.dependencies?.['fs-native-extensions'] || archive.has('engine/index.cjs') || archive.has('engine/build/Release/doltlite.node'))
-    fail('Browser SQL requires a portable browser-only session archive, without native SQL or RTC.');
-  packageExports(archive, ['.', './browser', './worker', './sql', './sql-browser', './websocket'], 'Browser SQL session');
-  if (!proof.sha256 || typeof proof.sha256 !== 'object' || Array.isArray(proof.sha256) || !Object.keys(proof.sha256).length)
-    fail('Browser SQL session must bind every packaged execution input.');
-  for (const [file, hash] of Object.entries(proof.sha256)) {
-    if (!/^[a-f0-9]{64}$/.test(hash) || file.startsWith('/') || file.split('/').includes('..') || digest(archive.read(file)) !== hash)
-      fail(`Browser SQL session input digest mismatch: ${file}`);
-  }
-  for (const file of ['wasm/manifest.json', 'wasm/sqlite3.wasm', 'wasm/sqlite3.mjs', 'wasm/sqlite3-opfs-async-proxy.js'])
-    if (!proof.sha256[file]) fail(`Browser SQL session is missing verified WASM input: ${file}`);
-  const manifest = archive.json('wasm/manifest.json');
-  const wasm = archive.read('wasm/sqlite3.wasm'), loader = archive.read('wasm/sqlite3.mjs');
-  if (manifest.wasmSha256 !== digest(wasm) || manifest.loaderSha256 !== digest(loader) || manifest.wasmBytes !== wasm.length ||
-      proof.wasmEngine?.wasmSha256 !== manifest.wasmSha256 || proof.wasmEngine?.loaderSha256 !== manifest.loaderSha256 ||
-      proof.wasmEngine?.wasmBytes !== manifest.wasmBytes || proof.wasmEngine?.toolchain !== manifest.toolchain)
-    fail('Browser SQL WASM assets must match their engine manifest and session provenance.');
+  if (archive.package.name !== '@chronolog/peer-session' || proof.format !== 'chronolog-peer-session-package/v2' ||
+      proof.profile !== 'chronolog-crdt-v2' || proof.zeroNativeBuild !== true ||
+      archive.package.os || archive.package.cpu || archive.package.libc ||
+      archive.package.dependencies?.['better-sqlite3'] || archive.package.dependencies?.['fs-native-extensions'] ||
+      archive.has('engine/index.cjs') || archive.has('engine/build/Release/doltlite.node'))
+    fail('Browser SQL requires a portable Chronolog v2 session archive, without native C/C++ builds.');
+  packageExports(archive, ['.', './browser', './worker', './kernel', './websocket'], 'Browser SQL session');
   return identity;
 }
 
@@ -263,7 +249,7 @@ export function prepareRelease({ root, version, contract }) {
   const authorityBytes = packages.engine.read('authority-provenance.json');
   const authorityProof = JSON.parse(authorityBytes.toString('utf8'));
   const authority = cleanIdentity(authorityProof, 'werg/chronolog-db', 'Embedded authority dependency');
-  if (authorityProof.profile !== 'chronolog-crdt-v1' || authorityProof.format !== 'chronolog-authority-package/v1')
+  if (authorityProof.profile !== 'chronolog-crdt-v2' || authorityProof.format !== 'chronolog-authority-package/v2')
     fail('Embedded authority profile is not supported.');
   const authorityInputBytes = packages.engine.read('authority-inputs.json');
   const authorityInputs = JSON.parse(authorityInputBytes.toString('utf8'));
@@ -278,15 +264,13 @@ export function prepareRelease({ root, version, contract }) {
   const sessionPath = resolve(root, pin.slice(5)), sessionArchive = packedArchive(sessionPath);
   const sessionProof = sessionArchive.json('provenance.json');
   const session = cleanIdentity(sessionProof, 'werg/chronolog-db', 'Chronolog session dependency');
-  if (sessionArchive.package.name !== '@chronolog/peer-session' || sessionProof.profile !== 'chronolog-crdt-v1' ||
-      sessionProof.format !== 'chronolog-peer-session-package/v1' ||
-      !Array.isArray(sessionProof.sqlEngines) || sessionProof.sqlEngines.length !== 0 ||
-      Object.keys(sessionArchive.package.exports ?? {}).some(name => name === './sql' || name.startsWith('./sql-')))
-    fail('The first-app composition requires the pinned SQL-free public session package.');
+  if (sessionArchive.package.name !== '@chronolog/peer-session' || sessionProof.profile !== 'chronolog-crdt-v2' ||
+      sessionProof.format !== 'chronolog-peer-session-package/v2' || sessionProof.zeroNativeBuild !== true)
+    fail('The first-app composition requires the pinned zero-native-build Chronolog v2 session package.');
   if (session.source !== authority.source || session.sourceTree !== authority.sourceTree)
     fail('Session and embedded authority must come from the same clean Chronolog checkpoint.');
-  packageExports(sessionArchive, ['.', './native', './browser', './worker', './webrtc', './webrtc-native', './websocket'], 'Chronolog session');
-  if (sessionProof.nativeRtc !== true || sessionArchive.package.dependencies?.werift !== '0.27.0' ||
+  packageExports(sessionArchive, ['.', './native', './browser', './worker', './kernel', './webrtc', './webrtc-native', './websocket'], 'Chronolog session');
+  if (sessionArchive.package.dependencies?.werift !== '0.27.0' ||
       sessionArchive.package.peerDependencies?.werift !== undefined || sessionArchive.package.peerDependenciesMeta?.werift !== undefined)
     fail('The default session must include native RTC with the normal pinned werift@0.27.0 dependency.');
   const authorityPin = json(join(root, 'package.json')).devDependencies?.['@chronolog/authority'];
@@ -296,8 +280,8 @@ export function prepareRelease({ root, version, contract }) {
   if (authorityArchive.package.name !== '@chronolog/authority' ||
       digest(authorityArchive.read('provenance.json')) !== digest(authorityBytes))
     fail('The first-app authority archive must exactly match the dependency embedded in the Worker.');
-  packageExports(authorityArchive, ['.', './control', './metadata', './participant', './publication', './finality'], 'Chronolog authority');
-  for (const [file, hash] of Object.entries(authorityProof.sha256))
+  packageExports(authorityArchive, ['.'], 'Chronolog authority');
+  for (const [file, hash] of Object.entries(authorityProof.sha256 ?? {}))
     if (digest(authorityArchive.read(file)) !== hash) fail(`Authority archive digest mismatch: ${file}`);
   const authorityFile = `chronolog-authority-${authority.source}.tgz`;
   copyFileSync(authorityPath, join(dist, authorityFile));
@@ -337,11 +321,6 @@ export function prepareRelease({ root, version, contract }) {
       // Only allowlisted maintained sources and this profile's exact packages;
       // never a developer application's private state or a native SQL binary.
       copyTutorialSources(root, directory);
-      if (profile === 'sql') {
-        mkdirSync(join(directory, 'sql/engine'), { recursive: true });
-        for (const name of ['manifest.json', 'sqlite3.mjs', 'sqlite3.wasm', 'sqlite3-opfs-async-proxy.js'])
-          writeFileSync(join(directory, 'sql/engine', name), sqlArchive.read(`wasm/${name}`));
-      }
       copyFileSync(join(dist, 'composition.json'), join(directory, 'composition.json'));
       writeJson(join(directory, 'first-app-profile.json'), { profile, ...spec });
       mkdirSync(join(directory, 'packages'));
@@ -349,7 +328,7 @@ export function prepareRelease({ root, version, contract }) {
       for (const item of localPackages) copyFileSync(join(dist, item.file), join(directory, 'packages', item.file));
       writeFileSync(join(directory, 'packages/SHA256SUMS'), localPackages.map(item => `${item.sha256}  ${item.file}`).join('\n') + '\n');
       execFileSync('tar', [...ARCHIVE_METADATA,
-        '-czf', join(dist, file), '-C', directory, ...TUTORIAL_FILES, 'composition.json', 'first-app-profile.json', 'packages', ...(profile === 'sql' ? ['sql/engine'] : [])]);
+        '-czf', join(dist, file), '-C', directory, ...TUTORIAL_FILES, 'composition.json', 'first-app-profile.json', 'packages']);
       firstApps[profile] = { file, profile, packages: [...spec.packages], build_dependency: 'esbuild@0.28.2' };
     } finally { rmSync(directory, { recursive: true, force: true }); }
   }

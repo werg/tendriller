@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as p from '@chronolog/peer-session';
 import { openNativeDevice } from '@chronolog/peer-session/native';
-import { definition } from '../../docs/tutorial/templates/notes/domain.mjs';
-import { authorityForDevices } from '../../collaboration/test/physical-fixture.mjs';
+import { definition, imports, topics } from '../../docs/tutorial/templates/notes/domain.mjs';
+import { genesisForDevices } from '../../collaboration/test/physical-fixture.mjs';
 
 // Execute the published example itself: the native API and cleanup contract
 // must stay usable without a private package import or an undocumented method.
@@ -91,8 +91,8 @@ test('documented consumer reads the pinned public native session and resumes its
   let session;
   t.after(async () => { try { await (session ? session.close() : device.close()); }
     finally { await rm(directory, { recursive: true, force: true }); } });
-  const { authority, key: epochKey } = await authorityForDevices([device], { applicationId: '75'.repeat(32) });
-  session = await p.createApplicationSession({ device, definition, authority, epochKeys: new Map([[0, epochKey]]) });
+  const { genesisBytes, casNodes, key: epoch0Key } = await genesisForDevices([device], { imports, topics });
+  session = await p.createApplicationSession({ device, definition, genesis: genesisBytes, casNodes, epochKeys: new Map([[0, epoch0Key]]) });
   for (const operationId of ['first', 'second']) {
     const operation = await session.command('putNote', { noteId: operationId, text: operationId }, { operationId });
     assert.equal((await operation.materialized({ signal: AbortSignal.timeout(5000) })).outcome, 'accepted');

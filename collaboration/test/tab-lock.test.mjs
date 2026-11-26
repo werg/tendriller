@@ -1,13 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defineApplication, eventExecutionManifest } from '@chronolog/peer-session';
+import { defineApplication, describeApplication } from '@chronolog/peer-session';
 import { openBrowserOwner, TAB_OWNER_PROTOCOL } from '../../session/browser.mjs';
 import { serveBrowserOwner } from '../../session/worker.mjs';
 
 const testDefinition = defineApplication({
   id: 'tendriller.call-room',
   version: '1',
-  executionManifest: eventExecutionManifest(),
   commands: {},
   queries: {},
 });
@@ -80,6 +79,7 @@ test('single-active-tab lock rejects second tab with TAB_ACTIVE_ELSEWHERE and ha
           const fakeSession = {
             applicationId: 'a'.repeat(64),
             definition: testDefinition,
+            describe: async () => describeApplication(testDefinition),
             identity: { publicKey: 'b'.repeat(64) },
             signal: lifetime.signal,
             status: { phase: 'ready', canAuthor: true, database: 'ready', connectedPeers: 0, pendingOperations: 0, materializationError: null },

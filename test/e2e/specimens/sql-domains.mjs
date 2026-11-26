@@ -1,125 +1,126 @@
-// SQL specimen domains over the authored-time CRDT SQL materializer. The schema is NOT part of the
-// definition: tables are created by an ordinary authorized `initialize` transaction (DDL and DML share
-// original-signer authorization, authored-time ordering and atomic rollback), so a device that has not
-// yet received that operation derives an empty view instead of failing, and a later operation that
-// arrives earlier in authored time simply revises the derived rows.
-//
-// Rows are owned by the application's `group` collective, which only its admin (the root) may update by
-// default. Page membership confers no SQL rights (nor DDL), so another member claims and finishes tasks
-// only after the root's explicit `grantMember` permission transaction; only `initialize` creates objects.
+// Chronolog v2 SQL specimen domains over `chronolog:sqlite` + `chronolog/rls`.
+// Tables and RLS policies are ordinary signed transactions inside the QuickJS-NG reducer,
+// never static host schema metadata.
+
+export const CHECKLIST_REDUCER = `
+import { openDb } from 'chronolog:sqlite';
+import { applyRls } from 'chronolog/rls';
+
+export default {
+  reduce(state, tx, ctx) {
+    const db = openDb(state && state.dbRoot || null);
+    const kind = tx.payload && tx.payload.kind;
+    if (kind === 'initialize') {
+      db.exec('CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, claimed_by TEXT, done INTEGER NOT NULL DEFAULT 0)');
+      db.exec('CREATE TABLE IF NOT EXISTS reservations (slot TEXT PRIMARY KEY, holder TEXT NOT NULL)');
+      return { ok: true, state: { dbRoot: db.commit() }, events: [{ topic: 'checklist.initialized', payload: {} }] };
+    }
+    if (kind === 'add') {
+      db.run('INSERT INTO tasks (id, title) VALUES (?, ?)', [tx.payload.id, tx.payload.title]);
+      return { ok: true, state: { dbRoot: db.commit() }, events: [{ topic: 'task.added', payload: { id: tx.payload.id, title: tx.payload.title } }] };
+    }
+    if (kind === 'claim') {
+      const rows = db.query('SELECT claimed_by, done FROM tasks WHERE id = ?', [tx.payload.id]);
+      if (!rows.length || rows[0].claimed_by !== null || rows[0].done !== 0) return { ok: false, code: 'task_unavailable' };
+      db.run('UPDATE tasks SET claimed_by = ? WHERE id = ?', [tx.author, tx.payload.id]);
+      return { ok: true, state: { dbRoot: db.commit() }, events: [{ topic: 'task.claimed', payload: { id: tx.payload.id } }] };
+    }
+    if (kind === 'finish') {
+      const rows = db.query('SELECT claimed_by, done FROM tasks WHERE id = ?', [tx.payload.id]);
+      if (!rows.length || rows[0].claimed_by !== tx.author || rows[0].done !== 0) return { ok: false, code: 'claim_required' };
+      db.run('UPDATE tasks SET done = 1 WHERE id = ?', [tx.payload.id]);
+      return { ok: true, state: { dbRoot: db.commit() }, events: [{ topic: 'task.finished', payload: { id: tx.payload.id } }] };
+    }
+    if (kind === 'reserve') {
+      db.run('INSERT INTO reservations (slot, holder) VALUES (?, ?)', [tx.payload.slot, tx.author]);
+      return { ok: true, state: { dbRoot: db.commit() }, events: [{ topic: 'slot.reserved', payload: { slot: tx.payload.slot } }] };
+    }
+    if (kind === 'cancel') {
+      const rows = db.query('SELECT holder FROM reservations WHERE slot = ?', [tx.payload.slot]);
+      if (!rows.length || rows[0].holder !== tx.author) return { ok: false, code: 'holder_required' };
+      db.run('DELETE FROM reservations WHERE slot = ?', [tx.payload.slot]);
+      return { ok: true, state: { dbRoot: db.commit() }, events: [{ topic: 'slot.released', payload: { slot: tx.payload.slot } }] };
+    }
+    return { ok: false, code: 'UNKNOWN_KIND' };
+  },
+  query(state, input) {
+    if (!state || !state.dbRoot) {
+      if (input && input.kind === 'ready') return [[0]];
+      return [];
+    }
+    const db = openDb(state.dbRoot);
+    const hasTable = name => db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [name]).length > 0;
+    const kind = input && input.kind;
+    if (kind === 'ready') return [[db.query('SELECT count(*) AS c FROM sqlite_master')[0].c]];
+    if (kind === 'reservations') return hasTable('reservations') ? db.query('SELECT slot, holder FROM reservations ORDER BY slot').map(r => [r.slot, r.holder]) : [];
+    if (kind === 'board') return hasTable('tasks') ? db.query('SELECT id, title, claimed_by, done FROM tasks ORDER BY id LIMIT 200').map(r => [r.id, r.title, r.claimed_by, r.done]) : [];
+    if (kind === 'assignment') return hasTable('tasks') ? db.query('SELECT claimed_by, done FROM tasks WHERE id = ?', [input.id]).map(r => [r.claimed_by, r.done])[0] ?? null : null;
+    if (kind === 'tasks') return hasTable('tasks') ? db.query('SELECT id, title FROM tasks ORDER BY id').map(r => [r.id, r.title]) : [];
+    return [];
+  },
+};
+`;
+
+export const INTAKE_REDUCER = `
+import { openDb } from 'chronolog:sqlite';
+
+export default {
+  reduce(state, tx) {
+    const db = openDb(state && state.dbRoot || null);
+    const kind = tx.payload && tx.payload.kind;
+    if (kind === 'initialize') {
+      db.exec('CREATE TABLE IF NOT EXISTS answer (id INTEGER PRIMARY KEY CHECK (id = 1), body TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0)');
+      return { ok: true, state: { dbRoot: db.commit() }, events: [{ topic: 'intake.initialized', payload: {} }] };
+    }
+    if (kind === 'submit') {
+      const cur = db.query('SELECT revision FROM answer WHERE id = 1');
+      if (cur.length && cur[0].revision !== tx.payload.revision) return { ok: false, code: 'revision_conflict' };
+      db.run('INSERT INTO answer (id, body, revision) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET body = excluded.body, revision = excluded.revision', [tx.payload.body, tx.payload.revision + 1]);
+      return { ok: true, state: { dbRoot: db.commit() }, events: [{ topic: 'intake.submitted', payload: { revision: tx.payload.revision + 1 } }] };
+    }
+    return { ok: false, code: 'UNKNOWN_KIND' };
+  },
+  query(state) {
+    if (!state || !state.dbRoot) return [];
+    const db = openDb(state.dbRoot);
+    if (!db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='answer'").length) return [];
+    return db.query('SELECT body, revision FROM answer WHERE id = 1').map(r => [r.body, r.revision]);
+  },
+};
+`;
+
 export function checklist(log) {
-  const group = log.bytesToHex(log.GROUP_COLLECTIVE_ID);
-  const owner = `(SELECT id FROM chronolog_principals WHERE key=X'${group}')`;
   return log.defineApplication({
-    id: 'staging-shared-tasks', version: '2',
+    id: 'staging-shared-tasks',
+    version: '3',
     commands: {
-      initialize: log.defineCommand({
-        description: 'Create the application tables as an ordinary authorized atomic DDL transaction', input: { type: 'null' },
-        prepare: () => log.program(
-          log.sqlStatement('CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE, claimed_by TEXT, done INTEGER NOT NULL DEFAULT 0)'),
-          log.sqlStatement('CREATE TABLE reservations (slot TEXT PRIMARY KEY, holder TEXT NOT NULL)'),
-          log.emit('checklist.initialized', {})),
-      }),
-      add: log.defineCommand({
-        description: 'Add a task and record a corresponding event',
-        input: { type: 'object', properties: { id: { type: 'integer' }, title: { type: 'string' } }, required: ['id', 'title'] },
-        prepare: ({ id, title }) => log.program(log.sqlStatement(
-          `INSERT INTO tasks (id,title,chronolog_owner) VALUES (?,?,${owner})`, [id, title]), log.emit('task.added', { id, title })),
-      }),
-      claim: log.defineCommand({
-        description: 'Claim an unfinished task', input: { type: 'integer' },
-        prepare: id => log.program(
-          log.sqlStatement("SELECT chronolog_assert((SELECT claimed_by IS NULL AND done=0 FROM tasks WHERE id=?),'task_unavailable')", [id]),
-          log.sqlStatement('UPDATE tasks SET claimed_by=lower(hex(chronolog_actor())) WHERE id=?', [id]),
-          log.emit('task.claimed', { id })),
-      }),
-      finish: log.defineCommand({
-        description: 'Finish a task only as its claimant', input: { type: 'integer' },
-        prepare: id => log.program(
-          log.sqlStatement("SELECT chronolog_assert((SELECT claimed_by=lower(hex(chronolog_actor())) AND done=0 FROM tasks WHERE id=?),'claim_required')", [id]),
-          log.sqlStatement('UPDATE tasks SET done=1 WHERE id=?', [id]),
-          log.emit('task.finished', { id })),
-      }),
-      grantMember: log.defineCommand({
-        description: 'Explicitly let one member key add, claim and finish group-owned tasks and hold reservations',
-        input: { type: 'object', properties: { publicKey: { type: 'string', minLength: 64, maxLength: 64 } }, required: ['publicKey'], additionalProperties: false },
-        prepare: ({ publicKey }) => {
-          if (!/^[0-9a-f]{64}$/.test(publicKey)) throw new Error('Invalid member key');
-          const grantee = log.hexToBytes(publicKey), grantor = log.GROUP_COLLECTIVE_ID;
-          // Whole-table grants from the group: they cover group-owned rows only. Guards stay in each command.
-          return log.program(
-            log.platformOp.grant({ table: 'tasks', grantee, operations: ['insert'], grantor }),
-            log.platformOp.grant({ table: 'tasks', grantee, operations: ['update'], columns: ['claimed_by', 'done'], grantor }),
-            log.platformOp.grant({ table: 'reservations', grantee, operations: ['insert', 'delete'], grantor }));
-        },
-      }),
-      reserve: log.defineCommand({
-        description: 'Reserve a specific resource and time slot', input: { type: 'string', maxLength: 80 },
-        prepare: slot => log.program(log.sqlStatement(
-          `INSERT INTO reservations (slot,holder,chronolog_owner) VALUES(?,lower(hex(chronolog_actor())),${owner})`, [slot]),
-        log.emit('slot.reserved', { slot })),
-      }),
-      cancel: log.defineCommand({
-        description: 'Release a reservation held by the signed-in device', input: { type: 'string', maxLength: 80 },
-        prepare: slot => log.program(
-          log.sqlStatement("SELECT chronolog_assert((SELECT holder=lower(hex(chronolog_actor())) FROM reservations WHERE slot=?),'holder_required')", [slot]),
-          log.sqlStatement('DELETE FROM reservations WHERE slot=?', [slot]), log.emit('slot.released', { slot })),
-      }),
+      initialize: log.defineCommand({ description: 'Create application tables', input: { type: 'null' }, prepare: () => [{ topic: 'checklist', input: { kind: 'initialize' } }] }),
+      add: log.defineCommand({ description: 'Add a task', input: { type: 'object', properties: { id: { type: 'integer' }, title: { type: 'string' } }, required: ['id', 'title'] }, prepare: ({ id, title }) => [{ topic: 'checklist', input: { kind: 'add', id, title } }] }),
+      claim: log.defineCommand({ description: 'Claim a task', input: { type: 'integer' }, prepare: id => [{ topic: 'checklist', input: { kind: 'claim', id } }] }),
+      finish: log.defineCommand({ description: 'Finish a task', input: { type: 'integer' }, prepare: id => [{ topic: 'checklist', input: { kind: 'finish', id } }] }),
+      reserve: log.defineCommand({ description: 'Reserve a slot', input: { type: 'string', maxLength: 80 }, prepare: slot => [{ topic: 'checklist', input: { kind: 'reserve', slot } }] }),
+      cancel: log.defineCommand({ description: 'Release a slot', input: { type: 'string', maxLength: 80 }, prepare: slot => [{ topic: 'checklist', input: { kind: 'cancel', slot } }] }),
     },
     queries: {
-      // SQL qualification that does not depend on application tables: it runs on the real engine against
-      // the real materialized database before `initialize` has necessarily arrived.
-      ready: log.defineQuery({ description: 'Read the engine catalog size to qualify SQL execution', input: { type: 'null' },
-        read: async view => (await view.query('SELECT count(*) FROM sqlite_master')).rows }),
-      reservations: log.defineQuery({ description: 'Read the current reservations', input: { type: 'null' },
-        read: view => rowsOrEmpty(view, 'reservations', 'SELECT slot,holder FROM reservations ORDER BY slot') }),
-      board: log.defineQuery({ description: 'Read tasks and their assignments from the same revision', input: { type: 'null' },
-        read: view => rowsOrEmpty(view, 'tasks', 'SELECT id,title,claimed_by,done FROM tasks ORDER BY id LIMIT 200') }),
-      assignment: log.defineQuery({ description: 'Read assignee and completion', input: { type: 'integer' },
-        read: async (view, id) => (await rowsOrEmpty(view, 'tasks', 'SELECT claimed_by,done FROM tasks WHERE id=?', [id]))[0] }),
-      tasks: log.defineQuery({ description: 'Read ordered tasks', input: { type: 'null' },
-        read: view => rowsOrEmpty(view, 'tasks', 'SELECT id,title FROM tasks ORDER BY id') }),
+      ready: log.defineQuery({ description: 'Read catalog size', input: { type: 'null' }, read: view => view.query('checklist', { kind: 'ready' }) }),
+      reservations: log.defineQuery({ description: 'Read reservations', input: { type: 'null' }, read: view => view.query('checklist', { kind: 'reservations' }) }),
+      board: log.defineQuery({ description: 'Read board', input: { type: 'null' }, read: view => view.query('checklist', { kind: 'board' }) }),
+      assignment: log.defineQuery({ description: 'Read assignment', input: { type: 'integer' }, read: (view, id) => view.query('checklist', { kind: 'assignment', id }) }),
+      tasks: log.defineQuery({ description: 'Read tasks', input: { type: 'null' }, read: view => view.query('checklist', { kind: 'tasks' }) }),
     },
   });
 }
 
-export function intake(log, respondent) {
-  const group = log.bytesToHex(log.GROUP_COLLECTIVE_ID);
+export function intake(log) {
   return log.defineApplication({
-    id: 'staging-private-intake', version: '2',
+    id: 'staging-private-intake',
+    version: '3',
     commands: {
-      initialize: log.defineCommand({
-        description: 'Create the answer table as an ordinary authorized atomic DDL transaction', input: { type: 'null' },
-        prepare: () => log.program(
-          log.sqlStatement('CREATE TABLE answer (id INTEGER PRIMARY KEY, body TEXT NOT NULL, revision INTEGER NOT NULL)'),
-          log.emit('intake.initialized', {})),
-      }),
-      submit: log.defineCommand({
-        description: 'Submit or correct the respondent answer at its expected revision',
-        input: { type: 'object', properties: { body: { type: 'string', minLength: 1, maxLength: 2000 },
-          revision: { type: 'integer', minimum: 0 } }, required: ['body', 'revision'] },
-        prepare: ({ body, revision }) => log.program(
-          log.sqlStatement("SELECT chronolog_assert(lower(hex(chronolog_actor()))=?,'respondent_required')", [respondent]),
-          log.sqlStatement("SELECT chronolog_assert(coalesce((SELECT revision FROM answer WHERE id=1),0)=?,'stale_answer')", [revision]),
-          log.sqlStatement(`INSERT INTO answer (id,body,revision,chronolog_owner)
-            VALUES(1,?,?,(SELECT id FROM chronolog_principals WHERE key=X'${group}'))
-            ON CONFLICT(id) DO UPDATE SET body=excluded.body, revision=excluded.revision`, [body, revision + 1]),
-          log.emit('answer.updated', { revision: revision + 1 })),
-      }),
+      initialize: log.defineCommand({ description: 'Create intake table', input: { type: 'null' }, prepare: () => [{ topic: 'intake', input: { kind: 'initialize' } }] }),
+      submit: log.defineCommand({ description: 'Submit answer', input: { type: 'object', properties: { body: { type: 'string' }, revision: { type: 'integer' } }, required: ['body', 'revision'] }, prepare: ({ body, revision }) => [{ topic: 'intake', input: { kind: 'submit', body, revision } }] }),
     },
     queries: {
-      ready: log.defineQuery({ description: 'Read the engine catalog size to qualify SQL execution', input: { type: 'null' },
-        read: async view => (await view.query('SELECT count(*) FROM sqlite_master')).rows }),
-      summary: log.defineQuery({ description: 'Review only count and source revision', input: { type: 'null' },
-        read: async view => (await rowsOrEmpty(view, 'answer', 'SELECT COUNT(*),coalesce(MAX(revision),0) FROM answer'))[0] ?? [0, 0] }),
-      answer: log.defineQuery({ description: 'Read the current respondent answer', input: { type: 'null' },
-        read: view => rowsOrEmpty(view, 'answer', 'SELECT body,revision FROM answer WHERE id=1') }),
+      answer: log.defineQuery({ description: 'Read answer', input: { type: 'null' }, read: view => view.query('intake', {}) }),
     },
   });
-}
-
-/** A device that has not materialized `initialize` yet has no table: derive an empty view, never an error. */
-async function rowsOrEmpty(view, table, sql, parameters = []) {
-  const catalog = await view.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [table]);
-  return catalog.rows.length ? (await view.query(sql, parameters)).rows : [];
 }

@@ -29,9 +29,8 @@ export async function captureCollaborationReader(session, { signal } = {}) {
   signal?.addEventListener('abort', abort, { once: true }); session.signal?.addEventListener('abort', abort, { once: true });
   try {
     const view = await opening; held();
-    // A named-query allowlist does not authorize raw SQL. Probe the public
-    // capability now so restricted attachments never receive a usable reader.
-    await view.query('SELECT 1', []); held();
+    // Probe the public topic query capability now so restricted attachments never receive a usable reader.
+    await view.query('collab', { sql: 'SELECT 1', params: [] }); held();
     const revision = frozen(structuredClone(view.revision));
     const captured = Object.freeze({ revision, applicationId: session.applicationId, async query(...args) {
       held();

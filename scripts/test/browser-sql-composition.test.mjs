@@ -27,34 +27,27 @@ test('supplemental browser SQL pin requires explicit in-checkout bytes and rejec
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 function fixture() {
   const identity = { repository: 'werg/chronolog-db', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40), dirty: false };
-  const files = new Map(Object.entries({ 'index.mjs': 'export {};', 'wasm/sqlite3.wasm': 'wasm fixture',
-    'wasm/sqlite3.mjs': 'loader fixture', 'wasm/sqlite3-opfs-async-proxy.js': 'proxy fixture' }).map(([name, text]) => [name, Buffer.from(text)]));
-  const manifest = { toolchain: 'fixture', wasmSha256: hash(files.get('wasm/sqlite3.wasm')),
-    loaderSha256: hash(files.get('wasm/sqlite3.mjs')), wasmBytes: files.get('wasm/sqlite3.wasm').length };
-  files.set('wasm/manifest.json', Buffer.from(JSON.stringify(manifest)));
-  const proof = { ...identity, format: 'chronolog-peer-session-package/v1', profile: 'chronolog-crdt-v1',
-    nativeRtc: false, sqlEngines: ['browser'], wasmEngine: { ...manifest },
-    sha256: Object.fromEntries([...files].map(([file, bytes]) => [file, hash(bytes)])) };
-  const pkg = { name: '@chronolog/peer-session', exports: Object.fromEntries(['.', './browser', './worker', './sql', './sql-browser', './websocket'].map(key => [key, './index.mjs'])) };
-  const archive = { package: pkg, has: name => files.has(name), read: name => { assert(files.has(name), `missing ${name}`); return files.get(name); },
-    json: name => name === 'provenance.json' ? proof : JSON.parse(files.get(name).toString()) };
+  const files = new Map(Object.entries({ 'index.mjs': 'export {};' }).map(([name, text]) => [name, Buffer.from(text)]));
+  const proof = { ...identity, format: 'chronolog-peer-session-package/v2', profile: 'chronolog-crdt-v2', zeroNativeBuild: true };
+  const pkg = { name: '@chronolog/peer-session', exports: Object.fromEntries(['.', './browser', './worker', './kernel', './websocket'].map(key => [key, './index.mjs'])) };
+  const archive = {
+    package: pkg,
+    has: name => files.has(name),
+    read: name => { assert(files.has(name), `missing ${name}`); return files.get(name); },
+    json: name => name === 'provenance.json' ? proof : JSON.parse(files.get(name).toString()),
+  };
   return { identity, files, proof, pkg, verify: () => verifyBrowserSqlSession(archive, identity) };
 }
-test('portable browser SQL graph binds exact clean source, loader, binary and proxy without native engine', () => {
+test('portable browser SQL graph binds exact clean Chronolog v2 source without native engine', () => {
   const f = fixture(); assert.deepEqual(f.verify(), f.identity);
 });
 for (const [name, mutate] of [
   ['dirty source', f => { f.proof.dirty = true; }],
   ['source mismatch', f => { f.proof.source = 'c'.repeat(40); }],
   ['source tree mismatch', f => { f.proof.sourceTree = 'c'.repeat(40); }],
-  ['native SQL', f => { f.proof.sqlEngines.push('native'); }],
-  ['native engine metadata', f => { f.proof.nativeEngine = {}; }],
+  ['native build', f => { f.proof.zeroNativeBuild = false; }],
   ['platform restriction', f => { f.pkg.os = ['linux']; }],
-  ['native RTC', f => { f.proof.nativeRtc = true; }],
-  ['missing SQL export', f => { delete f.pkg.exports['./sql-browser']; }],
-  ['missing WASM', f => { f.files.delete('wasm/sqlite3.wasm'); }],
-  ['changed proxy', f => { f.files.set('wasm/sqlite3-opfs-async-proxy.js', Buffer.from('changed')); }],
-  ['missing proxy hash', f => { delete f.proof.sha256['wasm/sqlite3-opfs-async-proxy.js']; }],
-  ['manifest mismatch', f => { f.proof.wasmEngine.wasmBytes++; }],
-  ['unhashed source', f => { f.proof.sha256 = {}; }],
+  ['better-sqlite3 dep', f => { f.pkg.dependencies = { 'better-sqlite3': '11.0.0' }; }],
+  ['missing kernel export', f => { delete f.pkg.exports['./kernel']; }],
+  ['legacy doltlite binary', f => { f.files.set('engine/build/Release/doltlite.node', Buffer.from('bin')); }],
 ]) test(`portable browser SQL rejects ${name}`, () => { const f = fixture(); mutate(f); assert.throws(f.verify); });

@@ -5,8 +5,11 @@ import { peerApi } from './peer-exchange';
 it('creates an independent stable application identity and leaves authority explicitly unprepared', async () => {
   const h = await create();
   expect(h.application.id).toMatch(/^[0-9a-f]{64}$/); expect(h.application.id).not.toContain(h.id);
-  const unprepared = { selection: h.application, configuration: null, publicationAuthority: null, authority: null,
-    hostAttestationKey: expect.stringMatching(/^[0-9a-f]{64}$/), admissionAccounts: [h.account, expect.stringMatching(/^email:owner-/)] };
+  const unprepared = {
+    selection: h.application, configuration: null, genesis: null, stateRoot: null, historyDigest: null,
+    currentEpoch: -1, closedThroughMs: null,
+    hostAttestationKey: expect.stringMatching(/^[0-9a-f]{64}$/), admissionAccounts: [h.account, expect.stringMatching(/^email:owner-/)],
+  };
   expect(await apiJson(h, 'GET', 'application')).toEqual(unprepared);
   expect((await peerApi(h, 'publication/read')).status).toBe(409);
   await inDO(h.id, t => { t.ctx.abort('Stable identity restart'); }).catch(() => {});

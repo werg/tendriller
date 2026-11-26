@@ -29,8 +29,8 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
     writeFileSync(tutorialSource(root, file), `fixture ${file}\n`);
   }
   const chronolog = { repository: 'werg/chronolog-db', source: 'a'.repeat(40), sourceTree: 'b'.repeat(40),
-    dirty: false, profile: 'chronolog-crdt-v1' };
-  const authorityProof = { ...chronolog, source: authoritySource, format: 'chronolog-authority-package/v1',
+    dirty: false, profile: 'chronolog-crdt-v2' };
+  const authorityProof = { ...chronolog, source: authoritySource, format: 'chronolog-authority-package/v2',
     sha256: { 'control.mjs': digest('authority fixture') } };
   const authorityInputs = { provenanceSha256: corruptAuthorityBinding ? '0'.repeat(64) : digest(JSON.stringify(authorityProof)), files: authorityProof.sha256 };
   const pack = (name, files, destination) => {
@@ -42,19 +42,17 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
     }
     execFileSync('tar', ['--sort=name', '--mtime=@0', '--owner=0', '--group=0', '--numeric-owner', '-czf', destination, '-C', directory, 'package']);
   };
-  pack('session', { 'package.json': { name: '@chronolog/peer-session', dependencies: { werift }, exports: Object.fromEntries(['.', './native', './browser', './worker', './webrtc', './webrtc-native', './websocket'].map(key => [key, './index.mjs'])) },
-    'index.mjs': 'export const session = true;', 'provenance.json': { ...chronolog, format: 'chronolog-peer-session-package/v1', dirty: sessionDirty, sqlEngines, nativeRtc } }, join(root, 'session.tgz'));
-  const wasmManifest = { toolchain: 'fixture', wasmSha256: digest('wasm fixture'), loaderSha256: digest('loader fixture'), wasmBytes: 12 };
-  const browserFiles = { 'package.json': { name: '@chronolog/peer-session', exports: Object.fromEntries(['.', './browser', './worker', './sql', './sql-browser', './websocket'].map(key => [key, './index.mjs'])) },
-    'index.mjs': 'export const browser = true;', 'wasm/manifest.json': wasmManifest,
-    'wasm/sqlite3.wasm': 'wasm fixture', 'wasm/sqlite3.mjs': 'loader fixture', 'wasm/sqlite3-opfs-async-proxy.js': 'proxy fixture', ...sqlFiles };
-  const browserProof = { ...chronolog, format: 'chronolog-peer-session-package/v1', nativeRtc: false, sqlEngines: ['browser'], wasmEngine: wasmManifest,
+  pack('session', { 'package.json': { name: '@chronolog/peer-session', dependencies: { werift }, exports: Object.fromEntries(['.', './native', './browser', './worker', './kernel', './webrtc', './webrtc-native', './websocket'].map(key => [key, './index.mjs'])) },
+    'index.mjs': 'export const session = true;', 'provenance.json': { ...chronolog, format: 'chronolog-peer-session-package/v2', dirty: sessionDirty, zeroNativeBuild: sqlEngines.length === 0 && nativeRtc } }, join(root, 'session.tgz'));
+  const browserFiles = { 'package.json': { name: '@chronolog/peer-session', exports: Object.fromEntries(['.', './browser', './worker', './kernel', './websocket'].map(key => [key, './index.mjs'])) },
+    'index.mjs': 'export const browser = true;', ...sqlFiles };
+  const browserProof = { ...chronolog, format: 'chronolog-peer-session-package/v2', zeroNativeBuild: true,
     sha256: Object.fromEntries(Object.entries(browserFiles).map(([name, value]) => [name, digest(typeof value === 'string' ? value : JSON.stringify(value))])), ...sqlProof };
   pack('browser-sql', { ...browserFiles, 'provenance.json': browserProof }, join(root, 'browser-sql.tgz'));
   mkdirSync(join(root, 'scripts'));
   writeJson(join(root, 'scripts/sql-browser-session.json'), { archive: 'browser-sql.tgz', sha256: digest(readFileSync(join(root, 'browser-sql.tgz'))) });
   pack('authority', { 'package.json': { name: '@chronolog/authority', version: '0.0.0-gaaaaaaaa',
-    exports: Object.fromEntries(['.', './control', './metadata', './participant', './publication', './finality'].map(key => [key, './control.mjs'])) },
+    exports: { '.': './control.mjs' } },
     'control.mjs': 'authority fixture', 'provenance.json': authorityProof }, join(root, 'authority.tgz'));
   // Copy only the enumerated public plugin sources: the authoritative review fixture list plus the manifest files.
   // Nothing is wildcard-copied, so private device state or generated data can never enter the ZIP inventory.
@@ -105,7 +103,7 @@ function fixture(t, { sessionDirty = false, sqlEngines = [], nativeRtc = true, w
     editProof(name, changes) { const path = join(root, 'dist', name); writeJson(path, { ...readJson(path), ...changes }); } };
 }
 
-test('browser SQL kit selects only its portable exact graph and verified packaged WASM', t => {
+test('browser SQL kit selects only its portable exact graph', t => {
   const f = fixture(t), manifest = f.prepare();
   const composition = readJson(join(f.root, 'dist/composition.json'));
   assert.deepEqual(composition.profiles.sql, { session: 'session-sql-browser', packages: ['sdk', 'tools', 'authority', 'session-sql-browser'] });
@@ -115,9 +113,6 @@ test('browser SQL kit selects only its portable exact graph and verified package
   const selected = composition.components.filter(item => composition.profiles.sql.packages.includes(item.role));
   assert.deepEqual(entries.filter(name => name.startsWith('packages/') && name.endsWith('.tgz')).sort(), selected.map(item => `packages/${item.file}`).sort());
   for (const item of selected) assert.equal(digest(execFileSync('tar', ['-xOf', archive, `packages/${item.file}`])), item.sha256);
-  assert.equal(execFileSync('tar', ['-xOf', archive, 'sql/engine/sqlite3.wasm']).toString(), 'wasm fixture');
-  assert.equal(execFileSync('tar', ['-xOf', archive, 'sql/engine/sqlite3.mjs']).toString(), 'loader fixture');
-  assert.equal(execFileSync('tar', ['-xOf', archive, 'sql/engine/sqlite3-opfs-async-proxy.js']).toString(), 'proxy fixture');
   const defaultEntries = execFileSync('tar', ['-tzf', join(f.root, 'dist', manifest.first_app.file)], { encoding: 'utf8' });
   assert(!defaultEntries.includes('sql/engine/'));
   assert.equal(manifest.first_app.profile, 'events');
@@ -125,8 +120,8 @@ test('browser SQL kit selects only its portable exact graph and verified package
 });
 
 for (const [name, sqlProof] of [['dirty', { dirty: true }], ['source', { source: 'c'.repeat(40) }],
-  ['tree', { sourceTree: 'c'.repeat(40) }], ['native SQL', { sqlEngines: ['browser', 'native'] }],
-  ['missing WASM', { wasmEngine: undefined }], ['native RTC', { nativeRtc: true }]])
+  ['tree', { sourceTree: 'c'.repeat(40) }], ['native build', { zeroNativeBuild: false }],
+  ['v1 profile', { profile: 'chronolog-crdt-v1' }]])
   test(`release rejects browser SQL ${name} evidence`, t => assert.throws(fixture(t, { sqlProof }).prepare));
 
 test('release rejects authority compiled from a different clean Chronolog checkpoint', t => {
@@ -221,9 +216,9 @@ test('release rejects a stale served starter even with a matching core version',
   assert.throws(f.prepare, /Starter source is stale: templates\/notes\/agent.mjs/);
 });
 
-test('first-app composition rejects dirty or SQL-only companion packages', t => {
+test('first-app composition rejects dirty or non-zero-native-build companion packages', t => {
   assert.throws(fixture(t, { sessionDirty: true }).prepare, /Chronolog session dependency must identify a clean/);
-  assert.throws(fixture(t, { sqlEngines: ['native'] }).prepare, /requires the pinned SQL-free/);
+  assert.throws(fixture(t, { sqlEngines: ['native'] }).prepare, /zero-native-build Chronolog v2 session package/);
 });
 
 test('different package bytes produce a different complete composition identity', t => {
@@ -325,7 +320,7 @@ test('sealing omits development runtime residue while restored-graph checks reje
 
 
 test('release requires the native factory and normal exact RTC dependency in the default session', t => {
-  assert.throws(fixture(t, { nativeRtc: false }).prepare, /default session must include native RTC/);
+  assert.throws(fixture(t, { nativeRtc: false }).prepare, /zero-native-build Chronolog v2 session package/);
   assert.throws(fixture(t, { werift: '^0.27.0' }).prepare, /normal pinned werift@0.27.0 dependency/);
 });
 

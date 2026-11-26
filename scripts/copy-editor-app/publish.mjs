@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
-import { signPublicationManifest } from '@chronolog/authority';
+import { encodeSignedOperation, hexToBytes } from '@chronolog/peer-session';
+import { authorityRecord } from '@tendriller/core/authority';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const types = {
@@ -34,33 +35,37 @@ export async function publishPage(context, { root = new URL('./dist/', import.me
   await visit(root);
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const graph = hash(JSON.stringify(files));
-  const name = `publication-${graph}.json`;
-  let publication = await context.readPrivate(name, true);
-  if (!publication) {
-    const [metadata, previous] = await Promise.all([context.host.peers.application(), context.host.peers.publication()]);
-    const scope = metadata.publicationAuthority;
-    if (scope?.applicationId !== context.page.applicationId || !scope.publisherKeys.includes(context.signer.publicKey)) {
-      throw Error('Prepare this page and review its independent publication grant first');
-    }
-    publication = await signPublicationManifest({
-      applicationId: context.page.applicationId,
-      membershipId: scope.grantId,
-      author: context.signer.publicKey,
+  const name = `publication-v2-${graph}.json`;
+  let op = await context.readPrivate(name, true);
+  if (!op) {
+    const previous = await context.host.peers.publication();
+    const { signOperationCore } = await import('@chronolog/peer-session/kernel');
+    const signed = await signOperationCore({
+      version: 1,
+      chainId: hexToBytes(context.page.applicationId),
+      author: hexToBytes(context.signer.publicKey),
       operationId: `publish-${graph}`,
-      revision: previous === null ? 0 : previous.publication.payload.revision + 1,
-      previous: previous?.publication.id ?? null,
-      executionManifestDigest: scope.executionManifestDigest,
-      entry: 'index.html',
-      files,
+      authorTimestampMs: BigInt(Date.now()),
+      nonce: crypto.getRandomValues(new Uint8Array(16)),
+      visibility: 'public',
+      updates: [{
+        topic: '$publications',
+        input: {
+          action: 'publish',
+          entry: 'index.html',
+          files,
+          ...(previous ? { expectedRevision: previous.revision } : {}),
+        },
+      }],
     }, context.signer);
-    await context.savePrivate(name, publication);
+    op = authorityRecord(encodeSignedOperation(signed));
+    await context.savePrivate(name, op);
   }
-  const receipt = await context.host.peers.publish(publication, [...assets.values()]);
-  if (receipt.publication.id !== publication.id) throw Error('Publication receipt does not identify the retained signed graph');
+  const receipt = await context.host.peers.publish(op, [...assets.values()]);
   return {
     page_url: context.page.pageUrl,
-    publicationId: publication.id,
+    publicationId: receipt.opId,
     version: receipt.version,
-    next: 'Open this ready signed page. Sign in to initialize local data; edits save locally and sync to the repo agent once paired.',
+    next: 'Open this ready signed page. Sign in to sync directly over Chronolog v2.',
   };
 }
