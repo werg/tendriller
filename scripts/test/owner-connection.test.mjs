@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createOwnerConnection, describeConnectionError } from '../../docs/tutorial/shared/connection.mjs';
+import { createOwnerConnection, describeConnectionError, reloadOnOwnerReplaced } from '../../docs/tutorial/shared/connection.mjs';
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture(t, connect, origin = 'https://page.example') {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'location');
@@ -34,4 +34,60 @@ test('a static off-origin preview opens no identity, storage or host work', asyn
 test('missing keys and owner authentication have explicit restore/sign-in actions, not native waiting loops', () => {
   const missing = describeConnectionError({ code: 'BOOTSTRAP_KEY_MISSING' }); assert.match(missing.detail, /Never initialize replacement keys/); assert.equal(missing.retry, undefined);
   const account = describeConnectionError({ code: 'browser_account_required' }); assert.equal(account.action, 'reload'); assert.match(account.title, /Sign in/);
+});
+test('connection status distinguishes waiting-keys, waiting-approval, removed and read-only from waiting-admission', async t => {
+  let emitAdmission, unsubscribed = 0;
+  const session = {
+    status: { canAuthor: false },
+    onStatus(fn) { fn(this.status); return () => {}; },
+    extensions: {
+      async call(name) { assert.equal(name, 'admission.state'); return { phase: 'waiting-keys', members: [{ self: true, writer: true }] }; },
+      subscribe(fn) { emitAdmission = fn; return () => { unsubscribed++; }; },
+    },
+  };
+  const f = fixture(t, async () => ({ session }));
+  await f.controller.start();
+  await tick();
+  assert.equal(f.controller.state.phase, 'key-required');
+  assert.equal(f.controller.state.admissionPhase, 'waiting-keys');
+  assert.match(f.controller.state.title, /Waiting for page keys/);
+
+  emitAdmission({ topic: 'admission', state: { phase: 'waiting-approval', members: [] } });
+  assert.equal(f.controller.state.admissionPhase, 'waiting-approval');
+  assert.match(f.controller.state.title, /Waiting for approval/);
+
+  emitAdmission({ topic: 'admission', state: { phase: 'removed', members: [] } });
+  assert.equal(f.controller.state.admissionPhase, 'removed');
+  assert.match(f.controller.state.title, /removed/i);
+
+  emitAdmission({ topic: 'admission', state: { phase: 'admitted', members: [{ self: true, reader: true, writer: false }] } });
+  assert.equal(f.controller.state.phase, 'connected');
+  assert.equal(f.controller.state.readOnly, true);
+  assert.match(f.controller.state.title, /Read-only/);
+
+  f.controller.close();
+  assert.equal(unsubscribed, 1);
+});
+test('TAB_ACTIVE_ELSEWHERE exposes a takeover action and reloadOnOwnerReplaced waits for visibility/focus', t => {
+  const elsewhere = describeConnectionError({ code: 'TAB_ACTIVE_ELSEWHERE' });
+  assert.equal(elsewhere.action, 'takeover');
+  assert.match(elsewhere.title, /another tab/i);
+
+  const prevLoc = Object.getOwnPropertyDescriptor(globalThis, 'location');
+  const prevDoc = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  let reloads = 0, vis = 'hidden';
+  const docTarget = new EventTarget();
+  Object.defineProperty(docTarget, 'visibilityState', { get() { return vis; } });
+  Object.defineProperty(globalThis, 'location', { configurable: true, value: { reload() { reloads++; } } });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: docTarget });
+  t.after(() => {
+    if (prevLoc) Object.defineProperty(globalThis, 'location', prevLoc); else delete globalThis.location;
+    if (prevDoc) Object.defineProperty(globalThis, 'document', prevDoc); else delete globalThis.document;
+  });
+
+  reloadOnOwnerReplaced();
+  assert.equal(reloads, 0, 'must not reload immediately while hidden or unfocused');
+  vis = 'visible';
+  docTarget.dispatchEvent(new Event('visibilitychange'));
+  assert.equal(reloads, 1, 'reloads once the tab becomes visible again');
 });

@@ -4,7 +4,7 @@ Tendriller is open-source and runs on a single Cloudflare Worker with D1, R2, an
 
 ## What it costs on your own Cloudflare account
 
-- **Cloudflare Workers Paid ($5/month base):** Strongly recommended before serving hosted MCP or public traffic. Removes the Free plan’s 10 ms CPU ceiling (needed for QuickJS-NG and DoltLite WASM in hosted MCP) and includes 10M Worker requests, 1M Durable Object requests, 400k GB-s DO duration, 25B D1/DO SQL reads, 50M writes, and 10 GB R2 storage with zero egress.
+- **Cloudflare Workers Paid ($5/month base):** Strongly recommended before serving hosted MCP or public traffic. Removes the Free plan’s 10 ms CPU ceiling (needed for QuickJS-NG and `sqlite-cas.wasm` in hosted MCP) and includes 10M Worker requests, 1M Durable Object requests, 400k GB-s DO duration, 25B D1/DO SQL reads, 50M writes, and 10 GB R2 storage with zero egress.
 - **Cloudflare Realtime SFU & TURN (optional):** Includes **1,000 GB/month free** shared egress across SFU and TURN, then **$0.05/GB** egress (ingress is free, and TURN used with Cloudflare Realtime SFU is free).
 
 ## 1. Provision Worker, D1, R2, and domains
@@ -56,7 +56,7 @@ Polar.sh billing secrets (`POLAR_ACCESS_TOKEN`, `POLAR_WEBHOOK_SECRET`, `POLAR_P
 Every self-hosted instance automatically unlocks both Tier A (`agent-held`), Tier B (`host-brokered`, personal & shared team `page` custody), BYO custom OAuth 2.1 providers (`custom:<slug>`), and GitHub/Google org group admission:
 
 - **Dedicated config encryption key (recommended):** Set `OAUTH_CONFIG_KEY` (32 random bytes) so BYO `client_secret`s and inbound HMAC webhook secrets are AES-256-GCM encrypted in D1 independently of `HOST_ATTESTATION_KEY`.
-- **Built-in third-party providers:** Register OAuth apps with redirect URI `https://app.yourdomain.com/auth/outbound/callback/<provider>` and upload them as one JSON map in `OUTBOUND_OAUTH_CLIENTS_JSON` (or run `node scripts/setup-oauth.mjs --config server/wrangler.my-tendriller.jsonc`). Use a **separate Google OAuth client** and a **separate GitHub OAuth/GitHub App** for outbound connections so login scopes stay minimal and clean.
+- **Built-in third-party providers:** GitHub and Google automatically reuse your existing login OAuth apps and `/auth/callback/{github,google}` callback URLs out of the box (with Google incremental authorization `include_granted_scopes=true`), or you can override either with a dedicated client in `OUTBOUND_OAUTH_CLIENTS_JSON`. For other providers, register OAuth apps with redirect URI `https://app.yourdomain.com/auth/outbound/callback/<provider>` and upload them via `OUTBOUND_OAUTH_CLIENTS_JSON` (or run `node scripts/setup-oauth.mjs --config server/wrangler.my-tendriller.jsonc`).
 - **Instant GitHub org offboarding (optional):** Set `GITHUB_ORG_WEBHOOK_SECRET` and point org/GitHub App webhooks (`organization`, `membership`) to `https://app.yourdomain.com/api/webhooks/github-org`.
 
 ## 4. Move an existing workspace to your self-hosted instance

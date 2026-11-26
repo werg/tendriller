@@ -1,5 +1,37 @@
 import { defineApplication, defineCommand, defineQuery } from '@chronolog/peer-session';
 
+const COPY_TOPICS = Object.freeze(['copy.edit', 'copy.undo', 'copy.submit', 'copy.applied']);
+
+export const reducerSource = `
+export default {
+  reduce(state, tx, ctx) {
+    if (!ctx.query('$permissions', { check: 'writer', actor: tx.author })) {
+      return { ok: false, code: 'writer_required' };
+    }
+    const eventTopic = ctx.config && typeof ctx.config.eventTopic === 'string' ? ctx.config.eventTopic : 'copy.edit';
+    const count = (state && typeof state.count === 'number' ? state.count : 0) + 1;
+    return {
+      ok: true,
+      state: { count, lastAuthor: tx.author },
+      events: [{ topic: eventTopic, payload: tx.payload }],
+    };
+  },
+  query(state) {
+    return state || { count: 0 };
+  },
+};
+`;
+
+export const imports = Object.freeze({ 'app/copy-editor': reducerSource });
+export const topics = Object.freeze(
+  Object.fromEntries(
+    COPY_TOPICS.map(name => [
+      name,
+      Object.freeze({ module: 'app/copy-editor', config: Object.freeze({ eventTopic: name }) }),
+    ]),
+  ),
+);
+
 const copyKey = { type: 'string', minLength: 1, maxLength: 160 };
 const copyText = { type: 'string', maxLength: 4000 };
 const editItem = {

@@ -16,7 +16,12 @@ import { inspectAccessToken } from './accounts/oauth-tokens';
 import { base64url } from './accounts/oauth-support';
 import { servicePage } from './accounts/ui';
 import { escapeHtml } from './inject';
-import { renderAccountExternalConnectionsSection } from './oauth-outbound/routes';
+import {
+  mcpConnectExternalProvider,
+  mcpInvokeExternalConnection,
+  mcpListExternalConnections,
+  renderAccountExternalConnectionsSection,
+} from './oauth-outbound/routes';
 import { HttpError, isPlainObject, json, readBody } from './http';
 import { sha256Hex } from './ids';
 import { APP_ID, REQUEST_LIMIT, mcpOAuth, fields, listConnected, requireScope, resolveConnection, string, type McpPrincipal, type Rpc } from './mcp-shared';
@@ -74,6 +79,33 @@ const tools = [
     ['handle', 'publicKey', 'wrapKey'], false),
   tool('list_tendrils', 'List applications opted into hosted MCP for this OAuth grant, 100 per call.',
     'tendrils:list', { cursor: { type: 'string', pattern: '^[a-z2-7]{12}$' } }, []),
+  tool('list_external_connections', 'List this account’s external OAuth connections (Google, GitHub, Linear, Notion, Slack, etc.) and live provider availability/actions on this host.',
+    'applications:read', {}, []),
+  tool('connect_external_provider', 'Start a wrapped Tier B (host-brokered) external OAuth connection so this MCP assistant can access an external service even when no browser UI or local agent is open. Share the returned authorize_url with the user in chat; K_conn auto-seals to this MCP grant’s wrap key (zero plaintext tokens or keys at rest). Request only the exact minimal scopes needed.',
+    'applications:write',
+    {
+      provider: { type: 'string', pattern: '^(?:[a-z0-9][a-z0-9_-]{1,31}|custom:[a-z0-9][a-z0-9_-]{1,31})$', description: 'Built-in provider id (e.g. google, github, linear) or custom:<slug>.' },
+      scopes: { type: 'array', items: schemaString, maxItems: 32, description: 'Minimal OAuth scopes to request (Google uses incremental authorization).' },
+      actions: { type: 'array', items: schemaString, maxItems: 64, description: 'Optional subset of allowlisted action IDs (defaults to provider actions).' },
+      custody: { type: 'string', enum: ['personal', 'page'], default: 'personal' },
+      page_id: { type: 'string', pattern: '^[a-z2-7]{12}$' },
+      label: { type: 'string', maxLength: 80 },
+    },
+    ['provider'], false),
+  tool('invoke_external_connection', 'Invoke an allowlisted action on a connected external OAuth provider (e.g. google.calendar.events:list, github.issues:list) through Tendriller’s SSRF-hardened wrapped proxy, with no browser UI or local agent required.',
+    'applications:write',
+    {
+      connection_id: { type: 'string', pattern: '^oc_[a-z2-7]{26}$' },
+      action: schemaString,
+      params: { type: 'object' },
+      query: { type: 'object' },
+      body: {},
+      method: { type: 'string', enum: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] },
+      url: schemaString,
+      headers: { type: 'object' },
+      connection_key: { type: 'string', maxLength: 64, description: 'Optional explicit K_conn if the connection was not created by this MCP grant.' },
+    },
+    ['connection_id', 'action'], false),
   tool('describe_application', 'Inspect allowed commands, queries, page agent @handle roster, and primary-agent status.',
     'applications:read', app, ['applicationId']),
   tool('agents_list', 'List all agents on this page (handles, bios, public keys, primary status).',
@@ -348,9 +380,15 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
     if (method === 'initialize') {
       const mcpFeed = await listActiveBroadcasts(env, { audiences: ['mcp', 'agents'] }).catch(() => null);
       const urgent = mcpFeed?.broadcasts.filter(b => b.payload.severity === 'urgent' || b.payload.severity === 'critical') ?? [];
-      const advisoryNote = urgent.length
-        ? ` Active service advisories (${urgent.length}): ${urgent.map(b => `[${b.payload.severity}] ${b.payload.title}`).join('; ')}. Call get_broadcasts for full signed details.`
-        : '';
+      const notices = mcpFeed?.broadcasts.filter(b => b.payload.severity !== 'urgent' && b.payload.severity !== 'critical') ?? [];
+      const parts: string[] = [];
+      if (urgent.length) {
+        parts.push(`Active service advisories (${urgent.length}): ${urgent.map(b => `[${b.payload.severity}] ${b.payload.title}`).join('; ')}. Call get_broadcasts for full signed details.`);
+      }
+      if (notices.length) {
+        parts.push(`Active platform notices (${notices.length}): ${notices.slice(0, 3).map(b => `[${b.payload.kind}] ${b.payload.title}`).join('; ')}. Call get_broadcasts or tendril_guide(topic: "changelog") for details.`);
+      }
+      const advisoryNote = parts.length ? ' ' + parts.join(' ') : '';
       return result(id, {
         protocolVersion: supported.includes(String(params.protocolVersion)) ? params.protocolVersion : PROTOCOL,
         capabilities: { tools: {}, resources: {} },
@@ -461,6 +499,15 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
       if (selected.name === 'list_tendrils') {
         const { applications, nextCursor } = await listConnected(env, principal.account, principal.grant, args.cursor === undefined ? null : string(args.cursor, 12));
         return complete(toolResult({ applications, nextCursor, ...await assistantDiscovery(env, config.issuer, applications.length === 0 && args.cursor === undefined) }));
+      }
+      if (selected.name === 'list_external_connections') {
+        return complete(toolResult(await mcpListExternalConnections(env, principal.account)));
+      }
+      if (selected.name === 'connect_external_provider') {
+        return complete(toolResult(await mcpConnectExternalProvider(env, principal.account, principal.grant, principal.wrapPublicKey, args)));
+      }
+      if (selected.name === 'invoke_external_connection') {
+        return complete(toolResult(await mcpInvokeExternalConnection(env, principal.account, principal.grant, principal.wrapPublicKey, principal.wrapPrivateKey, args)));
       }
       const applicationId = string(args.applicationId, 64, APP_ID);
       const connected = await resolveConnection(env, principal.account, principal.grant, applicationId);

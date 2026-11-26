@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createLiveView } from '@chronolog/peer-session';
 import { openNativePage } from '../../shared/native-page.mjs';
-import { definition, deriveCopyState } from './domain.mjs';
+import { definition, deriveCopyState, imports, topics } from './domain.mjs';
 
 export { definition };
 
@@ -49,4 +49,4 @@ async function attachInboxBridge({ session }) {
   return {};
 }
 
-export const openPage = (context) => openNativePage(context, { definition, assistant: attachInboxBridge });
+export const openPage = (context) => openNativePage(context, { definition, imports, topics, assistant: attachInboxBridge });

@@ -7,6 +7,7 @@ import { publicBase } from "../urls";
 import { routeTestAccess, testAccountEnabled } from './test-access';
 import { authFormAction, readSessionCookie, renderAuthControls, routeLocalAuth, sessionCookieHeader } from "./local-auth";
 import { recordGoogleWorkspaceDomain, syncGitHubOrgGroups } from "../groups/org-groups";
+import { handleOutboundCallback } from "../oauth-outbound/routes";
 
 type Provider = "github" | "google";
 export interface AccountSession { accountId: string; email: string | null; createdAt: number; suspendedAt: number | null }
@@ -131,6 +132,9 @@ export async function routeAuth(req: Request, env: Env, url: URL): Promise<Respo
 
   const callback = /^\/auth\/callback\/(github|google)$/.exec(path);
   if (callback && req.method === "GET") {
+    if (url.searchParams.get("state")?.startsWith("out_")) {
+      return handleOutboundCallback(req, env, url, callback[1]!);
+    }
     const started = performance.now();
     const phases: string[] = [];
     let previous = started;

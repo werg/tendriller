@@ -1,6 +1,6 @@
 import { openNativePage } from '../../shared/native-page.mjs';
 import { followCall } from '../../shared/media/call-agent.mjs';
-import { definition } from './domain.mjs';
+import { definition, imports, topics } from './domain.mjs';
 
 /**
  * Native agent participant for a video conferencing page.
@@ -8,7 +8,7 @@ import { definition } from './domain.mjs';
  * zero media overhead. Switch to `mode: 'audio'` to receive per-speaker PCM audio via Werift.
  */
 export async function openPage(context) {
-  const owner = await openNativePage(context, { definition });
+  const owner = await openNativePage(context, { definition, imports, topics });
   const mode = process.env.TENDRIL_CALL_AGENT_MODE === 'audio' ? 'audio' : 'transcript';
   const call = followCall(owner.session, {
     handle: context.agent?.handle ?? 'scribe',

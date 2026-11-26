@@ -32,13 +32,16 @@ and the hosted MCP participant do not establish a running request worker.
 
 ## Execution engines inside the Durable Object
 
-- **Events apps:** Chronolog replays encrypted envelopes in RAM.
-- **SQL apps:** Chronolog materializes into an ephemeral in-memory **DoltLite
-  WASM** database (`MEMFS`), leaving zero plaintext SQLite data on disk.
-- **Pure `domain.js` sandbox:** Publishing a signed `domain.js` bundle alongside
-  your page lets hosted MCP execute your declared queries and commands inside a
-  synchronous **QuickJS-NG WASM** sandbox (16 MiB memory ceiling, 50 ms CPU
-  deadline, zero host/network access).
+- **Hash-pinned in-chain `$reducers` (QuickJS-NG WASM):** Every Chronolog v2
+  page carries its deterministic ES Module reducer code (or binds built-in
+  `chronolog/sql`) directly inside its Merkle-DAG CAS and `$reducers` control
+  topic. Hosted MCP executes `reduce()`, `query()`, and `describe()` inside a
+  fresh synchronous **QuickJS-NG WASM** sandbox (zero separate `domain.js`
+  upload, zero host/network access).
+- **SQL apps (`chronolog/sql` + `sqlite-cas.wasm`):** Chronolog materializes
+  SQL topics directly over a 4 KiB Merkle-paged **SQLite-CAS** VFS
+  (`sqlite-cas.wasm` + FTS5 + `sqlite-vec`) with Postgres-style write RLS
+  (`chronolog/rls`), leaving zero plaintext SQLite files on disk.
 
 ## Available MCP tools
 
@@ -46,8 +49,8 @@ and the hosted MCP participant do not establish a running request worker.
   for your signed-in account.
 - `list_applications` — List pages connected to this OAuth grant, including
   their `@handle`, `isPrimary`, and roster.
-- `describe_application` — Inspect declared `domain.js` queries/commands,
-  hosted participant metadata, and page agent roster.
+- `describe_application` — Inspect in-chain reducer `describe()` commands and
+  queries, hosted participant metadata, and page agent roster.
 - `agents_list` — Inspect all workspace and hosted MCP agents on a page.
 - `query_application` / `call_application_command` — Run declared queries and
   idempotent commands (with a stable `operationId`).

@@ -88,18 +88,64 @@ async function connectFacade(endpoint, { applicationId, context }, { signal, tim
   }
 }
 
+function shouldTakeover(mode) {
+  if (mode === true) return true;
+  if (mode === false) return false;
+  // Default 'auto': a foreground tab or standalone PWA seamlessly takes over from an
+  // existing tab, while a hidden background tab never steals an active session.
+  return globalThis.document?.visibilityState !== 'hidden';
+}
+
+function tryAcquireImmediateLock(lockName, signal) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const done = (error, value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error); else resolve(value);
+    };
+    const onAbort = () => done(signal.reason);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    void navigator.locks.request(lockName, { ifAvailable: true }, lock => {
+      if (!lock) {
+        done(null, null);
+        return Promise.resolve();
+      }
+      if (settled || signal?.aborted) return Promise.resolve();
+      let releaseLock;
+      const held = new Promise(r => { releaseLock = r; });
+      done(null, { release: () => releaseLock() });
+      return held;
+    }).catch(error => done(error));
+  });
+}
+
 /**
  * Acquire the single-active-tab lock for `profileId`.
- * When `takeover` is false and another tab already holds the lock, returns `null` immediately.
- * When `takeover` is true, requests the existing tab to release over BroadcastChannel and waits.
+ * Always tries an immediate non-blocking acquire first. When another tab holds the lock:
+ * - `takeover: false` (or `'auto'` while hidden) returns `null` immediately.
+ * - `takeover: true` (or `'auto'` while visible) requests the existing tab to release
+ *   over BroadcastChannel and waits for a clean handoff.
  */
-async function acquireTabLock(profileId, { takeover = false, signal, timeoutMs = 15_000 } = {}) {
+async function acquireTabLock(profileId, { takeover = 'auto', signal, timeoutMs = 15_000 } = {}) {
   signal?.throwIfAborted();
   const lockName = tabLockName(profileId);
-  let channel;
-  if (takeover && typeof globalThis.BroadcastChannel === 'function') {
+  const immediate = await tryAcquireImmediateLock(lockName, signal);
+  if (immediate) return immediate;
+  if (!shouldTakeover(takeover)) return null;
+
+  let channel, nudgeTimer;
+  if (typeof globalThis.BroadcastChannel === 'function') {
     channel = new BroadcastChannel(tabChannelName(profileId));
-    channel.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'takeover', profileId, requestId: crypto.randomUUID() });
+    const requestId = crypto.randomUUID();
+    const postTakeover = () => {
+      try { channel.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'takeover', profileId, requestId }); } catch { /* Channel closed. */ }
+    };
+    postTakeover();
+    // Re-nudge briefly in case the previous holder was mid-boot or waking from throttle.
+    nudgeTimer = setInterval(postTakeover, 400);
+    nudgeTimer.unref?.();
   }
   try {
     return await new Promise((resolve, reject) => {
@@ -115,8 +161,7 @@ async function acquireTabLock(profileId, { takeover = false, signal, timeoutMs =
       const timer = setTimeout(() => done(new SessionError('OWNER_BUSY', 'Another tab did not release this page in time.')), timeoutMs);
       signal?.addEventListener('abort', onAbort, { once: true });
 
-      const requestOptions = takeover ? {} : { ifAvailable: true };
-      void navigator.locks.request(lockName, requestOptions, lock => {
+      void navigator.locks.request(lockName, {}, lock => {
         if (!lock) {
           done(null, null);
           return Promise.resolve();
@@ -129,6 +174,7 @@ async function acquireTabLock(profileId, { takeover = false, signal, timeoutMs =
       }).catch(error => done(error));
     });
   } finally {
+    clearInterval(nudgeTimer);
     channel?.close();
   }
 }
@@ -187,7 +233,7 @@ export async function openBrowserOwner(options) {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new SessionError('OWNER_CONFIGURATION_INVALID', 'Opening timeout must be finite and positive');
 
   const lock = await acquireTabLock(options.profileId, {
-    takeover: options.takeover === true,
+    takeover: options.takeover ?? 'auto',
     signal: options.signal,
     timeoutMs,
   });
@@ -256,6 +302,24 @@ export async function openBrowserOwner(options) {
   const onExternalAbort = () => { void release(options.signal.reason); };
 
   try {
+    options.signal?.addEventListener('abort', onExternalAbort, { once: true });
+    if (options.signal?.aborted) onExternalAbort();
+
+    // Register the handoff listener immediately after acquiring the lock so a takeover
+    // arriving while this tab is still booting its Worker is honored cleanly.
+    if (typeof globalThis.BroadcastChannel === 'function') {
+      handoffChannel = new BroadcastChannel(tabChannelName(options.profileId));
+      handoffChannel.addEventListener('message', ({ data }) => {
+        if (detached || data?.protocol !== TAB_OWNER_PROTOCOL || data.type !== 'takeover' || data.profileId !== options.profileId) return;
+        const hadSession = Boolean(session);
+        void Promise.resolve(session?.detach()).catch(() => {}).finally(() => release(new Error('TAB_TAKEN_OVER'))).finally(() => {
+          if (hadSession) {
+            try { options.onOwnerReplaced?.({ previous: tabId, reason: 'tab_takeover' }); } catch { /* Isolate callback errors. */ }
+          }
+        });
+      });
+    }
+
     worker = new Worker(url, { type: 'module', name: `tendriller-tab-${tabId}` });
     rtcHost = startTabRtcHost(worker, {
       signal: lifetime.signal,
@@ -264,25 +328,14 @@ export async function openBrowserOwner(options) {
     appEndpoint = createAppEndpoint(worker, lifetime.signal);
 
     const bootId = crypto.randomUUID();
-    const ready = waitForWorker(worker, data => data.type === 'ready' && data.id === bootId, { signal: options.signal, timeoutMs });
+    const ready = waitForWorker(worker, data => data.type === 'ready' && data.id === bootId, { signal: lifetime.signal, timeoutMs });
     worker.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'boot', id: bootId, profileId: options.profileId });
     await ready;
 
-    session = await connectFacade(appEndpoint, { applicationId: options.applicationId, context: options.context ?? {} }, { signal: options.signal, timeoutMs });
-
-    if (typeof globalThis.BroadcastChannel === 'function') {
-      handoffChannel = new BroadcastChannel(tabChannelName(options.profileId));
-      handoffChannel.addEventListener('message', ({ data }) => {
-        if (detached || data?.protocol !== TAB_OWNER_PROTOCOL || data.type !== 'takeover' || data.profileId !== options.profileId) return;
-        void Promise.resolve(session?.detach()).catch(() => {}).finally(() => release(new Error('TAB_TAKEN_OVER'))).finally(() => {
-          try { options.onOwnerReplaced?.({ previous: tabId, reason: 'tab_takeover' }); } catch { /* Isolate callback errors. */ }
-        });
-      });
-    }
+    session = await connectFacade(appEndpoint, { applicationId: options.applicationId, context: options.context ?? {} }, { signal: lifetime.signal, timeoutMs });
+    lifetime.signal.throwIfAborted();
 
     globalThis.addEventListener?.('pagehide', onPageHide);
-    options.signal?.addEventListener('abort', onExternalAbort, { once: true });
-    if (options.signal?.aborted) onExternalAbort();
 
     return Object.freeze({
       session,

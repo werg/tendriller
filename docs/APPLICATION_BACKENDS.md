@@ -35,11 +35,7 @@ backend; a failure must not silently switch storage or create an empty replaceme
 history. Explicit new-device capability checks choose a supported backend before
 initialization. There is no migration or in-memory durability fallback.
 
-SQL engine selection is explicit: provide `createMaterializer` when opening the
-session and import/create the engine within that factory. The `/sql` factory is
-`createSqlMaterializationRuntime({ engine, path, rootPrincipal })`. Platform trust
-initialization does not freeze application tables; ordinary authorized signed
-transactions create and change schema.
+SQL topics bind directly to built-in `chronolog/sql` (or a custom ES Module reducer importing `chronolog:sqlite` and `chronolog/rls`) over deterministic Merkle-paged `sqlite-cas.wasm`. Zero native C/C++ builds or separate materializer factories are required — SQLite-CAS loads lazily only when an active topic binds `chronolog:sqlite` / `chronolog/sql`. Platform trust initialization does not freeze application tables; ordinary authorized signed transactions (`migrate`, `exec`, `setRls`) create and evolve schema and write RLS rules.
 
 `status.database` reports `idle`, `opening`, `ready`, `failed` or `closed`, separately
 from protocol connectivity. Inspect `materializationError` for an operational
@@ -55,12 +51,11 @@ a reading of an existing device's immutable pin. A diagnostic does not open or
 mutate a Tendriller application device; it is not an implicit enrollment,
 database activation, or a proof of synchronized peers.
 
-**SQL/WASM is independent of the record backend.** The browser SQL specimen's
-separate DoltLite engine and OPFS SAH-pool VFS still require their own assets,
-capability checks and qualification. An IndexedDB event journal does not make
-SQL available, and a SQL-required signed definition must fail explicitly rather
-than silently run as events-only. Safari 17/iPadOS 17 events-only eligibility
-does **not** establish SQL support or physical-device qualification. See
+**SQLite-CAS shares the exact same `BytesStore` / Merkle-DAG CAS backend.** Both
+browser OPFS and IndexedDB stores persist SQLite-CAS 4 KiB Merkle pages cleanly
+through `ContentAddressedStore` with zero OPFS SAH-pool VFS requirement. Browser
+workers pass `wasmModule` (QuickJS-NG) and `sqliteWasmModule` (`sqlite-cas.wasm`)
+to `createApplicationSession`. See
 [browser qualification](E2E_TESTING.md#record-storage-and-browser-eligibility).
 
 Native agents use the session directly. Browser code owns its session in a Worker and uses the public Worker facade. Both expose the same operation, query and status model. The Tendriller adapter changes API composition, not application semantics.

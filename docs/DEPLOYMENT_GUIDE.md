@@ -101,10 +101,9 @@ deleting the workspace or state.
 ## Container
 
 The `deploy/Dockerfile` uses Node 24 on Debian, a non-root user,
-and the workspace's locked runtime dependencies. It is a native events-starter
-template. A native SQL engine with install-time build requirements needs its own
-matching prepared runtime/image; `--ignore-scripts` does not compile such an engine
-or establish SQL support. No silent fallback to events is permitted.
+and the workspace's locked runtime dependencies (`npm ci --ignore-scripts`).
+Both event/JSON topics and SQLite-CAS (`chronolog/sql` via `sqlite-cas.wasm`)
+run with zero native C/C++ builds on Node 22+ built-in `node:sqlite`.
 
 Use the matching `deploy/Dockerfile.dockerignore`
 when building from the workspace root. It excludes the standard private store,

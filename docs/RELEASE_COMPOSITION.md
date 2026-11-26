@@ -124,6 +124,7 @@ Only fresh devices may select IndexedDB automatically. Existing devices
 remain pinned; browser updates, erased partial origin storage, disabled OPFS
 or quota errors must surface failure without silently replacing history.
 A real iPadOS 17 Safari **events-only** write/reload/resume/sync check is an
-additional physical-device gate before claiming Safari 17 qualified. SQL's
-DoltLite WASM/OPFS SAH-pool has a different gate, and no event-backend
-qualification implies SQL or uninterrupted mobile background work.
+additional physical-device gate before claiming Safari 17 qualified. SQL topics
+run on portable `sqlite-cas.wasm` over the same Merkle-DAG CAS store (with zero
+OPFS SAH-pool or native C/C++ dependencies), and are separately exercised by
+`npm run test:chaos -- --profile sql` and the browser SQL qualification suite.

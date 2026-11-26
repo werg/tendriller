@@ -7,7 +7,7 @@ import { createApplicationSession } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
 import { participateApplication } from '@tendriller/core/participation';
-import { definition } from './domain.mjs';
+import { definition, imports, topics } from './domain.mjs';
 
 const quickJsWasmPromise = (async () => {
   const res = await fetch(new URL(quickJsWasmUrl, self.location.href));
@@ -33,7 +33,7 @@ serveBrowserOwner({
         let session, participation, admission;
         try {
           const [opened, wasmModule] = await Promise.all([
-            bootstrapBrowser({ configuration, device, signal }),
+            bootstrapBrowser({ configuration, device, imports, topics, signal }),
             quickJsWasmPromise,
           ]);
           const epochKeys = opened.epoch0Key ? new Map([[0, opened.epoch0Key]]) : undefined;

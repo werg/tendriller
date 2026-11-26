@@ -86,31 +86,39 @@ export function resolveShortcuts(shortcuts: PageShortcut[], base: string): PageS
 }
 
 /**
- * Manifest icons. Android installs only use PNG/WebP icons with real dimensions,
- * so emoji pages list the owner-drawn 512px PNGs (`rasterTag`) first, and custom
- * images carry their measured size. SVGs remain for platforms that use them.
+ * Manifest icons. Chromium installability (`beforeinstallprompt` / Android WebAPK)
+ * requires at least a 192x192 PNG/WebP icon with known dimensions on the first load.
+ * Owner-drawn 512px PNGs (`rasterTag`) are listed first once available; until then,
+ * static 192px + 512px brand PNGs satisfy installability immediately.
  */
 export function pageIcons(base: string, icon: string | null, extra: { rasterTag?: string | null; customSize?: { type: string; width: number; height: number } | null } = {}) {
   const maskable = { src: `${base}_tendril/icon-maskable.svg`, sizes: "any", type: "image/svg+xml", purpose: "maskable" };
-  const brand = { src: "/_tendril/brand/icon-180.png", sizes: "180x180", type: "image/png", purpose: "any" };
+  const brandIcons = [
+    { src: "/_tendril/brand/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+    { src: "/_tendril/brand/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+  ];
   if (icon && isEmojiIcon(icon)) {
-    const raster = extra.rasterTag ? [
-      { src: `${base}_tendril/icon-512.png?v=${extra.rasterTag}`, sizes: "512x512", type: "image/png", purpose: "any" },
-      { src: `${base}_tendril/icon-maskable-512.png?v=${extra.rasterTag}`, sizes: "512x512", type: "image/png", purpose: "maskable" },
-    ] : [];
+    if (extra.rasterTag) {
+      return [
+        { src: `${base}_tendril/icon-512.png?v=${extra.rasterTag}`, sizes: "512x512", type: "image/png", purpose: "any" },
+        { src: `${base}_tendril/icon-maskable-512.png?v=${extra.rasterTag}`, sizes: "512x512", type: "image/png", purpose: "maskable" },
+        { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
+        maskable,
+      ];
+    }
     return [
-      ...raster,
       { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
       maskable,
+      ...brandIcons,
     ];
   }
   const type = icon ? extra.customSize?.type ?? iconMediaType(icon) : undefined;
   if (icon && (extra.customSize || type === "image/png" || type === "image/webp" || type === "image/svg+xml")) {
-    // A measured raster icon is usable for Android installs. Do not add the
-    // generated letter as a maskable icon: launchers prefer maskable icons.
+    // A measured raster icon >= 192px satisfies Chromium installability on its own.
+    // Do not add the generated letter as a maskable icon: launchers prefer maskable icons.
     const size = extra.customSize;
     const custom = { src: icon, sizes: size ? `${size.width}x${size.height}` : "any", type, purpose: "any" };
-    return size && Math.min(size.width, size.height) >= 144 ? [custom] : [custom, brand];
+    return size && Math.min(size.width, size.height) >= 192 ? [custom] : [custom, ...brandIcons];
   }
   if (!icon && extra.rasterTag) {
     return [
@@ -121,7 +129,7 @@ export function pageIcons(base: string, icon: string | null, extra: { rasterTag?
     ];
   }
   return [
-    brand,
+    ...brandIcons,
     { src: `${base}_tendril/icon.svg`, sizes: "any", type: "image/svg+xml", purpose: "any" },
     maskable,
   ];

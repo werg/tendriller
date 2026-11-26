@@ -102,6 +102,8 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       target: 'es2022',
       outExtension: { '.js': '.mjs' },
       chunkNames: 'chunks/[name]-[hash]',
+      assetNames: 'assets/[name]-[hash]',
+      loader: { '.wasm': 'file' },
     });
     return fileURLToPath(output);
   } catch (cause) {

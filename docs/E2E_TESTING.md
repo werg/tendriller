@@ -56,7 +56,7 @@ The staging fixture uses the pinned Chronolog artifact and requires its diagnost
 | Desktop Chromium | Actual OPFS/IDB records and Worker lifecycle can be qualified in automated browser CI |
 | Chrome for Android | Requires real-device record write, Worker restart and reopening |
 | Safari 17 on a real iPad | Events-only requires native crypto, Web Locks, IndexedDB fallback, write/reopen/resume and peer exchange on the physical device; desktop WebKit does not qualify it |
-| Browser SQL/WASM | Separate actual DoltLite WASM + OPFS SAH-pool VFS qualification required for each target browser |
+| Browser SQL/WASM | Portable `sqlite-cas.wasm` + QuickJS-NG WASM over standard OPFS/IndexedDB Merkle-DAG CAS (no OPFS SAH-pool VFS); qualified via `npm run test:chaos -- --profile sql` and browser SQL tests |
 
 Never equate IndexedDB's `durability: 'strict'` hint with universal power-loss
 durability. Browser quota failure, background suspension and site-data eviction

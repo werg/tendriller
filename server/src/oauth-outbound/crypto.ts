@@ -98,18 +98,23 @@ export async function unwrapConnectionTokens(
   return parsed;
 }
 
+const X25519_PKCS8_PREFIX = new Uint8Array([
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+  0x03, 0x2b, 0x65, 0x6e, 0x04, 0x22, 0x04, 0x20,
+]);
+
 /**
- * Tier A: Seal OAuth tokens to a target agent's X25519 `wrapKey` (64 lowercase hex)
+ * Seal an arbitrary JSON payload to an X25519 `wrapKey` (64 lowercase hex)
  * using ephemeral X25519 ECDH + HKDF-SHA256 + AES-256-GCM.
  */
-export async function sealAgentTokens(
-  agentWrapPublicKeyHex: string,
-  tokens: OutboundTokenSet,
+export async function sealX25519Payload(
+  recipientPublicKeyHex: string,
+  payload: unknown,
   aadContext: string,
 ): Promise<string> {
-  const recipientPubBytes = hexToBytes(agentWrapPublicKeyHex);
+  const recipientPubBytes = hexToBytes(recipientPublicKeyHex);
   if (recipientPubBytes.byteLength !== 32) {
-    throw new HttpError(400, 'invalid_wrap_key', 'Agent wrapKey must be 32 bytes (64 hex)');
+    throw new HttpError(400, 'invalid_wrap_key', 'Wrap public key must be 32 bytes (64 hex)');
   }
   const recipientPub = await crypto.subtle.importKey('raw', asBuffer(recipientPubBytes), { name: 'X25519' }, false, []);
   const ephemeral = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']) as CryptoKeyPair;
@@ -128,7 +133,7 @@ export async function sealAgentTokens(
     ['encrypt'],
   );
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = encoder.encode(JSON.stringify(tokens));
+  const plaintext = encoder.encode(JSON.stringify(payload));
   const ct = new Uint8Array(await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: asBuffer(iv), additionalData: asBuffer(aad) },
     aesKey,
@@ -141,6 +146,69 @@ export async function sealAgentTokens(
     iv: base64url(iv),
     ct: base64url(ct),
   });
+}
+
+/**
+ * Unseal an X25519-HKDF-A256GCM envelope strictly in RAM using a 32-byte raw X25519 private key.
+ */
+export async function unsealX25519Payload<T = unknown>(
+  recipientPrivateKeyRaw32: Uint8Array,
+  recipientPublicKeyHex: string,
+  sealedJson: string,
+  aadContext: string,
+): Promise<T> {
+  let env: { v?: unknown; alg?: unknown; epk?: unknown; iv?: unknown; ct?: unknown };
+  try { env = JSON.parse(sealedJson); }
+  catch { throw new HttpError(500, 'sealed_payload_corrupt', 'Stored sealed envelope is invalid'); }
+  if (env?.v !== 1 || env.alg !== 'X25519-HKDF-A256GCM' || typeof env.epk !== 'string' || typeof env.iv !== 'string' || typeof env.ct !== 'string') {
+    throw new HttpError(500, 'sealed_payload_corrupt', 'Unsupported sealed envelope format');
+  }
+  if (recipientPrivateKeyRaw32.byteLength !== 32) {
+    throw new HttpError(400, 'invalid_wrap_key', 'Wrap private key must be 32 bytes');
+  }
+  const pkcs8 = new Uint8Array(X25519_PKCS8_PREFIX.length + 32);
+  pkcs8.set(X25519_PKCS8_PREFIX, 0);
+  pkcs8.set(recipientPrivateKeyRaw32, X25519_PKCS8_PREFIX.length);
+  const privKey = await crypto.subtle.importKey('pkcs8', asBuffer(pkcs8), { name: 'X25519' }, false, ['deriveBits']);
+  const epkBytes = hexToBytes(env.epk);
+  const recipientPubBytes = hexToBytes(recipientPublicKeyHex);
+  const epkKey = await crypto.subtle.importKey('raw', asBuffer(epkBytes), { name: 'X25519' }, false, []);
+  const sharedBits = await crypto.subtle.deriveBits({ name: 'X25519', public: epkKey } as any, privKey, 256);
+  const salt = new Uint8Array(64);
+  salt.set(epkBytes, 0);
+  salt.set(recipientPubBytes, 32);
+  const aad = encoder.encode(`tendriller-agent-oauth-v1:${aadContext}`);
+  const ikm = await crypto.subtle.importKey('raw', sharedBits, 'HKDF', false, ['deriveKey']);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: asBuffer(salt), info: asBuffer(aad) },
+    ikm,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['decrypt'],
+  );
+  let plain: ArrayBuffer;
+  try {
+    plain = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: asBuffer(unbase64url(env.iv)), additionalData: asBuffer(aad) },
+      aesKey,
+      asBuffer(unbase64url(env.ct)),
+    );
+  } catch {
+    throw new HttpError(403, 'connection_key_invalid', 'This MCP grant cannot unseal the connection wrap key.');
+  }
+  return JSON.parse(decoder.decode(plain)) as T;
+}
+
+/**
+ * Tier A: Seal OAuth tokens to a target agent's X25519 `wrapKey` (64 lowercase hex)
+ * using ephemeral X25519 ECDH + HKDF-SHA256 + AES-256-GCM.
+ */
+export async function sealAgentTokens(
+  agentWrapPublicKeyHex: string,
+  tokens: OutboundTokenSet,
+  aadContext: string,
+): Promise<string> {
+  return sealX25519Payload(agentWrapPublicKeyHex, tokens, aadContext);
 }
 
 /** Constant-time byte comparison. */

@@ -15,9 +15,11 @@ it('owner pages draw emoji icons into sized PNGs that the manifest offers to And
   await apiJson(h, 'PATCH', '', { icon: '🌱' });
   const html = await (await req(h.page_url)).text();
   const key = /"iconRaster":\{"key":("(?:[^"\\]|\\.)*")\}/.exec(html);
-  // A holding page (nothing published yet) does not ask; publish-time pages do.
+  // Before owner rasterization completes, brand 192/512 PNGs satisfy Chromium installability
+  // on first load, and no page-specific raster PNG exists yet.
   const manifest = async () => (await (await req(h.page_url + '_tendril/manifest.webmanifest')).json() as { icons: Icon[] }).icons;
-  expect((await manifest()).some(icon => icon.type === 'image/png')).toBe(false);
+  expect((await manifest()).some(icon => icon.src.includes('_tendril/icon-512.png'))).toBe(false);
+  expect((await manifest()).some(icon => icon.src === '/_tendril/brand/icon-192.png' && icon.sizes === '192x192')).toBe(true);
   const iconKey = key ? JSON.parse(key[1]!) as string : JSON.stringify([1, '🌱', '#2d6a4f']);
   const origin = new URL(h.page_url).origin, json = { 'Content-Type': 'application/json', Origin: origin };
   expect((await req(h.page_url + '_tendril/icon-raster', { method: 'POST', headers: json, body: JSON.stringify({ key: iconKey, any: png(64, 64), maskable: png(512, 512) }) })).status).toBe(400);
@@ -26,6 +28,7 @@ it('owner pages draw emoji icons into sized PNGs that the manifest offers to And
   const icons = await manifest();
   expect(icons[0]).toMatchObject({ sizes: '512x512', type: 'image/png', purpose: 'any' });
   expect(icons[1]).toMatchObject({ sizes: '512x512', type: 'image/png', purpose: 'maskable' });
+  expect(icons.some(icon => icon.src.includes('/_tendril/brand/'))).toBe(false);
   // iOS gets the opaque full-bleed PNG (it turns transparency black).
   const base = new URL(h.page_url).pathname;
   expect(await inDO(h.id, t => appleTouchIcon(t, base, h.page_url))).toEqual({ href: icons[1]!.src, sizes: '512x512' });
@@ -33,7 +36,8 @@ it('owner pages draw emoji icons into sized PNGs that the manifest offers to And
   expect(served.status).toBe(200); expect(served.headers.get('content-type')).toBe('image/png');
   // A different emoji or theme makes the stored pair stale until the owner's page redraws it.
   await apiJson(h, 'PATCH', '', { theme_color: '#112233' });
-  expect((await manifest()).some(icon => icon.type === 'image/png')).toBe(false);
+  expect((await manifest()).some(icon => icon.src.includes('_tendril/icon-512.png'))).toBe(false);
+  expect((await manifest()).some(icon => icon.src === '/_tendril/brand/icon-192.png')).toBe(true);
   expect((await req(h.page_url + '_tendril/icon-512.png')).status).toBe(404);
   expect(await inDO(h.id, t => appleTouchIcon(t, base, h.page_url))).toBeNull();
 });
@@ -71,7 +75,7 @@ it('default letter pages also rasterize into page-specific 512px PNGs for mobile
   expect(res.status).toBe(204);
   const manifest = await (await req(h.page_url + '_tendril/manifest.webmanifest')).json() as { icons: Icon[] };
   expect(manifest.icons[0]).toMatchObject({ sizes: '512x512', type: 'image/png', purpose: 'any' });
-  expect(manifest.icons.some(icon => icon.src.includes('/_tendril/brand/icon-180.png'))).toBe(false);
+  expect(manifest.icons.some(icon => icon.src.includes('/_tendril/brand/'))).toBe(false);
   const base = new URL(h.page_url).pathname;
   expect(await inDO(h.id, t => appleTouchIcon(t, base, h.page_url))).toEqual({ href: manifest.icons[1]!.src, sizes: '512x512' });
 });

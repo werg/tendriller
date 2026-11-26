@@ -35,11 +35,25 @@ export function rasterizeHomeScreenIcon(cfg: TendrilConfig): void {
       body: JSON.stringify({ key: request.key, any, maskable }),
     });
     if (!response.ok) return;
-    // Let the browser pick up the new icons without a reload.
+    // Replace the manifest link node so Chromium re-fetches the updated manifest and
+    // re-evaluates installability with the page's own 512px PNG icons without a reload.
     const link = document.querySelector<HTMLLinkElement>('link[rel="manifest"]');
-    if (link) { const href = new URL(link.href); href.searchParams.set("icons", String(Date.now())); link.href = href.href; }
+    if (link) {
+      const href = new URL(link.href);
+      href.searchParams.set("icons", String(Date.now()));
+      const next = document.createElement("link");
+      next.rel = "manifest";
+      if (link.crossOrigin) next.crossOrigin = link.crossOrigin;
+      next.href = href.href;
+      link.replaceWith(next);
+    }
   };
-  const start = () => { run().catch(() => { /* Keep the SVG icons. */ }); };
-  const idle = (window as { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => void }).requestIdleCallback;
-  if (idle) idle(start, { timeout: 5000 }); else setTimeout(start, 1500);
+  const start = () => { run().catch(() => { /* Keep the SVG/brand icons. */ }); };
+  // Run promptly after initial paint so the page's own 512px PNGs are stored before
+  // the user opens install options, without blocking document parsing.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => { setTimeout(start, 0); }, { once: true });
+  } else {
+    setTimeout(start, 0);
+  }
 }
