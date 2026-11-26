@@ -83,7 +83,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   const path = url.pathname;
 
   const rootRuntime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
-  const rootBrand = path === '/favicon.ico' || /^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path);
+  const rootBrand = path === '/favicon.ico' || /^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180|192|512)\.png|favicon\.ico)$/.test(path);
   const publicRead = (req.method === 'GET' || req.method === 'HEAD') && req.headers.get('Upgrade')?.toLowerCase() !== 'websocket';
   if (onPagesDomain && !parsePageRoute(url, env)) {
     // Old runtime releases missing from the static deployment still resolve
@@ -124,7 +124,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     // These platform bytes are already public on the service origin. Fetching
     // them on a valid page origin must not wake that page or query its account.
     const runtime = /^_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(rest);
-    const brand = /^_tendril\/brand\/(icon-(64|180)\.png|favicon\.ico)$/.test(rest);
+    const brand = /^_tendril\/brand\/(icon-(64|180|192|512)\.png|favicon\.ico)$/.test(rest);
     if ((req.method === "GET" || req.method === "HEAD") && req.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       if (runtime && !runtime[2].split("/").includes("..")) return runtimeAsset(env, req, runtime[1], runtime[2], context);
       if (brand) return asset(env, url, `/${rest}`);
@@ -260,7 +260,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return response;
   }
   if (path === "/favicon.ico") return asset(env, url, "/_tendril/brand/favicon.ico");
-  if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
+  if (/^\/_tendril\/brand\/(logo\.(png|webp)|icon-(64|180|192|512)\.png|favicon\.ico)$/.test(path)) return asset(env, url, path);
   if (path === "/health") {
     const preview = isBranchPreview(env) && /^[a-f0-9]{40}$/.test(env.BRANCH_PREVIEW_SHA ?? "")
       ? { branch: env.BRANCH_PREVIEW_BRANCH, commit: env.BRANCH_PREVIEW_SHA } : undefined;

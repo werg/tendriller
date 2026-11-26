@@ -5,6 +5,7 @@ import { verifyRuntimeManifest } from './runtime-manifest.mjs';
 const root = resolve(import.meta.dirname, '..');
 const brand = [
   '!/_tendril/brand/icon-64.png', '!/_tendril/brand/icon-180.png',
+  '!/_tendril/brand/icon-192.png', '!/_tendril/brand/icon-512.png',
   '!/_tendril/brand/logo.png', '!/_tendril/brand/logo.webp',
   '!/_tendril/brand/favicon.ico', '!/favicon.ico',
 ];

@@ -21,15 +21,18 @@ describe('page installation metadata', () => {
       expect(manifest).toMatchObject({ name: handle.name, id: base, start_url: base, scope: base, display: 'standalone' });
       expect(new URL(manifest.start_url, handle.page_url).href).toBe(handle.page_url);
       expect(manifest.icons).toContainEqual({ src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' });
-      expect(manifest.icons).toContainEqual({ src: '/_tendril/brand/icon-180.png', sizes: '180x180', type: 'image/png', purpose: 'any' });
+      expect(manifest.icons).toContainEqual({ src: '/_tendril/brand/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' });
+      expect(manifest.icons).toContainEqual({ src: '/_tendril/brand/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' });
       const svg = await req(new URL(`${base}_tendril/icon.svg`, handle.page_url).href);
       expect(svg.headers.get('Content-Type')).toBe('image/svg+xml');
       expect(await svg.text()).toContain('viewBox="0 0 512 512"');
-      const png = await req(new URL('/_tendril/brand/icon-180.png', handle.page_url).href);
-      expect(png.status).toBe(200);
-      const bytes = new DataView(await png.arrayBuffer());
-      expect(bytes.getUint32(16)).toBe(180);
-      expect(bytes.getUint32(20)).toBe(180);
+      for (const expectedSize of [192, 512]) {
+        const png = await req(new URL(`/_tendril/brand/icon-${expectedSize}.png`, handle.page_url).href);
+        expect(png.status).toBe(200);
+        const bytes = new DataView(await png.arrayBuffer());
+        expect(bytes.getUint32(16)).toBe(expectedSize);
+        expect(bytes.getUint32(20)).toBe(expectedSize);
+      }
     }
     await apiJson(first, 'PATCH', '', { name: 'Shopping for home', short_name: 'Shopping', theme_color: '#123456', background_color: '#f0f0f0' });
     const changed = await (await req(first.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
@@ -76,6 +79,8 @@ describe('page installation metadata', () => {
       expect(manifest.icons).toEqual([
         { src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
         { src: `${base}_tendril/icon-maskable.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' },
+        { src: '/_tendril/brand/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: '/_tendril/brand/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
       ]);
     }
 
@@ -84,7 +89,7 @@ describe('page installation metadata', () => {
     expect(reset).toContain('>G</text>');
     expect(reset).not.toContain('1️⃣');
     const manifest = await (await req(handle.page_url + '_tendril/manifest.webmanifest')).json() as Manifest;
-    expect(manifest.icons).toHaveLength(3);
+    expect(manifest.icons).toHaveLength(4);
     expect(manifest.icons).toContainEqual({ src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' });
     expect(manifest.icons).toContainEqual({ src: `${base}_tendril/icon-maskable.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' });
   });
@@ -119,12 +124,16 @@ describe('page installation metadata', () => {
       const base = new URL(handle.page_url).pathname;
       const maskable = { src: `${base}_tendril/icon-maskable.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' };
       if (type) {
-        // Unmeasurable here (no network): the custom icon plus a sized PNG fallback, never the generated letter.
-        expect(manifest.icons).toEqual([{ src: icon, type, sizes: 'any', purpose: 'any' },
-          { src: '/_tendril/brand/icon-180.png', sizes: '180x180', type: 'image/png', purpose: 'any' }]);
+        // Unmeasurable here (no network): the custom icon plus 192px/512px PNG fallbacks, never the generated letter.
+        expect(manifest.icons).toEqual([
+          { src: icon, type, sizes: 'any', purpose: 'any' },
+          { src: '/_tendril/brand/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/_tendril/brand/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+        ]);
       } else {
         expect(manifest.icons).toEqual([
-          { src: '/_tendril/brand/icon-180.png', sizes: '180x180', type: 'image/png', purpose: 'any' },
+          { src: '/_tendril/brand/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/_tendril/brand/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
           { src: `${base}_tendril/icon.svg`, sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
           maskable,
         ]);

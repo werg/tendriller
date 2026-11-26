@@ -57,7 +57,7 @@ export async function buildPublicArtifacts() {
   writeJson(join(runtime, "build-metrics.json"), graphs);
   cpSync(join(root, "node_modules/phonon-tts"), join(assets, "tts"), { recursive: true });
   mkdirSync(join(assets, "brand"), { recursive: true });
-  for (const [source, target] of [["tendriller-logo-ai-compressed.png", "logo.png"], ["tendriller-logo-ai.webp", "logo.webp"], ["tendriller-icon-64.png", "icon-64.png"], ["tendriller-icon-180.png", "icon-180.png"], ["tendriller-favicon.ico", "favicon.ico"]])
+  for (const [source, target] of [["tendriller-logo-ai-compressed.png", "logo.png"], ["tendriller-logo-ai.webp", "logo.webp"], ["tendriller-icon-64.png", "icon-64.png"], ["tendriller-icon-180.png", "icon-180.png"], ["tendriller-icon-192.png", "icon-192.png"], ["tendriller-icon-512.png", "icon-512.png"], ["tendriller-favicon.ico", "favicon.ico"]])
     copyFileSync(join(root, "docs/assets", source), join(assets, "brand", target));
   const resources = RUNTIME_RESOURCES.map(({url,sha256,type}) => ({url,sha256,type}));
   writeJson(join(assets, "resources.json"), { features: RUNTIME_FEATURES, resources });
