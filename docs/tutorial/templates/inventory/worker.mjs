@@ -3,7 +3,9 @@ import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
 import { participateApplication } from '@tendriller/core/participation';
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
-import { bootstrapBrowser } from '../../shared/helpers/browser-bootstrap.mjs';
+import { admitBrowserSession, bootstrapBrowser } from '../../shared/helpers/browser-bootstrap.mjs';
+import { hostedMcpExtensions } from '../../shared/helpers/hosted-mcp.mjs';
+import { composeOwnerExtensions } from '@tendriller/core/admission';
 import { definition } from './domain.mjs';
 serveBrowserOwner({ async load({ signal }) {
   const response = await fetch(new URL('./configuration.json', import.meta.url), { signal });
@@ -12,10 +14,10 @@ serveBrowserOwner({ async load({ signal }) {
   return { profileId,
     async createIdentity() { const device = await openBrowserDevice({ name: profileId, create: true }); try { return device.identity.publicKey; } finally { await device.close(); } },
     async openSession({ signal, openDirectConnection }) {
-      const device = await openBrowserDevice({ name: profileId, create: true }); let session, pool, participation;
+      const device = await openBrowserDevice({ name: profileId, create: true }); let session, pool, participation, admission;
       const release = async () => { const owned = pool; pool = undefined; await owned?.pauseVfs(); };
       try {
-        const { authority, peers } = await bootstrapBrowser({ configuration, device, signal });
+        const { authority, peers, wrapKey } = await bootstrapBrowser({ configuration, device, signal });
         session = await createApplicationSession({ device, definition, authority,
           async createMaterializer({ signal, rootPrincipal }) {
             // The optional SQL graph stays out of the page's eager imports.
@@ -28,9 +30,10 @@ serveBrowserOwner({ async load({ signal }) {
             return createSqlMaterializationRuntime({ engine: createBrowserSqlEngine({ ...loaded, vfs: pool.vfsName }), path: '/inventory.sqlite', rootPrincipal });
           },
         });
-        participation = participateApplication(session, { peers, openDirectConnection }); Object.defineProperty(session, 'participation', { value: participation });
-        return { session, async close() { await participation.close(); await release(); } };
-      } catch (error) { try { if (session) await session.close(); else await device.close(); } finally { await release(); } throw error; }
+        admission = admitBrowserSession(session, { peers, wrapKey });
+        participation = participateApplication(session, { peers, openDirectConnection, onNotification: () => void admission.refresh() }); Object.defineProperty(session, 'participation', { value: participation });
+        return { session, extensions: composeOwnerExtensions(admission.extensions, hostedMcpExtensions({ session, admission })), async close() { admission.close(); await participation.close(); await release(); } };
+      } catch (error) { admission?.close(); try { if (session) await session.close(); else await device.close(); } finally { await release(); } throw error; }
     },
   };
 } });

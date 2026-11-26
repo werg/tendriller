@@ -1,7 +1,9 @@
 // One optional page inside the workspace's single agent program. The shared
-// signer stays in the Node context; every page has separately provisioned keys.
+// signer and wrap key stay in the Node context; every page has its own admitted
+// membership and wrapped keys.
 import {createApplicationSession,describeApplication} from '@chronolog/peer-session';
-import {createAuthorityProvider,signPublicationManifest} from '@chronolog/authority';
+import {signPublicationManifest} from '@chronolog/authority';
+import {createAdmission,openPageAuthority} from '@tendriller/core/admission';
 import {createApplicationOwner} from '@chronolog/peer-session/worker';
 import {participateNativeApplication} from '@tendriller/core/native-rtc';
 import {watchApplicationSetup} from '@tendriller/core/setup';
@@ -25,20 +27,23 @@ export function publicationControl(context,definition) {
 export async function openNativePage(context,{definition,createMaterializer,assistant}={}) {
  context.signal?.throwIfAborted();
  const initialized=await context.readPrivate('initialized.json',true);
- if(!initialized?.provisioned||initialized.applicationId!==context.page.applicationId||initialized.publicKey!==context.signer.publicKey)throw Object.assign(Error('This page needs explicit account/key proof and recipient-bound native key provisioning; browser reads and Save do not require the native agent'),{code:'native_page_provisioning_required'});
- const device=await context.openDevice();let session,participation,lifecycle;
+ if(initialized?.applicationId!==context.page.applicationId||initialized.publicKey!==context.signer.publicKey)throw Object.assign(Error(`Run npm run init -- ${context.page.slug} first; browser reads and Save never require the agent`),{code:'native_page_init_required'});
+ const device=await context.openDevice({create:true});let session,participation,lifecycle,admission;
  try{
-  const authority=await createAuthorityProvider({store:device.store,applicationId:context.page.applicationId});
-  if(!authority.grant(device.identity.publicKey)?.reader||authority.epochKey(authority.currentMembership.epoch)===null)throw Object.assign(Error('Restore this page’s provisioned epoch keys and explicit reader grant'),{code:'native_page_keys_required'});
-  const config=await context.readPrivate('host-configuration.json',true);if(authority.descriptor.executionManifestDigest!==(config?.executionManifestDigest??initialized.executionManifestDigest))throw Error('Cached page execution scope differs from the prepared graph');
+  // Agent-first pages open their own cached keys; a browser-first page is pinned from the host
+  // and waits, without failing, until an online member admits this agent from its signed grant.
+  const {authority}=await openPageAuthority({store:device.store,identity:device.identity,wrapKey:context.wrapKey,peers:context.host.peers,applicationId:context.page.applicationId,executionManifestDigest:initialized.executionManifestDigest,create:false,signal:context.signal});
   session=await createApplicationSession({device,definition,authority,...(createMaterializer?{createMaterializer}: {})});
-  participation=participateNativeApplication(session,{peers:context.host.peers});
+  admission=createAdmission(session,{peers:context.host.peers,wrapKey:context.wrapKey,store:device.store,subject:'agent',
+   onEvent:notice=>context.report({admission:notice.kind,publicKey:notice.publicKey,label:notice.label??null,...(notice.reason?{reason:notice.reason}:{})})});
+  let phase;admission.subscribe(state=>{if(state.phase!==phase){phase=state.phase;context.report({admission:'phase',phase});}});
+  participation=participateNativeApplication(session,{peers:context.host.peers,onNotification:()=>void admission.refresh()});
   let optional={};
   try{if(assistant)optional=await assistant({context,session});}
   catch(error){context.report({state:'optional_assistant_unavailable',code:/^[A-Za-z0-9_]{1,96}$/.test(error?.code??'')?error.code:'assistant_configuration_unavailable',participantRunning:true});}
   const owned={session,participation};
   lifecycle=superviseParticipant({owned,signal:context.signal,report:context.report,watch:callbacks=>watchApplicationSetup({page:context.host,...callbacks}),...optional});
-  const owner=createApplicationOwner(session),close=owner.close.bind(owner);let closing;
-  return Object.assign(owner,{control:publicationControl(context,definition),participation,close:()=>closing??=(async()=>{const errors=[];for(const finish of [()=>lifecycle.close(),()=>participation.close(),close]){try{await finish();}catch(error){errors.push(error);}}if(errors.length)throw new AggregateError(errors,'Native page cleanup failed',{cause:errors[0]});})()});
- }catch(error){const errors=[error];for(const finish of [()=>lifecycle?.close(),()=>participation?.close(),()=>session?session.close():device.close()]){try{await finish();}catch(cleanup){errors.push(cleanup);}}if(errors.length>1)throw new AggregateError(errors,'Native page opening and cleanup failed',{cause:error});throw error;}
+  const owner=createApplicationOwner(session,{extensions:admission.extensions}),close=owner.close.bind(owner);let closing;
+  return Object.assign(owner,{control:publicationControl(context,definition),participation,admission,close:()=>closing??=(async()=>{const errors=[];for(const finish of [()=>admission.close(),()=>lifecycle.close(),()=>participation.close(),close]){try{await finish();}catch(error){errors.push(error);}}if(errors.length)throw new AggregateError(errors,'Native page cleanup failed',{cause:errors[0]});})()});
+ }catch(error){const errors=[error];for(const finish of [()=>admission?.close(),()=>lifecycle?.close(),()=>participation?.close(),()=>session?session.close():device.close()]){try{await finish();}catch(cleanup){errors.push(cleanup);}}if(errors.length>1)throw new AggregateError(errors,'Native page opening and cleanup failed',{cause:error});throw error;}
 }

@@ -1,6 +1,7 @@
 import { isDiscoverySocket, closeDiscoverySocket } from './discovery';
 import { isSetupWatch, notifySetupChanged } from './setup-watch';
-import { adoptPreparedApplication, applicationPrepared, withAuthorityMutation } from './authority';
+import { applicationPrepared, withAuthorityMutation } from './authority';
+import { attestGrantedAgent, issueAgentAttestation, ownerAdmissionEmail } from './admissions';
 import { isPublicationWatch, notifyPublicationWatchers } from "./publication-watch";
 import { lifetimeChangePending, recoverLifetimeChange } from './lifetime';
 import { isPeerSocket, handlePeerMessage, closePeer, nextPeerDeadline, expirePeers } from './peers';
@@ -24,10 +25,11 @@ import { Transactions, type CommitEffect } from './transactions';
 import { deleteUnreferencedContent } from './files';
 import { HttpError, json, readJson, toErrorResponse } from './http';
 import { parseShareExpiry } from './sharing';
-import { AGENT_PUBLIC_KEY_RE, handleAgentGrants, mirroredAgents, notifyAgentHub, notifyGrantedAgents, validAgentBio, validAgentHandle, writeLocalGrant } from './agent-grants';
+import { AGENT_PUBLIC_KEY_RE, AGENT_WRAP_KEY_RE, handleAgentGrants, mirroredAgents, notifyAgentHub, notifyGrantedAgents, validAgentBio, validAgentHandle, writeLocalGrant } from './agent-grants';
 import { AGENT_ID_RE, newLinkId, newPageKey, sha256Hex, safeEqual } from './ids';
 import type { Features } from './inject';
-import { ACCESS_WRITE_INTERVAL, AD_HOC_IDLE, DAY, MB, HOUR, RESIDENT_LIMIT } from './limits';
+import { ACCESS_WRITE_INTERVAL, ACCOUNT_STORAGE_LIMIT, AD_HOC_IDLE, DAY, HOUR, PAGE_LIMIT, RESIDENT_LIMIT } from './limits';
+import { accountLimits } from './service-state';
 import { handlePage, pageAccessDenied } from './page';
 import { agentPageApi, pageUrl, publicBase } from './urls';
 import { AGENT_HEADER, AGENT_SCOPES, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
@@ -270,7 +272,8 @@ export class Tendril extends DurableObject<Env> {
     if (this.exists()) throw new HttpError(409, "exists");
     const id = req.headers.get("x-tendril-id")!;
     const agentId = req.headers.get(AGENT_HEADER) ?? "", publicKey = req.headers.get("x-tendril-agent-key") ?? "";
-    if (!AGENT_ID_RE.test(agentId) || !AGENT_PUBLIC_KEY_RE.test(publicKey)) throw new HttpError(400, "invalid_agent");
+    const wrapKey = req.headers.get("x-tendril-agent-wrap-key") ?? "";
+    if (!AGENT_ID_RE.test(agentId) || !AGENT_PUBLIC_KEY_RE.test(publicKey) || !AGENT_WRAP_KEY_RE.test(wrapKey)) throw new HttpError(400, "invalid_agent");
     const handle = validAgentHandle(req.headers.get("x-tendril-agent-handle") ?? "");
     const bio = validAgentBio(req.headers.get("x-tendril-agent-bio") ?? "");
     const account = req.headers.get("x-account-id");
@@ -299,8 +302,10 @@ export class Tendril extends DurableObject<Env> {
         key, keyHash, now,
       );
       addActivity(this, { kind: "created", summary: `Tendril "${name}" created by @${handle}` });
-      return writeLocalGrant(this, agentId, handle, bio, publicKey, [...AGENT_SCOPES], "creator");
+      return writeLocalGrant(this, agentId, handle, bio, publicKey, wrapKey, [...AGENT_SCOPES], "creator");
     });
+    // The creator grant carries host evidence for the agent's keys from the start.
+    await attestGrantedAgent(this, agentId);
     if (account) this.recordAccess();
     this.scheduleAlarm();
     return json({ ...this.pageResult(), scopes: grant.scopes, revision: grant.revision, granted_by: grant.granted_by }, 201);
@@ -514,18 +519,24 @@ export class Tendril extends DurableObject<Env> {
           WHERE id = ? AND (owner_account IS NULL OR owner_account = ?) RETURNING id`)
           .bind(accountId, this.now(), lifetime, this.tid, accountId).first();
       } catch (err) {
-        if (String(err).includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: RESIDENT_LIMIT });
-        if (String(err).includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: 20 });
-        if (String(err).includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
+        const msg = String(err);
+        if (msg.includes("account_residents_full") || msg.includes("account_tendrils_full") || msg.includes("account_full")) {
+          const limits = await accountLimits(this.env);
+          if (msg.includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: limits.residents ?? RESIDENT_LIMIT });
+          if (msg.includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: limits.pages ?? PAGE_LIMIT });
+          throw new HttpError(413, "quota", "Account storage limit reached", { limit: limits.storage ?? ACCOUNT_STORAGE_LIMIT });
+        }
         throw err;
       }
       if (!row) throw new HttpError(409, "claimed", "This tendril was claimed already");
       this.transaction(() => {
-        adoptPreparedApplication(this, accountId);
         this.db.set("owner_account", accountId);
         this.db.set("claimed_at", this.now());
         if (applicationPrepared(this)) this.db.set('lifetime', 'resident');
       });
+      // Granted agents' evidence now names the owner account instead of the intended address.
+      await ownerAdmissionEmail(this, accountId);
+      for (const agentId of mirroredAgents(this)) await issueAgentAttestation(this, agentId).catch(() => undefined);
       // Starting the claim also starts the inactivity window.
       this.recordAccess();
       const label = (identities as { login?: unknown }[]).find((i) => typeof i?.login === "string")?.login;
@@ -614,7 +625,10 @@ export class Tendril extends DurableObject<Env> {
       if (err instanceof HttpError) throw err;
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("service_full")) throw new HttpError(507, "service_full", "Service storage is full");
-      if (message.includes("account_full")) throw new HttpError(413, "quota", "Account storage limit reached", { limit: 200 * MB });
+      if (message.includes("account_full")) {
+        const limits = await accountLimits(this.env);
+        throw new HttpError(413, "quota", "Account storage limit reached", { limit: limits.storage ?? ACCOUNT_STORAGE_LIMIT });
+      }
       throw err;
     }
   }

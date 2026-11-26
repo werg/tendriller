@@ -7,6 +7,8 @@ CREATE TABLE agents (
   bio TEXT NOT NULL DEFAULT '',
   token_hash TEXT NOT NULL UNIQUE,
   public_key TEXT NOT NULL,
+  -- X25519 key-wrap public key (64 lowercase hex) that page members seal epoch keys to.
+  wrap_key TEXT NOT NULL CHECK (length(wrap_key) = 64),
   created_at INTEGER NOT NULL,
   claimed_at INTEGER,
   revoked_at INTEGER,

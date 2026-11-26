@@ -31,5 +31,6 @@
     { "name": "REPORT_RATE", "namespace_id": "106", "simple": { "limit": 5, "period": 60 } }
   ],
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "tendriller-public-test-files" }],
-  "vars": { "PUBLIC_BASE": "https://tendriller.dev", "PAGE_BASE_DOMAIN": "tendriller.site" }
+  "vars": { "PUBLIC_BASE": "https://tendriller.dev", "PAGE_BASE_DOMAIN": "tendriller.site",
+    "HOST_ATTESTATION_KEY": "{\"publicKey\":\"ca48519afe505af513a97bd6e49ff30318a382849a6898c037e7effeee35283c\",\"privateKey\":\"302e020100300506032b657004220420b0df54d8dda272b6102a92eb353efcaa8576c36e3bef9136961a42fdc87c4e4f\"}" }
 }

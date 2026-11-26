@@ -24,12 +24,14 @@ const participation = participateNativeApplication(session, {
 The standard session package installs its native RTC dependency automatically.
 There is no separate native-RTC archive or manual capability-install step.
 Browser applications keep the supplied `serveBrowserOwner` / `openBrowserOwner`
-composition. Its page-side bridge supplies RTC mechanics for the single shared
-or elected owner; identity, authentication, stored operations and execution stay in that
-owner. Both browser engines and events/SQL starters consume this same path.
-Closing an RTC-serving page retires its transport; the existing session controller
-handles reconnection with another attached page or the fallback. It does not
-create a second identity, journal or application retry loop.
+composition. One active browser tab holds the profile's exclusive Web Lock, owns
+`RTCPeerConnection` (and any live media tracks or custom `app:*` DataChannels)
+directly, and pairs 1:1 with a dedicated Worker that owns identity, authentication,
+stored operations, and execution. Both browser engines and events/SQL starters
+consume this same path. Direct peer links also support in-band W3C Perfect
+Negotiation (`kind: 'rtc'`), mid-session RTP audio/video tracks, custom `app:*`
+binary DataChannels, and debounced ICE restart—see
+[WebRTC media, custom streams & calls](WEBRTC_MEDIA.md).
 
 ### What uses server bandwidth
 
@@ -126,7 +128,7 @@ enter the small WebSocket attachment.
 
 `listenInvitations(peerId)` opens a hibernatable host socket without a heartbeat. `invite(peerId,{channel,requesterPeerId})` sends one small `ephemeral/invite` action. Pending requests are bounded, coalesced and acknowledged when consumed. Revoked credentials and cancellation close the listener.
 
-`rendezvous(channel,peerId)` pairs authorized participants. Its `ready` result assigns offerer or answerer; callers must use that result. Each sends one complete bounded SDP description and the exchange closes. Binary frames, repeated descriptions, role confusion, foreign session IDs and expired pairs are rejected. `createPeerIntroductions` handles these details for the owned controller.
+`rendezvous(channel,peerId)` pairs authorized participants over `tendriller.rendezvous.v2`. Its `ready` result assigns offerer or answerer; callers must use that result. Each sends one bounded SDP `description` plus trickled ICE `candidate` frames, and the exchange closes when both sides report `connected` (up to 16 concurrent peers per page). Binary frames, repeated descriptions, role confusion, foreign session IDs and expired pairs are rejected. `createPeerIntroductions` handles these details for the owned controller; once the authenticated link is open, later media tracks, `app:*` DataChannels, and ICE restarts negotiate in-band via Perfect Negotiation (see [WebRTC media](WEBRTC_MEDIA.md)).
 
 `relay(channel,peerId,{remotePeerId,signal})` opens separate reliable and disposable WebSocket lanes. It returns `{reliable,live,ready,signal,close}`. Attach `frameWebSocketPeerConnection` synchronously, then await its readiness: the facade strips relay admission and receipt controls and forwards binary packets without an application payload queue. The four sockets must match one reciprocal peer pair and session. Disconnect, malformed traffic or cancellation closes the entire pair.
 

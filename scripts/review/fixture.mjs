@@ -13,15 +13,15 @@ export const REVIEW_FIXTURE_FILES = [
   ['review-worker.mjs', 'plugin/review-worker.mjs'],
   ['review-index.html', 'plugin/review-index.html'],
   // Canonical shared starter helpers, copied byte-for-byte; never maintain a second lifecycle, bootstrap,
-  // preparation, publication or workspace stack. The workspace itself comes from the installed @tendriller/tools archive.
+  // admission, preparation, publication or workspace stack. The workspace itself comes from the installed @tendriller/tools archive.
   ['support/participant-lifecycle.mjs', 'docs/tutorial/shared/participant-lifecycle.mjs'],
   ['support/native-page.mjs', 'docs/tutorial/shared/native-page.mjs'],
   ['support/prepare-host.mjs', 'docs/tutorial/shared/helpers/prepare-host.mjs'],
   ['support/publish.mjs', 'docs/tutorial/shared/publish.mjs'],
-  ['support/page-provisioning.mjs', 'docs/tutorial/shared/helpers/page-provisioning.mjs'],
+  ['support/page-data.mjs', 'docs/tutorial/shared/helpers/page-data.mjs'],
   ['support/browser-bootstrap.mjs', 'docs/tutorial/shared/helpers/browser-bootstrap.mjs'],
   ['support/browser-profile.mjs', 'docs/tutorial/shared/helpers/browser-profile.mjs'],
-  ['support/provisioning-view.mjs', 'docs/tutorial/shared/helpers/provisioning-view.mjs'],
+  ['support/devices-view.mjs', 'docs/tutorial/shared/helpers/devices-view.mjs'],
   ['support/hosted-mcp.mjs', 'docs/tutorial/shared/helpers/hosted-mcp.mjs'],
 ];
 export function installReviewFixtureSources(root, project) {

@@ -61,10 +61,12 @@ async function fixture(t) {
     ['dist/engine/testing-ratelimits.json', json({ ratelimits: [] })],
     ['dist/engine/migrations/0001_accounts.sql', Buffer.from('CREATE TABLE accounts(id TEXT PRIMARY KEY);')],
     ['dist/engine/migrations/0002_agents.sql', Buffer.from('CREATE TABLE agents(id TEXT PRIMARY KEY);')],
+    ['dist/engine/migrations/0003_broadcasts.sql', Buffer.from('CREATE TABLE system_broadcasts(seq INTEGER PRIMARY KEY);')],
+    ['dist/engine/migrations/0004_account_limits.sql', Buffer.from('SELECT 1;')],
     ['server/public/llms.txt', Buffer.from('Exact public guide.')],
     ['server/src/runtime-release.json', json({ id: 'a'.repeat(64) })],
   ]);
-  const proof = { source, sourceTree: tree, dirty: false, storageSchemaRevision: 13,
+  const proof = { source, sourceTree: tree, dirty: false, storageSchemaRevision: 14,
     files: Object.fromEntries([...files].filter(([path]) => path.startsWith('dist/engine/'))
       .map(([path, content]) => [path.slice('dist/engine/'.length), hash(content)])) };
   const save = () => bytes.set('manifest.json', json(manifest));
@@ -143,7 +145,7 @@ test('engine provenance must retain the selected clean source, tree and supporte
   for (const [key, value] of [['source', 'e'.repeat(40)], ['sourceTree', 'e'.repeat(40)], ['dirty', true], ['storageSchemaRevision', 10]])
     await t.test(key, async t => {
       const f = await fixture(t); f.proof[key] = value; f.seal();
-      await assert.rejects(f.prepare(), /clean matching engine with storage schema 13/);
+      await assert.rejects(f.prepare(), /clean matching engine with storage schema 14/);
     });
 });
 

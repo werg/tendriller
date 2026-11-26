@@ -8,13 +8,13 @@ The host stays application-neutral: it provides account authentication, OAuth 2.
 
 The name combines an agent's tendrils reaching new interfaces and sensors with a drill opening a path for them.
 
-**Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **register agent → create page → choose finality/availability policy → publish signed UI → owner sign-in → initialize the browser locally → author and replicate → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). One agent (one credential, one signing key) maintains many pages from one local workspace; see [multi-page agents](docs/MULTI_PAGE_AGENTS.md). Deliver the [running application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
+**Build an app:** follow [Build an app](docs/BUILD_AN_APP.md) for **register agent → create page → choose finality/availability policy and create page keys → publish signed UI → owner sign-in → member admits the browser → author and replicate → verify**. Agents starting from a domain should read [`/agent.md`](https://tendriller.dev/agent.md) or [`/.well-known/tendriller.json`](https://tendriller.dev/.well-known/tendriller.json). One agent (one credential, one signing key) maintains many pages from one local workspace; see [multi-page agents](docs/MULTI_PAGE_AGENTS.md). Deliver the [running application](docs/AGENT_DELIVERY.md), and consult the [capability map](docs/CAPABILITIES.md) before writing custom plumbing.
 
 Give each app a recognizable favicon: set `icon` to an emoji such as `🌱` and Tendriller converts it to an SVG automatically. HTTPS image URLs work too. See [favicons and page branding](docs/BROWSER_API.md#favicons-and-page-branding) for the agent API and CLI examples.
 
 ## Keep a page on your phone
 
-Open **Page options** on any published page to add it to your Home Screen (native install prompt on supporting browsers; **Share → Add to Home Screen** on iOS/iPadOS). **Save for offline use** caches that release's immutable page files; application state and device enrollment remain owned by the Chronolog session. See [Browser API](docs/BROWSER_API.md#home-screen-setup).
+Open **Page options** on any published page to add it to your Home Screen (native install prompt on supporting browsers; **Share → Add to Home Screen** on iOS/iPadOS). **Save for offline use** caches that release's immutable page files; application state and device admission remain owned by the Chronolog session. See [Browser API](docs/BROWSER_API.md#home-screen-setup).
 
 **Page options → Set up voice input** offers explicit tap-to-talk and optional on-device wake phrases. Microphone use starts only after local consent; speech assets load on demand. The controls keep an editable draft for review and copying, stop when the page is hidden, and never listen with every tab closed. Authored pages can reuse `mountVoiceControls` with a reviewed-text callback. See [voice lifecycle](docs/HANDS_FREE.md) and [browser/device qualification](docs/WAKE_WORD_QUALIFICATION.md).
 
@@ -29,7 +29,7 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Restart consumers](docs/AGENT_RESTART.md) — republish/agent-program restart checklist
 - [Reviewed media and AI](docs/AI_INPUT.md) — camera, voice, credential-owning native inference, and explicit review
 - [Events or SQL](docs/STATE_MODELS.md) — choosing events vs. guarded SQL transactions
-- [Session bootstrap](docs/SESSION_BOOTSTRAP.md) — native/browser identity, authority setup, enrollment, and safe resume
+- [Session bootstrap](docs/SESSION_BOOTSTRAP.md) — native/browser identity, page key creation, admission, and safe resume
 - [Agent delivery](docs/AGENT_DELIVERY.md) — provisioning, process lifetime, and completion evidence
 - [Start from MCP](docs/MCP_AGENT_GUIDE.md) — using `tendril_guide` and account-linked `/mcp`
 - [Connect ChatGPT](docs/CHATGPT_INTEGRATION.md) — plugin install, workspace sharing, and per-app consent
@@ -37,7 +37,7 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — failing stages, safe retries, and next actions
 - [Multi-page agents](docs/MULTI_PAGE_AGENTS.md) — one agent, one credential and one signing key for many pages; workspace, grants and the control hub
 - [Agents and grants](docs/AGENT_BINDINGS.md) — agent credentials, join codes, per-page grants and scopes
-- [Test a release locally](docs/LOCAL_HOST.md) — verified local host, test owner, publication, and enrollment
+- [Test a release locally](docs/LOCAL_HOST.md) — verified local host, test owner, publication, and admission
 
 ### Reference and operations
 - [Agent guide](agent.md) — concise agent workflow and contract reference
@@ -45,7 +45,7 @@ Open **Page options** on any published page to add it to your Home Screen (nativ
 - [Application contract](docs/APPLICATION_BACKENDS.md) — commands, stored and materialized operations, coherent reads, and optional finality
 - [Browser API](docs/BROWSER_API.md) — session adapter, Home Screen setup, sensors, voice, and offline cache
 - [Participant protocol](docs/PROTOCOL.md) — filtered authority transport, authorization, and signed publications
-- [Membership](docs/MEMBERSHIP.md) — account access, device grants, and key provisioning
+- [Membership](docs/MEMBERSHIP.md) — page creation, device admission, invites, strict mode and removal
 - [Authority records and publications](docs/AUTHORITY_AND_PUBLICATIONS.md) — host authority operations, signed code chain, and finality evidence
 - [Peer connections](docs/PEER_CONNECTIONS.md) — discovery, invitations, direct WebRTC, and relay fallback
 - [CLI and preview](docs/tools/CLI.md) — public session CLI and authored-file preview

@@ -1,9 +1,11 @@
-import { RESIDENT_LIMIT } from "../limits";
+import { PAGE_LIMIT, RESIDENT_LIMIT } from "../limits";
+import { accountLimits } from "../service-state";
 import type { Env } from "../env";
 import { errorResponse } from "../http";
 import { PAGE_KEY_RE, sha256Hex, TENDRIL_ID_RE } from "../ids";
 import { pageUrl } from "../urls";
 import { serviceSession } from "./auth";
+import { authFormAction, pageSessionCookieHeader, renderAuthControls } from "./local-auth";
 import { servicePage } from "./ui";
 
 const randomToken = () => btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
@@ -21,20 +23,24 @@ function redirect(location: string, cookie?: string): Response {
   if (cookie) headers.set("Set-Cookie", cookie);
   return new Response(null, { status: 303, headers });
 }
-function html(body: string, status = 200, script = ""): Response {
-  const response = servicePage("Open page", body, script);
-  return status === 200 ? response : new Response(response.body, { status, headers: response.headers });
+function html(body: string, status = 200, script = "", env?: Env): Response {
+  const response = servicePage("Open page", body, script, status, env ? { formAction: authFormAction(env) } : undefined);
+  return response;
 }
 
 /** A browser claim must explain a capacity stop, rather than displaying an API error as a sign-in failure. */
-async function claimFailure(req: Request, response: Response): Promise<Response> {
+async function claimFailure(req: Request, env: Env, response: Response): Promise<Response> {
   if (!req.headers.get('Accept')?.includes('text/html') || ![413, 429].includes(response.status)) return response;
-  const body = await response.clone().json().catch(() => null) as { error?: { code?: string; limit?: number } } | null;
+  const body = await response.clone().json().catch(() => null) as { error?: { code?: string; limit?: number; message?: string } } | null;
   if (body?.error?.code !== 'quota') return response;
   const limit = body.error.limit;
-  const explanation = response.status === 429 && limit === RESIDENT_LIMIT
-    ? `Your account can keep up to ${RESIDENT_LIMIT} resident pages.`
-    : response.status === 429 && limit === 20 ? 'Your account can keep up to 20 pages.'
+  const limits = await accountLimits(env);
+  const residentCap = limits.residents ?? RESIDENT_LIMIT;
+  const pageCap = limits.pages ?? PAGE_LIMIT;
+  const isResident = response.status === 429 && (body.error.message?.toLowerCase().includes('resident') || limit === residentCap);
+  const explanation = isResident
+    ? `Your account can keep up to ${limit ?? residentCap} resident pages.`
+    : response.status === 429 ? `Your account can keep up to ${limit ?? pageCap} pages.`
     : response.status === 413 ? 'Your account has reached its page storage allowance.' : 'Your account has reached its page allowance.';
   return html(`<h1>Your account is at its page limit</h1><p>${explanation}</p><p>Open your dashboard to remove a page you no longer need, then return to this page link. Your prepared app has not been claimed.</p><p><a class="button" href="/dashboard">Open dashboard</a></p>`, response.status);
 }
@@ -75,7 +81,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     const expectedLine = info.expected
       ? `${info.role === "guest" ? "Invited email" : "Intended owner"}: ${escape(info.expected)}`
       : "Keep this invitation link private.";
-    return html(`<section class="card"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "A page made for you"}</span><h1>${info.role === "guest" ? "You're invited in." : "Your agent made a page for you."}</h1><p class="lead">Sign in to open it.</p><p class="muted">${expectedLine}</p><div class="actions"><a class="button lg" href="/auth/github?return_to=${encodeURIComponent(returnTo)}">Continue with GitHub</a><a class="button secondary lg" href="/auth/google?return_to=${encodeURIComponent(returnTo)}">Continue with Google</a></div></section><p class="muted" style="margin-top:1rem;font-size:.86rem">Signing in lets Tendriller recognize you. Your agent never receives your sign-in credentials. By continuing, you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`);
+    return html(`<section class="card"><span class="eyebrow">${info.role === "guest" ? "Guest invitation" : "A page made for you"}</span><h1>${info.role === "guest" ? "You're invited in." : "Your agent made a page for you."}</h1><p class="lead">Sign in to open it.</p><p class="muted">${expectedLine}</p>${renderAuthControls(env, returnTo, { expectedEmail: info.expected })}</section><p class="muted" style="margin-top:1rem;font-size:.86rem">Signing in lets Tendriller recognize you. Your agent never receives your sign-in credentials. By continuing, you agree to the <a href="/terms">terms</a> and <a href="/privacy">privacy policy</a>.</p>`, 200, "", env);
   }
   const deleting = await env.ACCOUNTS.prepare("SELECT deleting_at FROM accounts WHERE id = ?").bind(session.accountId)
     .first<{ deleting_at: number | null }>();
@@ -92,7 +98,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ account_id: session.accountId, identities }),
     }));
-    if (!claim.ok) return claimFailure(req, claim);
+    if (!claim.ok) return claimFailure(req, env, claim);
     return issuePageCode(env, id, key, session.accountId);
   }
   const identities = await verifiedIdentities(env, session.accountId);
@@ -103,7 +109,7 @@ export async function routePageAuth(req: Request, env: Env, url: URL): Promise<R
     if (claim.status === 403) {
       const err = await claim.clone().json().catch(() => null) as { error?: { code?: string } } | null;
       if (err?.error?.code === "wrong_guest_email") {
-        return html(`<section class="card"><span class="eyebrow">Guest invitation</span><h1>This invitation is for another email address</h1><p class="lead">${info.expected ? `This link is restricted to <code>${escape(info.expected)}</code>.` : "Your signed-in account does not match the invited email address."} Sign in with a matching GitHub or Google account to join.</p><div class="actions"><a class="button" href="/auth/github?return_to=${encodeURIComponent(returnTo)}">Sign in with GitHub</a><a class="button secondary" href="/auth/google?return_to=${encodeURIComponent(returnTo)}">Sign in with Google</a></div></section>`, 403);
+        return html(`<section class="card"><span class="eyebrow">Guest invitation</span><h1>This invitation is for another email address</h1><p class="lead">${info.expected ? `This link is restricted to <code>${escape(info.expected)}</code>.` : "Your signed-in account does not match the invited email address."} Sign in with a matching account to join.</p>${renderAuthControls(env, returnTo, { expectedEmail: info.expected, compact: true })}</section>`, 403, "", env);
       }
       if (err?.error?.code === "declined") {
         return html(`<section class="card"><span class="eyebrow">Guest invitation</span><h1>Invitation unavailable</h1><p class="lead">This invitation was revoked.</p></section>`, 403);
@@ -126,5 +132,5 @@ export async function redeemPageCode(env: Env, id: string, key: string, code: st
     body: JSON.stringify({ account_id: row.account_id, role: row.role, hash: await sha256Hex(token) }),
   }));
   if (!res.ok) return res;
-  return redirect(pageUrl(env, id, key), `__Host-tendril=${token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+  return redirect(pageUrl(env, id, key), pageSessionCookieHeader(token, env));
 }

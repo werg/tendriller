@@ -1,5 +1,7 @@
 import { browserProfileId } from '../../shared/helpers/browser-profile.mjs';
-import { bootstrapBrowser } from '../../shared/helpers/browser-bootstrap.mjs';
+import { admitBrowserSession, bootstrapBrowser } from '../../shared/helpers/browser-bootstrap.mjs';
+import { hostedMcpExtensions } from '../../shared/helpers/hosted-mcp.mjs';
+import { composeOwnerExtensions } from '@tendriller/core/admission';
 import { createApplicationSession } from '@chronolog/peer-session';
 import { openBrowserDevice } from '@chronolog/peer-session/worker';
 import { serveBrowserOwner } from '@tendriller/core/worker-owner';
@@ -14,14 +16,15 @@ serveBrowserOwner({ async load({ signal }) {
     async openSession({ signal, openDirectConnection }) {
       // create:true initializes an empty profile only; retained signer/binding mismatches always fail closed.
       const device = await openBrowserDevice({ name: profileId, create: true });
-      let session, participation;
+      let session, participation, admission;
       try {
-        const { authority, peers } = await bootstrapBrowser({ configuration, device, signal });
+        const { authority, peers, wrapKey } = await bootstrapBrowser({ configuration, device, signal });
         session = await createApplicationSession({ device, definition, authority });
-        participation = participateApplication(session, { peers, openDirectConnection });
+        admission = admitBrowserSession(session, { peers, wrapKey });
+        participation = participateApplication(session, { peers, openDirectConnection, onNotification: () => void admission.refresh() });
         Object.defineProperty(session, 'participation', { value: participation });
-        return { session, async close() { await participation.close(); } };
-      } catch (error) { if (session) await session.close(); else await device.close(); throw error; }
+        return { session, extensions: composeOwnerExtensions(admission.extensions, hostedMcpExtensions({ session, admission })), async close() { admission.close(); await participation.close(); } };
+      } catch (error) { admission?.close(); if (session) await session.close(); else await device.close(); throw error; }
     },
   };
 } });

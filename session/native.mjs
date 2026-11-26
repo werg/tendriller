@@ -72,7 +72,7 @@ function checkedPolicy(value = {}) {
   if (Object.keys(value).some(key => !['capabilities', 'commands', 'queries', 'context', 'contextEvidence', 'identity', 'maxRequests', 'maxViews', 'rawSubmit', 'rawSql', 'preserveOperationId'].includes(key)))
     throw failure('SUPERVISOR_POLICY_INVALID');
   if (serialize(value).length > 16384) throw failure('SUPERVISOR_POLICY_LIMIT');
-  const capabilities = ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'finality', 'provisioning', 'publish'];
+  const capabilities = ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'finality', 'extensions', 'publish'];
   if (value.capabilities !== undefined && (!Array.isArray(value.capabilities) || value.capabilities.some(item => !capabilities.includes(item))) ||
       [value.commands, value.queries].some(items => items !== undefined && (!Array.isArray(items) || items.length > 128 ||
         items.some(item => typeof item !== 'string' || !item.length || item.length > 128))) ||
@@ -602,7 +602,7 @@ export async function connectOrStartNativeSession({
       id: 'trusted-local',
       token: createNativeAttachmentKey(),
       policy: {
-        capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'finality', 'provisioning', 'publish'],
+        capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'finality', 'extensions', 'publish'],
         preserveOperationId: true,
       },
     };

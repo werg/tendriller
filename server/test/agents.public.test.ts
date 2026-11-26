@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { agentReq, api, create, createAgent, createPage, dashboard, grantAgent, inDO, joinAccountAgent, randomTestIp, req, revokeGrant,
+import { agentReq, api, create, createAgent, createPage, dashboard, grantAgent, inDO, joinAccountAgent, randomTestIp, req, revokeGrant, testWrapKey,
   signInAsOwner, testPublicKey, type Handle } from './helpers';
 import { SETUP_WATCH_PROTOCOL } from '../src/setup-watch';
 import { PEER_DISCOVERY_PROTOCOL } from '../../contract/discovery-watch.mjs';
@@ -302,7 +302,7 @@ it('join codes are single-use, expire and add agents only to the issuing account
   const issued = await (await dashboard(h, '/dashboard/agents/join', { method: 'POST' })).json() as { code: string };
   await env.ACCOUNTS.prepare('UPDATE agent_join_codes SET expires_at=? WHERE account_id=?').bind(Date.now() - 1, h.account).run();
   const expired = await req('/api/agents/join', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': randomTestIp() },
-    body: JSON.stringify({ code: issued.code, handle: 'late', publicKey: testPublicKey() }) });
+    body: JSON.stringify({ code: issued.code, handle: 'late', publicKey: testPublicKey(), wrapKey: testWrapKey() }) });
   expect(expired.status).toBe(404);
   const joined = await joinAccountAgent(h, 'fresh');
   expect(await env.ACCOUNTS.prepare('SELECT account_id FROM agents WHERE id=?').bind(joined.agent.id).first()).toEqual({ account_id: h.account });

@@ -2,7 +2,7 @@
 //
 //   tendriller.json          { schemaVersion, service, agent: { id, handle, bio }, kit, pages: { <slug>: { id } } }
 //   pages/<slug>/            per-page source (agent.mjs, domain.mjs, page.mjs, ...)
-//   .tendriller/agent/       identity.sqlite (shared signer), credential.json, attach.json, owner/ (attach socket)
+//   .tendriller/agent/       identity.sqlite (shared signer), wrap-key.json (shared key-wrap key), credential.json, attach.json, owner/ (attach socket)
 //   .tendriller/pages/<id>/  page.json, device.sqlite, descriptor and setup records
 //   .tendriller/checkpoint-retired.json  present once `tendril checkpoint export` moved this workspace away
 import { existsSync } from 'node:fs';
@@ -12,13 +12,13 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createWorkspacePage } from './page-creation.mjs';
 import { randomBytes } from 'node:crypto';
-import { agentCredential, createAgentClient, describeReadiness, describeService, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin } from '@tendriller/core';
+import { agentCredential, createAgentClient, describeReadiness, describeService, evaluateBroadcastMatch, fetchBroadcastKeys, fetchBroadcasts, joinAgent, registerAgent, requireCreationReady, requireService, requireServiceOrigin, validateClientVersions, verifyBroadcastSignature } from '@tendriller/core';
 
 export const WORKSPACE_FILE = 'tendriller.json';
 export const SLUG = /^[a-z0-9][a-z0-9-]{0,47}$/u;
 const PAGE_ID = /^[a-z2-7]{12}$/u;
 const AGENT_TOKEN = /^ta_[a-z2-7]{32}$/u;
-export const ATTACH_POLICY = Object.freeze({ capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'finality', 'publish'] });
+export const ATTACH_POLICY = Object.freeze({ capabilities: ['commands', 'queries', 'events', 'content', 'signals', 'operations', 'diagnostics', 'finality', 'extensions', 'publish'] });
 const failure = (code, message, exit) => Object.assign(new Error(message), { code, ...(exit ? { exit } : {}) });
 
 async function readJson(path, optional = false) {
@@ -58,8 +58,9 @@ export function workspacePaths(root) {
   const secret = join(root, '.tendriller');
   return Object.freeze({
     root, config: join(root, WORKSPACE_FILE), secret, sources: join(root, 'pages'),
-    agent: join(secret, 'agent'), identity: join(secret, 'agent', 'identity.sqlite'),
+    agent: join(secret, 'agent'), identity: join(secret, 'agent', 'identity.sqlite'), wrapKey: join(secret, 'agent', 'wrap-key.json'),
     credential: join(secret, 'agent', 'credential.json'), attach: join(secret, 'agent', 'attach.json'),
+    broadcasts: join(secret, 'agent', 'broadcasts.json'),
     owner: join(secret, 'agent', 'owner'), pages: join(secret, 'pages'),
     retired: join(secret, 'checkpoint-retired.json'),
   });
@@ -75,6 +76,24 @@ export async function openSharedSigner(path, { create = false } = {}) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const device = await openNativeDevice({ path, ...(create ? { create: true } : {}) });
   try { return device.identity; } finally { await device.close(); }
+}
+
+/** The agent's one X25519 key-wrap key, registered with the host beside its signing key.
+ * Members wrap each page's epoch keys to it; the private half never leaves this folder. */
+export async function openWrapKey(path, { create = false } = {}) {
+  let saved = await readJson(path, true);
+  if (!saved) {
+    if (!create) throw failure('agent_wrap_key_missing', `The workspace key-wrap key ${path} is missing. Restore it from a checkpoint; a new key would not match the registered agent.`);
+    const { createWrapKeyPair } = await import('@chronolog/peer-session');
+    const pair = await createWrapKeyPair();
+    saved = await savePrivateJson(path, { publicKey: pair.publicKey, privateKey: Buffer.from(pair.privateKey).toString('hex') });
+  }
+  if (!/^[0-9a-f]{64}$/u.test(saved.publicKey ?? '') || !/^[0-9a-f]+$/u.test(saved.privateKey ?? '')) throw failure('agent_wrap_key_invalid', `${path} is damaged; restore it from a checkpoint.`);
+  return saved;
+}
+async function importWrapKey(saved) {
+  const { importWrapPrivateKey } = await import('@chronolog/peer-session');
+  return Object.freeze({ publicKey: saved.publicKey, privateKey: await importWrapPrivateKey(Uint8Array.from(Buffer.from(saved.privateKey, 'hex'))) });
 }
 
 /** One page device: its own native store, always signed by the shared agent key.
@@ -117,6 +136,7 @@ async function enroll(root, { service, handle, bio = '', kit, signal }, request)
     requireService(await describeService(origin, { signal }));
   }
   const signer = await openSharedSigner(paths.identity, { create: !existsSync(paths.identity) });
+  const wrap = await openWrapKey(paths.wrapKey, { create: !existsSync(paths.wrapKey) });
   let credential = retained;
   if (!credential) {
     const cleanHandle = agentHandle(handle);
@@ -125,15 +145,17 @@ async function enroll(root, { service, handle, bio = '', kit, signal }, request)
       handle: cleanHandle,
       ...(cleanBio ? { bio: cleanBio } : {}),
       publicKey: publicKeyBase64url(signer.publicKey),
+      wrapKey: wrap.publicKey,
     }, { signal });
     credential = await savePrivateJson(paths.credential, {
       schemaVersion: 1, service: origin,
       agent: { id: result.id, handle: result.handle, bio: result.bio ?? cleanBio },
-      token: result.token, publicKey: signer.publicKey,
+      token: result.token, publicKey: signer.publicKey, wrapKey: wrap.publicKey,
       accountState: result.account_state ?? null,
     });
   }
   if (credential.publicKey !== signer.publicKey) throw failure('agent_signer_mismatch', 'The retained signer does not match the registered agent key. Restore the original identity.sqlite.');
+  if (credential.wrapKey !== wrap.publicKey) throw failure('agent_wrap_key_mismatch', 'The retained key-wrap key does not match the registered agent. Restore the original wrap-key.json.');
   const config = { schemaVersion: 1, service: origin, agent: credential.agent, ...(kit ? { kit } : {}), pages: {} };
   await replaceJson(paths.config, config);
   await ensureGitignore(root);
@@ -176,9 +198,10 @@ export async function workspaceKey(root, { service, handle, bio = '' } = {}) {
   await requireEmptyWorkspace(root);
   if (existsSync(paths.credential)) throw failure('agent_credential_exists', `${paths.credential} already exists. Resume with tendril workspace adopt or restore tendriller.json.`);
   const signer = await openSharedSigner(paths.identity, { create: !existsSync(paths.identity) });
+  const wrap = await openWrapKey(paths.wrapKey, { create: !existsSync(paths.wrapKey) });
   return {
     service: origin,
-    register_agent: { handle: cleanHandle, ...(cleanBio ? { bio: cleanBio } : {}), publicKey: publicKeyBase64url(signer.publicKey) },
+    register_agent: { handle: cleanHandle, ...(cleanBio ? { bio: cleanBio } : {}), publicKey: publicKeyBase64url(signer.publicKey), wrapKey: wrap.publicKey },
     next: 'Call register_agent through the account-linked connector for this service with exactly these arguments, save its result privately, then run tendril workspace adopt --service ORIGIN --credential FILE.',
   };
 }
@@ -225,7 +248,7 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
   const config = await readJson(paths.config);
   if (config?.schemaVersion !== 1 || typeof config.service !== 'string' || !config.agent?.id)
     throw failure('workspace_state_invalid', `${paths.config} is not a Tendriller workspace file.`);
-  let credential, client, signer;
+  let credential, client, signer, wrapKey;
   const readCredential = async () => {
     credential ??= await readJson(paths.credential, true);
     if (!credential) throw failure('agent_credential_missing', `${paths.credential} is missing. Restore it from a checkpoint; the agent token is never reissued silently.`);
@@ -250,6 +273,14 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       signer ??= await openSharedSigner(paths.identity);
       if (signer.publicKey !== (await readCredential()).publicKey) throw failure('agent_signer_mismatch', 'identity.sqlite does not hold the registered agent key.');
       return signer;
+    },
+    async wrapKey() {
+      if (!wrapKey) {
+        const saved = await openWrapKey(paths.wrapKey);
+        if (saved.publicKey !== (await readCredential()).wrapKey) throw failure('agent_wrap_key_mismatch', 'wrap-key.json does not hold the registered agent key-wrap key.');
+        wrapKey = await importWrapKey(saved);
+      }
+      return wrapKey;
     },
     /** Resolve --page <slug|id> against the workspace registry. */
     async page(ref) {
@@ -324,8 +355,8 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
       return savePrivateJson(paths.attach, { id: 'local-terminal', token: createNativeAttachmentKey(), policy: ATTACH_POLICY });
     },
     /** Everything a page module needs; it never sees the agent token or private key bytes. */
-    async pageContext(ref, { signal, report = () => {}, roster } = {}) {
-      const page = await workspace.page(ref), agent = await getClient(), shared = await workspace.signer();
+    async pageContext(ref, { signal, report = () => {}, roster, broadcasts } = {}) {
+      const page = await workspace.page(ref), agent = await getClient(), shared = await workspace.signer(), wrap = await workspace.wrapKey();
       const host = agent.page(page.id, { applicationId: page.application.id });
       const privatePath = name => {
         if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(name)) throw failure('invalid_private_name', 'Private record names are plain file names.');
@@ -338,15 +369,23 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
         snapshot: () => ({ primary_agent_id: null, is_primary: false, agents: [] }),
         onChange: () => () => {},
       });
+      const defaultBroadcasts = Object.freeze({
+        snapshot: () => ({ latestSeq: 0, versions: null, active: [], all: [] }),
+        acknowledge: async () => false,
+        onBroadcast: () => () => {},
+      });
       return Object.freeze({
         workspace: root, service: config.service, agent: config.agent,
         page: Object.freeze({ id: page.id, slug: page.slug, name: page.name, applicationId: page.application.id,
           pageUrl: page.page_url, directory: page.directory, source: page.source }),
         host, signal, report,
         roster: roster ?? defaultRoster,
+        broadcasts: broadcasts ?? defaultBroadcasts,
         // Opaque signing authority stays in the Node-only context; never serialize it
         // into configuration, authored files, diagnostics or a checkpoint record.
         signer: Object.freeze({ publicKey: shared.publicKey, privateKey: shared.privateKey }),
+        // The agent's key-wrap key (opaque, non-extractable private CryptoKey) for receiving wrapped page keys.
+        wrapKey: wrap,
         devicePath: join(page.directory, 'device.sqlite'),
         openDevice: ({ create = false } = {}) => openPageDevice({ path: join(page.directory, 'device.sqlite'), signer: shared, create }),
         readPrivate: (name, optional = false) => readJson(privatePath(name), optional),
@@ -359,20 +398,156 @@ export async function openWorkspace({ root = findWorkspace(), fetch: fetcher, We
   return workspace;
 }
 
+/** Detect installed connector & Chronolog dependency versions in a workspace. */
+export async function detectWorkspaceVersions(root, kit) {
+  const readPkgVersion = async rel => {
+    const pkg = await readJson(join(root, rel), true);
+    return typeof pkg?.version === 'string' ? pkg.version.trim() : null;
+  };
+  const [core, tools, chronolog, authority, rootPkg] = await Promise.all([
+    readPkgVersion('node_modules/@tendriller/core/package.json'),
+    readPkgVersion('node_modules/@tendriller/tools/package.json'),
+    readPkgVersion('node_modules/@chronolog/peer-session/package.json'),
+    readPkgVersion('node_modules/@chronolog/authority/package.json'),
+    readJson(join(root, 'package.json'), true),
+  ]);
+  const packages = {};
+  if (core) packages['@tendriller/core'] = core;
+  if (tools) packages['@tendriller/tools'] = tools;
+  if (chronolog) packages['@chronolog/peer-session'] = chronolog;
+  if (authority) packages['@chronolog/authority'] = authority;
+  const declared = { ...(rootPkg?.dependencies ?? {}), ...(rootPkg?.devDependencies ?? {}) };
+  for (const name of ['@tendriller/core', '@tendriller/tools', '@chronolog/peer-session', '@chronolog/authority']) {
+    if (!packages[name] && typeof declared[name] === 'string' && /^[0-9]/.test(declared[name].replace(/^[\^~]/, ''))) {
+      packages[name] = declared[name].replace(/^[\^~]/, '');
+    }
+  }
+  const raw = {
+    ...(packages['@tendriller/core'] ? { core: packages['@tendriller/core'] } : {}),
+    ...(packages['@tendriller/tools'] ? { tools: packages['@tendriller/tools'] } : {}),
+    ...(packages['@chronolog/peer-session'] ? { chronolog: packages['@chronolog/peer-session'] } : {}),
+    ...(packages['@chronolog/authority'] ? { authority: packages['@chronolog/authority'] } : {}),
+    node: process.versions.node,
+    ...(typeof kit === 'string' && /^[A-Za-z0-9.+_-]{1,64}$/.test(kit) ? { kit } : {}),
+    ...(Object.keys(packages).length ? { packages } : {}),
+  };
+  try { return validateClientVersions(raw); } catch { return { node: process.versions.node }; }
+}
+
+export async function readBroadcastState(workspace) {
+  if (!workspace?.paths?.broadcasts) {
+    return { schemaVersion: 1, lastSeq: 0, acknowledged: [], trustedKeys: [], items: [] };
+  }
+  const saved = await readJson(workspace.paths.broadcasts, true);
+  if (!saved || typeof saved !== 'object') {
+    return { schemaVersion: 1, lastSeq: 0, acknowledged: [], trustedKeys: [], items: [] };
+  }
+  return {
+    schemaVersion: 1,
+    lastSeq: Number.isSafeInteger(saved.lastSeq) && saved.lastSeq >= 0 ? saved.lastSeq : 0,
+    acknowledged: Array.isArray(saved.acknowledged) ? saved.acknowledged.filter(v => typeof v === 'string') : [],
+    trustedKeys: Array.isArray(saved.trustedKeys) ? saved.trustedKeys : [],
+    items: Array.isArray(saved.items) ? saved.items : [],
+  };
+}
+
+export async function saveBroadcastState(workspace, state) {
+  if (!workspace?.paths?.broadcasts) return;
+  await mkdir(dirname(workspace.paths.broadcasts), { recursive: true, mode: 0o700 });
+  await replaceJson(workspace.paths.broadcasts, {
+    schemaVersion: 1,
+    lastSeq: state.lastSeq ?? 0,
+    acknowledged: [...new Set(state.acknowledged ?? [])].slice(-200),
+    trustedKeys: state.trustedKeys ?? [],
+    items: (state.items ?? []).slice(-100),
+  }, 0o600);
+}
+
+/** Verify and locally evaluate signed broadcasts for a workspace, persisting the cursor. */
+export async function syncWorkspaceBroadcasts(workspace, { signal, all = false } = {}) {
+  const client = await workspace.client();
+  const [versions, state] = await Promise.all([
+    detectWorkspaceVersions(workspace.root, workspace.config.kit),
+    readBroadcastState(workspace),
+  ]);
+  let trustedKeys = state.trustedKeys;
+  try {
+    const fetchedKeys = await client.broadcastKeys({ signal });
+    if (fetchedKeys.keys.length) trustedKeys = fetchedKeys.keys;
+  } catch { /* fall back to cached trusted keys */ }
+  const feed = await client.broadcasts({
+    audience: 'agents',
+    since: all ? 0 : 0,
+    verifyKeys: trustedKeys,
+    signal,
+  });
+  const ackSet = new Set(state.acknowledged);
+  const evaluated = feed.verified.map(signed => {
+    const match = evaluateBroadcastMatch(signed.payload, { audience: 'agents', versions });
+    return {
+      ...signed.payload,
+      signature: signed.signature,
+      verified: true,
+      matched: match.matched,
+      matchReasons: match.reasons,
+      acknowledged: ackSet.has(signed.payload.id),
+    };
+  });
+  const nextSeq = Math.max(state.lastSeq, feed.latest_seq);
+  await saveBroadcastState(workspace, {
+    lastSeq: nextSeq,
+    acknowledged: state.acknowledged,
+    trustedKeys,
+    items: evaluated,
+  });
+  return {
+    issuer: feed.issuer,
+    latest_seq: nextSeq,
+    versions,
+    active: evaluated.filter(b => b.matched && !b.acknowledged),
+    all: evaluated,
+    rejected: feed.rejected.map(r => ({ reason: r.reason })),
+  };
+}
+
+export async function acknowledgeWorkspaceBroadcast(workspace, id) {
+  if (typeof id !== 'string' || !/^bc_[a-z2-7]{26}$/.test(id)) {
+    throw failure('invalid_broadcast_id', 'Supply a valid broadcast id (bc_...).', 64);
+  }
+  const state = await readBroadcastState(workspace);
+  const acked = new Set(state.acknowledged);
+  acked.add(id);
+  const items = state.items.map(item => item.id === id ? { ...item, acknowledged: true } : item);
+  await saveBroadcastState(workspace, { ...state, acknowledged: [...acked], items });
+  return { acknowledged: true, id };
+}
+
 /** Bounded, non-secret status for terminals and the status command. */
 export async function describeWorkspace(workspace, { signal, remote = true } = {}) {
-  const pages = await workspace.pages();
-  let agent = null, granted = null, error;
+  const [pages, versions] = await Promise.all([
+    workspace.pages(),
+    detectWorkspaceVersions(workspace.root, workspace.config.kit),
+  ]);
+  let agent = null, granted = null, broadcasts = null, error;
   if (remote) {
     try {
       const client = await workspace.client();
       agent = await client.self({ signal });
       granted = [];
       for await (const page of client.pages.all({ signal })) granted.push({ id: page.id, name: page.name, scopes: page.scopes ?? [] });
+      broadcasts = await syncWorkspaceBroadcasts(workspace, { signal }).then(res => ({
+        latestSeq: res.latest_seq,
+        activeCount: res.active.length,
+        active: res.active.map(({ id, seq, kind, severity, title, summary, docs_url, action, matchReasons }) => ({
+          id, seq, kind, severity, title, summary, docs_url, action, matchReasons,
+        })),
+      })).catch(() => null);
     } catch (cause) { error = { code: cause.code ?? 'agent_unavailable', status: cause.status ?? null, message: cause.message }; }
   }
   const running = await stat(join(workspace.paths.owner, 'endpoint.json')).then(() => true, () => false);
   return { workspace: workspace.root, service: workspace.config.service, agent: { ...workspace.config.agent, ...(agent ? { remote: agent } : {}) },
+    versions,
+    ...(broadcasts ? { broadcasts } : {}),
     pages: pages.map(page => ({ ...page, granted: granted ? granted.some(item => item.id === page.id) : null })),
     unregistered: granted ? granted.filter(item => !pages.some(page => page.id === item.id)) : null,
     agentProgram: { endpointRecorded: running }, ...(error ? { error } : {}) };

@@ -29,7 +29,7 @@ export interface Handle {
   api: string;
   /** The creating agent's account-level credential. */
   token: string;
-  agent: { id: string; handle: string; bio?: string; public_key: string };
+  agent: { id: string; handle: string; bio?: string; public_key: string; wrap_key: string };
   application: { id: string };
   lifetime: string;
   claimed?: boolean;
@@ -53,11 +53,21 @@ export function testPublicKey(): string {
   return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
+/** A random X25519-shaped key-wrap public key (64 lowercase hex). */
+export function testWrapKey(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** The host's base64url form of a Chronolog hex public key. */
+export function base64urlKey(hex: string): string {
+  return btoa(String.fromCharCode(...hex.match(/../g)!.map(byte => parseInt(byte, 16)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 /** Creates an unclaimed agent for an owner email, the way a new agent bootstraps. */
-export async function createAgent(owner: string, handle = "maintainer", bio = ""): Promise<{ token: string; agent: Handle["agent"] }> {
+export async function createAgent(owner: string, handle = "maintainer", bio = "", keys: { publicKey?: string; wrapKey?: string } = {}): Promise<{ token: string; agent: Handle["agent"] }> {
   const res = await req("/api/agents", { method: "POST", anonymous: true,
     headers: { "Content-Type": "application/json", "CF-Connecting-IP": randomTestIp() },
-    body: JSON.stringify({ owner, handle, ...(bio ? { bio } : {}), publicKey: testPublicKey() }) });
+    body: JSON.stringify({ owner, handle, ...(bio ? { bio } : {}), publicKey: keys.publicKey ?? testPublicKey(), wrapKey: keys.wrapKey ?? testWrapKey() }) });
   if (res.status !== 201) throw new Error(`agent creation failed: ${res.status} ${await res.text()}`);
   return await res.json() as { token: string; agent: Handle["agent"] };
 }
@@ -82,14 +92,14 @@ export async function createPage(agent: { token: string; agent: Handle["agent"] 
  * signs in (claiming the page and the agent) and keeps the page-session cookie,
  * so ordinary page requests carry its account session.
  */
-export async function create(body: Record<string, unknown> & { claim?: boolean; listener?: boolean } = {}): Promise<Handle> {
-  const { claim = true, listener: _listener, owner, lifetime: _lifetime, ...rest } = body;
+export async function create(body: Record<string, unknown> & { claim?: boolean; listener?: boolean; agentKeys?: { publicKey?: string; wrapKey?: string } } = {}): Promise<Handle> {
+  const { claim = true, listener: _listener, owner, lifetime: _lifetime, agentKeys, ...rest } = body;
   const email = typeof owner === "string" ? owner : `owner-${crypto.randomUUID()}@example.com`;
   const account = crypto.randomUUID();
   const db = env.ACCOUNTS!;
   const now = Date.now();
   if (claim) await db.prepare("INSERT INTO accounts (id, created_at, email) VALUES (?, ?, ?)").bind(account, now, email).run();
-  const h = await createPage(await createAgent(email), rest);
+  const h = await createPage(await createAgent(email, "maintainer", "", agentKeys), rest);
   if (claim) {
     const { cookie, session } = await signInAsOwner(h, account, email);
     ownerCookies.set(h.id, cookie);
@@ -197,13 +207,13 @@ export function dashboard(h: Handle, path: string, init: RequestInit = {}): Prom
 }
 
 /** Adds an agent to the handle's account through Dashboard → Your agents → Add agent. */
-export async function joinAccountAgent(h: Handle, handle: string, bio = ""): Promise<{ token: string; agent: Handle["agent"] }> {
+export async function joinAccountAgent(h: Handle, handle: string, bio = "", keys: { publicKey?: string; wrapKey?: string } = {}): Promise<{ token: string; agent: Handle["agent"] }> {
   const issued = await dashboard(h, "/dashboard/agents/join", { method: "POST" });
   if (issued.status !== 201) throw new Error(`join code failed: ${issued.status} ${await issued.text()}`);
   const { code } = await issued.json() as { code: string };
   const res = await req("/api/agents/join", { method: "POST", anonymous: true,
     headers: { "Content-Type": "application/json", "CF-Connecting-IP": randomTestIp() },
-    body: JSON.stringify({ code, handle, ...(bio ? { bio } : {}), publicKey: testPublicKey() }) });
+    body: JSON.stringify({ code, handle, ...(bio ? { bio } : {}), publicKey: keys.publicKey ?? testPublicKey(), wrapKey: keys.wrapKey ?? testWrapKey() }) });
   if (res.status !== 201) throw new Error(`join failed: ${res.status} ${await res.text()}`);
   return await res.json() as { token: string; agent: Handle["agent"] };
 }
@@ -212,7 +222,7 @@ export async function joinAccountAgent(h: Handle, handle: string, bio = ""): Pro
 export async function grantAgent(h: Handle, agent: { token: string; agent: Handle["agent"] }, scopes?: string[]): Promise<Handle> {
   const res = await stub(h.id).fetch(new Request("https://tendril.internal/agent-grant/put", { method: "POST",
     headers: { "Content-Type": "application/json", "x-account-id": h.account! },
-    body: JSON.stringify({ agentId: agent.agent.id, handle: agent.agent.handle, bio: agent.agent.bio ?? "", publicKey: agent.agent.public_key, ...(scopes ? { scopes } : {}) }) }));
+    body: JSON.stringify({ agentId: agent.agent.id, handle: agent.agent.handle, bio: agent.agent.bio ?? "", publicKey: agent.agent.public_key, wrapKey: agent.agent.wrap_key, ...(scopes ? { scopes } : {}) }) }));
   if (!res.ok) throw new Error(`grant failed: ${res.status} ${await res.text()}`);
   return { ...h, token: agent.token, agent: agent.agent };
 }

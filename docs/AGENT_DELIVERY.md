@@ -4,13 +4,13 @@ A request to build an app includes setup, signed publication, real device-owned 
 
 ## Start provisioning early
 
-Read the exact service's `/api/service`, discovery and `/api/readiness` before package acquisition. Continue only with open creation readiness; stop on a pause or unavailable readiness and keep the same origin. Register the workspace agent once (`tendril workspace init` with the owner's verified email, `workspace join` with a dashboard code, or MCP `register_agent` plus `workspace adopt`; see [Build an app](BUILD_AN_APP.md)). The workspace holds one agent credential and one signing key for every page. Create each page with `npm run page:new` (the creating agent is granted it automatically); an existing page needs the owner's explicit per-agent grant (dashboard checkbox or the page's **Add people & devices → An agent**). Retain the private workspace (`.tendriller/`) across lost replies. The host derives the verified owner.
+Read the exact service's `/api/service`, discovery and `/api/readiness` before package acquisition. Continue only with open creation readiness; stop on a pause or unavailable readiness and keep the same origin. Register the workspace agent once (`tendril workspace init` with the owner's verified email, `workspace join` with a dashboard code, or MCP `register_agent` plus `workspace adopt`; see [Build an app](BUILD_AN_APP.md)). The workspace holds one agent credential, one signing key and one wrap key for every page. Create each page with `npm run page:new` (the creating agent is granted it automatically); an existing page needs the owner's explicit per-agent grant (dashboard checkbox or the page's **Add people & devices → An agent**). Retain the private workspace (`.tendriller/`) across lost replies. The host derives the verified owner.
 
-Choose finality/availability semantics explicitly (`none` by default), prepare the publisher policy (signed by the workspace's one shared signer, an independent right from data access) and publish the complete signed UI **before the first browser key is known**. Give the human the ready page URL without asking for a claimed reply. They perform their own sign-in. The first browser proves its key and initializes its root/membership and actual local keys without a native process. Additional devices require explicit account/key proof, owner rights review and recipient-bound key provisioning.
+Choose finality/availability semantics explicitly (`none` by default), prepare the publisher policy (signed by the workspace's one shared signer, an independent right from data access) create the page keys as the agent (`npm run init`), and publish the complete signed UI before owner sign-in. Start `npm run agent`, then give the human the ready page URL without asking for a claimed reply. They perform their own sign-in; the host attests the browser's keys for their account and the agent admits it and wraps its keys. Additional devices, strict-mode approval and invites use the same admission; see [membership](MEMBERSHIP.md#admission).
 
 ## Browser and optional process lifetime
 
-The browser's owned signer/store can durably author with no peer, agent program or finalizer. Cached local authority/identity/data open before remote refresh/discovery. Live synchronization requires participating devices/routing to be available; stopping them does not revoke the browser's local Save capability.
+The browser's owned signer/store can durably author with no peer, agent program or finalizer. Cached local authority/identity/data open before remote refresh/discovery. Live synchronization requires participating devices/routing to be available, and admitting a new device requires one online member holding the keys (the agent program, or an admitted device); stopping them does not revoke an admitted browser's local Save capability.
 
 The workspace's optional local program is:
 
@@ -18,7 +18,7 @@ The workspace's optional local program is:
 npm run agent        # tendril agent run
 ```
 
-It holds one hub connection to the host for every page's control traffic (setup notices, discovery, invitations, rendezvous, assistant adapter) and opens one Chronolog session per initialized page, each with its own device store and the agent's shared signing key. Page sync data (WebRTC, relay) keeps per-page connections and never uses the hub. Start it in the supported execution environment and retain enough process information to monitor, stop and restart it; the private workspace must survive future invocations. CLI queries, commands and publication attach to it with `--page <slug|id>`; an unavailable program is `OWNER_UNREACHABLE`, never a reason to open a second signer. UI publication attaches through an explicitly authorized [publication binding](tools/CLI.md#publication-capability-and-retained-bindings). For an agent integration, connect the session's public application tools and changes (`createApplicationTools`, `serveApplicationToolLines` from `@chronolog/peer-session`) to the agent's actual execution loop; merely printing changes does not make an LLM respond.
+It holds one hub connection to the host for every page's control traffic (setup notices, discovery, invitations, rendezvous, assistant adapter) and opens one Chronolog session per initialized page, each with its own device store, the agent's shared signing key and wrap key, and an admission controller that admits the owner's browsers and keeps keys wrapped. Page sync data (WebRTC, relay) keeps per-page connections and never uses the hub. Start it in the supported execution environment and retain enough process information to monitor, stop and restart it; the private workspace must survive future invocations. CLI queries, commands and publication attach to it with `--page <slug|id>`; an unavailable program is `OWNER_UNREACHABLE`, never a reason to open a second signer. UI publication attaches through an explicitly authorized [publication binding](tools/CLI.md#publication-capability-and-retained-bindings). For an agent integration, connect the session's public application tools and changes (`createApplicationTools`, `serveApplicationToolLines` from `@chronolog/peer-session`) to the agent's actual execution loop; merely printing changes does not make an LLM respond.
 
 Report the program's PID/process manager, start command, retained state location and stop/resume behavior only when actually established. A detached child may die when the execution environment ends. Do not call it permanent, resident or resumable merely because an adapter is installed. Root locks protect one physical profile, not global data order.
 
@@ -53,12 +53,12 @@ Page residency, a durable operation set, an optional MCP gateway, hibernating so
 
 Provide the ready page URL and concise evidence:
 
-- Actual page URL, application identity, owner claim status and the workspace agent (one credential, one signing key) that maintains it.
+- Actual page URL, application identity, owner claim status and the workspace agent (one credential, one signing key, one wrap key) that maintains it.
 - Verified signed publication ID/receipt and exact package/source composition tested.
-- First browser initialized after owner sign-in with **no native data process**.
+- Page keys created by `npm run init`; the owner's first browser admitted by the running agent after sign-in (or, on a `--browser-first` page, created by that browser).
 - A real command acknowledged **stored locally**, then its coherent **materialized locally** result (revisable).
 - Offline graph acknowledgment, disconnect, offline CRUD and reload retaining identity/drafts/operations.
-- A second genuinely separate profile/device first keyless, then explicitly proved/granted/provisioned; both replicas converge from authenticated operations.
+- A second genuinely separate profile/device shown waiting, then admitted with a **New device signed in** notice on the first; both replicas converge from authenticated operations. Remove device stops it receiving new changes under the rotated key.
 - Authenticated peer retention evidence, separately from execution. Configured finality is `none`, pending, verified finalized, or excluded as actually observed; never report fake finality.
 - Late earlier state/schema/outcome revisions and preserved draft/focus/deep links.
 - Actual browser and optional agent-program/provider lifetimes, private-state resume path and explicit untested boundaries.
@@ -73,12 +73,13 @@ The supported [local host](LOCAL_HOST.md) runs an exact sealed release with its 
 
 After the first working version, use this dedicated prompt:
 
-> Act as a first-time user at desktop and 320px phone width in fresh browser profiles. Exercise every domain flow without reading implementation code. Find observed friction in local opening, sign-in/key provisioning, offline Save/reload, domain navigation/editing, revisable operation facts, schema changes and optional feature availability. Verify keyboard/focus, Back/deep links, long content and cancellation. Fix concrete observed problems and retain before/after screenshots. Do not replace domain views with storage forms or treat transport tests as UX completion.
+> Act as a first-time user at desktop and 320px phone width in fresh browser profiles. Exercise every domain flow without reading implementation code. Find observed friction in local opening, sign-in/device admission, offline Save/reload, domain navigation/editing, revisable operation facts, schema changes and optional feature availability. Verify keyboard/focus, Back/deep links, long content and cancellation. Fix concrete observed problems and retain before/after screenshots. Do not replace domain views with storage forms or treat transport tests as UX completion.
 
 | Flow | Required observation |
 | --- | --- |
-| Fresh owner | Signed UI already published; first sign-in/key proof initializes locally; the page connects by itself, showing only connection state (no approval screen); a reload and a second tab connect with none; no native process or extra ordering approval |
-| New second profile | Keyless state honest; exact fingerprint/independent grant review; wrapped-key import; no magic old-data access |
+| Fresh owner | Signed UI already published; with the agent program running, sign-in is admitted automatically, showing only a short waiting state (no approval screen or pasted data); a reload and a second tab reopen locally; no extra ordering approval |
+| New second profile | Waiting state honest while no member is online; admitted and keyed automatically; New device notice on existing devices; strict mode holds it for Approve; Remove device ends its access |
+| Invites | Email/single-use/public link created, copied once, redeemed in another account; revoke and expiry honest |
 | Local Save | Enabled by local signer/store prerequisites even with zero peers, stale view, unavailable agent/finalizer |
 | Offline reload | Complete immutable graph saved; identity/keys/data and separate unsent drafts remain |
 | CRUD/list/detail | Stable entities update/move/disappear; derived counts/detail recompute; selection and local editor remain distinct |

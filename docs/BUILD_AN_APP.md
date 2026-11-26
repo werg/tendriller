@@ -1,6 +1,6 @@
 # Build your first Tendriller application
 
-Start here when given a service domain and asked to build an app. Deliver the working signed page with [verification evidence](AGENT_DELIVERY.md), not a ZIP or disconnected preview. The immutable first-app kit below includes complete event-note and [ordinary SQL inventory](STATE_MODELS.md) starters. The first browser operates without a native participant or the agent program. One **agent** (one `ta_` credential and one signing key) maintains many pages from one workspace; see [multi-page agents](MULTI_PAGE_AGENTS.md). Use [capabilities](CAPABILITIES.md) before building plumbing and [session bootstrap](SESSION_BOOTSTRAP.md) for exact ownership/API boundaries.
+Start here when given a service domain and asked to build an app. Deliver the working signed page with [verification evidence](AGENT_DELIVERY.md), not a ZIP or disconnected preview. The immutable first-app kit below includes complete event-note (`notes`), [ordinary SQL inventory](STATE_MODELS.md) (`inventory`), and [WebRTC video/audio call](WEBRTC_MEDIA.md) (`call`) starters. An admitted browser operates without a native participant or the agent program; the running agent program admits new browsers. One **agent** (one `ta_` credential, one signing key and one wrap key) maintains many pages from one workspace; see [multi-page agents](MULTI_PAGE_AGENTS.md). Use [capabilities](CAPABILITIES.md) before building plumbing and [session bootstrap](SESSION_BOOTSTRAP.md) for exact ownership/API boundaries.
 
 **Several pages, one agent.** The kit is a workspace: one agent credential and one signing key serve every page you create, and a single page is a workspace with one page. A `404` `not_found` (`No such granted page`) from `/api/agent/pages/<id>/...` means the agent holds no grant for that page or the page is gone; restoring a credential cannot recreate it. Confirm the service origin and ask the owner to grant the page, or create a new page. Do not treat an uncertain request or ordinary access failure as a confirmed deletion.
 
@@ -27,12 +27,12 @@ for active delivery. A running page owner or printed event establishes neither.
 | Discover | Read the host's `/api/service`, this guide and the supplied starter | Host contract, release and limits are known |
 | Register and create | Register the workspace agent once, then create the page; keep preparing | An agent credential, a page ID and stable application ID |
 | Define state and policy | Declare commands/queries; choose finality (default `none`) | Domain and policy are retained in the page source |
-| Build and publish | `npm run init -- <slug>`, then `npm run deploy -- <slug>` | A receipt and selected immutable release ready for the owner's first signed-in visit |
+| Create keys and publish | `npm run init -- <slug>`, then `npm run deploy -- <slug>` | The agent holds the page's genesis and first epoch key (`initialized.json`); a receipt and selected immutable release ready for the owner's first signed-in visit |
 | Owner sign-in | Give the person the already-published page URL | Existing code retained; no new publication needed |
-| Initialize locally | The browser's own key proof initializes root, membership and local keys | The session opens and reads a coherent empty view with no native process |
+| Admit the browser | With `npm run agent` running, the agent admits the owner's attested browser and wraps its keys | **Devices and access** lists the browser; the session reads a coherent view |
 | Verify | Save, reload offline, add a second device, inspect operation facts | Retained data, convergent replicas and the same operation identities survive reopening |
 
-The owner sign-in and device-key proof are real authority boundaries. Prepare the code and exact commands before asking for them. A missing grant or package is a setup issue to diagnose, not a reason to silently substitute another persistence service.
+The owner sign-in and member-signed admission are real authority boundaries. Prepare the code and exact commands before asking for them. A missing grant or package is a setup issue to diagnose, not a reason to silently substitute another persistence service.
 
 ## 1. Verify the selected service before installing
 
@@ -119,17 +119,17 @@ Retain composition, manifest, archive hashes and lockfile. The SDK/runtime/host/
 
 ## 3. Register the workspace agent and create the page for the intended owner
 
-The kit is an **agent workspace**: one agent credential and one signing key for any number of pages, one install, and `pages/<slug>/` source per page. Register the agent once per workspace, choosing the route your environment supports. The private workspace (`.tendriller/`) holds the credential and shared signer; `tendriller.json` holds no secret.
+The kit is an **agent workspace**: one agent credential, one signing key and one wrap key for any number of pages, one install, and `pages/<slug>/` source per page. Register the agent once per workspace, choosing the route your environment supports. The private workspace (`.tendriller/`) holds the credential, shared signer and wrap key; `tendriller.json` holds no secret.
 
 ### From an account-linked MCP connection
 
-The connector's linked account resolves the owner; no owner email or OAuth access token enters the local project. Create the shared key and print the public arguments:
+The connector's linked account resolves the owner; no owner email or OAuth access token enters the local project. Create the shared keys and print the public arguments:
 
 ```sh
 npx tendril workspace key --service "$TENDRILLER_ORIGIN" --handle notes-agent
 ```
 
-Call `register_agent` through the **same selected account-linked connector** with exactly the printed arguments (`name`, `publicKey`). Save its result privately as `.tendriller/register-agent-result.json` (never in chat or page assets), then retain it:
+Call `register_agent` through the **same selected account-linked connector** with exactly the printed arguments (`handle`, `bio`, `publicKey`, `wrapKey`). Save its result privately as `.tendriller/register-agent-result.json` (never in chat or page assets), then retain it:
 
 ```sh
 npx tendril workspace adopt --service "$TENDRILLER_ORIGIN" --credential .tendriller/register-agent-result.json
@@ -167,9 +167,9 @@ The host converts the emoji to an SVG favicon automatically. An HTTPS image URL 
 
 ### Continue after a lost credential or device
 
-`.tendriller/agent/` (credential and shared signer), `tendriller.json` and `.tendriller/pages/PAGE_ID/` (publisher identity, descriptor and device store) are the workspace's private state. There is no reissue of a lost key, so keep a way to move it: stop `tendril agent run`, then `tendril checkpoint export FILE` writes all of it as one encrypted file and retires this copy (a move, not a backup); `tendril checkpoint restore FILE` recreates it in an empty folder and verifies every page device against the restored signer. Page source moves separately with `tendril handoff source`. See [the CLI reference](tools/CLI.md#move-a-workspace-with-a-checkpoint). If only the token is lost or revoked, the owner can add the agent again from the dashboard and `workspace join` a fresh folder; a new key also needs explicit signed membership and key provisioning from surviving authorized devices.
+`.tendriller/agent/` (credential, shared signer and wrap key), `tendriller.json` and `.tendriller/pages/PAGE_ID/` (descriptor, device store and page keys) are the workspace's private state. There is no reissue of a lost key, so keep a way to move it: stop `tendril agent run`, then `tendril checkpoint export FILE` writes all of it as one encrypted file and retires this copy (a move, not a backup); `tendril checkpoint restore FILE` recreates it in an empty folder and verifies every page device against the restored signer. Page source moves separately with `tendril handoff source`. See [the CLI reference](tools/CLI.md#move-a-workspace-with-a-checkpoint). If only the token is lost or revoked, the owner can add the agent again from the dashboard and `workspace join` a fresh folder; a new key is admitted like any other agent from its signed host grant, by a surviving member.
 
-## 4. Choose policy, prepare and publish before owner sign-in
+## 4. Choose policy, create the page keys and publish before owner sign-in
 
 The default is complete no-finality operation: local durability and provisional reads have no provider dependency.
 
@@ -178,24 +178,26 @@ npm run init -- notes
 npm run deploy -- notes
 ```
 
-`init` saves `HostAppConfig` and prepares only the host's publisher policy, using the workspace's one opaque shared signer as the publisher; there is no per-page key. It does not create a device, data root or epoch key, choose an application order, freeze SQL schema, or need the first browser's public key. `deploy` builds the complete `pages/<slug>/dist/` graph and signs an immutable publication with that publisher. Signed publication attempts are retained before sending and retried exactly after uncertain replies.
+`init` saves `HostAppConfig`, prepares the host's publisher policy (the workspace's one opaque shared signer is the publisher; there is no per-page key) and creates the page data as its **creator**: it signs the descriptor, genesis membership (the agent alone, as administrator, pinning the owner account and the host attestation key in the admission policy) and first epoch key into the agent's own page store, then writes `initialized.json`. It does not choose an application order or freeze SQL schema. `deploy` builds the complete `pages/<slug>/dist/` graph and signs an immutable publication with that publisher. Signed publication and genesis attempts are retained before sending and retried exactly after uncertain replies. With the keys in hand, the agent can import data through an attached session (`npx tendril command … --page <slug>` while `npm run agent` runs) before the owner ever signs in.
 
-An explicitly selected browser signed-frontier policy can be prepared with `npm run init -- notes --browser-finalizer` on a new page. It grants the first browser a separate finalizer right. Configured policy is not demonstrated provider availability: exercise the browser's explicit frontier action and actual operation facts before claiming finality. Closing time may exclude genuinely offline work first seen behind it; never silently retimestamp it. Fixed-validator quorum configuration needs its actual authenticated validators/votes. Ordinary Save stays available when a provider is absent. No-finality waits fail as unsupported rather than manufacturing success.
+`npm run init -- notes --browser-first` leaves creation to the owner's first browser instead: no data exists until they sign in, and the agent is admitted later from its signed host grant.
+
+An explicitly selected browser signed-frontier policy can be prepared with `npm run init -- notes --browser-finalizer` on a new page. It implies `--browser-first`: the first browser creates the page and holds the separate finalizer right. Configured policy is not demonstrated provider availability: exercise the browser's explicit frontier action and actual operation facts before claiming finality. Closing time may exclude genuinely offline work first seen behind it; never silently retimestamp it. Fixed-validator quorum configuration needs its actual authenticated validators/votes. Ordinary Save stays available when a provider is absent. No-finality waits fail as unsupported rather than manufacturing success.
 
 For the selected SQL kit, run the same commands from its workspace (`npm run page:new -- inventory --template inventory`). Its manifest is computed from the kit's verified package-public WASM graph without supplemental acquisition, a native addon or native data process. Tables are created later by an ordinary browser transaction. See [state models](STATE_MODELS.md).
 
 ## 5. Give the ready page URL to the person
 
-Do not wait for a “claimed” reply. The owner opens the already-published page and completes their own sign-in. The browser proves its signing key; first initialization atomically binds the descriptor root and initial signed membership to that key and its epoch-key commitment. The actual key was durably saved **locally before the proof**. A lost reply resumes the original local key/intent, never replacement keys.
+Do not wait for a “claimed” reply. Start `npm run agent` and keep it running, then give the owner the page URL. They open the already-published page and complete their own sign-in. The browser creates its device key and wrap key, and the host attests them for the owner account. The agent (or any other online member) verifies that attestation against the signed admission policy, appends the browser to membership and wraps the epoch keys to it. Until then the page shows that it is waiting and retries; nothing needs pasting. On a `--browser-first` page the first browser creates the genesis itself and its key is saved **locally before sending**; a lost reply resends the same genesis, never replacement keys.
 
-The host stores signed control metadata and immutable code. It never receives plaintext epoch keys or application programs as a backend. The agent program (`npm run agent`, one hub connection and one session per initialized page) and any native process are optional; start one only when the application needs native coordination, private APIs or an assistant adapter, and report its actual lifetime. The program opens a page only after the starter's explicit native `sign-enrollment`, `provisioning-request` and `import-provisioning` steps have joined the shared signer to that page: the owner's browser proves and reviews the key and wraps the epoch keys to that recipient, and `initialized.json` is written only after the reader grant and current epoch key are verified. `init` alone never creates it.
+The host stores signed control metadata, attestations, key wraps and immutable code. It never signs membership and never receives plaintext epoch keys or application programs. The agent program (`npm run agent`, one hub connection and one session per initialized page) admits new devices and keeps keys wrapped; it is not needed for an admitted browser's reads and Save. Report its actual lifetime. The page's **Devices and access** view (`shared/helpers/devices-view.mjs`) lists every member, shows **New device signed in** notices and lets an administrator Remove a device (rotating the key), switch strict mode, approve waiting devices and create or revoke invites; the CLI offers the same actions (`tendril page devices|approve|remove-device|mode|invite|revoke-invite`).
 
 ## 6. Verify local use, offline readiness, and another device
 
 - Save a real note; inspect **stored locally**, **materialized locally (revisable)**, **retained by peers**, **finalized**, and **excluded** independently.
 - Save the complete signed graph using **Save complete app for offline use**. Only the service-worker acknowledgment establishes `offlineReady`; a loaded page or installed adapter does not.
 - Disconnect the device, reload, edit/create/delete and inspect its original operations. Save depends on local key/storage readiness, not peers, a current global read, an agent or finalizer.
-- Open a fresh browser profile/device and sign in. It must initially remain keyless. Create its public provisioning request, review its fingerprint on an existing authorized device, grant exact independent rights, wrap keys to that recipient, and import the package there. The agreement private key never leaves its owner.
+- Open a fresh browser profile/device and sign in. It waits (`waiting-admission`) until a member is online, then is admitted and receives its keys; the first device sees a **New device signed in** notice. Remove it from the first device and confirm it stops receiving new changes (`removed`) while the others continue under the rotated key. Optionally switch strict mode and Approve a device, or redeem an invite in another account.
 - Confirm the two devices automatically union operations and derive the same state. Check authenticated peer retention separately from current execution. SQL privileges need explicit ordinary permission transactions in addition to crypto writing.
 - Submit late earlier work and observe rederived rows/counts/details/outcomes while unsent drafts, focus and deep links survive. A changed/missing query must label the previous snapshot not current without clearing local input.
 
@@ -213,7 +215,8 @@ Give the ready page URL, publication ID/receipt, tested devices/viewports, store
 | `peer_application_unconfigured` | Run `npm run init -- <slug>`; a created page alone has no application authority. |
 | `APPLICATION_DEVICE_NOT_FOUND`, missing keys or data | Resume from the correct saved device directory/origin. Inspect missing storage; never generate a replacement under an old identity. |
 | `BYTES_STORE_IN_USE` or `BROWSER_STORAGE_IN_USE` | Close the other owner of that same device. CLI commands attach to the running agent program; only one agent program may own a workspace. |
-| `awaiting-keys`, connecting, or locally saved work | The device lacks epoch keys until explicit authenticated provisioning. Keep local work; an authorized device reviews the recipient request. Never paste an epoch key into the page. |
+| `waiting-admission`, `waiting-approval` or `waiting-keys` | No member holding the keys is online, the page is in strict mode, or the keys are not wrapped yet. Keep the page open and start `npm run agent` (or open an admitted device); in strict mode an administrator approves it. Never paste an epoch key into the page. |
+| `PAGE_UNINITIALIZED` | The creator has not created the page data. Run `npm run init -- <slug>` (or, on a browser-first page, the owner opens it). |
 | Stale publication or control transition | Inspect the selected head and saved request. Retry exact uncertain work; review a fresh change after a conflict. |
 | An operation is excluded or its outcome changed | A late earlier operation or a closed-time frontier revised it. Inspect the original signed intent; the person reviews and submits a new operation if the intent is still wanted. |
 
@@ -221,4 +224,4 @@ For exact API composition and ownership rules, continue to [Session bootstrap](S
 
 ## Optional hosted MCP access
 
-After the application works, the page owner can opt into the hosted Chronolog MCP participant at `/connections` (or `_tendril/mcp/connect`). The browser generates a dedicated signing key, enrolls it in the page's Chronolog membership, and seals the signing and epoch keys to the OAuth grant's X25519 `wrap_public_key`. Zero plaintext keys are stored at rest; the OAuth Bearer token unseals them strictly in RAM per `/mcp` request and runs the page's published signed `domain.js` inside QuickJS-WASM over Events or ephemeral in-memory DoltLite WASM. See [Hosted MCP](CLOUDFLARE_ASSISTANT.md) and [ChatGPT setup](CHATGPT_INTEGRATION.md).
+After the application works, the page owner can opt into the hosted Chronolog MCP participant at `/connections` (or `_tendril/mcp/connect`). The browser generates a dedicated signing key, adds it to the page's Chronolog membership, and seals the signing and epoch keys to the OAuth grant's X25519 `wrap_public_key`. Zero plaintext keys are stored at rest; the OAuth Bearer token unseals them strictly in RAM per `/mcp` request and runs the page's published signed `domain.js` inside QuickJS-WASM over Events or ephemeral in-memory DoltLite WASM. See [Hosted MCP](CLOUDFLARE_ASSISTANT.md) and [ChatGPT setup](CHATGPT_INTEGRATION.md).

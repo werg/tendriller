@@ -7,6 +7,8 @@
     "build:deploy": "node scripts/build.mjs --clean-public && node scripts/package-engine.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:host": "node scripts/dev-host.mjs",
+    "copy:edit": "node scripts/copy-editor.mjs",
+    "auth:hash-password": "node scripts/hash-password.mjs",
     "test": "npm run build && npm run test:server",
     "test:e2e": "npm run build && playwright test --config test/e2e/playwright.config.ts",
     "test:tts": "playwright test --config runtime/test/tts/playwright.config.ts",
@@ -46,8 +48,8 @@
     "test:chaos": "node scripts/test-chaos.mjs"
   },
   "devDependencies": {
-    "@chronolog/authority": "file:test/artifacts/chronolog-authority-c2844f5a.tgz",
-    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-660097c8.tgz",
+    "@chronolog/authority": "file:test/artifacts/chronolog-authority-96bbeb45.tgz",
+    "@chronolog/peer-session": "file:test/artifacts/chronolog-peer-session-96bbeb45.tgz",
     "@cloudflare/vitest-plugin": "^1.8.1",
     "@cloudflare/workers-types": "^5.20261113.1",
     "@playwright/test": "^1.65.0",

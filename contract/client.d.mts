@@ -29,6 +29,9 @@ export interface AgentClient {
   request<T = unknown>(path: string, options?: RequestOptions): Promise<T>;
   self(options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
   updateProfile(body: { handle?: string; bio?: string }, options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
+  reportVersions(versions: import('./broadcasts.mjs').ClientVersions, options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
+  broadcasts(options?: { audience?: import('./broadcasts.mjs').BroadcastAudience; since?: number; verifyKeys?: readonly import('./broadcasts.mjs').BroadcastPublicJwk[] | 'discover'; etag?: string | null; signal?: AbortSignal }): Promise<import('./broadcasts.mjs').BroadcastFeedResult>;
+  broadcastKeys(options?: { signal?: AbortSignal }): Promise<{ issuer: string; keys: import('./broadcasts.mjs').BroadcastPublicJwk[] }>;
   readonly pages: {
     list(options?: { cursor?: string; signal?: AbortSignal }): Promise<AgentPageList>;
     all(options?: { signal?: AbortSignal }): AsyncIterable<AgentPage>;
@@ -47,14 +50,23 @@ export interface HubSocket extends EventTarget {
   close(code?: number, reason?: string): void;
 }
 export interface HubEvent { readonly page: string; readonly kind: 'grant' | 'revoked' | 'page-deleted' | 'publication' | 'agents-changed' | string; readonly data: unknown }
+export interface HubBroadcastBatch {
+  readonly issuer: string;
+  readonly keys: readonly import('./broadcasts.mjs').BroadcastPublicJwk[];
+  readonly latest_seq: number;
+  readonly broadcasts: readonly import('./broadcasts.mjs').SignedBroadcast[];
+}
 export interface HubStatus { readonly state: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'replaced' | 'revoked' | 'closed'; readonly retryInMs?: number; readonly reconnected?: boolean }
 export interface AgentHubOptions { service: string; token: string; WebSocket?: typeof globalThis.WebSocket; probe?: (options: { signal: AbortSignal }) => Promise<unknown>;
-  retryMs?: number; maxRetryMs?: number; pingMs?: number; openTimeoutMs?: number; keepAlive?: boolean }
+  retryMs?: number; maxRetryMs?: number; pingMs?: number; openTimeoutMs?: number; keepAlive?: boolean;
+  versions?: import('./broadcasts.mjs').ClientVersions; lastBroadcastSeq?: number }
 export interface AgentHub {
   readonly state: HubStatus['state'];
   readonly streams: number;
   socket(page: string, path: string, protocols?: readonly string[]): HubSocket;
   events(listener: (event: HubEvent) => void): () => void;
+  broadcasts(listener: (batch: HubBroadcastBatch) => void): () => void;
+  sendHello(options?: { versions?: import('./broadcasts.mjs').ClientVersions; lastBroadcastSeq?: number }): void;
   onStatus(listener: (status: HubStatus) => void): () => boolean;
   connect(): void;
   close(): void;
@@ -67,11 +79,11 @@ export function validateHubPath(path: string): string;
 export function createAgentHub(options: AgentHubOptions): AgentHub;
 export class ApiError extends Error { status: number; code: string; details?: ValidationIssue[]; error?: Partial<PublicError>; constructor(status: number, error?: Partial<PublicError>) }
 export function createAgentClient(credential: { service: string; token: string }, options?: ClientOptions): AgentClient;
-export function registerAgent(service: string, body: { owner: string; handle: string; bio?: string; publicKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
+export function registerAgent(service: string, body: { owner: string; handle: string; bio?: string; publicKey: string; wrapKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
 /** Normalizes the host's {agent, token} registration answer (also an MCP register_agent result). */
 export function agentCredential(result: unknown): AgentCredential;
-export function joinAgent(service: string, body: { code: string; handle: string; bio?: string; publicKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
-export interface ServiceDescriptor { contract: number; core_release: string; limits: Record<string, unknown> }
+export function joinAgent(service: string, body: { code: string; handle: string; bio?: string; publicKey: string; wrapKey: string }, options?: { fetch?: typeof globalThis.fetch; signal?: AbortSignal }): Promise<AgentCredential>;
+export interface ServiceDescriptor { contract: number; core_release: string; limits: Record<string, unknown>; /** Host attestation public key (hex) pages pin in their admission policy; null when unconfigured. */ attestationKey: string | null }
 export function describeService(service: string, options?: ClientOptions & { signal?: AbortSignal }): Promise<ServiceDescriptor>;
 export function requireService(descriptor: ServiceDescriptor, requirements?: { contract?: number }): ServiceDescriptor;
 export function requireServiceOrigin(service: string): string;
@@ -85,7 +97,9 @@ export interface ServiceReadiness {
   writes: { available: boolean; code: null | 'read_only' | 'unavailable' };
   readinessUrl: string;
   statusUrl: string;
+  broadcasts?: { latestSeq: number; activeCount: number; criticalCount: number };
   checkedAt: string;
 }
 export function describeReadiness(service: string, options?: ClientOptions & { signal?: AbortSignal }): Promise<ServiceReadiness>;
 export function requireCreationReady(readiness: ServiceReadiness, options?: { service?: string }): ServiceReadiness;
+export { fetchBroadcastKeys, fetchBroadcasts, verifyBroadcastSignature, evaluateBroadcastMatch, matchesBroadcast, validateClientVersions } from './broadcasts.mjs';

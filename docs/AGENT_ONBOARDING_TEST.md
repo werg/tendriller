@@ -32,7 +32,7 @@ environment restrictions so a missing capability is distinguishable from a
 documentation failure.
 
 Use a disposable test application and an authorized owner account. The owner can
-answer identity questions, complete sign-in and review required enrollment or
+answer identity questions, complete sign-in and make required device-admission or
 recovery decisions. Keep credentials and private application records out of the
 evaluation report. A staged evaluation should use a deployed candidate host with
 the matching public docs and artifacts. Record exact commits and artifact hashes;
@@ -49,7 +49,7 @@ replace only the domain in this prompt:
 > return to it. Ask me for any identity or sign-in you actually need.
 
 Do not rescue a stuck agent with implementation advice during the baseline
-attempt. It may ask for owner identity, human claim, legitimate device enrollment
+attempt. It may ask for owner identity, human claim, legitimate device admission
 or an unavailable tool/artifact. Record those questions and the reason.
 If a maintainer supplies architecture or code guidance, mark the attempt
 **assisted** and keep the preceding failure trace; a successful continuation is
@@ -60,10 +60,10 @@ useful evidence but is not an unassisted completion.
 | Stage | Evidence required |
 | --- | --- |
 | Discover | Starting from the domain, the agent finds a task-oriented build route and the compatible public artifacts through published links. Record the URLs followed and any broken or inaccessible resource. |
-| Prepare before claim | The agent registers one workspace agent (credential and shared signing key retained privately under `.tendriller/agent/`), creates the page, initializes and publishes the signed UI before requesting sign-in, and gives the owner the ready page and permission-review URLs. Claim retains the same publication and keys and claims the agent; no claimed reply or agent redeployment is required. An optional `tendril agent run` is started only when the application needs a native participant. |
+| Prepare before claim | The agent registers one workspace agent (credential, shared signing key and wrap key retained privately under `.tendriller/agent/`), creates the page, creates its keys (`npm run init`) and publishes the signed UI before requesting sign-in, and gives the owner the ready page and permission-review URLs. Claim retains the same publication and keys and claims the agent; no claimed reply or agent redeployment is required. `tendril agent run` is started so the agent admits the owner's browser. |
 | Reuse | The agent uses the task/capability map and imports or adapts current session/helpers where appropriate. Record exact files used and whether historical contrib links were mistaken for current APIs. |
 | Define retained work | The authored application has a real checklist definition, declared commands and a coherent query/read path. Identify where an agent edits the model and UI for a different user request. |
-| Configure authority | The actual execution commitments and finality policy (default `none`) are prepared; the publisher policy (signed by the workspace's one shared signer), device grants and account bindings are explicit. The owner's sign-in and the browser's device-key proof initialize the root and keys locally, and no generation selection or ordering approval exists. Additional devices use explicit authenticated key provisioning. No invented digest, fixture-only authority or copied private signer stands in for enrollment. |
+| Configure authority | The actual execution commitments and finality policy (default `none`) are prepared; the publisher policy (signed by the workspace's one shared signer) is explicit. The agent's genesis pins the owner account and host attestation key. After the owner's sign-in the running agent admits the attested browser and wraps its keys; no generation selection or ordering approval exists. Additional devices use the same admission. No invented digest, fixture-only authority or copied private signer stands in for admission. |
 | Open and connect | Native and browser participants use the same application ID with their own authorized signing identities and persistent stores. The browser runs the session in its Worker. One participation controller owns connection and reconnect behavior. Record actual session/participation status and selected transport. |
 | Publish | The complete authored file graph is signed by an authorized publisher key and published through the host's publication route. Retain the signed intent, publication operation ID and returned receipt; verify the selected head. |
 | Browser to agent | Add an item through the published page's UI. Observe the command outcome and the same item through a coherent native session query. A DOM change or local draft alone does not pass. |
@@ -74,11 +74,9 @@ useful evidence but is not an unassisted completion.
 
 The prompt asks to see the list from the agent session, so the native participant
 stages above are requested features of this evaluation, not prerequisites of the
-browser-first stages: Prepare, Publish and the browser's local Save, reload and
-offline work must pass without a native process. The agent's shared key joins the
-page's data session only through the explicit `sign-enrollment`,
-`provisioning-request` and `import-provisioning` steps after the owner reviews
-its exact rights; a host token alone never grants data access. If the evaluation
+browser stages: once admitted, the browser's local Save, reload and offline work
+must pass without a native process. The agent's shared key is the page's creator
+through `npm run init`; a host token alone never grants data access. If the evaluation
 omits an agent-session requirement from the prompt, mark those two stages not
 applicable instead of failing the attempt.
 
@@ -104,7 +102,7 @@ application. Record exactly which environment and artifact tuple was exercised.
    saved intent. Verify the original receipt is returned. Test a stale or changed
    release separately and confirm that the agent reads the current head and uses
    a new reviewed operation for changed content.
-4. **Missing setup.** In a separate fresh attempt, omit an enrollment or required
+4. **Missing setup.** In a separate fresh attempt, omit `npm run init`, the running agent program or a required
    artifact. The agent should name the incomplete checkpoint and concrete next
    action, preserve the native route and avoid claiming completion. This is a
    successful diagnosis, not a completed application build.
@@ -124,7 +122,7 @@ original to obtain a green onboarding score.
 | The result is a static page, unconfigured application, or installed adapter with no observed peer exchange. | It demonstrates only an earlier checkpoint. |
 | The guide ends at undefined `session`, `authority`, `epochKeys`, `connectPeers` or an unknown `deployment.mjs`. | The first-app path still requires unprovided implementation knowledge. Record the exact unresolved variable/file and last successful step. |
 | The agent assumes page login or an API token is a publisher/device grant. | Host access and signed application authority remain separate. |
-| Agent tokens, native private keys or another device's signer are embedded in authored browser assets. | The published graph does not preserve the required credential boundaries. A browser must use its own enrolled identity. |
+| Agent tokens, native private keys or another device's signer are embedded in authored browser assets. | The published graph does not preserve the required credential boundaries. A browser must use its own admitted identity. |
 | A failed reopen silently creates an empty device, swaps storage backends or resets authority. | The apparent recovery loses identity/history instead of resuming it. |
 | Changed input/files are submitted under an already-used operation identity. | This violates exact retry and conceals uncertainty. |
 | `stored`, `materialized`, `retained`, `finalized`, adapter readiness or offline code saving are presented as equivalent guarantees. | The user cannot assess persistence, connectivity, replication or finality correctly. |
@@ -166,7 +164,7 @@ evidence from the cold-start evaluation:
 | `npm run check` | The configured contract, type, build, boundary, runtime, host, consumer and tools checks pass for that checkout. | A new agent can discover and compose an app from only the domain. |
 | `npm run check:release` | Core checks plus the configured browser gates pass. | A particular live service, owner sign-in or physical device is qualified. |
 | `npm run test:first-app -- --session-archive PATH` | The downloaded app runs against a packed host and real native/browser sessions, including exact retry and reopening. | An unaided agent naturally chooses that route or a temporary process survives the conversation. |
-| `node scripts/check-deployment.mjs https://SERVICE_HOST` | The script's public service, guide, automated-client and runtime probes succeed on that host. | Signed publication, device enrollment or application synchronization has been exercised by a fresh agent. |
+| `node scripts/check-deployment.mjs https://SERVICE_HOST` | The script's public service, guide, automated-client and runtime probes succeed on that host. | Signed publication, device admission or application synchronization has been exercised by a fresh agent. |
 | [Three-repository qualification](RELEASE_COMPOSITION.md) | Recorded independent consumers compose the exact supplied core, Chronolog and cookbook artifacts under their stated scenarios. | The task-oriented entry path is comprehensible without maintainer help. |
 | This domain-only evaluation | The recorded agent attempt reaches or fails the concrete user outcome through naturally discovered resources. | Broader mobile, recovery, security or production guarantees outside its observed scenarios. |
 
@@ -379,8 +377,8 @@ credentials are never a model input. Exact review text must be chosen by the
 evaluator after inspection, not guessed or approved by checking every checkbox.
 For a review with one confirm button and no permission checkboxes, use
 `permissions: []`; the exact displayed-text checks still apply. Add the
-application/account text to `expected` when checking those fields. Browser device
-enrollment has no review step.
+application/account text to `expected` when checking those fields. Owner-account
+device admission has no review step in attested mode.
 `inspect` also returns a private `view` of definition-list fields, link targets,
 non-secret visible inputs, and the displayed proposal JSON, so the evaluator can
 choose actual values without exporting browser keys or injecting state.
@@ -392,7 +390,7 @@ writer. `wait` accepts a selector, `condition` (`visible`, `enabled`, or `text`)
 optional text `value`, and `timeoutMs` up to 30000. It only observes the DOM. If a
 review form reports expired/already used, navigate with GET to the same review
 link, compare the unchanged proposal and rights, then confirm; do not replace the
-browser key or start a new enrollment to bypass that message.
+browser key or sign in again to bypass that message.
 
 ### Maintained starter observer (no custom module)
 
@@ -501,7 +499,7 @@ independent finality-proof verification from an inspection boolean.
 Host metadata is the actual `{selection, publicationAuthority, authority, ...}`
 response; canonical authority bytes are decoded by the public codec. Preclaim and
 publication checks use the independent host publisher authority, which needs no
-data root, native writer grant or initialized browser.
+data membership, native writer grant or admitted browser.
 Browser measurements read the paired owner's actual page, public runtime identity,
 device field and rendered rows. They require the configured app's page URL and a
 distinct browser identity. `owner navigate` and `reopen` may use that one
@@ -573,7 +571,7 @@ For example, after the owner adds a note:
 }
 ```
 
-Take `connected` as soon as both participants are enrolled and the native process
+Take `connected` as soon as both participants are admitted and the native process
 configuration is measured. It retains the process checkpoint before checking the
 optional transport metric, so a transport-blocked observation still supplies the
 owned-process prerequisite for later cleanup. Record every subsequent native
@@ -672,7 +670,7 @@ measurements (public identities and private paths must stay in the private evide
 | --- | --- |
 | `discovery` | Ordered discovered URLs, failed reads, reused files/imports, install/create timing and exact downloaded package hashes. |
 | `preclaim-publication` | `unclaimed: true`, `signatureVerified: true`, `publicationId`, `operationId`, receipt, observation before claim, same signed head after claim. |
-| `authority` | Pinned signed descriptor and verified membership chain, explicit authenticated account/origin/device provisioning and actual finality policy (default `none`). |
+| `authority` | Pinned signed descriptor and verified membership chain, account-attested device admission by a member, and actual finality policy (default `none`). |
 | `connected` | `applicationId`, distinct `nativeDeviceId`/`browserDeviceId`, `transport`, and `nativeProcess` containing `pid`, `startedAt`, exact `resume` command and `storage` location. Include connection/session observations. |
 | `browser-to-agent`, `agent-to-browser` | `operationId`, stable `proposalId`, independent `facts: {stored, materialized, retained, finalized, excluded}`, coherent `query: {applicationId, revision, value}`, unique `marker`, `browserObserved: true`, `nativeObserved: true` and actual verified signed-envelope witness. Materialized outcomes may revise; neither retained nor finalized must be true merely to author/read. |
 | `browser-reload` | Browser device identity before/after reload and persisted marker/read observations. |
@@ -782,8 +780,8 @@ host's waiting page, handles the first publication. The source-722 commit path
 notified that watch only for `next === 1`; it did not provide a later-release notice
 to an already published, unpaired tab. The observed custom page also did not show
 such a notice. This is not evidence of a missing data-session subscription: the
-failure occurred before browser enrollment and the publication pin was independent
-of that enrollment.
+failure occurred before browser admission and the publication pin was independent
+of that admission.
 
 A requirement that frontend repairs reach an existing tab before pairing needs a
 separate test: publish v2 while the owner remains on broken v1, verify a visible

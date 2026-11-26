@@ -12,7 +12,6 @@ import { importReviewPackages, reviewInstallArguments, verifyInstalledReviewPack
 import { chromium } from '@playwright/test';
 import { readWithAdmissionRetry } from './read.mjs';
 import { readReviewAccess, authorizeReview } from './access.mjs';
-import { provisionNative } from './provision.mjs';
 import { recordReview } from './record.mjs';
 import { preflightReviewDeployment, reviewComposition, reviewProvenance } from './preflight.mjs';
 import { cleanupFixturePage, installReviewFixtureSources, readFixtureHandle } from './fixture.mjs';
@@ -80,25 +79,26 @@ try {
     diagnostics.step('verify-publication');
     assert.equal((await readWithAdmissionRetry(() => host.peers.publication())).publication.id, publication.publication.id);
     assert.notEqual((await readWithAdmissionRetry(() => host.peers.application())).authority, null, 'The signed-in browser initialized application authority');
-    phase = 'provision optional native participant';
-    diagnostics.step('provision-native');
-    await provisionNative({ page, run, project });
     phase = 'start optional participant';
     diagnostics.step('start-participant');
     const state = openSync(join(project, 'participant-state-private.log'), 'w', 0o600), diagnostic = openSync(join(project, 'participant-private.log'), 'w', 0o600);
-    // The one long-running local program is the installed tools archive's agent: it opens this provisioned page's optional native owner.
+    // The one long-running local program is the installed tools archive's agent: it opens this initialized page's optional native owner.
     try { child = spawn(process.execPath, [join(project, 'node_modules/@tendriller/tools/bin/tendril.mjs'), 'agent', 'run'],
       { cwd: project, env: { ...process.env, TENDRIL_WORKSPACE: project }, stdio: ['ignore', state, diagnostic] }); }
     finally { closeSync(state); closeSync(diagnostic); }
     let participantError;
     child.once('error', () => { participantError = true; });
-    const deadline = Date.now() + 60000;
+    // No copied request or package: the online browser admits the agent from the host's signed attestation for its
+    // creator grant and wraps the page keys to it; the agent reports authoring once it holds them.
+    diagnostics.step('admit-agent');
+    const deadline = Date.now() + 90000;
     for (;;) {
-      assert(Date.now() < deadline, 'Participant start deadline');
+      assert(Date.now() < deadline, 'Agent admission deadline');
       assert(!participantError && child.exitCode === null, 'Optional participant must remain running');
-      if (readFileSync(join(project, 'participant-state-private.log'), 'utf8').split('\n').some(line => { try { const value = JSON.parse(line); return value.page === handle.id && value.state === 'running'; } catch { return false; } })) break;
+      if (readFileSync(join(project, 'participant-state-private.log'), 'utf8').split('\n').some(line => { try { const value = JSON.parse(line); return value.page === handle.id && value.canAuthor === true; } catch { return false; } })) break;
       await delay();
     }
+    await page.locator('#devices').getByText('@review-fixture', { exact: false }).first().waitFor({ timeout: 30000 });
     phase = 'connect hosted MCP';
     // The owner opts this page into hosted MCP for exactly this run's OAuth grant. The hosted participant uses its own
     // enrolled key and wrapped epoch keys; the optional native participant above is not its provider.
@@ -115,7 +115,7 @@ try {
   report.publishedBeforeBrowserKey = true;
   report.browserWithoutNativeProcess = true;
   report.hostedConnectionSurvivesReload = true;
-  report.workspace = { credential: 'account-level register_agent through the linked account', signer: 'one shared workspace key', pageAccess: 'creator grant', publisher: 'the shared key', participant: 'tendril agent run, optional', hostedMcp: 'owner opt-in for this run\'s OAuth grant' };
+  report.workspace = { credential: 'account-level register_agent through the linked account', signer: 'one shared workspace key', pageAccess: 'creator grant', admission: 'agent admitted from its signed host grant by the online browser', publisher: 'the shared key', participant: 'tendril agent run, optional', hostedMcp: 'owner opt-in for this run\'s OAuth grant' };
   report.fixtureSources = fixtureSources;
   report.installedPackages = installedPackages;
   report.consumerSource = consumerSource;

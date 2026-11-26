@@ -24,12 +24,17 @@
         "publicKey": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "wrapKey": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       },
       "required": [
         "owner",
         "handle",
-        "publicKey"
+        "publicKey",
+        "wrapKey"
       ],
       "additionalProperties": false
     },
@@ -54,12 +59,17 @@
         "publicKey": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "wrapKey": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       },
       "required": [
         "code",
         "handle",
-        "publicKey"
+        "publicKey",
+        "wrapKey"
       ],
       "additionalProperties": false
     },
@@ -338,12 +348,24 @@
         },
         "limits": {
           "type": "object"
+        },
+        "attestationKey": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
         "contract",
         "core_release",
-        "limits"
+        "limits",
+        "attestationKey"
       ],
       "additionalProperties": false
     },

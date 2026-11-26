@@ -60,8 +60,8 @@ function expectDescriptor(value: Record<string, any>, origin = BASE) {
       service_descriptor: origin + '/api/service',
       readiness: origin + '/api/readiness',
       contract: origin + '/contract/v3.json',
-      register_agent: { method: 'POST', url: origin + '/api/agents', required: ['owner', 'handle', 'publicKey'] },
-      join_agent: { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'handle', 'publicKey'] },
+      register_agent: { method: 'POST', url: origin + '/api/agents', required: ['owner', 'handle', 'publicKey', 'wrapKey'] },
+      join_agent: { method: 'POST', url: origin + '/api/agents/join', required: ['code', 'handle', 'publicKey', 'wrapKey'] },
       create_page: { method: 'POST', url: origin + '/api/agent/pages', authorization: 'agent token' },
     },
   });
@@ -146,10 +146,58 @@ describe('public application onboarding', () => {
     expect(html).toMatch(/<link[^>]+rel="service-desc"[^>]+type="application\/json"/);
     const primaryAction = /<a\b[^>]*\bclass="button"[^>]*>/.exec(html)?.[0];
     expect(primaryAction).toContain(`href="${BASE}${guidePath}"`);
+    expect(html).toContain('Agent instructions');
+    for (const slug of ['claude-code', 'codex', 'meta-muse', 'instinct', 'openai-dots', 'claude-duet', 'grokbot', 'openclaw', 'hermes']) {
+      expect(html, slug).toContain(`href="${BASE}/agents/${slug}"`);
+      expect(html, slug).toContain(`href="${BASE}/agents/${slug}.md"`);
+    }
     const head = await req('/', { method: 'HEAD', anonymous: true });
     expect(head.status).toBe(200);
     expectDiscoveryLinks(head);
     expect(await head.text()).toBe('');
+  });
+
+  it('serves human and AI-friendly getting-started pages per agent platform', async () => {
+    const indexHtml = await req('/agents', { anonymous: true });
+    expect(indexHtml.status).toBe(200);
+    expect(indexHtml.headers.get('Content-Type')).toContain('text/html');
+    expectDiscoveryLinks(indexHtml);
+    expect(await indexHtml.text()).toContain('Claude Code');
+
+    const indexMd = await req('/agents.md', { anonymous: true });
+    expect(indexMd.status).toBe(200);
+    expect(indexMd.headers.get('Content-Type')).toContain('text/markdown');
+    expect(indexMd.headers.get('X-Content-Type-Options')).toBe('nosniff');
+    expectDiscoveryLinks(indexMd);
+    expect(await indexMd.text()).toContain(`${BASE}/agents/codex.md`);
+
+    for (const slug of ['claude-code', 'codex', 'meta-muse', 'instinct', 'openai-dots', 'claude-duet', 'grokbot', 'openclaw', 'hermes']) {
+      const htmlRes = await req(`/agents/${slug}`, { anonymous: true });
+      expect(htmlRes.status, slug).toBe(200);
+      expect(htmlRes.headers.get('Content-Type')).toContain('text/html');
+      expectDiscoveryLinks(htmlRes);
+      const htmlText = await htmlRes.text();
+      expect(htmlText, slug).toContain(`href="${BASE}/agents/${slug}.md"`);
+
+      const mdRes = await req(`/agents/${slug}.md`, { anonymous: true });
+      expect(mdRes.status, slug).toBe(200);
+      expect(mdRes.headers.get('Content-Type')).toContain('text/markdown');
+      expect(mdRes.headers.get('X-Content-Type-Options')).toBe('nosniff');
+      expectDiscoveryLinks(mdRes);
+      const mdText = await mdRes.text();
+      expect(mdText, slug).toContain(`${BASE}/docs/BUILD_AN_APP.md`);
+
+      const head = await req(`/agents/${slug}.md`, { method: 'HEAD', anonymous: true });
+      expect(head.status, slug).toBe(200);
+      expect(await head.text()).toBe('');
+    }
+
+    const unknown = await req('/agents/unknown-harness', { anonymous: true });
+    expect(unknown.status).toBe(404);
+    await unknown.text();
+    const post = await req('/agents/codex.md', { method: 'POST', anonymous: true, body: 'x' });
+    expect(post.status).toBe(405);
+    await post.text();
   });
 
   it('publishes anonymous navigation without credentials or creating accounts and pages', async () => {
@@ -216,7 +264,7 @@ describe('public application onboarding', () => {
     expect(catalog.starter).toBe(origin + downloadPath);
     for (const entry of catalog.capabilities) expect(new URL(entry.guide).origin, entry.id).toBe(origin);
     expect(JSON.stringify(catalog)).not.toContain(BASE);
-    for (const path of ['/', '/agent.md', '/llms.txt', '/llms-full.txt', guidePath, '/AGENTS.md']) {
+    for (const path of ['/', '/agents', '/agents.md', '/agents/claude-code', '/agents/codex.md', '/agent.md', '/llms.txt', '/llms-full.txt', guidePath, '/AGENTS.md']) {
       const response = await route(new Request(origin + path), target);
       expect(response.status, path).toBe(200);
       expectDiscoveryLinks(response, origin);
@@ -274,7 +322,7 @@ describe('public application onboarding', () => {
     expect(response.headers.get('Access-Control-Expose-Headers')).toContain('Link');
     const value = await response.json();
     expect(() => assertValid('serviceDescriptor', value)).not.toThrow();
-    expect(Object.keys(value as object).sort()).toEqual(['contract', 'core_release', 'limits']);
+    expect(Object.keys(value as object).sort()).toEqual(['attestationKey', 'contract', 'core_release', 'limits']);
   });
 });
 
@@ -318,7 +366,8 @@ describe('onboarding after page creation', () => {
     expect(result.error.code).toBe('application_unprepared');
     expect(result.error.message).toContain('host.peers.prepare');
     expect(result.error.message).toContain(guidePath);
-    expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configuration: null, publicationAuthority: null, authority: null });
+    expect(await apiJson(h, 'GET', 'application')).toEqual({ selection: h.application, configuration: null, publicationAuthority: null, authority: null,
+      hostAttestationKey: expect.stringMatching(/^[0-9a-f]{64}$/), admissionAccounts: [h.account, expect.stringMatching(/^email:owner-/)] });
   });
 
   it('does not expose a per-page MCP route on the tendril API', async () => {

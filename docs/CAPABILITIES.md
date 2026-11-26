@@ -6,6 +6,7 @@ Use the selected service's `/.well-known/tendriller-capabilities.json` and [Buil
 
 - **Shared notes/events:** complete browser-first `domain.mjs`, `setup.mjs`, `publish.mjs`, `worker.mjs`, `page.mjs`. Event notifications invalidate a coherent domain projection; they are not an arrival-ordered UI database.
 - **Ordinary SQL:** `sql/` inventory, guarded atomic DML, explicit ordinary schema initialization/ALTER and separate SQL permission grants. Use the exact qualified native/WASM engine profile; no immutable application-schema descriptor exists.
+- **Video/audio call & real-time WebRTC (`templates/call/`):** hair-check lobby, responsive desktop/320px video grid, screen share, continuous on-device per-person captions, optional agent audio consent, custom `app:*` binary DataChannels, and honest relay degradation. See [WebRTC media cookbook](WEBRTC_MEDIA.md).
 - **Several views/agents:** retain one physical owner and separate view drafts/approved consumer bindings. Provisional resource claims are revisable, not globally exclusive locks or permission for irreversible effects.
 
 ## Task to implementation
@@ -14,19 +15,19 @@ Use the selected service's `/.well-known/tendriller-capabilities.json` and [Buil
 | --- | --- | --- |
 | Durable state/commands/queries | `@chronolog/peer-session`: `createApplicationSession`, `defineApplication`, `defineCommand`, `defineQuery` | Signing/storage readiness permits offline Save; no peer/finalizer/agent gate |
 | Signed control/crypto grants | `@chronolog/authority`; `@tendriller/core/authority` transport | Account access, root principal, reader/writer/admin/publisher/finalizer and application SQL permissions remain distinct |
-| Browser owner | `@tendriller/core/browser-owner`, `@tendriller/core/worker-owner` | SharedWorker/elected Worker retain one device store and bounded root lifetimes, not global order |
-| Recipient key transfer | `session.provisioning.createProvisioningRequest/exportProvisioning/importProvisioning`; `shared/helpers/provisioning-view.mjs` | Explicit signed request, owner review/grant, HPKE-wrapped keys; no plaintext epoch keys reach authored assets or host |
+| Browser owner | `@tendriller/core/browser-owner`, `@tendriller/core/worker-owner` | Single-active-tab Web Lock with a 1:1 dedicated Worker for device storage and page-owned `RTCPeerConnection`; explicit `takeover: true` handoff via `TAB_ACTIVE_ELSEWHERE` |
+| Page keys and device admission | `@tendriller/core/admission` (`openPageAuthority`, `createAdmission`); `shared/helpers/page-data.mjs`, `browser-bootstrap.mjs`, `devices-view.mjs`; `tendril page devices/approve/remove-device/mode/invite/revoke-invite` | The creator signs genesis; host attestation, invites and strict-mode approval are one mechanism; members sign membership and wrap keys to each wrap key; Remove device rotates; no plaintext epoch key reaches authored assets or host |
 | RTC/relay | `@tendriller/core/participation`, `@tendriller/core/native-rtc`, `@tendriller/core/peers` | Optional bounded background introductions; verify actual authenticated data traffic |
 | Reactive domain UI | `createLiveView`, `createViewStore`; event/SQL pages and `shared/ui/` examples | Render coherent materialization plus independent drafts/view state; preserve focus/deep links across revised outcomes/schema |
 | Operation facts/exact retry | `operations.get/retry/subscribe`, `operation.inspect/materialized/retained/finalized` | Stored, revisable execution, peer retention and optional finality are separate; uncertainty retains originals |
 | Optional finality | Configured `none`, `fixed-validator`, `signed-frontier`; `session.finality` provider methods | Closing author time may exclude late unseen offline work; cannot allocate order, guarantee retention or exactly-once effects |
-| Immutable UI and offline graph | `publish.mjs`; `tendril.publication.saveOffline()` | Independent publisher authorization before first root exists; offline ready only after complete graph acknowledgment |
-| Many pages for one agent | `tendril workspace init` or `join`, `tendril page new`, `tendril agent run`; [multi-page agents](MULTI_PAGE_AGENTS.md) | One `ta_` credential and one signing key per agent, owner-granted pages, one hub connection for control traffic only; page sync data keeps per-page connections; the program is optional for browser writes |
-| Native tools/local CLI | `@tendriller/core/native-owner`; [CLI](tools/CLI.md) (`--page <slug|id>`) | Optional private supervisor/IPC and explicit device provisioning; no native process required for browser writes |
+| Immutable UI and offline graph | `publish.mjs`; `tendril.publication.saveOffline()` | Independent publisher authorization, separate from data access; offline ready only after complete graph acknowledgment |
+| Many pages for one agent | `tendril workspace init` or `join`, `tendril page new`, `tendril agent run`; [multi-page agents](MULTI_PAGE_AGENTS.md) | One `ta_` credential, one signing key and one wrap key per agent, owner-granted pages, one hub connection for control traffic only; page sync data keeps per-page connections; the program is optional for browser writes |
+| Native tools/local CLI | `@tendriller/core/native-owner`; [CLI](tools/CLI.md) (`--page <slug|id>`) | Optional private supervisor/IPC and admission actions through the running agent program; no native process required for browser writes |
 | Multi-agent `@handles` & hosted MCP | `tendril.agents`, `shared/helpers/agent-requests.mjs`, [hosted MCP](CLOUDFLARE_ASSISTANT.md) | Self-chosen `@handles`, one optional primary agent per page, and opt-in OAuth-token-wrapped hosted MCP with zero plaintext keys at rest |
 | Signals/presence/progress | `session.signals`; `shared/helpers/signal-request.mjs` | Disposable authenticated live updates, not durable ordering or private recipient authorization |
 | Reviewed photos/content | `session.content`, `shared/helpers/reviewed-input.mjs`, `shared/media/camera.mjs` | Acquisition and inference suggestions never commit automatically; explicit local consent/review required |
-| WebRTC video/audio, custom streams & agent call following | `shared/media/call-room.mjs`, `shared/ui/call-room.mjs`, `shared/media/call-agent.mjs`, `shared/media/native-audio.mjs`, `shared/helpers/call-domain.mjs`, `templates/call/` | Direct authenticated WebRTC links carry RTP tracks & `app:*` binary DataChannels via in-band Perfect Negotiation; relay links degrade media honestly while keeping sync & per-person on-device transcripts active |
+| WebRTC video/audio, custom streams & agent call following | `shared/media/call-room.mjs`, `shared/ui/call-room.mjs`, `shared/media/call-agent.mjs`, `shared/media/native-audio.mjs`, `shared/helpers/call-domain.mjs`, `templates/call/`, [WebRTC media cookbook](WEBRTC_MEDIA.md) | Direct authenticated WebRTC links carry RTP tracks & `app:*` binary DataChannels via in-band Perfect Negotiation; relay links degrade media honestly while keeping sync & per-person on-device transcripts active |
 | Sensors/voice | `tendril.capabilities/sensors`, optional `@tendriller/runtime/voice` (`createVoice`, `createStreamTranscriber`) | Trusted gestures and tracked cancellation; API presence does not prove permission/hardware/provider availability |
 | Local diagnostics | `@tendriller/core/diagnostics`, transport/error inspectors | Observations are not command success, retention, finality or future process wake guarantees |
 
@@ -42,7 +43,7 @@ Keep these stages distinct: user gesture/acquisition, bounded local preview, exp
 
 ## Preview early, verify the hosted session
 
-A static preview checks layout only. Final verification uses the actual signed page, browser-first enrollment, offline author/reload and a second explicitly provisioned participant. Exercise late earlier operations and schema changes, stale query errors and stable-ID draft/focus/deep-link preservation at desktop and 320px. Report exact evidence and untested boundaries under [delivery](AGENT_DELIVERY.md).
+A static preview checks layout only. Final verification uses the actual signed page, owner sign-in admitted by the running agent, offline author/reload, a second admitted device and Remove device. Exercise late earlier operations and schema changes, stale query errors and stable-ID draft/focus/deep-link preservation at desktop and 320px. Report exact evidence and untested boundaries under [delivery](AGENT_DELIVERY.md).
 
 ## Use contrib as an implementation source with evidence
 

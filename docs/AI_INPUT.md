@@ -8,7 +8,7 @@ unavailable. Opening the page, selecting a file, and receiving a suggestion do
 not submit that command.
 
 First complete [Build an app](BUILD_AN_APP.md): create and claim the page,
-initialize its authority, publish its complete source, enroll the browser device,
+create its page keys, publish its complete source, have the browser device admitted,
 and connect the actual native/browser session. The result to deliver is the
 hosted page with these connections working. The
 [first-app source archive](/downloads/tendriller-first-app.tgz) supplies all the

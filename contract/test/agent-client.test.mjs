@@ -13,20 +13,20 @@ const page = { id: PAGE, name: 'Notes', page_url: `https://${PAGE}.pages.test/s/
 test('registration and join return a checked ta_ credential without any ambient authentication', async () => {
   const calls = [];
   const fetch = async (url, init) => { calls.push({ url, init }); return Response.json({ id: 'ag_' + 'b'.repeat(26), handle: 'laptop', bio: 'Dev agent', token: TOKEN, account_state: 'unclaimed' }, { status: 201 }); };
-  const publicKey = 'A'.repeat(43);
-  const created = await registerAgent(service, { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey }, { fetch });
+  const publicKey = 'A'.repeat(43), wrapKey = 'ab'.repeat(32);
+  const created = await registerAgent(service, { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey, wrapKey }, { fetch });
   assert.equal(created.token, TOKEN);
   assert.equal(created.handle, 'laptop');
   assert.equal(calls[0].url, service + '/api/agents');
   assert.equal(calls[0].init.headers.Authorization, undefined);
-  assert.deepEqual(JSON.parse(calls[0].init.body), { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey });
-  await joinAgent(service, { code: 'join-code', handle: 'laptop', publicKey }, { fetch });
+  assert.deepEqual(JSON.parse(calls[0].init.body), { owner: 'owner@example.test', handle: 'laptop', bio: 'Dev agent', publicKey, wrapKey });
+  await joinAgent(service, { code: 'join-code', handle: 'laptop', publicKey, wrapKey }, { fetch });
   assert.equal(calls[1].url, service + '/api/agents/join');
   await assert.rejects(registerAgent(service, { owner: 'bad', handle: 'ab', publicKey }, { fetch }), { name: 'ContractError' });
   await assert.rejects(registerAgent(service, { owner: 'owner@example.test', handle: 'Bad Handle!', publicKey }, { fetch }), { name: 'ContractError' });
-  await assert.rejects(registerAgent(service, { owner: 'owner@example.test', handle: 'ab', publicKey },
+  await assert.rejects(registerAgent(service, { owner: 'owner@example.test', handle: 'ab', publicKey, wrapKey },
     { fetch: async () => Response.json({ id: 'ag_x', handle: 'ab', token: 'tk_old' }) }), { code: 'invalid_response' });
-  await assert.rejects(registerAgent('https://service.test/api', { owner: 'owner@example.test', handle: 'ab', publicKey }, { fetch }), { code: 'invalid_service_origin' });
+  await assert.rejects(registerAgent('https://service.test/api', { owner: 'owner@example.test', handle: 'ab', publicKey, wrapKey }, { fetch }), { code: 'invalid_service_origin' });
 });
 
 test('the agent client is inert until used and bases page routes at /api/agent/pages/<id>', async () => {
@@ -41,7 +41,7 @@ test('the agent client is inert until used and bases page routes at /api/agent/p
   };
   const client = createAgentClient({ service, token: TOKEN }, { fetch, WebSocket: hub.WebSocket });
   assert.equal(calls.length, 0); assert.equal(hub.connections.length, 0);
-  assert.deepEqual(Object.keys(client).sort(), ['close', 'hub', 'page', 'pages', 'request', 'self', 'service', 'updateProfile']);
+  assert.deepEqual(Object.keys(client).sort(), ['broadcastKeys', 'broadcasts', 'close', 'hub', 'page', 'pages', 'reportVersions', 'request', 'self', 'service', 'updateProfile']);
   assert.equal((await client.self()).grants, 2);
   assert.equal(calls[0].init.headers.Authorization, 'Bearer ' + TOKEN);
   await client.updateProfile({ handle: 'atlas', bio: 'Primary assistant' });

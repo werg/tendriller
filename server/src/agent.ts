@@ -100,7 +100,7 @@ export function tendrilMeta(t: Tendril) {
 }
 
 route('GET', /^$/, async (t, _req, _url, _by, _params, principal) => json({ ...await tendrilInfo(t, principal.agentId), scopes: principal.scopes }));
-route('GET', /^service$/, () => json(serviceDescriptor()));
+route('GET', /^service$/, t => json(serviceDescriptor(t.env)));
 route('GET', /^guide$/, t => json(onboardingDescriptor(publicBase(t.env))));
 route("PATCH", /^$/, async (t, req) => {
   const b = await readJson(req, 64 * 1024);

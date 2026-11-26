@@ -1,12 +1,12 @@
 # Reuse the application helpers
 
-Start with [browser-first setup](BUILD_AN_APP.md), [ownership/bootstrap](SESSION_BOOTSTRAP.md), and [capabilities](CAPABILITIES.md). A rich application needs domain views, not a JSON editor or a form mirroring storage fields.
+Start with [setup](BUILD_AN_APP.md), [ownership/bootstrap](SESSION_BOOTSTRAP.md), and [capabilities](CAPABILITIES.md). A rich application needs domain views, not a JSON editor or a form mirroring storage fields.
 
 ## Connect the browser
 
 `worker.mjs` opens retained identity/authority/keys locally, then `createApplicationSession`. `page.mjs` uses `openBrowserOwner` and installs `createApplicationBackend(session)` into the runtime. `shared/helpers/browser-profile.mjs` supplies the same stable profile for every document. Never gate Save on network/discovery/native-provider/finalizer reachability.
 
-The first owner browser initializes local data keys after actual sign-in/key proof. A fresh second browser stays keyless until explicit reviewed crypto membership and recipient-bound wrapped-key transfer. Use `shared/helpers/provisioning-view.mjs`; no ordering pause or native-prepared prefix exists. SQL permission grants remain ordinary transactions, separate from crypto membership.
+`worker.mjs` also starts the one admission controller (`admitBrowserSession`) and returns its `extensions` with the session. A signed-in browser waits until an online member admits it and wraps its keys; mount `shared/helpers/devices-view.mjs` (`mountDevices({root, session, pageUrl})`) for the waiting banner, devices and agents list, New device notices, Remove device, pending Approve, the strict-mode switch, invites and invite-link redemption. It re-renders each coherent `{topic:'admission', state}` notice; actions run in the owner. No ordering pause exists. SQL permission grants remain ordinary transactions, separate from crypto membership.
 
 ### Match an application-owned palette
 
@@ -325,3 +325,33 @@ with **zero durable Chronolog writes**. Reserve Chronolog commands for durable u
 decisions, chat turns, and retained observations.
 
 These are optional presentation/live-signal consumers, not a second persistence framework. Bind them to current coherent snapshots and explicitly approved agent scopes. No agent program is necessary for independent browser authoring.
+
+## Real-time WebRTC calls, media & binary streams
+
+For video/audio calls, screen sharing, or low-latency binary streams (`app:*` DataChannels) over Chronolog's existing direct WebRTC peer links, start from `templates/call/` or compose `shared/ui/call-room.mjs`, `shared/media/call-room.mjs`, and `shared/media/call-agent.mjs` (see the full [WebRTC media cookbook](WEBRTC_MEDIA.md)):
+
+```js
+// Browser: drop-in call UI with hair-check lobby, video grid, screen share,
+// continuous on-device per-person captions, and explicit agent audio consent.
+import { mountCallRoom } from '../../shared/ui/call-room.mjs';
+const ui = await mountCallRoom({
+  runtime: window.tendril, session, attachment, peers: window.tendril.host.peers,
+  container: document.querySelector('#call-root'),
+  transcription: 'model', persistTranscript: false, agentAudio: 'ask',
+});
+
+// Browser or native: custom low-latency binary stream over the same peer link.
+attachment.onPeer(peer => {
+  const dc = peer.openDataChannel('app:telemetry', { ordered: false, maxRetransmits: 0 });
+  peer.onDataChannel(incoming => { /* handle remote app:* DataChannels */ });
+});
+
+// Native agent: follow per-person transcripts (default) or opt into raw audio.
+import { createCallAgent } from '../../shared/media/call-agent.mjs';
+const agent = createCallAgent({
+  session, callId: 'main', handle: 'notetaker', mode: 'transcript',
+  onUtterance: u => console.log(`[${u.displayName}] ${u.text}`),
+});
+```
+
+Direct peer links negotiate mid-session RTP tracks and `app:*` DataChannels in-band via W3C Perfect Negotiation; peers on the encrypted WebSocket relay keep CRDT sync, chat, and on-device per-person transcripts running while honestly reporting A/V media unavailable.

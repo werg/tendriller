@@ -34,5 +34,6 @@ test('the host control client refuses raw application data before HTTP and expos
   for (const input of [{ facet: 'database', action: 'submit', payload: { program: 'not host data' } }, { record: '00', applicationData: [] }, { record: 'AA' }]) await assert.rejects(client.participant(input), { code: 'authority_record_invalid' });
   assert.equal(requests, 0);
   for (const name of ['submit', 'range', 'coverage', 'selectGeneration', 'administerGeneration']) assert.equal(client[name], undefined);
-  assert.equal(typeof client.prepare, 'function'); assert.equal(typeof client.enroll, 'function'); assert.equal(typeof client.grant, 'function');
+  assert.equal(typeof client.prepare, 'function'); assert.equal(typeof client.enroll, 'function'); assert.equal(client.grant, undefined);
+  for (const name of ['enrollAgent', 'initialize', 'membership', 'admissions', 'wrap', 'wraps']) assert.equal(typeof client[name], 'function');
 });

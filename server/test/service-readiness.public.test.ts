@@ -3,7 +3,7 @@ import { expect, it } from 'vitest';
 import { CORE_RELEASE } from '../../contract/index.mjs';
 import type { Env } from '../src/env';
 import { route } from '../src/router';
-import { createAgent, testPublicKey } from './helpers';
+import { createAgent, testPublicKey, testWrapKey } from './helpers';
 import { BASE } from './helpers';
 
 const read = (settings: Env = env, method = 'GET') => route(new Request(new URL('/api/readiness', settings.PUBLIC_BASE), { method }), settings);
@@ -85,7 +85,7 @@ it('rechecks service state at creation after a previously successful preflight',
   await env.ACCOUNTS.prepare("UPDATE service_state SET mode='creation_paused' WHERE id=1").run();
   try {
     for (const [path, body, headers] of [
-      ['/api/agents', { owner: 'readiness-test@example.com', handle: 'readiness', publicKey: testPublicKey() }, {}],
+      ['/api/agents', { owner: 'readiness-test@example.com', handle: 'readiness', publicKey: testPublicKey(), wrapKey: testWrapKey() }, {}],
       ['/api/agent/pages', {}, { Authorization: `Bearer ${agent.token}` }],
     ] as const) {
       const response = await route(new Request(BASE + path, { method: 'POST',

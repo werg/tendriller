@@ -1,11 +1,12 @@
 /** Account-level maintenance agents: self-chosen @handle + bio, credentials, page grants, and service-origin agent API. */
 import type { Env } from './env';
 import { AGENT_HEADER, AGENT_SCOPES, AGENT_SCOPES_HEADER, agentScopes, type AgentScope } from './access';
-import { AGENT_HANDLE_RE, AGENT_PUBLIC_KEY_RE, validAgentBio, validAgentHandle } from './agent-grants';
+import { AGENT_HANDLE_RE, AGENT_PUBLIC_KEY_RE, AGENT_WRAP_KEY_RE, validAgentBio, validAgentHandle } from './agent-grants';
 import { HttpError, isPlainObject, json, readJson } from './http';
 import { AGENT_ID_RE, AGENT_TOKEN_RE, newAgentId, newAgentToken, newTendrilId, randomB32, sha256Hex, TENDRIL_ID_RE } from './ids';
-import { AGENT_JOIN_CODE_TTL, AGENT_PAGE_LIST_LIMIT, DAY, RESIDENT_LIMIT } from './limits';
-import { checkCreationIp, requireCreationOpen, reserveCreationIp } from './service-state';
+import { AGENT_JOIN_CODE_TTL, AGENT_PAGE_LIST_LIMIT, DAY, PAGE_LIMIT, RESIDENT_LIMIT } from './limits';
+import { accountLimits, checkCreationIp, requireCreationOpen, reserveCreationIp } from './service-state';
+import { broadcastSummary, getAgentVersions, recordAgentVersions } from './broadcasts';
 import { publicBase } from './urls';
 import { joinBlurb } from './sharing';
 
@@ -19,15 +20,15 @@ const UNCLAIMED_AGENT_RETENTION = 7 * DAY;
 
 export interface AgentRow {
   id: string; account_id: string | null; owner_email: string | null; handle: string; bio: string; public_key: string;
-  created_at: number; claimed_at: number | null;
+  wrap_key: string; created_at: number; claimed_at: number | null;
 }
 export interface GrantedAgent extends AgentRow { scopes: AgentScope[] | null }
 
-const AGENT_COLUMNS = 'a.id,a.account_id,a.owner_email,a.handle,a.bio,a.public_key,a.created_at,a.claimed_at';
+const AGENT_COLUMNS = 'a.id,a.account_id,a.owner_email,a.handle,a.bio,a.public_key,a.wrap_key,a.created_at,a.claimed_at';
 
 export function agentView(row: AgentRow) {
   return {
-    id: row.id, handle: row.handle, bio: row.bio, public_key: row.public_key, claimed: row.account_id !== null,
+    id: row.id, handle: row.handle, bio: row.bio, public_key: row.public_key, wrap_key: row.wrap_key, claimed: row.account_id !== null,
     ...(row.account_id === null ? { owner_email: row.owner_email } : {}), created_at: row.created_at, claimed_at: row.claimed_at,
   };
 }
@@ -35,6 +36,11 @@ export function agentView(row: AgentRow) {
 export function validPublicKey(value: unknown): string {
   if (typeof value !== 'string' || !AGENT_PUBLIC_KEY_RE.test(value))
     throw new HttpError(400, 'invalid_public_key', 'publicKey must be a base64url (unpadded) Ed25519 public key.');
+  return value;
+}
+export function validWrapKey(value: unknown): string {
+  if (typeof value !== 'string' || !AGENT_WRAP_KEY_RE.test(value))
+    throw new HttpError(400, 'invalid_wrap_key', 'wrapKey must be the agent\u2019s X25519 key-wrap public key as 64 lowercase hex characters.');
   return value;
 }
 function validOwner(value: unknown): string {
@@ -123,6 +129,18 @@ export async function routeAgentApi(req: Request, env: Env, url: URL): Promise<R
     if (req.method === 'DELETE') { await revokeAgent(env, agent.id); return new Response(null, { status: 204 }); }
     throw new HttpError(405, 'method_not_allowed');
   }
+  if (path === '/api/agent/versions') {
+    const agent = await authenticateAgentRequest(env, req);
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      return json({ agent_id: agent.id, versions: await getAgentVersions(env, agent.id) });
+    }
+    if (req.method === 'PUT' || req.method === 'POST') {
+      const input = await body(req, 4096);
+      const saved = await recordAgentVersions(env, agent.id, input);
+      return json({ agent_id: agent.id, versions: saved, updated_at: Date.now() });
+    }
+    throw new HttpError(405, 'method_not_allowed');
+  }
   if (path === '/api/agent/hub') {
     if (req.method !== 'GET' || req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') throw new HttpError(426, 'websocket_required');
     if (!socketProtocols(req).includes(HUB_PROTOCOL)) throw new HttpError(400, 'hub_protocol_required', `Use the ${HUB_PROTOCOL} subprotocol with the agent token`);
@@ -161,13 +179,13 @@ async function createUnclaimedAgent(req: Request, env: Env): Promise<Response> {
     throw new HttpError(429, 'rate_limited', 'Creation rate limit reached');
   await checkCreationIp(env, req);
   const input = await body(req);
-  const owner = validOwner(input.owner), handle = validAgentHandle(input.handle), bio = validAgentBio(input.bio), publicKey = validPublicKey(input.publicKey);
+  const owner = validOwner(input.owner), handle = validAgentHandle(input.handle), bio = validAgentBio(input.bio), publicKey = validPublicKey(input.publicKey), wrapKey = validWrapKey(input.wrapKey);
   await pruneUnclaimed(env);
   const token = newAgentToken(), now = Date.now();
-  const row: AgentRow = { id: newAgentId(), account_id: null, owner_email: owner, handle, bio, public_key: publicKey, created_at: now, claimed_at: null };
-  const inserted = await env.ACCOUNTS.prepare(`INSERT INTO agents(id,account_id,owner_email,handle,bio,token_hash,public_key,created_at)
-    SELECT ?,NULL,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM agents WHERE account_id IS NULL AND owner_email=? AND revoked_at IS NULL) < ? RETURNING id`)
-    .bind(row.id, owner, handle, bio, await sha256Hex(token), publicKey, now, owner, UNCLAIMED_AGENT_CAPACITY).first();
+  const row: AgentRow = { id: newAgentId(), account_id: null, owner_email: owner, handle, bio, public_key: publicKey, wrap_key: wrapKey, created_at: now, claimed_at: null };
+  const inserted = await env.ACCOUNTS.prepare(`INSERT INTO agents(id,account_id,owner_email,handle,bio,token_hash,public_key,wrap_key,created_at)
+    SELECT ?,NULL,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM agents WHERE account_id IS NULL AND owner_email=? AND revoked_at IS NULL) < ? RETURNING id`)
+    .bind(row.id, owner, handle, bio, await sha256Hex(token), publicKey, wrapKey, now, owner, UNCLAIMED_AGENT_CAPACITY).first();
   if (!inserted) throw new HttpError(429, 'agent_capacity', 'Too many unclaimed agents for this owner. Ask the owner to sign in or add the agent from their dashboard.');
   return json({
     agent: agentView(row), token, service: publicBase(env),
@@ -178,7 +196,7 @@ async function createUnclaimedAgent(req: Request, env: Env): Promise<Response> {
 async function joinAgent(req: Request, env: Env): Promise<Response> {
   if (env.AUTH_RATE && !(await env.AUTH_RATE.limit({ key: 'agent-join:' + ip(req) })).success) throw new HttpError(429, 'rate_limited');
   const input = await body(req);
-  const handle = validAgentHandle(input.handle), bio = validAgentBio(input.bio), publicKey = validPublicKey(input.publicKey);
+  const handle = validAgentHandle(input.handle), bio = validAgentBio(input.bio), publicKey = validPublicKey(input.publicKey), wrapKey = validWrapKey(input.wrapKey);
   const code = typeof input.code === 'string' ? input.code.trim() : '';
   const fail = async () => {
     if (env.FAILED_AUTH_RATE && !(await env.FAILED_AUTH_RATE.limit({ key: ip(req) })).success)
@@ -192,10 +210,10 @@ async function joinAgent(req: Request, env: Env): Promise<Response> {
     results = await env.ACCOUNTS.batch([
       env.ACCOUNTS.prepare(`UPDATE agent_join_codes SET used_at=? WHERE code_hash=? AND used_at IS NULL AND expires_at>?
         AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=agent_join_codes.account_id AND a.suspended_at IS NULL AND a.deleting_at IS NULL)`).bind(now, hash, now),
-      env.ACCOUNTS.prepare(`INSERT INTO agents(id,account_id,owner_email,handle,bio,token_hash,public_key,created_at,claimed_at)
-        SELECT ?,account_id,NULL,?,?,?,?,?,? FROM agent_join_codes WHERE code_hash=? AND used_at=?
+      env.ACCOUNTS.prepare(`INSERT INTO agents(id,account_id,owner_email,handle,bio,token_hash,public_key,wrap_key,created_at,claimed_at)
+        SELECT ?,account_id,NULL,?,?,?,?,?,?,? FROM agent_join_codes WHERE code_hash=? AND used_at=?
           AND (SELECT COUNT(*) FROM agents x WHERE x.account_id=agent_join_codes.account_id AND x.revoked_at IS NULL) < ?
-        RETURNING account_id`).bind(id, handle, bio, await sha256Hex(token), publicKey, now, now, hash, now, AGENT_CAPACITY),
+        RETURNING account_id`).bind(id, handle, bio, await sha256Hex(token), publicKey, wrapKey, now, now, hash, now, AGENT_CAPACITY),
     ]);
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw new HttpError(409, 'agent_handle_in_use', `Handle @${handle} is already in use in this account. Choose another handle.`);
@@ -204,7 +222,7 @@ async function joinAgent(req: Request, env: Env): Promise<Response> {
   if (!results[0].meta.changes) throw await fail();
   const account = (results[1].results[0] as { account_id?: string } | undefined)?.account_id;
   if (!account) throw new HttpError(429, 'agent_capacity', 'This account already has the maximum number of agents.');
-  const row: AgentRow = { id, account_id: account, owner_email: null, handle, bio, public_key: publicKey, created_at: now, claimed_at: now };
+  const row: AgentRow = { id, account_id: account, owner_email: null, handle, bio, public_key: publicKey, wrap_key: wrapKey, created_at: now, claimed_at: now };
   return json({
     agent: agentView(row), token, service: publicBase(env),
     next_step: 'Store this token privately. The owner grants existing pages from their dashboard; pages you create are granted to you automatically.',
@@ -232,12 +250,18 @@ async function updateAgentProfile(req: Request, env: Env, agent: GrantedAgent) {
 }
 
 async function agentSelf(env: Env, agent: GrantedAgent) {
-  const row = await env.ACCOUNTS.prepare(`SELECT (SELECT COUNT(*) FROM agent_grants WHERE agent_id=?) AS grants,
-    (SELECT email FROM accounts WHERE id=?) AS email`).bind(agent.id, agent.account_id).first<{ grants: number; email: string | null }>();
+  const [row, versions, broadcasts] = await Promise.all([
+    env.ACCOUNTS.prepare(`SELECT (SELECT COUNT(*) FROM agent_grants WHERE agent_id=?) AS grants,
+      (SELECT email FROM accounts WHERE id=?) AS email`).bind(agent.id, agent.account_id).first<{ grants: number; email: string | null }>(),
+    getAgentVersions(env, agent.id),
+    broadcastSummary(env),
+  ]);
   return {
     agent: agentView(agent),
     account: agent.account_id === null ? { claimed: false, owner_email: agent.owner_email } : { claimed: true, email: row?.email ?? null },
     grants: row?.grants ?? 0,
+    ...(versions ? { versions } : {}),
+    broadcasts,
     service: publicBase(env),
   };
 }
@@ -308,8 +332,11 @@ async function createAgentPage(req: Request, env: Env, agent: GrantedAgent): Pro
             .bind(id, claimed, claimed ? null : agent.owner_email, req.headers.get('CF-Connecting-IP'), now, claimed ? now : null, 'ad_hoc').run();
         } catch (err) {
           const message = String(err);
-          if (message.includes('account_tendrils_full')) throw new HttpError(429, 'quota', 'Account tendril limit reached', { limit: 20 });
-          if (message.includes('account_residents_full')) throw new HttpError(429, 'quota', 'Account resident tendril limit reached', { limit: RESIDENT_LIMIT });
+          if (message.includes('account_tendrils_full') || message.includes('account_residents_full')) {
+            const limits = await accountLimits(env);
+            if (message.includes('account_tendrils_full')) throw new HttpError(429, 'quota', 'Account tendril limit reached', { limit: limits.pages ?? PAGE_LIMIT });
+            throw new HttpError(429, 'quota', 'Account resident tendril limit reached', { limit: limits.residents ?? RESIDENT_LIMIT });
+          }
           throw err;
         }
         indexed = true;
@@ -318,7 +345,7 @@ async function createAgentPage(req: Request, env: Env, agent: GrantedAgent): Pro
           headers: {
             'x-tendril-id': id, 'Content-Type': 'application/json', [AGENT_HEADER]: agent.id,
             'x-tendril-agent-handle': agent.handle, 'x-tendril-agent-bio': encodeURIComponent(agent.bio),
-            'x-tendril-agent-key': agent.public_key,
+            'x-tendril-agent-key': agent.public_key, 'x-tendril-agent-wrap-key': agent.wrap_key,
             ...(claimed ? { 'x-account-id': claimed } : {}),
           },
           body: doBody,
@@ -388,9 +415,9 @@ async function claimAgentPages(env: Env, agentId: string, ownerEmail: string, si
   }
 }
 
-export interface AccountAgent { id: string; handle: string; bio: string; public_key: string; created_at: number; claimed_at: number | null; grants: number }
+export interface AccountAgent { id: string; handle: string; bio: string; public_key: string; wrap_key: string; created_at: number; claimed_at: number | null; grants: number }
 export async function listAccountAgents(env: Env, accountId: string): Promise<AccountAgent[]> {
-  return (await env.ACCOUNTS.prepare(`SELECT a.id,a.handle,a.bio,a.public_key,a.created_at,a.claimed_at,
+  return (await env.ACCOUNTS.prepare(`SELECT a.id,a.handle,a.bio,a.public_key,a.wrap_key,a.created_at,a.claimed_at,
     (SELECT COUNT(*) FROM agent_grants g WHERE g.agent_id=a.id) AS grants FROM agents a
     WHERE a.account_id=? AND a.revoked_at IS NULL ORDER BY a.created_at, a.id`).bind(accountId).all<AccountAgent>()).results;
 }
@@ -436,7 +463,7 @@ export async function setAgentGrant(env: Env, accountId: string, agentId: string
   if (!TENDRIL_ID_RE.test(pageId) || !await env.ACCOUNTS.prepare("SELECT 1 FROM tendrils WHERE id=? AND owner_account=? AND state='active'").bind(pageId, accountId).first())
     throw new HttpError(404, 'not_found', 'No such page');
   const res = granted
-    ? await pageGrantCall(env, pageId, 'put', { agentId, handle: agent.handle, bio: agent.bio, publicKey: agent.public_key, scopes: [...AGENT_SCOPES] }, accountId)
+    ? await pageGrantCall(env, pageId, 'put', { agentId, handle: agent.handle, bio: agent.bio, publicKey: agent.public_key, wrapKey: agent.wrap_key, scopes: [...AGENT_SCOPES] }, accountId)
     : await pageGrantCall(env, pageId, 'delete', { agentId }, accountId);
   await res.body?.cancel();
 }
@@ -474,27 +501,27 @@ async function disconnectAgent(env: Env, agentId: string, reason: string): Promi
  * MCP `register_agent`: an OAuth-linked assistant registers a workspace agent with a self-chosen
  * `@handle`, optional `bio`, and signing key. Re-registering the same handle rotates token & key.
  */
-export async function registerAccountAgent(env: Env, accountId: string, rawHandle: unknown, rawKey: unknown, rawBio?: unknown) {
-  const handle = validAgentHandle(rawHandle), bio = validAgentBio(rawBio), publicKey = validPublicKey(rawKey);
+export async function registerAccountAgent(env: Env, accountId: string, rawHandle: unknown, rawKey: unknown, rawWrapKey: unknown, rawBio?: unknown) {
+  const handle = validAgentHandle(rawHandle), bio = validAgentBio(rawBio), publicKey = validPublicKey(rawKey), wrapKey = validWrapKey(rawWrapKey);
   const token = newAgentToken(), hash = await sha256Hex(token), now = Date.now();
   const existing = await env.ACCOUNTS.prepare(`SELECT ${AGENT_COLUMNS} FROM agents a WHERE a.account_id=? AND lower(a.handle)=lower(?) AND a.revoked_at IS NULL`)
     .bind(accountId, handle).first<AgentRow>();
   if (existing) {
-    await env.ACCOUNTS.prepare('UPDATE agents SET token_hash=?, public_key=?, bio=? WHERE id=? AND revoked_at IS NULL').bind(hash, publicKey, bio, existing.id).run();
+    await env.ACCOUNTS.prepare('UPDATE agents SET token_hash=?, public_key=?, wrap_key=?, bio=? WHERE id=? AND revoked_at IS NULL').bind(hash, publicKey, wrapKey, bio, existing.id).run();
     await disconnectAgent(env, existing.id, 'Agent credential rotated');
     const grants = await env.ACCOUNTS.prepare(`SELECT g.page_id,g.scopes FROM agent_grants g JOIN tendrils t ON t.id=g.page_id
       WHERE g.agent_id=? AND t.owner_account=?`).bind(existing.id, accountId).all<{ page_id: string; scopes: string }>();
     await Promise.all(grants.results.map(grant => pageGrantCall(env, grant.page_id, 'put',
-      { agentId: existing.id, handle, bio, publicKey, scopes: agentScopes(JSON.parse(grant.scopes)) }, accountId)
+      { agentId: existing.id, handle, bio, publicKey, wrapKey, scopes: agentScopes(JSON.parse(grant.scopes)) }, accountId)
       .then(r => r.body?.cancel()).catch(error => console.error('Agent key re-mirror failed', error))));
-    return { agent: agentView({ ...existing, handle, bio, public_key: publicKey }), token, rotated: true, service: publicBase(env) };
+    return { agent: agentView({ ...existing, handle, bio, public_key: publicKey, wrap_key: wrapKey }), token, rotated: true, service: publicBase(env) };
   }
-  const row: AgentRow = { id: newAgentId(), account_id: accountId, owner_email: null, handle, bio, public_key: publicKey, created_at: now, claimed_at: now };
+  const row: AgentRow = { id: newAgentId(), account_id: accountId, owner_email: null, handle, bio, public_key: publicKey, wrap_key: wrapKey, created_at: now, claimed_at: now };
   let inserted: unknown;
   try {
-    inserted = await env.ACCOUNTS.prepare(`INSERT INTO agents(id,account_id,owner_email,handle,bio,token_hash,public_key,created_at,claimed_at)
-      SELECT ?,?,NULL,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM agents WHERE account_id=? AND revoked_at IS NULL) < ? RETURNING id`)
-      .bind(row.id, accountId, handle, bio, hash, publicKey, now, now, accountId, AGENT_CAPACITY).first();
+    inserted = await env.ACCOUNTS.prepare(`INSERT INTO agents(id,account_id,owner_email,handle,bio,token_hash,public_key,wrap_key,created_at,claimed_at)
+      SELECT ?,?,NULL,?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM agents WHERE account_id=? AND revoked_at IS NULL) < ? RETURNING id`)
+      .bind(row.id, accountId, handle, bio, hash, publicKey, wrapKey, now, now, accountId, AGENT_CAPACITY).first();
   } catch (error) {
     if (String(error).includes('UNIQUE')) throw new HttpError(409, 'agent_handle_in_use', 'Retry register_agent; another registration used this handle concurrently.');
     throw error;

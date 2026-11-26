@@ -17,7 +17,7 @@ function host(mode = 'open', build = source.build) {
     calls.push(url);
     assert.equal(options.method ?? 'GET', 'GET'); assert.equal(options.redirect, 'error');
     assert.equal(options.credentials, 'omit'); assert.equal(options.body, undefined);
-    if (url === STAGING_ORIGIN + '/api/service') return Response.json({ contract: 3, core_release: CORE_RELEASE, limits: {} });
+    if (url === STAGING_ORIGIN + '/api/service') return Response.json({ contract: 3, core_release: CORE_RELEASE, limits: {}, attestationKey: 'ab'.repeat(32) });
     assert.equal(url, STAGING_ORIGIN + '/api/readiness');
     return Response.json({ schemaVersion: 1, serviceOrigin: STAGING_ORIGIN, environment: { id: STAGING_ORIGIN, kind: 'deployment', label: 'staging' },
       build, mode, creation: { available: mode === 'open', code: mode === 'open' ? null : mode === 'unavailable' ? 'unavailable' : 'creation_paused', message: mode, nextAction: 'Ask the operator to restore readiness.' },

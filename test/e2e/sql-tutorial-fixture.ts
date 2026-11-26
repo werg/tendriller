@@ -14,7 +14,6 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { randomUUID } from 'node:crypto';
 import { expect } from '@playwright/test';
 import { Agent, WebSocket, getGlobalDispatcher, setGlobalDispatcher } from 'undici';
 import { TUTORIAL_FILES } from '../../scripts/onboarding.mjs';
@@ -79,7 +78,7 @@ export async function prepareSqlTutorial(consumer: string, engineDirectory: stri
     await cp(resolve(consumer, 'node_modules'), modules, { recursive: true, dereference: true });
     await cp(resolve('dist/sdk'), join(modules, '@tendriller/core'), { recursive: true, dereference: true });
     await cp(resolve('dist/tools'), join(modules, '@tendriller/tools'), { recursive: true, dereference: true });
-    // The pinned authority package matching the session's kernel source (page provisioning imports it).
+    // The pinned authority package matching the session's kernel source (publication signing imports it).
     await cp(resolve('node_modules/@chronolog/authority'), join(modules, '@chronolog/authority'), { recursive: true, dereference: true });
     const load = (path: string) => import(pathToFileURL(join(workspaceRoot, path)).href);
     const tools = await load('node_modules/@tendriller/tools/lib/workspace.mjs');
@@ -100,10 +99,11 @@ export async function prepareSqlTutorial(consumer: string, engineDirectory: stri
     const credential = JSON.parse(await readFile(join(workspaceRoot, '.tendriller/agent/credential.json'), 'utf8'));
     const handle: PageHandle = { id: created.id, page_url: created.page_url, api: `${SERVICE}/api/agent/pages/${created.id}`,
       token: credential.token, agent: credential.agent, application: saved.application };
-    // Host preparation is metadata only: no page device, schema, data root or epoch key is created. It also places
-    // the package's exact browser engine assets in pages/stock/engine/; they must be the verified ones under test.
-    const prepared = await (await pageModule('setup.mjs')).initializePage(context);
-    expect(prepared).toMatchObject({ prepared: true, initialized: false });
+    // Browser-first preparation is metadata only: no page device, schema, data root or epoch key is created; the
+    // owner's first browser creates the page data. It also places the package's exact browser engine assets in
+    // pages/stock/engine/; they must be the verified ones under test.
+    const prepared = await (await pageModule('setup.mjs')).initializePage(context, { browserFirst: true });
+    expect(prepared).toMatchObject({ prepared: true, creator: 'browser', dataInitialized: false });
     const engineFiles = ['manifest.json', 'sqlite3.mjs', 'sqlite3.wasm', 'sqlite3-opfs-async-proxy.js'];
     for (const name of engineFiles) {
       const installed = await readFile(join(context.page.source, 'engine', name)), verified = await readFile(resolve(engineDirectory, name));
@@ -126,11 +126,6 @@ export async function prepareSqlTutorial(consumer: string, engineDirectory: stri
       throw Error('Host did not retain the exact signed tutorial graph and host version mapping');
     const publication = served.publication, publicationVersion = served.version;
 
-    const runStarter = async (action: string, value?: unknown) => {
-      const file = value === undefined ? [] : [join(directory, `${action}-${randomUUID()}.json`)];
-      if (file.length) await writeFile(file[0], JSON.stringify(value), { mode: 0o600 });
-      return starter.run(action, [SLUG, ...file]);
-    };
     const pageDirectory = context.page.directory, devicePath = context.devicePath;
     const materialized = context.privatePath('materialized.sqlite');
     async function exists(path: string) {
@@ -146,16 +141,9 @@ export async function prepareSqlTutorial(consumer: string, engineDirectory: stri
     return {
       handle, publication, publicationVersion,
       sessionProvenance: JSON.parse(await readFile(join(modules, '@chronolog/peer-session/provenance.json'), 'utf8')),
-      // The native participant is optional and never receives keys implicitly. These are the starter's explicit
-      // commands for the page's shared signer: account-bound enrollment proof, a public provisioning request and
-      // recipient-bound package import, each through the workspace's own `run(action, [slug, FILE])`.
+      // The native participant is optional. On this browser-first page it holds no keys until an online member
+      // admits it from the host's signed attestation for its creator grant and wraps the page keys to it.
       nativePublicKey: context.signer.publicKey as string,
-      async signEnrollment(challenge: unknown) { return runStarter('sign-enrollment', challenge); },
-      async provisioningRequest() { return runStarter('provisioning-request'); },
-      async importProvisioning(value: unknown) {
-        if (owned) throw Error('Stop the page owner before importing keys; it owns the page device.');
-        return runStarter('import-provisioning', value);
-      },
       // This page's part of the agent program: pages/stock/agent.mjs openPage(context).
       async start() {
         if (owned) throw Error('Stop the current page owner before starting it again.');

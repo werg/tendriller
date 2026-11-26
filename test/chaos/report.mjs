@@ -42,8 +42,8 @@ export function buildReport({ seed, config, golden, harness, browserVersion, sta
     // No "selected history changed" notice exists; these are excluded
     // selected operations or not-current live views seen in tabs (empty = none observed).
     recoveries: outcome.recoveries ?? [],
-    // Explicit browser key provisioning grants performed by the harness owner device.
-    provisioning: outcome.provisioning ?? [],
+    // Automatic browser admissions (by an online member, or by the reopened harness owner profile).
+    admissions: outcome.admissions ?? [],
     messages: outcome.messages,
     snapshots: outcome.snapshots,
     evidence,

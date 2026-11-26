@@ -94,10 +94,15 @@ export function mountUtility(api: RuntimeApi): () => void {
     .agent-pills{display:flex;gap:5px;flex-wrap:wrap;align-items:center}
     .agent-pill{font-size:11px;font-weight:600;padding:2px 7px;border-radius:999px;background:#8882}
     .agent-pill.primary{background:#1e644a22;color:#1e644a}.agent-pill.online{background:#1f8b4c22;color:#1f8b4c}.agent-pill.warn{background:#d9822b22;color:#9a5b13}
+    .agent-pill.danger{background:#b4232322;color:#b42323}
+    .broadcast-card{border-left:4px solid #1e644a}.broadcast-card.warn{border-left-color:#d9822b}.broadcast-card.danger{border-left-color:#b42323}
+    .broadcast-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+    .broadcast-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px}.broadcast-actions a,.broadcast-actions button{min-height:36px;padding:6px 10px;font-size:12px}
+    .broadcast-actions .primary{width:auto;margin:0;flex:1;text-align:center}.broadcast-actions .secondary{width:auto}
     .agent-primary-row{display:grid;gap:6px;margin:8px 0 12px}.agent-primary-row select{font:inherit;font-size:13px;padding:7px 9px;border:1px solid #8886;border-radius:8px;background:Canvas;color:CanvasText;width:100%}
     .agent-links{display:grid;gap:6px;margin-top:8px}
     .message{font-size:13px;margin:10px 0 0}.suggestion p{margin:0 0 8px}.suggestion strong{font-size:16px}.actions{display:flex;align-items:center;gap:6px}.actions .primary{width:auto;margin:0;flex:1}.actions button{white-space:nowrap}
-    @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}.share-role,.agent-pill.primary{background:#a6dfbd22;color:#a6dfbd}.agent-pill.online{background:#4ade8022;color:#86efac}.agent-pill.warn{background:#fbbf2422;color:#fcd34d}.share-row-actions .revoke{color:#fca5a5;border-color:#fca5a555}}
+    @media(prefers-color-scheme:dark){.primary{background:#a6dfbd;color:#123b2b}.primary:hover{background:#bcebcf}.share-role,.agent-pill.primary{background:#a6dfbd22;color:#a6dfbd}.agent-pill.online{background:#4ade8022;color:#86efac}.agent-pill.warn{background:#fbbf2422;color:#fcd34d}.agent-pill.danger{background:#f8717122;color:#fca5a5}.share-row-actions .revoke{color:#fca5a5;border-color:#fca5a555}}
   `;
   const element = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
     const node = document.createElement(tag);
@@ -815,13 +820,62 @@ export function mountUtility(api: RuntimeApi): () => void {
   if (api.identity.version > 0) links.append(latest);
   links.append(manage); panel.append(links);
 
+  // Signed system-wide broadcasts matched locally for this page (e.g. security advisories, upgrade notices, maintenance).
+  const broadcastCard = element("aside", undefined, "card broadcast-card");
+  broadcastCard.hidden = true;
+  broadcastCard.setAttribute("aria-label", "System notice");
+  broadcastCard.setAttribute("role", "status");
+  broadcastCard.setAttribute("aria-live", "polite");
+  const renderBroadcastCard = () => {
+    if (disposed) return;
+    const activeBroadcasts = api.broadcasts?.active?.() ?? [];
+    if (!activeBroadcasts.length) {
+      broadcastCard.hidden = true;
+      return;
+    }
+    // Show the highest-severity (then newest) undismissed broadcast in the floating card.
+    const rank = { critical: 4, urgent: 3, recommended: 2, info: 1 } as const;
+    const sorted = [...activeBroadcasts].sort((a, b) => (rank[b.severity] - rank[a.severity]) || (b.seq - a.seq));
+    const current = sorted[0]!;
+    const tone = current.severity === "critical" || current.severity === "urgent" ? "danger"
+      : current.severity === "recommended" ? "warn" : "";
+    broadcastCard.className = `card broadcast-card${tone ? " " + tone : ""}`;
+    broadcastCard.replaceChildren();
+    const head = element("div", undefined, "broadcast-head");
+    const pillClass = tone ? `agent-pill ${tone}` : "agent-pill primary";
+    head.append(element("span", `${current.kind} · ${current.severity}`, pillClass));
+    if (sorted.length > 1) head.append(element("span", `+${sorted.length - 1} more`, "note"));
+    broadcastCard.append(head, element("strong", current.title), element("p", current.summary, "note"));
+    if (current.action?.requires_republish) {
+      broadcastCard.append(element("p", "Reconnect an agent from your dashboard to rebuild and republish this page.", "note"));
+    } else if (current.action?.requires_tab_reload) {
+      broadcastCard.append(element("p", "Close all tabs of this page and reopen it to apply the update.", "note"));
+    }
+    const row = element("div", undefined, "broadcast-actions");
+    if (current.docs_url) {
+      const detailsLink = element("a", "Details", "primary");
+      detailsLink.href = current.docs_url;
+      detailsLink.target = "_blank";
+      detailsLink.rel = "noopener";
+      row.append(detailsLink);
+    }
+    if (current.dismissible) {
+      const dismissBroadcast = button("Dismiss", "secondary");
+      dismissBroadcast.addEventListener("click", () => { api.broadcasts?.dismiss?.(current.id); });
+      row.append(dismissBroadcast);
+    }
+    if (row.childNodes.length) broadcastCard.append(row);
+    broadcastCard.hidden = false;
+  };
+  const offBroadcasts = api.broadcasts?.onChange?.(renderBroadcastCard) ?? (() => {});
+
   const suggestion = element("aside", undefined, "card suggestion"); suggestion.hidden = true;
   suggestion.setAttribute("aria-label", "Home screen suggestion");
   const pitch = element("p"); pitch.append(element("strong", "Keep this page one tap away"));
   const suggestAdd = button("Show me how", "primary"), dismiss = button("Not now");
   const actions = element("div", undefined, "actions"); actions.append(suggestAdd, dismiss);
   suggestion.append(pitch, element("p", "Add a shortcut to your Home Screen."), actions);
-  root.append(style, update, suggestion, panel, nav);
+  root.append(style, broadcastCard, update, suggestion, panel, nav);
 
   let engaged = false, suggested = false, suppressed = false, installing = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1068,14 +1122,14 @@ export function mountUtility(api: RuntimeApi): () => void {
   const observer = new MutationObserver(attach);
   const offSensors = api.sensors.on(renderSensors), offInstallation = api.installation.on(renderInstallation);
   const offErrors = api.errors?.on?.(renderDiagnostics) ?? (() => {});
-  applyCorner(); renderInstallation(); renderSensors(); renderDiagnostics(); attach(); observer.observe(document, { childList: true, subtree: true });
+  applyCorner(); renderInstallation(); renderSensors(); renderDiagnostics(); renderBroadcastCard(); attach(); observer.observe(document, { childList: true, subtree: true });
   const offGeometry = observeUtilityBar(nav);
   const offViewport = observeVisualViewport(({ keyboardHeight }) => {
     lastKeyboardHeight = keyboardHeight;
     updateKeyboardLayout();
   });
   return () => {
-    disposed = true; stopFollowing(); voiceControls?.dispose(); transportInspector.close(); offUpdate(); offAgents(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
+    disposed = true; stopFollowing(); voiceControls?.dispose(); transportInspector.close(); offUpdate(); offAgents(); offBroadcasts(); cancelSuggestion(); observer.disconnect(); offGeometry(); offViewport(); offSensors(); offInstallation(); offErrors();
     document.removeEventListener("pointerup", interact); document.removeEventListener("keydown", keydown);
     document.removeEventListener("focusin", updateKeyboardLayout); document.removeEventListener("focusout", updateKeyboardLayout);
     window.removeEventListener("pagehide", hide); window.removeEventListener("pageshow", show); host.remove();

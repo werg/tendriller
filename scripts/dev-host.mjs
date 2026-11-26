@@ -11,6 +11,7 @@ import { parseArgs } from 'node:util';
 import { prepareDevHostRelease } from './dev-host-release.mjs';
 import { FIRST_APP_WEBSOCKET_PROXY_WORKER } from './first-app-websocket-host.mjs';
 import { packedEngineModules } from './packed-engine-modules.mjs';
+import { createAttestationKey } from './attestation-key.mjs';
 
 const require = createRequire(import.meta.url);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -23,7 +24,7 @@ const usage = `Usage: npm run dev:host -- --release FULL_SOURCE_SHA [options]
   --headless        With --open, run Chromium without a window for automation
   --artifacts DIR   Read a complete manifest-bound release from DIR instead of GitHub
 
-Requires a source release with a sealed deployment and storage schema 13.
+Requires a source release with a sealed deployment and storage schema 14.
 Uses the release's packed Worker, public assets and first-app kit without a build.
 No Cloudflare account or production credentials are needed. See docs/LOCAL_HOST.md.`;
 
@@ -118,6 +119,15 @@ export async function startDevHost({ release, state, port = 8790, artifacts, sig
     const accountId = 'test_' + digest('tendriller-dev-host:' + release).slice(0, 32);
     const owner = 'owner@example.test', token = randomBytes(32).toString('base64url');
     const now = Date.now(), expiresAt = now + 86_400_000;
+    // Retained pages pin this key in their signed admission policy; keep it with the state.
+    const attestationPath = join(directory, 'attestation-key.json');
+    let attestationKey;
+    try { attestationKey = await readFile(attestationPath, 'utf8'); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      attestationKey = JSON.stringify(createAttestationKey());
+      await writeFile(attestationPath, attestationKey, { mode: 0o600, flag: 'wx' });
+    }
     const { ratelimits } = await json(join(engine, 'testing-ratelimits.json'));
     const compatibilityDate = '2026-11-01';
     stage = 'runtime startup';
@@ -136,7 +146,7 @@ export async function startDevHost({ release, state, port = 8790, artifacts, sig
             routerConfig: { has_user_worker: true } },
           bindings: { PUBLIC_BASE: serviceOrigin, PAGE_BASE_DOMAIN: 'pages.localhost', SERVICE_ENVIRONMENT: 'local',
             SERVICE_SOURCE_COMMIT: release, SERVICE_COMPOSITION_ID: manifest.composition.id,
-            TEST_ACCESS_JSON: JSON.stringify({ accountId, tokenSha256: digest(token), expiresAt }) },
+            TEST_ACCESS_JSON: JSON.stringify({ accountId, tokenSha256: digest(token), expiresAt }), HOST_ATTESTATION_KEY: attestationKey.trim() },
         },
       ],
     }), resourcePersistencePath: join(directory, 'storage'), resourceTmpPath: join(directory, 'tmp'),
@@ -159,6 +169,7 @@ export async function startDevHost({ release, state, port = 8790, artifacts, sig
         .bind('test', accountId, accountId, 'local-owner', owner, now),
       accounts.prepare('INSERT OR IGNORE INTO identity_emails(provider,subject,email) VALUES(?,?,?)').bind('test', accountId, owner),
     ]);
+    await accounts.prepare("UPDATE service_state SET account_page_cap=NULL, account_resident_cap=NULL, account_storage_cap=NULL WHERE id=1").run().catch(() => {});
     stage = 'local certificate setup';
     const cert = await certificate(port);
     stage = 'readiness verification';

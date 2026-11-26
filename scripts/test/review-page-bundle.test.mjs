@@ -10,7 +10,7 @@ import { installReviewFixtureSources } from '../review/fixture.mjs';
 // every named import present in the current public contract. This checks composition, not browser behavior.
 const root = resolve(import.meta.dirname, '../..');
 const core = { 'browser-owner': 'session/browser.mjs', 'worker-owner': 'session/worker.mjs', participation: 'session/participation.mjs',
-  authority: 'contract/authority.mjs', peers: 'contract/peers.mjs', setup: 'contract/setup.mjs', '': 'contract/index.mjs' };
+  authority: 'contract/authority.mjs', peers: 'contract/peers.mjs', admission: 'session/admission.mjs', setup: 'contract/setup.mjs', '': 'contract/index.mjs' };
 test('the review page and Worker bundle from copied fixture sources using only current public imports', async t => {
   const project = mkdtempSync(join(tmpdir(), 'review-bundle-')); t.after(() => rmSync(project, { recursive: true, force: true }));
   installReviewFixtureSources(root, project);

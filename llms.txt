@@ -45,6 +45,7 @@ Page creation or package installation alone is not completion. Verify a locally 
 - [Browser API](https://tendriller.dev/docs/BROWSER_API.md): session adapter, sensors, Home Screen setup, and offline code.
 - [Membership](https://tendriller.dev/docs/MEMBERSHIP.md): independent account, device, and publisher rights.
 - [Peer connections](https://tendriller.dev/docs/PEER_CONNECTIONS.md): discovery, invitations, direct WebRTC, and relay fallback.
+- [WebRTC media, custom streams & calls](https://tendriller.dev/docs/WEBRTC_MEDIA.md): video/audio calls, in-band Perfect Negotiation, custom `app:*` binary DataChannels, continuous on-device per-person transcripts, and agent call following.
 - [Protocol](https://tendriller.dev/docs/PROTOCOL.md): filtered control transport, authorization, and release atomicity.
 - [Cloudflare assistant](https://tendriller.dev/docs/CLOUDFLARE_ASSISTANT.md): hosted `/mcp` gateway, hibernating participant sockets, and event delivery.
 - [Live signals](https://tendriller.dev/docs/APPLICATION_SIGNALS.md): ephemeral delivery, expiration, and cancellation.

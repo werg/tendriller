@@ -1,7 +1,10 @@
 // The only long-running local program: one hub connection, one Chronolog session per
-// granted and initialized page (own device store, shared signer), one attach socket.
+// granted and initialized page (own device store, shared signer and wrap key), one attach socket.
+// A page whose data a browser created opens too: it waits there until a member admits this agent.
 import { existsSync, watch as watchFiles } from 'node:fs';
 import { join } from 'node:path';
+import { evaluateBroadcastMatch, verifyBroadcastSignature } from '@tendriller/core';
+import { acknowledgeWorkspaceBroadcast, detectWorkspaceVersions, readBroadcastState, saveBroadcastState } from './workspace.mjs';
 
 const PAGE_RETRY_MS = 1000, PAGE_MAX_RETRY_MS = 60_000;
 const safeCode = error => /^[A-Za-z0-9_]{1,96}$/u.test(error?.code ?? '') ? error.code : 'page_unavailable';
@@ -67,8 +70,97 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     });
   };
 
+  const [versions, broadcastState] = await Promise.all([
+    detectWorkspaceVersions(workspace.root, workspace.config.kit),
+    readBroadcastState(workspace),
+  ]);
+  const broadcastListeners = new Set();
+  const broadcastCache = {
+    lastSeq: broadcastState.lastSeq,
+    acknowledged: new Set(broadcastState.acknowledged),
+    trustedKeys: broadcastState.trustedKeys,
+    byId: new Map((broadcastState.items ?? []).map(item => [item.id, item])),
+  };
+  const broadcastsHandle = Object.freeze({
+    snapshot: () => {
+      const all = [...broadcastCache.byId.values()].sort((a, b) => a.seq - b.seq);
+      return Object.freeze({
+        latestSeq: broadcastCache.lastSeq,
+        versions,
+        active: Object.freeze(all.filter(item => item.matched && !broadcastCache.acknowledged.has(item.id))),
+        all: Object.freeze(all),
+      });
+    },
+    async acknowledge(id) {
+      await acknowledgeWorkspaceBroadcast(workspace, id);
+      broadcastCache.acknowledged.add(id);
+      const existing = broadcastCache.byId.get(id);
+      if (existing) broadcastCache.byId.set(id, { ...existing, acknowledged: true });
+      return true;
+    },
+    onBroadcast(fn) {
+      broadcastListeners.add(fn);
+      return () => { broadcastListeners.delete(fn); };
+    },
+  });
+
+  async function onHubBroadcasts(batch) {
+    let trustedKeys = broadcastCache.trustedKeys;
+    try {
+      const fetched = await client.broadcastKeys({ signal });
+      if (fetched.keys.length) trustedKeys = broadcastCache.trustedKeys = fetched.keys;
+    } catch {
+      if (!trustedKeys.length && Array.isArray(batch.keys)) trustedKeys = batch.keys;
+    }
+    const newlyVerified = [];
+    for (const signed of batch.broadcasts ?? []) {
+      const check = await verifyBroadcastSignature(signed, trustedKeys, { issuer: workspace.config.service });
+      if (!check.valid) {
+        report({ broadcast_rejected: { id: signed?.payload?.id ?? null, reason: check.reason ?? 'invalid_signature' } });
+        continue;
+      }
+      const payload = signed.payload;
+      const match = evaluateBroadcastMatch(payload, { audience: 'agents', versions });
+      const entry = {
+        ...payload,
+        signature: signed.signature,
+        verified: true,
+        matched: match.matched,
+        matchReasons: match.reasons,
+        acknowledged: broadcastCache.acknowledged.has(payload.id),
+      };
+      const isNew = !broadcastCache.byId.has(payload.id);
+      broadcastCache.byId.set(payload.id, entry);
+      if (isNew) newlyVerified.push(entry);
+    }
+    if (Number.isSafeInteger(batch.latest_seq) && batch.latest_seq > broadcastCache.lastSeq) {
+      broadcastCache.lastSeq = batch.latest_seq;
+    }
+    await saveBroadcastState(workspace, {
+      lastSeq: broadcastCache.lastSeq,
+      acknowledged: [...broadcastCache.acknowledged],
+      trustedKeys: broadcastCache.trustedKeys,
+      items: [...broadcastCache.byId.values()],
+    }).catch(() => {});
+    for (const item of newlyVerified) {
+      report({
+        broadcast: {
+          id: item.id, seq: item.seq, kind: item.kind, severity: item.severity,
+          title: item.title, summary: item.summary, docs_url: item.docs_url,
+          action: item.action, matched: item.matched, matchReasons: item.matchReasons,
+          verified: true, acknowledged: item.acknowledged,
+        },
+      });
+      for (const listener of broadcastListeners) {
+        try { listener(item); } catch { /* listener errors cannot disrupt hub delivery */ }
+      }
+    }
+  }
+
   const hub = client.hub;
   const stopEvents = hub.events(event => void onHubEvent(event).catch(() => {}));
+  const stopBroadcasts = hub.broadcasts?.(batch => void onHubBroadcasts(batch).catch(() => {})) ?? (() => {});
+  hub.sendHello?.({ versions, lastBroadcastSeq: broadcastCache.lastSeq });
   const stopStatus = hub.onStatus(status => {
     report({ hub: status.state, ...(status.retryInMs === undefined ? {} : { retryInMs: status.retryInMs }) });
     if (status.state === 'connected' && status.reconnected) scheduleRescan(true);
@@ -120,6 +212,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
         signal: pageSignal,
         report: value => report({ page: id, slug: entry.slug, ...value }),
         roster: rosterHandleFor(id),
+        broadcasts: broadcastsHandle,
       });
       const module = await workspace.pageModule({ slug: entry.slug });
       if (typeof module.openPage !== 'function') throw Object.assign(Error(`pages/${entry.slug}/agent.mjs must export openPage(context)`), { code: 'page_module_invalid' });
@@ -187,7 +280,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
   let watcher;
   try {
     // Watch the existing private parent, including when no page directory exists
-    // yet. Registration discovers a page; only explicit provisioning may open it.
+    // yet. Registration discovers a page; `init` (initialized.json) lets the program open it.
     if (existsSync(workspace.paths.secret)) {
       watcher = watchFiles(workspace.paths.secret, { recursive: true }, (_type, name) => {
         const file = String(name ?? '').split(/[\\/]/u).at(-1);
@@ -203,7 +296,7 @@ export async function runAgent(workspace, { signal, report = () => {}, openOwner
     if (!signal?.aborted) await new Promise(resolve => signal?.addEventListener('abort', resolve, { once: true }));
   } finally {
     stopping = true; clearTimeout(rescanTimer); watcher?.close();
-    stopEvents(); stopStatus();
+    stopEvents(); stopBroadcasts(); stopStatus();
     await Promise.allSettled([...pages.keys()].map(id => closePage(id, 'stopping')));
     changes.close(); await changeReport;
     hub.close(); client.close?.();

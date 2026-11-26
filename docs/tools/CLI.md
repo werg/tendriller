@@ -1,7 +1,7 @@
 # Use the agent workspace from a terminal
 
 `tendril` drives one **agent workspace**: one account-level agent credential and
-one signing key for many pages, one install, and `pages/<slug>/` source per page.
+one signing key and one wrap key for many pages, one install, and `pages/<slug>/` source per page.
 A single page is a workspace with one page. `tendril agent run` is the only
 long-running local program, and it is optional: ordinary browser reads and durable
 writes never depend on it, and the CLI does not install another signer, application
@@ -17,6 +17,7 @@ These commands need no workspace and make no authenticated request:
 tendril guide --server https://YOUR_HOST          # workflow and documentation links; no network
 tendril readiness --server https://YOUR_HOST      # current creation availability
 tendril service --server https://YOUR_HOST        # public contract and limits
+tendril broadcasts --server https://YOUR_HOST     # verified Ed25519-signed upgrade & security broadcasts
 tendril probe --server https://YOUR_HOST --check-network
 ```
 
@@ -33,12 +34,12 @@ tendril workspace init --service https://YOUR_HOST --owner owner@example.com --h
 tendril workspace join --service https://YOUR_HOST --code CODE --handle atlas [--bio "Builds and maintains my pages"]
 ```
 
-With an account-linked MCP connector, create the shared key first and register it
+With an account-linked MCP connector, create the shared keys first and register it
 through the connector instead:
 
 ```sh
 tendril workspace key --service https://YOUR_HOST --handle atlas [--bio "Builds and maintains my pages"]
-# prints the public register_agent arguments {handle, bio?, publicKey}; call the tool with exactly those,
+# prints the public register_agent arguments {handle, bio?, publicKey, wrapKey}; call the tool with exactly those,
 # save its result privately, then retain it:
 tendril workspace adopt --service https://YOUR_HOST --credential FILE
 ```
@@ -47,7 +48,8 @@ tendril workspace adopt --service https://YOUR_HOST --credential FILE
 host derives the owner from the linked account, so no email is needed.
 
 `workspace init` checks readiness and the host contract, creates the shared
-signing key in `.tendriller/agent/identity.sqlite`, registers an unclaimed agent
+signing key in `.tendriller/agent/identity.sqlite` and the X25519 wrap key in
+`.tendriller/agent/wrap-key.json`, registers an unclaimed agent
 for that owner (`POST /api/agents`) and saves its `ta_` token in
 `.tendriller/agent/credential.json` (mode 600). The owner claims the agent by
 signing in to any page it created. `workspace join` registers the agent under the
@@ -66,7 +68,7 @@ tendril agent profile --handle reviewer --bio "Reviews plans and edits"
 `tendriller.json` holds no secret and can be committed; `.tendriller/` is private
 and gitignored. A second `workspace init` in the same folder is refused instead of
 registering another agent. Losing `.tendriller/agent/` loses the agent: restore it
-from a checkpoint rather than creating a new key.
+from a checkpoint (which includes both keys) rather than creating a new key.
 
 Commands find the workspace from the nearest `tendriller.json` above the current
 folder; `--workspace DIR` or `TENDRIL_WORKSPACE` selects one explicitly.
@@ -77,6 +79,12 @@ folder; `--workspace DIR` or `TENDRIL_WORKSPACE` selects one explicitly.
 tendril page new notes [--name "Shared notes"]   # create a page granted to this agent
 tendril page grant garden PAGE_ID                # register a page the owner granted
 tendril page list                                # granted and registered pages
+tendril page devices notes                       # members, pending sign-ins, invites, mode
+tendril page approve notes PUBLIC_KEY [--writer] [--admin]
+tendril page remove-device notes PUBLIC_KEY      # revoke and rotate the page key
+tendril page mode notes attested|strict
+tendril page invite notes --email friend@example.com | --open | --public [--max N] [--expires DAYS] [--role reader|writer|admin]
+tendril page revoke-invite notes INVITE_ID
 tendril status                                   # workspace, agent, grants, agent program
 ```
 
@@ -90,11 +98,29 @@ owner grants it, and `page grant` registers it under a slug.
 A page's Node source must include `pages/<slug>/agent.mjs` exporting
 `openPage(context)`. The first-app kit supplies templates, initialization and
 builds (`npm run page:new -- <slug>`, `npm run init -- <slug>`). A page is opened
-by the agent program once `.tendriller/pages/<page-id>/initialized.json` exists. That file is written by the explicit native `sign-enrollment`, `provisioning-request` and `import-provisioning` steps, and only after the reader grant and current epoch key are verified; `init` alone does not create it.
+by the agent program once `.tendriller/pages/<page-id>/initialized.json` exists; `npm run init -- <slug>` writes it.
 
-## Browser-first publication
+## Devices and access
 
-The starter's `npm run init -- <slug>` and `npm run deploy -- <slug>` prepare the host's publisher policy (the workspace's one opaque shared signer is the publisher; no per-page key) and sign the complete UI **before the first browser key exists**. They need no agent program, native data device, data root, fixed schema or finalizer. Give the owner the ready page URL; their real sign-in/key proof initializes local browser data keys. No claimed reply or second deployment is necessary. `init` creates no device, data root or key. The agent's shared key is a separate member of each page's application: it joins only through the explicit native `sign-enrollment`, `provisioning-request` and `import-provisioning` steps (an account-bound key proof, the owner's review of exact rights and recipient-bound epoch-key wrapping; see [session bootstrap](../SESSION_BOOTSTRAP.md)), never by a host token alone.
+The admission commands attach to the page owner inside the running agent program
+and call its admission actions with the agent's own signer; the host never signs
+membership. `page devices` returns `{phase, mode, administrator, members, pending,
+invites}`. `approve` admits a pending device (strict mode, another account, a
+previously removed key) as a reader, `--writer` adds writing and `--admin`
+administration. `remove-device` signs the member's revocation and a new epoch key
+wrapped only to the remaining members; it does not sign out the account. `mode
+strict` holds every new device for an administrator's approval; `mode attested`
+lets any online member admit the owner account's devices automatically. `invite`
+signs an invite into membership (`--email` binds one verified address, `--open`
+one account, `--public` up to `--max` accounts; default 7 days, role `writer`, or
+`reader` for public links) and prints the link: the page URL with
+`#invite=<id>.<secret>`. The fragment is the only copy of the secret; share it
+only with the invitee. `revoke-invite` signs it revoked. All but `devices` need an
+administrator: the creator agent is one; owner devices are not unless promoted.
+
+## Agent-first publication
+
+The starter's `npm run init -- <slug>` prepares the host's publisher policy (the workspace's one opaque shared signer is the publisher; no per-page key) and creates the page keys with the agent as creator; `npm run deploy -- <slug>` signs the complete UI. Give the owner the ready page URL and keep `tendril agent run` running: it admits their signed-in browser and wraps the keys to it. No claimed reply or second deployment is necessary. With `--browser-first` the owner's first browser creates the page instead, and the agent is admitted from its signed host grant once a member is online. See [session bootstrap](../SESSION_BOOTSTRAP.md#admission-wire-contract).
 
 ## Run the agent program
 
@@ -115,8 +141,10 @@ stdout is one JSON object per event: `{running}`, `{hub, retryInMs?}`,
 `{page, slug, canAuthor, database}` (the session's own status), `{page, slug, connection}`
 from the optional participation controller, and page integration reports such as
 `{page, setup}` (setup notices) or `{page, state}` with `awaiting_assistant_consent`,
-`adapter_online` or `adapter_offline`. Initialization and provisioning are explicit
-steps; a page that has not completed them reports `awaiting_initialization`.
+`adapter_online` or `adapter_offline`, and admission reports `{page, admission: 'phase', phase}`
+(`admitted`, `waiting-admission`, `waiting-approval`, `waiting-keys` or `removed`)
+and `{page, admission: 'new-device'|'pending'|'removed', publicKey, label, reason?}`. A page without
+`initialized.json` reports `awaiting_initialization`.
 The hub reconnects with backoff; losing it fails the page control streams closed
 so each one reopens through its own retry while sessions, local writes and direct
 peer links continue. A `grant` event registers nothing by itself (it reports
@@ -135,8 +163,8 @@ Session commands attach to one page owner inside the running agent program.
 `--page <slug|id>` selects the page; it may be omitted when the workspace has one
 page. Detaching never stops the owner, and an unavailable agent program is an
 error (`OWNER_UNREACHABLE`) rather than a reason to open a second signer. Exiting
-detaches only this caller. `--mode independent --profile NAME` requires an
-explicitly provisioned separate profile; one physical store owner and bounded
+detaches only this caller. `--mode independent --profile NAME` requires a
+separately admitted profile; one physical store owner and bounded
 view/root lifetimes are local fencing, not an application ordering coordinator.
 
 ```sh
@@ -217,7 +245,7 @@ Signed finality statements and proofs contain exact bigint author times, which J
 ```sh
 tendril --page notes finality close --through 1700000000000 > closed.json
 # closed.json: {"closedThroughMs":"1700000000000","proofs":{"record":"a1..."}}
-# The other workspace must be provisioned for this SAME page and application.
+# The other workspace must be admitted to this SAME page and application.
 tendril --workspace /path/to/other-device --page notes finality submit "$(node -p "JSON.stringify(require('./closed.json').proofs)")"
 ```
 

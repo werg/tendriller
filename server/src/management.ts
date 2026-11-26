@@ -3,12 +3,12 @@ import { validOptionalEmail } from './tendril';
 import type { PagePrincipal } from './access';
 import { AGENT_SCOPES, currentPrincipal, localAgentGrant } from './access';
 import { addActivity } from './activity';
-import { brandHead, brandMark, brandStyle } from './brand';
+import { brandMark } from './brand';
 import { renderQrSvg } from './qr';
 import { listVersions, pointers } from './files';
 import { escapeHtml } from './inject';
 import { HttpError, readBody } from './http';
-import { avatar, icon, serviceStyle } from './accounts/ui';
+import { avatar, icon, renderShell } from './accounts/ui';
 import { hostApprovalBinding, requireHostApprovalBinding, requireHostApprovalPolicy } from './owner-review';
 import { listAccountAgents, type AccountAgent } from './agents';
 import { deleteAgentGrant, mirroredAgents, pageAgents, putAgentGrant, setPrimaryAgent } from './agent-grants';
@@ -47,7 +47,7 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
         const has = !!localAgentGrant(t, agent.id);
         if (checked.has(agent.id) && !has) {
           await commit(() => {});
-          await putAgentGrant(t, principal.accountId!, agent.id, agent.handle, agent.bio, agent.public_key, [...AGENT_SCOPES]); granted++;
+          await putAgentGrant(t, principal.accountId!, agent.id, agent.handle, agent.bio, agent.public_key, agent.wrap_key, [...AGENT_SCOPES]); granted++;
         } else if (!checked.has(agent.id) && has) {
           await commit(() => {});
           await deleteAgentGrant(t, agent.id, `owner:${principal.accountId}`); removed++;
@@ -72,8 +72,16 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
       await commit(() => {});
       const dashboardUrl = text(t.env.PUBLIC_BASE + '/dashboard?deleted=1');
       await t.destroy();
-      return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Page deleted · Tendriller</title>${serviceStyle}</head><body><main><section class="card" style="margin-top:2rem"><span class="eyebrow">Deleted</span><h1>This page was deleted</h1><p class="lead">Its files, invite links and agent credentials were removed.</p><div class="actions"><a class="button" href="${dashboardUrl}">Back to dashboard</a></div></section></main></body></html>`,
-        { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'" } });
+      const deletedHtml = renderShell({
+        title: 'Page deleted',
+        brand: brandMark(base + '_tendril/brand/', dashboardUrl),
+        brandBase: base + '_tendril/brand/',
+        nav: `<a class="nav-link" href="${dashboardUrl}">Dashboard</a>`,
+        footer: '',
+        body: `<section class="card"><span class="eyebrow">Deleted</span><h1>This page was deleted</h1><p class="lead">Its files, invite links and agent credentials were removed.</p><div class="actions"><a class="button" href="${dashboardUrl}">Back to dashboard</a></div></section>`,
+      });
+      return new Response(deletedHtml,
+        { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'" } });
     } else if (action === 'create-link') {
       const role = form.get('role');
       if (role !== 'guest' && role !== 'display') throw new HttpError(400, 'bad_request', 'Choose a guest invite or page-only link');
@@ -216,7 +224,14 @@ export async function handleManagement(t: Tendril, req: Request, base: string, p
   </div>`;
 
   const facts = owner ? `<div class="page-meta"><span>${icon('layers')} ${current ? `Version ${text(current)}` : 'Not published yet'}</span><span>${icon('bot')} ${agents.length} ${agents.length === 1 ? 'agent' : 'agents'}</span><span>${icon('link')} ${shareLinks.length} ${shareLinks.length === 1 ? 'link' : 'links'}</span></div>` : '';
-  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="same-origin"><title>Manage page · Tendriller</title>${brandHead(brandPrefix)}${serviceStyle}${brandStyle}</head><body><main><header>${brandMark(brandPrefix, base)}<nav>${owner ? `<a class="nav-link" href="#add">${icon('user-plus')} Add people</a>` : ''}<a class="nav-link" href="${text(base)}">Return to page</a></nav></header><div class="page-head"><div class="page-head-row"><div style="display:flex;gap:.9rem;align-items:center">${avatar(rawName, t.tid)}<div><span class="eyebrow">Page settings</span><h1 style="margin:0">${pageName}</h1>${facts}</div></div><span class="badge${owner ? ' ok' : ''}">${text(principal.role)} access</span></div></div>${message ? `<p class="notice" role="status">${icon('check')}<span>${text(message)}</span></p>` : ''}${owner ? ownerSections : '<section class="card"><p>Only the signed-in owner can manage agent connections, guest access, and publications.</p></section>'}<footer><a href="${text(t.env.PUBLIC_BASE + '/dashboard')}">Account dashboard</a><a href="${text(base + '_tendril/report')}">Report this page</a></footer></main></body></html>`;
+  const html = renderShell({
+    title: 'Manage page',
+    brand: brandMark(brandPrefix, base),
+    brandBase: brandPrefix,
+    nav: `<nav>${owner ? `<a class="nav-link" href="#add">${icon('user-plus')} Add people</a>` : ''}<a class="nav-link" href="${text(base)}">Return to page</a></nav>`,
+    body: `<div class="page-head"><div class="page-head-row"><div style="display:flex;gap:.9rem;align-items:center">${avatar(rawName, t.tid)}<div><span class="eyebrow">Page settings</span><h1 style="margin:0">${pageName}</h1>${facts}</div></div><span class="badge${owner ? ' ok' : ''}">${text(principal.role)} access</span></div></div>${message ? `<p class="notice" role="status">${icon('check')}<span>${text(message)}</span></p>` : ''}${owner ? ownerSections : '<section class="card"><p>Only the signed-in owner can manage agent connections, guest access, and publications.</p></section>'}`,
+    footer: `<span>Tendriller</span><span class="foot-links"><a href="${text(t.env.PUBLIC_BASE + '/dashboard')}">Account dashboard</a><a href="${text(base + '_tendril/report')}">Report this page</a></span>`,
+  });
   return new Response(req.method === 'HEAD' ? null : html, { headers: {
     // Keep Origin on same-origin navigation POSTs for the management forms.
     'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin',

@@ -107,13 +107,14 @@ npm run build -- notes
 
 Use the printed service origin if you selected another port. `workspace init`
 performs the ordinary readiness check and registers one agent (one credential,
-one signing key) for the synthetic owner; `page:new` creates the page, granted to
-that agent. Retain the complete `.tendriller/` directory and the signed
+one signing key, one wrap key) for the synthetic owner; `page:new` creates the
+page, granted to that agent; `init` creates its keys with the agent as creator.
+The local host generates its own host attestation key when none is configured. Retain the complete `.tendriller/` directory and the signed
 publication operation ID. A retry in this same workspace resumes the same agent
 and page. To try another release, use a separate host state directory and a
 separate workspace directory.
 
-## 4. Run the agent program, claim and pair the browser
+## 4. Run the agent program, claim and admit the browser
 
 In a second terminal with the same `NODE_OPTIONS`, start the workspace's one
 long-running program and leave it running, then publish through it:
@@ -127,9 +128,10 @@ npm run deploy -- notes
 Open the `page_url` returned by `page:new` in the runner's Chromium window. Keep
 its URL unchanged; the browser handles local port routing. Sign in to the local
 test account first if necessary, claim the page (this also claims the agent), and
-follow the normal browser connection flow. The running agent program stages the
-browser's signed device proposal; the host approves it automatically and the page
-connects by itself, without an approval screen.
+follow the normal browser connection flow. The local host attests the browser's
+device key for the test account; the running agent program (the page's creator
+after `npm run init`) admits it and wraps its keys, and the page connects by
+itself, without an approval screen.
 The [build guide](BUILD_AN_APP.md) describes these normal connection steps.
 
 Add a note in the browser. From another terminal in the same workspace
@@ -144,7 +146,7 @@ npx tendril --page notes query notes null
 Also submit a native command and observe it in the browser, reload the browser,
 and check that the original notes remain. Inspect the signed publication with
 `npx tendril --page notes publication`. These checks exercise real host setup,
-publication, browser enrollment and connected application state. A successful
+publication, browser admission and connected application state. A successful
 server startup alone does not establish application connectivity.
 
 ## Review connected UX with realistic development data
@@ -213,7 +215,7 @@ The release browser CI job runs
 same sealed graph. It verifies browser test-account login, packed-SDK page
 creation, owner claim, public assets and host/browser restart persistence. The
 separate exact-kit first-app tests qualify signed publication and real native /
-browser enrollment/key provisioning and application state exchange.
+browser admission/key wrapping and application state exchange.
 
 This runner supports the schema-11 source-release format. Its emulator is pinned
 by the runner checkout's lockfile; it is a local compatibility test, not a claim

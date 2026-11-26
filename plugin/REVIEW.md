@@ -49,10 +49,10 @@ runner prepares publication with the shared key (there is no separate page
 publisher) and publishes the complete signed browser page **before any browser key
 exists**, verifying that no data authority exists yet. The signed-in browser then initializes its own identity,
 root and data key locally with no native process running. Only then does the
-runner explicitly provision the optional native participant: the native
-signer, the workspace's shared key, proves itself for an account-bound challenge, the browser reviews its public
-request and wraps keys to exactly that recipient, and the native process imports
-the package. The runner starts `tendril agent run` from the installed tools archive, approves application access and
+runner start `tendril agent run` from the installed tools archive: the online
+browser verifies the host's signed agent attestation (issued for the page's creator
+grant) against the pinned attestation key and owner account, admits the agent's
+shared key and wraps the page keys to it; nothing is copied between processes. The runner approves application access and
 connects an actual Codex app-server MCP client, exercising the six positive and
 three negative packaged scenarios at the tool/protocol level. It verifies reads,
 a write, exact retry, retained events, rejected operations, that the signed
@@ -152,29 +152,25 @@ checkpoint, then install `esbuild` for the one-time page build
 2. Run `node review-app.mjs init`, `node review-app.mjs build` and
    `node review-app.mjs publish` to prepare publication with the shared key and
    publish the complete signed page **before** the owner browser key exists. The
-   build also emits the signed `domain.js` bundle from which hosted MCP runs the
-   declared `checklist` query and `completeItem` command.
+   page is browser-first: `init` creates no agent device, root, membership or
+   data key. The build also emits the signed `domain.js` bundle from which hosted
+   MCP runs the declared `checklist` query and `completeItem` command.
 3. The owner signs in with the static test-account form and opens the page. Its
-   browser initializes identity, keys and storage locally; the checklist works
-   with no native process.
-4. To enable the optional MCP participant, print its public key with
-   `node review-app.mjs signer-key` (the workspace's shared signer; no device is
-   created). In the page's **Add another device explicitly** section prove that
-   public key for the account-bound challenge, sign the challenge with
-   `node review-app.mjs sign-enrollment FILE`, record the proof, then use
-   `node review-app.mjs provisioning-request`, review that request in the page,
-   grant the reviewed rights and import the wrapped package with
-   `node review-app.mjs import-provisioning FILE`. The native process never
-   creates a root, membership or data key.
-5. Optionally supervise `npx tendril agent run` in the workspace (the installed
-   tools archive's one long-running program). It opens only provisioned pages from
-   their cached stores; it is not the MCP provider.
-6. Connect hosted MCP explicitly: in the page open **Page options → An agent**,
+   browser creates the page's signed descriptor, genesis membership and data key
+   locally; the checklist works with no native process. Later owner-account
+   browsers are admitted automatically by an online member (**Devices and
+   access** shows each one); nothing is copied between devices.
+4. Optionally supervise `npx tendril agent run` in the workspace (the installed
+   tools archive's one long-running program). The page's creator grant gave the
+   agent a signed host attestation; while the owner's browser is online it
+   admits the agent and wraps the page keys to it, and the agent then opens the
+   page from its own store. It is not the MCP provider.
+5. Connect hosted MCP explicitly: in the page open **Page options → An agent**,
    choose the linked OAuth client's card, keep or edit its handle and select
    **Connect to this page**. The page enrolls a fresh hosted key, grants it
    membership and wraps the current epoch keys to that grant; nothing connects
    without this owner action, and **Disconnect** revokes it.
-7. Verify listing, description and the initial read without sending a command.
+6. Verify listing, description and the initial read without sending a command.
    Use the disposable qualification fixture for the mutation and denial tests.
 
 Do not delete this sample during qualification. Keep its optional native process and

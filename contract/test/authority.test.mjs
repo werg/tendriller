@@ -18,6 +18,17 @@ test('browser-first host prepare is independent of data authority and native par
   await client.challenge('12'.repeat(32));
   assert.equal(calls[1].path, 'peers/enrollment');
 });
+test('admission actions are exact host enrollment requests; the host-signed grant action is gone', async () => {
+  const calls = [], client = createAuthorityClient(async (path, options) => { calls.push({ path, body: options?.body }); return { selection: { id: applicationId } }; }, { applicationId });
+  const record = { record: '00' }, invite = { inviteId: 'ab'.repeat(16), secret: 'cd'.repeat(32) };
+  await client.enroll(record); await client.enroll(record, invite); await client.enrollAgent(); await client.initialize(record); await client.membership(record);
+  await client.admissions(); await client.wrap(record); await client.wraps('12'.repeat(32));
+  assert.ok(calls.every(call => call.path === 'peers/enrollment'));
+  assert.deepEqual(calls.map(call => call.body), [
+    { action: 'enroll', proof: record }, { action: 'enroll', proof: record, invite }, { action: 'enroll-agent' }, { action: 'initialize', bundle: record },
+    { action: 'membership', bundle: record }, { action: 'admissions' }, { action: 'wrap', wrap: record }, { action: 'wraps', recipient: '12'.repeat(32) }]);
+  assert.equal(client.grant, undefined);
+});
 test('a stable explicit scope pin rejects mismatched metadata without resolving another host scope', async () => {
   const client = createAuthorityClient(async () => ({ selection: { id: 'ff'.repeat(32) } }), { applicationId });
   await assert.rejects(client.application(), { code: 'application_scope_mismatch' });

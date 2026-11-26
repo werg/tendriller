@@ -31,32 +31,31 @@ async function kit(t) {
   return directory;
 }
 
-/** Only the host boundary is a fixture: signed authority, native storage, build and owner are real. */
-async function hostPeers(applicationId) {
-  const p = await import('@chronolog/peer-session');
-  const authority = await p.createSigningIdentity(), key = crypto.getRandomValues(new Uint8Array(32)), published = [];
-  let configuration = null;
+/** Only the host boundary is a fixture: the page admission wire contract (admission-host), signed authority, native storage, build and owner are real. */
+async function hostPeers(applicationId, agentKey) {
+  const { createAdmissionHost } = await import(pathToFileURL(join(root, 'scripts/test/helpers/admission-host.mjs')).href);
+  const published = [];
+  let configuration = null, admission = null;
   const unavailable = () => { throw Error('Unexpected remote peer'); };
   const wait = signal => {
     const done = Promise.withResolvers(), close = () => done.resolve();
     signal?.addEventListener('abort', close, { once: true }); if (signal?.aborted) close();
     return { ready: Promise.resolve(), close, done: done.promise, closed: done.promise };
   };
-  const metadata = () => ({ selection: { id: applicationId }, authority: null,
-    publicationAuthority: { applicationId, grantId: 'f'.repeat(64), publisherKeys: configuration.publisherKeys } });
+  // The agent's page principal: its registered key is the page creator's key.
+  const page = () => admission.client({ agent: { publicKey: agentKey } });
+  const publicationAuthority = () => ({ applicationId, grantId: 'f'.repeat(64), publisherKeys: configuration.publisherKeys });
+  const delegate = name => (...args) => page()[name](...args);
   return {
-    published, key,
-    /** The signed authority a recipient package would carry to the explicitly provisioned page device. */
-    async bundle(member) {
-      const descriptor = await p.signAppDescriptor({ applicationId, rootPrincipal: member, authorityPublicKey: authority.publicKey,
-        executionManifestDigest: configuration.executionManifestDigest, finalityPolicy: { kind: 'none' } }, authority);
-      const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
-        epochKeyDigest: await p.epochKeyCommitment(applicationId, 0, key),
-        members: [{ publicKey: member, reader: true, writer: true, administrator: true, publisher: false, finalizer: false }] }, authority);
-      return { descriptor, memberships: [membership] };
+    published, host: () => admission,
+    async prepare(value) {
+      configuration = value; admission ??= await createAdmissionHost({ applicationId, configuration });
+      return { ...await page().application(), publicationAuthority: publicationAuthority() };
     },
-    async prepare(value) { configuration = value; return metadata(); },
-    application: async () => metadata(),
+    application: async () => admission === null ? { selection: { id: applicationId }, configuration: null, authority: null, publicationAuthority: null }
+      : { ...await page().application(), publicationAuthority: publicationAuthority() },
+    initialize: delegate('initialize'), membership: delegate('membership'), admissions: delegate('admissions'),
+    wrap: delegate('wrap'), wraps: delegate('wraps'), enrollAgent: delegate('enrollAgent'),
     publication: async () => null,
     publish: async (publication, assets) => { published.push({ publication, assets }); return { publication, version: published.length }; },
     exchange: unavailable,
@@ -75,7 +74,9 @@ async function pageContext(directory, slug, { signal, requests = [] } = {}) {
   const privateDir = join(directory, '.tendriller/pages', PAGE), identity = join(directory, '.tendriller/agent/identity.sqlite');
   await mkdir(privateDir, { recursive: true, mode: 0o700 });
   const signer = await openSharedSigner(identity, { create: true });
-  const peers = await hostPeers('74'.repeat(32)), reports = [];
+  const p = await import('@chronolog/peer-session'), wrap = await p.createWrapKeyPair();
+  const wrapKey = { publicKey: wrap.publicKey, privateKey: await p.importWrapPrivateKey(wrap.privateKey) };
+  const peers = await hostPeers('74'.repeat(32), signer.publicKey), reports = [];
   const host = { base: `https://service.test/api/agent/pages/${PAGE}`, peers,
     info: async () => ({ owner_account_id: 'acct_owner' }),
     async request(path, options) { requests.push({ path, ...options }); return { proposed: 'd'.repeat(64), reviewUrl: 'https://service.test/review', approved: false, applicationId: '74'.repeat(32) }; },
@@ -88,13 +89,13 @@ async function pageContext(directory, slug, { signal, requests = [] } = {}) {
   return { reports, peers, context: { workspace: directory, service: 'https://service.test', agent: { id: AGENT, handle: 'laptop', bio: '' },
     page: { id: PAGE, slug, name: 'Field notes', applicationId: '74'.repeat(32), pageUrl: `https://${PAGE}.pages.test/s/${'e'.repeat(26)}/`,
       directory: privateDir, source: join(directory, 'pages', slug) },
-    host, signal, report: value => reports.push(value), signer: { publicKey: signer.publicKey },
+    host, signal, report: value => reports.push(value), signer: { publicKey: signer.publicKey }, wrapKey,
     devicePath: join(privateDir, 'device.sqlite'),
     openDevice: ({ create = false } = {}) => openPageDevice({ path: join(privateDir, 'device.sqlite'), signer, create }),
     readPrivate: read, savePrivate: (name, value) => savePrivateJson(join(privateDir, name), value), privatePath: name => join(privateDir, name) } };
 }
 
-test('a renamed events page prepares publication with the shared agent key, builds its dist and, once explicitly provisioned, runs as an agent page owner', { timeout: 60_000 }, async t => {
+test('a renamed events page prepares publication with the shared agent key, creates its data as the agent, builds its dist and runs as an agent page owner', { timeout: 60_000 }, async t => {
   const directory = await kit(t), slug = 'field';
   await cp(join(directory, 'templates/notes'), join(directory, 'pages', slug), { recursive: true });
   await writeFile(join(directory, 'pages', slug, 'domain.mjs'), `
@@ -113,14 +114,23 @@ export const definition = defineApplication({
   const { context, reports, peers } = await pageContext(directory, slug);
   const page = join(directory, 'pages', slug), module = name => import(pathToFileURL(join(page, name)).href);
   const setup = await module('setup.mjs');
-  // Preparation is browser-first metadata only: no page device, schema, data root or epoch key is created.
+  // Agent-first init: the shared agent key creates the descriptor, genesis membership and first epoch key.
   const prepared = await setup.initializePage(context);
-  assert.equal(prepared.prepared, true); assert.equal(prepared.initialized, false);
-  assert.equal(await context.readPrivate('initialized.json', true), null, 'preparation never creates the provisioning marker');
-  await assert.rejects(access(context.devicePath), { code: 'ENOENT' });
+  assert.equal(prepared.prepared, true); assert.equal(prepared.creator, 'agent'); assert.equal(prepared.created, true); assert.equal(prepared.dataInitialized, true);
+  assert.equal((await context.readPrivate('initialized.json')).creator, 'agent', 'the running agent program opens the page from this marker');
+  await access(context.devicePath);
   const configuration = await context.readPrivate('host-configuration.json');
   assert.deepEqual(configuration.publisherKeys, [context.signer.publicKey], 'the shared agent key is the independent publisher');
-  assert.deepEqual(await setup.initializePage(context), prepared, 'preparing again resumes the same retained configuration');
+  const { decodeRecord } = await import('@chronolog/peer-session'), { authorityRecordBytes } = await import(pathToFileURL(join(root, 'contract/authority.mjs')).href);
+  const stored = (await peers.application()).authority, genesis = decodeRecord(authorityRecordBytes(stored));
+  assert.equal(genesis.descriptor.payload.rootPrincipal, context.signer.publicKey);
+  assert.equal(genesis.descriptor.payload.authorityPublicKey, context.signer.publicKey, 'the creator key, never the host, is the descriptor authority');
+  const head = genesis.memberships[0].payload;
+  assert.equal(head.admission.hostKey, peers.host().host.publicKey, 'genesis pins the host attestation key');
+  assert(head.admission.accounts.includes('acct_owner'), 'genesis authorizes the owner account for attested admission');
+  assert.deepEqual(head.members.map(member => [member.publicKey, member.wrapKey, member.administrator]), [[context.signer.publicKey, context.wrapKey.publicKey, true]]);
+  assert.deepEqual({ ...await setup.initializePage(context), created: true }, prepared, 'initializing again resumes the same retained page data');
+  assert.deepEqual((await peers.application()).authority, stored, 'a retry never creates a second genesis');
   await assert.rejects(setup.initializePage(context, { requestedFinality: { kind: 'threshold' } }), /Retained preparation differs/);
   assert.deepEqual(await context.readPrivate('host-configuration.json'), configuration);
 
@@ -139,17 +149,7 @@ export const definition = defineApplication({
   await assert.rejects(access(join(page, 'dist')), { code: 'ENOENT' });
   await writeFile(preparedPath, original, { mode: 0o600 });
 
-  // The agent never invents keys: without the explicit recipient-bound provisioning import there is no native owner.
   const { openPage } = await module('agent.mjs');
-  await assert.rejects(openPage(context), /explicit/i);
-  await assert.rejects(access(context.devicePath), { code: 'ENOENT' }, 'a refused open creates no device or replacement keys');
-  const { createAuthorityProvider } = await import('@chronolog/authority');
-  const device = await context.openDevice({ create: true });
-  await createAuthorityProvider({ store: device.store, bundle: await peers.bundle(device.identity.publicKey), epochKeys: [[0, peers.key]] });
-  await device.close();
-  await context.savePrivate('initialized.json', { applicationId: context.page.applicationId, publicKey: context.signer.publicKey,
-    executionManifestDigest: configuration.executionManifestDigest, provisioned: true });
-
   const owner = await openPage(context);
   try {
     assert.equal(owner.session.identity.publicKey, context.signer.publicKey);
@@ -168,6 +168,18 @@ export const definition = defineApplication({
   finally { await reopened.close(); }
 });
 
+test('browser-first init prepares publication only: no agent device, data root or epoch key until the first browser creates it', { timeout: 60_000 }, async t => {
+  const directory = await kit(t), slug = 'notes';
+  await cp(join(directory, 'templates/notes'), join(directory, 'pages', slug), { recursive: true });
+  const { context, peers } = await pageContext(directory, slug);
+  const setup = await import(pathToFileURL(join(directory, 'pages', slug, 'setup.mjs')).href);
+  const prepared = await setup.initializePage(context, { browserFirst: true });
+  assert.equal(prepared.prepared, true); assert.equal(prepared.creator, 'browser'); assert.equal(prepared.dataInitialized, false);
+  assert.equal((await peers.application()).authority, null, 'the host holds no page data before the first browser');
+  await assert.rejects(access(context.devicePath), { code: 'ENOENT' }, 'browser-first init creates no agent device or keys');
+  assert.equal((await context.readPrivate('initialized.json')).creator, 'browser', 'the agent program opens the page and waits for admission');
+});
+
 /** A loopback host with the agent routes used by workspace init and page creation. */
 async function host(t) {
   const calls = [], granted = [];
@@ -181,7 +193,7 @@ async function host(t) {
       environment: { id: origin, label: 'Local', kind: 'local' }, build: { coreRelease: 'test', runtimeId: 'a'.repeat(64), sourceCommit: null },
       creation: { available: mode === 'open', code: mode === 'open' ? null : 'creation_paused', message: 'State.', nextAction: 'Keep this origin.' },
       writes: { available: true, code: null }, readinessUrl: origin + '/api/readiness', statusUrl: origin + '/status', checkedAt: new Date().toISOString() });
-    if (request.url === '/api/service') return json(200, { contract: 3, core_release: 'test', limits: {} });
+    if (request.url === '/api/service') return json(200, { contract: 3, core_release: 'test', limits: {}, attestationKey: 'ab'.repeat(32) });
     if (request.url === '/api/agents') return json(201, { id: AGENT, handle: JSON.parse(body).handle, bio: JSON.parse(body).bio ?? '', token: TOKEN, account_state: 'unclaimed' });
     if (request.headers.authorization !== 'Bearer ' + TOKEN) return json(401, { error: { code: 'unauthorized', message: 'No' } });
     if (request.url === '/api/agent') return json(200, { id: AGENT, handle: 'laptop', bio: '', account_state: 'unclaimed', grants: granted.length });

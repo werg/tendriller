@@ -51,7 +51,7 @@ test('native-only readiness needs the hub, the running page, local authoring abi
  f.report({page:PAGE,canAuthor:false,database:'ready'});assert.equal(readiness(f).length,0);
  f.report({page:PAGE,canAuthor:true,database:'ready'});
  assert.deepEqual(readiness(f),[{idleSoakCoverage:1,bootstrapScope:'native-only-without-mcp-adapter',wakeups:true,modelTurns:false,eventsForwarding:false},{idleSoakReady:1}]);
- const before=f.wakeups.length;f.report({page:PAGE,revision:{},change:'materialized'});f.report({page:PAGE,provisioning:{verified:true}});
+ const before=f.wakeups.length;f.report({page:PAGE,revision:{},change:'materialized'});f.report({page:PAGE,admission:'new-device',publicKey:'ab'.repeat(32),label:'Browser device'});
  assert.equal(f.wakeups.length,before+2);assert(f.wakeups.every(x=>x==='wakeups'));
  f.relay({idleSoak:1,source:'native',kind:'requests',count:1,category:'agent-hub'});
  assert.deepEqual(f.messages.at(-1),{idleSoak:1,source:'native',kind:'requests',count:1,category:'agent-hub'},'Observer counters from the agent program reach the runner.');
@@ -66,7 +66,7 @@ test('a reported reconciliation failure or session loss withholds readiness unti
  const f=fixture();await flush();f.report({hub:'connected'});f.report({page:PAGE,state:'running'});f.report({page:PAGE,canAuthor:true});
  f.report({page:PAGE,setup:{state:'connected'}});f.report({page:PAGE,state:'setup_retry',code:'x'});f.report({page:PAGE,connection:'connected'});
  assert.equal(readiness(f).length,0);
- f.report({page:PAGE,state:'page_retry'});f.report({page:PAGE,provisioning:{verified:true}});assert.equal(readiness(f).length,0,'A retried page must report its running state, local ability and route again.');
+ f.report({page:PAGE,state:'page_retry'});f.report({page:PAGE,setup:{state:'connected'}});assert.equal(readiness(f).length,0,'A retried page must report its running state, local ability and route again.');
  f.report({page:PAGE,state:'running'});f.report({page:PAGE,connection:'connected'});assert.equal(readiness(f).length,0);
  f.report({page:PAGE,canAuthor:true});assert.equal(readiness(f).length,2);
  f.stop.abort();await f.task;

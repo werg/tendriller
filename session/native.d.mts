@@ -1,5 +1,5 @@
 export interface NativeAttachmentPolicy {
-  capabilities?: readonly ('commands' | 'queries' | 'events' | 'content' | 'signals' | 'operations' | 'diagnostics' | 'finality' | 'provisioning' | 'publish')[];
+  capabilities?: readonly ('commands' | 'queries' | 'events' | 'content' | 'signals' | 'operations' | 'diagnostics' | 'finality' | 'extensions' | 'publish')[];
   commands?: readonly string[];
   queries?: readonly string[];
   identity?: { principalId?: string; agentBindingId?: string; deviceProfileId?: string };

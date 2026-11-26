@@ -6,15 +6,15 @@ import { pathToFileURL } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { checklist, intake } from './specimens/sql-domains.mjs';
+import { signSpecimenGenesis } from './specimens/genesis.mjs';
 import type { PageClient } from '../../dist/sdk/client.mjs';
 
 type Peers = PageClient['peers'];
 
 /**
- * Two native SQL devices on the authored-time CRDT through the live host. Authority is signed by the host from
- * each device's own enrollment proof (the first enrolled device is the root), never configured by this harness.
- * A second device's proof only binds its key to the account: the owner's browser grants its membership, and the
- * root's ordinary SQL permission transaction grants its checklist rights.
+ * Two native SQL devices on the authored-time CRDT through the live host. Device A creates the page: its own key
+ * signs the descriptor and genesis membership (naming device B), presented from the owner's signed-in page; the
+ * host only verifies and stores it and never signs authority.
  * Concurrent edits are not ordered by a participant: both are accepted locally, and after exchange the
  * deterministic authored-time order revises exactly one outcome. Disconnected authoring converges on reconnect
  * with the original signed operation preserved; there is no recovery, takeover, abandonment or reapply.
@@ -44,39 +44,18 @@ export async function runStagingSql({ consumer, handle, page, peers, privateInta
     const prepared = await peers.prepare({ executionManifestDigest, executionProfile: 'sql', publisherKeys: [signer.publicKey],
       tools: log.describeApplication(definition) });
     expect(prepared.selection.id).toBe(id);
-    expect(prepared.authority, 'No device has enrolled yet, so no data authority exists').toBeNull();
+    expect(prepared.authority, 'No device has created the page data yet').toBeNull();
 
-    // Enrollment goes through the signed-in owner page: the host binds each device key to the owner's account and
-    // signs the application authority. The first device becomes the root; the second joins its membership only
-    // through the owner's explicit grant below.
-    const enroll = async (device: any) => {
-      let metadata = await page.evaluate(async () => (window as any).tendril.host.peers.application());
-      let epoch = 0, epochKeyDigest = await log.epochKeyCommitment(id, 0, key);
-      if (metadata.authority !== null) {
-        const previous = log.decodeRecord(Uint8Array.from(Buffer.from(metadata.authority.record, 'hex')));
-        ({ epoch, epochKeyDigest } = previous.memberships.at(-1).payload);
-      }
-      const challenge = await page.evaluate(async publicKey => (window as any).tendril.host.peers.challenge(publicKey), device.identity.publicKey);
-      const proof = await log.signEnrollmentRequest({ applicationId: challenge.applicationId, publicKey: challenge.publicKey,
-        challenge: challenge.challenge, epoch, epochKeyDigest }, device.identity);
-      const record = { record: Buffer.from(log.encodeRecord(proof)).toString('hex') };
-      metadata = await page.evaluate(async value => (window as any).tendril.host.peers.enroll(value), record);
-      expect(metadata.authority).not.toBeNull();
-      const bundle = log.decodeRecord(Uint8Array.from(Buffer.from(metadata.authority.record, 'hex')));
-      await log.verifyAuthorityBundle(bundle);
-      return bundle;
-    };
-    await enroll(aDevice);
-    let bundle = await enroll(bDevice);
-    const head = bundle.memberships.at(-1);
-    if (!head.payload.members.some((member: { publicKey: string; reader: boolean }) => member.publicKey === bDevice.identity.publicKey && member.reader)) {
-      const floor = BigInt(Date.now()) > head.payload.authorTimeAfterMs ? BigInt(Date.now()) : head.payload.authorTimeAfterMs + 1n;
-      const granted = await page.evaluate(async input => (window as any).tendril.host.peers.grant(input), {
-        requestId: randomUUID(), expectedMembershipId: await log.recordDigest(head), authorTimeAfterMs: floor.toString(),
-        grant: { publicKey: bDevice.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false } });
-      bundle = log.decodeRecord(Uint8Array.from(Buffer.from(granted.authority.record, 'hex')));
-      await log.verifyAuthorityBundle(bundle);
-    }
+    // The owner's signed-in page presents A's genesis: initialization is an owner-account (or root agent) action.
+    const metadata = await page.evaluate(async () => (window as any).tendril.host.peers.application());
+    expect(metadata.authority).toBeNull();
+    const genesis = await signSpecimenGenesis(log, { metadata, identity: aDevice.identity, members: [bDevice.identity.publicKey], key });
+    const initialized = await page.evaluate(async value => (window as any).tendril.host.peers.initialize(value),
+      { record: Buffer.from(log.encodeRecord(genesis)).toString('hex') });
+    expect(initialized.authority).not.toBeNull();
+    const bundle = log.decodeRecord(Uint8Array.from(Buffer.from(initialized.authority.record, 'hex')));
+    await log.verifyAuthorityBundle(bundle);
+    expect(bundle.descriptor.payload.authorityPublicKey, 'The creating device, never the host, signs page authority').toBe(aDevice.identity.publicKey);
     expect(bundle.descriptor.payload.rootPrincipal).toBe(aDevice.identity.publicKey);
     expect(bundle.memberships.at(-1).payload.members.filter((member: { reader: boolean }) => member.reader)
       .map((member: { publicKey: string }) => member.publicKey).sort()).toEqual([aDevice.identity.publicKey, bDevice.identity.publicKey].sort());

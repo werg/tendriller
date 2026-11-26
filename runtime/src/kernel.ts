@@ -17,6 +17,7 @@ import { createWakeLockLease } from "./wake-lock";
 import { createShareTarget } from "./share-target";
 import { createNotifications } from "./notifications";
 import { createAgentsStore } from "./agents";
+import { createBroadcastsStore } from "./broadcasts";
 
 async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof createCore>): Promise<ServiceWorkerRegistration | null> {
   if (!("serviceWorker" in navigator) || !cfg.publication) return null;
@@ -51,6 +52,7 @@ export interface RuntimeOptions {
 export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): RuntimeApi {
   validateDocumentContext(cfg);
   const agents = createAgentsStore(cfg);
+  const broadcasts = createBroadcastsStore(cfg, { autoFetch: options.watchPublication === true });
   const core = createCore(cfg, options.application);
   // The address bar keeps the page's own URL so a reload or new tab opens the latest
   // selected release. Opening an immutable /_publications/ID/ URL pins explicitly.
@@ -129,6 +131,7 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     },
     shareTarget: createShareTarget(identity.base),
     notifications: createNotifications(identity.base, installation.api, () => registerOffline().catch(() => null)),
+    broadcasts: broadcasts.api,
   };
   return Object.freeze(shared);
 }

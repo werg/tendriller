@@ -7,7 +7,11 @@ import { createApplicationOwner } from '@chronolog/peer-session/worker';
 import { connectApplicationOwner } from '@chronolog/peer-session/browser';
 import { createCollaborationDefinition } from '../domain.mjs';
 import { captureCollaborationReader } from '../paging.mjs';
-import { checkOwnerFrame } from '../../session/browser-transport.mjs';
+
+function checkOwnerFrame(frame) {
+  const bytes = Buffer.byteLength(JSON.stringify(frame), 'utf8');
+  if (bytes > 512 * 1024) throw Error(`OWNER_FRAME_TOO_LARGE:${bytes}`);
+}
 
 const A='a'.repeat(64),B='b'.repeat(64),C='c'.repeat(64),APP='7'.repeat(64);
 let defaultClaimProposalId;

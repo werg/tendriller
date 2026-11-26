@@ -59,7 +59,7 @@ export function spawnAgentProgram(root, { onReport, onMessage }) {
 }
 
 const READY_PHASES = ['connected'];
-const RECONCILIATION_FAILURES = ['provisioning_required', 'awaiting_owner_claim', 'setup_retry', 'setup_channel_closed'];
+const RECONCILIATION_FAILURES = ['awaiting_owner_claim', 'setup_retry', 'setup_channel_closed'];
 
 /** Observation/readiness only: the page owner, authority refresh and assistant lifecycle stay inside the agent program. */
 export async function runNativeBootstrap({ assistant = false, events = false, workspace, signal, record, send }, { spawnAgent }) {
@@ -94,7 +94,7 @@ export async function runNativeBootstrap({ assistant = false, events = false, wo
     }
     if (value.state === 'agent_revoked') return fatal('AGENT_REVOKED');
     if (value.page !== pageId) return;
-    // Counts every actual page callback: setup notices and retries, provisioning results,
+    // Counts every actual page callback: setup notices and retries, admission notices,
     // participation status, application changes and assistant status.
     record('wakeups');
     if (value.state === 'running') activated = true;
@@ -102,7 +102,6 @@ export async function runNativeBootstrap({ assistant = false, events = false, wo
     if (['page_failed', 'page_retry', 'session_ended', 'closed'].includes(value.state)) { activated = false; localCanAuthor = false; participationReady = false; }
     if (value.connection !== undefined) participationReady = READY_PHASES.includes(value.connection) && !value.error;
     if (value.setup) reconciled = value.setup.state === 'connected';
-    if (value.provisioning?.verified === true) reconciled = true;
     if (RECONCILIATION_FAILURES.includes(value.state)) reconciled = false;
     if (assistant) {
       if (value.state === 'adapter_activity_failed' && events) { eventsForwardingBlocked = true; assistantStatus(adapterReady); }

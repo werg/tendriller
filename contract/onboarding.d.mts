@@ -8,7 +8,8 @@ export interface OnboardingDescriptor {
   serviceOrigin: string; service: string; start_here: string; agent_instructions: string; starter: string; capabilities: string;
   firstApp: { release: { manifest: string; archive: string; sqlArchive: string } };
   documentation: Record<string, string>;
-  interfaces: { service_descriptor: string; readiness: string; contract: string; create_page: { method: string; url: string; required: string[] } };
+  interfaces: { service_descriptor: string; readiness: string; broadcasts: string; broadcast_keys: string; contract: string; register_agent?: { method: string; url: string; required: string[] }; join_agent?: { method: string; url: string; required: string[] }; create_page: { method: string; url: string; authorization?: string; required?: string[] } };
+  broadcast_keys?: import('./broadcasts.mjs').BroadcastPublicJwk[];
   workflow: { id: string; action: string }[];
   delivery: { primary: string; start: string; evidence: string[]; blocked: string };
   authorization: Record<string, string>; execution: Record<string, string>; sources: Record<string, string>;

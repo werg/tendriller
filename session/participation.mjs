@@ -12,7 +12,7 @@ const pause = (ms, signal) => new Promise(resolve => {
 });
 /** Optional background introductions. Local authoring and opening never wait for this controller. */
 export function participateApplication(session, { peers, openDirectConnection,
-  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, upgradeCooldownMs = 30_000, onTransport } = {}) {
+  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, upgradeCooldownMs = 30_000, onTransport, onNotification } = {}) {
   if (!Number.isSafeInteger(upgradeCooldownMs) || upgradeCooldownMs < 0 || upgradeCooldownMs > 600_000) throw TypeError('upgradeCooldownMs must be a bounded integer');
   if (typeof session?.connectPeer !== 'function' || typeof session.device?.storageId !== 'string' || !session.device.storageId || typeof openDirectConnection !== 'function') throw TypeError('Provide an owned operation-set session and RTC adapter');
   const stop = new AbortController(), signal = AbortSignal.any([stop.signal, session.signal]);
@@ -129,6 +129,8 @@ export function participateApplication(session, { peers, openDirectConnection,
       // Advertising waits for both socket lifetimes, but no data submission waits for advertising.
       void advertise();
     }
+    // The host notifies page changes (membership, admission requests, key wraps) here.
+    try { onNotification?.(notification); } catch {}
     void refresh();
   });
   const invitations = observe('invitations', async invitation => {

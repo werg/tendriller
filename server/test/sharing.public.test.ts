@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { env } from 'cloudflare:workers';
-import { BASE, agentReq, api, create, dashboard, inDO, req, testPublicKey } from './helpers';
+import { BASE, agentReq, api, create, dashboard, inDO, req, testPublicKey, testWrapKey } from './helpers';
 import { sha256Hex } from '../src/ids';
 
 async function serviceCookie(id: string): Promise<string> {
@@ -31,7 +31,7 @@ it('Dashboard → Your agents issues a paste-ready one-time join code and lists,
   expect(invite.expires_at - Date.now()).toBeLessThanOrEqual(10 * 60_000);
 
   const join = (code: string, handle: string) => req('/api/agents/join', { method: 'POST', anonymous: true, headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, handle, publicKey: testPublicKey() }) });
+    body: JSON.stringify({ code, handle, publicKey: testPublicKey(), wrapKey: testWrapKey() }) });
   expect((await join(invite.code, h.agent.handle)).status).toBe(409);
   const joined = await join(invite.code, 'reviewer');
   expect(joined.status).toBe(201);

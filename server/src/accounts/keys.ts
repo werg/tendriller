@@ -1,14 +1,14 @@
 import type { Env } from "../env";
 import { errorResponse, HttpError, isPlainObject, json, readBody, toErrorResponse } from "../http";
-import { RESIDENT_LIMIT } from "../limits";
 import { publicBase } from "../urls";
 import { serviceSession } from "./auth";
 import { renderQrSvg } from "../qr";
-import { requireWritesOpen } from "../service-state";
+import { accountLimits, requireWritesOpen } from "../service-state";
 import { emojiIconSvg, iconSvg } from "../inject";
 import { DEFAULT_THEME_COLOR, isEmojiIcon } from "../pwa";
 import { avatar, icon, servicePage } from "./ui";
 import { accountGrants, createJoinCode, listAccountAgents, revokeAgent, setAgentGrant, setPagePrimaryAgent } from "../agents";
+import { listActiveBroadcasts } from "../broadcasts";
 
 function escape(s: string): string { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!); }
 export async function dashboard(req: Request, env: Env, url: URL): Promise<Response> {
@@ -17,8 +17,17 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
   const sessionMs = performance.now() - started;
   if (!session || !env.ACCOUNTS) return new Response(null, { status: 302, headers: { Location: `/auth?return_to=${encodeURIComponent(url.pathname)}` } });
   const db = env.ACCOUNTS;
-  const notices = await db.prepare("SELECT kind, tendril_id, reason, created_at FROM account_notices WHERE account_id = ? ORDER BY created_at DESC LIMIT 50")
-    .bind(session.accountId).all<{ kind: string; tendril_id: string | null; reason: string; created_at: number }>();
+  const [notices, broadcastFeed] = await Promise.all([
+    db.prepare("SELECT kind, tendril_id, reason, created_at FROM account_notices WHERE account_id = ? ORDER BY created_at DESC LIMIT 50")
+      .bind(session.accountId).all<{ kind: string; tendril_id: string | null; reason: string; created_at: number }>(),
+    listActiveBroadcasts(env, { audiences: ["dashboard", "page_owners"] }),
+  ]);
+  const systemBroadcasts = broadcastFeed.broadcasts.length
+    ? `<section class="card" aria-labelledby="system-broadcasts-title"><div class="card-head"><div><span class="eyebrow">Service</span><h2 id="system-broadcasts-title">System announcements</h2></div><span class="badge ${broadcastFeed.broadcasts.some(b => b.payload.severity === "critical" || b.payload.severity === "urgent") ? "danger" : "warn"}">${broadcastFeed.broadcasts.length}</span></div><ul class="list">${broadcastFeed.broadcasts.map(({ payload }) => {
+        const badge = payload.severity === "critical" || payload.severity === "urgent" ? "danger" : payload.severity === "recommended" ? "warn" : "";
+        return `<li class="list-item"><div class="list-item-main"><div class="list-item-title"><span class="badge ${badge}">${escape(payload.kind)} · ${escape(payload.severity)}</span> ${escape(payload.title)}</div><p class="list-item-sub">${escape(payload.summary)}${payload.docs_url ? ` · <a href="${escape(payload.docs_url)}" target="_blank" rel="noopener">Details</a>` : ""}</p>${payload.body ? `<p class="fine" style="margin-top:.35rem;white-space:pre-wrap">${escape(payload.body)}</p>` : ""}</div></li>`;
+      }).join("")}</ul></section>`
+    : "";
   const noticeList = notices.results.length
     ? `<section class="card"><div class="card-head"><div><h2>Notices</h2></div><span class="badge warn">${notices.results.length}</span></div><ul class="list">${notices.results.map(n => `<li class="list-item"><div class="list-item-main"><div class="list-item-title">${escape(n.kind.replaceAll("_", " "))}${n.tendril_id ? ` <code>${escape(n.tendril_id)}</code>` : ""}</div><p class="list-item-sub">${escape(n.reason)} · ${escape(new Date(n.created_at).toISOString())}</p></div></li>`).join("")}</ul></section>`
     : "";
@@ -139,7 +148,7 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
   if (req.method === "GET") {
     const tendrils = await db.prepare("SELECT id, lifetime, state, created_at FROM tendrils WHERE owner_account = ? ORDER BY created_at DESC")
       .bind(session.accountId).all<{ id: string; lifetime: string; state: string; created_at: number }>();
-    const [agents, grants] = await Promise.all([listAccountAgents(env, session.accountId), accountGrants(env, session.accountId)]);
+    const [agents, grants, limits] = await Promise.all([listAccountAgents(env, session.accountId), accountGrants(env, session.accountId), accountLimits(env)]);
     const dbMs = performance.now() - started - sessionMs;
     type Summary = { name: string; page_url: string; icon?: string | null; theme_color?: string | null; version: number; held: boolean; bytes: number; agents: number; primary_agent_id?: string | null; guests_waiting: number; last_activity: { ts: number; summary: string } | null };
     const summaries = await Promise.all(tendrils.results.map(async t => {
@@ -202,18 +211,19 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
     </dialog>`;
     const empty = `<article class="card" style="grid-column:1/-1;text-align:center;padding:2.5rem 1.5rem"><div class="way-icon" style="display:inline-grid;place-items:center;width:3.2rem;height:3.2rem;border-radius:14px;background:var(--accent-soft);color:var(--accent-text);font-size:1.5rem;margin-bottom:.8rem">${icon("sparkles")}</div><h2>Start with something useful</h2><p class="muted" style="margin:0 auto 1rem">Tell your agent what you want to build. Your first page will appear here.</p><div class="actions" style="justify-content:center"><button type="button" data-copy-from="build-prompt">${icon("copy")} Copy a starter prompt</button><a class="button secondary" href="https://cookbooks.tendriller.dev/">Explore cookbooks</a><a class="button ghost" href="/agent.md">Agent guide</a></div></article>`;
     const body = `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} Workspace</span><h1>${greeting}</h1><p class="lead">Signed in as ${escape(who)}.</p></div><div class="actions tight"><a class="button secondary sm" href="/connections">${icon("key")} Assistants</a><a class="button secondary sm" href="#agents">${icon("bot")} Agents</a><form class="inline-form" method="post" action="/auth/logout"><button class="secondary sm" type="submit">${icon("logout")} Sign out</button></form></div></div>
-      <div class="stats"><div class="stat"><strong>${tendrils.results.length}</strong><span>${tendrils.results.length === 1 ? "page" : "pages"}</span></div><div class="stat"><strong>${residents}<small style="font-size:.9rem;color:var(--hero-muted)"> / ${RESIDENT_LIMIT}</small></strong><span>resident pages</span></div><div class="stat"><strong>${agents.length}</strong><span>${agents.length === 1 ? "agent" : "agents"}</span></div><div class="stat"><strong>${totals.guests}</strong><span>guest requests</span></div></div></section>
+      <div class="stats"><div class="stat"><strong>${tendrils.results.length}</strong><span>${tendrils.results.length === 1 ? "page" : "pages"}</span></div><div class="stat"><strong>${residents}${limits.residents !== null ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${limits.residents}</small>` : ""}</strong><span>resident pages</span></div><div class="stat"><strong>${agents.length}</strong><span>${agents.length === 1 ? "agent" : "agents"}</span></div><div class="stat"><strong>${totals.guests}</strong><span>guest requests</span></div></div></section>
       ${url.searchParams.get("agent_revoked") === "1" ? `<p class="notice" role="status">${icon("check")}<span>Agent revoked. Its credential stopped working and its page connections were closed.</span></p>` : ""}
       ${url.searchParams.get("deleted") === "1" ? `<p class="notice" role="status">${icon("check")}<span>Page deleted. Its files, links and agent access were removed.</span></p>` : ""}
-      ${residents >= RESIDENT_LIMIT ? `<p class="notice warn">${icon("layers")}<span>You have reached ${RESIDENT_LIMIT} resident pages. Delete one you no longer need before an agent can make another page resident.</span></p>` : ""}
+      ${limits.residents !== null && residents >= limits.residents ? `<p class="notice warn">${icon("layers")}<span>You have reached ${limits.residents} resident pages. Delete one you no longer need before an agent can make another page resident.</span></p>` : ""}
+      ${systemBroadcasts}
       ${noticeList}
-      <section class="card" aria-labelledby="new-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} Bring in an agent</span><h2 id="new-title">Build a new page with any agent</h2><p>Paste this into Claude, ChatGPT, Codex or another coding agent, then describe what you want.</p></div></div><div class="copy-box"><textarea id="build-prompt" readonly rows="4" style="min-height:6.5rem">${escape(buildPrompt)}</textarea><div class="cluster"><button class="sm" type="button" data-copy-from="build-prompt">${icon("copy")} Copy prompt</button><a class="button ghost sm" href="/docs/BUILD_AN_APP.md">${icon("book")} Read the guide</a></div></div><p class="fine" style="margin-top:.75rem">To let one of your agents maintain an <em>existing</em> page, add it under <a href="#agents">Your agents</a>, then check it in that page’s <strong>Add people &amp; devices → An agent</strong>.</p></section>
+      <section class="card" aria-labelledby="new-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} Bring in an agent</span><h2 id="new-title">Build a new page with any agent</h2><p>Paste this into Claude Code, Codex, Meta Muse, OpenClaw, Hermes, or any other agent, then describe what you want.</p></div><a class="button secondary sm" href="/agents">Platform guides</a></div><div class="copy-box"><textarea id="build-prompt" readonly rows="4" style="min-height:6.5rem">${escape(buildPrompt)}</textarea><div class="cluster"><button class="sm" type="button" data-copy-from="build-prompt">${icon("copy")} Copy prompt</button><a class="button ghost sm" href="/docs/BUILD_AN_APP.md">${icon("terminal")} Agent instructions</a></div></div><p class="fine" style="margin-top:.75rem">To let one of your agents maintain an <em>existing</em> page, add it under <a href="#agents">Your agents</a>, then check it in that page’s <strong>Add people &amp; devices → An agent</strong>.</p></section>
       ${agentsSection}
       <div class="section-title"><h2>Your pages</h2><span class="badge">${tendrils.results.length}</span><span class="rule"></span></div>
       <div class="grid">${cards.join("") || empty}</div>
       <details class="disclosure"><summary>Account settings</summary><div class="disclosure-body stack"><div class="actions tight"><a class="button secondary sm" href="/dashboard/export">Download account data</a><a class="button secondary sm" href="/auth/link/github">Link GitHub</a><a class="button secondary sm" href="/auth/link/google">Link Google</a><a class="button secondary sm" href="/oauth/connections">OAuth clients</a></div><div class="card danger"><h3>Delete account</h3><p class="muted" style="font-size:.88rem">Permanently deletes your pages and stored files.</p><form method="post" action="/dashboard/delete"><div class="field"><label class="field-label" for="delete-confirm">Type DELETE to confirm</label><input id="delete-confirm" name="confirm" required></div><div class="actions"><button class="danger sm">Delete account</button></div></form></div></div></details>
       ${dialog}
-      <dialog class="sheet" id="delete-dialog" aria-labelledby="delete-title" style="width:min(30rem,calc(100vw - 1.5rem))"><form method="post" id="delete-form"><div class="sheet-head"><div><span class="eyebrow" style="color:var(--danger)">${icon("trash")} Delete page</span><h2 id="delete-title">…</h2></div><button class="ghost sm icon-button" type="button" data-close aria-label="Close">${icon("x")}</button></div><div class="sheet-body"><p>This permanently deletes the page, its published files, invite links and agent credentials. People and devices lose access immediately. This cannot be undone.</p><p class="fine" id="delete-resident" hidden>This frees one of your ${RESIDENT_LIMIT} resident page slots.</p><input type="hidden" name="confirm" id="delete-confirm-id"><div class="actions"><button class="danger" type="submit">${icon("trash")} Delete permanently</button><button class="secondary" type="button" data-close>Cancel</button></div></div></form></dialog>`;
+      <dialog class="sheet" id="delete-dialog" aria-labelledby="delete-title" style="width:min(30rem,calc(100vw - 1.5rem))"><form method="post" id="delete-form"><div class="sheet-head"><div><span class="eyebrow" style="color:var(--danger)">${icon("trash")} Delete page</span><h2 id="delete-title">…</h2></div><button class="ghost sm icon-button" type="button" data-close aria-label="Close">${icon("x")}</button></div><div class="sheet-body"><p>This permanently deletes the page, its published files, invite links and agent credentials. People and devices lose access immediately. This cannot be undone.</p>${limits.residents !== null ? `<p class="fine" id="delete-resident" hidden>This frees one of your ${limits.residents} resident page slots.</p>` : `<p class="fine" id="delete-resident" hidden></p>`}<input type="hidden" name="confirm" id="delete-confirm-id"><div class="actions"><button class="danger" type="submit">${icon("trash")} Delete permanently</button><button class="secondary" type="button" data-close>Cancel</button></div></div></form></dialog>`;
     const script = `<script>(()=>{
 const $=id=>document.getElementById(id),dialog=$('add-dialog');let current=null,opener=null;
 const flash=(b,t)=>{const old=b.innerHTML;b.textContent=t;b.disabled=true;setTimeout(()=>{b.innerHTML=old;b.disabled=false},1600)};

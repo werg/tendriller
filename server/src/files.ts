@@ -11,6 +11,9 @@ import { appleTouchIcon, iconRasterRequest } from "./icon-raster";
 import { MAX_FILES_PER_VERSION } from "./limits";
 import { isHtmlType } from "./mime";
 import { assetResponse, etagMatches, immutableObject } from "./immutable-cache";
+import { brandMark } from "./brand";
+import { icon, renderShell } from "./accounts/ui";
+import { broadcastSummary, publicBroadcastKeys, recordPageVersion } from "./broadcasts";
 
 function scanContent(body: ArrayBuffer): number {
   const text = new TextDecoder().decode(body.slice(0, 1024 * 1024));
@@ -155,11 +158,12 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     await t.hold("High static screening score on young account");
   }
   await options.beforeCommit();
+  const publishedAt = t.now();
   const n = t.transaction(() => {
     assertStoredContent(t, files.values());
     const next = t.db.get<number>("latest", 0) + 1;
     t.db.run("INSERT INTO versions (version, created_at, runtime_id, runtime_version, runtime_features, message, by, risk_score, risk_flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      next, t.now(), runtimeRelease.id, runtimeRelease.version, JSON.stringify(runtimeRelease.features), message, by, riskScore, JSON.stringify(riskFlags));
+      next, publishedAt, runtimeRelease.id, runtimeRelease.version, JSON.stringify(runtimeRelease.features), message, by, riskScore, JSON.stringify(riskFlags));
     for (const f of files.values()) {
       t.db.run("INSERT INTO version_files (version, path, hash, type, size) VALUES (?, ?, ?, ?, ?)", next, f.path, f.hash, f.type, f.size);
 
@@ -176,6 +180,7 @@ export async function createVersion(t: Tendril, files: Map<string, VersionFile>,
     });
     return next;
   });
+  t.afterCommit(() => recordPageVersion(t.env, t.tid, n, runtimeRelease.id, runtimeRelease.version, publishedAt));
   return n;
 }
 
@@ -225,9 +230,13 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
   }
   if (risk >= 5 && role === "owner" && accountId &&
     !t.db.one("SELECT 1 AS x FROM trusted_versions WHERE account_id = ? AND version = ?", accountId, version)) {
-    const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Review this version · Tendriller</title><link rel="icon" href="/_tendril/brand/icon-64.png"><style>body{font:16px/1.6 system-ui,sans-serif;max-width:42rem;margin:2rem auto;padding:0 1.25rem}img{vertical-align:middle;margin-right:.5rem}button{padding:.7rem 1rem;background:#17654b;color:white;border:0;border-radius:.6rem;font:inherit}</style></head><body><main><p><img src="/_tendril/brand/icon-64.png" alt="" width="32" height="32">Tendriller</p>
-      <h1>Review this page before opening it</h1><p>This version asks for passwords, sends data elsewhere, or contains another risky pattern. Tendriller never asks for passwords. Continue only if you trust the agent that made it.</p>
-      <form method="post" action="${base}_tendril/trust-version"><input type="hidden" name="version" value="${version}"><button>Continue to page</button></form></main></body></html>`;
+    const html = renderShell({
+      title: "Review this version",
+      brand: brandMark("/_tendril/brand/", base),
+      nav: `<a class="nav-link" href="${base}_tendril/manage">Page settings</a>`,
+      footer: "",
+      body: `<section class="card danger"><span class="eyebrow" style="color:var(--danger)">${icon("shield")} Security review</span><h1>Review this page before opening it</h1><p class="lead">This version asks for passwords, sends data elsewhere, or contains another risky pattern. Tendriller never asks for passwords. Continue only if you trust the agent that made it.</p><form method="post" action="${base}_tendril/trust-version"><input type="hidden" name="version" value="${version}"><div class="actions"><button type="submit">Continue to page</button><a class="button secondary" href="${base}_tendril/manage">Page settings</a></div></form></section>`,
+    });
     return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
       "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }
@@ -273,7 +282,13 @@ export async function servePageFile(t: Tendril, req: Request, base: string, rest
     // the publication or adding a discovery poll to a running application.
     headers.set("Cache-Control", "private, no-cache");
     if (req.method === 'HEAD') return new Response(null, { headers });
+    const [broadcastKeys, bcSummary] = await Promise.all([
+      publicBroadcastKeys(t.env).then(r => r.keys).catch(() => []),
+      broadcastSummary(t.env).catch(() => ({ latestSeq: 0, activeCount: 0, criticalCount: 0 })),
+    ]);
     const html = injectRuntime(await obj.text(), { id: t.tid, base, version, application, peerBootstrap: introductions, documentPath: path, features: t.features(), publication: publicationManifest(t, version, base),
+      broadcastKeys,
+      ...(bcSummary.activeCount > 0 ? { broadcastLatestSeq: bcSummary.latestSeq } : {}),
       branding: { ...branding(), appleIcon: await appleTouchIcon(t, base, new URL(base, req.url).href).catch(() => null) }, iconRaster: iconRasterRequest(t, role) });
     return new Response(html, { headers });
   }

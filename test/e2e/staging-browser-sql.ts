@@ -91,10 +91,10 @@ export async function openBrowserSqlSpecimen(options: {
     }
   }
   const [first, second] = fixtures;
-  // Authority is not configured by this harness. The host signs it from the first enrolling browser's own
-  // proof (that device becomes the root and administrator; an additional account-bound device enrolls into
-  // the existing membership with the same explicitly test-provisioned data key), so the harness only
-  // prepares publication: the independent publisher, the exact execution graph and the declared tools.
+  // The harness only prepares publication: the independent publisher, the exact execution graph and the
+  // declared tools. The first browser creates the page itself: its own key signs the descriptor and genesis
+  // membership (it becomes the root and administrator and names the second device's key), presented from the
+  // owner's signed-in page; the host never signs authority. Both use the same explicitly test-provisioned data key.
   const signer = await log.createSigningIdentity();
   const definition = isPrivate ? intake(log, first.id) : checklist(log);
   const key = new Uint8Array(randomBytes(32));
@@ -105,38 +105,7 @@ export async function openBrowserSqlSpecimen(options: {
     tools: log.describeApplication(definition) });
   expect(prepared.selection.id).toBe(applicationId);
   expect(prepared.publicationAuthority.publisherKeys).toEqual([signer.publicKey]);
-  expect(prepared.authority, 'No browser has enrolled yet, so no data authority exists').toBeNull();
-  // Enrollment proof only binds an additional device's key to its account; it grants no data rights. Record that
-  // proof from the device's own origin first (an unmarked, unmeasured read), then make the owner's explicit
-  // membership grant from the owner's browser, so the measured opening below starts from an authorized reader. The data key itself is
-  // the explicitly test-provisioned one, not a wrapped-key transfer.
-  const grantAdditionalDevice = async (fixture: Fixture) => {
-    const bootstrap = new URL('acceptance-enrollment.mjs', pageUrl).href;
-    await fixture.page.route(bootstrap, route => route.fulfill({ contentType: 'text/javascript', body: workerCode }));
-    try {
-      await fixture.page.evaluate(input => new Promise<void>((resolve, reject) => {
-        const worker = new Worker(input.bootstrap, { type: 'module' });
-        const finish = () => { clearTimeout(timer); worker.terminate(); };
-        const timer = setTimeout(() => { finish(); reject(new Error('Additional device enrollment timed out')); }, 20_000);
-        worker.onerror = event => { finish(); reject(new Error(event.message)); };
-        worker.onmessage = ({ data }) => { finish(); if (data.type === 'enrolled') resolve(); else reject(new Error(data.message)); };
-        worker.postMessage({ type: 'enroll', name: input.name, applicationId: input.applicationId, key: input.key,
-          base: (window as any).tendril.identity.base });
-      }), { bootstrap, name: fixture.name, applicationId, key: Array.from(key) });
-    } finally { await fixture.page.unroute(bootstrap); }
-    const metadata = await peers.application();
-    const head = log.decodeRecord(Uint8Array.from(Buffer.from(metadata.authority.record, 'hex'))).memberships.at(-1);
-    const floor = BigInt(Date.now()) > head.payload.authorTimeAfterMs ? BigInt(Date.now()) : head.payload.authorTimeAfterMs + 1n;
-    // Membership grants are an owner action from the owner's signed-in browser, never the agent credential.
-    const granted = await first.page.evaluate(async body => {
-      const response = await fetch(new URL('_tendril/peers/enrollment', (window as any).tendril.identity.base), {
-        method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'grant', ...body }) });
-      return { status: response.status, body: await response.json().catch(() => null) };
-    }, { requestId: randomUUID(), expectedMembershipId: await log.recordDigest(head), authorTimeAfterMs: floor.toString(),
-      grant: { publicKey: fixture.id, reader: true, writer: true, administrator: false, publisher: false, finalizer: false } });
-    expect(granted.status, `Owner membership grant: ${JSON.stringify(granted.body)}`).toBe(200);
-  };
+  expect(prepared.authority, 'No browser has created the page data yet').toBeNull();
   const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
   const assetTypes = { 'manifest.json': 'application/json', 'sqlite3.mjs': 'text/javascript',
@@ -168,13 +137,13 @@ export async function openBrowserSqlSpecimen(options: {
   // Canonical session participation owns discovery, bounded attempts and failure
   // backoff for asymmetric startup; this barrier is not a product readiness rule
   // or a substitute for qualification of that controller.
-  // The first fixture must enroll first: it becomes the root device. Each device keeps its own bounded
+  // The first fixture must open first: it creates the page as the root device. Each device keeps its own bounded
   // metadata budget, so preparing them one after another cannot consume a peer's opening deadline.
   for (const fixture of fixtures) {
-    if (fixture !== first) await grantAdditionalDevice(fixture);
     await fixture.page.waitForFunction(() => typeof (window as any).prepareAcceptanceSession === 'function');
     await fixture.page.evaluate(async input => (window as any).prepareAcceptanceSession({ ...input, key: new Uint8Array(input.key) }),
-      { name: fixture.name, key: Array.from(key), respondent: isPrivate ? first.id : undefined });
+      { name: fixture.name, key: Array.from(key), respondent: isPrivate ? first.id : undefined,
+        members: fixture === first ? fixtures.map(item => item.id) : undefined });
   }
   // Tables are created by an ordinary authorized DDL transaction on the root device before any live view
   // exists; opening then synchronizes it to the other device before that device's single initial read.
@@ -191,9 +160,10 @@ export async function openBrowserSqlSpecimen(options: {
     return Promise.all([open(first, second.id, channel), open(second, first.id, channel)]);
   };
   await pair();
-  const enrolled = await peers.application();
-  const bundle = log.decodeRecord(Uint8Array.from(Buffer.from(enrolled.authority.record, 'hex')));
+  const created = await peers.application();
+  const bundle = log.decodeRecord(Uint8Array.from(Buffer.from(created.authority.record, 'hex')));
   expect(bundle.descriptor.payload.rootPrincipal).toBe(first.id);
+  expect(bundle.descriptor.payload.authorityPublicKey, 'The creating browser, never the host, signs page authority').toBe(first.id);
   expect(bundle.memberships.at(-1).payload.members.filter((member: { reader: boolean }) => member.reader).map((member: { publicKey: string }) => member.publicKey).sort())
     .toEqual([first.id, second.id].sort());
   return {

@@ -68,7 +68,11 @@ for (const slowPeer of ['none', 'owner', 'guest', 'cold-sql'] as const) {
       const startup = await page.evaluate(() => (window as any).inspectAcceptanceState?.());
       console.info('SQL_FIXTURE_STARTUP', JSON.stringify(startup));
       expect(startup.viewReads, 'One coherent initial read, with no post-Ready duplicate').toBe(1);
-      expect(await second.evaluate(() => (window as any).inspectAcceptanceState?.().viewReads)).toBe(1);
+      // The guest may legitimately reread when a replicated revision (e.g. its grant) lands after its
+      // first read; it must never reread a revision it already displays.
+      const guestState = await second.evaluate(() => (window as any).inspectAcceptanceState?.());
+      expect(guestState.viewReads).toBeGreaterThanOrEqual(1);
+      expect(guestState.duplicateViewReads, 'No redundant reread of a displayed revision').toBe(0);
       if (isPrivate) {
         for (const answer of ['First answer', 'Corrected answer']) {
           await page.getByRole('textbox', { name: 'Your answer' }).fill(answer);

@@ -12,6 +12,17 @@ const TOOL_SPECS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'system_broadcasts',
+    description: 'Fetch and verify Ed25519-signed system broadcasts (dependency upgrades, security advisories, maintenance notices) matched against this workspace, or acknowledge a broadcast by id.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        acknowledgeId: { type: 'string', pattern: '^bc_[a-z2-7]{26}$', description: 'Optional broadcast id to mark acknowledged locally.' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'app_discover',
     description: 'Inspect the connected Tendriller application descriptor, allowed commands/queries, and current session status.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -156,7 +167,8 @@ const TOOL_SPECS = [
   },
 ];
 // Every page-scoped tool takes `page`; the agent program attaches to that page only.
-export const TOOLS = TOOL_SPECS.map(tool => tool.name === 'pages_list' ? tool : { ...tool, inputSchema: { ...tool.inputSchema,
+const GLOBAL_TOOLS = new Set(['pages_list', 'system_broadcasts']);
+export const TOOLS = TOOL_SPECS.map(tool => GLOBAL_TOOLS.has(tool.name) ? tool : { ...tool, inputSchema: { ...tool.inputSchema,
   properties: { page: PAGE, ...tool.inputSchema.properties }, required: ['page', ...(tool.inputSchema.required ?? [])] } });
 
 async function observationOf(session, operationId) {
@@ -181,7 +193,10 @@ function validateArguments(name, args) {
         /[\u0000-\u001f\u007f]/u.test(item.operationId) || !Object.hasOwn(item, 'input'))
       throw invalid('Every command needs a name, input and stable operationId');
   };
-  if (name !== 'pages_list' && (typeof args.page !== 'string' || !args.page.trim() || args.page.length > 64)) throw invalid('Supply the page slug or id');
+  if (!GLOBAL_TOOLS.has(name) && (typeof args.page !== 'string' || !args.page.trim() || args.page.length > 64)) throw invalid('Supply the page slug or id');
+  if (name === 'system_broadcasts' && args.acknowledgeId !== undefined && (typeof args.acknowledgeId !== 'string' || !/^bc_[a-z2-7]{26}$/.test(args.acknowledgeId))) {
+    throw invalid('acknowledgeId must be a valid broadcast id (bc_...)');
+  }
   if (name === 'command_submit') command({ ...args, page: undefined });
   if (name === 'command_submit_batch') {
     if (!Array.isArray(args.commands) || args.commands.length > 32) throw invalid('Supply 0..32 commands');
@@ -259,6 +274,10 @@ export async function handleStdioMcpMessage(pages, message, { signal } = {}) {
       if (name === 'pages_list') {
         const self = typeof pages.self === 'function' ? pages.self() : null;
         return toolOk({ ...(self ? { self } : {}), pages: await pages.list() });
+      }
+      if (name === 'system_broadcasts') {
+        if (typeof pages.broadcasts !== 'function') return toolErr('broadcasts_unavailable', 'System broadcasts are not available in this context');
+        return toolOk(await pages.broadcasts({ ...(args.acknowledgeId ? { acknowledgeId: args.acknowledgeId } : {}), signal }));
       }
       const owned = await pages.open(args.page, { signal });
       const { session } = owned;

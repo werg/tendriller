@@ -40,13 +40,13 @@ export async function prepareDevHostRelease({ release, directory, artifacts, man
   if ([...files.keys()].some(path => !isDeploymentPath(path)))
     throw Error('The deployment contains a path outside the public release graph.');
   const proof = JSON.parse(Buffer.from(files.get('dist/engine/provenance.json') ?? []).toString('utf8'));
-  if (proof.dirty !== false || proof.source !== release || proof.sourceTree !== manifest.source_tree || proof.storageSchemaRevision !== 13)
-    throw Error('Local hosting requires a clean matching engine with storage schema 13. Use a compatible dev-host version for other schemas.');
+  if (proof.dirty !== false || proof.source !== release || proof.sourceTree !== manifest.source_tree || proof.storageSchemaRevision !== 14)
+    throw Error('Local hosting requires a clean matching engine with storage schema 14. Use a compatible dev-host version for other schemas.');
   for (const [path, sha256] of Object.entries(proof.files ?? {})) {
     const content = files.get('dist/engine/' + path);
     if (!content || digest(content) !== sha256) throw Error(`The packed engine failed verification: ${path}`);
   }
-  for (const path of ['dist/engine/worker.mjs', 'dist/engine/testing-ratelimits.json', 'dist/engine/migrations/0001_accounts.sql', 'dist/engine/migrations/0002_agents.sql', 'server/public/llms.txt'])
+  for (const path of ['dist/engine/worker.mjs', 'dist/engine/testing-ratelimits.json', 'dist/engine/migrations/0001_accounts.sql', 'dist/engine/migrations/0002_agents.sql', 'dist/engine/migrations/0003_broadcasts.sql', 'dist/engine/migrations/0004_account_limits.sql', 'server/public/llms.txt'])
     if (!files.has(path)) throw Error(`The sealed deployment is missing ${path}.`);
   // Only our dedicated release child is replaced. D1, R2, device and browser state live elsewhere.
   const destination = join(resolve(directory), 'release');

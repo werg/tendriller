@@ -1,8 +1,8 @@
 // Signed browser page: it opens its own retained identity/keys/storage and never requires the native participant.
 import { openBrowserOwner } from '@tendriller/core/browser-owner';
-import { createLiveView, createViewStore, createApplicationBackend } from '@chronolog/peer-session';
+import { createLiveView, createApplicationBackend } from '@chronolog/peer-session';
 import { browserProfileId } from './support/browser-profile.mjs';
-import { mountProvisioning } from './support/provisioning-view.mjs';
+import { mountDevices } from './support/devices-view.mjs';
 import { enableHostedMcp } from './support/hosted-mcp.mjs';
 import { deriveChecklist } from './review-domain.mjs';
 const $ = selector => document.querySelector(selector);
@@ -12,8 +12,7 @@ const configuration = await response.json(), profileId = browserProfileId(config
 let storage, viewId;
 try { storage = localStorage; viewId = sessionStorage.getItem(`${profileId}:view`) || crypto.randomUUID(); sessionStorage.setItem(`${profileId}:view`, viewId); }
 catch { const map = new Map(); storage = { get length() { return map.size; }, key: i => [...map.keys()][i] ?? null, getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) }; viewId = crypto.randomUUID(); }
-const local = createViewStore({ storage, applicationId: configuration.applicationId, profileId, viewId });
-let attachment, session, live, provisioning, hostedMcp, canAuthor = false, items = [];
+let attachment, session, live, devices, hostedMcp, canAuthor = false, items = [];
 const nodes = new Map();
 function render() {
   for (const item of items) {
@@ -36,10 +35,10 @@ function render() {
 async function connect() {
   try {
     attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, context: { viewId }, timeoutMs: 30_000 });
-    session = attachment.session; $('#public-key').value = session.identity.publicKey;
-    session.onStatus(status => { canAuthor = status.canAuthor; $('#connection-status').textContent = `${status.canAuthor ? 'Local signing and storage ready' : 'Key provisioning required'} · ${status.connectedPeers} connected peers. Peer availability never gates saving.`; render(); });
+    session = attachment.session;
+    session.onStatus(status => { canAuthor = status.canAuthor; $('#connection-status').textContent = `${status.canAuthor ? 'Local signing and storage ready' : 'This browser is not admitted yet (see Devices and access)'} · ${status.connectedPeers} connected peers. Peer availability never gates saving.`; render(); });
     window.tendril.application.install(createApplicationBackend(session));
-    provisioning = mountProvisioning({ root: $('#provisioning'), session, peers: window.tendril.host.peers, local });
+    devices = mountDevices({ root: $('#devices'), session, pageUrl: configuration.page_url, storage });
     // Page options → An agent offers explicit owner opt-in for each linked OAuth client; nothing connects automatically.
     hostedMcp = enableHostedMcp({ runtime: window.tendril, session, peers: window.tendril.host.peers, label: 'Review checklist' });
     live = createLiveView(session, deriveChecklist, { onError: error => { $('#view-error').hidden = false; $('#view-error').textContent = `View not current: ${error.message}. The last snapshot is retained.`; } });
@@ -48,6 +47,6 @@ async function connect() {
     window.tendril.ready();
   } catch (error) { $('#connection-status').textContent = `Local session could not open: ${error.message}. Retain this browser profile.`; }
 }
-window.addEventListener('pagehide', event => { if (event.persisted) void attachment?.suspend().catch(() => {}); else { live?.close(); provisioning?.close(); hostedMcp?.close(); void attachment?.detach().catch(() => {}); } });
+window.addEventListener('pagehide', event => { if (event.persisted) void attachment?.suspend().catch(() => {}); else { live?.close(); devices?.close(); hostedMcp?.close(); void attachment?.detach().catch(() => {}); } });
 window.addEventListener('pageshow', event => { if (event.persisted) void attachment?.resume().then(() => live?.refresh()).catch(() => {}); });
 void connect();

@@ -95,7 +95,7 @@ class HubStream extends EventTarget {
  * Streams fail closed (1006) when the connection is lost so callers' own retry logic reopens them. */
 export function createAgentHub({ service, token, WebSocket: Socket = globalThis.WebSocket, probe,
   retryMs = HUB_LIMITS.retryMs, maxRetryMs = HUB_LIMITS.maxRetryMs, pingMs = HUB_LIMITS.pingMs,
-  openTimeoutMs = HUB_LIMITS.openTimeoutMs, keepAlive = false } = {}) {
+  openTimeoutMs = HUB_LIMITS.openTimeoutMs, keepAlive = false, versions, lastBroadcastSeq } = {}) {
   let url;
   try { url = new URL('/api/agent/hub', service); } catch { fail('invalid_hub', 'Expected the service origin'); }
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
@@ -104,9 +104,11 @@ export function createAgentHub({ service, token, WebSocket: Socket = globalThis.
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   if (typeof token !== 'string' || !/^ta_[a-z2-7]{32}$/.test(token)) fail('invalid_hub', 'The hub requires an agent token');
   if (typeof Socket !== 'function') fail('invalid_hub', 'A WebSocket implementation is required');
-  const streams = new Map(), pending = new Map(), listeners = new Set(), statusListeners = new Set();
+  const streams = new Map(), pending = new Map(), listeners = new Set(), statusListeners = new Set(), broadcastListeners = new Set();
   let socket, state = 'idle', failures = 0, retryTimer, pingTimer, lastSeen = 0, nextStream = 1, stopped = false, terminal, connectedOnce = false;
-  const want = () => !stopped && !terminal && (keepAlive || streams.size > 0 || listeners.size > 0);
+  let currentVersions = versions ?? null;
+  let broadcastCursor = Number.isSafeInteger(lastBroadcastSeq) && lastBroadcastSeq >= 0 ? lastBroadcastSeq : 0;
+  const want = () => !stopped && !terminal && (keepAlive || streams.size > 0 || listeners.size > 0 || broadcastListeners.size > 0);
   const status = value => {
     state = value.state;
     for (const listener of statusListeners) { try { listener(Object.freeze(value)); } catch {} }
@@ -139,6 +141,19 @@ export function createAgentHub({ service, token, WebSocket: Socket = globalThis.
       if (typeof frame.page !== 'string' || typeof frame.kind !== 'string') return;
       const value = Object.freeze({ page: frame.page, kind: frame.kind, data: frame.data ?? null });
       for (const listener of listeners) { try { listener(value); } catch {} }
+      return;
+    }
+    if (frame.t === 'broadcasts') {
+      if (!Array.isArray(frame.broadcasts)) return;
+      const latest = Number.isSafeInteger(frame.latest_seq) && frame.latest_seq >= 0 ? frame.latest_seq : broadcastCursor;
+      if (latest > broadcastCursor) broadcastCursor = latest;
+      const value = Object.freeze({
+        issuer: typeof frame.issuer === 'string' ? frame.issuer : '',
+        keys: Array.isArray(frame.keys) ? frame.keys : [],
+        latest_seq: latest,
+        broadcasts: frame.broadcasts,
+      });
+      for (const listener of broadcastListeners) { try { listener(value); } catch {} }
       return;
     }
     const stream = Number.isSafeInteger(frame.s) ? streams.get(frame.s) : undefined;
@@ -189,6 +204,15 @@ export function createAgentHub({ service, token, WebSocket: Socket = globalThis.
       if (socket !== current) return;
       opened = true; clearTimeout(openTimer); failures = 0; lastSeen = Date.now();
       status({ state: 'connected', reconnected: connectedOnce }); connectedOnce = true;
+      if (currentVersions || broadcastListeners.size > 0) {
+        try {
+          sendFrame({
+            t: 'hello',
+            ...(currentVersions ? { versions: currentVersions } : {}),
+            ...(broadcastListeners.size > 0 ? { last_broadcast_seq: broadcastCursor } : {}),
+          });
+        } catch {}
+      }
       pingTimer = setInterval(() => {
         if (Date.now() - lastSeen > 2 * pingMs) { try { current.close(); } catch {} lost(1006); return; }
         try { sendFrame({ t: 'ping' }); } catch {}
@@ -237,6 +261,26 @@ export function createAgentHub({ service, token, WebSocket: Socket = globalThis.
       if (typeof listener !== 'function') fail('invalid_hub_listener', 'Expected an event listener');
       listeners.add(listener); connect();
       return () => { listeners.delete(listener); scheduleIdle(); };
+    },
+    /** Receive {issuer, keys, latest_seq, broadcasts} delivered on hub connect/reconnect. */
+    broadcasts(listener) {
+      if (typeof listener !== 'function') fail('invalid_hub_listener', 'Expected a broadcast listener');
+      broadcastListeners.add(listener); connect();
+      return () => { broadcastListeners.delete(listener); scheduleIdle(); };
+    },
+    /** Update client versions and optional broadcast cursor sent on connect (or immediately if open). */
+    sendHello({ versions: nextVersions, lastBroadcastSeq: nextSeq } = {}) {
+      if (nextVersions !== undefined) currentVersions = nextVersions;
+      if (Number.isSafeInteger(nextSeq) && nextSeq >= 0) broadcastCursor = nextSeq;
+      if (socket?.readyState === OPEN) {
+        try {
+          sendFrame({
+            t: 'hello',
+            ...(currentVersions ? { versions: currentVersions } : {}),
+            last_broadcast_seq: broadcastCursor,
+          });
+        } catch {}
+      }
     },
     onStatus(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
     connect() { keepAlive = true; connect(); },

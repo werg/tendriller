@@ -46,6 +46,10 @@ export type RuntimeConfiguration = {
   peerBootstrap?: import("./peers.mjs").PeerBootstrap;
   /** Owner pages only: draw the page's icon SVGs into 512px PNGs for Android home-screen installs. */
   iconRaster?: { key: string };
+  /** Trusted service Ed25519 public keys for verifying signed system broadcasts. */
+  broadcastKeys?: import("./broadcasts.mjs").BroadcastPublicJwk[];
+  /** Latest active system broadcast sequence number (omitted or 0 when no broadcasts are active, avoiding eager page fetches). */
+  broadcastLatestSeq?: number;
 } & (
   /** Decoded logical path of this document, independently of the publication's root entry. */
   { publication: PublicationManifest; documentPath: string }
@@ -168,6 +172,30 @@ export interface RuntimeAgents {
   registerMcpConnector(connector: (input: HostedMcpConnectInput) => Promise<unknown>): () => void;
   connectMcp(input: HostedMcpConnectInput): Promise<unknown>;
 }
+export interface RuntimeBroadcastEntry {
+  readonly id: string;
+  readonly seq: number;
+  readonly kind: import("./broadcasts.mjs").BroadcastKind;
+  readonly severity: import("./broadcasts.mjs").BroadcastSeverity;
+  readonly title: string;
+  readonly summary: string;
+  readonly body: string;
+  readonly docs_url: string | null;
+  readonly action: import("./broadcasts.mjs").BroadcastAction | null;
+  readonly dismissible: boolean;
+  readonly created_at: number;
+  readonly expires_at: number | null;
+  readonly dismissed: boolean;
+  readonly verified: boolean;
+  readonly matchReasons: readonly string[];
+}
+export interface RuntimeBroadcasts {
+  list(): RuntimeBroadcastEntry[];
+  active(): RuntimeBroadcastEntry[];
+  refresh(): Promise<RuntimeBroadcastEntry[]>;
+  dismiss(id: string): void;
+  onChange(listener: (entries: RuntimeBroadcastEntry[]) => void): () => void;
+}
 /** Explicit hosted operations. Constructing these services starts no connection or request. */
 export interface HostServices {
   readonly peers: import("./peers.mjs").PeersClient;
@@ -225,6 +253,8 @@ export interface RuntimeServices {
   readonly shareTarget?: RuntimeShareTarget;
   /** Opt-in Web Push notifications and app icon badging (zero eager network requests). */
   readonly notifications?: RuntimeNotifications;
+  /** Signed service-wide system broadcasts matched locally for this page. */
+  readonly broadcasts?: RuntimeBroadcasts;
 }
 /** Application work belongs to the installed session; host services are explicit. */
 export interface RuntimeApi extends RuntimeServices {}

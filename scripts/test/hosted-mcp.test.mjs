@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   bytesToHex,
   createApplicationSession,
+  decodeRecord,
   defineApplication,
   defineCommand,
   defineQuery,
@@ -12,20 +13,14 @@ import {
   openApplicationDevice,
   program,
 } from '@chronolog/peer-session';
-import {
-  createSigningIdentity,
-  decodeRecord,
-  encodeRecord,
-  epochKeyCommitment,
-  recordDigest,
-  signAppDescriptor,
-  signMembership,
-  verifyEnrollmentRequest,
-} from '@chronolog/authority';
-import { authorityRecord } from '../../contract/authority.mjs';
+import { createApplicationOwner } from '@chronolog/peer-session/worker';
+import { connectApplicationOwner } from '@chronolog/peer-session/browser';
+import { composeOwnerExtensions, createAdmission, deviceWrapKey, openPageAuthority } from '../../session/admission.mjs';
+import { createAdmissionHost } from './helpers/admission-host.mjs';
 import {
   connectHostedMcpGrant,
   enableHostedMcp,
+  hostedMcpExtensions,
   sealHostedKeys,
   syncHostedMcpEnvelopes,
 } from '../../docs/tutorial/shared/helpers/hosted-mcp.mjs';
@@ -73,71 +68,24 @@ const definition = defineApplication({
   },
 });
 
+// The page Worker composition: an administrator browser session with device admission and
+// the hosted MCP owner extension, attached to the page facade exactly as the starters do.
 async function openFixture(t) {
-  const appId = 'a'.repeat(64);
-  const epochKey = crypto.getRandomValues(new Uint8Array(32));
-  const authoritySigner = await createSigningIdentity();
-  const device = await openApplicationDevice({ store: new MemoryStore(), create: true });
-  const manifest = await executionManifestArtifacts(await eventExecutionManifest());
-  const descriptor = await signAppDescriptor({
-    applicationId: appId,
-    rootPrincipal: device.identity.publicKey,
-    authorityPublicKey: authoritySigner.publicKey,
-    executionManifestDigest: bytesToHex(manifest.executionManifestDigest),
-    finalityPolicy: { kind: 'none' },
-  }, authoritySigner);
-  const membership0 = await signMembership({
-    applicationId: appId,
-    revision: 0,
-    previous: null,
-    authorTimeAfterMs: -1n,
-    epoch: 0,
-    epochKeyDigest: await epochKeyCommitment(appId, 0, epochKey),
-    members: [{ publicKey: device.identity.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false }],
-  }, authoritySigner);
-  let bundle = { descriptor, memberships: [membership0] };
-  const session = await createApplicationSession({
-    device,
-    definition,
-    authority: bundle,
-    epochKeys: new Map([[0, epochKey]]),
-  });
-  t.after(() => session.close());
-
-  // Like the host, membership is granted only to a key that answered this account's enrollment challenge.
-  const challenges = new Map(), proven = new Set();
-  const peers = {
-    async application() { return { authority: authorityRecord(encodeRecord(bundle)) }; },
-    async challenge(publicKey) { const challenge = crypto.randomUUID(); challenges.set(challenge, publicKey); return { applicationId: appId, publicKey, challenge }; },
-    async enroll(proof) {
-      const request = decodeRecord(Uint8Array.from(proof.record.match(/../g), byte => parseInt(byte, 16)));
-      await verifyEnrollmentRequest(request);
-      const head = bundle.memberships.at(-1).payload;
-      assert.equal(challenges.get(request.payload.challenge), request.payload.publicKey);
-      assert.equal(request.payload.applicationId, appId); assert.equal(request.payload.epoch, head.epoch); assert.equal(request.payload.epochKeyDigest, head.epochKeyDigest);
-      proven.add(request.payload.publicKey);
-      return { authority: authorityRecord(encodeRecord(bundle)) };
-    },
-    async grant(intent) {
-      if (!proven.has(intent.grant.publicKey)) throw Object.assign(Error('member_key_proof_required'), { status: 403 });
-      const prev = bundle.memberships.at(-1);
-      const next = await signMembership({
-        applicationId: appId,
-        revision: prev.payload.revision + 1,
-        previous: await recordDigest(prev),
-        authorTimeAfterMs: BigInt(intent.authorTimeAfterMs),
-        epoch: prev.payload.epoch,
-        epochKeyDigest: prev.payload.epochKeyDigest,
-        members: [...prev.payload.members, intent.grant],
-      }, authoritySigner);
-      bundle = { descriptor, memberships: [...bundle.memberships, next] };
-      return { authority: authorityRecord(encodeRecord(bundle)) };
-    },
-  };
-  return { appId, epochKey, session, peers, getBundle: () => bundle, proveKey: publicKey => proven.add(publicKey) };
+  const digest = bytesToHex((await executionManifestArtifacts(await eventExecutionManifest())).executionManifestDigest);
+  const appId = 'a'.repeat(64), host = await createAdmissionHost({ applicationId: appId, configuration: { executionManifestDigest: digest, executionProfile: 'events', publisherKeys: ['aa'.repeat(32)] } });
+  const peers = host.client({ account: { accountId: 'acct_owner', email: 'owner@example.test' } });
+  const device = await openApplicationDevice({ store: new MemoryStore(), create: true }), wrapKey = await deviceWrapKey(device.store);
+  const { authority } = await openPageAuthority({ store: device.store, identity: device.identity, wrapKey, peers, applicationId: appId, executionManifestDigest: digest });
+  const session = await createApplicationSession({ device, definition, authority });
+  const admission = createAdmission(session, { peers, wrapKey, store: device.store, memberIntervalMs: 60_000 });
+  const owner = createApplicationOwner(session, { extensions: composeOwnerExtensions(admission.extensions, hostedMcpExtensions({ session, admission })) });
+  const channel = new MessageChannel(); owner.attach(channel.port1);
+  const page = await connectApplicationOwner(channel.port2, { applicationId: appId });
+  t.after(async () => { await page.detach().catch(() => {}); admission.close(); await owner.close(); channel.port1.close(); channel.port2.close(); });
+  return { appId, session, page, peers, host, admission, getBundle: () => session.authority.bundle(), epochKey: session.authority.epochKey(0) };
 }
 
-test('connectHostedMcpGrant provisions a revocable identity in RAM and X25519-seals epoch keys cleanly', async t => {
+test('connectHostedMcpGrant adds a revocable identity through the owner and X25519-seals epoch keys; the page never sees them', async t => {
   const f = await openFixture(t);
   const wrapPair = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']);
   const wrapPubRaw = new Uint8Array(await crypto.subtle.exportKey('raw', wrapPair.publicKey));
@@ -165,7 +113,7 @@ test('connectHostedMcpGrant provisions a revocable identity in RAM and X25519-se
 
   await connectHostedMcpGrant({
     runtime,
-    session: f.session,
+    session: f.page,
     peers: f.peers,
     grantId: 'og_test_grant',
     wrapPublicKey: wrapPubHex,
@@ -203,6 +151,10 @@ test('connectHostedMcpGrant provisions a revocable identity in RAM and X25519-se
   assert.equal(material.signingPublicKey, postedConnect.publicKey);
   assert.match(material.signingSeedHex, /^[a-f0-9]{96}$/u);
   assert.equal(material.epochKeys['0'], bytesToHex(f.epochKey));
+  // The hosted identity is an ordinary administrator-signed member, visible and removable on every replica.
+  const added = f.session.authority.grant(postedConnect.publicKey);
+  assert.deepEqual([added.reader, added.writer, added.administrator], [true, true, false]);
+  assert.equal(decodeRecord(Uint8Array.from(f.host.state.authority.record.match(/../g), byte => parseInt(byte, 16))).memberships.at(-1).signer, f.session.device.identity.publicKey);
 });
 
 test('syncHostedMcpEnvelopes and enableHostedMcp exchange blind encrypted envelopes across sessions without plaintext', async t => {
@@ -238,14 +190,7 @@ test('syncHostedMcpEnvelopes and enableHostedMcp exchange blind encrypted envelo
 
   // Second device/session (simulating hosted MCP) writes an op and pushes to DO store
   const peerDevice = await openApplicationDevice({ store: new MemoryStore(), create: true });
-  f.proveKey(peerDevice.identity.publicKey);
-  await f.peers.grant({
-    requestId: crypto.randomUUID(),
-    expectedMembershipId: f.getBundle().memberships.at(-1).id,
-    authorTimeAfterMs: String(Date.now() - 10),
-    grant: { publicKey: peerDevice.identity.publicKey, reader: true, writer: true, administrator: false, publisher: false, finalizer: false },
-  });
-  await f.session.mergeAuthority(f.getBundle());
+  await f.admission.call('admission.addKey', peerDevice.identity.publicKey, null, { writer: true });
   const peerSession = await createApplicationSession({
     device: peerDevice,
     definition,

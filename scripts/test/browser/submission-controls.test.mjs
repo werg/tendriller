@@ -55,7 +55,7 @@ test('documented multi-control wiring releases all eligible actions without data
     // A missing key or closed storage blocks every local write and says why; the editor stays usable.
     await page.evaluate(() => controls.submission.application({ canAuthor: false, phase: 'ready' }));
     for (const id of ['detail-save', 'card-save', 'new-card', 'retry']) assert.equal(await enabled(id), false);
-    assert.match(await page.locator('[data-submission-status]').textContent(), /explicit key provisioning/);
+    assert.match(await page.locator('[data-submission-status]').textContent(), /waiting to be admitted/);
     await page.evaluate(() => controls.submission.application({ canAuthor: true, phase: 'closed' }));
     assert.equal(await enabled('card-save'), false);
     assert.match(await page.locator('[data-submission-status]').textContent(), /Local storage is unavailable/);

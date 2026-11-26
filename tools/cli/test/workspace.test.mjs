@@ -32,7 +32,7 @@ async function host(t, { mode = 'open' } = {}) {
     const json = (status, value) => { response.statusCode = status; response.end(JSON.stringify(value)); };
     const authorized = request.headers.authorization === 'Bearer ' + TOKEN;
     if (request.url === '/api/readiness') return json(200, readiness(origin, mode));
-    if (request.url === '/api/service') return json(200, { contract: 3, core_release: 'test', limits: {} });
+    if (request.url === '/api/service') return json(200, { contract: 3, core_release: 'test', limits: {}, attestationKey: 'ab'.repeat(32) });
     if (request.url === '/api/agents' && request.method === 'POST') {
       const value = JSON.parse(body); registered.push(value);
       return json(201, { id: AGENT, handle: value.handle, bio: value.bio ?? '', token: TOKEN, account_state: 'unclaimed' });
@@ -92,14 +92,16 @@ export async function openPage(context) {
   // Authority and data key are retained with the page device, so a reopen (an agent retry) resumes the same signed authority.
   let retained = await device.store.get('fixture/authority'), key = await device.store.get('fixture/epoch-key');
   if (!retained) {
-    const authority = await p.createSigningIdentity();
+    // The page creator (the shared agent key) is the descriptor authority; the host never signs authority.
+    const authority = device.identity;
     key = crypto.getRandomValues(new Uint8Array(32));
     const execution = await p.executionManifestArtifacts(await p.eventExecutionManifest());
     const descriptor = await p.signAppDescriptor({ applicationId, rootPrincipal: signer, authorityPublicKey: authority.publicKey,
       executionManifestDigest: p.bytesToHex(execution.executionManifestDigest), finalityPolicy: { kind: 'none' } }, authority);
     const membership = await p.signMembership({ applicationId, revision: 0, previous: null, authorTimeAfterMs: -1n, epoch: 0,
       epochKeyDigest: await p.epochKeyCommitment(applicationId, 0, key),
-      members: [{ publicKey: signer, reader: true, writer: true, administrator: true, publisher: false, finalizer: false }] }, authority);
+      members: [{ publicKey: signer, wrapKey: context.wrapKey.publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false }],
+      admission: { mode: 'strict', hostKey: authority.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [] }, authority);
     retained = p.encodeRecord({ descriptor, memberships: [membership] });
     await device.store.put('fixture/authority', retained); await device.store.put('fixture/epoch-key', key);
   }
@@ -237,7 +239,7 @@ test('agent run waits for explicit initialization and never opens a page device 
   const run = startAgent(t, directory);
   const waiting = await run.waitFor(value => value.state === 'awaiting_initialization' && value.page === PAGE);
   assert.equal(waiting.slug, 'notes');
-  await assert.rejects(access(join(directory, `.tendriller/pages/${PAGE}/device.sqlite`)), { code: 'ENOENT' }, 'no replacement keys or device exist before explicit provisioning');
+  await assert.rejects(access(join(directory, `.tendriller/pages/${PAGE}/device.sqlite`)), { code: 'ENOENT' }, 'no replacement keys or device exist before the page is initialized');
   await assert.rejects(tendril(directory, ['--page', 'notes', 'self']), error => JSON.parse(error.stderr).error.code === 'OWNER_UNREACHABLE');
   assert.equal(await run.stop(), 0, run.stderr());
   assert.equal(run.reports.some(value => value.state === 'running'), false);
@@ -296,7 +298,7 @@ test('account-linked MCP route: workspace key prints register_agent arguments an
   const server = serve((request, response) => {
     seen.push([request.url, request.headers.authorization]);
     response.setHeader('Content-Type', 'application/json');
-    if (request.url === '/api/service') return response.end(JSON.stringify({ contract: 3, core_release: 'test', limits: {} }));
+    if (request.url === '/api/service') return response.end(JSON.stringify({ contract: 3, core_release: 'test', limits: {}, attestationKey: 'ab'.repeat(32) }));
     if (request.url === '/api/agent' && request.headers.authorization === 'Bearer ' + token)
       return response.end(JSON.stringify({ id: 'ag_' + 'e'.repeat(26), handle: 'assistant', bio: '', account_state: 'claimed', grants: 0 }));
     response.statusCode = 401; response.end(JSON.stringify({ error: { code: 'unauthorized', message: 'No' } }));

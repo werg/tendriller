@@ -3,12 +3,12 @@ import { parseArgs, intFlag } from './args.mjs';
 import { jsonInput, runSessionCommand, watchPages, watchSession, watchSignals, withSession } from './session.mjs';
 import { onboardingGuide, publicServiceOrigin, serverBase } from './guide.mjs';
 import { diagnosticFinding } from '@tendriller/core/diagnostics';
-import { describeReadiness, describeService } from '@tendriller/core';
+import { describeReadiness, describeService, fetchBroadcasts } from '@tendriller/core';
 import { probeCapabilities } from '@tendriller/core/probe';
 import { serveStdioMcp } from './mcp-stdio.mjs';
 import { exportSourceHandoff } from './handoff.mjs';
 import { exportWorkspaceCheckpoint, restoreWorkspaceCheckpoint } from './checkpoint.mjs';
-import { adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, updateWorkspaceProfile, workspaceKey } from './workspace.mjs';
+import { acknowledgeWorkspaceBroadcast, adoptWorkspace, describeWorkspace, findWorkspace, initWorkspace, joinWorkspace, openWorkspace, syncWorkspaceBroadcasts, updateWorkspaceProfile, workspaceKey } from './workspace.mjs';
 import { attachPage, runAgent } from './agent.mjs';
 
 export const usage = `Usage: tendril <command> [options]
@@ -18,6 +18,7 @@ Start with a service origin (no workspace required):
   probe [--server URL] [--check-network] [--project DIR]  Inspect local runtime, storage, IPC and network capabilities
   service --server URL                  Read the public host contract and limits
   readiness --server URL                Check current creation availability before setup
+  broadcasts [--server URL] [--audience A] [--all] [--ack ID]  Read & verify signed system broadcasts (dependency upgrades, security advisories)
   handoff source <out.tgz> [--project DIR]  Pack non-secret source files for another sandbox
 
 Workspace (one agent credential and signing key for many pages):
@@ -28,6 +29,12 @@ Workspace (one agent credential and signing key for many pages):
   page new <slug> [--name TITLE]        Create a page (granted to this agent) and its pages/<slug>/ folder
   page grant <slug> <page-id>           Register a page the owner granted to this agent
   page list                             Granted and registered pages
+  page devices <slug>                   Admitted devices/agents, pending sign-ins, invites and admission mode
+  page approve <slug> <public-key> [--writer] [--admin]   Admit a pending device (strict mode, guests)
+  page remove-device <slug> <public-key>  Remove a device or agent and rotate the page key
+  page mode <slug> attested|strict      Auto-admit owner devices, or require approval
+  page invite <slug> --email ADDRESS | --open | --public [--max N] [--expires DAYS] [--role reader|writer|admin]
+  page revoke-invite <slug> <invite-id> Stop an invite (signed in page state; the host stops redemptions)
   status                                Workspace, agent, grants and the agent program
   agent run                             The only long-running program: hub, one session per page, attach socket
   agent profile [--handle H] [--bio B]  Update this agent's @handle or short bio
@@ -75,8 +82,8 @@ const flagsByCommand = {
   signal: ['ttl'], finality: ['through'], definition: [], publication: [], 'publication-operation': [], publish: ['operation', 'entry'],
   guide: ['server'], probe: ['server', 'check-network', 'project'],
   handoff: ['project'], checkpoint: ['secret-env'],
-  readiness: ['server'], service: ['server'],
-  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name'], agent: ['handle', 'bio'], 'mcp-stdio': [],
+  readiness: ['server'], service: ['server'], broadcasts: ['server', 'audience', 'all', 'ack'],
+  workspace: ['service', 'owner', 'handle', 'bio', 'code', 'kit', 'credential'], page: ['name', 'writer', 'admin', 'email', 'open', 'public', 'max', 'expires', 'role'], agent: ['handle', 'bio'], 'mcp-stdio': [],
   info: ['show-url'], meta: [], release: [], link: [], notify: ['title', 'body', 'path', 'tag', 'badge'],
   activity: ['after'], remove: ['yes'],
 };
@@ -84,9 +91,9 @@ const arity = { self: [0, 0], endpoints: [0, 0], doctor: [0, 0], describe: [0, 0
   'command-batch': [1, 1], operation: [1, 1], retry: [1, 1],
   events: [0, 0], watch: [0, 0], logs: [0, 0], signal: [2, 2], finality: [1, 2], definition: [0, 0], publication: [0, 0],
   'publication-operation': [1, 1], publish: [1, 1], guide: [0, 0], probe: [0, 0], handoff: [2, 2], checkpoint: [2, 2],
-  readiness: [0, 0], service: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], 'mcp-stdio': [0, 0],
+  readiness: [0, 0], service: [0, 0], broadcasts: [0, 0], workspace: [1, 1], page: [1, 3], agent: [1, 1], 'mcp-stdio': [0, 0],
   info: [0, 0], meta: [1, 1], release: [0, 0], link: [1, 2], notify: [0, 0], activity: [0, 0], remove: [0, 0] };
-const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service']);
+const workspaceFree = new Set(['guide', 'probe', 'handoff', 'readiness', 'service', 'broadcasts']);
 const invalid = message => Object.assign(Error(message), { exit: 64 });
 const checkedName = value => { if (!value) throw invalid('Supply an identity'); return encodeURIComponent(value); };
 
@@ -100,6 +107,21 @@ async function publicCommand(command, args, flags, signal) {
   if (command === 'handoff') {
     if (args[0] !== 'source') throw invalid('Use: tendril handoff source <output.tgz> [--project DIR]');
     return exportSourceHandoff(flags.project ?? process.cwd(), args[1]);
+  }
+  if (command === 'broadcasts') {
+    const wsRoot = flags.workspace ?? (process.env.TENDRIL_WORKSPACE || (!flags.server ? findWorkspace() : null));
+    if (wsRoot && !flags.server) {
+      const workspace = await openWorkspace({ root: wsRoot });
+      if (typeof flags.ack === 'string') return acknowledgeWorkspaceBroadcast(workspace, flags.ack.trim());
+      return syncWorkspaceBroadcasts(workspace, { signal, all: Boolean(flags.all) });
+    }
+    if (!flags.server && !process.env.TENDRIL_SERVER) throw invalid('broadcasts requires a workspace or --server / TENDRIL_SERVER');
+    const server = publicServiceOrigin(serverBase(process.env, flags));
+    return fetchBroadcasts(server, {
+      ...(typeof flags.audience === 'string' ? { audience: flags.audience } : {}),
+      verifyKeys: 'discover',
+      signal,
+    });
   }
   if (!flags.server && !process.env.TENDRIL_SERVER) throw invalid(`${command} requires --server or TENDRIL_SERVER with the selected connector service origin`);
   const server = publicServiceOrigin(serverBase(process.env, flags));
@@ -151,7 +173,8 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
       const page = await workspace.registerPage(slug, granted);
       return { slug, id: page.id, name: page.name, source: page.source };
     }
-    throw invalid('Use page new <slug>, page grant <slug> <page-id> or page list');
+    if (['devices', 'approve', 'remove-device', 'mode', 'invite', 'revoke-invite'].includes(action)) return pageAdmission(workspace, action, slug, id, flags, signal);
+    throw invalid('Use page new|grant|list|devices|approve|remove-device|mode|invite|revoke-invite; see --help');
   }
   if (command === 'agent') {
     if (args[0] === 'profile') {
@@ -178,6 +201,10 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
     };
     const pages = {
       self: () => workspace.config.agent,
+      broadcasts: async ({ acknowledgeId, signal: requestSignal } = {}) => {
+        if (acknowledgeId) return acknowledgeWorkspaceBroadcast(workspace, acknowledgeId);
+        return syncWorkspaceBroadcasts(workspace, { signal: requestSignal ?? signal });
+      },
       list: async () => {
         const local = await workspace.pages();
         const remoteById = new Map();
@@ -246,6 +273,36 @@ async function workspaceCommand(command, args, flags, signal, emit, { workspaceD
   throw invalid('Unknown link action; see --help');
 }
 
+const KEY_RE = /^[0-9a-f]{64}$/u;
+/** Page admission actions run inside the page owner of the running agent program (its signer, never the host's). */
+async function pageAdmission(workspace, action, slug, value, flags, signal) {
+  if (!slug) throw invalid(`page ${action} requires a page slug`);
+  const call = async (name, ...input) => {
+    const owned = await attachPage(workspace, slug, { signal });
+    try { return await owned.session.extensions.call(name, input); } finally { await owned.detach(); }
+  };
+  if (action === 'devices') {
+    const state = await call('admission.state');
+    return { page: slug, phase: state.phase, mode: state.mode, administrator: state.administrator, members: state.members, pending: state.pending, invites: state.invites };
+  }
+  if (action === 'approve' || action === 'remove-device') {
+    if (!KEY_RE.test(value ?? '')) throw invalid(`page ${action} requires the device's 64-hex public key (see page devices)`);
+    return action === 'approve' ? call('admission.approve', value, { ...(flags.writer ? { writer: true } : {}), ...(flags.admin ? { writer: true, administrator: true } : {}) })
+      : call('admission.remove', value);
+  }
+  if (action === 'mode') { if (!['attested', 'strict'].includes(value)) throw invalid('page mode takes attested or strict'); return call('admission.mode', value); }
+  if (action === 'revoke-invite') { if (!/^[0-9a-f]{32}$/u.test(value ?? '')) throw invalid('page revoke-invite requires the invite id'); return call('admission.revokeInvite', value); }
+  const kinds = ['email', 'open', 'public'].filter(name => flags[name] !== undefined && flags[name] !== false);
+  if (kinds.length !== 1 || value !== undefined) throw invalid('page invite takes exactly one of --email ADDRESS, --open or --public');
+  if (kinds[0] === 'email' && typeof flags.email !== 'string') throw invalid('--email requires the invitee address');
+  const binding = kinds[0] === 'email' ? { kind: 'email', email: flags.email } : kinds[0] === 'open' ? { kind: 'open' } : { kind: 'public', max: flags.max === undefined ? null : intFlag(flags.max, 'max') };
+  const days = flags.expires === undefined ? 7 : intFlag(flags.expires, 'expires');
+  const created = await call('admission.invite', { binding, ...(flags.role ? { role: flags.role } : {}), expiresInMs: days * 86_400_000 });
+  const page = await workspace.page(slug), link = new URL(page.page_url); link.hash = created.fragment;
+  return { inviteId: created.inviteId, role: created.role, binding: created.binding, expiresAt: String(created.expiresAt), link: link.href,
+    note: 'The link fragment carries the invite secret; share it only with the invitee. Revoke with page revoke-invite.' };
+}
+
 /** Parse, validate and run one invocation. `attach` replaces the agent attachment in tests only. */
 export async function main(argv, { attach } = {}) {
   const { cmd, args, flags } = parseArgs(argv);
@@ -253,7 +310,7 @@ export async function main(argv, { attach } = {}) {
   if (!Object.hasOwn(flagsByCommand, cmd)) throw invalid(`Unknown command: ${cmd}`);
   const pageScoped = sessionCommands.has(cmd) || hostCommands.has(cmd) || cmd === 'status' && flags.page !== undefined;
   const session = sessionCommands.has(cmd) || cmd === 'status' && flags.page !== undefined;
-  const allowed = new Set(['pretty', 'timeout', ...(workspaceFree.has(cmd) ? [] : ['workspace']),
+  const allowed = new Set(['pretty', 'timeout', ...(workspaceFree.has(cmd) && cmd !== 'broadcasts' ? [] : ['workspace']),
     ...(pageScoped || cmd === 'status' ? ['page'] : []), ...flagsByCommand[cmd]]);
   for (const name of Object.keys(flags)) if (!allowed.has(name)) throw invalid(`${cmd} does not accept --${name}`);
   const [min, max] = arity[cmd];

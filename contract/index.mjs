@@ -14,6 +14,8 @@ const email = { type: 'string', maxLength: 254, pattern: '^[^\\s@]+@[^\\s@]+\\.[
 const agentHandle = { type: 'string', minLength: 2, maxLength: 32, pattern: '^[a-z][a-z0-9_-]{1,31}$' };
 const agentBio = { type: 'string', maxLength: 160 };
 const publicKey = { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' };
+/** Chronolog 32-byte keys (X25519 wrap keys, Ed25519 attestation keys) are lowercase hex. */
+const hexKey = { type: 'string', pattern: '^[0-9a-f]{64}$' };
 const error = object({ code: string, message: string, details: {} }, ['code', 'message'], true);
 const pageAgent = object({
   id: string,
@@ -25,8 +27,8 @@ const pageAgent = object({
   granted_at: integer,
 }, ['id', 'handle', 'bio', 'public_key', 'kind', 'is_primary'], true);
 export const schemas = Object.freeze({
-  agentRegistration: object({ owner: email, handle: agentHandle, bio: agentBio, publicKey }, ['owner', 'handle', 'publicKey']),
-  agentJoin: object({ code: { type: 'string', minLength: 1, maxLength: 128 }, handle: agentHandle, bio: agentBio, publicKey }, ['code', 'handle', 'publicKey']),
+  agentRegistration: object({ owner: email, handle: agentHandle, bio: agentBio, publicKey, wrapKey: hexKey }, ['owner', 'handle', 'publicKey', 'wrapKey']),
+  agentJoin: object({ code: { type: 'string', minLength: 1, maxLength: 128 }, handle: agentHandle, bio: agentBio, publicKey, wrapKey: hexKey }, ['code', 'handle', 'publicKey', 'wrapKey']),
   agentProfileUpdate: object({ handle: agentHandle, bio: agentBio }, []),
   agentCredential: object({ id: agentId, handle: agentHandle, bio: agentBio, token: { type: 'string', pattern: '^ta_[a-z2-7]{32}$' },
     account_state: { enum: ['unclaimed', 'claimed'] } }, ['id', 'handle', 'token'], true),
@@ -43,7 +45,7 @@ export const schemas = Object.freeze({
     agents: { type: 'array', maxItems: 64, items: { $ref: '#/$defs/pageAgent' } } }, ['id', 'page_url', 'application'], true),
   agentPageList: object({ pages: { type: 'array', maxItems: 100, items: { $ref: '#/$defs/agentPage' } },
     next_cursor: { anyOf: [string, { type: 'null' }] } }, ['pages'], true),
-  serviceDescriptor: object({ contract: { const: 3 }, core_release: string, limits: { type: 'object' } }, ['contract', 'core_release', 'limits']),
+  serviceDescriptor: object({ contract: { const: 3 }, core_release: string, limits: { type: 'object' }, attestationKey: { anyOf: [hexKey, { type: 'null' }] } }, ['contract', 'core_release', 'limits', 'attestationKey']),
   objectResponse: { type: 'object' }, error, errorResponse: object({ error }, ['error']),
 });
 

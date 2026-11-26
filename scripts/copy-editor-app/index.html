@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tendriller Copy Editor</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:#0e1612;color:#f6f1e3;font:13.5px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+  #preview-frame{display:block;width:100%;height:100%;border:0;background:#f7f3e8}
+  #conn-banner{
+    position:fixed;top:12px;right:14px;z-index:50;max-width:min(380px,calc(100vw - 28px));
+  }
+  #tce-dock{
+    position:fixed;left:14px;right:180px;bottom:14px;margin:0 auto;width:fit-content;z-index:60;
+    display:flex;align-items:center;gap:6px;flex-wrap:nowrap;
+    max-width:calc(100vw - 196px);overflow-x:auto;padding:7px 10px;border-radius:14px;
+    background:rgba(20,33,27,.95);color:#f6f1e3;
+    border:1px solid rgba(255,244,218,.18);
+    box-shadow:0 16px 40px -10px rgba(0,0,0,.55);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  }
+  @media(max-width:760px){
+    #tce-dock{left:10px;right:10px;bottom:72px;max-width:calc(100vw - 20px);width:auto}
+    .tce-panel{bottom:124px}
+  }
+  #tce-dock.collapsed>*:not(#tce-expand){display:none}
+  #tce-dock:not(.collapsed) #tce-expand{display:none}
+  .tce-dot{width:8px;height:8px;border-radius:50%;background:#f3b544;flex:none}
+  .tce-dot.ok{background:#5ee3a1;box-shadow:0 0 0 3px rgba(94,227,161,.22)}
+  .tce-dot.err{background:#f47c7c}
+  #tce-dock select,#tce-dock input{
+    height:30px;padding:0 9px;border-radius:8px;flex:none;
+    background:rgba(255,248,232,.10);border:1px solid rgba(255,248,232,.20);
+    color:#fff9ec;font:inherit;
+  }
+  #tce-dock select option{background:#16241e;color:#fff9ec}
+  #tce-dock input#tce-note{width:clamp(140px,18vw,220px)}
+  #tce-dock input::placeholder{color:#b6c6bc}
+  #tce-dock button,#tce-drawer button,#tce-pair button{
+    appearance:none;display:inline-flex;align-items:center;gap:5px;flex:none;
+    height:30px;padding:0 10px;border-radius:8px;border:1px solid rgba(255,248,232,.2);
+    background:rgba(255,248,232,.10);color:#fff9ec;font:650 12px/1 system-ui,sans-serif;
+    cursor:pointer;white-space:nowrap;
+  }
+  #tce-dock button:hover,#tce-drawer button:hover,#tce-pair button:hover{background:rgba(255,248,232,.18)}
+  #tce-dock button:disabled{opacity:.5;cursor:default}
+  #tce-dock button.tce-send{background:#df5f32;border-color:transparent;color:#fff}
+  #tce-dock button.tce-send:hover{background:#c84e23}
+  #tce-dock button.active{background:rgba(110,211,159,.22);border-color:#6ed39f;color:#a8f0c8}
+  .tce-badge{padding:2px 7px;border-radius:999px;font-size:11px;font-weight:750;background:rgba(223,95,50,.28);color:#ffcfb8}
+  .tce-status{font-size:12px;color:#b7ccb9;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:none}
+  .tce-panel{
+    position:fixed;left:50%;bottom:64px;transform:translateX(-50%);z-index:55;
+    width:min(700px,calc(100vw - 24px));max-height:58vh;overflow:auto;
+    padding:14px 16px;border-radius:16px;
+    background:rgba(20,33,27,.97);color:#f6f1e3;
+    border:1px solid rgba(255,244,218,.18);box-shadow:0 20px 50px rgba(0,0,0,.6);
+  }
+  .tce-panel[hidden]{display:none}
+  .tce-panel h3{margin:0 0 10px;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+  .tce-diff-row{padding:8px 10px;border-radius:10px;background:rgba(255,248,232,.06);border:1px solid rgba(255,248,232,.1);margin-bottom:8px}
+  .tce-diff-key{font:600 11.5px/1.3 ui-monospace,monospace;color:#9be6be;display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+  .tce-diff-old{color:#f4a29e;text-decoration:line-through;font-size:12px;margin-bottom:2px;overflow-wrap:anywhere}
+  .tce-diff-new{color:#b6f2cf;font-size:12.5px;overflow-wrap:anywhere}
+  .tce-panel textarea,.tce-panel input[type=text]{
+    width:100%;padding:8px 10px;border-radius:9px;margin:4px 0 8px;
+    background:rgba(255,248,232,.07);border:1px solid rgba(255,248,232,.18);
+    color:#fff9ec;font:12px/1.45 ui-monospace,monospace;
+  }
+  .tce-panel textarea{min-height:84px;resize:vertical}
+  .tce-panel label{display:block;font-size:12px;color:#b7ccb9;margin:6px 0 2px}
+  .tce-panel details{margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,248,232,.12)}
+  .tce-panel summary{cursor:pointer;font-weight:650;color:#f5cb78;font-size:12.5px}
+  .tce-panel p{margin:0 0 8px;color:#c7d7cb;font-size:12.5px}
+  .tce-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+</style>
+</head>
+<body>
+<div id="conn-banner"></div>
+<iframe id="preview-frame" title="Tendriller editable site preview"></iframe>
+
+<section id="tce-drawer" class="tce-panel" hidden aria-label="Pending copy edits and history"></section>
+
+<section id="tce-pair" class="tce-panel" hidden aria-label="Pair repo agent or another device">
+  <h3><span>Pair repo agent &amp; devices (Chronolog E2EE)</span><button type="button" id="tce-pair-close">Close</button></h3>
+  <p>Your browser holds the epoch keys locally. Every inline edit is saved durably in Chronolog even offline. Pair the repo agent once so submitted batches sync straight to <code>scripts/copy-editor.mjs --wait</code>.</p>
+  <p>Repo agent public key: <code id="agent-pubkey">loading…</code></p>
+  <div class="tce-row">
+    <button type="button" data-provisioning="request">Create request for this browser</button>
+    <button type="button" data-provisioning="review">Review incoming request</button>
+    <label style="display:inline-flex;align-items:center;gap:5px;margin:0"><input type="checkbox" data-provisioning="writer"> Allow writer</label>
+    <button type="button" data-provisioning="grant" disabled>Grant &amp; wrap keys</button>
+    <button type="button" data-provisioning="import">Import wrapped keys</button>
+  </div>
+  <label>Incoming (paste provisioning request, signed proof, or wrapped key package)</label>
+  <textarea data-provisioning="in" placeholder="Paste JSON here…"></textarea>
+  <label>Outgoing (copy challenge or encrypted key package)</label>
+  <textarea data-provisioning="out" readonly placeholder="Output appears here…"></textarea>
+  <p data-provisioning="status" role="status" aria-live="polite"></p>
+</section>
+
+<div id="tce-dock" role="region" aria-label="Tendriller live copy editor">
+  <button type="button" id="tce-expand">Copy editor</button>
+  <span class="tce-dot" id="tce-dot" title="Chronolog session status"></span>
+  <select id="tce-page" aria-label="Switch page"></select>
+  <button type="button" id="tce-mode" class="active" title="Toggle inline editing vs clicking links">Editing</button>
+  <button type="button" id="tce-diff-btn">Edits <span class="tce-badge" id="tce-count">0</span></button>
+  <input id="tce-note" type="text" placeholder="Note for agent (optional)…">
+  <button type="button" id="tce-send" class="tce-send" disabled>Send to agent</button>
+  <button type="button" id="tce-pair-btn" title="Pair repo agent or another device">Pair agent</button>
+  <span class="tce-status" id="tce-status" role="status" aria-live="polite">Opening Chronolog…</span>
+  <button type="button" id="tce-hide" title="Collapse dock">×</button>
+</div>
+
+<script type="module" src="./page.mjs"></script>
+</body>
+</html>

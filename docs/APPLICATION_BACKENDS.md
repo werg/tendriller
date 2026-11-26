@@ -44,7 +44,7 @@ transactions create and change schema.
 `status.database` reports `idle`, `opening`, `ready`, `failed` or `closed`, separately
 from protocol connectivity. Inspect `materializationError` for an operational
 failure and keep retained original operations and drafts visible. Missing keys
-require explicit provisioning, never replacement signing identities or keys.
+are wrapped to the device by an online member after admission, never replaced by new signing identities or keys.
 A device never needs a coordinator to author or read its own operations.
 
 The owning Worker exposes `probeBrowserCapabilities()` from the Chronolog

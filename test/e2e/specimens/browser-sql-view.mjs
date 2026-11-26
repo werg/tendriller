@@ -6,7 +6,7 @@ const identity = revision => JSON.stringify([revision.digest, revision.view, rev
 
 export function observeSqlFixture(session, { query, onSnapshot, onError = () => {}, signal }) {
   const lifetime = new AbortController(), owned = AbortSignal.any([session.signal, signal, lifetime.signal].filter(Boolean));
-  let closed = false, running = false, dirty = false, latest, displayed, snapshot, reads = 0, unavailable = false, readiness = 0, stopStatus = () => {};
+  let closed = false, running = false, dirty = false, latest, displayed, snapshot, reads = 0, duplicateReads = 0, unavailable = false, readiness = 0, stopStatus = () => {};
   let resolveReady, rejectReady;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   // Readiness owns a bounded initial coherent read, not a delay after Ready.
@@ -43,6 +43,8 @@ export function observeSqlFixture(session, { query, onSnapshot, onError = () => 
         unavailable = false;
         const received = identity(result.revision);
         if (closed) return;
+        // A read of the revision already displayed is redundant work.
+        if (snapshot && received === displayed) duplicateReads++;
         // A read that already contains the latest invalidation is coherent.
         // Otherwise discard the old snapshot and read again before Ready/render.
         if (latest !== requested && received !== latest) { dirty = true; continue; }
@@ -75,5 +77,5 @@ export function observeSqlFixture(session, { query, onSnapshot, onError = () => 
     // snapshot now; a change that lands during this read is coalesced into a coherent reread.
     dirty = true; void pump();
   }
-  return { ready, close, get reads() { return reads; }, get snapshot() { return snapshot; } };
+  return { ready, close, get reads() { return reads; }, get duplicateReads() { return duplicateReads; }, get snapshot() { return snapshot; } };
 }

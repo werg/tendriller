@@ -130,7 +130,8 @@ async function seedPageAuthorityAndDomain(
     authorTimeAfterMs: -1n,
     epoch: 0,
     epochKeyDigest: await epochKeyCommitment(page.application.id, 0, epochKey),
-    members: writers.map(publicKey => ({ publicKey, reader: true, writer: true, administrator: true, publisher: false, finalizer: false })),
+    members: writers.map(publicKey => ({ publicKey, wrapKey: null, reader: true, writer: true, administrator: true, publisher: false, finalizer: false })),
+    admission: { mode: 'strict', hostKey: signer.publicKey, accounts: [], grant: { reader: true, writer: true } }, admitted: [], invites: [],
   }, signer);
   const bundle = { descriptor, memberships: [membership] };
   const configuration = { executionManifestDigest: manifestDigest, executionProfile, publisherKeys: [signer.publicKey] };
@@ -479,7 +480,7 @@ it('register_agent over /mcp registers a handle + bio and rotates on repeat hand
   const f = await hostFixture(), issued = await tokens(f);
   const kp1 = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']) as CryptoKeyPair;
   const pub1 = base64url(new Uint8Array(await crypto.subtle.exportKey('raw', kp1.publicKey) as ArrayBuffer));
-  const first = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'atlas', bio: 'Research helper', publicKey: pub1 });
+  const first = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'atlas', bio: 'Research helper', publicKey: pub1, wrapKey: '1a'.repeat(32) });
   expect(first.response.status).toBe(200);
   expect(first.result.isError).not.toBe(true);
   expect(first.value).toMatchObject({ agent: { handle: 'atlas', bio: 'Research helper' }, rotated: false });
@@ -487,11 +488,14 @@ it('register_agent over /mcp registers a handle + bio and rotates on repeat hand
 
   const kp2 = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']) as CryptoKeyPair;
   const pub2 = base64url(new Uint8Array(await crypto.subtle.exportKey('raw', kp2.publicKey) as ArrayBuffer));
-  const second = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'atlas', bio: 'Updated bio', publicKey: pub2 });
-  expect(second.value).toMatchObject({ agent: { id: first.value.agent.id, handle: 'atlas', bio: 'Updated bio' }, rotated: true });
+  const second = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'atlas', bio: 'Updated bio', publicKey: pub2, wrapKey: '2b'.repeat(32) });
+  expect(second.value).toMatchObject({ agent: { id: first.value.agent.id, handle: 'atlas', bio: 'Updated bio', wrap_key: '2b'.repeat(32) }, rotated: true });
   expect(second.value.token).not.toBe(first.value.token);
 
-  const invalid = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'Bad Handle!', publicKey: pub2 });
+  const invalid = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'Bad Handle!', publicKey: pub2, wrapKey: '2b'.repeat(32) });
+  expect(invalid.result.isError).toBe(true);
+  const missingWrap = await mcpCall(f.settings, issued.access_token, 'register_agent', { handle: 'nowrap', publicKey: pub2 });
+  expect(missingWrap.result.isError).toBe(true);
   expect(invalid.result.isError).toBe(true);
 });
 

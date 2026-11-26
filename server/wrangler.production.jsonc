@@ -22,28 +22,29 @@
     "bindings": [
       {
         "name": "TENDRIL",
-        "class_name": "TendrilS13"
+        "class_name": "TendrilS14"
       },
       {
         "name": "ADMISSION",
-        "class_name": "AdmissionS13"
+        "class_name": "AdmissionS14"
       },
       {
         "name": "AGENT_HUB",
-        "class_name": "AgentHubS13"
+        "class_name": "AgentHubS14"
       }
     ]
   },
   "migrations": [
     { "tag": "baseline", "new_sqlite_classes": ["Tendril", "Admission"] },
     { "tag": "agent-hub", "new_sqlite_classes": ["AgentHub"] },
-    { "tag": "storage-13", "new_sqlite_classes": ["TendrilS13", "AdmissionS13", "AgentHubS13"] }
+    { "tag": "storage-13", "new_sqlite_classes": ["TendrilS13", "AdmissionS13", "AgentHubS13"] },
+    { "tag": "storage-14", "new_sqlite_classes": ["TendrilS14", "AdmissionS14", "AgentHubS14"] }
   ],
   "d1_databases": [
     {
       "binding": "ACCOUNTS",
-      "database_name": "tendriller-production-s12-accounts",
-      "database_id": "053e4676-08a8-42e2-9a94-e5144de547c0",
+      "database_name": "tendriller-production-s14-accounts",
+      "database_id": "0a5d94db-f381-4ec1-a363-2e62eee76ef1",
       "migrations_dir": "migrations"
     }
   ],

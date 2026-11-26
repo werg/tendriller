@@ -1,19 +1,31 @@
-// Actual browser/storage qualification of the public owner composition, without a hosted service.
+// Actual browser/storage qualification of the single-active-tab dedicated Worker owner composition, without a hosted service.
 import assert from 'node:assert/strict';
-import {build} from 'esbuild';
-import {chromium} from '@playwright/test';
-import {launchNetworkBrowser} from '../test/e2e/network-qualification/browser-launch.mjs';
-import {createServer} from 'node:http';
-import {mkdir,readFile,writeFile} from 'node:fs/promises';
-import {resolve,join} from 'node:path';
-const qualifyLifecycle=process.env.TENDRILLER_BROWSER_LIFECYCLE==='1';
-const root=resolve(import.meta.dirname,'..'),reportRoot=resolve(process.env.TENDRILLER_BROWSER_OUTPUT??join(root,'.results')),out=join(reportRoot,'collaboration-browser-assets');
-await mkdir(out,{recursive:true});
-await build({absWorkingDir:root,entryPoints:{page:'collaboration/test/browser/page.mjs',worker:'collaboration/test/browser/worker.mjs'},
-  bundle:true,splitting:true,format:'esm',platform:'browser',target:'es2022',outdir:out,outExtension:{'.js':'.mjs'}});
-await build({absWorkingDir:root,stdin:{contents:"export {openBrowserOwner,createBrowserIdentity} from './session/browser.mjs';export {serveBrowserOwner} from './session/worker.mjs';",resolveDir:root,loader:'js'},bundle:true,format:'esm',platform:'browser',target:'es2022',outfile:join(out,'passive.mjs')});
-const server=createServer(async(req,res)=>{const path=new URL(req.url,'http://localhost').pathname;
-  if(path==='/passive.html'){res.writeHead(200,{'content-type':'text/html'});res.end(`<!doctype html><title>Passive public import</title><script type="module">
+import { build } from 'esbuild';
+import { chromium } from '@playwright/test';
+import { createServer } from 'node:http';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+
+const root = resolve(import.meta.dirname, '..');
+const reportRoot = resolve(process.env.TENDRILLER_BROWSER_OUTPUT ?? join(root, '.results'));
+const out = join(reportRoot, 'collaboration-browser-assets');
+await mkdir(out, { recursive: true });
+await build({
+  absWorkingDir: root,
+  entryPoints: { page: 'collaboration/test/browser/page.mjs', worker: 'collaboration/test/browser/worker.mjs' },
+  bundle: true, splitting: true, format: 'esm', platform: 'browser', target: 'es2022', outdir: out, outExtension: { '.js': '.mjs' },
+});
+await build({
+  absWorkingDir: root,
+  stdin: { contents: "export {openBrowserOwner,createBrowserIdentity} from './session/browser.mjs';export {serveBrowserOwner} from './session/worker.mjs';", resolveDir: root, loader: 'js' },
+  bundle: true, format: 'esm', platform: 'browser', target: 'es2022', outfile: join(out, 'passive.mjs'),
+});
+
+const server = createServer(async (req, res) => {
+  const path = new URL(req.url, 'http://localhost').pathname;
+  if (path === '/passive.html') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(`<!doctype html><title>Passive public import</title><script type="module">
 window.passiveReady=(async()=>{
   const calls={};
   for(const name of ['Worker','SharedWorker','BroadcastChannel','WebSocket','RTCPeerConnection'])if(typeof window[name]==='function')window[name]=class{constructor(){calls[name]=(calls[name]||0)+1;throw Error('EAGER_'+name);}};
@@ -23,217 +35,156 @@ window.passiveReady=(async()=>{
   forbid(indexedDB,'open');forbid(window,'fetch');
   await import('/passive.mjs');return calls;
 })();
-</script>`);return;}
-  if(path==='/'||path==='/board.html'||path==='/discussion.html'){res.writeHead(200,{'content-type':'text/html'});res.end('<!doctype html><title>Owner conformance</title><script type="module" src="/page.mjs"></script>');return;}
-  if(!/^\/[A-Za-z0-9_.-]+\.mjs$/.test(path)){res.writeHead(404);res.end();return;}
-  try{res.writeHead(200,{'content-type':'text/javascript'});res.end(await readFile(join(out,path.slice(1))));}catch{res.writeHead(404);res.end();}
-});
-await new Promise(done=>server.listen(0,'127.0.0.1',done));const base=`http://127.0.0.1:${server.address().port}`;
-let browser,lifecycleBrowser;const evidence={status:'failed',stage:'launch',scenarios:[],completedStages:[],diagnostics:[],scope:'Actual Chromium; local origin, events backend; no mobile/provider/Internet claim'};
-async function stage(name,run,timeoutMs=25000){
-  evidence.stage=name;console.log(`Browser qualification: ${name}`);let timer;
-  try{const result=await Promise.race([run(),new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error(`Browser stage timed out: ${name}`)),timeoutMs);})]);
-    evidence.completedStages.push(name);return result;
-  }finally{clearTimeout(timer);}
-}
-function observe(page,label){
-  const record=message=>{if(evidence.diagnostics.length<64)evidence.diagnostics.push({page:label,stage:evidence.stage,message});};
-  page.on('pageerror',error=>record(error.message));page.on('console',message=>{if(message.type()==='error')record(message.text());});
-}
-const deadline=setTimeout(()=>{evidence.failure=`Browser qualification exceeded its 120 second deadline at ${evidence.stage}`;void browser?.close();},120000);
-try{
-  const launchOptions=process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?{executablePath:process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH}:{};
-  if(qualifyLifecycle){lifecycleBrowser=await launchNetworkBrowser(launchOptions);browser=lifecycleBrowser.browser;}
-  else browser=await chromium.launch({headless:true,...launchOptions});
-  evidence.browser=browser.version();
-  await stage('passive-public-import-does-not-open-storage-workers-or-peer-discovery',async()=>{
-    const context=await browser.newContext(),page=await context.newPage();
-    try{await page.goto(base+'/passive.html');assert.deepEqual(await page.evaluate(()=>window.passiveReady),{});evidence.passivePublicImportLazy=true;}
-    finally{await context.close();}
-  });
-  for(const mode of ['shared','elected']){
-    const context=lifecycleBrowser?.context??await browser.newContext(),profile=`qualification-${mode}`,one=await context.newPage(),two=await context.newPage();
-    observe(one,`${mode}:one`);observe(two,`${mode}:two`);
-    const url=(path,view='copied-view')=>`${base}/${path}?profile=${profile}&mode=${mode}&view=${view}`;
-    const a=await stage(`${mode}:identity-and-first-attachment`,async()=>{await one.goto(url('board.html')+'&identity=create');return one.evaluate(()=>window.ready);});
-    await stage(`${mode}:participant-focus`,()=>one.evaluate(()=>window.verifyParticipantPanel()));
-    await stage(`${mode}:same-page-reattach-keeps-the-owner`,async()=>{
-      // An app-level reconnect in the only page must not restart the owner (and its peer connections).
-      const endpoint=await one.evaluate(()=>window.reattach());
-      assert.equal(endpoint.ownerInstanceId,a.endpoint.ownerInstanceId,JSON.stringify(await one.evaluate(()=>window.reattachTrace)));
-    });
-    const b=await stage(`${mode}:second-attachment`,async()=>{await two.goto(url('discussion.html'));return two.evaluate(()=>window.ready);});
-    assert.equal(a.publicKey,b.publicKey);assert.equal(a.endpoint.ownerInstanceId,b.endpoint.ownerInstanceId);
-    assert.notEqual(a.endpoint.endpointIncarnation,b.endpoint.endpointIncarnation);assert.notEqual(a.endpoint.context.viewId,b.endpoint.context.viewId);
-    assert.equal(a.status.canAuthor,true);assert.equal(b.status.canAuthor,true);
-    assert.notEqual(a.status.phase,'closed');assert.notEqual(b.status.phase,'closed');
-    await stage(`${mode}:signal-subscription-readiness`,()=>two.evaluate(async()=>{
-      const iterator=window.session.signals.subscribe({topics:['progress','fixture-ready'],mode:'latest',signal:AbortSignal.timeout(15000)})[Symbol.asyncIterator]();
-      window.signalIterator=iterator;let received=false;
-      const admitted=iterator.next().then(result=>{if(result.done||result.value.topic!=='fixture-ready')throw Error('Signal subscription readiness failed');received=true;});
-      // Ephemeral sends do not acknowledge subscriber admission. Observe a real
-      // fixture probe before the one-shot cross-page assertion; no arbitrary sleep.
-      for(let index=0;index<32&&!received;index++)await window.session.signals.send('fixture-ready',{probe:index},{stream:{streamId:'fixture-readiness'}});
-      await admitted;
-      window.signalNext=(async()=>{for(;;){const result=await iterator.next();if(result.done)throw Error('Live progress signal deadline expired');
-        if(result.value.topic==='progress')return result.value;}})();
-    }));
-    await stage(`${mode}:cross-endpoint-signal`,async()=>{
-      await one.evaluate(()=>window.session.signals.send('progress',{run:'one'},{stream:{streamId:'run-one'}}));
-      const signal=await two.evaluate(async()=>{const value=await window.signalNext;await window.signalIterator.return();return{value,status:window.session.status};});
-      assert.equal(signal.value.stream.endpointId,await one.evaluate(()=>window.session.endpoint.endpointId));assert.equal(signal.status.canAuthor,true);
-    });
-    await stage(`${mode}:drafts-and-commands`,async()=>{
-      await one.evaluate(()=>window.viewStore.writeDraft({text:'board draft'}));await two.evaluate(()=>window.viewStore.writeDraft({text:'discussion draft'}));
-      assert.equal(await one.evaluate(()=>window.viewStore.readDraft().text),'board draft');
-      await one.evaluate(async()=>{const op=await window.session.command('say','first',{operationId:'first'});await op.materialized();});
-      await two.evaluate(async()=>{const op=await window.session.command('say','second',{operationId:'second'});await op.materialized();});
-      assert.equal(await two.evaluate(async()=>(await window.session.query('messages',null)).value.events.length),2);
-    });
-    await stage(`${mode}:suspend-resume`,async()=>{
-      const before=await one.evaluate(()=>window.session.endpoint.endpointIncarnation);
-      await one.evaluate(()=>window.attachment.suspend());await one.evaluate(()=>window.attachment.resume());
-      assert.equal(await one.evaluate(()=>window.session.endpoint.endpointIncarnation),before);
-    });
-    if(qualifyLifecycle)await stage(`${mode}:automatic-freeze-retains-document-and-owner`,async()=>{
-      // A DedicatedWorker freezes with its owning page. Freeze the follower
-      // in elected mode so this case measures a genuinely live owner.
-      const selected=mode==='elected'?two:one,sibling=mode==='elected'?one:two;
-      const before=await selected.evaluate(()=>{window.freezeMarker=crypto.randomUUID();window.freezeEvents=[];
-        for(const type of ['freeze','resume'])document.addEventListener(type,()=>window.freezeEvents.push(type));
-        return{marker:window.freezeMarker,endpoint:window.session.endpoint,publicKey:window.session.identity.publicKey};});
-      const cdp=await context.newCDPSession(selected);let cover;
-      try{
-        await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:false});
-        cover=await context.newPage();await cover.goto('about:blank');await cover.bringToFront();
-        assert.equal(await selected.evaluate(()=>document.hidden),true,'Selected document must really be hidden before freeze');
-        await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),before.endpoint.endpointId,{timeout:5000,polling:100});
-        await cdp.send('Page.setWebLifecycleState',{state:'frozen'});
-        // Cross the unchanged 15s page fence while the healthy owner still serves
-        // a sibling. This is actual Chromium suspension, not a synthetic event.
-        await sibling.evaluate(()=>window.session.query('messages',null));
-        await new Promise(resolve=>setTimeout(resolve,16000));
-        await cdp.send('Page.setWebLifecycleState',{state:'active'});await cover.close();cover=undefined;await selected.bringToFront();
-        await selected.waitForFunction(()=>window.freezeEvents.includes('resume'),null,{timeout:5000});
-        await sibling.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='active'),before.endpoint.endpointId,{timeout:5000,polling:100});
-        const after=await selected.evaluate(async()=>({marker:window.freezeMarker,events:window.freezeEvents,endpoint:window.session.endpoint,publicKey:window.session.identity.publicKey,aborted:window.session.signal.aborted,eventsRead:(await window.session.query('messages',null)).value.events.length}));
-        assert.equal(after.marker,before.marker);assert.deepEqual(after.events,['freeze','resume']);assert.deepEqual(after.endpoint,before.endpoint);assert.equal(after.publicKey,before.publicKey);assert.equal(after.aborted,false);assert.equal(after.eventsRead,2);
-      }finally{await cdp.send('Page.setWebLifecycleState',{state:'active'}).catch(()=>{});await cover?.close();await cdp.detach();}
-    });
-    await stage(`${mode}:follower-reload-retains-view`,async()=>{
-      await two.reload();const reloaded=await two.evaluate(()=>window.ready);
-      assert.equal(reloaded.endpoint.context.viewId,b.endpoint.context.viewId);
-      assert.notEqual(reloaded.endpoint.endpointIncarnation,b.endpoint.endpointIncarnation);
-      assert.equal(await two.evaluate(()=>window.viewStore.readDraft().text),'discussion draft');
-      assert.equal(reloaded.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-    });
-    if(qualifyLifecycle)await stage(`${mode}:frozen-document-discard-reclaims-root-capacity`,async()=>{
-        const before=await two.evaluate(async()=>({publicKey:window.session.identity.publicKey,ownerInstanceId:window.session.endpoint.ownerInstanceId,
-          operation:await (await window.session.operations.get('first')).inspect(),eventCount:(await window.session.query('messages',null)).value.events.length}));
-        // Both root/attachment limits are four. Retained siblings plus six
-        // lost teardown notifications require actual witness reclamation.
-        const wireProof=[],roots=[];
-        for(let index=0;index<6;index++){
-          const wire={droppedRootDetaches:0,droppedRouteReleases:0,droppedRpcCloses:0};
-          const orphan=await context.newPage();let cover,cdp,timer;
-          try{
-            await orphan.exposeBinding('__orphanWire',(_source,type)=>{if(type==='root.detach.dropped')wire.droppedRootDetaches++;else if(type==='route.release.dropped')wire.droppedRouteReleases++;else if(type==='rpc.close.dropped')wire.droppedRpcCloses++;});
-            await orphan.goto(url('discussion.html',`orphan-${index}`)+'&lost-teardown=1');const attached=await orphan.evaluate(()=>window.ready);
-            assert.equal(attached.mode,mode,'Another ownership route must not hide exhausted capacity');
-            assert.equal(typeof attached.rootId,'string');roots.push(attached.rootId);
-            assert.equal(attached.publicKey,before.publicKey);assert.equal(attached.endpoint.ownerInstanceId,before.ownerInstanceId);
-            const events=[];let frozen;const observed=new Promise(resolve=>{frozen=resolve;});
-            await orphan.exposeBinding('__orphanLifecycle',(_source,type)=>{events.push(type);if(type==='freeze')frozen();});
-            await orphan.evaluate(()=>{for(const type of ['freeze','resume'])document.addEventListener(type,()=>{void window.__orphanLifecycle(type);});});
-            cdp=await context.newCDPSession(orphan);await cdp.send('Emulation.setFocusEmulationEnabled',{enabled:false});
-            cover=await context.newPage();await cover.goto('about:blank');await cover.bringToFront();assert.equal(await orphan.evaluate(()=>document.hidden),true);
-            await one.waitForFunction(async id=>(await window.session.endpoints()).some(row=>row.endpointId===id&&row.state==='suspended'),attached.endpoint.endpointId,{timeout:5000,polling:100});
-            await cdp.send('Page.setWebLifecycleState',{state:'frozen'});
-            try{await Promise.race([observed,new Promise((_resolve,reject)=>{timer=setTimeout(()=>reject(Error('ORPHAN_FREEZE_NOT_OBSERVED')),5000);})]);}finally{clearTimeout(timer);}
-            // The fixture drops private detach and BC release notifications.
-            // Worker-side port close/error listeners are independently disabled.
-            // Deliberately never thaw or call application detach. Browser death
-            // releases the witness while this Worker keeps serving the siblings.
-            await orphan.close();assert.deepEqual(events,['freeze']);wireProof.push(wire);
-          }finally{await orphan.close().catch(()=>{});await cover?.close();await cdp?.detach().catch(()=>{});}
-        }
-        // A fresh root also forces admission GC for the final discarded root.
-        assert.deepEqual(await two.evaluate(()=>window.cycleRoots(1)),[before.ownerInstanceId]);
-        const after=await two.evaluate(async()=>({publicKey:window.session.identity.publicKey,ownerInstanceId:window.session.endpoint.ownerInstanceId,
-          operation:await (await window.session.operations.get('first')).inspect(),eventCount:(await window.session.query('messages',null)).value.events.length}));
-        assert.deepEqual(after,before);assert.equal(await one.evaluate(()=>window.session.signal.aborted),false);
-        const proof=await one.evaluate(roots=>window.fixtureOwnerProof(roots),roots);
-        assert.deepEqual(proof.observedMissing,roots.map(()=>true),`The owner must observe every discarded document witness missing: ${JSON.stringify({tracked:proof.tracked,queries:proof.queryCount,missing:proof.observedMissing})}`);
-        if(mode==='shared')assert.ok(proof.suppressedPortListeners>0,'Port death must not stand in for witness reclamation');
-        evidence.frozenDiscardWitness??={};evidence.frozenDiscardWitness[mode]={pages:wireProof,witnessesObservedMissing:proof.observedMissing.length,portDeathCleanupSuppressed:mode==='shared'};
-      });
-    if(mode==='shared'){
-      await stage('shared:another-worker-version-attaches-to-the-existing-owner',async()=>{
-        // A tab on a different publication's Worker URL gets its own SharedWorker,
-        // which cannot take the held profile. It must attach to the owner, not fail OWNER_BUSY.
-        const three=await context.newPage();observe(three,'shared:three');
-        await three.goto(url('board.html','third-view')+'&variant=next');
-        const c=await three.evaluate(()=>window.ready);
-        assert.equal(c.publicKey,a.publicKey);assert.equal(c.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-        await three.evaluate(async()=>{const op=await window.session.command('say','third',{operationId:'third'});await op.materialized();});
-        await three.close();
-      });
-      await stage('shared:repeated-root-detach',async()=>{
-        assert.deepEqual(await two.evaluate(()=>window.cycleRoots(12)),[a.endpoint.ownerInstanceId]);
-      });
-      await stage('shared:local-detach-preserves-sibling',async()=>{
-        await one.evaluate(()=>window.attachment.detach());
-        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).inspect()).materialized.outcome),'accepted');
-        await one.reload();const again=await one.evaluate(()=>window.ready);assert.equal(again.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-      });
-      await stage('shared:underlying-session-close-and-reopen',async()=>{
-        await two.evaluate(()=>window.closeUnderlyingSession());
-        await Promise.all([one.waitForFunction(()=>window.session.status.phase==='closed'),two.waitForFunction(()=>window.session.status.phase==='closed')]);
-        await two.waitForFunction(async()=>!(await navigator.locks.query()).held.some(lock=>lock.name===`chronolog-owner:${window.ownerProfile}`));
-        await two.reload();const reopened=await two.evaluate(()=>window.ready);
-        assert.equal(reopened.publicKey,a.publicKey);assert.notEqual(reopened.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-        // A reopened session warms its materialization independently; wait for the original operation's outcome.
-        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).materialized({timeoutMs:15000})).outcome),'accepted');
-      });
-    }else{
-      await stage('elected:local-detach-preserves-sibling',async()=>{
-        await one.evaluate(()=>window.attachment.detach());
-        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).inspect()).materialized.outcome),'accepted');
-        assert.equal(await two.evaluate(()=>window.session.endpoint.ownerInstanceId),a.endpoint.ownerInstanceId);
-        assert.notEqual(await two.evaluate(()=>window.session.status.phase),'closed');
-      });
-      await stage('elected:physical-owner-page-close-and-reopen',async()=>{
-        // Physical page death can terminate its dedicated Worker. A retired
-        // local attachment alone must not do so while an authenticated sibling lives.
-        // Owner loss is detected only through the follower's bounded liveness
-        // contract: a 15s silence fence, with one pending finite call (the 5s
-        // heartbeat's 20s ping) allowed to run to its own deadline, so the documented
-        // bound is below 45s. Never shorten that contract or assume page close killed the owner.
-        const workers=async()=>{const cdp=await browser.newBrowserCDPSession();try{return(await cdp.send('Target.getTargets')).targetInfos.filter(target=>target.type==='worker').length;}finally{await cdp.detach().catch(()=>{});}};
-        const snapshot=()=>two.evaluate(async()=>{const locks=await navigator.locks.query();return{visibility:document.visibilityState,status:window.session.status,attachment:window.session.attachmentState,aborted:window.session.signal.aborted,
-          boundedRequest:window.session.boundedRequest,ownerInstanceId:window.session.endpoint?.ownerInstanceId,held:locks.held.map(lock=>lock.name),pending:locks.pending.map(lock=>lock.name)};}).catch(error=>({unreadable:String(error)}));
-        const workersBefore=await workers(),started=Date.now();
-        try{
-          await one.close();
-          // Prove the physical owner Worker actually died with its page; closing a document is not assumed to do it.
-          for(let index=0;index<100&&await workers()>=workersBefore;index++)await new Promise(resolve=>setTimeout(resolve,100));
-          assert.ok(await workers()<workersBefore,'The closed page must take its dedicated owner Worker with it');
-          evidence.ownerLoss={workersBefore,workersAfterClose:await workers(),workerGoneAfterMs:Date.now()-started};
-          await two.waitForFunction(()=>window.session.status.phase==='closed',null,{timeout:50000,polling:250});
-          evidence.ownerLoss.detectedAfterMs=Date.now()-started;
-          assert.ok(evidence.ownerLoss.detectedAfterMs<45000,'Owner loss exceeded the documented fence plus one bounded request grace');
-        }catch(error){evidence.ownerLoss={...evidence.ownerLoss,failedAfterMs:Date.now()-started,cachedStateAndLocks:await snapshot()};throw error;}
-        await two.reload();const reopened=await two.evaluate(()=>window.ready);assert.equal(reopened.publicKey,a.publicKey);
-        assert.notEqual(reopened.endpoint.ownerInstanceId,a.endpoint.ownerInstanceId);
-        // A reopened session warms its materialization independently; wait for the original operation's outcome.
-        assert.equal(await two.evaluate(async()=>(await (await window.session.operations.get('first')).materialized({timeoutMs:15000})).outcome),'accepted');
-      },60000);
-    }
-    evidence.scenarios.push({mode,oneSigner:true,twoDocuments:true,duplicateViewFenced:true,localAuthoringAvailable:true,signedLocalSignals:true,
-      concurrentCommands:true,independentDrafts:true,...(mode==='shared'?{otherWorkerVersionAttaches:true}:{}),samePageReattachKeepsOwner:true,suspendResume:true,automaticChromiumFreezeResume:qualifyLifecycle,frozenDiscardCapacityReclaimed:qualifyLifecycle,frozenDiscardCount:qualifyLifecycle?6:0,detachPreservesSibling:true,detachOrCrashReopen:true,
-      asyncIdentityBootstrap:true,participantFocus:true,reloadPreservesDraft:true,...(mode==='shared'?{boundedRootReuse:true,sessionCloseReleasesFence:true}:{})});
-    if(lifecycleBrowser)await Promise.all(context.pages().map(page=>page.close()));else await context.close();
+</script>`);
+    return;
   }
-  evidence.stage='complete';evidence.status='passed';console.log(JSON.stringify(evidence,null,2));
-}catch(error){evidence.failure??=error.stack??String(error);console.error(JSON.stringify(evidence,null,2));throw error;
-}finally{clearTimeout(deadline);if(lifecycleBrowser)await lifecycleBrowser.close();else await browser?.close();await new Promise(done=>server.close(done));await writeFile(join(reportRoot,'collaboration-browser.json'),JSON.stringify(evidence,null,2)+'\n');}
+  if (path === '/' || path === '/board.html' || path === '/discussion.html') {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><title>Owner conformance</title><script type="module" src="/page.mjs"></script>');
+    return;
+  }
+  if (!/^\/[A-Za-z0-9_.-]+\.mjs$/.test(path)) { res.writeHead(404); res.end(); return; }
+  try { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(await readFile(join(out, path.slice(1)))); }
+  catch { res.writeHead(404); res.end(); }
+});
+await new Promise(done => server.listen(0, '127.0.0.1', done));
+const base = `http://127.0.0.1:${server.address().port}`;
+let browser;
+const evidence = {
+  status: 'failed',
+  stage: 'launch',
+  scenarios: [],
+  completedStages: [],
+  diagnostics: [],
+  scope: 'Actual Chromium; local origin, events backend, single-active-tab dedicated Worker lock',
+};
+
+async function stage(name, run, timeoutMs = 25000) {
+  evidence.stage = name;
+  console.log(`Browser qualification: ${name}`);
+  let timer;
+  try {
+    const result = await Promise.race([
+      run(),
+      new Promise((_resolve, reject) => { timer = setTimeout(() => reject(Error(`Browser stage timed out: ${name}`)), timeoutMs); }),
+    ]);
+    evidence.completedStages.push(name);
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function observe(page, label) {
+  const record = message => { if (evidence.diagnostics.length < 64) evidence.diagnostics.push({ page: label, stage: evidence.stage, message }); };
+  page.on('pageerror', error => record(error.message));
+  page.on('console', message => { if (message.type() === 'error') record(message.text()); });
+}
+
+const deadline = setTimeout(() => { evidence.failure = `Browser qualification exceeded its 120 second deadline at ${evidence.stage}`; void browser?.close(); }, 120000);
+try {
+  const launchOptions = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {};
+  browser = await chromium.launch({ headless: true, ...launchOptions });
+  evidence.browser = browser.version();
+
+  await stage('passive-public-import-does-not-open-storage-workers-or-peer-discovery', async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+      await page.goto(base + '/passive.html');
+      assert.deepEqual(await page.evaluate(() => window.passiveReady), {});
+      evidence.passivePublicImportLazy = true;
+    } finally {
+      await context.close();
+    }
+  });
+
+  const context = await browser.newContext();
+  const profile = 'qualification-single-tab';
+  const one = await context.newPage();
+  const two = await context.newPage();
+  observe(one, 'one');
+  observe(two, 'two');
+  const url = (path, view = 'main-view', extra = '') => `${base}/${path}?profile=${profile}&view=${view}${extra}`;
+
+  const a = await stage('identity-and-first-attachment', async () => {
+    await one.goto(url('board.html', 'tab-one', '&identity=create'));
+    return one.evaluate(() => window.ready);
+  });
+  assert.equal(a.mode, 'dedicated');
+  assert.equal(a.status.canAuthor, true);
+
+  await stage('participant-focus', () => one.evaluate(() => window.verifyParticipantPanel()));
+
+  await stage('drafts-and-commands', async () => {
+    await one.evaluate(() => window.viewStore.writeDraft({ text: 'board draft' }));
+    assert.equal(await one.evaluate(() => window.viewStore.readDraft().text), 'board draft');
+    await one.evaluate(async () => {
+      const op = await window.session.command('say', 'first', { operationId: 'first' });
+      await op.materialized();
+    });
+    assert.equal(await one.evaluate(async () => (await window.session.query('messages', null)).value.events.length), 1);
+  });
+
+  await stage('suspend-resume', async () => {
+    const before = await one.evaluate(() => window.session.endpoint.endpointIncarnation);
+    await one.evaluate(() => window.attachment.suspend());
+    await one.evaluate(() => window.attachment.resume());
+    assert.equal(await one.evaluate(() => window.session.endpoint.endpointIncarnation), before);
+  });
+
+  await stage('second-tab-reports-active-elsewhere-without-stealing', async () => {
+    await two.goto(url('discussion.html', 'tab-two'));
+    await two.waitForFunction(() => window.ownerStage === 'failed:attachment');
+    const failure = await two.evaluate(() => window.ownerFailure);
+    assert.equal(failure.code, 'TAB_ACTIVE_ELSEWHERE');
+    assert.equal(await one.evaluate(() => window.ownerReplacedCount), 0);
+    assert.equal(await one.evaluate(() => window.session.signal.aborted), false);
+  });
+
+  await stage('explicit-takeover-transfers-lock-and-preserves-local-state', async () => {
+    await two.goto(url('discussion.html', 'tab-two', '&takeover=1'));
+    const b = await two.evaluate(() => window.ready);
+    assert.equal(b.publicKey, a.publicKey);
+    assert.equal(b.status.canAuthor, true);
+    await one.waitForFunction(() => window.ownerReplacedCount === 1);
+    assert.equal(await two.evaluate(async () => (await (await window.session.operations.get('first')).materialized({ timeoutMs: 15000 })).outcome), 'accepted');
+    await two.evaluate(async () => {
+      const op = await window.session.command('say', 'second', { operationId: 'second' });
+      await op.materialized();
+    });
+    assert.equal(await two.evaluate(async () => (await window.session.query('messages', null)).value.events.length), 2);
+  });
+
+  await stage('reload-retains-identity-and-stored-operations', async () => {
+    await two.reload();
+    const reloaded = await two.evaluate(() => window.ready);
+    assert.equal(reloaded.publicKey, a.publicKey);
+    assert.equal(await two.evaluate(async () => (await window.session.query('messages', null)).value.events.length), 2);
+  });
+
+  evidence.scenarios.push({
+    mode: 'dedicated',
+    oneSigner: true,
+    localAuthoringAvailable: true,
+    singleActiveTabLock: true,
+    explicitTakeoverPreservesState: true,
+    suspendResume: true,
+    asyncIdentityBootstrap: true,
+    participantFocus: true,
+    reloadPreservesState: true,
+  });
+  await context.close();
+  evidence.stage = 'complete';
+  evidence.status = 'passed';
+  console.log(JSON.stringify(evidence, null, 2));
+} catch (error) {
+  evidence.failure ??= error.stack ?? String(error);
+  console.error(JSON.stringify(evidence, null, 2));
+  throw error;
+} finally {
+  clearTimeout(deadline);
+  await browser?.close();
+  await new Promise(done => server.close(done));
+  await writeFile(join(reportRoot, 'collaboration-browser.json'), JSON.stringify(evidence, null, 2) + '\n');
+}

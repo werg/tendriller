@@ -20,10 +20,11 @@ export async function handlePeerParticipant(t: Tendril, req: Request, principal:
     if (!['authority.read', 'publication.read', 'publication.publish', 'finality.read', 'finality.publish'].includes(request.payload.action)) throw new HttpError(403, 'participant_action_forbidden');
     await freshAuthorityAccess(t, principal);
     if (principal.kind === 'agent') requireAgentScope(principal, 'participants:connect');
-    const account = authorityAccount(t, principal);
-    if (!t.db.get<{publicKey: string; accountId: string}[]>('application_device_accounts', []).some(binding => binding.publicKey === request.signer && binding.accountId === account)) throw new HttpError(403, 'participant_account_mismatch');
+    authorityAccount(t, principal);
     const bundle = await readAuthorityBundle(t);
     if (bundle === null) throw new HttpError(409, 'application_uninitialized');
+    // Signed membership, not host bookkeeping, identifies participant keys.
+    if (!bundle.memberships.at(-1)!.payload.members.some(member => member.publicKey === request.signer)) throw new HttpError(403, 'participant_member_required');
     const memory = new Map<string, Uint8Array>(), authority = await createAuthorityProvider({ bundle, store: { async get(key) { return memory.get(key) ?? null; }, async put(key, bytes) { memory.set(key, bytes); } } });
     const participant = createAuthorityParticipant({ authority, publications: {
       async read() { const receipt = await exchangePeerPublication(t, principal, 'read', {}) as {publication: any} | null; return receipt ? [receipt.publication] : []; },

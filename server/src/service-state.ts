@@ -1,9 +1,35 @@
 import type { Env } from "./env";
 import { HttpError } from "./http";
+import { ACCOUNT_STORAGE_LIMIT, PAGE_LIMIT, RESIDENT_LIMIT } from "./limits";
 import { serviceIdentity } from './service-identity';
+import { hostAttestationKey, loadHostAttestationIdentity } from './host-attestation';
+import { broadcastSummary } from './broadcasts';
 import ipaddr from "ipaddr.js";
 
 export type ServiceMode = "open" | "creation_paused" | "read_only";
+
+export interface AccountLimits {
+  pages: number | null;
+  residents: number | null;
+  storage: number | null;
+}
+
+/** Active per-account limits from service_state (NULL means unlimited; defaults preserve production caps). */
+export async function accountLimits(env: Env): Promise<AccountLimits> {
+  if (!env.ACCOUNTS) return { pages: PAGE_LIMIT, residents: RESIDENT_LIMIT, storage: ACCOUNT_STORAGE_LIMIT };
+  try {
+    const row = await env.ACCOUNTS.prepare("SELECT account_page_cap, account_resident_cap, account_storage_cap FROM service_state WHERE id = 1")
+      .first<{ account_page_cap: number | null; account_resident_cap: number | null; account_storage_cap: number | null }>();
+    if (!row) return { pages: PAGE_LIMIT, residents: RESIDENT_LIMIT, storage: ACCOUNT_STORAGE_LIMIT };
+    return {
+      pages: row.account_page_cap,
+      residents: row.account_resident_cap,
+      storage: row.account_storage_cap,
+    };
+  } catch {
+    return { pages: PAGE_LIMIT, residents: RESIDENT_LIMIT, storage: ACCOUNT_STORAGE_LIMIT };
+  }
+}
 
 export async function serviceMode(env: Env): Promise<ServiceMode> {
   const row = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: ServiceMode }>();
@@ -11,6 +37,13 @@ export async function serviceMode(env: Env): Promise<ServiceMode> {
     throw new HttpError(503, "unavailable", "Service state is not initialized");
   }
   return row.mode;
+}
+
+/** Device and agent admission need a valid host attestation key; pages pin its public key. */
+async function attestationReadiness(env: Env) {
+  const available = await loadHostAttestationIdentity(env) !== null;
+  return { available, key: available ? hostAttestationKey(env) : null, code: available ? null : 'attestation_unconfigured' as const,
+    nextAction: available ? null : 'Ask the operator to install the HOST_ATTESTATION_KEY Worker secret (docs/OPERATIONS.md); browser and agent enrollment are unavailable until then.' };
 }
 
 /** An advisory service-level preflight; creation still checks live state and admission. */
@@ -38,8 +71,10 @@ export async function serviceReadiness(env: Env) {
       available: mode === 'open' || mode === 'creation_paused',
       code: mode === 'unavailable' ? 'unavailable' : mode === 'read_only' ? 'read_only' : null,
     },
+    attestation: await attestationReadiness(env),
     readinessUrl: origin + '/api/readiness',
     statusUrl: origin + '/status',
+    broadcasts: await broadcastSummary(env),
     checkedAt: new Date().toISOString(),
   };
 }

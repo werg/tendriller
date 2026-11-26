@@ -1,4 +1,4 @@
-import type { ApplicationSession, ApplicationSessionOwner, ApplicationOwnerOptions } from '@chronolog/peer-session';
+import type { ApplicationSession, ApplicationSessionOwner, ApplicationOwnerOptions, ApplicationOwnerExtensions } from '@chronolog/peer-session';
 import type { WebRtcOptions, WorkerWebRtcConnection } from '@chronolog/peer-session/webrtc';
 
 export interface BrowserOwnerConfiguration {
@@ -6,7 +6,7 @@ export interface BrowserOwnerConfiguration {
   openSession: (options: {
     signal: AbortSignal;
     openDirectConnection: (options: Omit<WebRtcOptions, 'createPeerConnection'>) => Promise<WorkerWebRtcConnection>;
-  }) => Promise<{ session: ApplicationSession; close?: () => Promise<void> }>;
+  }) => Promise<{ session: ApplicationSession; close?: () => Promise<void>; extensions?: ApplicationOwnerExtensions }>;
   createIdentity?: (options: { signal: AbortSignal }) => Promise<string>;
   ownerOptions?: ApplicationOwnerOptions;
 }

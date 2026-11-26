@@ -1,27 +1,11 @@
 // Browser-side helper for opt-in Hosted MCP (OAuth-token-wrapped X25519 keys)
 // and blind encrypted Chronolog envelope sync (`_tendril/mcp/*`).
 //
-// Zero plaintext keys ever touch the Tendriller host: the browser generates a
-// revocable Ed25519 identity, grants it membership, extracts current epoch keys
-// in RAM via Chronolog's standard provisioning protocol, X25519-seals them to
-// the OAuth grant's `wrap_public_key`, and discards all ephemeral keys.
-import {
-  bytesToHex,
-  createApplicationSession,
-  createSigningIdentity,
-  defineApplication,
-  exportSigningIdentity,
-  hexToBytes,
-  openApplicationDevice,
-} from '@chronolog/peer-session';
-import { decodeRecord, encodeRecord, recordDigest, signEnrollmentRequest } from '@chronolog/authority';
-
-const authorityBytes = value => {
-  if (!value || typeof value !== 'object' || typeof value.record !== 'string' || !/^[0-9a-f]+$/iu.test(value.record) || value.record.length % 2 !== 0) {
-    throw Error('AUTHORITY_RECORD_INVALID');
-  }
-  return hexToBytes(value.record);
-};
+// Zero plaintext keys ever touch the Tendriller host or the page: the owner Worker
+// (an administrator device) generates a revocable Ed25519 identity, signs its
+// membership grant, X25519-seals it with every epoch key to the OAuth grant's
+// `wrap_public_key`, and discards the ephemeral identity.
+import { bytesToHex, createSigningIdentity, decodeRecord, encodeRecord, exportSigningIdentity, hexToBytes } from '@chronolog/peer-session';
 
 const encoder = new TextEncoder();
 
@@ -43,16 +27,6 @@ function asBuffer(bytes) {
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return copy.buffer;
-}
-
-class EphemeralStore {
-  #map = new Map();
-  async get(key) { return this.#map.get(key)?.slice() ?? null; }
-  async put(key, value) { this.#map.set(key, value.slice()); }
-  async delete(key) { this.#map.delete(key); }
-  async initialize(entries) {
-    for (const entry of entries) if (!this.#map.has(entry.key)) this.#map.set(entry.key, entry.value.slice());
-  }
 }
 
 /**
@@ -94,63 +68,29 @@ export async function sealHostedKeys(wrapPublicKeyHex, material, aadContext) {
 }
 
 /**
- * Grant a revocable hosted identity membership in Chronolog authority and extract
- * the page's current epoch keys strictly in RAM via standard Chronolog provisioning.
+ * Owner-side half of hosted MCP opt-in, composed beside device admission in the
+ * page Worker: an administrator device adds a fresh revocable hosted identity to
+ * signed membership and seals that identity plus every epoch key to the OAuth
+ * grant's wrap key. Plaintext keys never reach the page or the host.
  */
-async function provisionHostedIdentityInRam({ session, peers, hostedIdentity, writer = true }) {
-  const metadata = await peers.application();
-  let bundle = decodeRecord(authorityBytes(metadata.authority));
-  const head = bundle.memberships.at(-1);
-  const existing = head.payload.members.find(m => m.publicKey === hostedIdentity.publicKey);
-  if (!existing?.reader || (writer && !existing?.writer)) {
-    // The host grants membership only to a key that proved itself for this account: answer an
-    // account-bound challenge with the fresh hosted identity before requesting its grant.
-    const { applicationId } = bundle.descriptor.payload, { epoch, epochKeyDigest } = head.payload;
-    const challenge = await peers.challenge(hostedIdentity.publicKey);
-    const proof = await signEnrollmentRequest({ applicationId, publicKey: hostedIdentity.publicKey, challenge: challenge.challenge, epoch, epochKeyDigest }, hostedIdentity);
-    await peers.enroll({ record: bytesToHex(encodeRecord(proof)) });
-    const intent = {
-      requestId: crypto.randomUUID(),
-      expectedMembershipId: await recordDigest(head),
-      authorTimeAfterMs: (BigInt(Date.now()) > head.payload.authorTimeAfterMs
-        ? BigInt(Date.now())
-        : head.payload.authorTimeAfterMs + 1n).toString(),
-      grant: {
-        publicKey: hostedIdentity.publicKey,
-        reader: true,
-        writer: Boolean(existing?.writer || writer),
-        administrator: existing?.administrator ?? false,
-        publisher: existing?.publisher ?? false,
-        finalizer: existing?.finalizer ?? false,
-      },
-    };
-    const result = await peers.grant(intent);
-    bundle = decodeRecord(authorityBytes(result.authority));
-  }
-  await session.mergeAuthority(bundle);
-
-  const memStore = new EphemeralStore();
-  const tempDevice = await openApplicationDevice({ store: memStore, managedSigner: hostedIdentity, create: true });
-  const tempSession = await createApplicationSession({
-    device: tempDevice,
-    definition: defineApplication({ id: 'tendriller-mcp-key-export', version: '1', commands: {}, queries: {} }),
-    authority: bundle,
+export function hostedMcpExtensions({ session, admission }) {
+  return Object.freeze({
+    async call(name, args) {
+      if (name !== 'hosted.seal') throw Object.assign(Error('EXTENSION_UNKNOWN'), { code: 'EXTENSION_UNKNOWN' });
+      const [{ wrapPublicKey, aad, writer = true }] = args;
+      if (!/^[0-9a-f]{64}$/u.test(wrapPublicKey ?? '') || typeof aad !== 'string' || !aad) throw Error('HOSTED_MCP_INPUT_INVALID');
+      const hostedIdentity = await createSigningIdentity(), exported = await exportSigningIdentity(hostedIdentity);
+      await admission.call('admission.addKey', hostedIdentity.publicKey, null, { writer });
+      const epochKeys = {};
+      for (const epoch of new Set(session.authority.bundle().memberships.map(m => m.payload.epoch))) {
+        const key = session.authority.epochKey(epoch);
+        if (!key) throw Error(`Missing epoch key ${epoch} for hosted MCP export`);
+        epochKeys[String(epoch)] = bytesToHex(key);
+      }
+      const sealed = await sealHostedKeys(wrapPublicKey, { signingSeedHex: exported.privateKey, signingPublicKey: exported.publicKey, epochKeys }, aad);
+      return { publicKey: exported.publicKey, wrappedKeysBase64: base64url(sealed) };
+    },
   });
-  try {
-    const req = await tempSession.provisioning.createProvisioningRequest();
-    const pkg = await session.provisioning.exportProvisioning(req);
-    await tempSession.provisioning.importProvisioning(pkg);
-    const epochs = [...new Set(bundle.memberships.map(m => m.payload.epoch))];
-    const epochKeys = {};
-    for (const epoch of epochs) {
-      const key = tempSession.authority.epochKey(epoch);
-      if (!key) throw Error(`Missing epoch key ${epoch} for hosted MCP export`);
-      epochKeys[String(epoch)] = bytesToHex(key);
-    }
-    return { bundle, epochKeys };
-  } finally {
-    await tempSession.close().catch(() => {});
-  }
 }
 
 /**
@@ -171,21 +111,14 @@ export async function connectHostedMcpGrant({
   fetchImpl = globalThis.fetch,
 }) {
   if (!runtime?.identity?.base || !runtime?.identity?.page) throw Error('Tendriller runtime identity is required');
-  if (!session || !peers) throw Error('Chronolog session and peers client are required');
+  if (!session?.extensions) throw Error('An attached Chronolog owner session with extensions is required');
   if (!grantId || !wrapPublicKey) throw Error('OAuth grantId and wrapPublicKey are required');
   const applicationId = session.applicationId ?? runtime.application?.id;
   if (!applicationId) throw Error('Application ID unavailable');
 
-  const hostedIdentity = await createSigningIdentity();
-  const exported = await exportSigningIdentity(hostedIdentity);
-  const { epochKeys } = await provisionHostedIdentityInRam({ session, peers, hostedIdentity, writer });
-
+  // The page Worker (an administrator device) signs the membership grant and seals the keys.
   const aad = `${runtime.identity.page}:${applicationId}:${grantId}`;
-  const sealed = await sealHostedKeys(wrapPublicKey, {
-    signingSeedHex: exported.privateKey,
-    signingPublicKey: exported.publicKey,
-    epochKeys,
-  }, aad);
+  const exported = await session.extensions.call('hosted.seal', [{ grantId, wrapPublicKey, aad, writer }]);
 
   const res = await fetchImpl(`${runtime.identity.base}_tendril/mcp/connect`, {
     method: 'POST',
@@ -196,7 +129,7 @@ export async function connectHostedMcpGrant({
       handle,
       bio,
       publicKey: exported.publicKey,
-      wrappedKeysBase64: base64url(sealed),
+      wrappedKeysBase64: exported.wrappedKeysBase64,
       ...(label ? { label } : {}),
       ...(capabilities ? { capabilities } : {}),
     }),

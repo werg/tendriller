@@ -9,13 +9,18 @@ import { routeIntegrationOAuth } from "./accounts/integration-oauth";
 import { dashboard } from "./accounts/keys";
 import { accountData } from "./accounts/data";
 import { reportPage } from "./abuse/report";
-import { adminPage, appealPage } from "./abuse/admin";
+import { adminAccount, adminPage, appealPage } from "./abuse/admin";
+import { checkBroadcastAdminToken, createBroadcast, fleetVersionSummary, listActiveBroadcasts, listAllBroadcastsForAdmin, publicBroadcastKeys, revokeBroadcast, validAudienceParam } from "./broadcasts";
 import { budgetWebhook } from "./budget";
 import { redeemPageCode, routePageAuth } from "./accounts/page";
-import { CORS_HEADERS, errorResponse, json, toErrorResponse, withCors } from "./http";
-import { landingPage } from "./inject";
+import { CORS_HEADERS, errorResponse, json, readJson, toErrorResponse, withCors } from "./http";
+import { escapeHtml, landingPage } from "./inject";
+import { etagMatches } from "./immutable-cache";
+import { BROADCAST_ID_RE } from "./ids";
+import { agentPlatformHtml, agentPlatformIndexHtml, agentPlatformIndexMd, agentPlatformMd } from "./agent-platforms";
 import { internalHeaders, routeAgentApi } from "./agents";
 import { serviceDescriptor } from "./descriptor";
+import { hostAttestationKey } from "./host-attestation";
 import { onboardingDescriptor, onboardingLinks } from "./onboarding";
 import { capabilityCatalog } from "./capability-catalog";
 import { isBranchPreview, parsePageRoute, publicBase } from "./urls";
@@ -60,7 +65,9 @@ export async function route(req: Request, env: Env, context?: CacheContext): Pro
   const preview = isBranchPreview(env);
   if (onPagesDomain || preview) {
     const headers = new Headers(res.headers);
-    if (onPagesDomain) headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    if (onPagesDomain && new URL(req.url).protocol === "https:") {
+      headers.set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload");
+    }
     if (preview) headers.set("X-Robots-Tag", "noindex, nofollow");
     if (res.status === 101) return new Response(null, { status: 101, headers, webSocket: res.webSocket });
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
@@ -163,7 +170,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   if (path === "/report") return reportPage(req, env, url);
   if (path === "/internal/budget") return budgetWebhook(req, env);
   if (path === "/appeal" || path === "/appeal/account") return appealPage(req, env, url);
-  if (path === "/admin" || path === "/admin/action" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
+  if (path === "/admin" || path === "/admin/action" || path === "/admin/broadcast" || path === "/admin/broadcast/revoke" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
@@ -173,8 +180,40 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
       headers: { "Content-Type": "text/html; charset=utf-8", Link: onboardingLinks(publicBase(env)) },
     });
   }
+  if (path === "/agents" || path === "/agents/") {
+    if (!publicRead) return errorResponse(405, "method_not_allowed", "Platform guides are read-only");
+    return new Response(req.method === "HEAD" ? null : agentPlatformIndexHtml(publicBase(env)), {
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", Link: onboardingLinks(publicBase(env)) },
+    });
+  }
+  if (path === "/agents.md") {
+    if (!publicRead) return errorResponse(405, "method_not_allowed", "Platform guides are read-only");
+    return new Response(req.method === "HEAD" ? null : agentPlatformIndexMd(publicBase(env)), {
+      headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Link: onboardingLinks(publicBase(env)) },
+    });
+  }
+  const agentPlatformRoute = /^\/agents\/([a-z0-9-]+)(\.md)?$/.exec(path);
+  if (agentPlatformRoute) {
+    if (!publicRead) return errorResponse(405, "method_not_allowed", "Platform guides are read-only");
+    const [, slug, isMd] = agentPlatformRoute;
+    const body = isMd ? agentPlatformMd(slug, publicBase(env)) : agentPlatformHtml(slug, publicBase(env));
+    if (!body) return errorResponse(404, "not_found", "Not found");
+    return new Response(req.method === "HEAD" ? null : body, {
+      headers: {
+        "Content-Type": isMd ? "text/markdown; charset=utf-8" : "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        ...(isMd ? { "X-Content-Type-Options": "nosniff" } : {}),
+        Link: onboardingLinks(publicBase(env)),
+      },
+    });
+  }
   if (path === "/.well-known/tendriller.json" && publicRead) {
-    const response = json(onboardingDescriptor(publicBase(env)), 200, { Link: onboardingLinks(publicBase(env)) });
+    const keys = await publicBroadcastKeys(env).then(r => r.keys).catch(() => []);
+    const response = json({ ...onboardingDescriptor(publicBase(env)), attestationKey: hostAttestationKey(env), ...(keys.length ? { broadcast_keys: keys } : {}) }, 200, { Link: onboardingLinks(publicBase(env)) });
+    return req.method === "HEAD" ? new Response(null, response) : response;
+  }
+  if (path === "/.well-known/tendriller-broadcast-keys.json" && publicRead) {
+    const response = withCors(json(await publicBroadcastKeys(env), 200, { "Cache-Control": "public, max-age=300", Link: onboardingLinks(publicBase(env)) }));
     return req.method === "HEAD" ? new Response(null, response) : response;
   }
   if (path === "/.well-known/tendriller-capabilities.json" && publicRead) {
@@ -197,11 +236,20 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return json(preview ? { ok: true, preview } : { ok: true });
   }
   if (path === "/status") {
-    const state = await env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>();
+    const [state, feed] = await Promise.all([
+      env.ACCOUNTS.prepare("SELECT mode FROM service_state WHERE id = 1").first<{ mode: string }>(),
+      listActiveBroadcasts(env, { audiences: ["dashboard", "page_all"] }),
+    ]);
     const mode = state?.mode === "open" ? ["ok", "Operational", "Pages, sign-in and new page creation are available."]
       : state?.mode === "creation_paused" ? ["warn", "New page creation paused", "Existing pages keep working. New pages cannot be created right now."]
       : ["danger", "Read-only or unavailable", "Existing pages may be read-only. Changes are paused until service resumes."];
-    return servicePage("Status", `<section class="hero"><span class="eyebrow">Service</span><h1>Tendriller status</h1><p class="lead">${mode[2]}</p><div class="actions"><span class="badge ${mode[0]}">${mode[1]}</span></div></section>`);
+    const noticesHtml = feed.broadcasts.length
+      ? `<section class="card"><h2>Service notices</h2><ul class="list">${feed.broadcasts.map(({ payload }) => {
+          const badge = payload.severity === "critical" || payload.severity === "urgent" ? "danger" : payload.severity === "recommended" ? "warn" : "";
+          return `<li class="list-item"><div class="list-item-main"><div class="list-item-title"><span class="badge ${badge}">${escapeHtml(payload.kind)} · ${escapeHtml(payload.severity)}</span> ${escapeHtml(payload.title)}</div><p class="list-item-sub">${escapeHtml(payload.summary)}${payload.docs_url ? ` · <a href="${escapeHtml(payload.docs_url)}" rel="noopener">Details</a>` : ""}</p></div></li>`;
+        }).join("")}</ul></section>`
+      : "";
+    return servicePage("Status", `<div class="stack"><section class="hero"><span class="eyebrow">Service</span><h1>Tendriller status</h1><p class="lead">${mode[2]}</p><div class="actions"><span class="badge ${mode[0]}">${mode[1]}</span></div></section>${noticesHtml}</div>`);
   }
   if (path === "/agent.md" || path === "/AGENTS.md" || path === "/llms.txt" || path === "/llms-full.txt" || /^\/docs\/(?:tools\/)?[A-Z0-9_-]+\.md$/.test(path)) {
     if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation is read-only");
@@ -222,7 +270,22 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   }
   if (path === "/contract/v3.json") return json(schemaDocument);
   if (["/terms", "/privacy", "/acceptable-use", "/copyright", "/law-enforcement"].includes(path)) {
-    return asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+    const raw = await asset(env, url, `/legal${path}.html`, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+    if (!raw.ok) return raw;
+    const source = await raw.text();
+    const title = (/<title>([^<]+)<\/title>/i.exec(source)?.[1] ?? "Legal · Tendriller").replace(/\s*·\s*Tendriller\s*$/i, "");
+    const main = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(source)?.[1];
+    if (!main) return new Response(req.method === "HEAD" ? null : source, { headers: raw.headers });
+    const legalLinks: readonly [string, string][] = [
+      ["/terms", "Terms"],
+      ["/privacy", "Privacy"],
+      ["/acceptable-use", "Acceptable use"],
+      ["/copyright", "Copyright"],
+      ["/law-enforcement", "Law-enforcement"],
+    ];
+    const subnav = `<nav class="prose-subnav" aria-label="Legal policies">${legalLinks.map(([href, label]) => `<a href="${href}"${href === path ? ' aria-current="page"' : ''}>${label}</a>`).join("")}</nav>`;
+    const wrapped = servicePage(title, `${subnav}<article class="card prose">${main}</article>`);
+    return req.method === "HEAD" ? new Response(null, { status: wrapped.status, headers: wrapped.headers }) : wrapped;
   }
   const runtime = /^\/_tendril\/runtime\/([a-f0-9]{64})\/([A-Za-z0-9_./-]+)$/.exec(path);
   if (runtime) return runtimeAsset(env, req, runtime[1], runtime[2], context);
@@ -244,12 +307,62 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   const path = url.pathname;
   try {
     if (path === "/api/service" && req.method === "GET")
-      return json(serviceDescriptor(), 200, { Link: onboardingLinks(publicBase(env)) });
+      return json(serviceDescriptor(env), 200, { Link: onboardingLinks(publicBase(env)) });
     if (path === "/api/readiness") {
       if (req.method !== 'GET' && req.method !== 'HEAD') return errorResponse(405, 'method_not_allowed', 'Readiness is read-only');
       const readiness = await serviceReadiness(env);
       const response = json(readiness, readiness.mode === 'unavailable' ? 503 : 200, { Link: onboardingLinks(publicBase(env)) });
       return req.method === 'HEAD' ? new Response(null, response) : response;
+    }
+    if (path === "/api/broadcasts") {
+      if (req.method !== 'GET' && req.method !== 'HEAD') return errorResponse(405, 'method_not_allowed', 'Broadcasts feed is read-only');
+      const audience = validAudienceParam(url.searchParams.get('audience'));
+      const sinceRaw = url.searchParams.get('since');
+      if (sinceRaw !== null && !/^\d+$/.test(sinceRaw)) return errorResponse(400, 'bad_request', 'since must be a non-negative integer');
+      const since = sinceRaw !== null ? Number(sinceRaw) : 0;
+      const feed = await listActiveBroadcasts(env, { audience, since });
+      if (etagMatches(req.headers.get('If-None-Match'), feed.etag)) {
+        return new Response(null, { status: 304, headers: { ETag: feed.etag, 'Cache-Control': 'public, max-age=60' } });
+      }
+      const response = json({
+        issuer: feed.issuer,
+        keys: feed.keys,
+        latest_seq: feed.latest_seq,
+        broadcasts: feed.broadcasts,
+      }, 200, { ETag: feed.etag, 'Cache-Control': 'public, max-age=60', Link: onboardingLinks(publicBase(env)) });
+      return req.method === 'HEAD' ? new Response(null, response) : response;
+    }
+    if (path === "/api/admin/broadcasts" || /^\/api\/admin\/broadcasts\/[^/]+$/.test(path)) {
+      const tokenAdmin = await checkBroadcastAdminToken(req, env);
+      const sessionAdmin = tokenAdmin ? null : await adminAccount(req, env);
+      const actor = tokenAdmin ? 'broadcast_admin_token' : sessionAdmin;
+      if (!actor) return errorResponse(404, 'not_found', 'Not found');
+      if (path === "/api/admin/broadcasts") {
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          const [broadcasts, fleet, keysInfo] = await Promise.all([
+            listAllBroadcastsForAdmin(env, 100),
+            fleetVersionSummary(env),
+            publicBroadcastKeys(env),
+          ]);
+          const response = json({ issuer: keysInfo.issuer, keys: keysInfo.keys, fleet, broadcasts }, 200, { 'Cache-Control': 'no-store' });
+          return req.method === 'HEAD' ? new Response(null, response) : response;
+        }
+        if (req.method === 'POST') {
+          const input = await readJson(req, 32 * 1024);
+          const created = await createBroadcast(env, actor, input);
+          return json(created, 201, { 'Cache-Control': 'no-store' });
+        }
+        return errorResponse(405, 'method_not_allowed');
+      }
+      const id = path.slice('/api/admin/broadcasts/'.length);
+      if (!BROADCAST_ID_RE.test(id)) return errorResponse(404, 'not_found');
+      if (req.method === 'DELETE') {
+        const reason = url.searchParams.get('reason')?.trim() || 'Revoked via admin API';
+        const revoked = await revokeBroadcast(env, actor, id, reason);
+        if (!revoked) return errorResponse(404, 'not_found', 'No active broadcast with that id');
+        return json({ revoked: true, id }, 200, { 'Cache-Control': 'no-store' });
+      }
+      return errorResponse(405, 'method_not_allowed');
     }
     const agentResponse = await routeAgentApi(req, env, url);
     if (agentResponse) return agentResponse;

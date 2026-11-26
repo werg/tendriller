@@ -2,15 +2,14 @@
   "name": "tendriller-pages",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "page:new": "node setup.mjs new",
     "init": "node setup.mjs init",
     "build": "node setup.mjs build",
     "deploy": "node setup.mjs deploy",
-    "sign-enrollment": "node setup.mjs sign-enrollment",
-    "provisioning-request": "node setup.mjs provisioning-request",
-    "import-provisioning": "node setup.mjs import-provisioning",
     "demo": "node setup.mjs demo",
     "agent": "tendril agent run",
     "status": "tendril status",

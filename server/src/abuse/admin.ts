@@ -6,6 +6,8 @@ import { publicBase } from "../urls";
 import { accountSuspendedNotice, ownerNotice } from "./notices";
 import ipaddr from "ipaddr.js";
 import { servicePage } from "../accounts/ui";
+import { createBroadcast, fleetVersionSummary, listAllBroadcastsForAdmin, publicBroadcastKeys, revokeBroadcast } from "../broadcasts";
+import { BROADCAST_AUDIENCES, BROADCAST_KINDS, BROADCAST_SEVERITIES } from "../../../contract/broadcasts.mjs";
 
 const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 const page = (body: string, status = 200) => servicePage("Review", body, "", status);
@@ -48,7 +50,7 @@ export async function appealPage(req: Request, env: Env, url: URL): Promise<Resp
   return page("<h1>Appeal received</h1><p>Your page remains held while the appeal is reviewed.</p>");
 }
 
-async function adminAccount(req: Request, env: Env): Promise<string | null> {
+export async function adminAccount(req: Request, env: Env): Promise<string | null> {
   const session = await serviceSession(req, env);
   if (!session) return null;
   const allow = new Set((env.ADMIN_IDENTITIES ?? "").split(",").map(s => s.trim()).filter(Boolean));
@@ -89,17 +91,102 @@ export async function adminPage(req: Request, env: Env, url: URL): Promise<Respo
       <h2>Activity</h2><ul>${data.activity.map(a => `<li>${escape(a.kind)}: ${escape(a.summary)}</li>`).join("")}</ul>`);
   }
   if (req.method === "GET") {
-    const [held, reports, appeals, accountAppeals] = await Promise.all([
+    const [held, reports, appeals, accountAppeals, broadcasts, fleet, keysInfo] = await Promise.all([
       env.ACCOUNTS.prepare("SELECT id, owner_account, created_at FROM tendrils WHERE state = 'held' ORDER BY created_at DESC LIMIT 100").all<{ id: string; owner_account: string | null; created_at: number }>(),
       env.ACCOUNTS.prepare("SELECT tendril_id, source, reason, created_at FROM reports ORDER BY created_at DESC LIMIT 100").all<{ tendril_id: string; source: string; reason: string; created_at: number }>(),
       env.ACCOUNTS.prepare("SELECT id, tendril_id, account_id, reason, created_at FROM appeals WHERE resolved_at IS NULL ORDER BY created_at LIMIT 100").all<{ id: string; tendril_id: string; account_id: string; reason: string; created_at: number }>(),
       env.ACCOUNTS.prepare("SELECT id, account_id, reason, created_at FROM account_appeals WHERE resolved_at IS NULL ORDER BY created_at LIMIT 100").all<{ id: string; account_id: string; reason: string; created_at: number }>(),
+      listAllBroadcastsForAdmin(env, 50),
+      fleetVersionSummary(env),
+      publicBroadcastKeys(env),
     ]);
-    return page(`<h1>Abuse administration</h1><h2>Open account appeals</h2><ul>${accountAppeals.results.map(a => `<li>${escape(a.account_id)}: ${escape(a.reason)}</li>`).join("")}</ul><h2>Open page appeals</h2><ul>${appeals.results.map(a => `<li>${escape(a.tendril_id)}: ${escape(a.reason)}</li>`).join("")}</ul>
-      <h2>Held tendrils</h2><ul>${held.results.map(t => `<li><a href="/admin/t/${escape(t.id)}">${escape(t.id)}</a> · owner ${escape(t.owner_account ?? "none")}</li>`).join("")}</ul>
-      <h2>Recent reports</h2><ul>${reports.results.map(r => `<li><a href="/admin/t/${escape(r.tendril_id)}">${escape(r.tendril_id)}</a> · ${escape(r.source)} · ${escape(r.reason)}</li>`).join("")}</ul>
-      <h2>Action</h2><form method="post" action="/admin/action"><label>Action <select name="action"><option>disable</option><option>restore</option><option>suspend</option><option>unsuspend</option><option>reject_account_appeal</option><option>block_ip</option></select></label>
+    const now = Date.now();
+    const versionList = (items: Array<{ version: string; count: number }>) =>
+      items.length ? items.map(item => `<li><code>${escape(item.version)}</code>: ${item.count}</li>`).join("") : "<li>None reported yet</li>";
+    const runtimeList = fleet.pages.byRuntime.length
+      ? fleet.pages.byRuntime.map(item => `<li><code>${escape(item.version)}</code> (<code>${escape(item.runtimeId.slice(0, 12))}…</code>): ${item.count}</li>`).join("")
+      : "<li>No published pages recorded yet</li>";
+    const broadcastRows = broadcasts.length
+      ? broadcasts.map(b => {
+          const expired = b.payload.expires_at !== null && b.payload.expires_at <= now;
+          const status = b.revoked_at ? "revoked" : expired ? "expired" : "active";
+          return `<li><strong>#${b.payload.seq} [${escape(b.payload.kind)} / ${escape(b.payload.severity)}]</strong> ${escape(b.payload.title)} · <code>${escape(b.payload.id)}</code> · audiences: <code>${escape(b.payload.audiences.join(", "))}</code> · key <code>${escape(b.signature.kid)}</code> · <em>${status}</em>` +
+            `<br>${escape(b.payload.summary)}` +
+            `${b.payload.match ? `<br><small>match: <code>${escape(JSON.stringify(b.payload.match))}</code></small>` : ""}` +
+            `${b.payload.action ? `<br><small>action: <code>${escape(JSON.stringify(b.payload.action))}</code></small>` : ""}` +
+            `${status === "active" ? ` <form method="post" action="/admin/broadcast/revoke" style="display:inline"><input type="hidden" name="id" value="${escape(b.payload.id)}"><button type="submit">Revoke</button></form>` : ""}</li>`;
+        }).join("")
+      : "<li>No broadcasts published yet.</li>";
+    return page(`<h1>Administration</h1>
+      <h2>System broadcasts (Ed25519 signed)</h2>
+      <p>Active signing keys: ${keysInfo.keys.map(k => `<code>${escape(k.kid)}</code>`).join(", ") || "none"} · <a href="/api/broadcasts">JSON feed</a> · <a href="/.well-known/tendriller-broadcast-keys.json">Public keys</a></p>
+      <form method="post" action="/admin/broadcast">
+        <label>Kind <select name="kind">${BROADCAST_KINDS.map(k => `<option value="${k}">${k}</option>`).join("")}</select></label>
+        <label>Severity <select name="severity">${BROADCAST_SEVERITIES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></label>
+        <fieldset><legend>Audiences</legend>${BROADCAST_AUDIENCES.map(a => `<label style="display:inline-flex;gap:.35rem;margin-right:.8rem"><input type="checkbox" name="audience" value="${a}"${a === "agents" || a === "dashboard" ? " checked" : ""}>${a}</label>`).join("")}</fieldset>
+        <label>Title <input name="title" required maxlength="160" placeholder="Upgrade @chronolog/peer-session"></label>
+        <label>Summary <textarea name="summary" required maxlength="500" rows="2" placeholder="Concise actionable summary"></textarea></label>
+        <label>Body (optional) <textarea name="body" maxlength="4000" rows="3"></textarea></label>
+        <label>Docs URL (optional HTTPS) <input name="docs_url" type="url" maxlength="512" placeholder="https://tendriller.dev/docs/..."></label>
+        <label>Match JSON (optional, e.g. <code>{"packages":{"@chronolog/peer-session":"&lt;0.5.0"},"agentless_only":true}</code>) <textarea name="match_json" rows="2" maxlength="2000"></textarea></label>
+        <label>Action JSON (optional, e.g. <code>{"kind":"upgrade_dependencies","requires_republish":true}</code>) <textarea name="action_json" rows="2" maxlength="2000"></textarea></label>
+        <label>Expires in hours (optional) <input name="expires_hours" type="number" min="1" max="8760" placeholder="Leave blank for no expiry"></label>
+        <label><input type="checkbox" name="dismissible" value="1" checked> Dismissible in UI</label>
+        <button type="submit">Sign &amp; publish broadcast</button>
+      </form>
+      <h3>Recent broadcasts</h3><ul>${broadcastRows}</ul>
+      <h2>Fleet versions</h2>
+      <p>Agents: ${fleet.agents.reporting} / ${fleet.agents.total} reporting · Published pages: ${fleet.pages.published} (${fleet.pages.agentlessPublished} without an active agent)</p>
+      <h3>Agents by @tendriller/core</h3><ul>${versionList(fleet.agents.byCore)}</ul>
+      <h3>Agents by @chronolog/peer-session</h3><ul>${versionList(fleet.agents.byChronolog)}</ul>
+      <h3>Agents by @tendriller/tools</h3><ul>${versionList(fleet.agents.byTools)}</ul>
+      <h3>Published pages by runtime</h3><ul>${runtimeList}</ul>
+      <h2>Abuse administration</h2><h3>Open account appeals</h3><ul>${accountAppeals.results.map(a => `<li>${escape(a.account_id)}: ${escape(a.reason)}</li>`).join("")}</ul><h3>Open page appeals</h3><ul>${appeals.results.map(a => `<li>${escape(a.tendril_id)}: ${escape(a.reason)}</li>`).join("")}</ul>
+      <h3>Held tendrils</h3><ul>${held.results.map(t => `<li><a href="/admin/t/${escape(t.id)}">${escape(t.id)}</a> · owner ${escape(t.owner_account ?? "none")}</li>`).join("")}</ul>
+      <h3>Recent reports</h3><ul>${reports.results.map(r => `<li><a href="/admin/t/${escape(r.tendril_id)}">${escape(r.tendril_id)}</a> · ${escape(r.source)} · ${escape(r.reason)}</li>`).join("")}</ul>
+      <h3>Action</h3><form method="post" action="/admin/action"><label>Action <select name="action"><option>disable</option><option>restore</option><option>suspend</option><option>unsuspend</option><option>reject_account_appeal</option><option>block_ip</option></select></label>
       <label>Tendril id, account id, or IP <input name="target" required></label><label>Reason <textarea name="reason" required maxlength="2000"></textarea></label><button>Apply action</button></form>`);
+  }
+  if (req.method === "POST" && url.pathname === "/admin/broadcast") {
+    if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) return errorResponse(403, "bad_origin");
+    const input = await form(req);
+    const parseOptJson = (raw: string | null, field: string) => {
+      const trimmed = raw?.trim() ?? "";
+      if (!trimmed) return null;
+      try { return JSON.parse(trimmed); } catch { throw new HttpError(400, "bad_request", `${field} must be valid JSON`); }
+    };
+    const hoursRaw = input.get("expires_hours")?.trim() ?? "";
+    const hours = hoursRaw ? Number(hoursRaw) : null;
+    if (hours !== null && (!Number.isFinite(hours) || hours <= 0 || hours > 8760)) {
+      return errorResponse(400, "bad_request", "expires_hours must be 1..8760");
+    }
+    try {
+      await createBroadcast(env, actor, {
+        kind: input.get("kind"),
+        severity: input.get("severity"),
+        audiences: input.getAll("audience"),
+        title: input.get("title"),
+        summary: input.get("summary"),
+        body: input.get("body") ?? "",
+        docs_url: input.get("docs_url") || null,
+        match: parseOptJson(input.get("match_json"), "match_json"),
+        action: parseOptJson(input.get("action_json"), "action_json"),
+        dismissible: input.get("dismissible") === "1",
+        expires_at: hours === null ? null : Date.now() + Math.round(hours * 3_600_000),
+      });
+    } catch (error) {
+      if (error instanceof HttpError) return errorResponse(error.status, error.code, error.message);
+      throw error;
+    }
+    return new Response(null, { status: 303, headers: { Location: "/admin", "Cache-Control": "no-store" } });
+  }
+  if (req.method === "POST" && url.pathname === "/admin/broadcast/revoke") {
+    if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) return errorResponse(403, "bad_origin");
+    const input = await form(req);
+    const id = input.get("id")?.trim() ?? "";
+    const reason = input.get("reason")?.trim() || "Revoked from admin UI";
+    await revokeBroadcast(env, actor, id, reason);
+    return new Response(null, { status: 303, headers: { Location: "/admin", "Cache-Control": "no-store" } });
   }
   if (req.method !== "POST" || url.pathname !== "/admin/action") return errorResponse(405, "method_not_allowed");
   if (req.headers.get("Origin") !== new URL(publicBase(env)).origin) return errorResponse(403, "bad_origin");

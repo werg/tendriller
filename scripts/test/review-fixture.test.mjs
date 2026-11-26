@@ -97,5 +97,7 @@ test('every enumerated fixture source imports only copied sources or public pack
     // No per-page client, setup intent, session file or second workspace/credential implementation.
     assert.doesNotMatch(source, /\bcreateClient\b|prepareTendrilSetup|createSetupIntent|--session|createNativeBootstrap|publisher\.json/, file);
   }
-  assert(REVIEW_FIXTURE_FILES.some(([, source]) => source === 'docs/tutorial/shared/helpers/page-provisioning.mjs'));
+  for (const helper of ['page-data.mjs', 'devices-view.mjs', 'browser-bootstrap.mjs', 'hosted-mcp.mjs'])
+    assert(REVIEW_FIXTURE_FILES.some(([, source]) => source === 'docs/tutorial/shared/helpers/' + helper), helper);
+  assert(!REVIEW_FIXTURE_FILES.some(([, source]) => /provisioning/.test(source)), 'no copy-paste provisioning helper ships');
 });

@@ -28,7 +28,7 @@ export async function recordReview({ project, accessPath, output, composition, v
   const report = { passed: false, client: 'Codex app-server MCP', codex: execFileSync('codex', ['--version'], { encoding: 'utf8' }).trim(),
     agentBehaviorEvaluated: false, chatgptWebVerified: false, usesModelTokens: false,
     ...reviewProvenance(composition, readiness), browserApplicationPeerQualified: false, firstAppKitQualified: false,
-    nativeParticipant: 'optional; explicitly provisioned by the browser owner; not required for browser reads or writes',
+    nativeParticipant: 'optional; admitted from its signed host grant by the online browser owner; not required for browser reads or writes',
     hostedParticipant: 'owner opt-in for this OAuth grant; its own enrolled key with epoch keys wrapped to the grant',
     denialScope: 'Unlisted application ID rejected; no live second-account fixture is provisioned by this runner',
     origin: access.origin, applicationId: handle.application.id, cases: [], checks: [] };

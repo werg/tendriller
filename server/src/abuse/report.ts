@@ -2,8 +2,7 @@ import type { Env } from "../env";
 import { errorResponse, HttpError, readBody } from "../http";
 import { parsePageRoute, publicBase } from "../urls";
 import { serviceSession } from "../accounts/auth";
-import { serviceStyle } from "../accounts/ui";
-import { brandHead, brandLink, brandStyle } from "../brand";
+import { renderShell } from "../accounts/ui";
 
 const escape = (s: string) => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 
@@ -11,12 +10,17 @@ export async function reportPage(req: Request, env: Env, url: URL): Promise<Resp
   if (req.method === "GET") {
     if (!env.TURNSTILE_SITE_KEY) return errorResponse(503, "unavailable", "Reporting is not configured");
     const prefill = url.searchParams.get("url") ?? "";
-    return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Report a page · Tendriller</title>${brandHead()}${serviceStyle}${brandStyle}
-      <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script></head><body><main><header>${brandLink}<a class="nav-link" href="/dashboard">Dashboard</a></header><section class="card"><span class="eyebrow">Safety</span><h1>Report a Tendriller page</h1>
+    const html = renderShell({
+      title: "Report a page",
+      referrer: "no-referrer",
+      head: `<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>`,
+      body: `<section class="card"><span class="eyebrow">Safety</span><h1>Report a Tendriller page</h1>
       <form method="post"><div class="field"><label class="field-label" for="report-url">Page URL</label><input id="report-url" name="url" type="url" required value="${escape(prefill.slice(0, 2048))}"></div>
       <div class="field"><label class="field-label" for="report-reason">Reason</label><textarea id="report-reason" name="reason" required maxlength="2000"></textarea></div>
       <div class="cf-turnstile" data-sitekey="${escape(env.TURNSTILE_SITE_KEY)}" data-action="report"></div>
-      <div class="actions"><button>Send report</button></div></form></section><footer><a href="/terms">Terms</a><a href="/privacy">Privacy</a></footer></main></body></html>`, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
+      <div class="actions"><button>Send report</button></div></form></section>`,
+    });
+    return new Response(html, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store",
         "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; script-src https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src https://challenges.cloudflare.com; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'" } });
   }
   if (req.method !== "POST") return errorResponse(405, "method_not_allowed");

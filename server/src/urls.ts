@@ -1,6 +1,7 @@
 // URL shapes (PROTOCOL section 2).
 import type { Env } from "./env";
 import { PAGE_KEY_RE, TENDRIL_ID_RE } from "./ids";
+import { isLoopbackOrigin } from "./accounts/local-auth";
 
 export function publicBase(env: Env): string {
   return env.PUBLIC_BASE.replace(/\/+$/, "");
@@ -22,6 +23,11 @@ export function isBranchPreview(env: Env): boolean {
 export function pageUrl(env: Env, id: string, key: string): string {
   const suffix = pageHostSuffix(env);
   if (suffix === null) throw new Error("Invalid PAGE_HOST_SUFFIX");
+  const base = publicBase(env);
+  if (base.startsWith("http://") && isLoopbackOrigin(base)) {
+    const port = new URL(base).port;
+    return `http://${id}${suffix}.${env.PAGE_BASE_DOMAIN}${port ? `:${port}` : ""}/s/${key}/`;
+  }
   return `https://${id}${suffix}.${env.PAGE_BASE_DOMAIN}/s/${key}/`;
 }
 

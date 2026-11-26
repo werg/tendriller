@@ -153,8 +153,8 @@ it('drops both positive and negative local authorization snapshots on transactio
       const temporary: Principal = { kind: 'agent', agentId: 'ag_' + 'a'.repeat(26), scopes: ['participants:connect'], revision: 999 };
       expect(currentPrincipal(t, temporary)).toBeNull();
       expect(() => t.transaction(() => {
-        t.db.run('INSERT INTO agent_grants(agent_id,handle,bio,public_key,scopes,revision,granted_by,granted_at) VALUES(?,?,?,?,?,?,?,?)',
-          temporary.agentId, 'temp-agent', '', 'k'.repeat(43), JSON.stringify(temporary.scopes), temporary.revision, 'owner', t.now());
+        t.db.run('INSERT INTO agent_grants(agent_id,handle,bio,public_key,wrap_key,scopes,revision,granted_by,granted_at) VALUES(?,?,?,?,?,?,?,?,?)',
+          temporary.agentId, 'temp-agent', '', 'k'.repeat(43), 'ab'.repeat(32), JSON.stringify(temporary.scopes), temporary.revision, 'owner', t.now());
         expect(currentPrincipal(t, temporary)).not.toBeNull();
         throw new Error('roll back grant');
       })).toThrow('roll back grant');

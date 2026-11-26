@@ -55,7 +55,14 @@ async function bundles() {
               if (ok) { store.stock[from] -= units; store.stock[to] += units; store.transfers.push({ id: transferId, source: from, destination: to, units }); }
             } else op.materialized = { outcome: 'rejected', rejectionCode: 'unsupported_fixture_command' };
           };
-          const owner = { applicationId, historyId: 'history', identity: { publicKey: author }, endpoint: { context },
+          const owner = { applicationId, historyId: 'history', identity: { publicKey: author },
+            extensions: { async call(name) { if (name !== 'admission.state') throw Error('Unsupported fixture action ' + name);
+              // The owner's admission controller state for an admitted creator device (devices view input).
+              return { phase: 'admitted', publicKey: author, wrapKey: 'd'.repeat(64), subject: 'device', mode: 'attested', accounts: ['acct_owner'], epoch: 0, revision: 0,
+                administrator: true, canAdmit: true, members: [{ publicKey: author, self: true, reader: true, writer: true, administrator: true, wrapKey: 'd'.repeat(64), via: 'creator', subject: 'creator', label: 'Browser device' }],
+                pending: [], invites: [], notices: [], attestationExpiresAt: null, error: null }; },
+              subscribe() { return () => {}; } },
+            endpoint: { context },
             signals: { async send() {}, subscribe() { return { async *[Symbol.asyncIterator]() {} }; } }, signal: new AbortController().signal,
             get status() { return { ...status }; },
             onStatus(fn) { statusListeners.add(fn); fn({ ...status }); return () => statusListeners.delete(fn); },
@@ -174,7 +181,7 @@ test('a status callback after canAuthor toggles cannot abort startup, and the li
   await page.waitForFunction(() => document.querySelector('#summary').textContent.includes('2 bins'));
   // Keys leave and return: every status callback updates the page, the diagnostics and the Save gate without throwing.
   await page.evaluate(() => fixture.canAuthor(false));
-  await page.waitForFunction(() => document.querySelector('#session-status').textContent.includes('Explicit key provisioning required'));
+  await page.waitForFunction(() => document.querySelector('#session-status').textContent.includes('Not admitted yet'));
   assert.equal(await enabled(page, '#initialize'), false);
   assert.equal((await diagnostics(page)).sessionStatus.canAuthor, false);
   await page.evaluate(() => { fixture.canAuthor(true); fixture.peers(2); });

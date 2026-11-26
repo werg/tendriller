@@ -61,6 +61,7 @@ assert.equal(onboardingDescriptor('https://example.test').firstApp.release.manif
 import { createSignalBinding } from '@tendriller/core/signals';
 import { authorityRecord, authorityRecordBytes, createAuthorityClient } from '@tendriller/core/authority';
 import { createPeerIntroductions } from '@tendriller/core/peers';
+import { generateBroadcastKeyPair, signBroadcastPayload, verifyBroadcastSignature, evaluateBroadcastMatch } from '@tendriller/core/broadcasts';
 import { attachPage } from '@tendriller/tools/workspace';
 import { startRuntime } from '@tendriller/runtime/kernel';
 import { createVoice, mountVoiceControls, SPEECH_DOWNLOAD_BYTES } from '@tendriller/runtime/voice';
@@ -79,6 +80,10 @@ for (const api of [pack, withSession, startServer]) assert.equal(typeof api, 'fu
 const accounts = new DatabaseSync(':memory:');
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accounts-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/agents-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/broadcasts-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/limits-schema')), 'utf8'));
+assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='system_broadcasts'").get().name, 'system_broadcasts');
+for (const api of [generateBroadcastKeyPair, signBroadcastPayload, verifyBroadcastSignature, evaluateBroadcastMatch]) assert.equal(typeof api, 'function');
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_grants'").get().name,
   'integration_oauth_grants');
 assert.equal(accounts.prepare("SELECT COUNT(*) AS count FROM mcp_connections").get().count, 0);
@@ -92,7 +97,8 @@ assert.equal(schema.$defs.stateUpdate, undefined); assert.equal(schema.$defs.cre
 assert.ok(manifest.assets.some(file => file.path === 'tendril.js'));
 assert.ok(manifest.assets.some(file => file.path === 'voice-pcm-worklet.js'));
 assert.ok(manifest.assets.every(file => /^[a-f0-9]{64}$/.test(file.sha256)));
-assertValid('agentRegistration', {owner:'owner@example.test', handle:'laptop', publicKey:'A'.repeat(43)});
+assertValid('agentRegistration', {owner:'owner@example.test', handle:'laptop', publicKey:'A'.repeat(43), wrapKey:'c'.repeat(64)});
+assert.throws(() => assertValid('agentRegistration', {owner:'owner@example.test', handle:'laptop', publicKey:'A'.repeat(43)}), {name:'ContractError'}, 'registration requires the agent key-wrap key');
 assertValid('agentPageCreate', {name:'Notes'});
 assertValid('agentPageCreate', {name:'Board', mode:'dashboard', application});
 assert.throws(() => assertValid('agentPageCreate', {name:'Board', mode:'legacy'}), {name:'ContractError'});
@@ -178,7 +184,7 @@ const introductions = createPeerIntroductions({ peers: client.peers, identity: '
 const raw = await introductions.transport.open({ peer: { identity:'56'.repeat(32), route:{kind:'invitation',peerId:'56'.repeat(32)} } }, { signal: new AbortController().signal });
 const kind:'raw'=raw.kind; void kind;
 
-void registerAgent('https://host.test', {owner:'owner@example.test',handle:'laptop',publicKey:'A'.repeat(43)});
+void registerAgent('https://host.test', {owner:'owner@example.test',handle:'laptop',publicKey:'A'.repeat(43),wrapKey:'c'.repeat(64)});
 declare const message: AuthorityRecord;
 void client.peers.participant(message);
 void createVoice(page, {consent:async()=>true,transcript:()=>{},status:()=>{}});
@@ -258,12 +264,13 @@ import { diagnoseApplicationSession, type DiagnosticReport } from '@tendriller/c
 import { createTransportDiagnostics, readTransportDiagnostics, type TransportDiagnosticReport } from '@tendriller/core/transport-diagnostics';
 import { defineApplication, defineQuery, createApplicationSession, createLiveView, createScopedApplicationTools,
   type LiveView, type ApplicationSession, type MaterializedRevision, type OperationInspection,
-  type SignedProvisioningRequest, type SignedProvisioningPackage } from '@chronolog/peer-session';
+  type SignedKeyWrap, createWrapKeyPair, importWrapPrivateKey } from '@chronolog/peer-session';
 import type { WorkerApplicationSession } from '@chronolog/peer-session/browser';
 import type { ApplicationDevice } from '@chronolog/peer-session';
 import { createAuthorityClient, type EnrollmentChallenge } from '@tendriller/core/authority';
 import { createAgentClient } from '@tendriller/core';
 import { watchApplicationSetup } from '@tendriller/core/setup';
+import { createAdmission, deviceWrapKey, type PageAdmission, type AdmissionState } from '@tendriller/core/admission';
 const agentPage = createAgentClient({service:'https://service.example',token:'ta_'}).page('aaaaaaaaaaaa');
 const setupWatch = watchApplicationSetup({page:agentPage,onChange(){}});
 const authorityClient = createAuthorityClient(async (path, options) => ({path, options}));
@@ -304,9 +311,17 @@ initialized.applied();
 initialized.shared();
 // @ts-expect-error Schema is ordinary authorized DDL, not immutable setup metadata.
 collaboration.definition.schema;
-const provisioningRequest: SignedProvisioningRequest = await browserSession.provisioning.createProvisioningRequest();
-const provisioningPackage: SignedProvisioningPackage = await nativeSession.provisioning.exportProvisioning(provisioningRequest);
-await browserSession.provisioning.importProvisioning(provisioningPackage);
+// The one admission mechanism: a member wraps the current keys to an admitted recipient's X25519 wrap key.
+const recipientWrap = await createWrapKeyPair();
+const keyWrap: SignedKeyWrap = await nativeSession.provisioning.wrapKeys('b'.repeat(64));
+const installedEpochs: readonly number[] = await nativeSession.provisioning.unwrapKeys(keyWrap, await importWrapPrivateKey(recipientWrap.privateKey));
+const admissionState: unknown = await browserSession.extensions.call('admission.state');
+void installedEpochs; void admissionState;
+const consumerAdmission: PageAdmission = createAdmission(nativeSession, { peers: authorityClient, wrapKey: await deviceWrapKey(device.store), subject: 'agent' });
+const consumerPhase: AdmissionState['phase'] = consumerAdmission.state.phase;
+void consumerPhase; consumerAdmission.close();
+// @ts-expect-error Copy-paste provisioning requests no longer exist.
+nativeSession.provisioning.createProvisioningRequest();
 await browserSession.mergeAuthority(nativeSession.authority.bundle());
 const inspector=createTransportDiagnostics(browserSession);
 const transportReport:TransportDiagnosticReport=await inspector.refresh();

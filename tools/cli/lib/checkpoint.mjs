@@ -23,6 +23,7 @@ const MANIFEST_KEY = 'tendriller/workspace-checkpoint/v1';
 const CONFIG_KEY = 'workspace/tendriller.json';
 const CREDENTIAL_KEY = 'agent/credential.json';
 const IDENTITY_KEY = 'agent/identity.clcp';
+const WRAP_KEY = 'agent/wrap-key.json';
 const MiB = 1024 * 1024;
 // Each device is bounded on its own; the whole file is bounded again.
 const DEVICE_LIMITS = Object.freeze({ maxEntries: 16384, maxBytes: 16 * MiB, maxValueBytes: 4 * MiB });
@@ -210,7 +211,7 @@ export async function exportWorkspaceCheckpoint({ root, outputPath, secret }) {
         applicationId, deviceId: signer.publicKey, retireSource: false });
       return { label, device, applicationId, exported };
     };
-    const entries = [{ key: CONFIG_KEY, value: readFileSync(paths.config) }, { key: CREDENTIAL_KEY, value: readFileSync(paths.credential) }];
+    const entries = [{ key: CONFIG_KEY, value: readFileSync(paths.config) }, { key: CREDENTIAL_KEY, value: readFileSync(paths.credential) }, { key: WRAP_KEY, value: readFileSync(paths.wrapKey) }];
     const agentSnapshot = await snapshot('the agent signer', identity, null);
     entries.push({ key: IDENTITY_KEY, value: agentSnapshot.exported.bytes });
     const pages = [];
@@ -295,7 +296,7 @@ function readContainer(values) {
   if (!HEX64.test(manifest.publicKey ?? '') || !HEX64.test(manifest.innerKey ?? '') || !HEX64.test(manifest.identity?.manifestSha256 ?? '') ||
       typeof manifest.service !== 'string' || typeof manifest.agent?.id !== 'string' || !Array.isArray(manifest.pages) || manifest.pages.length > MAX_PAGES)
     throw fail('CHECKPOINT_CORRUPT', 'The checkpoint manifest is malformed.');
-  const expected = new Set([MANIFEST_KEY, CONFIG_KEY, CREDENTIAL_KEY, IDENTITY_KEY]), seen = new Set();
+  const expected = new Set([MANIFEST_KEY, CONFIG_KEY, CREDENTIAL_KEY, IDENTITY_KEY, WRAP_KEY]), seen = new Set();
   for (const page of manifest.pages) {
     if (!PAGE_ID.test(page?.id ?? '') || seen.has(page.id) || !Array.isArray(page.records) || !Array.isArray(page.databases) ||
         [...page.records, ...page.databases].some(name => typeof name !== 'string' || !RECORD_NAME.test(name) || name === 'device.sqlite') ||
@@ -369,6 +370,7 @@ export async function restoreWorkspaceCheckpoint({ root, inputPath, secret }) {
     await restoreDevice(staged.identity, values.get(IDENTITY_KEY), manifest.identity.manifestSha256);
     const signer = await verify({ path: staged.identity });
     writeNewPrivate(staged.credential, values.get(CREDENTIAL_KEY));
+    writeNewPrivate(staged.wrapKey, values.get(WRAP_KEY));
     const pages = [];
     for (const page of manifest.pages) {
       const directory = join(staged.pages, page.id);
