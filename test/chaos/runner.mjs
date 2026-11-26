@@ -22,7 +22,10 @@ export async function runChaos({ world, config, planner, replay, injectFault, lo
   const model = createModel({ pages: Object.keys(world.golden.pages), browsers: config.browsers,
     network: config.network, hostRestart: config.hostRestart });
   const runtime = createRuntime();
-  for (const page of Object.values(world.golden.pages)) runtime.knownDevices.add(page.nativeDeviceId);
+  for (const page of Object.values(world.golden.pages)) {
+    runtime.knownDevices.add(page.nativeDeviceId);
+    if (page.ownerDeviceId) runtime.knownDevices.add(page.ownerDeviceId);
+  }
   const tracker = createAppliedTracker();
   const entries = [], violations = [], convergence = [], snapshots = {};
   const started = Date.now();
