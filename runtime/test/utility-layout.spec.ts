@@ -323,9 +323,9 @@ test('Talk button glows on incoming messages, opens modal chat with agent & user
   await page.screenshot({ path: testInfo.outputPath('chat-modal-mobile.png') });
 });
 
-test('holding the Talk button starts immediate voice input and delivers transcript on release', async ({ page }, testInfo) => {
+test('desktop chat icon hover-expands to reveal mic without shifting, supporting hold-to-talk and tap-to-toggle', async ({ page }, testInfo) => {
   await page.emulateMedia({ colorScheme: 'dark' });
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1280, height: 800 });
   await fixture(page);
   await page.route('https://layout.test/voice-fixture.mjs', route => route.fulfill({
     contentType: 'text/javascript',
@@ -363,19 +363,344 @@ test('holding the Talk button starts immediate voice input and delivers transcri
     w.chatStore.api.register({ title: 'Dark chat', onSend(input: unknown) { w.voiceSent.push(input); } });
   });
   const talkBtn = page.getByRole('button', { name: 'Talk to assistant', exact: true });
-  const box = (await talkBtn.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const voiceBtn = page.getByRole('button', { name: 'Voice input', exact: true });
+
+  // At rest on desktop: chat icon is 44px and mic is collapsed inside .voice-reveal
+  const talkBefore = (await talkBtn.boundingBox())!;
+  expect(talkBefore.width).toBeGreaterThanOrEqual(42);
+  const voiceCollapsed = await page.evaluate(() => {
+    const el = document.querySelector('tendril-utility')?.shadowRoot?.querySelector('.voice-reveal') as HTMLElement | null;
+    return el ? el.getBoundingClientRect().width : -1;
+  });
+  expect(voiceCollapsed).toBe(0);
+  await page.screenshot({ path: testInfo.outputPath('dock-desktop-rest.png') });
+
+  // Hovering the chat button expands the mic inward (left) without shifting the chat button under the pointer
+  await talkBtn.hover();
+  await expect.poll(async () => {
+    const box = await voiceBtn.boundingBox();
+    return box ? box.width : 0;
+  }).toBeGreaterThanOrEqual(40);
+  const talkAfter = (await talkBtn.boundingBox())!;
+  expect(Math.abs(talkAfter.x - talkBefore.x)).toBeLessThan(1);
+  await page.screenshot({ path: testInfo.outputPath('dock-desktop-hover-expand.png') });
+
+  // 1) Press-and-hold on the revealed mic button -> push-to-talk
+  const vBox = (await voiceBtn.boundingBox())!;
+  await page.mouse.move(vBox.x + vBox.width / 2, vBox.y + vBox.height / 2);
   await page.mouse.down();
-  await expect(talkBtn).toHaveAttribute('data-recording', 'true');
+  const stopVoiceBtn = page.getByRole('button', { name: 'Finish voice input', exact: true });
+  await expect(stopVoiceBtn).toHaveAttribute('data-recording', 'true');
   await expect(page.getByText('Listening… release to send')).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('hold-to-talk-dark.png') });
   await page.mouse.up();
   await expect.poll(() => page.evaluate(() => (window as any).voiceSent)).toEqual([
     expect.objectContaining({ text: 'Check the greenhouse sensors', via: 'voice' }),
   ]);
-  expect(await page.evaluate(() => (window as any).__holdVoiceEvents)).toEqual(['start', 'finish']);
+
+  // 2) Quick tap/click on the mic button -> tap-to-toggle recording
+  await talkBtn.hover();
+  await expect.poll(async () => (await voiceBtn.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(40);
+  await voiceBtn.click();
+  await expect(stopVoiceBtn).toHaveAttribute('data-recording', 'true');
+  await expect(page.getByText('Listening… tap mic to send')).toBeVisible();
+  // Move pointer away: recording state keeps the mic stop button expanded and reachable
+  await page.mouse.move(10, 10);
+  await expect.poll(async () => (await stopVoiceBtn.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(40);
+  await stopVoiceBtn.click();
+  await expect.poll(() => page.evaluate(() => (window as any).voiceSent.length)).toBe(2);
+  expect(await page.evaluate(() => (window as any).__holdVoiceEvents)).toEqual(['start', 'finish', 'start', 'finish']);
+
   await page.getByRole('button', { name: 'Page options', exact: true }).click();
   await page.screenshot({ path: testInfo.outputPath('options-menu-dark.png') });
+});
+
+test('touch mobile shows compact always-expanded chat and mic split pill', async ({ browser }, testInfo) => {
+  const context = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 }, colorScheme: 'dark' });
+  const page = await context.newPage();
+  try {
+    await fixture(page);
+    const talkBtn = page.getByRole('button', { name: 'Talk to assistant', exact: true });
+    const voiceBtn = page.getByRole('button', { name: 'Voice input', exact: true });
+    const dockBox = (await page.locator('tendril-utility').boundingBox())!;
+    const vBox = (await voiceBtn.boundingBox())!;
+    const tBox = (await talkBtn.boundingBox())!;
+    expect(vBox.width).toBeGreaterThanOrEqual(40);
+    expect(tBox.width).toBeGreaterThanOrEqual(42);
+    expect(vBox.x).toBeLessThan(tBox.x);
+    expect(dockBox.height).toBeCloseTo(54, 0);
+    expect(dockBox.width).toBeLessThan(180);
+    await page.screenshot({ path: testInfo.outputPath('dock-mobile-split-pill.png') });
+  } finally {
+    await context.close();
+  }
+});
+
+test('toggling spoken replies in chat modal speaks new agent messages and supports reading a reply aloud', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await fixture(page);
+  await page.route('https://layout.test/voice-speak-fixture.mjs', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export function createVoice(runtime, handlers) {
+      let enabled = false;
+      window.__spoken = [];
+      return {
+        get speaking() { return false; },
+        get listening() { return false; },
+        get muted() { return !enabled; },
+        language() {},
+        async enableOutput() { enabled = true; return true; },
+        mute() { enabled = false; },
+        speak(text) {
+          if (!enabled) return;
+          window.__spoken.push(text);
+          handlers.status({ kind: 'output', state: 'speaking', speaking: true });
+          setTimeout(() => handlers.status({ kind: 'output', state: 'idle', speaking: false, completed: true }), 10);
+        },
+        stop() {},
+        dispose() {},
+      };
+    }`,
+  }));
+  await page.evaluate(() => {
+    const w = window as any;
+    w.api.assetUrl = () => 'https://layout.test/voice-speak-fixture.mjs';
+    w.chatStore.api.register({ title: 'Voice chat', onSend() {} });
+    w.chatStore.api.setMessages([
+      { id: 'm1', role: 'agent', senderHandle: 'atlas', text: 'Earlier message before speaker enabled.' },
+    ]);
+  });
+
+  await page.getByRole('button', { name: 'Talk to assistant', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Assistant' });
+  const speakerBtn = dialog.getByRole('button', { name: 'Toggle spoken replies', exact: true });
+  await speakerBtn.click();
+  await expect(speakerBtn).toHaveAttribute('aria-pressed', 'true');
+  // Historical message should NOT auto-replay just from toggling on
+  expect(await page.evaluate(() => (window as any).__spoken)).toEqual([]);
+
+  // New arriving agent reply IS spoken aloud automatically
+  await page.evaluate(() => {
+    const w = window as any;
+    w.chatStore.api.setMessages([
+      { id: 'm1', role: 'agent', senderHandle: 'atlas', text: 'Earlier message before speaker enabled.' },
+      { id: 'm2', role: 'agent', senderHandle: 'atlas', text: 'Greenhouse temperature is 22 degrees.' },
+    ]);
+  });
+  await expect.poll(() => page.evaluate(() => (window as any).__spoken)).toEqual([
+    'Greenhouse temperature is 22 degrees.',
+  ]);
+
+  // Clicking the per-message Read reply aloud button speaks that specific message on demand
+  await dialog.getByRole('button', { name: 'Read reply aloud', exact: true }).first().click();
+  await expect.poll(() => page.evaluate(() => (window as any).__spoken)).toEqual([
+    'Greenhouse temperature is 22 degrees.',
+    'Earlier message before speaker enabled.',
+  ]);
+
+  // Turning speaker off stops further automatic speech
+  await speakerBtn.click();
+  await expect(speakerBtn).toHaveAttribute('aria-pressed', 'false');
+  await page.evaluate(() => {
+    const w = window as any;
+    w.chatStore.api.setMessages([
+      { id: 'm1', role: 'agent', senderHandle: 'atlas', text: 'Earlier message before speaker enabled.' },
+      { id: 'm2', role: 'agent', senderHandle: 'atlas', text: 'Greenhouse temperature is 22 degrees.' },
+      { id: 'm3', role: 'agent', senderHandle: 'atlas', text: 'Should stay silent.' },
+    ]);
+  });
+  await page.waitForTimeout(40);
+  expect(await page.evaluate(() => (window as any).__spoken)).toEqual([
+    'Greenhouse temperature is 22 degrees.',
+    'Earlier message before speaker enabled.',
+  ]);
+});
+
+test('floating dock adapts its surface and accent colors to the host page palette', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 900, height: 600 });
+  await fixture(page);
+  const readDockPalette = () => page.evaluate(() => {
+    const host = document.querySelector('tendril-utility')!;
+    const pill = host.shadowRoot!.querySelector('.talk-pill')!;
+    const nav = host.shadowRoot!.querySelector('nav.dock')!;
+    const pillBg = getComputedStyle(pill).backgroundColor;
+    const dockBg = getComputedStyle(nav).backgroundColor;
+    const hostScheme = getComputedStyle(host).colorScheme;
+    return { pillBg, dockBg, hostScheme };
+  });
+
+  // 1) Warm cream & terracotta page -> warm light dock + terracotta accent (r >> g, b)
+  await page.evaluate(() => {
+    document.body.style.background = '#faf3e8';
+    document.body.style.color = '#2c1e16';
+    const cta = document.createElement('button');
+    cta.textContent = 'Save note';
+    cta.style.cssText = 'background:#c2410c;color:#ffffff;border:0;padding:10px 18px;border-radius:10px;';
+    document.body.prepend(cta);
+  });
+  await expect.poll(async () => {
+    const { pillBg } = await readDockPalette();
+    const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(pillBg);
+    return m ? Number(m[1]) > Number(m[2]) + 40 && Number(m[1]) > Number(m[3]) + 60 : false;
+  }).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('dock-adaptive-warm.png') });
+
+  // 2) Switch to dark navy & indigo page (even in light OS mode) -> dark dock + indigo accent (b > r, g)
+  await page.evaluate(() => {
+    document.body.style.background = '#0f172a';
+    document.body.style.color = '#e2e8f0';
+    const cta = document.body.querySelector('button') as HTMLElement;
+    cta.style.background = '#4f46e5';
+    document.documentElement.setAttribute('data-theme', 'dark');
+  });
+  await expect.poll(async () => {
+    const { pillBg, hostScheme } = await readDockPalette();
+    const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(pillBg);
+    return hostScheme === 'dark' && Boolean(m && Number(m[3]) > Number(m[1]) + 40 && Number(m[3]) > Number(m[2]) + 40);
+  }).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('dock-adaptive-indigo-dark.png') });
+});
+
+test('tapping outside closes Page options and chat composer merges Stop+Send vs Done by voice mode', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  await fixture(page);
+  await page.route('https://layout.test/voice-composer-fixture.mjs', route => route.fulfill({
+    contentType: 'text/javascript',
+    body: `export function createVoice(runtime, handlers) {
+      let n = 0;
+      return {
+        get speaking() { return false; },
+        get listening() { return false; },
+        get muted() { return true; },
+        language() {},
+        async startCapture() {
+          handlers.status({ kind: 'capture', state: 'recording', message: 'Listening…' });
+          handlers.level?.(0.55);
+        },
+        finishCapture() {
+          handlers.status({ kind: 'capture', state: 'idle' });
+          handlers.transcript(++n === 1 ? 'Water the tomatoes' : 'Draft note to review');
+        },
+        cancelCapture() { handlers.status({ kind: 'capture', state: 'idle' }); },
+        stop() {},
+        mute() {},
+        dispose() {},
+      };
+    }`,
+  }));
+  await page.evaluate(() => {
+    const w = window as any;
+    w.sentMsgs = [];
+    w.api.assetUrl = () => 'https://layout.test/voice-composer-fixture.mjs';
+    w.chatStore.api.register({ title: 'Clean chat', onSend(input: unknown) { w.sentMsgs.push(input); } });
+  });
+
+  // 1) Tapping anywhere else on the page closes the Page options popover
+  await page.getByRole('button', { name: 'Page options', exact: true }).click();
+  await expect(page.locator('#page-options')).toBeVisible();
+  await page.mouse.click(40, 40);
+  await expect(page.locator('#page-options')).toBeHidden();
+
+  // 2) Open chat modal: empty input shows primary Mic and hides disabled Send
+  await page.getByRole('button', { name: 'Talk to assistant', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Assistant' });
+  await expect(dialog.getByRole('button', { name: 'Send message', exact: true })).toBeHidden();
+  const micBtn = dialog.getByRole('button', { name: 'Tap or hold to speak', exact: true });
+  await expect(micBtn).toBeVisible();
+
+  // Typing reveals Send
+  const input = dialog.getByRole('textbox', { name: 'Message', exact: true });
+  await input.fill('Hello');
+  await expect(dialog.getByRole('button', { name: 'Send message', exact: true })).toBeVisible();
+  await input.fill('');
+  await expect(dialog.getByRole('button', { name: 'Send message', exact: true })).toBeHidden();
+
+  // 3) Recording in default "Send immediately" mode merges Stop + Send into one button
+  await micBtn.click();
+  const stopAndSend = dialog.getByRole('button', { name: 'Stop and send voice message', exact: true });
+  await expect(stopAndSend).toBeVisible();
+  await expect(stopAndSend).toContainText('Send');
+  await page.screenshot({ path: testInfo.outputPath('chat-composer-voice-send.png') });
+  await stopAndSend.click();
+  await expect.poll(() => page.evaluate(() => (window as any).sentMsgs)).toEqual([
+    expect.objectContaining({ text: 'Water the tomatoes', via: 'voice' }),
+  ]);
+
+  // 4) Switching to "Review in box" mode shows "Done" button and puts transcript into textarea
+  await dialog.getByRole('button', { name: 'Voice and chat settings', exact: true }).click();
+  await dialog.getByRole('radio', { name: 'Review in box', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Voice and chat settings', exact: true }).click();
+  await micBtn.click();
+  const stopToDraft = dialog.getByRole('button', { name: 'Stop dictating to draft', exact: true });
+  await expect(stopToDraft).toBeVisible();
+  await expect(stopToDraft).toContainText('Done');
+  await page.screenshot({ path: testInfo.outputPath('chat-composer-voice-draft.png') });
+  await stopToDraft.click();
+  await expect(input).toHaveValue('Draft note to review');
+  expect(await page.evaluate(() => (window as any).sentMsgs.length)).toBe(1);
+});
+
+test('mobile full-screen chat tracks visualViewport when soft keyboard opens without hiding feed or composer', async ({ browser }, testInfo) => {
+  const context = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await fixture(page);
+    await page.evaluate(() => {
+      const w = window as any;
+      w.chatStore.api.register({ title: 'Mobile chat', onSend() {} });
+      w.chatStore.api.setMessages([
+        { id: 'm1', role: 'user', senderHandle: 'alex', isSelf: true, text: 'First check-in' },
+        { id: 'm2', role: 'agent', senderHandle: 'atlas', isPrimary: true, text: 'Everything looks steady.' },
+        { id: 'm3', role: 'user', senderHandle: 'alex', isSelf: true, text: 'How is the soil moisture?' },
+        { id: 'm4', role: 'agent', senderHandle: 'atlas', isPrimary: true, text: 'Zone B is at 48% and healthy.' },
+      ]);
+    });
+
+    // Opening chat on touch mobile must NOT force-focus the textarea (so keyboard doesn't slam open)
+    await page.getByRole('button', { name: 'Talk to assistant', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Assistant' });
+    await expect(dialog).toBeVisible();
+    const focusedTag = await page.evaluate(() => {
+      const root = document.querySelector('tendril-utility')?.shadowRoot;
+      return root?.activeElement?.tagName.toLowerCase() ?? '';
+    });
+    expect(focusedTag).not.toBe('textarea');
+
+    // Full-screen on mobile: fills viewport edge-to-edge
+    const fullBox = (await dialog.boundingBox())!;
+    expect(fullBox.width).toBeCloseTo(390, 0);
+    expect(fullBox.height).toBeCloseTo(844, 0);
+    expect(fullBox.y).toBeCloseTo(0, 0);
+    await page.screenshot({ path: testInfo.outputPath('chat-mobile-fullscreen.png') });
+
+    // Simulate iOS Safari soft keyboard opening (layout stays 844px, visualViewport shrinks to 460px shifted down 40px)
+    await page.evaluate(() => {
+      const fakeVv = Object.assign(new EventTarget(), { width: 390, height: 460, offsetTop: 40, offsetLeft: 0 });
+      Object.defineProperty(window, 'visualViewport', { configurable: true, value: fakeVv });
+      // Re-mount utility with the simulated visualViewport so listener binds cleanly
+      (window as any).disposeUtility();
+      (window as any).mount();
+    });
+    await page.getByRole('button', { name: 'Talk to assistant', exact: true }).click();
+    const kbDialog = page.getByRole('dialog', { name: 'Assistant' });
+    await expect(kbDialog).toBeVisible();
+    const kbBox = (await kbDialog.boundingBox())!;
+    const composerBox = (await kbDialog.getByRole('textbox', { name: 'Message', exact: true }).boundingBox())!;
+    const msgBox = (await kbDialog.getByText('Zone B is at 48% and healthy.').boundingBox())!;
+    // Modal locks directly to the visible visualViewport band [40 .. 500]
+    expect(kbBox.y).toBeCloseTo(40, 1);
+    expect(kbBox.height).toBeCloseTo(460, 1);
+    // Latest agent message AND composer are both fully visible inside the 460px visible band
+    expect(msgBox.y).toBeGreaterThanOrEqual(kbBox.y + 40);
+    expect(msgBox.y + msgBox.height).toBeLessThanOrEqual(composerBox.y + 4);
+    expect(composerBox.y + composerBox.height).toBeLessThanOrEqual(kbBox.y + kbBox.height);
+    // Input font-size is >= 16px on mobile to prevent iOS Safari focus-zoom
+    const inputFont = await kbDialog.getByRole('textbox', { name: 'Message', exact: true }).evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+    expect(inputFont).toBeGreaterThanOrEqual(16);
+    await page.screenshot({ path: testInfo.outputPath('chat-mobile-keyboard-open.png') });
+  } finally {
+    await context.close();
+  }
 });
 
 test('the page options bar drags to any corner, snaps there, remembers it and still opens on a tap', async ({ page }, testInfo) => {

@@ -163,6 +163,8 @@ export function createSpeechOutput(base: string, bus: Bus, preferences: VoicePre
   const browserSpeak = (text: string) => {
     try {
       if (prefs().audio === false || !window.speechSynthesis || typeof SpeechSynthesisUtterance === "undefined") return;
+      // Chromium can leave speechSynthesis in a paused queue state; resume before queuing.
+      try { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); } catch { /* ignore */ }
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = language();
       const token = epoch;

@@ -36,15 +36,30 @@ export function observeVisualViewport(onChange?: (metrics: { viewportHeight: num
   const vv = window.visualViewport;
   if (!vv) return () => {};
   const style = document.documentElement.style;
-  const names = ["--tendril-viewport-height", "--tendril-keyboard-height"] as const;
+  const names = [
+    "--tendril-viewport-height",
+    "--tendril-keyboard-height",
+    "--tendril-viewport-top",
+    "--tendril-viewport-left",
+    "--tendril-viewport-width",
+  ] as const;
   const previous = names.map(name => ({ value: style.getPropertyValue(name), priority: style.getPropertyPriority(name) }));
   let published: string[] = [];
   let frame = 0;
   const update = () => {
     frame = 0;
     const viewportHeight = Math.max(0, Math.round(vv.height));
-    const keyboardHeight = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-    published = [`${viewportHeight}px`, `${keyboardHeight}px`];
+    const offsetTop = Math.max(0, Math.round(vv.offsetTop || 0));
+    const offsetLeft = Math.max(0, Math.round(vv.offsetLeft || 0));
+    const viewportWidth = Number.isFinite(vv.width) && vv.width > 0 ? Math.round(vv.width) : 0;
+    const keyboardHeight = Math.max(0, Math.round(window.innerHeight - vv.height - offsetTop));
+    published = [
+      `${viewportHeight}px`,
+      `${keyboardHeight}px`,
+      `${offsetTop}px`,
+      `${offsetLeft}px`,
+      viewportWidth ? `${viewportWidth}px` : "100vw",
+    ];
     names.forEach((name, index) => style.setProperty(name, published[index]!));
     onChange?.({ viewportHeight, keyboardHeight });
   };

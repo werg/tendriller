@@ -196,7 +196,7 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
     .banner-actions button{min-height:30px;padding:3px 10px;font-size:12px;border-radius:999px}
     .banner-actions button.primary{background:#1e644a;color:#fff;border-color:#1e644a}
     .banner-dismiss{border:0;min-width:26px;min-height:26px;padding:0;font-size:16px;background:transparent}
-    .feed{flex:1;min-height:140px;overflow-y:auto;overscroll-behavior:contain;padding:12px;display:flex;flex-direction:column;gap:10px}
+    .feed{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:12px;display:flex;flex-direction:column;gap:10px}
     .empty{margin:auto;text-align:center;max-width:280px;opacity:.75;font-size:13px;padding:18px 8px}
     .msg{display:flex;flex-direction:column;max-width:88%;gap:3px}
     .msg.user{align-self:flex-end;align-items:flex-end}
@@ -249,7 +249,8 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
       .launcher:hover:not(:disabled),.send-btn:hover:not(:disabled){background:#37a078}
     }
     @media(max-width:600px){
-      .shell.drawer{width:calc(100vw - 16px);height:min(76dvh,calc(var(--tendril-viewport-height,100dvh) - 88px))}
+      .shell.drawer{width:calc(100vw - 16px);height:min(76dvh,calc(var(--tendril-viewport-height,100dvh) - 72px))}
+      textarea,input{font-size:16px}
     }
     @media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
   `;
@@ -973,6 +974,14 @@ export function mountAgentChat(runtime: RuntimeApi, options: AgentChatOptions): 
       syncWakeLock();
       voice.mute();
     } else {
+      try {
+        if (typeof window !== "undefined" && window.speechSynthesis && typeof SpeechSynthesisUtterance !== "undefined") {
+          window.speechSynthesis.resume?.();
+          const primer = new SpeechSynthesisUtterance("");
+          primer.volume = 0;
+          window.speechSynthesis.speak(primer);
+        }
+      } catch { /* ignore */ }
       const ok = await ensureOutputEnabled();
       autoSpeak = ok;
     }

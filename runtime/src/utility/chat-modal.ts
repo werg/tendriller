@@ -46,7 +46,9 @@ export interface ChatModalController {
   startHoldVoice(): void;
   finishHoldVoice(): void;
   cancelHoldVoice(): void;
+  toggleDockVoice(): void;
   focusInput(): void;
+  scrollToBottom(): void;
   getDockState(): TalkDockState;
   dispose(): void;
 }
@@ -111,15 +113,19 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   let speaking = false;
   let audioLevel = 0;
   let holdRecordingActive = false;
+  let micHolding = false;
   let handsFreeTimer: ReturnType<typeof setTimeout> | null = null;
   const speechQueue: string[] = [];
   const spokenIds = new Set<string>();
+  let pumpingSpeech = false;
+  let providerSeeded = false;
 
   // Auto-wired Chronolog session state (used when api.application is available & no custom chat provider registered)
   let sessionMessages: RuntimeChatMessage[] = [];
   let sessionActivity: RuntimeChatActivity[] = [];
   let sessionStreams: RuntimeChatStream[] = [];
   const optimistic = new Map<string, RuntimeChatMessage>();
+  const ownOperationIds = new Set<string>();
   let sessionAbort: AbortController | null = null;
   let sessionUnread = 0;
   let sessionSeeded = false;
@@ -213,7 +219,10 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     const work = captureState === "working";
     const pres = presenceSummary().status;
     let statusChip = "";
-    if (rec) statusChip = holdRecordingActive ? "Listening… release to send" : "Listening…";
+    const willSend = autoSendVoice && Boolean(api.chat?.hasProvider || api.application?.available);
+    if (rec) statusChip = holdRecordingActive
+      ? (willSend ? "Listening… release to send" : "Dictating… release to review")
+      : (willSend ? "Listening… tap mic to send" : "Dictating… tap mic to review");
     else if (work) statusChip = voiceDetail || "Transcribing…";
     else if (wakeActive) statusChip = `Wake word: “${wakePhrase}”`;
     return {
@@ -279,21 +288,28 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   handleRow.append(handleInput, handleSaveBtn);
   handleField.append(handleLabel, handleRow);
 
-  const voiceQuickGrid = el("div", undefined, "quick-grid");
-  const autoSendWrap = el("label", undefined, "switch-row");
-  const autoSendCopy = el("div", undefined, "switch-copy");
-  autoSendCopy.append(el("strong", "Instant voice send"), el("span", "Send right after hold-to-talk"));
-  const autoSendCheck = el("input", undefined, "switch-input");
-  autoSendCheck.type = "checkbox"; autoSendCheck.checked = autoSendVoice;
-  autoSendWrap.append(autoSendCopy, autoSendCheck);
+  const voiceModeField = el("div", undefined, "field");
+  voiceModeField.append(el("label", "After speaking"));
+  const voiceModeSeg = el("div", undefined, "seg");
+  voiceModeSeg.setAttribute("role", "radiogroup");
+  voiceModeSeg.setAttribute("aria-label", "Voice input mode");
+  const modeSendBtn = btn("Send immediately");
+  modeSendBtn.setAttribute("role", "radio");
+  modeSendBtn.setAttribute("aria-checked", String(autoSendVoice));
+  modeSendBtn.setAttribute("aria-selected", String(autoSendVoice));
+  const modeDraftBtn = btn("Review in box");
+  modeDraftBtn.setAttribute("role", "radio");
+  modeDraftBtn.setAttribute("aria-checked", String(!autoSendVoice));
+  modeDraftBtn.setAttribute("aria-selected", String(!autoSendVoice));
+  voiceModeSeg.append(modeSendBtn, modeDraftBtn);
+  voiceModeField.append(voiceModeSeg);
 
   const handsFreeWrap = el("label", undefined, "switch-row");
   const handsFreeCopy = el("div", undefined, "switch-copy");
-  handsFreeCopy.append(el("strong", "Hands-free loop"), el("span", "Listen again after reply"));
+  handsFreeCopy.append(el("strong", "Hands-free loop"), el("span", "Listen again after each spoken reply"));
   const handsFreeCheck = el("input", undefined, "switch-input");
   handsFreeCheck.type = "checkbox"; handsFreeCheck.checked = handsFreeLoop;
   handsFreeWrap.append(handsFreeCopy, handsFreeCheck);
-  voiceQuickGrid.append(autoSendWrap, handsFreeWrap);
 
   const langAndTts = el("div", undefined, "quick-grid");
   const langField = el("div", undefined, "field");
@@ -349,7 +365,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   wakeActions.append(wakeToggleBtn, fullVoiceBtn);
   wakeBox.append(wakeTop, el("p", "Listens only while this page is visible. Ambient audio stays on this device.", "muted"), wakeFields, wakeActions);
 
-  configPanel.append(handleField, voiceQuickGrid, langAndTts, wakeBox);
+  configPanel.append(voiceModeField, langAndTts, handsFreeWrap, wakeBox, handleField);
 
   // Feed
   const feed = el("div", undefined, "chat-feed");
@@ -371,38 +387,57 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   statusCancel.hidden = true;
   statusStrip.append(statusText, statusCancel);
 
-  // Composer
+  // Composer (unified, context-adaptive single-action bar — zero dead buttons)
   const composer = el("div", undefined, "chat-composer");
   const mentionMenu = el("div", undefined, "mention-menu");
   mentionMenu.setAttribute("role", "listbox");
   mentionMenu.setAttribute("aria-label", "Mention an agent or person");
   mentionMenu.hidden = true;
 
-  const targetRow = el("div", undefined, "row-between");
-  const targetChip = btn("To: Primary ▾", "chip");
-  const userPill = el("span", "", "pill");
-  targetRow.append(targetChip, userPill);
-
   const composerRow = el("div", undefined, "composer-row");
   const textarea = el("textarea", undefined, "composer-input");
   textarea.rows = 1; textarea.maxLength = 8000; textarea.value = "";
-  textarea.placeholder = "Message @agent or hold mic…";
+  textarea.placeholder = "Message or tap mic…";
   textarea.setAttribute("aria-label", "Message");
   try {
     const saved = sessionStorage.getItem(draftKey);
     if (saved) textarea.value = saved;
   } catch { /* ignore */ }
 
-  const micBtn = btn("", "mic-btn");
+  const micBtn = btn("", "mic-btn primary-mic");
   micBtn.setAttribute("aria-label", "Tap or hold to speak");
-  micBtn.title = "Tap or press-and-hold to speak";
-  micBtn.append(iconEl("assistant"));
+  micBtn.title = "Tap to speak · Hold to talk";
+  micBtn.append(iconEl("mic"));
 
   const sendBtn = btn("", "send-btn");
   sendBtn.setAttribute("aria-label", "Send message");
-  sendBtn.append(iconEl("send"), el("span", "Send"));
+  sendBtn.title = "Send message";
+  sendBtn.append(iconEl("send"));
+  sendBtn.hidden = true;
   composerRow.append(textarea, micBtn, sendBtn);
-  composer.append(mentionMenu, targetRow, composerRow);
+
+  // Live voice capture bar (replaces composerRow while recording/transcribing)
+  const voiceBar = el("div", undefined, "voice-bar");
+  voiceBar.hidden = true;
+  const voiceCancelBtn = btn("", "voice-cancel-btn");
+  voiceCancelBtn.setAttribute("aria-label", "Cancel voice input");
+  voiceCancelBtn.title = "Cancel";
+  voiceCancelBtn.append(iconEl("close"));
+
+  const voiceWaveWrap = el("div", undefined, "voice-wave-wrap");
+  const voiceDot = el("span", undefined, "rec-pulse");
+  const voiceMeter = el("span", undefined, "voice-meter");
+  voiceMeter.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 5; i++) voiceMeter.append(el("i"));
+  const voiceBarLabel = el("span", "Listening…", "voice-bar-label");
+  voiceWaveWrap.append(voiceDot, voiceMeter, voiceBarLabel);
+
+  const voiceFinishBtn = btn("", "voice-finish-btn");
+  voiceFinishBtn.setAttribute("aria-label", "Stop and send voice message");
+  voiceFinishBtn.append(iconEl("send"), el("span", "Send"));
+  voiceBar.append(voiceCancelBtn, voiceWaveWrap, voiceFinishBtn);
+
+  composer.append(mentionMenu, composerRow, voiceBar);
 
   body.append(rosterPanel, configPanel, feed, activityDetails, statusStrip, composer);
 
@@ -411,14 +446,80 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     if (handsFreeTimer !== null) { clearTimeout(handsFreeTimer); handsFreeTimer = null; }
   };
 
+  const primeBrowserSpeech = () => {
+    try {
+      if (typeof window === "undefined" || !window.speechSynthesis || typeof SpeechSynthesisUtterance === "undefined") return;
+      window.speechSynthesis.resume?.();
+      // Unlock speechSynthesis synchronously within the user gesture (Safari/iOS/Chrome)
+      const primer = new SpeechSynthesisUtterance("");
+      primer.volume = 0;
+      window.speechSynthesis.speak(primer);
+    } catch { /* ignore */ }
+  };
+
   const pumpSpeech = () => {
-    if (disposed || speaking || speechQueue.length === 0 || !voice) return;
+    if (disposed || speaking || pumpingSpeech || speechQueue.length === 0) return;
     const next = speechQueue.shift();
     if (!next) return;
-    void (voice.muted ? voice.enableOutput(voiceOutputEngine) : Promise.resolve(true)).then(ok => {
-      if (ok && !disposed && voice) voice.speak(next);
-      else speechQueue.length = 0;
-    });
+    pumpingSpeech = true;
+    void (async () => {
+      try {
+        const v = await ensureVoice();
+        if (disposed || !autoSpeak) { speechQueue.length = 0; return; }
+        const ok = v.muted ? await v.enableOutput(voiceOutputEngine) : true;
+        if (ok && !disposed && autoSpeak) v.speak(next);
+        else speechQueue.length = 0;
+      } catch (err) {
+        if (!disposed) {
+          voiceError = err instanceof Error ? err.message : "Could not play spoken reply.";
+          renderControls();
+        }
+        speechQueue.length = 0;
+      } finally {
+        pumpingSpeech = false;
+        if (!disposed && !speaking && speechQueue.length > 0 && autoSpeak) pumpSpeech();
+      }
+    })();
+  };
+
+  const speakNow = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || disposed) return;
+    primeBrowserSpeech();
+    speechQueue.length = 0;
+    voice?.stop();
+    speaking = false;
+    void (async () => {
+      try {
+        const v = await ensureVoice();
+        if (disposed) return;
+        const ok = v.muted ? await v.enableOutput(voiceOutputEngine) : true;
+        if (ok && !disposed) v.speak(trimmed);
+      } catch (err) {
+        if (!disposed) {
+          voiceError = err instanceof Error ? err.message : "Could not play spoken reply.";
+          renderControls();
+        }
+      }
+    })();
+  };
+
+  const syncProviderSpeech = (msgs: readonly RuntimeChatMessage[]) => {
+    if (!providerSeeded) {
+      providerSeeded = true;
+      for (const m of msgs) {
+        if (m.role === "agent") spokenIds.add(m.id);
+      }
+      return;
+    }
+    for (const m of msgs) {
+      if (m.role !== "agent" || spokenIds.has(m.id)) continue;
+      spokenIds.add(m.id);
+      if (autoSpeak && m.text.trim()) {
+        speechQueue.push(m.text.trim());
+        pumpSpeech();
+      }
+    }
   };
 
   const ensureVoice = async (): Promise<VoiceAdapter> => {
@@ -454,6 +555,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
           if (disposed) return;
           audioLevel = lvl;
           micBtn.style.setProperty?.("--level", lvl.toFixed(3));
+          voiceBar.style.setProperty?.("--level", lvl.toFixed(3));
           emitDockState();
         },
         status(st) {
@@ -533,6 +635,38 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     emitDockState();
   };
 
+  const toggleDockVoice = () => {
+    if (disposed) return;
+    clearHandsFree();
+    voiceError = "";
+    if (voice?.speaking) voice.stop();
+    if (captureState === "recording") {
+      holdRecordingActive = false;
+      voice?.finishCapture();
+      emitDockState();
+      return;
+    }
+    if (captureState === "working") {
+      cancelHoldVoice();
+      return;
+    }
+    holdRecordingActive = false;
+    captureState = "working";
+    voiceDetail = "Preparing microphone…";
+    renderControls();
+    emitDockState();
+    void ensureVoice().then(v => {
+      if (disposed || captureState !== "working") return;
+      if (v.speaking) v.stop();
+      return v.startCapture();
+    }).catch(err => {
+      captureState = "error";
+      voiceError = err instanceof Error ? err.message : "Could not start voice input.";
+      renderControls();
+      emitDockState();
+    });
+  };
+
   // ── Auto Chronolog Session Bridge (zero-config when application installed) ──
   const parseAddressing = (text: string) => {
     const roster = rosterSnap();
@@ -596,19 +730,21 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
             acts.push({ id, senderHandle: agent?.handle ?? ev.author.slice(0, 8), toHandles, text: String(p.text ?? ""), at: atMs });
             continue;
           }
-          const isAgent = Boolean(agent);
-          const isSelf = !isAgent && optimistic.has(id);
+          const isOwn = optimistic.has(id) || ownOperationIds.has(id);
+          const isAgent = Boolean(agent) || p.replyToUser === true || (Boolean(p.inReplyTo) && !isOwn);
+          const isSelf = !isAgent && isOwn;
           const rStates = receipts.get(`${ev.author}:${ev.operationId}`) ?? [];
           const status = rStates.includes("done") ? "answered" : rStates.includes("thinking") ? "thinking" : rStates.includes("seen") ? "seen" : "delivered";
-          if (!seenSessionIds.has(id)) {
+          const wasSeen = seenSessionIds.has(id);
+          if (!wasSeen) {
             seenSessionIds.add(id);
             if (sessionSeeded && !isOpen && isAgent) newlyArrived++;
-            if (isAgent && autoSpeak && sessionSeeded && String(p.text ?? "").trim() && !spokenIds.has(id)) {
-              spokenIds.add(id);
+          }
+          if (isAgent && !spokenIds.has(id)) {
+            spokenIds.add(id);
+            if (!wasSeen && autoSpeak && sessionSeeded && String(p.text ?? "").trim()) {
               speechQueue.push(String(p.text).trim());
               pumpSpeech();
-            } else if (isAgent) {
-              spokenIds.add(id);
             }
           }
           msgs.push({
@@ -617,10 +753,10 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
             text: String(p.text ?? ""),
             at: atMs,
             status: isAgent ? undefined : status,
-            senderHandle: isAgent ? agent!.handle : (typeof p.senderHandle === "string" && p.senderHandle ? p.senderHandle : currentUserHandle()),
+            senderHandle: isAgent ? (agent?.handle ?? (ev.author ? ev.author.slice(0, 8) : "agent")) : (typeof p.senderHandle === "string" && p.senderHandle ? p.senderHandle : currentUserHandle()),
             senderRole: isAgent ? "agent" : (roster.viewer?.role === "guest" ? "guest" : "owner"),
             isSelf: !isAgent && (isSelf || !p.senderHandle || p.senderHandle === currentUserHandle()),
-            isPrimary: isAgent ? (agent!.id === roster.primary_agent_id || agent!.is_primary) : undefined,
+            isPrimary: isAgent && agent ? (agent.id === roster.primary_agent_id || agent.is_primary) : undefined,
             toHandles: toHandles.length ? toHandles : undefined,
           });
           optimistic.delete(id);
@@ -691,6 +827,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
         await api.chat.send({ text: trimmed, via, target, to });
       } else if (api.application?.available) {
         const operationId = typeof crypto?.randomUUID === "function" ? crypto.randomUUID() : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        ownOperationIds.add(operationId);
         const toHandles = to.map(t => t === "*" ? "*" : (rosterSnap().agents.find(a => a.public_key === t)?.handle ?? t.slice(0, 8)));
         optimistic.set(operationId, {
           id: operationId,
@@ -835,24 +972,22 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     const roster = rosterSnap();
     const pres = presenceSummary();
     setData(presenceDot, "status", pres.status);
-    presenceText.textContent = pres.label;
-    headerTitle.textContent = chatSnap()?.title || "Assistant";
-
     const target = currentTarget();
     const primary = roster.agents.find(a => a.id === roster.primary_agent_id || a.is_primary) ?? null;
-    if (roster.agents.length === 0) {
-      targetChip.textContent = "Participants ▾";
-    } else if (target === "*") {
-      targetChip.textContent = "To: @all ▾";
-    } else if (target) {
-      const hit = roster.agents.find(a => a.id === target || a.public_key === target);
-      targetChip.textContent = hit ? `To: @${hit.handle}${hit.id === primary?.id ? " (Primary)" : ""} ▾` : "To: Primary ▾";
-    } else if (primary) {
-      targetChip.textContent = `To: @${primary.handle} (Primary) ▾`;
+    if (target === "*" && roster.agents.length > 0) {
+      presenceText.textContent = `To @all · ${roster.agents.length} agents ▾`;
+      textarea.placeholder = "Message @all…";
+    } else if (roster.agents.length > 0) {
+      presenceText.textContent = `${pres.label} ▾`;
+      const focused = (target && target !== "*")
+        ? (roster.agents.find(a => a.id === target || a.public_key === target) ?? primary)
+        : primary;
+      textarea.placeholder = focused ? `Message @${focused.handle}…` : "Message @agent…";
     } else {
-      targetChip.textContent = "To: @mention an agent ▾";
+      presenceText.textContent = `${pres.label} ▾`;
+      textarea.placeholder = "Message or tap mic…";
     }
-    userPill.textContent = `@${currentUserHandle()}`;
+    headerTitle.textContent = chatSnap()?.title || "Assistant";
     handleInput.value = currentUserHandle();
 
     rosterPanel.hidden = !rosterOpen;
@@ -984,7 +1119,18 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
       if (msg.toHandles?.length) metaParts.push(`to ${msg.toHandles.map(h => h === "*" ? "@all" : `@${h}`).join(", ")}`);
       if (msg.at) metaParts.push(new Date(msg.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
       if (msg.status && STATUS_LABELS[msg.status]) metaParts.push(STATUS_LABELS[msg.status]);
-      if (metaParts.length) row.append(el("span", metaParts.join(" · "), "chat-meta"));
+      if (metaParts.length || (msg.role === "agent" && msg.text.trim())) {
+        const metaRow = el("span", metaParts.join(" · "), "chat-meta");
+        if (msg.role === "agent" && msg.text.trim()) {
+          const playBtn = btn("", "chat-play-btn");
+          playBtn.setAttribute("aria-label", "Read reply aloud");
+          playBtn.title = "Read aloud";
+          playBtn.append(iconEl("speakerOn"));
+          playBtn.addEventListener("click", () => speakNow(msg.text));
+          metaRow.append(playBtn);
+        }
+        row.append(metaRow);
+      }
       feed.append(row);
     }
     for (const stream of streams) {
@@ -1013,6 +1159,7 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     }
   };
 
+  let lastVoiceFinishMode: "" | "send" | "draft" = "";
   const renderControls = () => {
     if (disposed) return;
     stopSpeakBtn.hidden = !speaking;
@@ -1022,11 +1169,53 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     configBtn.setAttribute("aria-pressed", String(configOpen));
     configPanel.hidden = !configOpen;
 
-    setData(micBtn, "state", captureState);
-    clearChildren(micBtn);
-    micBtn.append(iconEl(captureState === "recording" ? "stop" : "assistant"));
-    micBtn.setAttribute("aria-label", captureState === "recording" ? "Finish recording" : "Tap or hold to speak");
-    sendBtn.disabled = sending || !(textarea.value ?? "").trim();
+    modeSendBtn.setAttribute("aria-checked", String(autoSendVoice));
+    modeSendBtn.setAttribute("aria-selected", String(autoSendVoice));
+    modeDraftBtn.setAttribute("aria-checked", String(!autoSendVoice));
+    modeDraftBtn.setAttribute("aria-selected", String(!autoSendVoice));
+
+    const hasText = Boolean((textarea.value ?? "").trim());
+    const voiceBusy = captureState === "recording" || captureState === "working";
+    const willInstantSend = autoSendVoice && Boolean(api.chat?.hasProvider || api.application?.available);
+
+    composerRow.hidden = voiceBusy;
+    voiceBar.hidden = !voiceBusy;
+
+    if (!voiceBusy) {
+      micBtn.className = hasText ? "mic-btn" : "mic-btn primary-mic";
+      micBtn.setAttribute("aria-label", hasText ? "Dictate more" : "Tap or hold to speak");
+      micBtn.title = hasText ? "Dictate into draft" : (willInstantSend ? "Tap or hold to speak (sends immediately)" : "Tap or hold to dictate into box");
+      sendBtn.hidden = !hasText;
+      sendBtn.disabled = sending || !hasText;
+    } else {
+      setData(voiceBar, "state", captureState);
+      voiceMeter.hidden = captureState !== "recording";
+      voiceDot.hidden = captureState !== "recording";
+      voiceFinishBtn.hidden = captureState !== "recording";
+      if (captureState === "recording") {
+        const mode: "send" | "draft" = willInstantSend ? "send" : "draft";
+        if (mode !== lastVoiceFinishMode) {
+          lastVoiceFinishMode = mode;
+          clearChildren(voiceFinishBtn);
+          if (mode === "send") {
+            voiceFinishBtn.className = "voice-finish-btn send-mode";
+            voiceFinishBtn.setAttribute("aria-label", "Stop and send voice message");
+            voiceFinishBtn.title = "Stop recording and send";
+            voiceFinishBtn.append(iconEl("send"), el("span", "Send"));
+          } else {
+            voiceFinishBtn.className = "voice-finish-btn draft-mode";
+            voiceFinishBtn.setAttribute("aria-label", "Stop dictating to draft");
+            voiceFinishBtn.title = "Stop recording and review in box";
+            voiceFinishBtn.append(iconEl("check"), el("span", "Done"));
+          }
+        }
+        voiceBarLabel.textContent = (micHolding || holdRecordingActive)
+          ? (willInstantSend ? "Release to send" : "Release to review")
+          : (willInstantSend ? "Listening…" : "Dictating to box…");
+      } else {
+        voiceBarLabel.textContent = voiceDetail || "Transcribing locally…";
+      }
+    }
 
     const wakeActive = !["off", "paused", "error"].includes(wakeState);
     wakeStatusPill.textContent = wakeActive ? (wakeState === "detected" ? "Detected!" : "Listening") : wakeState === "error" ? "Error" : "Off";
@@ -1043,11 +1232,6 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
       statusStrip.className = "chat-status";
       statusText.textContent = "Listening for follow-up…";
       statusCancel.hidden = false;
-    } else if (captureState === "recording" || captureState === "working") {
-      statusStrip.hidden = false;
-      statusStrip.className = "chat-status";
-      statusText.textContent = voiceDetail || (captureState === "recording" ? "Listening… tap Stop when done" : "Processing locally…");
-      statusCancel.hidden = false;
     } else {
       statusStrip.hidden = true;
     }
@@ -1055,12 +1239,6 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
 
   // ── Event Wiring ──────────────────────────────────────────────────────
   presenceBtn.addEventListener("click", () => {
-    rosterOpen = !rosterOpen;
-    if (rosterOpen) configOpen = false;
-    renderRoster();
-    renderControls();
-  });
-  targetChip.addEventListener("click", () => {
     rosterOpen = !rosterOpen;
     if (rosterOpen) configOpen = false;
     renderRoster();
@@ -1086,7 +1264,14 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     renderMessages();
     renderControls();
   });
-  autoSendCheck.addEventListener("change", () => { autoSendVoice = autoSendCheck.checked; saveVoicePrefs(); });
+  const setVoiceMode = (instant: boolean) => {
+    autoSendVoice = instant;
+    saveVoicePrefs();
+    renderControls();
+    emitDockState();
+  };
+  modeSendBtn.addEventListener("click", () => setVoiceMode(true));
+  modeDraftBtn.addEventListener("click", () => setVoiceMode(false));
   handsFreeCheck.addEventListener("change", () => {
     handsFreeLoop = handsFreeCheck.checked;
     if (!handsFreeLoop) clearHandsFree();
@@ -1117,9 +1302,17 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
       voice?.mute();
       speaking = false;
     } else {
+      // Unlock Web Speech synchronously in the click gesture before async dynamic import
+      primeBrowserSpeech();
+      // Mark already-displayed replies as seen so toggling on only speaks new replies
+      for (const m of effectiveMessages()) {
+        if (m.role === "agent") spokenIds.add(m.id);
+      }
+      voiceError = "";
       try {
         const v = await ensureVoice();
         autoSpeak = await v.enableOutput(voiceOutputEngine);
+        if (!autoSpeak) voiceError = "Spoken replies were not enabled.";
       } catch (err) {
         voiceError = err instanceof Error ? err.message : "Could not enable spoken replies.";
       }
@@ -1168,30 +1361,51 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   fullVoiceBtn.addEventListener("click", () => callbacks.onOpenVoiceModal());
   statusCancel.addEventListener("click", cancelHoldVoice);
 
-  // Composer Mic tap-or-hold
+  // Composer Mic tap-or-hold + unified live Voice Bar actions
   let micHoldTimer: ReturnType<typeof setTimeout> | null = null;
-  let micHolding = false;
   let suppressMicClick = false;
   const toggleMic = () => {
     clearHandsFree();
     voiceError = "";
     if (voice?.speaking) voice.stop();
     if (captureState === "recording") { voice?.finishCapture(); return; }
-    if (captureState === "working") { voice?.cancelCapture(); return; }
+    if (captureState === "working") { cancelHoldVoice(); return; }
     captureState = "working";
     voiceDetail = "Preparing microphone…";
     renderControls();
-    void ensureVoice().then(v => v.startCapture()).catch(err => {
+    emitDockState();
+    void ensureVoice().then(v => {
+      if (disposed || captureState !== "working") return;
+      return v.startCapture();
+    }).catch(err => {
       captureState = "error";
       voiceError = err instanceof Error ? err.message : "Voice input could not start.";
       renderControls();
+      emitDockState();
     });
+  };
+  const detachMicPtr = () => {
+    window.removeEventListener("pointerup", endMicPtr);
+    window.removeEventListener("pointercancel", endMicPtr);
+  };
+  const endMicPtr = (e: PointerEvent) => {
+    detachMicPtr();
+    if (micHoldTimer !== null) { clearTimeout(micHoldTimer); micHoldTimer = null; }
+    if (micHolding) {
+      micHolding = false;
+      if (e.type === "pointercancel") cancelHoldVoice();
+      else if (captureState === "recording") voice?.finishCapture();
+      else cancelHoldVoice();
+      renderControls();
+    }
   };
   micBtn.addEventListener("pointerdown", (e: PointerEvent) => {
     if (e.button !== 0 && e.pointerType === "mouse") return;
     micHolding = false;
     suppressMicClick = false;
     if (captureState === "idle" || captureState === "error") {
+      window.addEventListener("pointerup", endMicPtr);
+      window.addEventListener("pointercancel", endMicPtr);
       micHoldTimer = setTimeout(() => {
         micHoldTimer = null;
         micHolding = true;
@@ -1200,21 +1414,16 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
       }, 300);
     }
   });
-  const endMicPtr = (e: PointerEvent) => {
-    if (micHoldTimer !== null) { clearTimeout(micHoldTimer); micHoldTimer = null; }
-    if (micHolding) {
-      micHolding = false;
-      if (e.type === "pointercancel") voice?.cancelCapture();
-      else if (captureState === "recording") voice?.finishCapture();
-      else voice?.cancelCapture();
-    }
-  };
-  micBtn.addEventListener("pointerup", endMicPtr);
-  micBtn.addEventListener("pointercancel", endMicPtr);
   micBtn.addEventListener("click", (e: MouseEvent) => {
     if (suppressMicClick && e.detail !== 0) { suppressMicClick = false; return; }
     suppressMicClick = false;
     toggleMic();
+  });
+  voiceCancelBtn.addEventListener("click", () => cancelHoldVoice());
+  voiceFinishBtn.addEventListener("click", () => {
+    micHolding = false;
+    holdRecordingActive = false;
+    if (captureState === "recording") voice?.finishCapture();
   });
 
   // Composer typing & mention navigation
@@ -1244,13 +1453,16 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
   // Reactive subscriptions (zero network work!)
   const offAgents = api.agents?.onChange?.(() => {
     if (disposed) return;
+    if (sessionFeedStarted && !api.chat?.hasProvider) void refreshSessionFeed();
     renderRoster();
     renderMessages();
     emitDockState();
   }) ?? (() => {});
   const offChat = api.chat?.onChange?.(() => {
     if (disposed) return;
-    if (isOpen && (api.chat?.snapshot?.().unreadCount ?? 0) > 0) {
+    const snap = api.chat?.snapshot?.();
+    if (snap) syncProviderSpeech(snap.messages);
+    if (isOpen && (snap?.unreadCount ?? 0) > 0) {
       api.chat?.clearUnread?.();
       return;
     }
@@ -1259,6 +1471,8 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     renderActivity();
     emitDockState();
   }) ?? (() => {});
+  const initialChat = chatSnap();
+  if (initialChat && initialChat.messages.length > 0) syncProviderSpeech(initialChat.messages);
   const offAppReady = api.on?.("application_ready", () => attachAutoSession()) ?? (() => {});
   if (api.application?.available) attachAutoSession();
 
@@ -1300,11 +1514,14 @@ export function createChatModal(api: RuntimeApi, callbacks: ChatModalCallbacks):
     startHoldVoice,
     finishHoldVoice,
     cancelHoldVoice,
+    toggleDockVoice,
     focusInput() { textarea.focus(); },
+    scrollToBottom() { feed.scrollTop = feed.scrollHeight; },
     getDockState,
     dispose() {
       disposed = true;
       clearHandsFree();
+      detachMicPtr();
       if (micHoldTimer !== null) clearTimeout(micHoldTimer);
       sessionAbort?.abort();
       offAgents();

@@ -4,6 +4,7 @@ import type { RuntimeApi, SensorStatus } from "../../contract/index.mjs";
 import { btn, clearChildren, el, iconEl, setData } from "./utility/dom";
 import type { IconName } from "./utility/icons";
 import { UTILITY_CSS } from "./utility/styles";
+import { observePageTheme } from "./utility/theme";
 import { createChatModal, type TalkDockState } from "./utility/chat-modal";
 import {
   createAgentsModal,
@@ -59,6 +60,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const root = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = UTILITY_CSS;
+  const themeStyle = document.createElement("style");
 
   let disposed = false;
   let activeModal: ModalId | null = null;
@@ -117,13 +119,24 @@ export function mountUtility(api: RuntimeApi): () => void {
   const recCancel = btn("Cancel", "rec-cancel");
   recChip.append(recPulse, recText, recCancel);
 
+  const talkPill = el("div", undefined, "talk-pill");
+  const voiceReveal = el("div", undefined, "voice-reveal");
+  const voiceBtn = btn("", "dock-btn dock-voice");
+  voiceBtn.setAttribute("aria-label", "Voice input");
+  voiceBtn.title = "Tap to dictate · Hold to talk";
+  voiceBtn.append(iconEl("mic"));
+  const talkSep = el("span", undefined, "talk-sep");
+  talkSep.setAttribute("aria-hidden", "true");
+  voiceReveal.append(voiceBtn, talkSep);
+
   const talkBtn = btn("", "dock-btn dock-talk");
   talkBtn.setAttribute("aria-label", "Talk to assistant");
-  talkBtn.title = "Tap for chat · Hold for voice input";
-  talkBtn.append(iconEl("assistant"));
+  talkBtn.title = "Assistant chat";
+  talkBtn.append(iconEl("chat"));
   const talkDot = el("span", undefined, "dock-dot"); talkDot.hidden = true;
   const talkBadge = el("span", "", "dock-badge"); talkBadge.hidden = true;
   talkBtn.append(talkDot, talkBadge);
+  talkPill.append(voiceReveal, talkBtn);
 
   const optionsBtn = btn("", "dock-btn");
   optionsBtn.setAttribute("aria-label", "Page options");
@@ -134,7 +147,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const optionsDot = el("span", undefined, "dock-dot"); optionsDot.hidden = true;
   optionsBtn.append(optionsDot);
 
-  nav.append(activeSensors, stopSensors, recChip, talkBtn, optionsBtn);
+  nav.append(activeSensors, stopSensors, recChip, talkPill, optionsBtn);
 
   // ── Compact Options Popover Menu (Launches Dedicated Modals) ──────────
   const panel = el("section", undefined, "popover");
@@ -216,13 +229,12 @@ export function mountUtility(api: RuntimeApi): () => void {
 
   panel.append(popHead, popBody, popFoot);
 
-  // ── Unified Reactive Modal Shell (Desktop Dialog / Mobile Bottom Sheet) ──
+  // ── Unified Reactive Modal Shell (Desktop Dialog / Full-Screen Mobile View) ──
   const modalBackdrop = el("div", undefined, "modal-backdrop");
   modalBackdrop.hidden = true;
   const modalBox = el("section", undefined, "modal");
   modalBox.setAttribute("role", "dialog");
   modalBox.setAttribute("aria-modal", "true");
-  const modalGrab = el("div", undefined, "modal-grab");
   const modalHead = el("header", undefined, "modal-head");
   const modalHeadLeft = el("div", undefined, "modal-head-left");
   const modalHeadIco = el("span", undefined, "modal-head-ico");
@@ -233,16 +245,18 @@ export function mountUtility(api: RuntimeApi): () => void {
   modalHeadLeft.append(modalHeadIco, modalHeadCopy);
 
   const modalHeadActions = el("div", undefined, "modal-head-actions");
+  const modalStopSensors = btn("Stop sensors", "stop-btn sm");
+  modalStopSensors.hidden = true;
   const modalExtraSlot = el("div");
   const modalCloseBtn = btn("", "pop-close");
   modalCloseBtn.setAttribute("aria-label", "Close dialog");
   modalCloseBtn.append(iconEl("close"));
-  modalHeadActions.append(modalExtraSlot, modalCloseBtn);
+  modalHeadActions.append(modalStopSensors, modalExtraSlot, modalCloseBtn);
   modalHead.append(modalHeadLeft, modalHeadActions);
 
   const modalContentSlot = el("div");
   modalContentSlot.style.cssText = "display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden";
-  modalBox.append(modalGrab, modalHead, modalContentSlot);
+  modalBox.append(modalHead, modalContentSlot);
   modalBackdrop.append(modalBox);
 
   // ── Install Suggestion Lifecycle ──────────────────────────────────────
@@ -332,11 +346,26 @@ export function mountUtility(api: RuntimeApi): () => void {
     setData(optionsDot, "tone", errCount > 0 || broadcasts.some(b => b.severity === "critical" || b.severity === "urgent") ? "danger" : "busy");
   };
 
+  let lastVoiceRecording = false;
   const applyTalkDockState = (st: TalkDockState) => {
+    setData(talkPill, "glow", String(st.glowing));
+    setData(talkPill, "recording", String(st.recording));
+    setData(talkPill, "working", String(st.working && !st.recording));
+    setData(talkPill, "wake", String(st.wakeActive));
+
     setData(talkBtn, "glow", String(st.glowing));
-    setData(talkBtn, "recording", String(st.recording));
-    setData(talkBtn, "working", String(st.working && !st.recording));
-    talkBtn.style.setProperty?.("--level", st.audioLevel.toFixed(3));
+    setData(voiceBtn, "recording", String(st.recording));
+    setData(voiceBtn, "working", String(st.working && !st.recording));
+    setData(voiceBtn, "wake", String(st.wakeActive));
+    voiceBtn.style.setProperty?.("--level", st.audioLevel.toFixed(3));
+    if (st.recording !== lastVoiceRecording) {
+      lastVoiceRecording = st.recording;
+      clearChildren(voiceBtn);
+      voiceBtn.append(iconEl(st.recording ? "stop" : "mic"));
+      voiceBtn.setAttribute("aria-label", st.recording ? "Finish voice input" : "Voice input");
+      voiceBtn.title = st.recording ? "Finish voice input" : "Tap to dictate · Hold to talk";
+    }
+
     talkBadge.hidden = st.unreadCount <= 0;
     if (st.unreadCount > 0) talkBadge.textContent = st.unreadCount > 9 ? "9+" : String(st.unreadCount);
     talkDot.hidden = st.unreadCount > 0 || (st.presenceStatus !== "online" && st.presenceStatus !== "busy" && !st.wakeActive);
@@ -381,11 +410,17 @@ export function mountUtility(api: RuntimeApi): () => void {
     updateKeyboardLayout();
   };
 
+  const isFineDesktop = () => typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(hover: hover) and (pointer: fine)").matches
+    && (window.innerWidth || 0) >= 640;
+
   const closeModal = (restoreFocus = true) => {
     if (!activeModal) return;
     if (activeModal === "chat") chatModal.onClose();
     activeModal = null;
     modalBackdrop.hidden = true;
+    nav.classList?.remove("behind-modal");
     clearChildren(modalContentSlot);
     clearChildren(modalExtraSlot);
     const target = modalOpener;
@@ -416,8 +451,11 @@ export function mountUtility(api: RuntimeApi): () => void {
       modalContentSlot.append(chatModal.body);
       modalBackdrop.hidden = false;
       nav.classList?.remove("tucked");
+      nav.classList?.add("behind-modal");
       chatModal.onOpen();
-      chatModal.focusInput();
+      // Only auto-focus the text input on desktop; on touch/mobile let the user read the chat without forcing the keyboard up.
+      if (isFineDesktop()) chatModal.focusInput();
+      else chatModal.headerTitle.focus();
     } else {
       modalTitle.textContent = meta.title;
       modalSub.textContent = meta.subtitle;
@@ -433,6 +471,7 @@ export function mountUtility(api: RuntimeApi): () => void {
       map[id]();
       modalBackdrop.hidden = false;
       nav.classList?.remove("tucked");
+      nav.classList?.add("behind-modal");
       modalTitle.focus();
     }
     updateKeyboardLayout();
@@ -511,6 +550,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   modalCloseBtn.addEventListener("click", () => closeModal(true));
   modalBackdrop.addEventListener("click", (e: MouseEvent) => { if (e.target === modalBackdrop) closeModal(true); });
   stopSensors.addEventListener("click", () => { api.sensors.stopAll(); optionsBtn.focus(); });
+  modalStopSensors.addEventListener("click", () => { api.sensors.stopAll(); });
   recCancel.addEventListener("click", () => chatModal.cancelHoldVoice());
 
   // ── Corner Positioning & Drag-to-Snap + Hold-to-Talk Coexistence ──────
@@ -534,7 +574,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     applyCorner();
   }
 
-  let drag: { id: number; x: number; y: number; moved: boolean; onTalk: boolean } | null = null;
+  let drag: { id: number; x: number; y: number; moved: boolean; onVoice: boolean } | null = null;
   let holdTimer: ReturnType<typeof setTimeout> | null = null;
   let holdVoiceActive = false;
   let suppressNavClick = false;
@@ -548,6 +588,10 @@ export function mountUtility(api: RuntimeApi): () => void {
   talkBtn.addEventListener("click", () => {
     if (activeModal === "chat") closeModal(true);
     else openModal("chat", talkBtn);
+  });
+
+  voiceBtn.addEventListener("click", () => {
+    chatModal.toggleDockVoice();
   });
 
   const onMove = (event: PointerEvent) => {
@@ -598,25 +642,69 @@ export function mountUtility(api: RuntimeApi): () => void {
   nav.addEventListener("pointerdown", (event: PointerEvent) => {
     if (!event.isPrimary || (event.button !== 0 && event.pointerType === "mouse")) return;
     const path = event.composedPath?.() ?? [];
-    const onTalk = path.includes(talkBtn);
-    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, onTalk };
-    if (onTalk) {
-      clearHoldTimer();
-      holdTimer = setTimeout(() => {
-        holdTimer = null;
-        if (!drag || drag.moved) return;
-        holdVoiceActive = true;
-        chatModal.startHoldVoice();
-      }, HOLD_TO_TALK_MS);
+    const onVoice = path.includes(voiceBtn);
+    drag = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false, onVoice };
+    if (onVoice) {
+      const st = chatModal.getDockState();
+      if (!st.recording && !st.working) {
+        clearHoldTimer();
+        holdTimer = setTimeout(() => {
+          holdTimer = null;
+          if (!drag || drag.moved) return;
+          holdVoiceActive = true;
+          chatModal.startHoldVoice();
+        }, HOLD_TO_TALK_MS);
+      }
     }
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
   });
 
-  // ── Keyboard & Sensor Reactivity ──────────────────────────────────────
+  // ── Keyboard & Visual Viewport Reactivity ─────────────────────────────
+  let prevKbOpen = false;
+  const syncModalViewport = () => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    const kbOpen = lastKeyboardHeight > 80;
+    setData(modalBackdrop, "kb", String(kbOpen));
+    const offsetTop = vv ? Math.max(0, Math.round(vv.offsetTop || 0)) : 0;
+    setData(modalBackdrop, "vv-shifted", String(offsetTop > 0));
+    if (vv && activeModal !== null) {
+      const mobile = (typeof window !== "undefined" && window.innerWidth > 0 && window.innerWidth < 640);
+      if (mobile || kbOpen || offsetTop > 0) {
+        const w = Number.isFinite(vv.width) && vv.width > 0 ? `${Math.round(vv.width)}px` : "100vw";
+        const h = Math.max(180, Math.round(vv.height));
+        modalBackdrop.style.top = `${offsetTop}px`;
+        modalBackdrop.style.left = `${Math.max(0, Math.round(vv.offsetLeft || 0))}px`;
+        modalBackdrop.style.width = w;
+        modalBackdrop.style.height = `${h}px`;
+        modalBackdrop.style.right = "auto";
+        modalBackdrop.style.bottom = "auto";
+      } else {
+        modalBackdrop.style.top = "";
+        modalBackdrop.style.left = "";
+        modalBackdrop.style.width = "";
+        modalBackdrop.style.height = "";
+        modalBackdrop.style.right = "";
+        modalBackdrop.style.bottom = "";
+      }
+    } else if (activeModal === null) {
+      modalBackdrop.style.top = "";
+      modalBackdrop.style.left = "";
+      modalBackdrop.style.width = "";
+      modalBackdrop.style.height = "";
+      modalBackdrop.style.right = "";
+      modalBackdrop.style.bottom = "";
+    }
+    if (kbOpen && !prevKbOpen && activeModal === "chat") {
+      chatModal.scrollToBottom();
+    }
+    prevKbOpen = kbOpen;
+  };
+
   const updateKeyboardLayout = () => {
     if (disposed) return;
+    syncModalViewport();
     const focused = document.activeElement;
     const editingExternal = Boolean(
       focused && !host.contains?.(focused)
@@ -625,7 +713,7 @@ export function mountUtility(api: RuntimeApi): () => void {
     const hasSensors = !stopSensors.hidden;
     const kbOpen = lastKeyboardHeight > 120;
     const atBottom = !corner.startsWith("top");
-    if (kbOpen && hasSensors) {
+    if (kbOpen && hasSensors && activeModal === null) {
       nav.classList?.remove("tucked");
       host.style.setProperty?.("bottom", atBottom ? `calc(${utilityBottom} + ${lastKeyboardHeight}px)` : "auto", "important");
     } else {
@@ -636,12 +724,13 @@ export function mountUtility(api: RuntimeApi): () => void {
 
   const renderSensors = () => {
     const summary = sensorSummary(api.sensors.status());
-    activeSensors.hidden = stopSensors.hidden = !summary.visible;
+    activeSensors.hidden = stopSensors.hidden = modalStopSensors.hidden = !summary.visible;
     setData(nav, "sensors", String(summary.visible));
     activeSensors.textContent = summary.message;
     activeSensors.title = summary.message;
-    stopSensors.disabled = !summary.canStop;
+    stopSensors.disabled = modalStopSensors.disabled = !summary.canStop;
     stopSensors.setAttribute("aria-label", "Stop " + summary.names.join(", "));
+    modalStopSensors.setAttribute("aria-label", "Stop " + summary.names.join(", "));
     if (summary.visible) { suggestion.hidden = true; cancelSuggestion(); } else scheduleSuggestion();
     updateKeyboardLayout();
   };
@@ -650,6 +739,11 @@ export function mountUtility(api: RuntimeApi): () => void {
     if (!event.isTrusted || event.composedPath?.().includes(host)) return;
     engaged = true;
     scheduleSuggestion();
+  };
+  const onOutsidePointerDown = (event: PointerEvent) => {
+    if (panel.hidden) return;
+    if (event.composedPath?.().includes(host)) return;
+    closeMenu(false);
   };
   const keydown = (event: KeyboardEvent) => {
     if (event.key === "Escape") {
@@ -661,6 +755,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   const hide = () => { suggestion.hidden = true; cancelSuggestion(); };
   const show = () => { renderInstallSuggestion(); renderSensors(); };
 
+  document.addEventListener("pointerdown", onOutsidePointerDown, true);
   document.addEventListener("pointerup", interact);
   document.addEventListener("keydown", keydown);
   document.addEventListener("focusin", updateKeyboardLayout);
@@ -668,7 +763,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   window.addEventListener("pagehide", hide);
   window.addEventListener("pageshow", show);
 
-  root.append(style, broadcastCard, updateCard, suggestion, panel, nav, modalBackdrop);
+  root.append(style, themeStyle, broadcastCard, updateCard, suggestion, panel, nav, modalBackdrop);
 
   const attach = () => { const parent = document.body || document.documentElement; if (host.parentNode !== parent) parent.append(host); };
   const observer = new MutationObserver(attach);
@@ -686,6 +781,7 @@ export function mountUtility(api: RuntimeApi): () => void {
   updateMenuMeta();
   applyTalkDockState(chatModal.getDockState());
   attach();
+  const offTheme = observePageTheme(host, themeStyle);
   observer.observe(document, { childList: true, subtree: true });
   const offGeometry = observeUtilityBar(nav);
   const offViewport = observeVisualViewport(({ keyboardHeight }) => {
@@ -712,10 +808,12 @@ export function mountUtility(api: RuntimeApi): () => void {
     offAgentsMeta();
     offTransportMeta();
     offChatOpen();
+    offTheme();
     cancelSuggestion();
     observer.disconnect();
     offGeometry();
     offViewport();
+    document.removeEventListener("pointerdown", onOutsidePointerDown, true);
     document.removeEventListener("pointerup", interact);
     document.removeEventListener("keydown", keydown);
     document.removeEventListener("focusin", updateKeyboardLayout);
