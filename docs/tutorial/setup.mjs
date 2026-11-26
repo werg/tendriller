@@ -16,7 +16,6 @@ export async function createPage(slug,{template='notes',name}={}) {
  await requireEmptyPageFolder(slug);const origin=selected.config.service;
  requireCreationReady(await describeReadiness(origin),{service:origin});
  const source=new URL(template+'/',templateRoot);
- if(template==='inventory')await(await import(new URL('setup.mjs',source).href)).preflight(); // verifies browser WASM only
  await requireEmptyPageFolder(slug);
  const page=await selected.createPage(slug,{name:name??(template==='inventory'?'Shared inventory':'Shared notes')}),target=join(workspaceRoot,'pages',slug);
  for(const entry of await readdir(source))await cp(new URL(entry,source),join(target,entry),{recursive:true,errorOnExist:true,force:false});
