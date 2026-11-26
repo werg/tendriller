@@ -1,5 +1,31 @@
-import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+
+async function bundleDynamicModules(bundle, root, output, folder) {
+  const dir = new URL(`./${folder}/`, root);
+  if (!existsSync(dir)) return;
+  const entries = (await readdir(dir, { withFileTypes: true }))
+    .filter(item => item.isFile() && /\.(mjs|js)$/.test(item.name))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (!entries.length) return;
+  const outDir = new URL(`./${folder}/`, output);
+  await mkdir(outDir, { recursive: true });
+  // Bundle each facet/slot module standalone (splitting: false) so editing one
+  // facet changes only its own SHA-256 and triggers a live hot-swap, never a reload.
+  for (const item of entries) {
+    await bundle({
+      absWorkingDir: fileURLToPath(root),
+      entryPoints: [`${folder}/${item.name}`],
+      outfile: fileURLToPath(new URL(item.name.replace(/\.js$/, '.mjs'), outDir)),
+      bundle: true,
+      splitting: false,
+      format: 'esm',
+      platform: 'browser',
+      target: 'es2022',
+    });
+  }
+}
 
 export async function buildPage(context, { root = new URL('./', import.meta.url), bundle } = {}) {
   const output = new URL('./dist/', root);
@@ -45,6 +71,11 @@ export async function buildPage(context, { root = new URL('./', import.meta.url)
       target: 'es2022',
       external: ['@chronolog/peer-session'],
     });
+    if (existsSync(new URL('facets.json', root))) {
+      await copyFile(new URL('facets.json', root), new URL('facets.json', output));
+    }
+    await bundleDynamicModules(bundle, root, output, 'facets');
+    await bundleDynamicModules(bundle, root, output, 'slots');
     return fileURLToPath(output);
   } catch (cause) {
     await rm(output, { recursive: true, force: true });

@@ -128,8 +128,9 @@ export function mountUtility(api: RuntimeApi): () => void {
     ? "This address shows a fixed version. Open the latest version when you are ready."
     : "This page switches to it as soon as no unsaved changes are open.", "note"), openUpdate);
   // Live pages (the default) switch on their own: no prompt. Careful or pinned pages offer the update.
-  const offUpdate = api.publication.onUpdate(({ version }) => {
-    if (!disposed) update.hidden = version === null || (!api.publication.pinned && api.publication.policy !== "careful");
+  // Live hot-swapped slot/facet updates are already applied in-place and need no reload prompt.
+  const offUpdate = api.publication.onUpdate(({ version, kind }) => {
+    if (!disposed) update.hidden = version === null || kind === "hot-swapped" || (!api.publication.pinned && api.publication.policy !== "careful");
   });
   const nav = element("nav"); nav.setAttribute("aria-label", "Page operations");
   const active = element("span", undefined, "sensors"); active.setAttribute("role", "status");

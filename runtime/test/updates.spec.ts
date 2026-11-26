@@ -164,7 +164,7 @@ test('focused plaintext-only contenteditable in an open shadow root blocks switc
 test('rollback withdraws a notice while held; a later lower-numbered selection is still an update', async ({ page }) => {
   const notice = await policy(page); await page.evaluate(() => (window as any).release = (window as any).updates.hold());
   await notice(3); await notice(1);
-  expect(await page.evaluate(() => (window as any).notices)).toEqual([{ version: 3 }, { version: null }]);
+  expect(await page.evaluate(() => (window as any).notices)).toEqual([{ version: 3, kind: 'reload' }, { version: null, kind: 'reverted' }]);
   await page.evaluate(() => (window as any).release()); expect(await reloads(page)).toBe(0);
   await notice(2); expect(await reloads(page)).toBe(1);
 });

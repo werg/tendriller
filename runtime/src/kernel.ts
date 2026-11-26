@@ -1,5 +1,7 @@
 import { validateDocumentContext, resolveDocumentUrl } from "./document";
 import { explicitlyPinned, watchPublicationUpdates } from "./updates";
+import { createSlotManager } from "./slots";
+import { buildFacetUrl, mountFacets } from "./facets";
 // Importing this module mounts nothing and requests no device permissions.
 // One application session owns data. A page owns all application UI.
 import { createCore } from "./core";
@@ -23,7 +25,7 @@ async function registerServiceWorker(cfg: TendrilConfig, core: ReturnType<typeof
   if (!("serviceWorker" in navigator) || !cfg.publication) return null;
   if ((window as any).__TENDRIL_NO_SW__) return null;
   try {
-    const registration = await navigator.serviceWorker.register(cfg.base + "_tendril/sw.js", { scope: cfg.base });
+    const registration = await navigator.serviceWorker.register(cfg.base + "_tendril/sw.js", { scope: cfg.base, updateViaCache: "all" });
     // Blocked or unavailable support must not leave callbacks holding no registration.
     if (!registration) return null;
     const announce = () => {
@@ -54,13 +56,24 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   const agents = createAgentsStore(cfg);
   const broadcasts = createBroadcastsStore(cfg, { autoFetch: options.watchPublication === true });
   const core = createCore(cfg, options.application);
+  const pinned = explicitlyPinned(cfg);
+  const fetchLatestPublication = async () => {
+    const info = await core.host.request<{ version: number; publication?: import("../../contract/index.mjs").PublicationManifest | null }>("info");
+    return {
+      version: typeof info?.version === "number" ? info.version : 0,
+      publication: info?.publication ?? null,
+    };
+  };
+  const slotManager = createSlotManager(cfg, { latest: fetchLatestPublication });
   // The address bar keeps the page's own URL so a reload or new tab opens the latest
   // selected release. Opening an immutable /_publications/ID/ URL pins explicitly.
   const updates = watchPublicationUpdates(cfg, {
-    pinned: explicitlyPinned(cfg),
+    pinned,
     watch: options.watchPublication === true,
     onAgents: notice => agents.applyNotice(notice),
     onMcpSync: notice => core.bus.emit("mcp-sync", notice),
+    hasHotSwappableSlots: () => slotManager.hasRegistrations(),
+    onBeforeSwitch: version => slotManager.handlePublicationChange(version),
   });
   let registration: Promise<ServiceWorkerRegistration> | undefined;
   const registerOffline = () => registration ??= registerServiceWorker(cfg, core).then(registered => {
@@ -91,11 +104,12 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
   };
   // BFCache restores the same JavaScript realm without running startRuntime again.
   // Suspend observation while away, then reattach and resynchronize the utility.
-  window.addEventListener("pagehide", () => {
+  window.addEventListener("pagehide", event => {
     stopSensors();
     installation.suspend(); transport.suspend();
     capabilityObserver?.dispose(); capabilityObserver = null;
     offSensors?.(); offSensors = null;
+    if (!event.persisted) slotManager.close();
   });
   window.addEventListener("pageshow", event => {
     if (!event.persisted) return;
@@ -113,9 +127,21 @@ export function startRuntime(cfg: TendrilConfig, options: RuntimeOptions = {}): 
     version: cfg.version,
     identity,
     installation: installation.api,
-    publication: { async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, cfg.publication); },
-      get pinned() { return updates.pinned; }, get policy() { return updates.policy; }, get updateAvailable() { return updates.updateAvailable; },
-      onUpdate: listener => updates.onUpdate(listener), hold: () => updates.hold(), update: () => updates.update() },
+    publication: {
+      async saveOffline() { await registerOffline(); return savePublicationOffline(cfg.base, slotManager.current ?? cfg.publication); },
+      get current() { return slotManager.current; },
+      get pinned() { return updates.pinned; },
+      get policy() { return updates.policy; },
+      get updateAvailable() { return updates.updateAvailable; },
+      latest: () => slotManager.latest(),
+      assetUrl: (path, publication) => slotManager.assetUrl(path, publication),
+      facetUrl: (id, opts) => buildFacetUrl(cfg, id, { ...opts, pinned: opts?.pinned ?? updates.pinned }),
+      mountSlot: (name, container, opts) => slotManager.mountSlot(name, container, opts),
+      mountFacets: (container, opts) => mountFacets(slotManager, cfg, container, { ...opts, pinned: updates.pinned }),
+      onUpdate: listener => updates.onUpdate(listener),
+      hold: () => updates.hold(),
+      update: () => updates.update(),
+    },
     documentUrl(reference) { return resolveDocumentUrl(cfg, reference, updates.pinned); },
     assetUrl(path) {
       if (!path || /[?#\\]/.test(path) || path.startsWith("/") || /^[a-z]+:/i.test(path) || path.split("/").some(part => !part || part === "." || part === "..") || decodeURIComponent(path) !== path)

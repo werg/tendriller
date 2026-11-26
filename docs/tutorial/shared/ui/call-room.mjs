@@ -36,6 +36,13 @@ const STYLES = `
 .tr-lobby{display:grid;gap:12px;max-width:480px;margin:0 auto;padding:16px;border:1px solid #e2e8f0;border-radius:12px;background:#fff}
 .tr-lobby video{width:100%;border-radius:10px;background:#0f172a;aspect-ratio:16/10;object-fit:cover}
 .tr-toast{padding:10px 12px;border-radius:10px;background:#eff6ff;border:1px solid #93c5fd;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;font-size:13px}
+.tr-stage-shell{border:1px solid #e2e8f0;border-radius:12px;background:#fff;overflow:hidden;display:grid}
+.tr-stage-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:space-between;padding:8px 12px;background:#f8fafc;border-bottom:1px solid #e2e8f0}
+.tr-stage-tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.tr-tab{padding:5px 10px;border-radius:999px;border:1px solid #cbd5e1;background:#fff;color:#334155;font-size:13px;cursor:pointer}
+.tr-tab[aria-selected="true"]{background:#0f172a;color:#fff;border-color:#0f172a}
+.tr-stage-host{min-height:180px}
+.tr-pill.live{background:#dcfce7;color:#166534;border:1px solid #86efac}
 `;
 
 function injectStyles() {
@@ -81,6 +88,7 @@ export async function mountCallRoom({
   persistTranscript = false,
   agentAudio = 'ask',
   allowSyntheticGesture = false,
+  stage = false,
   onAdmit,
   loadVoice,
 } = {}) {
@@ -89,6 +97,26 @@ export async function mountCallRoom({
 
   const waitingGuests = new Map();
   const audioConsentPrompts = new Map();
+  let releaseReloadHold = null;
+  let updateNotice = null; // { kind: 'hot-swapped' | 'reload', version: number } | null
+
+  const syncReloadHold = (joined) => {
+    if (joined && !releaseReloadHold && typeof runtime?.publication?.hold === 'function') {
+      releaseReloadHold = runtime.publication.hold();
+    } else if (!joined && releaseReloadHold) {
+      try { releaseReloadHold(); } catch {}
+      releaseReloadHold = null;
+    }
+  };
+
+  const offUpdate = typeof runtime?.publication?.onUpdate === 'function'
+    ? runtime.publication.onUpdate(({ version, kind }) => {
+        if (version === null) updateNotice = null;
+        else if (kind === 'hot-swapped') updateNotice = { kind: 'hot-swapped', version };
+        else updateNotice = { kind: 'reload', version };
+        render(room.snapshot());
+      })
+    : () => {};
 
   const room = createMediaRoom({
     runtime, session, attachment, callId, transcription, persistTranscript, agentAudio, allowSyntheticGesture,
@@ -156,7 +184,83 @@ export async function mountCallRoom({
 
   const root = document.createElement('div');
   root.className = 'tr-call';
+  const callLayer = document.createElement('div');
+  callLayer.className = 'tr-call';
+  root.append(callLayer);
   container.replaceChildren(root);
+
+  // Persistent hot-swappable stage/facet area: lives beside the call layer so
+  // call UI refreshes never unmount or blink the active facet's Shadow DOM.
+  let facetsApi = null;
+  let stageShell = null;
+  if (stage && typeof runtime?.publication?.mountFacets === 'function') {
+    stageShell = document.createElement('section');
+    stageShell.className = 'tr-stage-shell';
+    const stageBar = document.createElement('div');
+    stageBar.className = 'tr-stage-bar';
+    const tabList = document.createElement('div');
+    tabList.className = 'tr-stage-tabs';
+    tabList.setAttribute('role', 'tablist');
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'tr-btn';
+    copyBtn.style.cssText = 'padding:4px 10px;font-size:12px';
+    copyBtn.textContent = 'Copy view link';
+    copyBtn.addEventListener('click', async () => {
+      if (!facetsApi) return;
+      const shareUrl = facetsApi.url(facetsApi.current.id);
+      try {
+        await navigator.clipboard?.writeText(shareUrl);
+        copyBtn.textContent = 'Copied view link';
+        setTimeout(() => { copyBtn.textContent = 'Copy view link'; }, 1800);
+      } catch {
+        copyBtn.textContent = shareUrl;
+      }
+    });
+    stageBar.append(tabList, copyBtn);
+    const stageHost = document.createElement('div');
+    stageHost.className = 'tr-stage-host';
+    stageShell.append(stageBar, stageHost);
+    root.append(stageShell);
+
+    const renderTabs = ({ current, facets }) => {
+      tabList.replaceChildren(...facets.map(facet => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.role = 'tab';
+        btn.className = 'tr-tab';
+        btn.setAttribute('aria-selected', String(facet.id === current.id));
+        btn.textContent = facet.title;
+        if (facet.description) btn.title = facet.description;
+        btn.addEventListener('click', () => { void facetsApi?.select(facet.id).catch(() => {}); });
+        return btn;
+      }));
+    };
+
+    const stageOptions = typeof stage === 'object' ? stage : {};
+    try {
+      facetsApi = await runtime.publication.mountFacets(stageHost, {
+        ...stageOptions,
+        context: {
+          session,
+          signals: session?.signals,
+          rtc: attachment?.rtc,
+          room,
+          runtime,
+          callId,
+          ...(stageOptions.context && typeof stageOptions.context === 'object' ? stageOptions.context : {}),
+        },
+        onChange: renderTabs,
+        onError(error) {
+          stageHost.textContent = `Stage update failed: ${error?.message ?? String(error)}`;
+        },
+      });
+      renderTabs({ current: facetsApi.current, facets: facetsApi.list() });
+    } catch {
+      stageShell.remove();
+      stageShell = null;
+    }
+  }
 
   let savedDisplayName = '';
   let previewStream = null;
@@ -256,6 +360,20 @@ export async function mountCallRoom({
       relayPill.className = 'tr-pill relay';
       relayPill.textContent = `${relayCount} peer(s) on relay — captions & chat active`;
       pills.append(relayPill);
+    }
+    if (updateNotice?.kind === 'hot-swapped') {
+      const livePill = document.createElement('span');
+      livePill.className = 'tr-pill live';
+      livePill.textContent = `Stage updated live (v${updateNotice.version})`;
+      pills.append(livePill);
+    } else if (updateNotice?.kind === 'reload') {
+      const reloadBtn = document.createElement('button');
+      reloadBtn.type = 'button';
+      reloadBtn.className = 'tr-btn';
+      reloadBtn.style.cssText = 'padding:4px 10px;font-size:12px';
+      reloadBtn.textContent = `Update v${updateNotice.version} ready · Reload`;
+      reloadBtn.addEventListener('click', () => runtime?.publication?.update?.());
+      pills.append(reloadBtn);
     }
     bar.append(h, pills);
     frag.append(bar);
@@ -403,17 +521,22 @@ export async function mountCallRoom({
   };
 
   const render = (snap) => {
-    root.replaceChildren(snap.joined ? renderActive(snap) : renderLobby(snap));
+    syncReloadHold(snap.joined);
+    callLayer.replaceChildren(snap.joined ? renderActive(snap) : renderLobby(snap));
   };
 
   const offRoom = room.subscribe(render);
 
   return Object.freeze({
     room,
+    facets: facetsApi,
     async dispose() {
       stopPreview();
+      offUpdate();
       offRoom();
       offChange();
+      syncReloadHold(false);
+      await facetsApi?.dispose();
       await room.dispose();
     },
   });

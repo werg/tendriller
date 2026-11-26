@@ -138,7 +138,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
       await check.body?.cancel();
       if (!check.ok) return pageAdmissionFailure(req, env, page, check.status === 403);
       if (resource) return immutableAsset(env, req, resource[1], resource[2], context);
-      return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base });
+      return asset(env, url, "/_tendril/sw.js", { "Service-Worker-Allowed": page.base, "Cache-Control": "private, max-age=300" });
     }
     const response = await forward(env, page.id, "page", req, url, {
       "x-tendril-key": page.key,

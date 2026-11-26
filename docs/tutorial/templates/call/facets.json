@@ -1,0 +1,17 @@
+{
+  "default": "stage",
+  "facets": [
+    {
+      "id": "stage",
+      "title": "Live stage",
+      "module": "facets/stage.mjs",
+      "description": "Agent-updatable live stage that hot-swaps mid-call without dropping video or audio."
+    },
+    {
+      "id": "notes",
+      "title": "Shared notes",
+      "module": "facets/notes.mjs",
+      "description": "Shared Chronolog meeting notes and persisted transcript over the same call state."
+    }
+  ]
+}

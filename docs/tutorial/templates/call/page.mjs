@@ -41,6 +41,7 @@ async function connect(takeover = false) {
       transcription: 'model',
       persistTranscript: false,
       agentAudio: 'ask',
+      stage: true,
     });
     window.tendril.ready();
   } catch (error) {

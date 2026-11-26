@@ -102,7 +102,7 @@ export function participateApplication(session, { peers, openDirectConnection,
       if (upgrade) { connectionSignal.throwIfAborted(); retire(peer.identity); }
       const link = await session.connectPeer({ connection, peerIdentity: peer.identity, signal: connectionSignal });
       if (signal.aborted || link.signal.aborted) { await link.close(); if (!signal.aborted) scheduleRetry(); return; }
-      links.set(peer.identity, link); descriptions.set(peer.identity, adapter.transport.describe(connection)); connectionRevision++; error = null; retryCount = 0;
+      links.set(peer.identity, link); descriptions.set(peer.identity, adapter.transport.describe(connection)); connectionRevision++; error = null; retryCount = 0; clearTimeout(retry); retry = undefined;
       link.signal.addEventListener('abort', () => { if (links.get(peer.identity) === link) { links.delete(peer.identity); descriptions.delete(peer.identity); connectionRevision++; } changed(); scheduleRetry(); }, { once: true });
     } catch (cause) {
       try { await connection?.close(); } catch {}

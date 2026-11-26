@@ -31,6 +31,79 @@ export interface RuntimeArtifactFeatures {
   speech: { model: string; url: string; sha256: string; size?: number; total_size?: number; languages?: string[];
     engine: { script: string; script_sha256: string; script_size?: number; wasm: string; wasm_sha256: string; wasm_size?: number } } | null;
 }
+export interface PublicationUpdate {
+  readonly version: number | null;
+  readonly kind?: "hot-swapped" | "reload" | "reverted";
+  readonly publication?: PublicationManifest | null;
+  readonly changedPaths?: readonly string[];
+}
+export interface SlotContext<T = Record<string, unknown>> {
+  readonly name: string;
+  readonly path: string;
+  readonly version: number;
+  readonly publication: PublicationManifest | null;
+  /** Aborted automatically just before unmount or live hot-swap. */
+  readonly signal: AbortSignal;
+  /** Application-supplied services (e.g. session, signals, rtc, runtime). */
+  readonly app: T;
+}
+export interface SlotModule<T = Record<string, unknown>> {
+  mount(root: HTMLElement | ShadowRoot, ctx: SlotContext<T>): void | (() => void | Promise<void>) | Promise<void | (() => void | Promise<void>)>;
+}
+export interface MountSlotOptions<T = Record<string, unknown>> {
+  /** Relative ES module path inside the publication (e.g. "slots/stage.mjs"). */
+  readonly module: string;
+  /** Additional relative file paths or directory prefixes (ending in "/") owned by this slot that may change without forcing a page reload. */
+  readonly owns?: readonly string[];
+  /** Passed as `ctx.app` to the slot's `mount()`. */
+  readonly context?: T;
+  /** "shadow" (default) isolates CSS & DOM inside an open ShadowRoot; "light" mounts directly in the container. */
+  readonly isolation?: "shadow" | "light";
+  readonly onSwap?: (info: { readonly name: string; readonly path: string; readonly version: number; readonly publicationId: string | null; readonly hash: string | null; readonly initial: boolean }) => void;
+  readonly onError?: (error: unknown, info: { readonly name: string; readonly path: string; readonly version: number; readonly phase: "import" | "mount" | "unmount" }) => void;
+}
+export interface MountedSlot {
+  readonly name: string;
+  readonly path: string;
+  readonly version: number;
+  readonly publicationId: string | null;
+  select(modulePath: string): Promise<void>;
+  reload(): Promise<void>;
+  dispose(): Promise<void>;
+}
+export interface FacetDescriptor {
+  readonly id: string;
+  readonly title: string;
+  readonly module: string;
+  readonly description?: string;
+}
+export interface FacetsManifest {
+  readonly default: string;
+  readonly facets: readonly FacetDescriptor[];
+}
+export interface MountFacetsOptions<T = Record<string, unknown>> {
+  /** Relative path to a JSON facets manifest in the publication (default "facets.json") or an inline manifest object. */
+  readonly manifest?: string | FacetsManifest;
+  /** Query parameter carrying the active facet id in shareable URLs (default "view"). */
+  readonly param?: string;
+  /** Optional fallback facet id overriding manifest.default when no URL parameter is present. */
+  readonly defaultFacet?: string;
+  /** Additional relative file paths or directory prefixes owned by these facets. */
+  readonly owns?: readonly string[];
+  readonly context?: T;
+  readonly isolation?: "shadow" | "light";
+  readonly onChange?: (state: { readonly current: FacetDescriptor; readonly facets: readonly FacetDescriptor[] }) => void;
+  readonly onSwap?: MountSlotOptions<T>["onSwap"];
+  readonly onError?: MountSlotOptions<T>["onError"];
+}
+export interface MountedFacets {
+  readonly current: FacetDescriptor;
+  list(): readonly FacetDescriptor[];
+  select(id: string, options?: { readonly replace?: boolean }): Promise<void>;
+  url(id: string, options?: { readonly pinned?: boolean }): string;
+  onChange(listener: (state: { readonly current: FacetDescriptor; readonly facets: readonly FacetDescriptor[] }) => void): () => void;
+  dispose(): Promise<void>;
+}
 export interface PublicationManifest {
   id: string; base: string;
   /** Canonical authored root entry, identical for every document in this publication. */
@@ -224,18 +297,30 @@ export interface RuntimeServices {
   documentUrl(reference: string): string;
   /** Resolve an explicit runtime dependency against the publication-pinned runtime. */
   assetUrl(path: string): string;
-  /** Resolves only after the exact required publication graph is saved by its service worker. */
+  /** Publication lifecycle, offline persistence, URL-addressable facets, and live hot-swappable slots. */
   publication: {
     saveOffline(): Promise<{ id: string; status: "ready" }>;
+    /** Currently active atomic publication manifest (updated live after slot/facet hot-swaps). */
+    readonly current: PublicationManifest | null;
     /** True only when this document was opened at its immutable /_publications/ID/ URL. */
     readonly pinned: boolean;
     /** "live" (default) switches as soon as no typed text is pending; "careful" (<meta name="tendriller-updates" content="careful">) also waits for any focused or changed control and shows an update prompt. */
     readonly policy: "live" | "careful";
-    /** A newer release is selected; the page switches at its next safe point. */
+    /** A newer release requires a full document reload; the page switches at its next safe point. */
     readonly updateAvailable: boolean;
-    /** Called with the selected version when it differs from this document's release; version null when the selection returns to it. */
-    onUpdate(listener: (update: { version: number | null }) => void): () => void;
-    /** Defer the automatic switch while there is unsaved work; call the result to release. */
+    /** Fetch the latest selected publication manifest from `_tendril/info` on demand (zero polling). */
+    latest(): Promise<{ version: number; publication: PublicationManifest | null }>;
+    /** Resolve a validated relative asset path against a publication's immutable base (defaults to current). */
+    assetUrl(path: string, publication?: PublicationManifest | null): string;
+    /** Pure shareable URL builder for a named facet (`?view=<id>`), preserving live vs pinned publication context. */
+    facetUrl(id: string, options?: { readonly param?: string; readonly pinned?: boolean; readonly base?: string }): string;
+    /** Mount a hot-swappable ES module slot from the active publication. */
+    mountSlot<T = Record<string, unknown>>(name: string, container: HTMLElement, options: MountSlotOptions<T>): Promise<MountedSlot>;
+    /** Mount URL-addressable, hot-swappable facets from `facets.json` (or an inline manifest). */
+    mountFacets<T = Record<string, unknown>>(container: HTMLElement, options?: MountFacetsOptions<T>): Promise<MountedFacets>;
+    /** Called when a new release is selected (live hot-swapped, requires reload, or reverted to this document's release). */
+    onUpdate(listener: (update: PublicationUpdate) => void): () => void;
+    /** Defer the automatic full-page reload while there is unsaved work or an active call; call the result to release. */
     hold(): () => void;
     /** Load the latest selected release now. */
     update(): void;

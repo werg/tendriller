@@ -11,8 +11,10 @@
 // Pinning is explicit: a document opened at its immutable /_publications/ID/ URL stays
 // on that release and only offers the update.
 import { watchPublicationUpdates as watchPublicationSelection, type AgentsRosterNotice, type McpSyncNotice } from "../../contract/publication-watch.mjs";
+import type { PublicationUpdate } from "../../contract/index.mjs";
 import { documentUrl } from "./document";
 import type { TendrilConfig } from "./types";
+import type { PublicationChangeOutcome } from "./slots";
 
 export type UpdatePolicy = "live" | "careful";
 
@@ -21,10 +23,10 @@ export interface PublicationUpdates {
   /** "live" switches as soon as nothing the person typed is pending; "careful" also waits for any focused or changed control. */
   readonly policy: UpdatePolicy;
   readonly updateAvailable: boolean;
-  /** Called with the selected version when it differs from this document's release,
+  /** Called with the selected version when it differs from this document's release (hot-swapped or reload),
    * and with version null when the selection returns to this release (a rollback). */
-  onUpdate(listener: (update: { version: number | null }) => void): () => void;
-  /** Defers automatic switching (unsaved work) until the returned function is called. */
+  onUpdate(listener: (update: PublicationUpdate) => void): () => void;
+  /** Defers automatic switching (unsaved work or active media call) until the returned function is called. */
   hold(): () => void;
   /** Load the latest release now. */
   update(): void;
@@ -107,15 +109,27 @@ const holdingStatus = (state: string) => state === "connected" ? "Your agent is 
 
 /** The update policy. `watch` opens the page's one publication watch (the default
  * tendril.js entry does; the bare kernel stays without host connections unless asked). */
-export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: boolean; watch?: boolean; reload?: () => void; policy?: UpdatePolicy; onAgents?: (notice: AgentsRosterNotice) => void; onMcpSync?: (notice: McpSyncNotice) => void } = { pinned: false }): PublicationUpdates {
-  const listeners = new Set<(update: { version: number | null }) => void>(), holds = new Set<object>(), edited = new Set<Element>();
+export function watchPublicationUpdates(cfg: TendrilConfig, options: {
+  pinned: boolean;
+  watch?: boolean;
+  reload?: () => void;
+  policy?: UpdatePolicy;
+  onAgents?: (notice: AgentsRosterNotice) => void;
+  onMcpSync?: (notice: McpSyncNotice) => void;
+  hasHotSwappableSlots?: () => boolean;
+  onBeforeSwitch?: (version: number) => Promise<PublicationChangeOutcome>;
+} = { pinned: false }): PublicationUpdates {
+  const listeners = new Set<(update: PublicationUpdate) => void>(), holds = new Set<object>(), edited = new Set<Element>();
   const policy = (): UpdatePolicy => options.policy ?? authoredUpdatePolicy();
   const reload = options.reload ?? (() => location.reload());
   const latestUrl = () => new URL(cfg.base, location.href).href;
-  let available: number | null = null, switching = false, switchReset: ReturnType<typeof setTimeout> | undefined, closed = false;
+  let activeVersion = cfg.version;
+  let available: number | null = null, availableUpdate: PublicationUpdate | null = null;
+  let switching = false, switchReset: ReturnType<typeof setTimeout> | undefined, closed = false;
+  let noticeEpoch = 0;
   const safe = () => holds.size === 0 && (policy() === "careful" ? !unsavedInput() : !typedDraftPending(edited));
-  const announce = (version: number | null) => {
-    for (const listener of listeners) { try { listener({ version }); } catch { /* Observers cannot block the switch. */ } }
+  const announce = (update: PublicationUpdate) => {
+    for (const listener of listeners) { try { listener(update); } catch { /* Observers cannot block the switch. */ } }
   };
   const attempt = () => {
     if (closed || available === null || options.pinned || switching || !safe()) return;
@@ -128,19 +142,57 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: b
   const browser = typeof document !== "undefined" && typeof document.addEventListener === "function" && typeof window !== "undefined" && typeof window.addEventListener === "function";
   if (!browser) return Object.freeze({ pinned: options.pinned, policy: options.policy ?? "live", updateAvailable: false, onUpdate: () => () => {}, hold: () => () => {}, update() { reload(); }, close() {} });
   let watch: { close(): void } | undefined;
+  const applyReloadNotice = (current: number, outcome?: PublicationChangeOutcome) => {
+    if (available === current) return;
+    available = current;
+    availableUpdate = Object.freeze({
+      version: current,
+      kind: "reload",
+      ...(outcome?.publication !== undefined ? { publication: outcome.publication } : {}),
+      ...(outcome?.changedPaths !== undefined ? { changedPaths: outcome.changedPaths } : {}),
+    });
+    announce(availableUpdate);
+    attempt();
+  };
   if (options.watch) try {
     watch = watchPublicationSelection({ base: latestUrl(),
       onCurrent({ current }: { current: number }) {
         if (closed) return;
+        const epoch = ++noticeEpoch;
         if (cfg.version === 0) {
           // A holding page opens the first release as soon as one is selected.
           if (current > 0 && !switching) { switching = true; reload(); }
           return;
         }
-        if (current === 0 || current === cfg.version) { if (available !== null) { available = null; announce(null); } return; }
-        if (available === current) return;
-        available = current; announce(current);
-        attempt();
+        if (current === 0 || current === activeVersion) {
+          if (available !== null) {
+            available = null; availableUpdate = null;
+            announce({ version: null, kind: "reverted" });
+          }
+          return;
+        }
+        if (!options.pinned && options.onBeforeSwitch && options.hasHotSwappableSlots?.()) {
+          void options.onBeforeSwitch(current).then(outcome => {
+            if (closed || epoch !== noticeEpoch) return;
+            if (outcome.handled && outcome.kind === "hot-swapped") {
+              activeVersion = current;
+              available = null;
+              availableUpdate = null;
+              announce(Object.freeze({
+                version: current,
+                kind: "hot-swapped",
+                ...(outcome.publication !== undefined ? { publication: outcome.publication } : {}),
+                ...(outcome.changedPaths !== undefined ? { changedPaths: outcome.changedPaths } : {}),
+              }));
+              return;
+            }
+            applyReloadNotice(current, outcome);
+          }).catch(() => {
+            if (!closed && epoch === noticeEpoch) applyReloadNotice(current);
+          });
+          return;
+        }
+        applyReloadNotice(current);
       },
       onAgents(notice: AgentsRosterNotice) {
         if (!closed) options.onAgents?.(notice);
@@ -172,10 +224,10 @@ export function watchPublicationUpdates(cfg: TendrilConfig, options: { pinned: b
     pinned: options.pinned,
     get policy() { return policy(); },
     get updateAvailable() { return available !== null; },
-    onUpdate(listener: (update: { version: number | null }) => void) {
+    onUpdate(listener: (update: PublicationUpdate) => void) {
       if (closed) return () => {};
       listeners.add(listener);
-      if (available !== null) listener({ version: available });
+      if (available !== null) listener(availableUpdate ?? { version: available, kind: "reload" });
       return () => { listeners.delete(listener); };
     },
     hold() { const token = {}; if (!closed) holds.add(token); return () => { holds.delete(token); attempt(); }; },

@@ -35,6 +35,14 @@ system-dark defaults. The application owns theme choice: `color-scheme: dark`
 alone does not activate a `prefers-color-scheme` media query. These hooks change
 colors only; connection actions, accessibility and reduced motion are unchanged.
 
+## URL-addressable facets & hot-swappable slots
+
+One Tendriller page can expose multiple URL-addressable views (**facets**) over the same Chronolog `applicationId` and hot-swap individual UI modules live without reloading the page shell (ideal for an agent continuously pushing charts, whiteboards, or notes during an active WebRTC call):
+
+- **Atomic signed publications remain the unit of trust and offline caching.** The host never tracks separate component versions. Instead, bundle each facet/slot entry (`facets/*.mjs`, `slots/*.mjs`) standalone (`splitting: false`) so editing a facet changes only its own asset SHA-256 in the publication manifest.
+- **Single slot (`tendril.publication.mountSlot`):** mounts a module exporting `mount(root, ctx)` inside an open Shadow DOM (`isolation: 'shadow'` default) with an automatic `ctx.signal` (`AbortSignal` aborted on swap/unmount). When a new publication arrives over the existing hibernating publication watch and only owned slot paths changed, the runtime imports the new module from its immutable `/_publications/<id>/` URL, runs cleanup, and mounts the replacement—zero full-page reload. If the import fails, the previous slot stays alive.
+- **URL facets (`tendril.publication.mountFacets`):** reads `facets.json` (`{ default, facets: [{ id, title, module, description? }] }`), selects the facet named by `?view=<id>`, supports Back/Forward via `history.pushState`/`popstate`, builds shareable links with `facets.url(id)`, and updates the facet catalog live when `facets.json` changes. See `templates/call/` for a complete working example.
+
 ## Domain views you can import
 
 - **List/detail with stable IDs:** the event notes page derives complete rows from one captured materialized event snapshot. Links select `#note=ID`; the detail is an inspector, while the editor owns separate local drafts per entity. Reordered snapshots do not overwrite textarea values.
