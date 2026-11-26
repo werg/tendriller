@@ -355,7 +355,7 @@ const connection = createOwnerConnection({
     } else if (s.phase === 'key-required') {
       dotEl.className = 'tce-dot';
       canAuthor = false;
-      setStatus('Waiting for automatic agent admission…');
+      setStatus(s.title || 'Waiting for admission…');
     } else if (s.phase === 'failed') {
       dotEl.className = 'tce-dot err';
       canAuthor = false;

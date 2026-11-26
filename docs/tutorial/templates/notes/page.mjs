@@ -25,7 +25,7 @@ const local = createViewStore({ storage, applicationId: configuration.applicatio
 const read = (key, fallback) => { try { return local.readDraft(key) ?? fallback; } catch { persistence = false; return fallback; } };
 const save = (key, value) => { try { local.writeDraft(value, key); } catch { persistence = false; $('#draft-help').textContent = 'This browser could not persist the draft. Keep this page open or copy unsent text before leaving.'; } };
 let editor = read('editor', { id: crypto.randomUUID(), isNew: true }), drafts = read('drafts', {}), intents = read('intents', {});
-let attachment, session, live, devices, notes = [], stale = false, hasSnapshot = false, inspectToken = 0;
+let attachment, session, live, devices, stopAdmission, notes = [], stale = false, hasSnapshot = false, inspectToken = 0;
 let operationView, observedOperationId, media;
 const nodes = new Map(), selectedId = () => { try { return new URLSearchParams(location.hash.slice(1)).get('note'); } catch { return null; } };
 $('#note').value = drafts[editor.id] ?? ''; $('#editor-heading').textContent = editor.isNew ? 'New note' : 'Edit note';
@@ -134,7 +134,21 @@ async function connect() {
     attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, context: { viewId }, timeoutMs: 30_000 });
     session = attachment.session;
     submission.update({ attached: true });
-    session.onStatus(status => { submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); $('#connection-status').textContent = `${status.canAuthor ? 'Local signing and storage ready' : 'This browser is not admitted yet (see Devices and access)'} · ${status.connectedPeers} connected peers · database ${status.database}. Peer availability never gates Save on an admitted device.`; });
+    let lastStatus = session.status, admissionState = null;
+    const renderConnectionStatus = () => {
+      if (!lastStatus) return;
+      const accessLabel = lastStatus.canAuthor ? 'Local signing and storage ready'
+        : admissionState?.phase === 'removed' ? 'This browser was removed (see Devices and access)'
+        : admissionState?.phase === 'waiting-approval' ? 'Waiting for approval in strict mode (see Devices and access)'
+        : admissionState?.phase === 'waiting-keys' ? 'Admitted; waiting for the latest page key (see Devices and access)'
+        : submission.snapshot.readOnly ? 'Read-only access (admitted)'
+        : 'This browser is not admitted yet (see Devices and access)';
+      $('#connection-status').textContent = `${accessLabel} · ${lastStatus.connectedPeers} connected peers · database ${lastStatus.database}. Peer availability never gates Save on an admitted device.`;
+    };
+    session.onStatus(status => { lastStatus = status; submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); renderConnectionStatus(); });
+    stopAdmission?.();
+    stopAdmission = session.extensions?.subscribe?.(message => { if (message?.topic === 'admission' && message.state) { admissionState = message.state; submission.admission(admissionState); renderConnectionStatus(); } });
+    void session.extensions?.call?.('admission.state', []).then(next => { if (next) { admissionState = next; submission.admission(admissionState); renderConnectionStatus(); } }).catch(() => {});
 
     window.tendril.application.install(createApplicationBackend(session));
   window.tendril.signals.install(session.signals);
@@ -158,7 +172,7 @@ async function connect() {
   } catch (error) { $('#connection-status').textContent = `Local session could not open: ${error.message}. Retain this browser profile and original work.`; $('#reconnect').hidden = false; }
 }
 $('#reconnect').addEventListener('click', () => { if (session) location.reload(); else void connect(); });
-window.addEventListener('pagehide', event => { stopOperationObservation(); retainEditor(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); media?.close(); window.appRequests?.close(); live?.close(); devices?.close(); void attachment?.detach().catch(() => {}); } });
+window.addEventListener('pagehide', event => { stopOperationObservation(); retainEditor(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); media?.close(); window.appRequests?.close(); live?.close(); stopAdmission?.(); devices?.close(); void attachment?.detach().catch(() => {}); } });
 window.addEventListener('pageshow', event => { if (event.persisted) void attachment?.resume().then(() => { observeSelectedOperation(); return live?.refresh(); }).catch(report); });
 void connect();
 

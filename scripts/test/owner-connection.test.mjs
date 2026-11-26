@@ -35,3 +35,36 @@ test('missing keys and owner authentication have explicit restore/sign-in action
   const missing = describeConnectionError({ code: 'BOOTSTRAP_KEY_MISSING' }); assert.match(missing.detail, /Never initialize replacement keys/); assert.equal(missing.retry, undefined);
   const account = describeConnectionError({ code: 'browser_account_required' }); assert.equal(account.action, 'reload'); assert.match(account.title, /Sign in/);
 });
+test('connection status distinguishes waiting-keys, waiting-approval, removed and read-only from waiting-admission', async t => {
+  let emitAdmission, unsubscribed = 0;
+  const session = {
+    status: { canAuthor: false },
+    onStatus(fn) { fn(this.status); return () => {}; },
+    extensions: {
+      async call(name) { assert.equal(name, 'admission.state'); return { phase: 'waiting-keys', members: [{ self: true, writer: true }] }; },
+      subscribe(fn) { emitAdmission = fn; return () => { unsubscribed++; }; },
+    },
+  };
+  const f = fixture(t, async () => ({ session }));
+  await f.controller.start();
+  await tick();
+  assert.equal(f.controller.state.phase, 'key-required');
+  assert.equal(f.controller.state.admissionPhase, 'waiting-keys');
+  assert.match(f.controller.state.title, /Waiting for page keys/);
+
+  emitAdmission({ topic: 'admission', state: { phase: 'waiting-approval', members: [] } });
+  assert.equal(f.controller.state.admissionPhase, 'waiting-approval');
+  assert.match(f.controller.state.title, /Waiting for approval/);
+
+  emitAdmission({ topic: 'admission', state: { phase: 'removed', members: [] } });
+  assert.equal(f.controller.state.admissionPhase, 'removed');
+  assert.match(f.controller.state.title, /removed/i);
+
+  emitAdmission({ topic: 'admission', state: { phase: 'admitted', members: [{ self: true, reader: true, writer: false }] } });
+  assert.equal(f.controller.state.phase, 'connected');
+  assert.equal(f.controller.state.readOnly, true);
+  assert.match(f.controller.state.title, /Read-only/);
+
+  f.controller.close();
+  assert.equal(unsubscribed, 1);
+});

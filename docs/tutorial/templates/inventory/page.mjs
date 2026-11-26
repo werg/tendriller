@@ -22,7 +22,7 @@ const save = (key, value) => { try { local.writeDraft(value, key); } catch { $('
 const draftIds = ['from', 'to', 'units', 'expected-source', 'expected-destination', 'bin-id', 'bin-units', 'bin-expected', 'bin-label', 'sql-grantee', 'author-time'];
 const draft = read('draft', {}); for (const id of draftIds) if ($('#' + id)) { $('#' + id).value = draft[id] ?? ''; $('#' + id).addEventListener('input', () => { draft[id] = $('#' + id).value; save('draft', draft); }); }
 const intents = read('intents', {}); $('#op-id').value = read('selected-operation', '');
-let session, attachment, live, devices, snapshot, stale = false, inspectionToken = 0;
+let session, attachment, live, devices, stopAdmission, snapshot, stale = false, inspectionToken = 0;
 let operationView, observedOperationId;
 const nodes = new Map();
 const selected = () => new URLSearchParams(location.hash.slice(1)).get('bin');
@@ -111,7 +111,20 @@ try {
   attachment = await openBrowserOwner({ workerUrl: new URL('./worker.mjs', import.meta.url), profileId, applicationId: configuration.applicationId, requiresDedicatedWorker: true, context: { viewId }, timeoutMs: 30_000 });
   session = attachment.session;
   submission.update({ attached: true });
-  session.onStatus(status => { submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); $('#session-status').textContent = `${status.canAuthor ? 'Local signing/storage ready' : 'Not admitted yet (see Devices and access)'} · ${status.connectedPeers} peers · SQL ${status.database}. Stored submission does not wait for peers or a read.`; });
+  let lastStatus = session.status, admissionState = null;
+  const renderSessionStatus = () => {
+    if (!lastStatus) return;
+    const accessLabel = lastStatus.canAuthor ? 'Local signing/storage ready'
+      : admissionState?.phase === 'removed' ? 'This browser was removed (see Devices and access)'
+      : admissionState?.phase === 'waiting-approval' ? 'Waiting for approval in strict mode (see Devices and access)'
+      : admissionState?.phase === 'waiting-keys' ? 'Admitted; waiting for the latest page key (see Devices and access)'
+      : submission.snapshot.readOnly ? 'Read-only access (admitted)'
+      : 'Not admitted yet (see Devices and access)';
+    $('#session-status').textContent = `${accessLabel} · ${lastStatus.connectedPeers} peers · SQL ${lastStatus.database}. Stored submission does not wait for peers or a read.`;
+  };
+  session.onStatus(status => { lastStatus = status; submission.application(status); diagnostics.update({localOwnerStatus:'open',sessionStatus:{phase:status.phase,canAuthor:status.canAuthor,connectedPeers:status.connectedPeers}}); renderSessionStatus(); });
+  stopAdmission = session.extensions?.subscribe?.(message => { if (message?.topic === 'admission' && message.state) { admissionState = message.state; submission.admission(admissionState); renderSessionStatus(); } });
+  void session.extensions?.call?.('admission.state', []).then(next => { if (next) { admissionState = next; submission.admission(admissionState); renderSessionStatus(); } }).catch(() => {});
 
   window.tendril.application.install(createApplicationBackend(session));
   window.tendril.signals.install(session.signals);
@@ -126,5 +139,5 @@ try {
   window.tendril.ready();
   if ($('#op-id').value) void inspect().catch(report);
 } catch (error) { $('#session-status').textContent = `Local opening failed: ${error.message}. Preserve this browser's private identity/store and reload after fixing its named prerequisite.`; }
-window.addEventListener('pagehide', event => { stopOperationObservation(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); live?.close(); devices?.close(); void attachment?.detach().catch(() => {}); } });
+window.addEventListener('pagehide', event => { stopOperationObservation(); if (event.persisted) void attachment?.suspend().catch(report); else { telemetry?.close(); unregisterFlush?.(); live?.close(); stopAdmission?.(); devices?.close(); void attachment?.detach().catch(() => {}); } });
 window.addEventListener('pageshow', event => { if (event.persisted) void attachment?.resume().then(() => { observeSelectedOperation(); return live?.refresh(); }).catch(report); });

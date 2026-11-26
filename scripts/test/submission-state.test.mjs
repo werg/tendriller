@@ -43,3 +43,22 @@ test('uncertain submissions preserve draft advice and retry uses only the select
   assert.equal(ui.snapshot.canInspect, true);
   assert.equal(ui.snapshot.canSubmit, true);
 });
+test('submission state distinguishes waiting-keys, waiting-approval, removed and read-only access', () => {
+  const ui = createSubmissionState();
+  ui.update({ attached: true });
+  ui.application({ phase: 'ready', canAuthor: false });
+  assert.match(ui.snapshot.message, /waiting to be admitted/);
+
+  ui.admission({ phase: 'waiting-keys', members: [{ self: true, writer: true }] });
+  assert.match(ui.snapshot.message, /waiting for the latest page key/);
+
+  ui.admission({ phase: 'waiting-approval', members: [] });
+  assert.match(ui.snapshot.message, /waiting for approval/);
+
+  ui.admission({ phase: 'removed', members: [] });
+  assert.match(ui.snapshot.message, /removed from the page/);
+
+  ui.admission({ phase: 'admitted', members: [{ self: true, reader: true, writer: false }] });
+  assert.equal(ui.snapshot.readOnly, true);
+  assert.match(ui.snapshot.message, /read-only/);
+});
