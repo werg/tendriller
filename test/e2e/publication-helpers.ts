@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 import { createSigningIdentity, signPublicationManifest, verifyPublicationManifest,
   type SigningIdentity, type SignedPublication } from '@chronolog/authority';
 import type { PeersClient } from '../../dist/sdk/peers.mjs';
@@ -11,6 +11,8 @@ export type PublishedAssets = Record<string, { body: string | Uint8Array; type: 
 export const newAgentSigner = (): Promise<AgentSigner> => createSigningIdentity();
 /** Chronolog Ed25519 public keys are hex; the host registers an agent's key as base64url. */
 export const registrationKey = (signer: AgentSigner): string => Buffer.from(signer.publicKey, 'hex').toString('base64url');
+/** A fresh X25519 key-wrap public key (64 hex) for agent registration; these fixtures never receive wrapped page keys. */
+export const registrationWrapKey = (): string => generateKeyPairSync('x25519').publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
 
 /** Code-only fixture: it has no database, so the execution graph is a fixed label, never a schema. */
 const executionManifestDigest = createHash('sha256').update('tendriller-e2e-code-only-publication').digest('hex');

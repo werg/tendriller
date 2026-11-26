@@ -43,7 +43,9 @@ let handle = input.handle;
 if (!handle) {
   const { generateKeyPairSync } = await import('node:crypto');
   const publicKey = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' }).x;
-  const agent = await registerAgent(input.serviceOrigin, { owner: input.owner, handle: 'local-host-smoke', publicKey });
+  // Agents register their X25519 key-wrap key with their signing key; members wrap page keys to it.
+  const wrapKey = generateKeyPairSync('x25519').publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex');
+  const agent = await registerAgent(input.serviceOrigin, { owner: input.owner, handle: 'local-host-smoke', publicKey, wrapKey });
   const created = await createAgentClient({ service: input.serviceOrigin, token: agent.token }).pages.create({ name: 'Local host smoke' });
   handle = { ...created, token: agent.token };
 }

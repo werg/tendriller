@@ -200,6 +200,8 @@ test('invites: email, single-use and public links admit with their role through 
     const friend = await w.participant({ principal: { account: { accountId: 'acct_friend', email: 'friend@example.test' } } });
     await friend.admission.call('admission.redeem', `#${emailInvite.fragment}`);
     await until(() => friend.admission.state.phase === 'admitted', 'email invitee admitted');
+    // The invitee can observe its admission before this member merges it; wait for the member's own view.
+    await until(() => admin.session.authority.grant(friend.device.identity.publicKey) !== null, 'admin sees the email admission');
     const friendGrant = admin.session.authority.grant(friend.device.identity.publicKey);
     assert.deepEqual([friendGrant.reader, friendGrant.writer, friendGrant.administrator], [true, false, false]);
     const mallory = await w.participant({ principal: { account: { accountId: 'acct_mallory', email: 'mallory@example.test' } } });
@@ -208,6 +210,7 @@ test('invites: email, single-use and public links admit with their role through 
     const a = await w.participant({ principal: { account: { accountId: 'acct_a', email: null } } });
     await a.admission.call('admission.redeem', openInvite.fragment);
     await until(() => a.admission.state.phase === 'admitted', 'open invitee admitted');
+    await until(() => admin.session.authority.grant(a.device.identity.publicKey) !== null, 'admin sees the open admission');
     assert.equal(admin.session.authority.grant(a.device.identity.publicKey).writer, true);
     const b = await w.participant({ principal: { account: { accountId: 'acct_b', email: null } } });
     await b.admission.call('admission.redeem', openInvite.fragment);

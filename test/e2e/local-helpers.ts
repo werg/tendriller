@@ -1,6 +1,6 @@
 import { expect, request, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
 import { createAgentClient } from '../../dist/sdk/client.mjs';
-import { newAgentSigner, publishAssetGraph, registrationKey, type AgentSigner, type PublicationReceipt } from './publication-helpers';
+import { newAgentSigner, publishAssetGraph, registrationKey, registrationWrapKey, type AgentSigner, type PublicationReceipt } from './publication-helpers';
 
 import { LOCAL_WORKER_SERVICE } from '../../scripts/e2e-network.mjs';
 export const SERVICE = LOCAL_WORKER_SERVICE;
@@ -31,7 +31,7 @@ export async function createPage(owner = OWNER, sameAgent?: Handle): Promise<Han
   else {
     signer = await newAgentSigner();
     const registered = await http.post(`${SERVICE}/api/agents`, { headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': ip },
-      data: { owner, handle: 'e2e-agent', publicKey: registrationKey(signer) } });
+      data: { owner, handle: 'e2e-agent', publicKey: registrationKey(signer), wrapKey: registrationWrapKey() } });
     expect(registered.status(), await registered.text()).toBe(201);
     ({ token, agent } = await registered.json() as { token: string; agent: { id: string } });
   }

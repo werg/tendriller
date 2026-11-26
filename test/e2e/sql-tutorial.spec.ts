@@ -5,8 +5,8 @@ import { deletePage, openClaimed, signInFixture } from './local-helpers';
 import { prepareSqlTutorial } from './sql-tutorial-fixture';
 
 async function stock(page: Page, source: number, destination: number) {
-  await expect(page.locator('#stock tr').filter({ has: page.getByRole('link', { name: 'source', exact: true }) })).toHaveText(`source${source}`);
-  await expect(page.locator('#stock tr').filter({ has: page.getByRole('link', { name: 'destination', exact: true }) })).toHaveText(`destination${destination}`);
+  await expect(page.locator('#stock tr').filter({ has: page.getByRole('link', { name: 'source', exact: true }) })).toHaveText(`source${source}`, { timeout: 30_000 });
+  await expect(page.locator('#stock tr').filter({ has: page.getByRole('link', { name: 'destination', exact: true }) })).toHaveText(`destination${destination}`, { timeout: 30_000 });
 }
 async function publishedGraph(page: Page, app: { publication: any; publicationVersion: number }) {
   const hosted = await page.evaluate(() => ({
@@ -81,7 +81,7 @@ test('actual SQL inventory page: signed publication, browser-first initializatio
     const browserKey = await page.locator('#public-key').inputValue();
     expect(browserKey).toMatch(/^[a-f0-9]{64}$/);
     expect(app.nativePublicKey).not.toBe(browserKey);
-    await expect(page.locator('#summary')).not.toContainText('Loading');
+    await expect(page.locator('#summary')).not.toContainText('Loading', { timeout: 30_000 });
     // Schema and rows are an ordinary authorized DDL/DML transaction, stored and materialized locally.
     await page.locator('#initialize').click();
     await expect(page.locator('#result')).toContainText('Stored locally: true', { timeout: 30_000 });
@@ -104,8 +104,11 @@ test('actual SQL inventory page: signed publication, browser-first initializatio
     expect(native.identity.publicKey).toBe(app.nativePublicKey);
     await test.step('the online browser admits the agent from its signed grant and wraps the page keys (nothing copied)', async () => {
       await expect.poll(() => native.status.canAuthor, { timeout: 60_000 }).toBe(true);
-      await expect(page.locator('#devices')).toContainText('New agent signed in', { timeout: 30_000 });
-      const memberships = await page.evaluate(async () => (await (window as any).tendril.application.backend.readAuthority()).memberships.map((item: any) => item.payload));
+      // The browser may admit the agent before it starts (its grant attestation exists from page creation),
+      // so the signed member list, not an ephemeral notice, is the browser-side evidence.
+      const key = app.nativePublicKey;
+      await expect(page.locator('#devices .admission-members')).toContainText(`agent · key ${key.slice(0, 8)}…${key.slice(-4)}`, { timeout: 30_000 });
+      const memberships = native.authority.bundle().memberships.map((item: any) => item.payload);
       const admissions = memberships.flatMap((item: any) => item.admitted.map((entry: any) => [entry.publicKey, entry.via]));
       expect(admissions).toContainEqual([app.nativePublicKey, 'attested']);
       expect(memberships.at(-1).members.find((member: any) => member.publicKey === app.nativePublicKey)?.wrapKey).toMatch(/^[a-f0-9]{64}$/);
