@@ -21,11 +21,15 @@ async function fresh(t: Tendril, principal: Principal) {
     throw new HttpError(403, 'forbidden', 'Peer discovery access is no longer active');
   identity(t, principal);
 }
+function retire(ws: WebSocket, code: number, reason: string): void {
+  try { ws.serializeAttachment(null); } catch {}
+  try { ws.close(code, reason); } catch {}
+}
 function listeners(t: Tendril): WebSocket[] {
   return t.ctx.getWebSockets(TAG).filter(ws => {
     const value = attachment(ws);
     if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return false;
-    if (!currentPrincipal(t, value.principal)) { ws.close(4003, 'Peer host access revoked'); return false; }
+    if (!currentPrincipal(t, value.principal)) { retire(ws, 4003, 'Peer host access revoked'); return false; }
     return true;
   });
 }
@@ -56,18 +60,27 @@ export async function handleDiscoveryWatch(t: Tendril, req: Request, url: URL, p
   let peerId: string;
   try { peerId = validatePeerId(url.searchParams.get('peerId')); } catch { throw new HttpError(400, 'bad_request'); }
   await fresh(t, principal);
-  const owner = identity(t, principal), sockets = listeners(t), previous = sockets.find(ws => attachment(ws)!.peerId === peerId);
-  if (previous && attachment(previous)!.owner !== owner) throw new HttpError(409, 'peer_identity_conflict');
+  const owner = identity(t, principal), sockets = listeners(t), previous = sockets.filter(ws => attachment(ws)!.peerId === peerId);
+  if (previous.some(ws => attachment(ws)!.owner !== owner)) throw new HttpError(409, 'peer_identity_conflict');
   const budget = participantIdentity(t, principal).budget;
-  if (!previous && (sockets.length >= LIMITS.peers || sockets.filter(ws => participantIdentity(t, attachment(ws)!.principal).budget === budget).length >= LIMITS.peersPerPrincipal))
+  if (!previous.length && (sockets.length >= LIMITS.peers || sockets.filter(ws => participantIdentity(t, attachment(ws)!.principal).budget === budget).length >= LIMITS.peersPerPrincipal))
     throw new HttpError(429, 'peer_directory_full');
+  const staleConnections = new Set(previous.map(ws => attachment(ws)!.connection));
+  for (const stale of previous) retire(stale, 4000, 'Discovery listener replaced');
   const [client, server] = Object.values(new WebSocketPair());
   t.ctx.acceptWebSocket(server, [TAG]);
-  server.serializeAttachment({ kind: TAG, peerId, owner, principal, connection: crypto.randomUUID() } satisfies Attachment);
-  previous?.close(4000, 'Discovery listener replaced');
+  const connection = crypto.randomUUID();
+  server.serializeAttachment({ kind: TAG, peerId, owner, principal, connection } satisfies Attachment);
   server.send(JSON.stringify({ type: 'ready' }));
-  // Replacing a presence withdraws its former hint until it re-advertises.
-  if (previous) notify(t, attachment(server)!.connection);
+  // Replacing a presence withdraws its former hint synchronously until it re-advertises.
+  if (staleConnections.size) {
+    t.transaction(() => {
+      const before = t.db.get<StoredAdvertisement[]>(key, []);
+      const after = before.filter(row => !staleConnections.has(row.connection));
+      if (before.length !== after.length) t.db.set(key, after);
+      notify(t, connection);
+    });
+  }
   return new Response(null, { status: 101, webSocket: client, headers: { 'Sec-WebSocket-Protocol': PROTOCOL } });
 }
 export function closeDiscoverySocket(t: Tendril, ws: WebSocket): void {
@@ -103,7 +116,7 @@ export async function exchangeDiscovery(t: Tendril, principal: Principal, action
   } catch (error) { throw new HttpError(400, 'bad_request', error instanceof Error ? error.message : 'Invalid advertisement'); }
   const owner = identity(t, principal);
   return t.transaction(() => {
-    const sockets = listeners(t), socket = sockets.find(ws => attachment(ws)!.peerId === peerId), bound = socket && attachment(socket)!;
+    const sockets = listeners(t), socket = sockets.filter(ws => attachment(ws)!.peerId === peerId).at(-1), bound = socket && attachment(socket)!;
     if (bound && bound.owner !== owner) throw new HttpError(409, 'peer_identity_conflict');
     const retained = t.db.get<StoredAdvertisement[]>(key, []), rows = active(t), previous = rows.find(row => row.advertisement.peerId === peerId);
     if (previous && previous.owner !== owner) throw new HttpError(409, 'peer_identity_conflict');

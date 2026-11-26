@@ -25,11 +25,17 @@ async function fresh(t: Tendril, principal: Principal): Promise<void> {
     throw new HttpError(403, 'forbidden', 'Peer invitation access is no longer active');
   identity(t, principal);
 }
+function retire(ws: WebSocket, code: number, reason: string): void {
+  // Detach before closing so a half-open or hibernated socket can never be
+  // matched ahead of its replacement listener.
+  try { ws.serializeAttachment(null); } catch {}
+  try { ws.close(code, reason); } catch {}
+}
 function active(t: Tendril): WebSocket[] {
   return t.ctx.getWebSockets('peer-invitations').filter(ws => {
     const value = attachment(ws);
     if (ws.readyState !== WebSocket.READY_STATE_OPEN || !value) return false;
-    if (!currentPrincipal(t, value.principal)) { ws.close(4003, 'Peer host access revoked'); return false; }
+    if (!currentPrincipal(t, value.principal)) { retire(ws, 4003, 'Peer host access revoked'); return false; }
     return true;
   });
 }
@@ -45,12 +51,12 @@ export async function handleInvitations(t: Tendril, req: Request, url: URL, prin
     try { peerId = validatePeerId(url.searchParams.get('peerId')); }
     catch { throw new HttpError(400, 'bad_request', 'A bounded peer identity is required'); }
     await fresh(t, principal);
-    const listeners = active(t), previous = listeners.find(ws => attachment(ws)!.peerId === peerId);
-    if (previous && attachment(previous)!.owner !== owner) throw new HttpError(409, 'peer_identity_conflict');
+    const listeners = active(t), previous = listeners.filter(ws => attachment(ws)!.peerId === peerId);
+    if (previous.some(ws => attachment(ws)!.owner !== owner)) throw new HttpError(409, 'peer_identity_conflict');
     const budget = participantIdentity(t, principal).budget;
-    if (!previous && (listeners.length >= LIMITS.listeners || listeners.filter(ws => participantIdentity(t, attachment(ws)!.principal).budget === budget).length >= LIMITS.listenersPerPrincipal))
+    if (!previous.length && (listeners.length >= LIMITS.listeners || listeners.filter(ws => participantIdentity(t, attachment(ws)!.principal).budget === budget).length >= LIMITS.listenersPerPrincipal))
       throw new HttpError(429, 'peer_listener_full', 'The bounded invitation directory is full');
-    previous?.close(1000, 'Invitation listener replaced');
+    for (const stale of previous) retire(stale, 1000, 'Invitation listener replaced');
     const [client, server] = Object.values(new WebSocketPair());
     t.ctx.acceptWebSocket(server, ['peer-invitations']);
     server.serializeAttachment({ kind: 'peer-invitations', peerId, owner, principal, window: t.now(), seen: [], pending: [] } satisfies Attachment);
@@ -69,15 +75,15 @@ export async function sendPeerInvitation(t: Tendril, principal: Principal, input
     invitation = validatePeerInvitation({ channel: input.channel, requesterPeerId: input.requesterPeerId });
     if (peerId === invitation.requesterPeerId) throw new Error('self invitation');
   } catch { throw new HttpError(400, 'bad_request', 'Expected only a target peer and bounded invitation'); }
-  const recipient = active(t).find(ws => attachment(ws)!.peerId === peerId);
+  const recipient = active(t).filter(ws => attachment(ws)!.peerId === peerId).at(-1);
   if (!recipient) throw new HttpError(404, 'peer_unavailable', 'The peer is not listening for invitations');
   const original = attachment(recipient)!;
   await fresh(t, principal);
   try { await fresh(t, original.principal); }
-  catch (error) { recipient.close(4003, 'Peer host access revoked'); throw error; }
-  const current = attachment(recipient)!;
-  identity(t, principal); identity(t, current.principal);
-  if (recipient.readyState !== WebSocket.READY_STATE_OPEN || current.peerId !== peerId || current.owner !== original.owner)
+  catch (error) { retire(recipient, 4003, 'Peer host access revoked'); throw error; }
+  const current = attachment(recipient);
+  identity(t, principal); if (current) identity(t, current.principal);
+  if (!current || recipient.readyState !== WebSocket.READY_STATE_OPEN || current.peerId !== peerId || current.owner !== original.owner)
     throw new HttpError(409, 'peer_unavailable', 'The invitation listener changed');
   const fingerprint = JSON.stringify([owner, invitation.channel, invitation.requesterPeerId]);
   const seen = t.now() - current.window < 60_000 ? current.seen : [];
@@ -90,7 +96,7 @@ export async function sendPeerInvitation(t: Tendril, principal: Principal, input
   recipient.serializeAttachment({ ...current, window: seen === current.seen ? current.window : t.now(),
     seen: [...seen, pending], pending: [...current.pending, pending] } satisfies Attachment);
   try { recipient.send(JSON.stringify({ t: 'invitation', ...invitation })); }
-  catch { recipient.close(1011, 'Invitation delivery failed'); throw new HttpError(503, 'peer_unavailable'); }
+  catch { retire(recipient, 1011, 'Invitation delivery failed'); throw new HttpError(503, 'peer_unavailable'); }
   return { invited: peerId, channel: invitation.channel };
 }
 
@@ -98,8 +104,8 @@ export async function sendPeerInvitation(t: Tendril, principal: Principal, input
 export function handleInvitationMessage(t: Tendril, ws: WebSocket, message: string | ArrayBuffer): void {
   const value = attachment(ws);
   if (!value || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
-  if (!currentPrincipal(t, value.principal)) { ws.close(4003, 'Peer host access revoked'); return; }
-  if (typeof message !== 'string' || new TextEncoder().encode(message).byteLength > LIMITS.messageBytes) { ws.close(1009, 'Invitations accept bounded acknowledgements'); return; }
+  if (!currentPrincipal(t, value.principal)) { retire(ws, 4003, 'Peer host access revoked'); return; }
+  if (typeof message !== 'string' || new TextEncoder().encode(message).byteLength > LIMITS.messageBytes) { retire(ws, 1009, 'Invitations accept bounded acknowledgements'); return; }
   try {
     const input = JSON.parse(message);
     if (!input || typeof input !== 'object' || Object.keys(input).length !== 3 || input.t !== 'received') throw new Error('frame');
@@ -107,5 +113,5 @@ export function handleInvitationMessage(t: Tendril, ws: WebSocket, message: stri
     const pending = value.pending.filter(item => item.channel !== invitation.channel || item.requesterPeerId !== invitation.requesterPeerId);
     if (pending.length === value.pending.length) throw new Error('unknown acknowledgement');
     ws.serializeAttachment({ ...value, pending });
-  } catch { ws.close(1008, 'Invalid invitation acknowledgement'); }
+  } catch { retire(ws, 1008, 'Invalid invitation acknowledgement'); }
 }

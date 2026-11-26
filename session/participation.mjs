@@ -12,15 +12,33 @@ const pause = (ms, signal) => new Promise(resolve => {
 });
 /** Optional background introductions. Local authoring and opening never wait for this controller. */
 export function participateApplication(session, { peers, openDirectConnection,
-  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, upgradeCooldownMs = 30_000, onTransport, onNotification } = {}) {
+  configuration = PEER_TRANSPORT_POLICY.configuration, directTimeoutMs = PEER_TRANSPORT_POLICY.directTimeoutMs, upgradeCooldownMs = 30_000, passiveDialDelayMs = 1500, onTransport, onNotification } = {}) {
   if (!Number.isSafeInteger(upgradeCooldownMs) || upgradeCooldownMs < 0 || upgradeCooldownMs > 600_000) throw TypeError('upgradeCooldownMs must be a bounded integer');
+  if (!Number.isSafeInteger(passiveDialDelayMs) || passiveDialDelayMs < 0 || passiveDialDelayMs > 30_000) throw TypeError('passiveDialDelayMs must be a bounded integer');
   if (typeof session?.connectPeer !== 'function' || typeof session.device?.storageId !== 'string' || !session.device.storageId || typeof openDirectConnection !== 'function') throw TypeError('Provide an owned operation-set session and RTC adapter');
   const stop = new AbortController(), signal = AbortSignal.any([stop.signal, session.signal]);
   const adapter = createPeerIntroductions({ peers, identity: session.identity.publicKey, directTimeoutMs,
     openDirectConnection: options => openDirectConnection({ ...options, configuration, timeoutMs: directTimeoutMs }),
     openRelayConnection: ({ relay, signal }) => openWebSocketConnection(relay, { ready: relay.ready, signal }), onTransport });
-  const links = new Map(), opening = new Map(), listeners = new Set(), descriptions = new Map(), introduced = new Map();
+  const links = new Map(), opening = new Map(), listeners = new Set(), descriptions = new Map(), introduced = new Map(), passiveFallbacks = new Map();
   let error = null, advertising, refreshing, dirty = false, retry, retryCount = 0, connectionRevision = 0;
+  function cancelPassiveFallback(peerId) {
+    const timer = passiveFallbacks.get(peerId);
+    if (timer !== undefined) { clearTimeout(timer); passiveFallbacks.delete(peerId); }
+  }
+  function schedulePassiveFallback(peer) {
+    if (signal.aborted || passiveDialDelayMs === 0 || passiveFallbacks.has(peer.identity) || links.has(peer.identity) || opening.has(peer.identity)) return;
+    // One-shot bounded fallback: if the lower-key dialer still thinks its old
+    // link from a crashed/reloaded tab is alive, break the 30s ICE deadlock
+    // without adding any periodic polling or idle traffic.
+    const timer = setTimeout(() => {
+      passiveFallbacks.delete(peer.identity);
+      if (signal.aborted || links.has(peer.identity) || opening.has(peer.identity) || !session.authority.grant(peer.identity)?.reader) return;
+      void connect(peer, undefined, false, true);
+    }, passiveDialDelayMs);
+    timer.unref?.();
+    passiveFallbacks.set(peer.identity, timer);
+  }
   const status = () => Object.freeze({ phase: signal.aborted ? 'closed' : links.size ? 'connected' : opening.size ? 'connecting' : 'disconnected', connectedPeers: Object.freeze([...links.keys()].sort()), connectionRevision, pendingConnections: opening.size, error });
   const changed = () => { for (const listener of listeners) { try { listener(status()); } catch {} } };
   function scheduleRetry() {
@@ -48,12 +66,13 @@ export function participateApplication(session, { peers, openDirectConnection,
     if (links.get(peerId) === stale) { links.delete(peerId); descriptions.delete(peerId); connectionRevision++; }
   }
   // `promote` asks for a direct-only path that replaces a relay link to the peer.
-  async function connect(peer, invitation, promote = false) {
+  async function connect(peer, invitation, promote = false, fallbackDial = false) {
     if (signal.aborted || peer.identity === session.identity.publicKey) return;
     // A remote's `direct:` invitation is its promotion attempt: our current link
     // stays until the direct path physically opens, and survives if it fails.
     const upgrade = promote || typeof invitation?.channel === 'string' && invitation.channel.startsWith('direct:');
     if (invitation !== undefined) {
+      cancelPassiveFallback(peer.identity);
       // A redelivered hint for the current link or attempt changes nothing.
       if ((links.has(peer.identity) || opening.has(peer.identity)) && introduced.get(peer.identity) === invitation?.channel) return;
       // A peer dials only when it holds no link or attempt to us. Its new
@@ -66,9 +85,14 @@ export function participateApplication(session, { peers, openDirectConnection,
     }
     if (opening.has(peer.identity) && invitation === undefined || links.size + opening.size >= 16) return;
     if (upgrade ? !links.has(peer.identity) || promote && descriptions.get(peer.identity)?.kind !== 'relay' : links.has(peer.identity)) return;
-    // Exactly one side proactively dials; the other always accepts its invitation.
-    // Either side may promote its own relay link after a local network change.
-    if (invitation === undefined && !promote && session.identity.publicKey > peer.identity) return;
+    // Normally one side proactively dials; the passive side waits briefly so a
+    // healthy dialer introduces once, then falls back if the dialer holds a
+    // stale dead link from a crashed/reloaded peer.
+    if (invitation === undefined && !promote && !fallbackDial && session.identity.publicKey > peer.identity) {
+      schedulePassiveFallback(peer);
+      return;
+    }
+    cancelPassiveFallback(peer.identity);
     const controller = new AbortController(), connectionSignal = AbortSignal.any([signal, controller.signal]);
     opening.set(peer.identity, controller); introduced.set(peer.identity, invitation?.channel); changed(); let connection;
     try {
@@ -142,6 +166,8 @@ export function participateApplication(session, { peers, openDirectConnection,
     let stopping = false;
     const shutdown = () => {
       if (stopping) return; stopping = true; stopAuthority(); clearTimeout(retry);
+      for (const timer of passiveFallbacks.values()) clearTimeout(timer);
+      passiveFallbacks.clear();
       for (const controller of opening.values()) controller.abort(signal.reason);
       void Promise.allSettled([...links.values()].map(link => link.close())).finally(async () => { links.clear(); descriptions.clear(); connectionRevision++; changed(); await Promise.allSettled([notifications, invitations]); resolve(); });
     };

@@ -242,3 +242,38 @@ test('a relay link is promoted to direct after a network change, and a failed pr
     await eventually(() => known(dialer).size === 1 && [...known(dialer)].every(id => known(observer).has(id)));
   } finally { stops.forEach(stop => stop()); await Promise.allSettled(controllers.map(controller => controller.close())); await Promise.allSettled(sessions.map(session => session.close())); }
 });
+
+test('a reloaded passive peer breaks the dialer zombie-link deadlock via its bounded one-shot fallback', async () => {
+  const devices = [await p.openApplicationDevice({ store: memoryStore(), create: true }), await p.openApplicationDevice({ store: memoryStore(), create: true })];
+  const { authority, key } = await authorityForDevices(devices);
+  const sessions = await Promise.all(devices.map(device => p.createApplicationSession({ device, authority, epochKeys: new Map([[0, key]]),
+    definition: p.defineApplication({ id: 'passive-reload', version: '1', commands: {}, queries: {} }) })));
+  const host = sharedHost(authority.descriptor.payload.applicationId);
+  const dialer = sessions[0].identity.publicKey < sessions[1].identity.publicKey ? 0 : 1, passive = 1 - dialer;
+  const dialerController = participateApplication(sessions[dialer], { peers: host.peersFor(sessions[dialer].identity.publicKey), directTimeoutMs: 500,
+    passiveDialDelayMs: 120, openDirectConnection: host.openDirectConnection });
+  let passiveController = participateApplication(sessions[passive], { peers: host.peersFor(sessions[passive].identity.publicKey), directTimeoutMs: 500,
+    passiveDialDelayMs: 120, openDirectConnection: host.openDirectConnection });
+  try {
+    await eventually(() => dialerController.status.connectedPeers.length === 1 && passiveController.status.connectedPeers.length === 1);
+    assert.equal(host.channels.size, 1);
+    const [first] = host.channels.values(), dialerRevision = dialerController.status.connectionRevision;
+    // Black-hole the old path before tearing down the passive peer, simulating
+    // a hard reload or crash where the dialer never receives a close frame.
+    first.path.blackhole();
+    await passiveController.close();
+    assert.equal(dialerController.status.connectedPeers.length, 1, 'Dialer still believes its stale link is alive');
+    // The passive peer reboots with the same identity and higher public key.
+    passiveController = participateApplication(sessions[passive], { peers: host.peersFor(sessions[passive].identity.publicKey), directTimeoutMs: 500,
+      passiveDialDelayMs: 120, openDirectConnection: host.openDirectConnection });
+    await eventually(() => host.channels.size === 2 && dialerController.status.connectionRevision > dialerRevision &&
+      dialerController.status.connectedPeers.length === 1 && passiveController.status.connectedPeers.length === 1, 5000);
+    const op = await sessions[passive].submit({ operationId: 'after-passive-reload', program: p.program(p.emit('reloaded', { ok: true })) });
+    await op.materialized();
+    const known = index => new Set(sessions[index].exportFacts().envelopes.map(envelope => envelope.payload.proposalId));
+    await eventually(() => [...known(passive)].every(id => known(dialer).has(id)));
+  } finally {
+    await Promise.allSettled([dialerController.close(), passiveController.close()]);
+    await Promise.allSettled(sessions.map(session => session.close()));
+  }
+});

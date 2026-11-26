@@ -214,16 +214,30 @@ export async function openBrowserOwner(options) {
     handoffChannel?.close();
     globalThis.removeEventListener?.('pagehide', onPageHide);
     options.signal?.removeEventListener('abort', onExternalAbort);
+    // Close active RTCPeerConnections synchronously before any await so page
+    // unload emits SCTP ABORT / DTLS close_notify instead of stranding peers.
+    try { rtcHost?.closeNow(); } catch { /* Best-effort synchronous RTC close. */ }
     lifetime.abort(reason ?? new Error('TAB_DETACHED'));
+    let retirePosted = false;
+    const postRetire = () => {
+      if (!worker || retirePosted) return null;
+      retirePosted = true;
+      const id = crypto.randomUUID();
+      try { worker.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'retire', id, profileId: options.profileId }); } catch { return null; }
+      return id;
+    };
+    const unload = reason?.message === 'PAGE_UNLOAD';
+    const retireId = unload ? postRetire() : null;
     releasing = (async () => {
       try { await rtcHost?.close(); } catch { /* Best-effort RTC cleanup. */ }
       try { appEndpoint?.close(); } catch { /* Best-effort port cleanup. */ }
       if (worker) {
         try {
-          const id = crypto.randomUUID();
-          const retired = waitForWorker(worker, data => data.type === 'retired' && data.id === id, { timeoutMs: 2000 });
-          worker.postMessage({ protocol: TAB_OWNER_PROTOCOL, type: 'retire', id, profileId: options.profileId });
-          await retired;
+          const id = retireId ?? postRetire();
+          if (id) {
+            const retired = waitForWorker(worker, data => data.type === 'retired' && data.id === id, { timeoutMs: 2000 });
+            await retired;
+          }
         } catch { /* Terminate unconditionally if worker is busy/closing. */ }
         worker.terminate();
       }
@@ -232,7 +246,13 @@ export async function openBrowserOwner(options) {
     return releasing;
   };
 
-  const onPageHide = event => { if (!event.persisted) void release(new Error('PAGE_UNLOAD')); };
+  const onPageHide = event => {
+    if (event.persisted) return;
+    // Even if app code called detach() earlier in pagehide, close RTC links
+    // synchronously right now rather than waiting for an async Worker RPC.
+    try { rtcHost?.closeNow(); } catch { /* Best-effort synchronous RTC close. */ }
+    void release(new Error('PAGE_UNLOAD'));
+  };
   const onExternalAbort = () => { void release(options.signal.reason); };
 
   try {

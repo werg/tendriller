@@ -53,12 +53,30 @@ export function createTabRtcEndpoint(port, { signal } = {}) {
   return endpoint;
 }
 
-/** Tab-side 1:1 RTC host: returns the WorkerWebRtcServer (getPeer, peers, onPeer, close). */
+/** Tab-side 1:1 RTC host: returns the WorkerWebRtcServer (getPeer, peers, onPeer, closeNow, close). */
 export function startTabRtcHost(port, { signal, createPeerConnection, onNetworkChange } = {}) {
   const endpoint = createTabRtcEndpoint(port, { signal });
+  const liveConnections = new Set();
+  const baseCreatePeerConnection = createPeerConnection ?? (config => new globalThis.RTCPeerConnection(config));
+  const trackedCreatePeerConnection = config => {
+    const pc = baseCreatePeerConnection(config);
+    if (pc && typeof pc.close === 'function') {
+      liveConnections.add(pc);
+      const forget = () => {
+        if (pc.connectionState === 'closed' || pc.signalingState === 'closed') {
+          liveConnections.delete(pc);
+          pc.removeEventListener?.('connectionstatechange', forget);
+          pc.removeEventListener?.('signalingstatechange', forget);
+        }
+      };
+      pc.addEventListener?.('connectionstatechange', forget);
+      pc.addEventListener?.('signalingstatechange', forget);
+    }
+    return pc;
+  };
   const server = serveWorkerWebRtcConnections(endpoint, {
     signal,
-    ...(createPeerConnection ? { createPeerConnection } : {}),
+    createPeerConnection: trackedCreatePeerConnection,
   });
   const notifyNetwork = () => {
     if (signal?.aborted) return;
@@ -72,14 +90,22 @@ export function startTabRtcHost(port, { signal, createPeerConnection, onNetworkC
     for (const name of ['online', 'pageshow']) globalThis.removeEventListener?.(name, notifyNetwork);
     network?.removeEventListener?.('change', notifyNetwork);
   };
-  signal?.addEventListener('abort', cleanupListeners, { once: true });
+  const closeNow = () => {
+    cleanupListeners();
+    endpoint.close();
+    for (const pc of liveConnections) {
+      try { pc.close(); } catch { /* Best-effort synchronous unload close. */ }
+    }
+    liveConnections.clear();
+  };
+  signal?.addEventListener('abort', closeNow, { once: true });
   return Object.freeze({
     getPeer: peerId => server.getPeer(peerId),
     peers: () => server.peers(),
     onPeer: listener => server.onPeer(listener),
+    closeNow,
     async close() {
-      cleanupListeners();
-      endpoint.close();
+      closeNow();
       await server.close();
     },
   });
