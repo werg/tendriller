@@ -9,8 +9,7 @@ import type { Tendril } from '../tendril';
 import type { PagePrincipal } from '../access';
 import { allows } from '../access';
 import { addActivity } from '../activity';
-import { selectedApplication } from '../application';
-import { readControlState, type MaterializedControlState } from '../authority';
+import { activeChainId, readControlState, type MaterializedControlState } from '../authority';
 import { notifyDiscoveryWatchers } from '../discovery';
 import { HttpError, isPlainObject, json, readJson } from '../http';
 import { TENDRIL_ID_RE } from '../ids';
@@ -212,8 +211,8 @@ export async function validateSignedGroupPolicy(
     throw new HttpError(403, 'administrator_required', 'Group policy must be signed by a current page administrator');
   }
   const p = signed.payload;
-  const app = selectedApplication(t);
-  if (p.pageId !== t.tid || p.applicationId !== app.id) {
+  const appId = activeChainId(t);
+  if (p.pageId !== t.tid || p.applicationId !== appId) {
     throw new HttpError(409, 'group_policy_scope_mismatch', 'Group policy pageId or applicationId does not match this page');
   }
   if (!Number.isSafeInteger(p.revision) || p.revision < 0 || !Array.isArray(p.rules) || p.rules.length > 32) {
@@ -267,7 +266,7 @@ export async function maybeSignGroupAttestation(
   const now = t.now();
   const signed = await signRecord(GROUP_ATTESTATION_DOMAIN, {
     pageId: t.tid,
-    applicationId: selectedApplication(t).id,
+    applicationId: activeChainId(t),
     accountId: input.accountId,
     publicKey: input.publicKey,
     wrapKey: input.wrapKey,
@@ -365,7 +364,7 @@ export async function enforceOrgDepartureOnPage(
       const observedAbsentAt = input.observedAbsentAt ?? t.now();
       const existing = t.db.get<Record<string, Signed<OrgDeparturePayload>>>('org_departures', {});
       const nextMap = { ...existing };
-      const appId = selectedApplication(t).id;
+      const appId = activeChainId(t);
       for (const publicKey of targetKeys) {
         const dep = await signRecord(ORG_DEPARTURE_DOMAIN, {
           pageId: t.tid,

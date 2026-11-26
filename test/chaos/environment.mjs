@@ -25,6 +25,7 @@ const execute = promisify(execFile);
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const jsonFile = async path => JSON.parse(await readFile(path, 'utf8'));
 export const PAGE_SLUGS = Object.freeze(['notes', 'journal', 'diary', 'ledger']);
+export const SQL_PAGE_SLUGS = Object.freeze(['inventory', 'warehouse', 'depot', 'stock']);
 export const uiMarker = version => `chaos-ui-v${version}`;
 
 let dispatcherInstalled;
@@ -48,8 +49,10 @@ async function run(command, args, options = {}) {
 // program is then started while those tabs stay online, the owner browser admits
 // the agent from its signed host grant and wraps the page keys to it (no copied
 // artifacts), every page is verified open and authoring, then it is stopped cleanly.
-export async function prepareGolden({ root, firstAppArchive, directory, port, pages: pageCount = 2, log = console.log }) {
-  const profile = 'events', profileSpec = FIRST_APP_PROFILES[profile];
+export async function prepareGolden({ root, firstAppArchive, directory, port, pages: pageCount = 2, profile = 'events', log = console.log }) {
+  const profileSpec = FIRST_APP_PROFILES[profile];
+  if (!profileSpec) throw Error(`Unsupported chaos profile: ${profile}`);
+  const isSql = profile === 'sql';
   const version = (await jsonFile(join(root, 'package.json'))).version;
   const proof = await jsonFile(join(root, 'dist/provenance.json'));
   const toolsProof = await jsonFile(join(root, 'dist/tools-manifest.json'));
@@ -59,11 +62,13 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
     assert.equal(sha256(await readFile(join(root, 'dist', artifact.file))), artifact.sha256, `Archive changed: ${artifact.file}`);
   const archive = resolve(firstAppArchive);
   const kitProfile = JSON.parse(await run('tar', ['-xOf', archive, 'first-app-profile.json']));
-  assert.deepEqual(kitProfile, { profile, ...profileSpec }, 'The chaos harness needs the events (notes) first-app kit.');
+  assert.deepEqual(kitProfile, { profile, ...profileSpec }, `The chaos harness needs the ${profile} first-app kit.`);
   const release = await jsonFile(join(root, 'dist/manifest.json'));
-  const record = release.artifacts.find(item => item.role === 'first-app' && item.file === release.first_app?.file);
-  assert.ok(record, 'The release manifest must bind the first-app archive.');
-  assert.equal(release.first_app.profile, profile); assert.deepEqual(release.first_app.packages, profileSpec.packages);
+  const kitManifest = isSql ? release.first_apps?.sql : release.first_app;
+  const role = isSql ? 'first-app-sql' : 'first-app';
+  const record = release.artifacts.find(item => item.role === role && item.file === kitManifest?.file);
+  assert.ok(record, `The release manifest must bind the ${profile} first-app archive.`);
+  assert.equal(kitManifest.profile, profile); assert.deepEqual(kitManifest.packages, profileSpec.packages);
   assert.equal(sha256(await readFile(archive)), record.sha256, 'The first-app archive must match the release manifest (rebuild artifacts).');
   const composition = JSON.parse(await run('tar', ['-xOf', archive, 'composition.json']));
   assert.deepEqual(composition.profiles?.[profile], profileSpec);
@@ -132,9 +137,11 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
     await tendril(['workspace', 'init', '--service', SERVICE, '--owner', FIXTURE_OWNER.email, '--handle', 'chaos']);
     const workspaceFile = await jsonFile(join(app, 'tendriller.json'));
     const pages = {};
-    for (const slug of PAGE_SLUGS.slice(0, pageCount)) {
-      log(`chaos setup: create, prepare and publish page ${slug} v1 (before any browser key)`);
-      const created = await setup(['new', slug, '--template', 'notes', '--name', `Chaos ${slug}`]);
+    const templateName = isSql ? 'inventory' : 'notes';
+    const slugs = (isSql ? SQL_PAGE_SLUGS : PAGE_SLUGS).slice(0, pageCount);
+    for (const slug of slugs) {
+      log(`chaos setup: create, prepare and publish page ${slug} v1 (${templateName}, before any browser key)`);
+      const created = await setup(['new', slug, '--template', templateName, '--name', `Chaos ${slug}`]);
       await setup(['init', slug, '--browser-first']);
       const prepared = await jsonFile(join(app, '.tendriller/pages', created.id, 'prepared.json'));
       // The build copies the page's index.html; mark it so v1 is an observable version.
@@ -159,7 +166,13 @@ export async function prepareGolden({ root, firstAppArchive, directory, port, pa
       tab.on('requestfailed', request => { if (messages.length < 40) messages.push(`requestfailed: ${request.url()} ${request.failure()?.errorText}`); });
       try {
       await tab.goto(page.page_url, { timeout: 60_000 });
-      await waitFor(() => tab.locator('#submit').isEnabled(), Boolean, 60_000, `owner browser ready on ${page.slug}`);
+      if (isSql) {
+        await waitFor(() => tab.locator('#initialize').isEnabled(), Boolean, 60_000, `owner browser ready on ${page.slug}`);
+        await tab.locator('#initialize').click();
+        await waitFor(() => tab.locator('#summary').textContent(), text => /2 bins/.test(text ?? ''), 60_000, `initial SQL tables materialized on ${page.slug}`);
+      } else {
+        await waitFor(() => tab.locator('#submit').isEnabled(), Boolean, 60_000, `owner browser ready on ${page.slug}`);
+      }
       page.ownerDeviceId = await tab.locator('#public-key').inputValue();
       } catch (error) { log(`chaos setup: owner tab diagnostics ${page.slug}: url=${tab.url()} hasRuntime=${await tab.evaluate(() => Boolean(window.tendril)).catch(e => e.message)} hasConfig=${await tab.evaluate(() => Boolean(window.__TENDRIL__)).catch(e => e.message)}\n${messages.join('\n')}`); throw error; }
     }

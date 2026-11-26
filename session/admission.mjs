@@ -56,22 +56,81 @@ function policyGrant(input) {
   return { reader: value.reader, writer: value.writer, administrator: value.administrator };
 }
 
+function buildAuthorityTopic(authority, identity, wrapKey) {
+  if (!authority || authority.mode === 'attested') return null;
+  if (authority.mode === 'multisig') {
+    const rawSigners = Array.isArray(authority.signers) ? authority.signers : [];
+    const signers = [...new Set([identity.publicKey, ...rawSigners])];
+    for (const s of signers) {
+      if (!HEX.test(s ?? '')) throw failure('AUTHORITY_SIGNER_INVALID', `Invalid multisig signer key: ${s}`);
+    }
+    const threshold = authority.threshold ?? Math.min(2, signers.length);
+    if (!Number.isSafeInteger(threshold) || threshold < 1 || threshold > signers.length) {
+      throw failure('AUTHORITY_THRESHOLD_INVALID', `Multisig threshold must be between 1 and ${signers.length}.`);
+    }
+    return {
+      topic: {
+        module: 'chronolog/permissions',
+        export: 'multisigMembers',
+        initialState: {
+          signers,
+          threshold,
+          members: [{
+            publicKey: identity.publicKey,
+            wrapKey,
+            reader: true,
+            writer: true,
+            administrator: true,
+            publisher: true,
+            finalizer: true,
+          }],
+          proposals: {},
+          admission: null,
+        },
+      },
+      privateChainDefault: true,
+    };
+  }
+  if (authority.mode === 'open') {
+    return {
+      topic: {
+        module: 'chronolog/permissions',
+        export: 'openMembers',
+        initialState: {
+          admins: [identity.publicKey],
+          members: [],
+          openRead: authority.openRead !== false,
+          openWrite: authority.openWrite !== false,
+          admission: null,
+        },
+      },
+      privateChainDefault: false,
+    };
+  }
+  throw failure('AUTHORITY_MODE_INVALID', 'Choose authority mode attested, multisig, or open.');
+}
+
 /**
  * Create a Chronolog v2 GenesisBlock for a Tendriller page.
  * By default pins the host attestation key, owner admission accounts, and default owner-device
- * grant inside `$permissions.admission`. Pass `admission: null` or supply a custom
- * `topics.$permissions` reducer (e.g. `multisigMembers` or `openMembers`) to opt out of
- * host-attested admission completely.
+ * grant inside `$permissions.admission`. Pass `authority: { mode: 'multisig' | 'open', ... }`,
+ * `admission: null`, or a custom `topics.$permissions` reducer to opt out of host-attested
+ * admission completely.
  */
 export async function createPageGenesis({
   identity, wrapKey, hostKey, accounts = [], mode = 'attested', ownerGrant = DEFAULT_OWNER_GRANT,
-  admission = undefined, privateChain = true, imports, topics, finalitySchedule, frozenReducers, salt,
+  authority = undefined, admission = undefined, privateChain = undefined, imports, topics, finalitySchedule, frozenReducers, salt,
 }) {
-  const customPerms = Boolean(topics && Object.hasOwn(topics, '$permissions'));
-  const hostAttested = admission !== null && !customPerms;
   if (!HEX.test(identity?.publicKey ?? '') || !HEX.test(wrapKey ?? '')) {
     throw failure('GENESIS_INPUT_INVALID');
   }
+  const builtAuthority = buildAuthorityTopic(authority, identity, wrapKey);
+  const resolvedTopics = builtAuthority && !(topics && Object.hasOwn(topics, '$permissions'))
+    ? { ...(topics ?? {}), $permissions: builtAuthority.topic }
+    : topics;
+  const resolvedPrivateChain = privateChain ?? builtAuthority?.privateChainDefault ?? true;
+  const customPerms = Boolean(resolvedTopics && Object.hasOwn(resolvedTopics, '$permissions'));
+  const hostAttested = admission !== null && !customPerms;
   if (hostAttested && !HEX.test(hostKey ?? '')) {
     throw failure('GENESIS_INPUT_INVALID');
   }
@@ -86,10 +145,10 @@ export async function createPageGenesis({
       publisher: true,
       finalizer: true,
     },
-    privateChain,
+    privateChain: resolvedPrivateChain,
     ...(hostAttested ? { hostPublicKey: hostKey } : {}),
     imports,
-    topics,
+    topics: resolvedTopics,
     finalitySchedule,
     frozenReducers,
     salt,
@@ -127,7 +186,7 @@ export async function createPageGenesis({
  * retries after an uncertain network reply resend the exact same bytes.
  */
 export async function openPageGenesis({
-  store, identity, wrapKey, peers, applicationId, create = true, ownerGrant, imports, topics, privateChain = true, finalitySchedule, signal,
+  store, identity, wrapKey, peers, applicationId, create = true, ownerGrant, authority, imports, topics, privateChain, finalitySchedule, signal,
 }) {
   const readCachedIntent = async (...keys) => {
     for (const k of keys) {
@@ -188,6 +247,7 @@ export async function openPageGenesis({
       hostKey: metadata.hostAttestationKey,
       accounts: metadata.admissionAccounts,
       ownerGrant,
+      authority,
       imports,
       topics,
       privateChain,
@@ -272,7 +332,8 @@ export function createAdmission(session, {
   let wasMember = session.isMember(identity.publicKey);
   let known = new Set((session.permissions().members ?? []).map(m => m.publicKey));
   let seenPending = new Set();
-  let notices = [], pending = [], lastError = null;
+  let seenRejected = new Set();
+  let notices = [], pending = [], lastError = null, lastReportedError = null;
   let state = snapshot();
 
   function snapshot() {
@@ -379,13 +440,29 @@ export function createAdmission(session, {
     }
   }
 
-  async function classify(item) {
-    const value = decode(item);
+  async function classify(item, { reportRejected = false } = {}) {
+    let value;
+    try { value = decode(item); } catch {
+      return reportRejected ? { rejected: true, reason: 'attestation_malformed', publicKey: '', label: null, subject: 'device' } : null;
+    }
+    const payload = value?.payload;
+    const pk = typeof payload?.publicKey === 'string' ? payload.publicKey : '';
+    const label = typeof payload?.label === 'string' ? payload.label : null;
+    const subj = payload?.subject === 'agent' ? 'agent' : 'device';
     const perms = session.permissions();
     const hostKey = perms.admission?.hostKey;
-    if (!hostKey || !await verifyHostAttestationV2(value, hostKey)) return null;
-    const payload = value.payload;
-    if (!payload || payload.applicationId !== applicationId || now() >= payload.expiresAt) return null;
+    if (!hostKey) {
+      return reportRejected ? { rejected: true, reason: 'host_key_missing', publicKey: pk, label, subject: subj } : null;
+    }
+    if (!await verifyHostAttestationV2(value, hostKey)) {
+      return reportRejected ? { rejected: true, reason: 'attestation_signature_invalid', publicKey: pk, label, subject: subj } : null;
+    }
+    if (!payload || payload.applicationId !== applicationId) {
+      return reportRejected ? { rejected: true, reason: 'application_id_mismatch', publicKey: pk, label, subject: subj } : null;
+    }
+    if (now() >= payload.expiresAt) {
+      return reportRejected ? { rejected: true, reason: 'attestation_expired', publicKey: pk, label, subject: subj } : null;
+    }
     if (perms.members.some(m => m.publicKey === payload.publicKey)) return null;
     const removed = perms.admission?.removed ?? [];
     if (removed.includes(payload.publicKey)) {
@@ -416,8 +493,19 @@ export function createAdmission(session, {
     const result = await peers.admissions({ signal: lifetime.signal });
     const classified = [];
     for (const item of result.pending ?? []) {
-      const entry = await classify(item).catch(() => null);
-      if (entry) classified.push(entry);
+      const entry = await classify(item, { reportRejected: true }).catch(error => ({
+        rejected: true, reason: codeOf(error), publicKey: '', label: null, subject: 'device',
+      }));
+      if (!entry) continue;
+      if (entry.rejected) {
+        const dedup = `${entry.publicKey}:${entry.reason}`;
+        if (!seenRejected.has(dedup)) {
+          seenRejected.add(dedup);
+          notice({ kind: 'rejected', publicKey: entry.publicKey, label: entry.label, subject: entry.subject, reason: entry.reason });
+        }
+        continue;
+      }
+      classified.push(entry);
     }
     pending = classified.filter(e => e.via === null).map(e => Object.freeze({
       publicKey: e.payload.publicKey,
@@ -553,8 +641,15 @@ export function createAdmission(session, {
         await adminDuties();
       }
       lastError = null;
+      lastReportedError = null;
     } catch (error) {
-      if (!lifetime.signal.aborted) lastError = codeOf(error);
+      if (!lifetime.signal.aborted) {
+        lastError = codeOf(error);
+        if (lastError !== lastReportedError) {
+          lastReportedError = lastError;
+          notice({ kind: 'error', publicKey: identity.publicKey, error: lastError });
+        }
+      }
     }
     observeMembership();
     emit();

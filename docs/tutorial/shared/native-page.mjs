@@ -105,7 +105,7 @@ export async function openNativePage(context, { definition, imports, topics, ass
       store: device.store,
       subject: 'agent',
       ...(onEpochRotated ? { onEpochRotated } : {}),
-      onEvent: notice => context.report({ admission: notice.kind, publicKey: notice.publicKey, label: notice.label ?? null, ...(notice.reason ? { reason: notice.reason } : {}) }),
+      onEvent: notice => context.report({ admission: notice.kind, publicKey: notice.publicKey, label: notice.label ?? null, ...(notice.reason ? { reason: notice.reason } : {}), ...(notice.error ? { error: notice.error } : {}) }),
     });
     let phase;
     admission.subscribe(state => { if (state.phase !== phase) { phase = state.phase; context.report({ admission: 'phase', phase }); } });

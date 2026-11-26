@@ -416,3 +416,61 @@ test('an unclaimed page pins the intended owner email and admits that account’
     await until(() => browser.admission.state.phase === 'admitted', 'owner by email admitted');
   } finally { await w.close(); }
 });
+
+test('createPageGenesis supports pluggable multisig and open authority modes without host attestation', async () => {
+  const { createPageGenesis } = await import('../../session/admission.mjs');
+  const creator = await createSigningIdentity();
+  const peer2 = await createSigningIdentity();
+  const wrap = await (await import('@chronolog/peer-session')).createWrapKeyPair();
+
+  const ms = await createPageGenesis({
+    identity: creator,
+    wrapKey: wrap.publicKey,
+    authority: { mode: 'multisig', signers: [peer2.publicKey], threshold: 2 },
+  });
+  assert.equal(ms.genesis.privateChain, true);
+  assert.equal(ms.genesis.initialTopics.$reducers.topics.$permissions.export, 'multisigMembers');
+  assert.equal(ms.genesis.initialTopics.$permissions.threshold, 2);
+  assert.deepEqual(ms.genesis.initialTopics.$permissions.signers, [creator.publicKey, peer2.publicKey]);
+  assert.equal(ms.genesis.initialTopics.$permissions.admission, null);
+
+  const open = await createPageGenesis({
+    identity: creator,
+    wrapKey: wrap.publicKey,
+    authority: { mode: 'open' },
+  });
+  assert.equal(open.genesis.privateChain, false);
+  assert.equal(open.genesis.initialTopics.$reducers.topics.$permissions.export, 'openMembers');
+  assert.equal(open.genesis.initialTopics.$permissions.openWrite, true);
+  assert.equal(open.genesis.initialTopics.$permissions.admission, null);
+});
+
+test('admission surfaces a rejected notice when a pending attestation fails host-key verification', async () => {
+  const w = await world();
+  try {
+    const admin = await w.participant({ principal: owner });
+    const rogue = await createSigningIdentity();
+    const rogueAtt = await (await import('@chronolog/authority')).signHostAttestationV2({
+      subject: 'device',
+      pageId: 'test',
+      applicationId: admin.session.chainId,
+      accountId: 'acct_owner',
+      email: 'owner@example.test',
+      publicKey: rogue.publicKey,
+      wrapKey: 'ab'.repeat(32),
+      label: 'Bad-host device',
+      inviteId: null,
+      issuedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+      nonce: '00'.repeat(32),
+    }, rogue);
+    const { authorityRecord } = await import('../../contract/authority.mjs');
+    const { encodeRecord } = await import('@chronolog/authority');
+    w.host.state.pending.set(rogue.publicKey, authorityRecord(encodeRecord(rogueAtt)));
+    await admin.admission.refresh();
+    assert.ok(
+      admin.admission.state.notices.some(n => n.kind === 'rejected' && n.publicKey === rogue.publicKey && n.reason === 'attestation_signature_invalid'),
+      'rejected notice must surface host-key signature mismatch',
+    );
+  } finally { await w.close(); }
+});

@@ -18,13 +18,20 @@ export interface CreatedPageGenesis {
   readonly epoch0Key?: Uint8Array;
 }
 
+export type PageAuthorityConfig =
+  | { readonly mode: 'attested' }
+  | { readonly mode: 'multisig'; readonly signers?: readonly string[]; readonly threshold?: number }
+  | { readonly mode: 'open'; readonly openRead?: boolean; readonly openWrite?: boolean };
+
 export declare function createPageGenesis(options: {
   readonly identity: SigningIdentity;
   readonly wrapKey: string;
-  readonly hostKey: string;
+  readonly hostKey?: string;
   readonly accounts?: readonly string[];
   readonly mode?: 'attested' | 'strict';
   readonly ownerGrant?: OwnerGrant | 'reader' | 'writer' | 'admin';
+  readonly authority?: PageAuthorityConfig;
+  readonly admission?: null;
   readonly privateChain?: boolean;
   readonly imports?: Readonly<Record<string, string>>;
   readonly topics?: Readonly<Record<string, ChainTopicSeed>>;
@@ -41,6 +48,7 @@ export declare function openPageGenesis(options: {
   readonly applicationId?: string;
   readonly create?: boolean;
   readonly ownerGrant?: OwnerGrant | 'reader' | 'writer' | 'admin';
+  readonly authority?: PageAuthorityConfig;
   readonly imports?: Readonly<Record<string, string>>;
   readonly topics?: Readonly<Record<string, ChainTopicSeed>>;
   readonly privateChain?: boolean;

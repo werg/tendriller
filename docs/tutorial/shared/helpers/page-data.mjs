@@ -3,7 +3,7 @@
 // `$publications`, and the host attestation key) and epoch 0 key before any browser exists.
 import { openPageGenesis } from '@tendriller/core/admission';
 
-export async function initializePageData(context, { imports, topics, browserFirst = false, ownerGrant, privateChain = true, finalitySchedule } = {}) {
+export async function initializePageData(context, { imports, topics, browserFirst = false, ownerGrant, authority, privateChain, finalitySchedule } = {}) {
   const marker = { applicationId: context.page.applicationId, publicKey: context.signer.publicKey, creator: browserFirst ? 'browser' : 'agent' };
   const existing = await context.readPrivate('initialized.json', true);
   if (existing && JSON.stringify({ ...existing, creator: marker.creator }) !== JSON.stringify(marker)) {
@@ -22,7 +22,8 @@ export async function initializePageData(context, { imports, topics, browserFirs
         applicationId: context.page.applicationId,
         imports,
         topics,
-        privateChain,
+        ...(privateChain === undefined ? {} : { privateChain }),
+        ...(authority === undefined ? {} : { authority }),
         finalitySchedule,
         create: !browserFirst,
         ...(ownerGrant === undefined ? {} : { ownerGrant }),

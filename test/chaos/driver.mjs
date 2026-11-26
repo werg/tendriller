@@ -11,11 +11,12 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 // `Local signing and storage ready · N connected peers · database X`, and #count
 // reports the rendered live materialized snapshot (`… · local snapshot <digest> · revisable`,
 // or `— not current` when the live view failed). There is no #data-status/#peer-status.
-const AUTHOR_READY = /^Local signing and storage ready · /;
-export const CONNECTED = /^Local signing and storage ready · [1-9]\d* connected peers/;
-const SNAPSHOT_CURRENT = /local snapshot [0-9a-f]{12} · revisable/;
+const AUTHOR_READY = /^Local signing(?: and |\/)storage ready · /;
+export const CONNECTED = /^Local signing(?: and |\/)storage ready · [1-9]\d* (?:connected )?peers/;
+const SNAPSHOT_CURRENT = /local snapshot [0-9a-f]{12} (?:· revisable|\(revisable\))/;
 /** Heal liveness: local author+storage ready, at least one connected peer, and a current rendered snapshot. */
 export const isConnectedAndReady = view => !view.error && CONNECTED.test(view.peer ?? '') && SNAPSHOT_CURRENT.test(view.data ?? '') && !view.viewError;
+const isSqlWorld = world => world?.golden?.profile === 'sql';
 
 export async function poll(read, done, { timeoutMs, intervalMs = 250 }) {
   const deadline = Date.now() + timeoutMs;
@@ -44,11 +45,17 @@ export function watchPage(runtime, page, label) {
   page.on('crash', () => runtime.messages.push({ type: 'pageerror', text: 'PAGE_CRASHED', tab: label, step: runtime.step, at: new Date().toISOString() }));
 }
 
-const readyState = page => page.evaluate(() => ({
-  connection: document.getElementById('connection-status')?.textContent ?? null,
-  count: document.getElementById('count')?.textContent ?? null,
-  submit: document.getElementById('submit') ? !document.getElementById('submit').disabled : null,
-  submission: document.getElementById('submission-status')?.textContent ?? null }));
+const readyState = page => page.evaluate(() => {
+  const isSql = Boolean(document.getElementById('session-status'));
+  return {
+    connection: (isSql ? document.getElementById('session-status') : document.getElementById('connection-status'))?.textContent ?? null,
+    count: (isSql ? document.getElementById('summary') : document.getElementById('count'))?.textContent ?? null,
+    submit: isSql
+      ? Boolean(document.querySelector('#bin-form button[value="add"]') && !document.querySelector('#bin-form button[value="add"]').disabled)
+      : (document.getElementById('submit') ? !document.getElementById('submit').disabled : null),
+    submission: document.getElementById('submission-status')?.textContent ?? null,
+  };
+});
 
 /** Ready = this device can author locally and its live view rendered a current snapshot (no peer requirement). */
 export async function waitReady(page, timeoutMs = 60_000) {
@@ -75,8 +82,9 @@ async function recordDevice(runtime, page, profileId, slug) {
 async function admitFromOnlineMember(world, runtime, page, slug) {
   const started = Date.now();
   const recipientKey = await page.locator('#public-key').inputValue();
+  const submitSelector = isSqlWorld(world) ? '#bin-form button[value="add"]' : '#submit';
   let via = 'online-member';
-  const admitted = await poll(() => page.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 20_000 });
+  const admitted = await poll(() => page.locator(submitSelector).isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 20_000 });
   if (!admitted.ok) {
     via = 'owner-profile';
     const owner = await launchProfile(world, OWNER_PROFILE, { trace: false });
@@ -84,9 +92,9 @@ async function admitFromOnlineMember(world, runtime, page, slug) {
       const member = owner.pages()[0] ?? await owner.newPage();
       watchPage(runtime, member, `${OWNER_PROFILE}/${slug}`);
       await member.goto(pageUrl(world, slug), { timeout: 60_000 });
-      const ready = await poll(() => member.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 60_000 });
+      const ready = await poll(() => member.locator(submitSelector).isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 60_000 });
       if (!ready.ok) throw Error(`Owner device not ready to admit on ${slug}: ${JSON.stringify(await readyState(member).catch(error => error.message))}`);
-      const enabled = await poll(() => page.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 60_000 });
+      const enabled = await poll(() => page.locator(submitSelector).isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 60_000 });
       if (!enabled.ok) throw Error(`Automatic admission did not enable Save on ${slug}: ${await page.locator('#devices').textContent().catch(() => '')}`);
     } finally { await owner.close().catch(() => {}); }
   }
@@ -154,6 +162,31 @@ export const EXECUTORS = {
 
   async 'browser.addNote'(world, runtime, params) {
     const page = tabPage(runtime, params.profile, params.tab);
+    if (isSqlWorld(world)) {
+      const addBtn = page.locator('#bin-form button[value="add"]');
+      const enabled = await poll(() => addBtn.isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 20_000 });
+      if (!enabled.ok) return { skipped: 'submit-disabled', submission: await page.locator('#submission-status').textContent().catch(() => null) };
+      const before = await page.locator('#op-id').inputValue();
+      const binId = params.token;
+      const units = String((params.n % 99) + 1);
+      await page.locator('#bin-id').fill(binId);
+      await page.locator('#bin-units').fill(units);
+      await addBtn.click();
+      const storedOperation = id => page.evaluate(async id => {
+        const operation = await window.tendril.application.backend.operations.get(id);
+        return operation ? (await operation.inspect()).stored === true : false;
+      }, id).catch(() => false);
+      const settled = await poll(async () => ({
+        id: await page.locator('#op-id').inputValue(),
+        status: await page.locator('#result').textContent(),
+      }), value => value.id && value.id !== before && /^[0-9a-f-]{36}$/.test(value.id) && (value.status ?? '').includes(value.id)
+        && (/Stored locally: (true|false)/.test(value.status ?? '') || /Inspect or retry/.test(value.status ?? '')), { timeoutMs: 30_000 });
+      const { id, status } = settled.value;
+      const operationId = id && id !== before ? id : null;
+      const shown = Boolean(operationId) && (status ?? '').includes('Stored locally: true');
+      const saved = shown || (Boolean(operationId) && await storedOperation(operationId));
+      return { operationId, saved, savedShown: shown, retained: binId, retainedLength: binId.length, typedLength: binId.length, status: status?.slice(0, 300), settled: settled.ok };
+    }
     const enabled = await poll(() => page.locator('#submit').isEnabled({ timeout: 2_000 }), value => value === true, { timeoutMs: 20_000 });
     if (!enabled.ok) return { skipped: 'submit-disabled', submission: await page.locator('#submission-status').textContent().catch(() => null) };
     const before = await page.locator('#operation-id').inputValue();
@@ -191,13 +224,15 @@ export const EXECUTORS = {
 
   async 'browser.draftReload'(world, runtime, params) {
     const page = tabPage(runtime, params.profile, params.tab);
-    await page.locator('#note').fill(params.text);
+    const field = isSqlWorld(world) ? '#bin-id' : '#note';
+    const draftText = isSqlWorld(world) ? params.text.replace(/\s+/g, ' ').slice(0, 100) : params.text;
+    await page.locator(field).fill(draftText);
     await sleep(100);
     await page.reload({ timeout: 60_000 });
-    const kept = await poll(() => page.locator('#note').inputValue({ timeout: 2_000 }), value => value === params.text, { timeoutMs: 20_000 });
+    const kept = await poll(() => page.locator(field).inputValue({ timeout: 2_000 }), value => value === draftText, { timeoutMs: 20_000 });
     const ready = await waitReady(page, 60_000).then(() => true, error => error.message);
     return { kept: kept.ok, ready, violations: kept.ok ? [] : [{ invariant: 'draft-survives-reload', profile: params.profile, tab: params.tab, slug: params.slug,
-      expected: params.text.slice(0, 120), actual: typeof kept.value === 'string' ? kept.value.slice(0, 120) : kept.value }] };
+      expected: draftText.slice(0, 120), actual: typeof kept.value === 'string' ? kept.value.slice(0, 120) : kept.value }] };
   },
 
   async 'browser.reload'(world, runtime, params) {
@@ -270,6 +305,11 @@ export const EXECUTORS = {
 
   async 'agent.command'(world, runtime, params) {
     try {
+      if (isSqlWorld(world)) {
+        const reply = await world.tendril(['--page', params.slug, 'command', 'addBin', JSON.stringify({ id: params.token, units: (params.n % 99) + 1 }),
+          '--operation', params.operation, '--wait', 'materialized'], { timeoutMs: 60_000 });
+        return { outcome: reply.materialized?.outcome ?? null, stored: reply.stored ?? null, operationId: reply.operationId ?? null, proposalId: reply.proposalId ?? null, retained: params.token };
+      }
       // Candidate notes domain: putNote with a fresh stable note id (the old addNote created a new note).
       const reply = await world.tendril(['--page', params.slug, 'command', 'putNote', JSON.stringify({ noteId: params.operation, text: params.text }),
         '--operation', params.operation, '--wait', 'materialized'], { timeoutMs: 60_000 });
@@ -329,10 +369,22 @@ export const EXECUTORS = {
  * label is actually rendered in #notes.
  */
 export async function readTabRows(page) {
-  const { dom, notes } = await page.evaluate(async () => {
-    const dom = [...document.querySelectorAll('#notes li a')].map(link => link.textContent ?? '');
+  const result = await page.evaluate(async () => {
+    const isSql = Boolean(document.getElementById('stock'));
     const backend = window.tendril?.application?.backend;
     if (!backend) throw Error('No installed application backend');
+    if (isSql) {
+      const dom = [...document.querySelectorAll('#stock tr td:first-child a')].map(link => link.textContent ?? '');
+      const view = await backend.readView();
+      try {
+        const res = await view.query('inventory', { sql: 'SELECT id, owner FROM inventory ORDER BY id' });
+        const rows = (res?.rows ?? []).map(([id, owner]) => ({ text: String(id), author: String(owner), operationId: null }));
+        return { isSql: true, dom, rows };
+      } catch {
+        return { isSql: true, dom, rows: [] };
+      } finally { await view.release(); }
+    }
+    const dom = [...document.querySelectorAll('#notes li a')].map(link => link.textContent ?? '');
     const view = await backend.readView();
     const notes = new Map(); let cursor;
     try {
@@ -346,12 +398,16 @@ export async function readTabRows(page) {
         cursor = batch.cursor;
       }
     } finally { await view.release(); }
-    return { dom, notes: [...notes.values()] };
+    return { isSql: false, dom, notes: [...notes.values()] };
   });
+  if (result.isSql) {
+    const rendered = new Set(result.dom);
+    return result.rows.filter(row => rendered.has(row.text));
+  }
   const labels = new Map();
-  for (const label of dom) labels.set(label, (labels.get(label) ?? 0) + 1);
+  for (const label of result.dom) labels.set(label, (labels.get(label) ?? 0) + 1);
   const rows = [];
-  for (const note of notes) {
+  for (const note of result.notes) {
     const label = note.text.length > 180 ? note.text.slice(0, 180) + '…' : note.text;
     if (!labels.get(label)) continue;
     labels.set(label, labels.get(label) - 1);
@@ -362,19 +418,20 @@ export async function readTabRows(page) {
 
 export async function readTabState(page) {
   return page.evaluate(() => {
+    const isSql = Boolean(document.getElementById('session-status'));
     const viewError = document.getElementById('view-error');
-    const operation = document.getElementById('operation-status')?.textContent ?? null;
+    const operation = (isSql ? document.getElementById('result') : document.getElementById('operation-status'))?.textContent ?? null;
+    const peerEl = isSql ? document.getElementById('session-status') : document.getElementById('connection-status');
+    const dataEl = isSql ? document.getElementById('summary') : document.getElementById('count');
     return {
-      peer: document.getElementById('connection-status')?.textContent ?? null,
-      data: document.getElementById('count')?.textContent ?? null,
+      peer: peerEl?.textContent ?? null,
+      data: dataEl?.textContent ?? null,
       viewError: viewError && !viewError.hidden ? viewError.textContent : null,
       submission: document.getElementById('submission-status')?.textContent ?? null,
-      connection: document.getElementById('connection-status')?.textContent?.trim().slice(0, 200) ?? null,
-      draft: document.getElementById('note')?.value ?? null,
+      connection: peerEl?.textContent?.trim().slice(0, 200) ?? null,
+      draft: (isSql ? document.getElementById('bin-id') : document.getElementById('note'))?.value ?? null,
       operation: operation?.slice(0, 400) ?? null,
-      // There is no "selected history changed" notice. Record what the UI does
-      // show instead: an excluded selected operation, or a not-current live view.
-      recovery: /Excluded: yes/.test(operation ?? '') ? operation.slice(0, 400) : viewError && !viewError.hidden ? viewError.textContent : null,
+      recovery: /Excluded: (yes|true)/.test(operation ?? '') ? operation.slice(0, 400) : viewError && !viewError.hidden ? viewError.textContent : null,
       html: document.documentElement.outerHTML.match(/chaos-ui-v\d+/g) ?? [],
       url: location.href,
     };
@@ -397,6 +454,10 @@ export async function readExcludedFacts(page, operationIds) {
 }
 
 export async function readAgentRows(world, slug) {
+  if (isSqlWorld(world)) {
+    const reply = await world.tendril(['--page', slug, 'query', 'sql', JSON.stringify({ sql: 'SELECT id, owner FROM inventory ORDER BY id' })], { timeoutMs: 30_000 });
+    return (reply.value?.rows ?? []).map(([id, owner]) => ({ text: String(id), author: String(owner), operationId: String(id) }));
+  }
   const reply = await world.tendril(['--page', slug, 'query', 'notes', 'null'], { timeoutMs: 30_000 });
   return reply.value.map(note => ({ text: note.text, author: note.author, operationId: note.operationId }));
 }

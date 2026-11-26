@@ -23,8 +23,8 @@ export async function deriveInventory(view) {
   if (!catalog.some(t => t.name === 'inventory')) {
     return { stock: [], transfers: [], columns: [], catalog, hasLabel: false };
   }
-  const colsRes = await view.query('inventory', { sql: 'PRAGMA table_info(inventory)' });
-  const columnNames = (colsRes?.rows ?? []).map(r => String(r[1]));
+  const colsRes = await view.query('inventory', { sql: 'SELECT * FROM inventory LIMIT 0' });
+  const columnNames = Array.isArray(colsRes?.columns) ? colsRes.columns.map(String) : [];
   const hasLabel = columnNames.includes('label');
   const stockRes = await view.query('inventory', {
     sql: 'SELECT id, units' + (hasLabel ? ', label' : '') + ' FROM inventory ORDER BY id',
@@ -227,6 +227,21 @@ export const definition = defineApplication({
       description: 'Derive rows, balances, details and schema from one coherent current local snapshot.',
       input: { type: 'null' },
       read: deriveInventory,
+    }),
+    schema: defineQuery({
+      description: 'Inspect SQLite-CAS tables, columns, user-owned objects, and active write RLS policies.',
+      input: { type: 'null' },
+      read: view => view.query('inventory', { query: 'schema' }),
+    }),
+    sql: defineQuery({
+      description: 'Execute a read-only SQL query against the deterministic SQLite-CAS inventory state.',
+      input: {
+        type: 'object',
+        properties: { sql: { type: 'string', minLength: 1, maxLength: 4096 } },
+        required: ['sql'],
+        additionalProperties: false,
+      },
+      read: (view, { sql }) => view.query('inventory', { sql }),
     }),
   },
 });
