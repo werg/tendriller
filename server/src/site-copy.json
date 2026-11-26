@@ -101,11 +101,11 @@
           "icon": "users",
           "warm": true,
           "title": "Invite others in",
-          "body": "Share a private guest invite link — open or locked to a specific email — or a display-only link. Collaborators sign in via GitHub or Google and share the same live dashboard, database, and agent.",
+          "body": "Share a private guest invite link, tie admission to a **GitHub Org** or **Google Workspace** group, or hop into a multi-party video call with on-device captions — all sharing the same live dashboard, database, and agent.",
           "tags": [
             "Guest invites",
-            "Multi-device",
-            "Display links",
+            "Video & captions",
+            "Team OAuth",
             "Home Screen"
           ]
         }
@@ -246,6 +246,76 @@
       ],
       "openSourceTitle": "Zero lock-in — open source & cleanly migratable",
       "openSourceNote": "Your data lives locally on your devices and your apps are plain signed bundles. Inspect the code, run it locally, or self-host on your own Cloudflare account and migrate cleanly anytime."
+    },
+    "pricing": {
+      "eyebrow": "Pricing & zero lock-in",
+      "title": "Free to start. Pay only for cloud media & scale.",
+      "lead": "Local offline writes, direct peer-to-peer WebRTC, and running `tendril agent run` on your own machine stay free and unlimited. Upgrade when you want multi-party SFU video, TURN across strict firewalls, Team OAuth tie-ins, or hosted MCP at scale — or self-host free forever.",
+      "ctaPricing": "Full pricing & limits",
+      "ctaSelfHost": "5-minute self-host guide",
+      "guarantee": "**No surprise bills or data lock-in:** hitting a quota never locks or deletes your data, pay-as-you-go is off by default with an editable (or removable) monthly spend cap, and you can move workspaces to your own Cloudflare account anytime.",
+      "tiers": [
+        {
+          "eyebrow": "Hobby",
+          "name": "Free",
+          "price": "$0",
+          "sub": "Forever · no card required",
+          "featured": false,
+          "cta": "Get started free",
+          "href": "/auth",
+          "points": [
+            "**20** active pages · **5** resident pages · **5** agents",
+            "**Unlimited** direct P2P sync & local `tendril agent run`",
+            "**2 GB/mo** TURN trial + **5 hrs/mo** relay fallback",
+            "Hosted MCP: **1** page · **250** calls/mo"
+          ]
+        },
+        {
+          "eyebrow": "Recommended",
+          "name": "Pro",
+          "price": "$12/mo",
+          "sub": "or $100/yr (~30% off)",
+          "featured": true,
+          "cta": "See Pro details",
+          "href": "/pricing",
+          "points": [
+            "**100** pages · **25** residents · **2 GB** R2 · **15** agents",
+            "**100 GB/mo** Cloudflare SFU video & TURN (up to 12 peers, 720p)",
+            "**15,000** hosted MCP calls/mo across **25** pages",
+            "**Host-brokered personal OAuth** & opt-in PAYG"
+          ]
+        },
+        {
+          "eyebrow": "Studio & Orgs",
+          "name": "Team",
+          "price": "$39/mo",
+          "sub": "or $320/yr (~32% off)",
+          "featured": false,
+          "cta": "See Team details",
+          "href": "/pricing",
+          "points": [
+            "**500** pages · **100** residents · **20 GB** R2 · **50** agents",
+            "**500 GB/mo** SFU & TURN (up to 50 peers, 1080p + screen)",
+            "**Team OAuth tie-ins:** GitHub Org & Google Workspace admission + auto-offboarding",
+            "**100k** MCP calls/mo · custom page domain"
+          ]
+        },
+        {
+          "eyebrow": "Open Source",
+          "name": "Self-Hosted",
+          "price": "$0 OSS",
+          "sub": "Your own Cloudflare account",
+          "featured": false,
+          "cta": "Self-host in 5 min",
+          "href": "/self-host",
+          "points": [
+            "**Unlimited** pages, residents, agents, guests & hosted MCP",
+            "Single Cloudflare Worker + D1 + R2 + Durable Objects",
+            "Plug in your own CF Realtime keys (**1 TB/mo** free from CF)",
+            "Export & migrate existing workspaces cleanly anytime"
+          ]
+        }
+      ]
     },
     "agentsBand": {
       "eyebrow": "For agents & builders",

@@ -287,19 +287,55 @@ async function updateAgentProfile(req: Request, env: Env, agent: GrantedAgent) {
 }
 
 async function agentSelf(env: Env, agent: GrantedAgent) {
-  const [row, versions, broadcasts] = await Promise.all([
+  const origin = publicBase(env);
+  const [row, versions, broadcasts, ent] = await Promise.all([
     env.ACCOUNTS.prepare(`SELECT (SELECT COUNT(*) FROM agent_grants WHERE agent_id=?) AS grants,
       (SELECT email FROM accounts WHERE id=?) AS email`).bind(agent.id, agent.account_id).first<{ grants: number; email: string | null }>(),
     getAgentVersions(env, agent.id),
     broadcastSummary(env),
+    agent.account_id ? getAccountEntitlements(env, agent.account_id).catch(() => null) : Promise.resolve(null),
   ]);
   return {
     agent: agentView(agent),
-    account: agent.account_id === null ? { claimed: false, owner_email: agent.owner_email } : { claimed: true, email: row?.email ?? null },
+    account: agent.account_id === null
+      ? { claimed: false, owner_email: agent.owner_email }
+      : {
+          claimed: true,
+          email: row?.email ?? null,
+          ...(ent ? {
+            plan: ent.plan,
+            unlimitedHost: ent.unlimitedHost,
+            paygEnabled: ent.paygEnabled,
+            quotas: {
+              pages: ent.quotas.pages,
+              residents: ent.quotas.residents,
+              storageBytes: ent.quotas.storageBytes,
+              pageStorageBytes: ent.quotas.pageStorageBytes,
+              agents: ent.quotas.agents,
+              guestsPerPage: ent.quotas.guestsPerPage,
+              mcpPages: ent.quotas.mcpPages,
+              mcpCallsPerMonth: ent.quotas.mcpCallsPerMonth,
+              sfuEnabled: ent.quotas.sfuEnabled,
+              sfuMaxPeers: ent.quotas.sfuMaxPeers,
+              hostBrokeredOAuth: ent.quotas.hostBrokeredOAuth,
+              teamOrgOAuth: ent.quotas.teamOrgOAuth,
+            },
+            usage: {
+              period: ent.usage.period,
+              resetsAt: ent.usage.resetsAt,
+              mcpCalls: ent.usage.mcpCalls,
+              mediaBytes: ent.usage.mediaBytes,
+              relayMs: ent.usage.relayMs,
+            },
+            billingUrl: `${origin}/dashboard/billing`,
+            pricingUrl: `${origin}/pricing`,
+            selfHostUrl: `${origin}/self-host`,
+          } : {}),
+        },
     grants: row?.grants ?? 0,
     ...(versions ? { versions } : {}),
     broadcasts,
-    service: publicBase(env),
+    service: origin,
   };
 }
 

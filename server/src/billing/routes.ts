@@ -166,9 +166,10 @@ export async function pricingPage(req: Request, env: Env): Promise<Response> {
   <section class="card stack-sm">
     <h2>Fairness guarantees</h2>
     <ul class="list">
+      <li class="list-item"><div class="list-item-main"><div class="list-item-title">What stays free forever</div><p class="list-item-sub">Local offline reads and writes in Chronolog, direct peer-to-peer WebRTC sync, running <code>tendril agent run</code> on your own machine, and exporting your workspaces never require a paid plan.</p></div></li>
       <li class="list-item"><div class="list-item-main"><div class="list-item-title">Hitting a quota never locks or deletes your data</div><p class="list-item-sub">Your local Chronolog state stays readable and editable offline. If you downgrade from Pro to Free, all existing pages stay accessible — you only pause creating new pages above the Free cap.</p></div></li>
       <li class="list-item"><div class="list-item-main"><div class="list-item-title">No surprise overage bills</div><p class="list-item-sub">Pay-as-you-go is off by default. When you opt in, you choose a monthly spend cap (default $25, editable or removable anytime). Payments and global VAT/tax invoices are handled securely by Polar.sh.</p></div></li>
-      <li class="list-item"><div class="list-item-main"><div class="list-item-title">Zero lock-in</div><p class="list-item-sub">Prefer to run Tendriller on your own Cloudflare account? <a href="/self-host">Follow the 5-minute self-hosting guide</a> — it uses the exact same open-source engine.</p></div></li>
+      <li class="list-item"><div class="list-item-main"><div class="list-item-title">Zero lock-in</div><p class="list-item-sub">Prefer to run Tendriller on your own Cloudflare account? <a href="/self-host">Follow the 5-minute self-hosting guide</a> — it uses the exact same open-source engine. <a href="/pricing.md">Read machine-readable pricing (.md)</a>.</p></div></li>
     </ul>
   </section>`;
 

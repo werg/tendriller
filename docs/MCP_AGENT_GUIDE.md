@@ -16,9 +16,15 @@ another website builder does not attach an application to this session.
 
 This guide is available through `tendril_guide` even before account linking.
 Use its `topic` argument for the maintained instructions themselves: `build`,
-`capabilities`, `sensors`, `connect`, `delivery` or `troubleshooting`. You do not need a web
+`capabilities`, `sensors`, `connect`, `delivery`, `pricing`, `self_hosting` or `troubleshooting`. You do not need a web
 browsing tool to read those documents. Use the `serviceOrigin` returned by MCP
 throughout; staging must stay on staging.
+
+`get_profile` also reports the linked account's live `account.plan`, `account.quotas`,
+`account.usage`, and `billingUrl` / `pricingUrl` / `selfHostUrl` links. Local `tendril agent run`
+and direct P2P sync stay free and unlimited; hosted `/mcp`, TURN/SFU media, and fleet quotas vary
+by plan (or are unlimited on a self-hosted deployment). If a call returns `quota_exceeded`, share
+its `localAlternative`, `upgradeUrl`, and `selfHostUrl` rather than creating workaround pages.
 
 If an installed plugin does not expose `tendril_guide`, `get_profile` and
 `list_tendrils` also return the service identity and direct `setup.startHere`,

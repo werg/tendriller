@@ -178,7 +178,29 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   const outboundCb = /^\/auth\/outbound\/callback\/([^/]{2,96})$/.exec(path);
   if (outboundCb && req.method === "GET") return handleOutboundCallback(req, env, url, decodeURIComponent(outboundCb[1]!));
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
-  if (path === "/pricing") return pricingPage(req, env);
+  if (path === "/pricing") {
+    const accept = req.headers.get("Accept") ?? "";
+    if (publicRead && accept.includes("text/markdown") && !accept.includes("text/html")) {
+      const guide = await asset(env, url, "/docs/PRICING.md");
+      if (guide.ok) {
+        const body = (await guide.text()).replaceAll("https://tendriller.dev", publicBase(env));
+        return new Response(req.method === "HEAD" ? null : body, {
+          headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Vary: "Accept", Link: onboardingLinks(publicBase(env)) },
+        });
+      }
+    }
+    return pricingPage(req, env);
+  }
+  if (path === "/pricing.md" || path === "/self-host.md") {
+    if (!publicRead) return errorResponse(405, "method_not_allowed", "Documentation is read-only");
+    const docPath = path === "/pricing.md" ? "/docs/PRICING.md" : "/docs/SELF_HOSTING.md";
+    const guide = await asset(env, url, docPath);
+    if (!guide.ok) return guide;
+    const body = (await guide.text()).replaceAll("https://tendriller.dev", publicBase(env));
+    return new Response(req.method === "HEAD" ? null : body, {
+      headers: { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Link: onboardingLinks(publicBase(env)) },
+    });
+  }
   if (path === "/self-host") return selfHostPage(req, env);
   if (path === "/dashboard/billing" || path.startsWith("/dashboard/billing/")) return routeBillingDashboard(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);

@@ -60,12 +60,45 @@ describe("Pricing, self-host, and Polar.sh MoR billing", () => {
     const homeHtml = await home.text();
     expect(homeHtml).toContain("Zero lock-in");
     expect(homeHtml).toContain("/self-host");
+    expect(homeHtml).toContain('href="/pricing"');
+    expect(homeHtml).toContain('id="pricing"');
+    expect(homeHtml).toContain("Free to start. Pay only for cloud media &amp; scale.");
+    expect(homeHtml).toContain("/pricing.md");
+
+    const discovery = await req("/.well-known/tendriller.json", { anonymous: true });
+    expect(discovery.status).toBe(200);
+    const desc = await discovery.json() as { documentation: Record<string, string>; interfaces: Record<string, unknown> };
+    expect(desc.documentation.pricing).toBe(`${BASE}/docs/PRICING.md`);
+    expect(desc.documentation.self_hosting).toBe(`${BASE}/docs/SELF_HOSTING.md`);
+    expect(desc.interfaces.pricing).toBe(`${BASE}/pricing`);
+    expect(desc.interfaces.pricing_markdown).toBe(`${BASE}/pricing.md`);
+    expect(desc.interfaces.self_host).toBe(`${BASE}/self-host`);
+    expect(desc.interfaces.billing).toBe(`${BASE}/dashboard/billing`);
 
     const selfHost = await req("/self-host", { anonymous: true });
     expect(selfHost.status).toBe(200);
     const shHtml = await selfHost.text();
     expect(shHtml).toContain("scripts/provision.mjs");
     expect(shHtml).toContain("CF_REALTIME_APP_ID");
+  });
+
+  it("exposes live account plan, quotas, and usage on GET /api/agent", async () => {
+    const h = await create();
+    const res = await req("/api/agent", {
+      anonymous: true,
+      headers: { Authorization: `Bearer ${h.token}` },
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json() as { account: Record<string, any> };
+    expect(data.account).toMatchObject({
+      claimed: true,
+      plan: "free",
+      billingUrl: `${BASE}/dashboard/billing`,
+      pricingUrl: `${BASE}/pricing`,
+      selfHostUrl: `${BASE}/self-host`,
+      quotas: expect.objectContaining({ pages: 20, residents: 5, agents: 5, sfuEnabled: false }),
+      usage: expect.objectContaining({ mcpCalls: 0, mediaBytes: 0, relayMs: 0 }),
+    });
   });
 
   it("verifies Polar Standard Webhooks HMAC signatures, rejects tampering/replay, and deduplicates events", async () => {

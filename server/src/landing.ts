@@ -339,6 +339,52 @@ section[id]{scroll-margin-top:4.5rem}
 .oss-link:hover{border-color:var(--green);background:var(--green-soft);color:var(--green)}
 .oss-link:hover svg{color:var(--green)}
 
+/* Pricing & zero lock-in teaser */
+.pricing-head-links{display:flex;align-items:center;gap:.85rem;flex-wrap:wrap;font-size:.86rem;font-weight:650}
+.pricing-head-links a{text-decoration:none}
+.pricing-head-links a:hover{text-decoration:underline}
+.pricing-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.95rem;align-items:stretch}
+.price-card{
+  display:flex;flex-direction:column;gap:.75rem;
+  padding:1.3rem 1.25rem;border-radius:var(--radius);
+  background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow-sm);
+}
+.price-card.featured{
+  border-color:color-mix(in srgb,var(--green) 58%,var(--line));
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--green) 22%,transparent),var(--shadow);
+}
+.price-top{display:flex;align-items:flex-start;justify-content:space-between;gap:.5rem}
+.price-eyebrow{display:block;font-size:.7rem;font-weight:750;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin-bottom:.18rem}
+.price-card.featured .price-eyebrow{color:var(--green)}
+.price-top h3{font-size:1.12rem;margin:0}
+.price-tag{
+  flex:none;padding:.24rem .62rem;border-radius:999px;
+  background:var(--surface-2);border:1px solid var(--line);
+  font:760 .85rem/1.1 inherit;color:var(--ink);white-space:nowrap;
+}
+.price-card.featured .price-tag{background:var(--green-soft);border-color:color-mix(in srgb,var(--green) 35%,transparent);color:var(--green)}
+.price-sub{font-size:.8rem;color:var(--faint);margin:-.35rem 0 0}
+.price-points{list-style:none;margin:0;padding:0;display:grid;gap:.45rem;font-size:.85rem;line-height:1.45;color:var(--muted)}
+.price-points li{position:relative;padding-left:.95rem}
+.price-points li::before{content:"";position:absolute;left:0;top:.52em;width:.36rem;height:.36rem;border-radius:50%;background:var(--green);opacity:.78}
+.price-points strong{color:var(--ink);font-weight:680}
+.price-cta{
+  margin-top:auto;padding-top:.4rem;
+  display:inline-flex;align-items:center;justify-content:center;gap:.38rem;
+  min-height:2.35rem;padding:.45rem .85rem;border-radius:10px;
+  border:1px solid var(--line-strong);background:var(--surface-2);color:var(--ink);
+  font:660 .84rem/1 inherit;text-decoration:none;transition:background .15s,border-color .15s,color .15s;
+}
+.price-cta:hover{border-color:var(--green);background:var(--green-soft);color:var(--green);text-decoration:none}
+.price-card.featured .price-cta{background:var(--green);border-color:var(--green);color:#fff}
+.price-card.featured .price-cta:hover{background:var(--green-2);border-color:var(--green-2);color:#fff}
+.pricing-note{
+  margin-top:1.1rem;padding:.9rem 1.15rem;border-radius:var(--radius-sm);
+  background:var(--paper-2);border:1px solid var(--line);
+  font-size:.88rem;line-height:1.5;color:var(--muted);
+}
+.pricing-note strong{color:var(--ink)}
+
 /* For agents & developers dark band */
 .agents-band{
   margin-top:clamp(2.5rem,5vw,4rem);
@@ -386,6 +432,7 @@ section[id]{scroll-margin-top:4.5rem}
   .plat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .pillars{grid-template-columns:1fr}
   .ideas,.trust-grid,.agent-links{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .pricing-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:760px){
   .timeline{display:block;margin:1.75rem 0 0}
@@ -403,12 +450,12 @@ section[id]{scroll-margin-top:4.5rem}
   .hero-copy h1{font-size:clamp(1.85rem,7.8vw,2.5rem);white-space:normal}
   .hero-ribbon{padding:.8rem 1.2rem}
   .reply-strip{grid-template-columns:1fr;gap:.65rem}
-  .plat-grid,.ideas,.trust-grid,.agent-links{grid-template-columns:1fr}
+  .plat-grid,.ideas,.trust-grid,.agent-links,.pricing-grid{grid-template-columns:1fr}
   .namesake{padding:1.1rem 1.15rem}
 }
 @media(prefers-color-scheme:dark){
   .cta{color:#1d110a}
-  .copy-btn,.step-num{color:#081b12}
+  .copy-btn,.step-num,.price-card.featured .price-cta{color:#081b12}
   .timeline li:last-child .step-num{color:#1d110a}
 }
 `;
@@ -449,12 +496,15 @@ export function landingPage(publicBase: string, options?: { editable?: boolean }
   const nav = `<nav aria-label="Main navigation">` +
     `<a class="hide-sm" href="#how">How it works</a>` +
     `<a class="hide-sm" href="#ideas">Examples</a>` +
+    `<a href="/pricing">Pricing</a>` +
     `<a class="hide-xxs" href="${base}/docs/BUILD_AN_APP.md">${escapeHtml(h.hero.ctaAgent)}</a>` +
     `<a class="nav-pill" href="/dashboard">Dashboard</a>` +
     `<a class="hide-xs" href="https://github.com/werg/tendriller">GitHub</a>` +
     `</nav>`;
 
   const footer = `<span>Tendriller</span><span class="foot-links">` +
+    `<a href="/pricing">Pricing</a>` +
+    `<a href="/self-host">Self-host</a>` +
     `<a href="${base}/agents">Platforms</a>` +
     `<a href="/dashboard">Dashboard</a>` +
     `<a href="${base}/docs/BUILD_AN_APP.md">${escapeHtml(h.hero.ctaAgent)}</a>` +
@@ -627,6 +677,37 @@ export function landingPage(publicBase: string, options?: { editable?: boolean }
         <a class="oss-link" href="https://github.com/werg/tendriller"><span>werg/tendriller</span> ${icon("arrow")}</a>
       </div>
     </div>
+  </section>
+
+  <section id="pricing" class="section" aria-labelledby="pricing-title">
+    <div class="section-head">
+      <div class="section-head-copy">
+        <span class="eyebrow"${c("home.pricing.eyebrow", h.pricing.eyebrow)}>${txt(h.pricing.eyebrow)}</span>
+        <h2 id="pricing-title"${c("home.pricing.title", h.pricing.title)}>${txt(h.pricing.title)}</h2>
+        <p${c("home.pricing.lead", h.pricing.lead)}>${txt(h.pricing.lead)}</p>
+      </div>
+      <div class="pricing-head-links">
+        <a class="cookbook-cta" href="${base}/pricing"><span${c("home.pricing.ctaPricing", h.pricing.ctaPricing)}>${txt(h.pricing.ctaPricing)}</span> ${icon("arrow")}</a>
+        <a href="${base}/pricing.md" title="Machine-readable pricing Markdown for AI agents">Pricing (.md)</a>
+      </div>
+    </div>
+    <div class="pricing-grid">
+      ${h.pricing.tiers.map((tier, i) => `<article class="price-card${tier.featured ? " featured" : ""}">
+        <div class="price-top">
+          <div>
+            <span class="price-eyebrow"${c(`home.pricing.tiers.${i}.eyebrow`, tier.eyebrow)}>${txt(tier.eyebrow)}</span>
+            <h3${c(`home.pricing.tiers.${i}.name`, tier.name)}>${txt(tier.name)}</h3>
+          </div>
+          <span class="price-tag"${c(`home.pricing.tiers.${i}.price`, tier.price)}>${txt(tier.price)}</span>
+        </div>
+        <p class="price-sub"${c(`home.pricing.tiers.${i}.sub`, tier.sub)}>${txt(tier.sub)}</p>
+        <ul class="price-points">
+          ${tier.points.map((pt, j) => `<li${c(`home.pricing.tiers.${i}.points.${j}`, pt)}>${txt(pt)}</li>`).join("")}
+        </ul>
+        <a class="price-cta" href="${base}${tier.href}"><span${c(`home.pricing.tiers.${i}.cta`, tier.cta)}>${txt(tier.cta)}</span> ${icon("arrow")}</a>
+      </article>`).join("")}
+    </div>
+    <p class="pricing-note"${c("home.pricing.guarantee", h.pricing.guarantee)}>${txt(h.pricing.guarantee)}</p>
   </section>
 
   <section class="agents-band" aria-labelledby="agents-title">
