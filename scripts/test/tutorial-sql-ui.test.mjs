@@ -103,8 +103,8 @@ test('SQL schema, preconditions, and RLS policies use first-class chronolog/sql 
     async query(topic, input) {
       assert.equal(topic, 'inventory');
       if (input?.kind === 'tables') return { tables: [{ name: 'inventory', type: 'table' }, { name: 'transfers', type: 'table' }] };
-      if (input?.sql === 'PRAGMA table_info(inventory)') {
-        return { rows: label ? [[0, 'id'], [1, 'units'], [2, 'owner'], [3, 'label']] : [[0, 'id'], [1, 'units'], [2, 'owner']] };
+      if (input?.sql === 'SELECT * FROM inventory LIMIT 0') {
+        return { columns: label ? ['id', 'units', 'owner', 'label'] : ['id', 'units', 'owner'], rows: [] };
       }
       if (input?.sql?.includes('FROM inventory')) {
         return { rows: label ? [['source', 10, 'new field']] : [['source', 10]] };
