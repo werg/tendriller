@@ -14,13 +14,25 @@ export interface AccountLimits {
   storage: number | null;
 }
 
-/** Active per-account limits from service_state (NULL means unlimited; defaults preserve production caps). */
-export async function accountLimits(env: Env): Promise<AccountLimits> {
+/** Active per-account limits from accounts + service_state (NULL means unlimited; defaults preserve production caps). */
+export async function accountLimits(env: Env, accountId?: string | null): Promise<AccountLimits> {
   if (!env.ACCOUNTS) return { pages: PAGE_LIMIT, residents: RESIDENT_LIMIT, storage: ACCOUNT_STORAGE_LIMIT };
   try {
     const row = await env.ACCOUNTS.prepare("SELECT account_page_cap, account_resident_cap, account_storage_cap FROM service_state WHERE id = 1")
       .first<{ account_page_cap: number | null; account_resident_cap: number | null; account_storage_cap: number | null }>();
     if (!row) return { pages: PAGE_LIMIT, residents: RESIDENT_LIMIT, storage: ACCOUNT_STORAGE_LIMIT };
+    if (accountId && (row.account_page_cap !== null || row.account_resident_cap !== null || row.account_storage_cap !== null)) {
+      const acc = await env.ACCOUNTS.prepare("SELECT plan, page_cap, resident_cap, storage_cap FROM accounts WHERE id = ?")
+        .bind(accountId).first<{ plan: string | null; page_cap: number | null; resident_cap: number | null; storage_cap: number | null }>().catch(() => null);
+      if (acc) {
+        if (acc.plan === "unlimited") return { pages: null, residents: null, storage: null };
+        return {
+          pages: row.account_page_cap === null ? null : (acc.page_cap ?? row.account_page_cap),
+          residents: row.account_resident_cap === null ? null : (acc.resident_cap ?? row.account_resident_cap),
+          storage: row.account_storage_cap === null ? null : (acc.storage_cap ?? row.account_storage_cap),
+        };
+      }
+    }
     return {
       pages: row.account_page_cap,
       residents: row.account_resident_cap,

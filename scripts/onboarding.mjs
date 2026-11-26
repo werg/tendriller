@@ -13,7 +13,7 @@ export const ONBOARDING_DOCS = Object.freeze([
   'docs/MULTIPARTICIPANT.md', 'docs/TRANSPORT_DIAGNOSTICS.md', 'docs/AGENT_BINDINGS.md', 'docs/APPLICATION_SIGNALS.md',
   'docs/CHATGPT_INTEGRATION.md', 'docs/CLOUDFLARE_ASSISTANT.md',
   'docs/TROUBLESHOOTING.md', 'docs/tools/CLI.md', 'docs/DEPLOYMENT_GUIDE.md', 'docs/SERVERLESS_HOST.md',
-  'docs/LOCAL_HOST.md',
+  'docs/LOCAL_HOST.md', 'docs/SELF_HOSTING.md',
 ]);
 export const ONBOARDING_IMAGES = Object.freeze([
   'docs/assets/app-patterns-desktop.png', 'docs/assets/app-patterns-phone.png', 'docs/assets/app-patterns-states.png',
@@ -58,6 +58,7 @@ export const TUTORIAL_FILES = Object.freeze([
   'shared/media/native-audio.mjs',
   'shared/media/panel.mjs',
   'shared/media/provider-openai.mjs',
+  'shared/media/sfu-transport.mjs',
   'shared/media/voice.mjs',
   'shared/native-page.mjs',
   'shared/observation/README.md',

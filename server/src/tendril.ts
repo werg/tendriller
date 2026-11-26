@@ -30,6 +30,7 @@ import { AGENT_ID_RE, newLinkId, newPageKey, sha256Hex, safeEqual } from './ids'
 import type { Features } from './inject';
 import { ACCESS_WRITE_INTERVAL, ACCOUNT_STORAGE_LIMIT, AD_HOC_IDLE, DAY, HOUR, PAGE_LIMIT, RESIDENT_LIMIT } from './limits';
 import { accountLimits } from './service-state';
+import { getAccountEntitlements, quotaError } from './billing/entitlements';
 import { handlePage, pageAccessDenied } from './page';
 import { agentPageApi, pageUrl, publicBase } from './urls';
 import { AGENT_HEADER, AGENT_SCOPES, authenticateLocalPage, currentPrincipal, pagePolicy, readPageSession } from './access';
@@ -483,6 +484,26 @@ export class Tendril extends DurableObject<Env> {
           throw new HttpError(403, "wrong_guest_email", "This invitation is for a different email address");
         }
       }
+      const existingGuest = this.db.one<{ approved: number }>("SELECT approved FROM guest_accounts WHERE account_id = ? AND link_id = ?", b.account_id, link.id);
+      if (!existingGuest) {
+        const pageOwner = this.db.get<string | null>("owner_account", null);
+        const ent = pageOwner ? await getAccountEntitlements(this.env, pageOwner, this.now()).catch(() => null) : null;
+        if (ent && ent.quotas.guestsPerPage !== null) {
+          const distinctGuests = this.db.one<{ n: number }>("SELECT COUNT(DISTINCT account_id) AS n FROM guest_accounts WHERE approved = 1 AND account_id != ?", b.account_id)?.n ?? 0;
+          if (distinctGuests >= ent.quotas.guestsPerPage) {
+            throw quotaError({
+              env: this.env,
+              quota: "guests",
+              plan: ent.plan,
+              used: distinctGuests,
+              limit: ent.quotas.guestsPerPage,
+              resetsAt: null,
+              message: `This page has reached its guest limit (${ent.quotas.guestsPerPage} guests on ${ent.plan}).`,
+              localAlternative: "The page owner can remove an unused guest, upgrade for more guests per page, or self-host on Cloudflare.",
+            });
+          }
+        }
+      }
       this.db.run("INSERT OR IGNORE INTO guest_accounts (account_id, link_id, approved, created_at) VALUES (?, ?, 1, ?)",
         b.account_id, link.id, this.now());
       const row = this.db.one<{ approved: number }>("SELECT approved FROM guest_accounts WHERE account_id = ? AND link_id = ?", b.account_id, link.id);
@@ -522,10 +543,21 @@ export class Tendril extends DurableObject<Env> {
       } catch (err) {
         const msg = String(err);
         if (msg.includes("account_residents_full") || msg.includes("account_tendrils_full") || msg.includes("account_full")) {
-          const limits = await accountLimits(this.env);
-          if (msg.includes("account_residents_full")) throw new HttpError(429, "quota", "Account resident tendril limit reached", { limit: limits.residents ?? RESIDENT_LIMIT });
-          if (msg.includes("account_tendrils_full")) throw new HttpError(429, "quota", "Account tendril limit reached", { limit: limits.pages ?? PAGE_LIMIT });
-          throw new HttpError(413, "quota", "Account storage limit reached", { limit: limits.storage ?? ACCOUNT_STORAGE_LIMIT });
+          const [limits, ent] = await Promise.all([
+            accountLimits(this.env, accountId),
+            getAccountEntitlements(this.env, accountId, this.now()).catch(() => null),
+          ]);
+          const plan = ent?.plan ?? "free";
+          if (msg.includes("account_residents_full")) {
+            const limit = limits.residents ?? RESIDENT_LIMIT;
+            throw quotaError({ env: this.env, code: "quota", status: 429, quota: "residents", plan, used: limit, limit, resetsAt: null, message: "Account resident tendril limit reached" });
+          }
+          if (msg.includes("account_tendrils_full")) {
+            const limit = limits.pages ?? PAGE_LIMIT;
+            throw quotaError({ env: this.env, code: "quota", status: 429, quota: "pages", plan, used: limit, limit, resetsAt: null, message: "Account tendril limit reached" });
+          }
+          const limit = limits.storage ?? ACCOUNT_STORAGE_LIMIT;
+          throw quotaError({ env: this.env, code: "quota", status: 413, quota: "storage", plan, used: limit, limit, resetsAt: null, message: "Account storage limit reached" });
         }
         throw err;
       }
@@ -597,20 +629,20 @@ export class Tendril extends DurableObject<Env> {
       this.db.one<{ n: number }>("SELECT COALESCE(SUM(size), 0) AS n FROM stored_files")?.n ?? 0);
   }
 
-  checkLocalStorage(additional: number): void {
-    const limit = RESOURCE_LIMITS.page_bytes;
+  checkLocalStorage(additional: number, pageLimit: number = RESOURCE_LIMITS.page_bytes): void {
+    const limit = pageLimit;
     const used = this.storageUsed()
       + this.db.one<{ n: number }>('SELECT COALESCE(SUM(length(value)),0) AS n FROM participant_records')!.n;
     if (used + additional > limit) throw new HttpError(413, "quota", "Tendril storage limit reached", { limit, used });
   }
 
-  reserveStoredFile(hash: string, size: number, riskScore: number): boolean {
+  reserveStoredFile(hash: string, size: number, riskScore: number, pageLimit?: number): boolean {
     const stored = this.db.one<{ size: number }>("SELECT size FROM stored_files WHERE hash=?", hash);
     if (stored) {
       if (stored.size !== size) throw new HttpError(422, "digest_size_mismatch", "Stored content has a different size");
       return false;
     }
-    this.checkLocalStorage(size);
+    this.checkLocalStorage(size, pageLimit);
     this.db.run("INSERT INTO stored_files (hash, size, created_at, risk_score, status) VALUES (?, ?, ?, ?, 'writing')",
       hash, size, this.now(), riskScore);
     return true;
@@ -627,8 +659,23 @@ export class Tendril extends DurableObject<Env> {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("service_full")) throw new HttpError(507, "service_full", "Service storage is full");
       if (message.includes("account_full")) {
-        const limits = await accountLimits(this.env);
-        throw new HttpError(413, "quota", "Account storage limit reached", { limit: limits.storage ?? ACCOUNT_STORAGE_LIMIT });
+        const owner = this.db.get<string | null>("owner_account", null);
+        const [limits, ent] = await Promise.all([
+          accountLimits(this.env, owner),
+          owner ? getAccountEntitlements(this.env, owner, this.now()).catch(() => null) : Promise.resolve(null),
+        ]);
+        const limit = limits.storage ?? ACCOUNT_STORAGE_LIMIT;
+        throw quotaError({
+          env: this.env,
+          code: "quota",
+          status: 413,
+          quota: "storage",
+          plan: ent?.plan ?? "free",
+          used: limit,
+          limit,
+          resetsAt: null,
+          message: "Account storage limit reached",
+        });
       }
       throw err;
     }

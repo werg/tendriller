@@ -64,4 +64,26 @@ export interface Env {
   BROADCAST_PUBLIC_JWKS?: string;
   /** Optional operator bearer token for CI/CLI access to /api/admin/broadcasts. */
   BROADCAST_ADMIN_TOKEN?: string;
+  /** Optional Polar.sh Merchant of Record configuration for hosted billing. */
+  POLAR_ACCESS_TOKEN?: string;
+  /** Standard Webhooks signing secret from Polar (`whsec_...` or raw secret). */
+  POLAR_WEBHOOK_SECRET?: string;
+  /** Optional Polar API environment: "production" (default) or "sandbox". */
+  POLAR_SERVER?: string;
+  /** Optional Polar API base URL override for testing/proxies. */
+  POLAR_API_BASE?: string;
+  /** JSON map of Polar product IDs: `{ pro_month, pro_year, team_month, team_year }`. */
+  POLAR_PRODUCTS_JSON?: string;
+  /** JSON map of Polar meter names/IDs: `{ media_egress_gb, mcp_overage_calls }`. */
+  POLAR_METERS_JSON?: string;
+  /** Explicitly enable billing UI/routes even without live Polar tokens (e.g. preview/tests). */
+  BILLING_ENABLED?: string;
+  /** Optional Cloudflare Realtime SFU credentials. */
+  CF_REALTIME_APP_ID?: string;
+  CF_REALTIME_API_TOKEN?: string;
+  /** Optional Cloudflare Realtime TURN credentials. */
+  CF_TURN_KEY_ID?: string;
+  CF_TURN_API_TOKEN?: string;
+  /** Optional Cloudflare Realtime API base URL override (defaults to https://rtc.live.cloudflare.com/v1). */
+  CF_REALTIME_API_BASE?: string;
 }

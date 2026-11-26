@@ -63,6 +63,7 @@ async function fixture(t) {
     ['dist/engine/migrations/0002_agents.sql', Buffer.from('CREATE TABLE agents(id TEXT PRIMARY KEY);')],
     ['dist/engine/migrations/0003_broadcasts.sql', Buffer.from('CREATE TABLE system_broadcasts(seq INTEGER PRIMARY KEY);')],
     ['dist/engine/migrations/0004_account_limits.sql', Buffer.from('SELECT 1;')],
+    ['dist/engine/migrations/0005_billing_and_tiers.sql', Buffer.from('SELECT 1;')],
     ['server/public/llms.txt', Buffer.from('Exact public guide.')],
     ['server/src/runtime-release.json', json({ id: 'a'.repeat(64) })],
   ]);

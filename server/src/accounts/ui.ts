@@ -456,8 +456,8 @@ export interface ShellOptions {
   script?: string;
 }
 
-const DEFAULT_NAV = `<nav aria-label="Main navigation"><a class="hide-sm" href="/agents">Platforms</a><a class="hide-xs" href="/docs/BUILD_AN_APP.md">Agent instructions</a><a class="nav-pill" href="/dashboard">Dashboard</a></nav>`;
-const DEFAULT_FOOTER = `<span>Tendriller</span><span class="foot-links"><a href="/agents">Platforms</a><a href="/dashboard">Dashboard</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/status">Status</a></span>`;
+const DEFAULT_NAV = `<nav aria-label="Main navigation"><a class="hide-sm" href="/pricing">Pricing</a><a class="hide-sm" href="/agents">Platforms</a><a class="hide-xs" href="/docs/BUILD_AN_APP.md">Agent instructions</a><a class="nav-pill" href="/dashboard">Dashboard</a></nav>`;
+const DEFAULT_FOOTER = `<span>Tendriller</span><span class="foot-links"><a href="/pricing">Pricing</a><a href="/self-host">Self-host</a><a href="/agents">Platforms</a><a href="/dashboard">Dashboard</a><a href="/terms">Terms</a><a href="/privacy">Privacy</a><a href="/status">Status</a></span>`;
 
 /** Renders a complete HTML document using Tendriller's unified theme, sticky topbar, and footer. */
 export function renderShell(options: ShellOptions): string {

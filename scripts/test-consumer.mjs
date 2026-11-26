@@ -82,6 +82,9 @@ accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/accou
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/agents-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/broadcasts-schema')), 'utf8'));
 accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/limits-schema')), 'utf8'));
+accounts.exec(readFileSync(new URL(import.meta.resolve('@tendriller/engine/billing-schema')), 'utf8'));
+for (const table of ['subscriptions', 'billing_events', 'usage_periods', 'active_relay_leases'])
+  assert.equal(accounts.prepare('SELECT name FROM sqlite_master WHERE name=?').get(table)?.name, table);
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='system_broadcasts'").get().name, 'system_broadcasts');
 for (const api of [generateBroadcastKeyPair, signBroadcastPayload, verifyBroadcastSignature, evaluateBroadcastMatch]) assert.equal(typeof api, 'function');
 assert.equal(accounts.prepare("SELECT name FROM sqlite_master WHERE name='integration_oauth_grants'").get().name,

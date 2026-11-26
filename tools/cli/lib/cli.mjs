@@ -415,7 +415,12 @@ export function runExecutable(argv = process.argv.slice(2), options = {}) {
   return main(argv, options).catch(error => {
     const exit = error?.exit;
     process.exitCode = Number.isInteger(exit) && exit >= 1 && exit <= 255 ? exit : 1;
-    console.error(jsonText({ error: { code: error.code ?? 'command_failed', message: error.message },
+    const quotaKeys = ['quota', 'plan', 'used', 'limit', 'resetsAt', 'localAlternative', 'upgradeUrl', 'pricingUrl', 'selfHostUrl'];
+    const rawErr = error?.error && typeof error.error === 'object' ? error.error : null;
+    const quotaFields = rawErr
+      ? Object.fromEntries(quotaKeys.filter(k => rawErr[k] !== undefined).map(k => [k, rawErr[k]]))
+      : {};
+    console.error(jsonText({ error: { code: error.code ?? 'command_failed', message: error.message, ...quotaFields },
       diagnostic: diagnosticFinding(error, { scope: error.scope ?? {} }),
       ...(Number.isInteger(error.status) ? { status: error.status } : {}), ...(error.operation ? { operation: error.operation } : {}),
       ...(error.publication ? { publication: error.publication } : {}),

@@ -584,10 +584,13 @@ export function createMediaRoom({
 
   function snapshot() {
     const direct = directPeerIds();
+    const isSfu = transport?.kind === 'cloudflare-sfu';
+    const transportState = typeof transport?.state === 'function' ? transport.state() : null;
     const now = Date.now();
     const participants = [];
     for (const [peerId, info] of remotePresence) {
       if (now - info.receivedAtMs > 45_000) continue;
+      const hasMedia = direct.has(peerId);
       participants.push({
         peerId,
         displayName: info.displayName || info.handle || peerId.slice(0, 8),
@@ -599,11 +602,16 @@ export function createMediaRoom({
         cameraOn: Boolean(info.cameraOn),
         screenSharing: Boolean(info.screenSharing),
         speaking: Boolean(info.speaking),
-        transportKind: direct.has(peerId) ? 'direct' : 'relay',
-        mediaAvailable: direct.has(peerId),
+        transportKind: hasMedia ? (isSfu ? 'sfu' : 'direct') : 'relay',
+        mediaAvailable: hasMedia,
         stream: remoteStreams.get(peerId) ?? null,
         audioApproved: info.kind === 'agent' ? (agentAudio === 'allow' || approvedAudioAgents.has(peerId)) : true,
       });
+    }
+    const humans = participants.filter(p => p.kind !== 'agent');
+    if (joined && typeof transport?.evaluate === 'function') {
+      const hasRelayOnlyPeer = humans.some(p => !p.mediaAvailable);
+      void transport.evaluate({ peerCount: humans.length, hasRelayOnlyPeer }).catch(() => {});
     }
     return Object.freeze({
       callId,
@@ -616,9 +624,11 @@ export function createMediaRoom({
       savingTranscript,
       localStream,
       screenStream,
+      transportKind: transport?.kind ?? 'chronolog-direct',
+      transportState,
       participants,
       agents: participants.filter(p => p.kind === 'agent'),
-      humans: participants.filter(p => p.kind !== 'agent'),
+      humans,
       transcript: mergeUtterances(durableUtterances, liveUtterances),
     });
   }
@@ -632,6 +642,7 @@ export function createMediaRoom({
     await leave();
     stop.abort(new Error('MEDIA_ROOM_DISPOSED'));
     offTransport?.();
+    if (typeof transport?.dispose === 'function') await transport.dispose().catch(() => {});
     offSensors?.();
     globalThis.window?.removeEventListener?.('pagehide', onPageHide);
     for (const spec of dataStreamSpecs.values()) {

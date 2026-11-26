@@ -31,6 +31,7 @@ import { notifyMcpSyncWatchers } from './publication-watch';
 import { requireWritesOpen } from './service-state';
 import { notifySetupChanged } from './setup-watch';
 import type { Tendril } from './tendril';
+import { canConsumeMcpCall, getAccountEntitlements, quotaError, recordAccountUsage } from './billing/entitlements';
 
 interface McpConnectionRow {
   grant_id: string;
@@ -165,6 +166,10 @@ function listEnvelopeRows(t: Tendril): Array<{ k: string; v: Uint8Array }> {
   ).map(row => ({ k: row.k, v: asBytes(row.v) }));
 }
 
+function mcpStoreBytes(t: Tendril): number {
+  return t.db.one<{ n: number }>('SELECT COALESCE(SUM(LENGTH(v)), 0) AS n FROM mcp_store')?.n ?? 0;
+}
+
 /** Browser-facing opt-in enrollment and encrypted envelope sync routes under `_tendril/mcp/*`. */
 export async function handlePageMcp(t: Tendril, req: Request, sub: string, principal: PagePrincipal): Promise<Response> {
   const m = req.method;
@@ -221,6 +226,29 @@ export async function handlePageMcp(t: Tendril, req: Request, sub: string, princ
     // Ensure handle doesn't collide with another agent on this page.
     const existing = pageAgents(t).agents.find(item => item.handle.toLowerCase() === handle && item.id !== `mcp:${grantId}`);
     if (existing) throw new HttpError(409, 'agent_handle_in_use', `@${handle} is already used by another agent on this page.`);
+
+    // Enforce per-account hosted MCP opted-in page cap (updating an already-connected page does not consume a new slot).
+    const alreadyConnectedPage = Boolean(t.db.one('SELECT 1 AS x FROM mcp_connections LIMIT 1'));
+    if (!alreadyConnectedPage) {
+      const ent = await getAccountEntitlements(t.env, accountId, t.now());
+      if (ent.quotas.mcpPages !== null) {
+        const countRow = await t.env.ACCOUNTS.prepare(`SELECT COUNT(DISTINCT page_id) AS n FROM mcp_connections
+          WHERE account_id = ? AND page_id != ?`).bind(accountId, t.tid).first<{ n: number }>();
+        const usedPages = countRow?.n ?? 0;
+        if (usedPages >= ent.quotas.mcpPages) {
+          throw quotaError({
+            env: t.env,
+            quota: 'mcp_pages',
+            plan: ent.plan,
+            used: usedPages,
+            limit: ent.quotas.mcpPages,
+            resetsAt: null,
+            message: `Your ${ent.plan} plan supports hosted MCP on up to ${ent.quotas.mcpPages} ${ent.quotas.mcpPages === 1 ? 'page' : 'pages'}. Disconnect another page, upgrade, or run tendril agent run locally.`,
+            localAlternative: 'Run `npm run agent` locally to connect unlimited pages without hosted MCP page limits.',
+          });
+        }
+      }
+    }
 
     const now = t.now();
     const copy = new Uint8Array(wrappedKeys.byteLength);
@@ -290,6 +318,11 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
   if (!bundle) throw new HttpError(409, 'application_uninitialized', 'Application authority is not initialized yet.');
   const appId = selectedApplication(t).id;
 
+  const ownerAccount = t.db.get<string | null>('owner_account', null);
+  const ent = ownerAccount ? await getAccountEntitlements(t.env, ownerAccount, t.now()) : null;
+  const storeCap = ent?.quotas.mcpStoreBytes ?? null;
+  let currentStoreBytes = storeCap !== null ? mcpStoreBytes(t) : 0;
+
   let stored = 0;
   for (const item of incoming) {
     if (typeof item !== 'string' || item.length > 128 * 1024) throw new HttpError(400, 'invalid_envelope');
@@ -303,7 +336,21 @@ export async function handleEnvelopeSync(t: Tendril, req: Request): Promise<Resp
     copy.set(raw);
     const exists = t.db.one('SELECT 1 AS x FROM mcp_store WHERE k=?', ENVELOPE_PREFIX + payload.proposalId);
     if (!exists) {
+      if (storeCap !== null && currentStoreBytes + copy.byteLength > storeCap) {
+        throw quotaError({
+          env: t.env,
+          status: 413,
+          quota: 'mcp_store',
+          plan: ent?.plan ?? 'free',
+          used: currentStoreBytes,
+          limit: storeCap,
+          resetsAt: null,
+          message: `Hosted MCP encrypted sync storage limit reached for this page (${Math.round(storeCap / (1024 * 1024))} MB on ${ent?.plan ?? 'free'}).`,
+          localAlternative: 'Your local browser and native Chronolog storage are unaffected; run `npm run agent` locally or upgrade for larger hosted MCP retention.',
+        });
+      }
       t.db.run('INSERT OR IGNORE INTO mcp_store(k, v) VALUES(?, ?)', ENVELOPE_PREFIX + payload.proposalId, copy.buffer);
+      currentStoreBytes += copy.byteLength;
       stored++;
     }
     known.add(payload.proposalId);
@@ -523,14 +570,37 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
     }
   };
 
+  const ent = await getAccountEntitlements(t.env, principal.account, t.now());
+  const mcpCheck = canConsumeMcpCall(ent);
+  if (!mcpCheck.allowed) {
+    const cap = ent.quotas.mcpCallsPerMonth ?? 0;
+    const isPaygCapped = ent.paygEnabled && !ent.overage.withinSpendCap;
+    throw quotaError({
+      env: t.env,
+      status: 429,
+      quota: 'mcp_calls',
+      plan: ent.plan,
+      used: ent.usage.mcpCalls,
+      limit: cap,
+      resetsAt: ent.usage.resetsAt,
+      message: isPaygCapped
+        ? `Monthly pay-as-you-go spend cap reached on ${ent.plan}. Raise or disable your spend cap in billing settings, or use a local agent.`
+        : `Monthly hosted MCP call allowance reached (${ent.usage.mcpCalls}/${cap} on ${ent.plan}).`,
+      localAlternative: 'Run `npm run agent` locally for unlimited zero-host-quota access, or self-host on your own Cloudflare account.',
+    });
+  }
+  const sandboxTimeoutMs = ent.quotas.mcpSandboxTimeoutMs;
+
   if (method === 'agents_list') {
     await checkGrant('applications:read');
+    t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, t.now()));
     const roster = pageAgents(t);
     return json({ value: { applicationId, pageId: t.tid, self: `mcp:${conn.grant_id}`, selfHandle: conn.handle, ...roster } });
   }
 
   if (method === 'describe_application') {
     await checkGrant('applications:read');
+    t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, t.now()));
     const domainBundle = await loadPublishedDomainBundle(t);
     const domain = domainBundle ? await describeDomainBundle(domainBundle) : null;
     const configTools = t.db.get<{ tools?: { queries?: any[]; commands?: any[] } } | null>('application_configuration', null)?.tools;
@@ -566,9 +636,11 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
   }
 
   return t.serializeMcp(async () => {
+    const meterCall = () => { t.ctx.waitUntil(recordAccountUsage(t.env, principal.account, { mcpCalls: 1 }, t.now())); };
     if (method === 'read_application_events') {
       await checkGrant('applications:read');
       if (!caps.read) throw new HttpError(403, 'read_not_permitted');
+      meterCall();
       return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
         const topics = Array.isArray(params.topics) ? params.topics.map(v => string(v, 128)) : undefined;
         const limit = params.limit === undefined ? 50 : Math.min(256, Math.max(1, Number(params.limit)));
@@ -585,6 +657,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
 
     if (method === 'inspect_application_operation') {
       await checkGrant('applications:read');
+      meterCall();
       const operationId = string(params.operationId, 512);
       return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session }) => {
         const op = await session.operations.get(operationId);
@@ -595,6 +668,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
     if (method === 'query_application' || method === 'agent_feed') {
       await checkGrant('applications:read');
       if (!caps.read) throw new HttpError(403, 'read_not_permitted');
+      meterCall();
       const queryName = method === 'agent_feed' ? 'agentFeed' : string(params.query, 128);
       if (method === 'query_application' && caps.queries && !caps.queries.includes(queryName)) {
         throw new HttpError(403, 'operation_not_approved');
@@ -636,7 +710,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
             ...(isSql ? { query: (sql, sqlParams) => runSql(sql, sqlParams) } : {}),
           };
           await declaredInput(domainBundle, 'queries', queryName, params.input ?? null);
-          const value = await runDomainQuery(domainBundle, queryName, params.input ?? null, bridge);
+          const value = await runDomainQuery(domainBundle, queryName, params.input ?? null, bridge, { timeoutMs: sandboxTimeoutMs });
           return json({ value: { revision: view.revision, value } });
         } finally {
           await view.release();
@@ -648,6 +722,20 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
       await checkGrant('applications:write');
       await requireWritesOpen(t.env);
       if (!caps.write) throw new HttpError(403, 'write_not_permitted');
+      if (ent.quotas.mcpStoreBytes !== null && mcpStoreBytes(t) >= ent.quotas.mcpStoreBytes) {
+        throw quotaError({
+          env: t.env,
+          status: 413,
+          quota: 'mcp_store',
+          plan: ent.plan,
+          used: mcpStoreBytes(t),
+          limit: ent.quotas.mcpStoreBytes,
+          resetsAt: null,
+          message: `Hosted MCP encrypted sync storage limit reached for this page (${Math.round(ent.quotas.mcpStoreBytes / (1024 * 1024))} MB on ${ent.plan}).`,
+          localAlternative: 'Your local browser and native Chronolog storage are unaffected; run `npm run agent` locally or upgrade for larger hosted MCP retention.',
+        });
+      }
+      meterCall();
       const operationId = string(params.operationId, 512);
       return withHostedSession(t, conn, principal.wrapPublicKey, principal.wrapPrivateKey!, async ({ session, domainBundle, roster }) => {
         let steps: SandboxProgramStep[];
@@ -699,7 +787,7 @@ export async function mcpRequest(t: Tendril, req: Request): Promise<Response> {
             throw new HttpError(409, 'domain_bundle_missing', 'Publish a signed domain.js bundle with your page to run named commands in hosted MCP.');
           }
           await declaredInput(domainBundle, 'commands', commandName, params.input);
-          steps = await runDomainCommand(domainBundle, commandName, params.input);
+          steps = await runDomainCommand(domainBundle, commandName, params.input, { timeoutMs: sandboxTimeoutMs });
         }
         const op = await session.submit({ program: buildChronologProgram(steps), operationId });
         const ac = new AbortController();

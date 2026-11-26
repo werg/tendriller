@@ -4,6 +4,8 @@ import { publicBase } from "../urls";
 import { serviceSession } from "./auth";
 import { renderQrSvg } from "../qr";
 import { accountLimits, requireWritesOpen } from "../service-state";
+import { getAccountEntitlements } from "../billing/entitlements";
+import { planSpec } from "../billing/plans";
 import { emojiIconSvg, iconSvg } from "../inject";
 import { DEFAULT_THEME_COLOR, isEmojiIcon } from "../pwa";
 import { avatar, icon, servicePage } from "./ui";
@@ -148,7 +150,12 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
   if (req.method === "GET") {
     const tendrils = await db.prepare("SELECT id, lifetime, state, created_at FROM tendrils WHERE owner_account = ? ORDER BY created_at DESC")
       .bind(session.accountId).all<{ id: string; lifetime: string; state: string; created_at: number }>();
-    const [agents, grants, limits] = await Promise.all([listAccountAgents(env, session.accountId), accountGrants(env, session.accountId), accountLimits(env)]);
+    const [agents, grants, limits, ent] = await Promise.all([
+      listAccountAgents(env, session.accountId),
+      accountGrants(env, session.accountId),
+      accountLimits(env, session.accountId),
+      getAccountEntitlements(env, session.accountId).catch(() => null),
+    ]);
     const dbMs = performance.now() - started - sessionMs;
     type Summary = { name: string; page_url: string; icon?: string | null; theme_color?: string | null; version: number; held: boolean; bytes: number; agents: number; primary_agent_id?: string | null; guests_waiting: number; last_activity: { ts: number; summary: string } | null };
     const summaries = await Promise.all(tendrils.results.map(async t => {
@@ -210,11 +217,17 @@ export async function dashboard(req: Request, env: Env, url: URL): Promise<Respo
         </div></div></div>
     </dialog>`;
     const empty = `<article class="card" style="grid-column:1/-1;text-align:center;padding:2.5rem 1.5rem"><div class="way-icon" style="display:inline-grid;place-items:center;width:3.2rem;height:3.2rem;border-radius:14px;background:var(--accent-soft);color:var(--accent-text);font-size:1.5rem;margin-bottom:.8rem">${icon("sparkles")}</div><h2>Start with something useful</h2><p class="muted" style="margin:0 auto 1rem">Tell your agent what you want to build. Your first page will appear here.</p><div class="actions" style="justify-content:center"><button type="button" data-copy-from="build-prompt">${icon("copy")} Copy a starter prompt</button><a class="button secondary" href="https://cookbooks.tendriller.dev/">Explore cookbooks</a><a class="button ghost" href="/agent.md">Agent guide</a></div></article>`;
-    const body = `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} Workspace</span><h1>${greeting}</h1><p class="lead">Signed in as ${escape(who)}.</p></div><div class="actions tight"><a class="button secondary sm" href="/connections">${icon("key")} Assistants</a><a class="button secondary sm" href="#agents">${icon("bot")} Agents</a><form class="inline-form" method="post" action="/auth/logout"><button class="secondary sm" type="submit">${icon("logout")} Sign out</button></form></div></div>
-      <div class="stats"><div class="stat"><strong>${tendrils.results.length}</strong><span>${tendrils.results.length === 1 ? "page" : "pages"}</span></div><div class="stat"><strong>${residents}${limits.residents !== null ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${limits.residents}</small>` : ""}</strong><span>resident pages</span></div><div class="stat"><strong>${agents.length}</strong><span>${agents.length === 1 ? "agent" : "agents"}</span></div><div class="stat"><strong>${totals.guests}</strong><span>guest requests</span></div></div></section>
+    const planName = ent ? planSpec(ent.plan).name : "Free";
+    const nearResident = limits.residents !== null && residents >= Math.ceil(limits.residents * 0.8) && residents < limits.residents;
+    const atResident = limits.residents !== null && residents >= limits.residents;
+    const nearMcp = ent && ent.quotas.mcpCallsPerMonth !== null && ent.usage.mcpCalls >= Math.ceil(ent.quotas.mcpCallsPerMonth * 0.8);
+    const body = `<section class="hero dark"><div class="page-head-row"><div><span class="eyebrow">${icon("sparkles")} Workspace · ${escape(planName)}</span><h1>${greeting}</h1><p class="lead">Signed in as ${escape(who)}.</p></div><div class="actions tight"><a class="button secondary sm" href="/dashboard/billing">${icon("sliders")} Plan &amp; usage</a><a class="button secondary sm" href="/connections">${icon("key")} Assistants</a><a class="button secondary sm" href="#agents">${icon("bot")} Agents</a><form class="inline-form" method="post" action="/auth/logout"><button class="secondary sm" type="submit">${icon("logout")} Sign out</button></form></div></div>
+      <div class="stats"><div class="stat"><strong>${tendrils.results.length}${limits.pages !== null ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${limits.pages}</small>` : ""}</strong><span>${tendrils.results.length === 1 ? "page" : "pages"}</span></div><div class="stat"><strong>${residents}${limits.residents !== null ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${limits.residents}</small>` : ""}</strong><span>resident pages</span></div><div class="stat"><strong>${agents.length}${ent?.quotas.agents !== null && ent?.quotas.agents !== undefined ? `<small style="font-size:.9rem;color:var(--hero-muted)"> / ${ent.quotas.agents}</small>` : ""}</strong><span>${agents.length === 1 ? "agent" : "agents"}</span></div><div class="stat"><strong>${totals.guests}</strong><span>guest requests</span></div></div></section>
       ${url.searchParams.get("agent_revoked") === "1" ? `<p class="notice" role="status">${icon("check")}<span>Agent revoked. Its credential stopped working and its page connections were closed.</span></p>` : ""}
       ${url.searchParams.get("deleted") === "1" ? `<p class="notice" role="status">${icon("check")}<span>Page deleted. Its files, links and agent access were removed.</span></p>` : ""}
-      ${limits.residents !== null && residents >= limits.residents ? `<p class="notice warn">${icon("layers")}<span>You have reached ${limits.residents} resident pages. Delete one you no longer need before an agent can make another page resident.</span></p>` : ""}
+      ${ent?.inGracePeriod ? `<p class="notice warn">${icon("shield")}<span>Your subscription renewal failed; your ${escape(planName)} plan remains active during your 7-day grace period. <a href="/dashboard/billing">Update payment method</a>.</span></p>` : ""}
+      ${atResident ? `<p class="notice warn">${icon("layers")}<span>You have reached ${limits.residents} resident pages on ${escape(planName)}. Your existing pages keep working; delete one you no longer need, <a href="/dashboard/billing">upgrade your plan</a>, or <a href="/self-host">self-host on Cloudflare</a> for unlimited slots.</span></p>` : nearResident ? `<p class="notice">${icon("layers")}<span>You are using ${residents} of ${limits.residents} resident pages on ${escape(planName)}. <a href="/dashboard/billing">View usage &amp; plans</a> or <a href="/self-host">self-host</a> anytime.</span></p>` : ""}
+      ${nearMcp ? `<p class="notice warn">${icon("cpu")}<span>Hosted MCP usage: ${ent!.usage.mcpCalls.toLocaleString("en-US")} / ${ent!.quotas.mcpCallsPerMonth!.toLocaleString("en-US")} calls this month. <a href="/dashboard/billing">Manage plan or pay-as-you-go</a>, or run <code>npm run agent</code> locally for unlimited access.</span></p>` : ""}
       ${systemBroadcasts}
       ${noticeList}
       <section class="card" aria-labelledby="new-title"><div class="card-head"><div><span class="eyebrow">${icon("bot")} Bring in an agent</span><h2 id="new-title">Build a new page with any agent</h2><p>Paste this into Claude Code, Codex, Meta Muse, OpenClaw, Hermes, or any other agent, then describe what you want.</p></div><a class="button secondary sm" href="/agents">Platform guides</a></div><div class="copy-box"><textarea id="build-prompt" readonly rows="4" style="min-height:6.5rem">${escape(buildPrompt)}</textarea><div class="cluster"><button class="sm" type="button" data-copy-from="build-prompt">${icon("copy")} Copy prompt</button><a class="button ghost sm" href="/docs/BUILD_AN_APP.md">${icon("terminal")} Agent instructions</a></div></div><p class="fine" style="margin-top:.75rem">To let one of your agents maintain an <em>existing</em> page, add it under <a href="#agents">Your agents</a>, then check it in that page’s <strong>Add people &amp; devices → An agent</strong>.</p></section>

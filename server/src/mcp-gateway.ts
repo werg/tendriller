@@ -6,6 +6,7 @@
  * or WebSocket adapter proxy.
  */
 import { registerAccountAgent } from './agents';
+import { getAccountEntitlements } from './billing/entitlements';
 import { listActiveBroadcasts } from './broadcasts';
 import type { Env } from './env';
 import { assistantDiscovery, assistantGuide, assistantGuides } from './mcp-guide';
@@ -56,7 +57,7 @@ const tools = [
       type: 'object',
       properties: {
         id: { type: 'string' }, serviceOrigin: { type: 'string' }, environment: { type: 'object' }, build: { type: 'object' },
-        readiness: { type: 'object' }, setup: { type: 'object' }, broadcasts: { type: 'object' },
+        readiness: { type: 'object' }, setup: { type: 'object' }, broadcasts: { type: 'object' }, account: { type: 'object' },
       },
       required: ['id'],
     },
@@ -141,18 +142,27 @@ const toolResult = (value: unknown, modern = false) => ({
   content: [{ type: 'text', text: JSON.stringify(value) }],
 });
 
+const QUOTA_ERROR_KEYS = ['quota', 'plan', 'used', 'limit', 'resetsAt', 'localAlternative', 'upgradeUrl', 'pricingUrl', 'selfHostUrl'] as const;
+
+function extractQuotaFields(error: unknown): Record<string, unknown> {
+  if (!(error instanceof HttpError) || !error.extra) return {};
+  if (error.code !== 'quota_exceeded' && error.code !== 'quota') return {};
+  return Object.fromEntries(QUOTA_ERROR_KEYS.filter(k => error.extra![k] !== undefined).map(k => [k, error.extra![k]]));
+}
+
 function failure(id: Rpc['id'], error: unknown, toolCall: boolean, modern: boolean) {
   const expected = error instanceof HttpError;
   const message = expected ? error.message : 'Application connection unavailable';
   const reason = expected ? error.code : 'mcp_unavailable';
+  const quotaFields = extractQuotaFields(error);
   if (!expected) console.error('MCP routing failed', error);
-  if (toolCall) return result(id, { ...(modern ? { resultType: 'complete' } : {}), ...toolResult({ code: reason, message }), isError: true });
+  if (toolCall) return result(id, { ...(modern ? { resultType: 'complete' } : {}), ...toolResult({ code: reason, message, ...quotaFields }), isError: true });
   return json({
     jsonrpc: '2.0', id,
     error: {
       code: expected ? error.extra?.rpcCode ?? -32000 : -32603,
       message,
-      data: { code: reason, ...(expected && error.extra?.reason ? { reason: error.extra.reason } : {}) },
+      data: { code: reason, ...(expected && error.extra?.reason ? { reason: error.extra.reason } : {}), ...quotaFields },
     },
   }, modern && expected && (error.extra?.rpcCode === -32601 || error.extra?.rpcCode === -32602) ? error.status : 200);
 }
@@ -174,10 +184,11 @@ async function pageMcpRequest(env: Env, pageId: string, req: Request, principal:
     signal: req.signal,
     headers: { 'Content-Type': 'application/json' },
   }));
-  const body = await response.json<{ error?: { code: string; message: string; rpcCode?: number; reason?: string }; value?: unknown }>();
+  const body = await response.json<{ error?: Record<string, unknown> & { code: string; message: string; rpcCode?: number; reason?: string }; value?: unknown }>();
   if (!response.ok || body.error) {
     const err = body.error;
-    throw new HttpError(response.status, err?.code ?? 'mcp_unavailable', err?.message, { rpcCode: err?.rpcCode, reason: err?.reason });
+    const { code: _c, message: _m, ...restExtra } = err ?? {};
+    throw new HttpError(response.status, err?.code ?? 'mcp_unavailable', err?.message, restExtra);
   }
   return body;
 }
@@ -215,7 +226,11 @@ async function submitCommandBatch(env: Env, pageId: string, req: Request, applic
         const expected = error instanceof HttpError;
         results.push({
           ok: false, operationId: item.operationId, command: item.command,
-          error: { code: expected ? error.code : 'mcp_unavailable', message: expected ? error.message : 'Command failed' },
+          error: {
+            code: expected ? error.code : 'mcp_unavailable',
+            message: expected ? error.message : 'Command failed',
+            ...extractQuotaFields(error),
+          },
         });
         if (stopOnError) break;
       }
@@ -387,13 +402,43 @@ export async function routeMcp(req: Request, env: Env, url: URL): Promise<Respon
         return complete(toolResult(await registerAccountAgent(env, principal.account, args.handle, args.publicKey, args.wrapKey, args.bio)));
       }
       if (selected.name === 'get_profile') {
-        const [discovery, feed] = await Promise.all([
+        const [discovery, feed, ent] = await Promise.all([
           assistantDiscovery(env, config.issuer),
           listActiveBroadcasts(env, { audiences: ['mcp', 'agents'] }),
+          getAccountEntitlements(env, principal.account).catch(() => null),
         ]);
         return complete(toolResult({
           id: 'profile_' + await sha256Hex(JSON.stringify([config.issuer, principal.account])),
           ...discovery,
+          ...(ent ? {
+            account: {
+              plan: ent.plan,
+              unlimitedHost: ent.unlimitedHost,
+              paygEnabled: ent.paygEnabled,
+              quotas: {
+                pages: ent.quotas.pages,
+                residents: ent.quotas.residents,
+                agents: ent.quotas.agents,
+                guestsPerPage: ent.quotas.guestsPerPage,
+                mcpPages: ent.quotas.mcpPages,
+                mcpCallsPerMonth: ent.quotas.mcpCallsPerMonth,
+                sfuEnabled: ent.quotas.sfuEnabled,
+                sfuMaxPeers: ent.quotas.sfuMaxPeers,
+                hostBrokeredOAuth: ent.quotas.hostBrokeredOAuth,
+                teamOrgOAuth: ent.quotas.teamOrgOAuth,
+              },
+              usage: {
+                period: ent.usage.period,
+                resetsAt: ent.usage.resetsAt,
+                mcpCalls: ent.usage.mcpCalls,
+                mediaBytes: ent.usage.mediaBytes,
+                relayMs: ent.usage.relayMs,
+              },
+              billingUrl: `${config.issuer}/dashboard/billing`,
+              pricingUrl: `${config.issuer}/pricing`,
+              selfHostUrl: `${config.issuer}/self-host`,
+            },
+          } : {}),
           broadcasts: {
             latestSeq: feed.latest_seq,
             issuer: feed.issuer,

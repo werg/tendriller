@@ -12,6 +12,7 @@ import { reportPage } from "./abuse/report";
 import { adminAccount, adminPage, appealPage } from "./abuse/admin";
 import { checkBroadcastAdminToken, createBroadcast, fleetVersionSummary, listActiveBroadcasts, listAllBroadcastsForAdmin, publicBroadcastKeys, revokeBroadcast, validAudienceParam } from "./broadcasts";
 import { budgetWebhook } from "./budget";
+import { polarWebhookRoute, pricingPage, routeBillingDashboard, selfHostPage } from "./billing/routes";
 import { redeemPageCode, routePageAuth } from "./accounts/page";
 import { CORS_HEADERS, errorResponse, json, readJson, toErrorResponse, withCors } from "./http";
 import { escapeHtml, landingPage } from "./inject";
@@ -155,6 +156,7 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
     return response;
   }
 
+  if (path === "/api/webhooks/polar") return polarWebhookRoute(req, env);
   if (path.startsWith("/api/")) {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
     return withCors(await api(req, env, url));
@@ -172,6 +174,9 @@ async function routeInner(req: Request, env: Env, onPagesDomain: boolean, contex
   if (path === "/appeal" || path === "/appeal/account") return appealPage(req, env, url);
   if (path === "/admin" || path === "/admin/action" || path === "/admin/broadcast" || path === "/admin/broadcast/revoke" || /^\/admin\/t\/[a-z2-7]{12}$/.test(path)) return adminPage(req, env, url);
   if (path === "/auth" || path.startsWith("/auth/")) return routeAuth(req, env, url);
+  if (path === "/pricing") return pricingPage(req, env);
+  if (path === "/self-host") return selfHostPage(req, env);
+  if (path === "/dashboard/billing" || path.startsWith("/dashboard/billing/")) return routeBillingDashboard(req, env, url);
   if (path === "/dashboard/export" || path === "/dashboard/delete") return accountData(req, env, url);
   if (path === "/dashboard" || path.startsWith("/dashboard/")) return dashboard(req, env, url);
 
